@@ -198,7 +198,6 @@ extern "C" __global__ void reshape_and_cache_flash_turbo4(
     const unsigned int block_offset = (unsigned int)(slot % block_size);
     const unsigned int n_elems = num_kv_heads * head_dim;
     const unsigned int num_groups = n_elems / GROUP_SIZE;
-    const unsigned int lane = threadIdx.x % 32;
 
     const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
     const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
@@ -295,7 +294,6 @@ extern "C" __global__ void reshape_and_cache_flash_turbo8(
     const unsigned int block_offset = (unsigned int)(slot % block_size);
     const unsigned int n_elems = num_kv_heads * head_dim;
     const unsigned int num_groups = n_elems / GROUP_SIZE;
-    const unsigned int lane = threadIdx.x % 32;
 
     const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
     const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;
@@ -377,7 +375,6 @@ extern "C" __global__ void reshape_and_cache_flash_turbo3(
     const unsigned int block_offset = (unsigned int)(slot % block_size);
     const unsigned int n_elems = num_kv_heads * head_dim;
     const unsigned int num_groups = n_elems / GROUP_SIZE;
-    const unsigned int lane = threadIdx.x % 32;
 
     const __nv_bfloat16* key_src = key + (unsigned long long)token_idx * key_stride;
     const __nv_bfloat16* val_src = value + (unsigned long long)token_idx * value_stride;

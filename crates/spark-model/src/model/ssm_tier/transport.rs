@@ -161,7 +161,6 @@ impl FileSnapshotArena {
 
 impl SnapshotTransport for FileSnapshotArena {
     fn write_blob(&self, offset: u64, bytes: &[u8]) -> Result<()> {
-        use std::os::unix::fs::FileExt;
         if offset + bytes.len() as u64 > self.capacity {
             anyhow::bail!(
                 "FileSnapshotArena write {offset}+{} exceeds capacity {}",
@@ -169,11 +168,9 @@ impl SnapshotTransport for FileSnapshotArena {
                 self.capacity
             );
         }
-        self.file.write_all_at(bytes, offset)?;
-        Ok(())
+        write_all_at(&self.file, bytes, offset)
     }
     fn read_blob(&self, offset: u64, out: &mut [u8]) -> Result<()> {
-        use std::os::unix::fs::FileExt;
         if offset + out.len() as u64 > self.capacity {
             anyhow::bail!(
                 "FileSnapshotArena read {offset}+{} exceeds capacity {}",
@@ -181,7 +178,58 @@ impl SnapshotTransport for FileSnapshotArena {
                 self.capacity
             );
         }
-        self.file.read_exact_at(out, offset)?;
-        Ok(())
+        read_exact_at(&self.file, out, offset)
     }
+}
+
+// Positional file I/O, one implementation per platform. The bounds checks and
+// the SnapshotTransport contract stay above in shared code; only the syscall
+// differs. `pread`/`pwrite` and `seek_read`/`seek_write` are both positional
+// and leave the file cursor alone, which is what the arena relies on.
+#[cfg(unix)]
+fn write_all_at(f: &std::fs::File, bytes: &[u8], offset: u64) -> Result<()> {
+    use std::os::unix::fs::FileExt;
+    f.write_all_at(bytes, offset)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_exact_at(f: &std::fs::File, out: &mut [u8], offset: u64) -> Result<()> {
+    use std::os::unix::fs::FileExt;
+    f.read_exact_at(out, offset)?;
+    Ok(())
+}
+
+// Windows has no `write_all_at`/`read_exact_at`: `seek_write`/`seek_read` are
+// the positional primitives and may transfer short, so loop rather than assume
+// one call moves everything.
+#[cfg(windows)]
+fn write_all_at(f: &std::fs::File, bytes: &[u8], offset: u64) -> Result<()> {
+    use std::os::windows::fs::FileExt;
+    let (mut off, mut done) = (offset, 0usize);
+    while done < bytes.len() {
+        let n = f.seek_write(&bytes[done..], off)?;
+        if n == 0 {
+            anyhow::bail!("seek_write wrote 0 bytes at offset {off}");
+        }
+        done += n;
+        off += n as u64;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_exact_at(f: &std::fs::File, out: &mut [u8], offset: u64) -> Result<()> {
+    use std::os::windows::fs::FileExt;
+    let (mut off, mut done) = (offset, 0usize);
+    let total = out.len();
+    while done < total {
+        let n = f.seek_read(&mut out[done..], off)?;
+        if n == 0 {
+            anyhow::bail!("seek_read hit EOF after {done} of {total} bytes at offset {off}");
+        }
+        done += n;
+        off += n as u64;
+    }
+    Ok(())
 }

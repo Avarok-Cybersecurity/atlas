@@ -90,6 +90,10 @@ impl TransformerModel {
         // 0-handle on targets that predate it; dispatch falls back).
         let w4a16_gemv_batch4_kernel =
             crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
+        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
+        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
+        let w4a16_gemv_batch8_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -261,23 +265,41 @@ impl TransformerModel {
             DevicePtr::NULL
         };
 
-        // ATLAS_MTP_DRAFTER_PREFILL: whole-prompt hidden capture buffer,
-        // [max_seq_len, hidden_size] BF16. Opt-in (PCND): NULL unless the env is
-        // set and MTP is active.
-        let mtp_prefill_hidden =
-            if has_mtp && crate::layers::mtp_head::mtp_drafter_prefill_enabled() {
-                let bytes = max_seq_len * config.hidden_size * 2;
+        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
+        // feature (see `crate::model::drafter_context`); NULL here disables
+        // prefill AND carry, since the carry path reads this buffer.
+        //
+        // Three conditions, all necessary: MTP must be active, the feature must
+        // not be killed, and the head must be a precision the batched prefill
+        // can actually run at — an NVFP4/FP8 MTP head would allocate this and
+        // never write it.
+        let mtp_prefill_hidden = if has_mtp
+            && mtp_quant.supports_drafter_prefill()
+            && crate::layers::mtp_drafter_prefill_enabled()
+        {
+            let bytes = max_seq_len * config.hidden_size * 2;
+            tracing::info!(
+                "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
+                 ({} x {} BF16)",
+                bytes as f64 / 1e6,
+                max_seq_len,
+                config.hidden_size,
+            );
+            gpu.alloc(bytes)?
+        } else {
+            if has_mtp
+                && !mtp_quant.supports_drafter_prefill()
+                && crate::layers::mtp_drafter_prefill_enabled()
+            {
                 tracing::info!(
-                    "ATLAS_MTP_DRAFTER_PREFILL=1: allocating {:.0} MB prompt-hidden \
-                 capture ({} x {} BF16) for MTP drafter prefill",
-                    bytes as f64 / 1e6,
-                    max_seq_len,
-                    config.hidden_size,
+                    "MTP drafter context: INACTIVE — the batched drafter prefill \
+                     needs a BF16 MTP head (--mtp-quantization bf16); this head is \
+                     {mtp_quant:?}. No prompt-hidden capture allocated.",
                 );
-                gpu.alloc(bytes)?
-            } else {
-                DevicePtr::NULL
-            };
+            }
+            DevicePtr::NULL
+        };
 
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
@@ -504,6 +526,7 @@ impl TransformerModel {
             dp4a_quant_k,
             dp4a_lm_head_batch2_k,
             w4a16_gemv_batch4_kernel,
+            w4a16_gemv_batch8_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,

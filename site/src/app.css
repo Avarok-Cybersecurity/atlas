@@ -327,20 +327,10 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem 2.5rem; backgro
 .footer-legal { max-width: 1080px; margin: 2rem auto 0; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.68rem; color: var(--t3); line-height: 1.6; }
 .footer-legal .tm { margin-top: 0.6rem; }
 
-/* ---- responsive ----------------------------------------------------------- */
-@media (max-width: 900px) {
-  .hero-inner, .star-wrap, .verified-grid, .hw-grid, .run-grid { grid-template-columns: 1fr; gap: 2rem; }
-  .verified-grid .receipt { max-width: 460px; }
-}
-@media (max-width: 680px) {
-  .nav-links { display: none; }
-  section { padding: 4rem 1.25rem; }
-  .hero { padding: 3.5rem 1.25rem 3rem; }
-  .gift-inner { padding: 0.6rem 1.25rem; }
-  .mnav-vendors, .mnav-subs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; padding-bottom: 0.3rem; }
-  .mnav-vendor, .mnav-sub { flex-shrink: 0; }
-  .ms-grid { grid-template-columns: 1fr; padding: 0 1.1rem 1.25rem; }
-}
+/* ---- responsive -----------------------------------------------------------
+   Every viewport rule lives in styles/mobile.css, loaded after this file.
+   Nothing width-conditional belongs here.
+   -------------------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
@@ -428,13 +418,3 @@ section { padding: 7rem 2rem; }
 .reach-card h3 { font-size: 1.05rem; font-weight: 780; margin-bottom: 0.4rem; }
 .reach-card p { font-size: 0.9rem; color: var(--t2); line-height: 1.6; }
 
-@media (max-width: 900px) {
-  .community-band { grid-template-columns: 1fr; gap: 1.75rem; padding: 2.25rem; }
-  .reach-grid { grid-template-columns: 1fr; }
-  .reach-head { align-items: flex-start; }
-}
-@media (max-width: 680px) {
-  section { padding: 4.5rem 1.25rem; }
-  .proof-strip { gap: 0.6rem 1.25rem; }
-  .gift-inner { font-size: 0.82rem; }
-}

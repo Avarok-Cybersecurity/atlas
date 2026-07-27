@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Phase-2 POSIX reference backend. Single pinned bounce buffer, `pread` +
-// `cuMemcpyHtoDAsync`, stream-sync after every memcpy to avoid the next
-// pread overwriting in-flight DMA. Slow-but-deterministic; used by tests as
-// the oracle the io_uring backend is compared against.
+// Phase-2 reference backend. Single pinned bounce buffer, positional read +
+// `cuMemcpyHtoDAsync`, stream-sync after every memcpy to avoid the next read
+// overwriting in-flight DMA. Slow-but-deterministic; used by tests as the
+// oracle the io_uring backend is compared against.
+//
+// Named "posix" for its history; it is now PORTABLE. The positional read/write
+// go through `atlas_tier::pio`, which is `pread`/`pwrite` on unix and
+// `seek_read`/`seek_write` on Windows, so this is the backend the Windows
+// build uses (io_uring has no Windows analogue).
 
 use anyhow::{Context, Result, bail};
 use std::ffi::c_void;
@@ -34,15 +39,13 @@ impl StorageBackend for PosixBackend {
         let bytes = self.layout.group_bytes() as usize;
         let bounce_ptr = self.bounce.ptr;
         for req in requests {
-            let fd = self.layout.fd(req.group.layer);
-            let off = self.layout.offset(req.group) as i64;
-            let n = unsafe { libc::pread(fd, bounce_ptr, bytes, off) };
-            if n != bytes as isize {
-                bail!(
-                    "pread {bytes}@{off} returned {n}, errno {}",
-                    std::io::Error::last_os_error()
-                );
-            }
+            let off = self.layout.offset(req.group);
+            // SAFETY: `bounce_ptr` is a pinned host allocation of at least
+            // `group_bytes()`, owned by `self.bounce` for the lifetime of this
+            // call and not aliased -- the loop serialises on `stream_sync`.
+            let buf = unsafe { std::slice::from_raw_parts_mut(bounce_ptr as *mut u8, bytes) };
+            atlas_tier::pio::read_exact_at(self.layout.file(req.group.layer), buf, off)
+                .with_context(|| format!("read {bytes}@{off}"))?;
             // The pinned bounce buffer is shared across all requests in this
             // call; we must let the H→D DMA complete before the next pread
             // overwrites the buffer, otherwise the second cuMemcpyHtoDAsync
@@ -67,18 +70,13 @@ impl StorageBackend for PosixBackend {
         unsafe {
             std::ptr::copy_nonoverlapping(src.as_ptr(), self.bounce.ptr as *mut u8, bytes);
         }
-        let fd = self.layout.fd(key.layer);
-        let off = self.layout.offset(key) as i64;
-        let n = unsafe { libc::pwrite(fd, self.bounce.ptr, bytes, off) };
-        if n != bytes as isize {
-            bail!(
-                "pwrite {bytes}@{off} returned {n}, errno {}",
-                std::io::Error::last_os_error()
-            );
-        }
+        let off = self.layout.offset(key);
+        // SAFETY: as above -- pinned, group-sized, exclusively owned here.
+        let buf = unsafe { std::slice::from_raw_parts(self.bounce.ptr as *const u8, bytes) };
+        atlas_tier::pio::write_all_at(self.layout.file(key.layer), buf, off)
+            .with_context(|| format!("write {bytes}@{off}"))?;
         // fsync would be needed for crash durability; skipped for the test
         // path where the file is single-process / single-run.
-        let _ = fd;
         Ok(())
     }
 
@@ -90,12 +88,22 @@ impl StorageBackend for PosixBackend {
 impl PosixBackend {
     /// Test helper: drop the page cache for the layer files so subsequent
     /// reads actually hit NVMe (otherwise small tests trivially read from RAM).
+    ///
+    /// `posix_fadvise(DONTNEED)` has no portable equivalent; on Windows the
+    /// cache is dropped by reopening with `FILE_FLAG_NO_BUFFERING`, which this
+    /// tier deliberately does not use. A no-op there means a Windows run of
+    /// the timing tests may read from RAM -- which is why this is a test
+    /// helper and not a correctness primitive.
+    #[cfg(unix)]
     pub fn drop_pagecache(&self) {
         for layer in 0..self.layout.spec.num_layers {
             let fd = self.layout.fd(layer);
             unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
         }
     }
+
+    #[cfg(not(unix))]
+    pub fn drop_pagecache(&self) {}
 }
 
 #[cfg(test)]

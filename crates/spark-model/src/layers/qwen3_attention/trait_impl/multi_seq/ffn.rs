@@ -72,46 +72,6 @@ impl Qwen3AttentionLayer {
                 (3 * h) as u32,
                 stream,
             )?;
-        } else if n == 4 && !force_seq_ffn {
-            // K=4 verify (num_drafts=3). Without this arm n=4 fell through to the
-            // dense `forward_prefill` branch below, i.e. the prefill GEMM at M=4 --
-            // 94% of the M-tile is padding, ~33 GB/s effective. `forward_k4` reads
-            // each projection weight ONCE for all 4 rows via the batched GEMV
-            // (~290 GB/s on these shapes), which is the same MMQ cliff the gb10
-            // side hit and fixed. The attention-layer FFN was the ONLY site still
-            // missing it -- lm_head (impl_a3), QKV (multi_seq/qkv) and the GDN
-            // decode path all already route M<=4 to the batch4 kernels, which is
-            // why K=4 measured net-negative here while gb10 measured it a win.
-            //
-            // `try_forward_k4` returns false when the path is unavailable (MoE /
-            // missing batch4 kernel / non-NVFP4 weights); the fallback below is
-            // byte-identical to the pre-existing behaviour for those configs.
-            let normed2 = fwd.buffers.norm_output();
-            ops::residual_add_rms_norm(
-                fwd.gpu,
-                self.residual_add_rms_norm_k,
-                hidden,
-                o_out,
-                &self.post_attn_norm,
-                normed2,
-                residual,
-                4,
-                h as u32,
-                eps,
-                stream,
-            )?;
-            if !self.ffn.try_forward_k4(normed2, fwd, stream)? {
-                self.ffn.forward_prefill(normed2, 4, fwd, stream)?;
-            }
-            let moe_out = fwd.buffers.moe_output();
-            ops::residual_add(
-                fwd.gpu,
-                self.residual_add_k,
-                hidden,
-                moe_out,
-                (4 * h) as u32,
-                stream,
-            )?;
         } else if n == 2 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(
@@ -135,6 +95,41 @@ impl Qwen3AttentionLayer {
                 hidden,
                 moe_out,
                 (2 * h) as u32,
+                stream,
+            )?;
+        } else if (4..=8).contains(&n) && !force_seq_ffn && self.ffn.can_forward_km(n as u32) {
+            // MISSING K=4 ARM (2026-07-24): the ladder jumped from n==2/3
+            // straight to the dense `forward_prefill` GEMM below, so K=4
+            // verify ran the 16 attention layers' FFN through the MMQ/tile
+            // prefill path (~156 GB/s cliff — the exact arm forward_km's
+            // docstring quantifies at 54.8 ms/step vs ~31 ms batched on the
+            // GDN stack, where it IS wired: trait_decode_batched.rs). Live
+            // K=4 A/B showed verify ~1.41x K=3 cost from this alone. Mirror
+            // of the n==3 arm with the M<=4 batched GEMV; n=5..8 (chain
+            // verify K=5..8) rides the same arm via `w4a16_gemv_batch8`.
+            let normed2 = fwd.buffers.norm_output();
+            ops::residual_add_rms_norm(
+                fwd.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                o_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            let used = self.ffn.try_forward_km(normed2, n as u32, fwd, stream)?;
+            debug_assert!(used, "can_forward_km checked at branch entry");
+            let moe_out = fwd.buffers.moe_output();
+            ops::residual_add(
+                fwd.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (n * h) as u32,
                 stream,
             )?;
         } else if !force_seq_ffn && self.ffn.is_dense() {

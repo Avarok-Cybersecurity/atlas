@@ -277,51 +277,19 @@ impl GpuBackend for AtlasCudaBackend {
         height: usize,
         stream: u64,
     ) -> Result<()> {
-        // NVIDIA: one pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's
-        // stream via the cudart runtime, replacing a per-row copy_d2d_async loop.
-        #[cfg(not(atlas_scale))]
-        {
-            unsafe extern "C" {
-                fn cudaMemcpy2DAsync(
-                    dst: *mut c_void,
-                    dpitch: usize,
-                    src: *const c_void,
-                    spitch: usize,
-                    width: usize,
-                    height: usize,
-                    kind: i32,
-                    stream: u64,
-                ) -> i32;
-            }
-            let status = unsafe {
-                cudaMemcpy2DAsync(
-                    dst.0 as *mut c_void,
-                    dst_pitch,
-                    src.0 as *const c_void,
-                    src_pitch,
-                    width_bytes,
-                    height,
-                    3,
-                    stream,
-                )
-            };
-            if status != 0 {
-                bail!("cudaMemcpy2DAsync failed: status {status}");
-            }
-            Ok(())
-        }
-        // strix/SCALE: no cudart runtime linked (SCALE's libcuda is driver-only).
-        // Fall back to the per-row driver-API loop this pitched copy replaced —
-        // `copy_d2d_async` uses `cuMemcpyDtoDAsync`, which SCALE provides.
-        #[cfg(atlas_scale)]
-        {
-            for row in 0..height {
-                let s = DevicePtr(src.0 + (row * src_pitch) as u64);
-                let d = DevicePtr(dst.0 + (row * dst_pitch) as u64);
-                self.copy_d2d_async(s, d, width_bytes, stream)?;
-            }
-            Ok(())
-        }
+        // Vendor-forked: NVIDIA uses one cudart `cudaMemcpy2DAsync`; the AMD
+        // (SCALE / native-HIP) targets have no cudart and use a per-row
+        // driver-API loop. Both arms live in `super::copy2d`.
+        super::copy2d::copy_d2d_2d_async(
+            self,
+            src,
+            src_pitch,
+            dst,
+            dst_pitch,
+            width_bytes,
+            height,
+            stream,
+        )
     }
 
     fn begin_capture(&self, stream: u64) -> Result<()> {

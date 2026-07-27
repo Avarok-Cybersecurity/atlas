@@ -3,6 +3,7 @@
   import GiftBanner from '$lib/components/GiftBanner.svelte';
   import Hero from '$lib/components/Hero.svelte';
   import Proof from '$lib/components/Proof.svelte';
+  import News from '$lib/components/News.svelte';
   import StarProof from '$lib/components/StarProof.svelte';
   import Community from '$lib/components/Community.svelte';
   import Verified from '$lib/components/Verified.svelte';
@@ -20,6 +21,7 @@
 <GiftBanner />
 <Hero />
 <Proof />
+<News />
 <StarProof />
 <Community />
 <Verified />

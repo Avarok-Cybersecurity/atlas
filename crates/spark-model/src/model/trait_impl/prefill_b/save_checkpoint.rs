@@ -29,13 +29,49 @@ impl TransformerModel {
         let bs = kv_cache.block_size();
         let end_token = chunk_start + chunk_len;
         let end_block = end_token / bs;
-        // The boundary a warm turn will actually match at. Saving here is what
-        // takes the next turn's SSM replay from ~254 tokens to 0.
+        // Tail checkpoints (issue #15 follow-up): the last two block
+        // boundaries below the prompt end bracket the next turn's
+        // block-aligned radix match (divergence sits within the template's
+        // generation-only suffix, < block_size tokens before `total`), so a
+        // snapshot at each makes warm multi-turn restores work regardless of
+        // --ssm-checkpoint-interval. The final chunk is split at these
+        // boundaries by `prefill_chunk_dispatch`. Interval checkpoints
+        // additionally fire at chunk boundaries that are interval-block
+        // multiples (with full-size chunks that granularity is coarse — the
+        // tail checkpoints + leaf carry the warm path).
+        let tail = (tokens.len().saturating_sub(1) / bs) * bs;
+        let is_prompt_tail = end_token == tail || (tail >= bs && end_token == tail - bs);
+        // NOTE (2026-07-21, dgx2 SSM audit): `--ssm-checkpoint-interval` is a
+        // FILTER over chunk boundaries, not a generator of them. This
+        // function only runs at a chunk end, so the effective checkpoint
+        // spacing is the CHUNK size, not the interval — the interval can only
+        // suppress boundaries, never create one. The auto-clamp that used to
+        // force the prefill budget down to `interval * block_size` was
+        // removed deliberately (impl_a1.rs, issue #15, 2026-07-02) because it
+        // forced micro-chunked prefill.
+        //
+        // Consequence to be aware of when reading a serve log: with
+        // `--ssm-checkpoint-interval 32` (32 blocks = 512 tokens at bs=16)
+        // and `--max-prefill-tokens 8192`, chunk ends land on blocks 512,
+        // 1024, ... — every one of which is a multiple of 32 — so interval
+        // checkpoints fire every 8192 tokens, NOT every 512. The warm path is
+        // carried by the tail checkpoints and the leaf above, which is why
+        // this is not currently a correctness problem.
+        //
+        // Making the interval a real generator (splitting chunks at interval
+        // boundaries) is a behaviour change with a prefill-throughput cost
+        // and is deliberately NOT made here; it needs its own measured A/B.
+        // Opt-in (`ATLAS_SSM_TAIL_CKPT=1`, default OFF) index-only tail insert,
+        // carried over from the Strix branch. Uses the spark_runtime boundary
+        // helper so save and lookup agree (SSOT). Kept as a SEPARATE predicate
+        // from `is_prompt_tail` above: main's checkpoint-firing policy is
+        // unchanged by default, and this only widens the guard when the env
+        // var is explicitly set. Consumed by the `if is_tail` block below.
         let is_tail = spark_runtime::ssm_tail_ckpt_enabled()
             && spark_runtime::ssm_tail_boundary(tokens.len(), bs) == Some(end_token);
-        let on_grid = self.ssm_checkpoint_interval > 0
+        let on_interval = self.ssm_checkpoint_interval > 0
             && end_block.is_multiple_of(self.ssm_checkpoint_interval);
-        if end_block == 0 || (!on_grid && !is_tail) {
+        if end_block == 0 || !(is_prompt_tail || on_interval || is_tail) {
             return Ok(());
         }
         // Stale-V cap (mirrors finalize_last): never checkpoint-cache a block

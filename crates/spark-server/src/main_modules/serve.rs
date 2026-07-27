@@ -673,6 +673,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // KV-allocation ceiling trued-up on completion. Set once, before the
     // scheduler thread spawns.
     scheduler::set_max_seq_len(args.max_seq_len);
+    // Capture the runtime handle IN async context so the scheduler OS thread
+    // can detach terminal stream sends (Done/Error) as tokio tasks.
+    scheduler::capture_runtime_handle();
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,

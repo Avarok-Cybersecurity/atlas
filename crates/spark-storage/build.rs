@@ -64,6 +64,16 @@ fn main() {
         println!("cargo:rerun-if-changed=build.rs");
         return;
     }
+    // The native-HIP target (strix-hip) ships hipcc, not nvcc, and these
+    // predictor kernels are NVIDIA-PTX loaded as PTX text — porting them to HIP
+    // code objects is future work. The windows/amd-hip build is compile-only
+    // (hosted runners have no AMD GPU), so emit the empty registry rather than
+    // panicking on a missing nvcc. SCALE (`strix`) keeps nvcc — it ships one.
+    if std::env::var("ATLAS_TARGET_HW").as_deref() == Ok("strix-hip") {
+        emit_stub();
+        println!("cargo:rerun-if-changed=build.rs");
+        return;
+    }
     compile_kernels();
     println!("cargo:rerun-if-changed=build.rs");
 }
@@ -150,9 +160,12 @@ fn compile_kernels() {
         if !status.success() {
             panic!("nvcc --ptx failed for {}", src.display());
         }
+        // `{:?}` supplies the quotes AND escapes the path: a Windows OUT_DIR
+        // like `D:\a\atlas\...` interpolated raw makes `\a` an invalid Rust
+        // escape, and the generated storage_ptx.rs fails to lex.
         emit.push_str(&format!(
-            "    StoragePtx {{ name: \"{stem}\", ptx: include_str!(\"{}\") }},\n",
-            ptx_out.display()
+            "    StoragePtx {{ name: \"{stem}\", ptx: include_str!({}) }},\n",
+            format_args!("{:?}", ptx_out.to_string_lossy())
         ));
     }
     emit.push_str("];\n");

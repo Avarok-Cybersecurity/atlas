@@ -168,9 +168,26 @@ pub async fn count_tokens(
         m.content
             .retain(|p| !matches!(p, crate::ir::ContentPart::Image(_)));
     }
-    let prepared = match crate::api::chat::prepare::prepare_chat_prompt(&state, &mut ir_req) {
-        Ok(p) => p,
-        Err(resp) => return openai_error_to_anthropic(resp).await,
+    // Same treatment as the chat handler: the Jinja render + tokenize inside
+    // `prepare_chat_prompt` is CPU-bound (measured 13 ms at 12931 prompt tokens)
+    // and must not hold an async worker. `ir_req` is not read after this point,
+    // so it is simply moved in rather than handed back.
+    let state_for_prepare = state.clone();
+    let prepared = match tokio::task::spawn_blocking(move || {
+        crate::api::chat::prepare::prepare_chat_prompt(&state_for_prepare, &mut ir_req)
+    })
+    .await
+    {
+        Ok(Ok(p)) => p,
+        Ok(Err(resp)) => return openai_error_to_anthropic(resp).await,
+        Err(join_err) => {
+            tracing::error!("count_tokens prepare panicked: {join_err}");
+            return anthropic_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+                format!("Error preparing prompt: {join_err}"),
+            );
+        }
     };
 
     let body = serde_json::json!({

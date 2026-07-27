@@ -15,6 +15,22 @@ use crate::ir::ChatRequest;
 
 use super::{msg_entry, template, thinking};
 
+/// Opt-in per-request phase timing for the chat request path
+/// (`ATLAS_CHAT_PHASE_TIMING=1`, strict `== "1"`).
+///
+/// Exists to localize a measured ~205 ms that `/v1/chat/completions` costs over
+/// `/v1/completions` for identical content on a SHORT, TOOL-LESS prompt. It is
+/// per-request CPU rather than prefill (it survives at p50 across warm reps),
+/// and it is not template compilation (the minijinja env is precompiled) nor the
+/// auto-compact double render (disabled by default). At ~350-450 ms/turn in the
+/// harness's shape that is ~9-12% of the wall, so it is worth an instrument.
+///
+/// Read once. Off by default, so the production path is unchanged.
+pub(super) fn phase_timing_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_CHAT_PHASE_TIMING").as_deref() == Ok("1"))
+}
+
 /// Outputs of [`prepare_chat_prompt`].
 pub(crate) struct PreparedChat {
     pub(crate) tools_active: bool,
@@ -75,6 +91,8 @@ pub(crate) fn prepare_chat_prompt(
         req.sampling.repetition_penalty,
     );
 
+    let _t_phase = std::time::Instant::now();
+
     // ── Phase 1: build MsgEntry vec + image preprocess + cwd ────
     let msg_entry::BuildOut {
         messages,
@@ -87,6 +105,7 @@ pub(crate) fn prepare_chat_prompt(
         &req.messages,
         tools_active,
     )?;
+    let us_msg_entry = _t_phase.elapsed().as_micros();
 
     // ── Phase 1.5 + 2: thinking directive + resolution (pre-template) ─
     // The client's per-request directive (resolved at the API edge) wins;
@@ -103,6 +122,7 @@ pub(crate) fn prepare_chat_prompt(
         req.max_tokens as u32,
         tools_active,
     );
+    let us_thinking = _t_phase.elapsed().as_micros() - us_msg_entry;
 
     // ── Phase 5: render Jinja template + image-pad expansion ────
     let template::TemplateOut {
@@ -118,6 +138,14 @@ pub(crate) fn prepare_chat_prompt(
         thinking_budget,
         tools_active,
     )?;
+    if phase_timing_enabled() {
+        let us_template = _t_phase.elapsed().as_micros() - us_msg_entry - us_thinking;
+        tracing::info!(
+            "CHAT_PHASE prepare: msg_entry={us_msg_entry}us thinking={us_thinking}us \
+             template_render_and_tokenize={us_template}us prompt_tokens={}",
+            prompt_tokens.len()
+        );
+    }
 
     Ok(PreparedChat {
         tools_active,

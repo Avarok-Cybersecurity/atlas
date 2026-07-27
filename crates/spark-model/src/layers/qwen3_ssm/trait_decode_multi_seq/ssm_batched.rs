@@ -124,10 +124,14 @@ impl Qwen3SsmLayer {
         let use_batch4 = gemv_batch_k.0 != 0
             && n <= 16
             && std::env::var("ATLAS_SSM_GEMV_BATCH4").ok().as_deref() != Some("0");
-        // FP4 sibling: w4a16_gemv batch4 (M<=4) / batch16 (M<=16). Single NVFP4
-        // weight pass for the QKVZ + out_proj GEMVs (amortizes the weight read).
+        // FP4 sibling: w4a16_gemv batch4 (M<=4) / batch8 (M=5..8) / batch16
+        // (M<=16). Single NVFP4 weight pass for the QKVZ + out_proj GEMVs
+        // (amortizes the weight read). batch8 halves batch16's acc/smem
+        // pressure at the mid tier; 0-handle → batch16 as before.
         let fp4_gemv_batch_k = if n <= 4 {
             self.w4a16_gemv_batch4_k
+        } else if n <= 8 && self.w4a16_gemv_batch8_k.0 != 0 {
+            self.w4a16_gemv_batch8_k
         } else {
             self.w4a16_gemv_batch16_k
         };

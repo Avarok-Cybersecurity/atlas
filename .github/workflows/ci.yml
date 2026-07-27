@@ -4,6 +4,17 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  # Reusable: release.yml gates its (expensive) build matrix on CI passing, so
+  # a fmt or clippy failure costs one cheap runner instead of eight toolchain
+  # installs. Defined once here; release.yml calls it rather than copying it.
+  workflow_call:
+
+# Least privilege: CI only reads the repo. Without an explicit block the
+# GITHUB_TOKEN inherits the repository default, which can be write — flagged by
+# CodeQL (code-scanning/32) once this workflow gained the release-matrix job.
+# The reusable workflows it calls inherit this and declare the same.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -337,3 +348,18 @@ jobs:
 
   # cargo-deny runs in security.yml with path filters on Cargo.toml / Cargo.lock /
   # deny.toml plus a weekly cron. Not duplicated here.
+
+  # The release build matrix runs only after every gate above is green, in
+  # this same CI run — so a PR's checks table shows base CI then the matrix,
+  # and CI is never executed twice for one commit. Guarded to pull_request:
+  # release.yml calls this workflow for its own gate, and must not trigger a
+  # second matrix build there.
+  release-matrix:
+    name: release matrix
+    if: github.event_name == 'pull_request'
+    needs: [fmt, clippy, license-headers, typos, test, test-macos-metal]
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: 0.0.0-pr${{ github.event.number }}
+      pr_mode: true
+      retention_days: 1

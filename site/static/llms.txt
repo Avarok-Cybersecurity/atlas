@@ -1,10 +1,11 @@
 # Atlas Inference
 
-Pure Rust + CUDA LLM inference engine, hand-tuned for prosumer AI machines (NVIDIA DGX Spark / GB10 today, AMD Strix Halo in bring-up).
+Pure Rust + CUDA LLM inference engine, hand-tuned for prosumer AI machines (NVIDIA DGX Spark / GB10 and AMD Strix Halo / gfx1151). Submitted to MLPerf Inference v6.1, closed edge division, on both.
 
 ## Links
 
 - Repo: https://github.com/Avarok-Cybersecurity/atlas
+- MLPerf Edge Agentic benchmark (Atlas Inference named as a contributor): https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/
 - Deployment guide: https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md
 - Recipes (model SSOT): https://github.com/Avarok-Cybersecurity/atlas-recipes
 - Discord: https://discord.gg/6vDbKaKrKD

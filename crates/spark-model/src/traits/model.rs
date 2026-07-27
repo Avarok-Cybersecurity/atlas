@@ -54,6 +54,34 @@ pub struct BeamReq {
     pub early_stopping: bool,
 }
 
+/// The multi-sequence batch padding ladder — the SSOT for `padded_n`.
+///
+/// Batched decode pads the live sequence count up to a small set of captured
+/// sizes so that (a) CUDA graphs (`ATLAS_DECODE_GRAPHS_MULTISEQ`) are keyed by
+/// a handful of stable shapes instead of one per exact n, and (b) the batched
+/// kernels see a bounded set of widths. Padding rows point at the dummy SSM
+/// slot / dummy KV block and cost one wasted lane each.
+///
+/// This expression used to be duplicated at FOUR call sites
+/// (`decode_a2.rs:168`, `decode_b.rs:52` and `:110`,
+/// `phase_continue_prefills.rs:142` — the last one in a different crate), which
+/// is exactly how the ladder would have drifted when a step was added. All four
+/// now call here.
+///
+/// `12` and `16` were added for the `C=[1,2,4,8,16]` concurrency work
+/// (2026-07-25): previously any n ≥ 9 fell through to `padded_n = n`, so at
+/// C=16 every distinct batch composition minted its OWN CUDA graph (n=9, 10,
+/// ... 16 each a separate capture) and the buffer-fit guards were computed on
+/// exact n. Above 16 the fall-through behaviour is unchanged.
+#[inline]
+pub fn padded_batch_n(n: usize) -> usize {
+    [2usize, 4, 8, 12, 16]
+        .iter()
+        .copied()
+        .find(|&s| s >= n)
+        .unwrap_or(n)
+}
+
 pub trait Model: Send + Sync {
     /// True when this model implements run-to-completion beam search
     /// ([`Self::generate_beam_batch`]). Default `false` — only encoder-decoder
@@ -839,14 +867,6 @@ pub trait Model: Send + Sync {
         Ok(()) // No-op if no secondary stream.
     }
 
-    /// F62 (2026-04-27): copy canonical SSM state from `*_checkpoint` into
-    /// `*_state` BEFORE verify so the kernel can scratch-write it. Runs on
-    /// default_stream (FIFO ordering with the next kernel). No-op default
-    /// for non-MTP backends.
-    fn pre_verify_copy_async(&self, _seq: &mut SequenceState) -> Result<()> {
-        Ok(())
-    }
-
     /// Item #2 (STree-style in-place verify commit): commit the surviving
     /// prefix of a verify pass directly onto the canonical `h_state` /
     /// `conv_state`. Full accept (`num_accepted == k`) is a no-op (the
@@ -861,28 +881,6 @@ pub trait Model: Send + Sync {
         _k: usize,
     ) -> Result<()> {
         Ok(())
-    }
-
-    /// F62 (2026-04-27): commit a verify pass to the canonical SSM state.
-    /// `num_accepted ∈ [0, k]`: full accept → copy `h_state` → checkpoint;
-    /// partial → copy `h_state_intermediates[num_accepted-1]`; full reject →
-    /// no-op. Runs on secondary_stream; pair with `sync_secondary`.
-    fn commit_verify_state_async(
-        &self,
-        seq: &mut SequenceState,
-        num_accepted: usize,
-        k: usize,
-    ) -> Result<()> {
-        // Default: fall back to synchronous behavior compatible with the
-        // legacy NGram path. Backends without dual-buffer support use the
-        // pre-existing checkpoint/rollback machinery.
-        if num_accepted == k {
-            self.checkpoint_ssm_states(seq)
-        } else if num_accepted > 0 {
-            self.rollback_ssm_states(seq, num_accepted)
-        } else {
-            Ok(())
-        }
     }
 
     /// Save KV blocks + SSM state to writer. Does NOT free resources.

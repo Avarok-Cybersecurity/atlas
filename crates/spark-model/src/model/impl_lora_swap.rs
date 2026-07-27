@@ -22,6 +22,10 @@ impl TransformerModel {
     /// re-installing if the swapped slot is currently active. Requires rotation
     /// armed (`ATLAS_LORA_ROTATE`/`$ATLAS_LORA_PEER`) so decode is eager.
     #[cfg(feature = "cuda")]
+    // Peer staging pulls adapter tensors over RDMA (rdma-core), so this half
+    // is unix-only. The `_from_disk` twins below are plain file I/O and are
+    // portable.
+    #[cfg(unix)]
     pub fn swap_lora_slot_from_peer(
         &mut self,
         peer_addr: &str,
@@ -137,6 +141,10 @@ impl TransformerModel {
     /// plane so the delta actually applies under batch-1 (the per-slot bgmv route
     /// tables are still dormant — compute reads the installed active adapter).
     #[cfg(feature = "cuda")]
+    // Peer staging pulls adapter tensors over RDMA (rdma-core), so this half
+    // is unix-only. The `_from_disk` twins below are plain file I/O and are
+    // portable.
+    #[cfg(unix)]
     pub fn promote_lora_slot_from_peer(
         &mut self,
         peer_addr: &str,

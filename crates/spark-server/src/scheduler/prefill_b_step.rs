@@ -313,16 +313,24 @@ pub fn prefill_request(
                 top: p.top,
             })
             .collect();
-        if let Err(e) = tx.blocking_send(StreamEvent::PromptLogprobs(lps)) {
-            tracing::warn!("prefill_b_step: prompt-logprobs send failed: {e}");
+        if !super::mod_helpers::bounded_stream_send(
+            tx,
+            StreamEvent::PromptLogprobs(lps),
+            "prefill_b prompt-logprobs",
+        ) {
+            tracing::warn!("prefill_b_step: prompt-logprobs send failed");
         }
     }
     if !spontaneous_think
         && max_tokens > 0
         && let ResponseSink::Streaming(ref tx) = sink
-        && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
+        && !super::mod_helpers::bounded_stream_send(
+            tx,
+            StreamEvent::Token(first),
+            "prefill_b first token",
+        )
     {
-        tracing::warn!("prefill_b_step: first-token send failed (receiver dropped): {e}");
+        tracing::warn!("prefill_b_step: first-token send failed (receiver dropped)");
     }
 
     let output_tokens = if spontaneous_think || max_tokens == 0 {

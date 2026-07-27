@@ -19,6 +19,9 @@ extern "C" {
 // ── init / context ────────────────────────────────────────────────────
 int cuCtxGetCurrent(void** pctx)            { return hipCtxGetCurrent((hipCtx_t*)pctx); }
 int cuCtxSetCurrent(void* ctx)              { return hipCtxSetCurrent((hipCtx_t)ctx); }
+int cuCtxCreate_v2(void** pctx, unsigned f, int dev)
+                                            { return hipCtxCreate((hipCtx_t*)pctx, f, dev); }
+int cuCtxDestroy_v2(void* ctx)              { return hipCtxDestroy((hipCtx_t)ctx); }
 
 // ── errors ────────────────────────────────────────────────────────────
 int cuGetErrorName(int err, const char** s)   { *s = hipGetErrorName((hipError_t)err);   return 0; }
@@ -94,6 +97,8 @@ int cuMemcpyDtoD_v2(unsigned long long d,unsigned long long s,size_t n){return h
 int cuMemsetD8_v2(unsigned long long d,unsigned char v,size_t n){return hipMemsetD8((hipDeviceptr_t)d,v,n);}
 int cuMemsetD32_v2(unsigned long long d,unsigned int v,size_t n){return hipMemsetD32((hipDeviceptr_t)d,v,n);}
 int cuMemHostAlloc(void**p,size_t n,unsigned int f){return hipHostMalloc(p,n,f);}
+int cuMemHostGetDevicePointer_v2(CUdeviceptr* pdptr, void* p, unsigned int f)
+                                            { return hipHostGetDevicePointer((void**)pdptr, p, f); }
 
 // --- CudaContext::new path (cuDeviceGetAttribute maps CUDA enum NUMBERS to sane values, bypassing HIP enum mismatch) ---
 int cuInit(unsigned int f){return hipInit(f);}

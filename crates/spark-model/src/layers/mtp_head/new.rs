@@ -286,10 +286,10 @@ impl MtpHead {
             lm = (effective_vocab * h / 2) as f64 / (1024.0 * 1024.0),
         );
 
-        // ATLAS_MTP_DRAFTER_PREFILL: dedicated batched-prefill scratch
-        // (~50 MB at h=5120/nq=32/hd=256, PREFILL_CHUNK=512 rows). Dedicated
-        // rather than aliased onto the shared arena so the pass has zero
-        // aliasing hazards; allocated only when the env is set (PCND).
+        // Dedicated batched-prefill scratch (~50 MB at h=5120/nq=32/hd=256,
+        // PREFILL_CHUNK=512 rows). Dedicated rather than aliased onto the
+        // shared arena so the pass has zero aliasing hazards; allocated only
+        // when a consumer exists.
         // The catch-up feed (ATLAS_MTP_CATCHUP) runs through the same batched
         // row writer as the drafter prefill and needs the same scratch.
         let prefill_scratch =

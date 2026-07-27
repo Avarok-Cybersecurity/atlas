@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! [`DirectSwapFile`] — the real O_DIRECT NVMe cold tier, plus its
-//! page-aligned bounce-buffer plumbing.
+//! Unix [`DirectSwapFile`]: the real `O_DIRECT` NVMe cold tier, plus its
+//! page-aligned bounce-buffer plumbing. See `mod.rs` for the platform split.
 
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -10,6 +10,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
+use crate::direct_swap::validate_record_bytes;
 use crate::traits::SwapStore;
 
 /// `O_DIRECT` is a Linux-only open flag (macOS has no equivalent — `F_NOCACHE`
@@ -39,11 +40,7 @@ pub struct DirectSwapFile {
 
 impl DirectSwapFile {
     pub fn create(path: &Path, record_bytes: usize) -> Result<Self> {
-        if record_bytes == 0 || !record_bytes.is_multiple_of(4096) {
-            bail!(
-                "DirectSwapFile: record_bytes ({record_bytes}) must be a non-zero 4 KiB multiple"
-            );
-        }
+        validate_record_bytes(record_bytes)?;
         let f = OpenOptions::new()
             .read(true)
             .write(true)

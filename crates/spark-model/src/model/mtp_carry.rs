@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Carry the MTP drafter's KV across turns of a session (`ATLAS_MTP_CARRY_DRAFTER`).
+//! Carry the MTP drafter's KV across turns of a session (ON by default; see
+//! [`crate::model::drafter_context`] for the switch and the coupling).
 //!
 //! # The defect this closes
 //!
@@ -50,11 +51,16 @@
 
 use spark_runtime::gpu::DevicePtr;
 
-/// `ATLAS_MTP_CARRY_DRAFTER=1` — carry the drafter's KV across turns instead of
-/// rebuilding (or, today, skipping) it on every warm turn. Default OFF (PCND);
-/// requires `ATLAS_MTP_DRAFTER_PREFILL=1`, which owns the hidden buffer.
+/// Carry the drafter's KV across turns instead of rebuilding (or, before this
+/// existed, skipping) it on every warm turn. **ON by default.**
+///
+/// Inseparable from the drafter prefill, which owns the hidden buffer this
+/// path reads: the call site is nested inside `!mtp_prefill_hidden.is_null()`,
+/// so carry alone is inert, and prefill without carry is a measured −927
+/// ms/turn loss. [`crate::model::drafter_context`] resolves both together and
+/// is the single source of truth for the policy and its kill switch.
 pub fn mtp_carry_drafter_enabled() -> bool {
-    std::env::var("ATLAS_MTP_CARRY_DRAFTER").ok().as_deref() == Some("1")
+    crate::model::drafter_context::config().carry
 }
 
 /// `ATLAS_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no

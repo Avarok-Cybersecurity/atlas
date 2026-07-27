@@ -75,8 +75,13 @@ pub use model_dims::ModelDims;
 
 // `layout` opens disk files with `O_DIRECT` and pre-allocates via
 // `posix_fallocate` — both Linux-specific. Only the cuda-side modules
-// (high_speed_swap, backend/io_uring, backend/posix) consume it, so
-// gating it on the cuda feature is sufficient.
+// (high_speed_swap, backend/io_uring, backend/posix) consume it.
+//
+// The gate is `all(cuda, unix)`, NOT `cuda` alone: gating on the feature was
+// only ever sufficient because cuda implied Linux. CUDA on Windows breaks that
+// assumption, and io_uring has no Windows analogue at all. The whole NVMe /
+// RDMA cold-tier stack below is therefore unix-only, and a Windows `spark`
+// binary is built without it rather than against an unvalidated IOCP port.
 #[cfg(feature = "cuda")]
 pub mod layout;
 
@@ -85,7 +90,9 @@ pub mod layout;
 // because separating them would just smear the boundary.
 #[cfg(feature = "cuda")]
 pub mod backend;
-#[cfg(feature = "cuda")]
+// The tier micro-benchmark drives io_uring directly (submission queues, not
+// the StorageBackend trait), so it is Linux-only along with io_uring itself.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub mod bench;
 // T1 write-back cache composite (wraps any StorageBackend). cuda but not verbs.
 #[cfg(feature = "cuda")]
@@ -94,13 +101,16 @@ pub mod cascade_backend;
 pub mod expert_arena;
 #[cfg(feature = "cuda")]
 pub mod expert_tier;
-#[cfg(feature = "cuda")]
+// RDMA expert staging needs rdma-core (libibverbs), which is Linux-only.
+#[cfg(all(feature = "cuda", unix))]
 pub mod expert_tier_rdma;
 #[cfg(feature = "cuda")]
 pub mod high_speed_swap;
 #[cfg(feature = "cuda")]
 pub mod predictor;
-#[cfg(feature = "cuda")]
+// Capability probe for cuFile / GPUDirect Storage, which NVIDIA ships for
+// Linux only. There is nothing to probe on other platforms.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub mod probe;
 #[cfg(feature = "cuda")]
 pub mod scratch_pool;
@@ -117,7 +127,10 @@ pub mod weight_lora_rdma;
 pub mod weight_tier_rdma;
 
 #[cfg(feature = "cuda")]
-pub use backend::{IoUringBackend, PosixBackend, ReadRequest, StorageBackend};
+pub use backend::{PosixBackend, ReadRequest, StorageBackend};
+// io_uring is Linux-only; everything else in the tier is portable.
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+pub use backend::IoUringBackend;
 pub use config::HighSpeedSwapConfig;
 pub use eviction::EvictionPolicy;
 pub use expert::{
@@ -125,14 +138,13 @@ pub use expert::{
 };
 #[cfg(feature = "cuda")]
 pub use expert_arena::ExpertArena;
-#[cfg(unix)]
 pub use expert_pack::{ExpertFileReader, ExpertFileWriter};
 pub use expert_pack::{ExpertIndex, ProjData, ProjView, pack_record, unpack_record};
 #[cfg(feature = "cuda")]
 pub use expert_tier::{
     ArenaSlot, ExpertResidency, ExpertTier, PosixTier, TierKind, UmaArenaTier, open_tier,
 };
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", unix))]
 pub use expert_tier_rdma::RdmaTier;
 #[cfg(feature = "cuda")]
 pub use high_speed_swap::{HighSpeedSwap, install_local, local_installed, with_local};
@@ -155,10 +167,14 @@ pub const fn rdma_verbs_enabled() -> bool {
 #[cfg(test)]
 mod rdma_verbs_probe_tests;
 
-// Non-cuda stub surface — same names as the real CUDA orchestrator
-// above so spark-model's call sites compile unchanged. `with_local`
-// always returns None (orchestrator absent), `local_installed` is
-// false, and `install_local` bails — see `stubs.rs` for rationale.
+// Stub surface — same names as the real orchestrator above so spark-model's
+// call sites compile unchanged. `with_local` always returns None (orchestrator
+// absent), `local_installed` is false, and `install_local` bails — see
+// `stubs.rs` for rationale.
+//
+// Gated on the cuda feature alone: the orchestrator itself is now portable
+// (its backend is an alias -- io_uring on Linux, the positional-I/O backend
+// elsewhere), so a Windows CUDA build gets the REAL tier, not this stub.
 #[cfg(not(feature = "cuda"))]
 mod stubs;
 #[cfg(not(feature = "cuda"))]
@@ -166,7 +182,7 @@ pub use stubs::{HighSpeedSwap, install_local, local_installed, with_local};
 
 #[cfg(feature = "cuda")]
 pub use predictor::{Predictor, PredictorDims};
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use probe::{Backend, ProbeConfig, ProbeResult, run_probe};
 pub use projection::{PredictorShape, build_projection};
 #[cfg(feature = "cuda")]

@@ -123,5 +123,43 @@ pub(crate) fn step_done(step_start: Instant, seq_len: usize) {
         let fires = cnt as f64 / SUMMARY_PERIOD as f64;
         let _ = write!(line, " {}={per_step_ms:.2}ms(x{fires:.1})", NAMES[i]);
     }
-    tracing::info!("MTP K2 timing [{SUMMARY_PERIOD} steps, seq_len={seq_len}]:{line}");
+    tracing::info!("MTP verify timing [{SUMMARY_PERIOD} steps, seq_len={seq_len}]:{line}");
+}
+
+/// Drop guard that emits the [`step_done`] summary on EVERY exit path of a
+/// verify step.
+///
+/// Exists because `verify_k4_step` — the SHIPPED config (`--num-drafts 3`) —
+/// has four accept branches and several early error returns. The per-phase
+/// `record()` calls already fired there (picks route through
+/// `verify_pipeline_helper`), but nothing called `step_done`, which lived only
+/// in `verify_k2_step`. The accumulators filled and the summary was never
+/// emitted: a probe generating ~1800 tokens at K=4 produced zero timing lines.
+/// A guard cannot drift out of date the way a per-tail call can.
+///
+/// `seq_len` is captured at construction and is only the log's label — the
+/// verify path advances it mid-step. The measurement is elapsed step time.
+/// Error returns are counted too; they set `a.finished` and are rare, but an
+/// unusually low `total` beside a high step count implies they fired.
+///
+/// Costs one `Instant::now()` when `ATLAS_MTP_TIMING` is unset, since
+/// `step_done` returns immediately if not [`enabled`].
+pub(crate) struct StepTimer {
+    start: Instant,
+    seq_len: usize,
+}
+
+impl StepTimer {
+    pub(crate) fn new(seq_len: usize) -> Self {
+        Self {
+            start: Instant::now(),
+            seq_len,
+        }
+    }
+}
+
+impl Drop for StepTimer {
+    fn drop(&mut self) {
+        step_done(self.start, self.seq_len);
+    }
 }

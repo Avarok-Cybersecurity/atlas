@@ -48,23 +48,47 @@ fn upload(gpu: &dyn GpuBackend, bytes: &[u8]) -> Result<DevicePtr> {
 /// signature and 128-thread block.
 #[allow(clippy::too_many_arguments)]
 fn run(
-    gpu: &dyn GpuBackend, stream: u64, h: KernelHandle, m_tile: usize,
-    a: DevicePtr, packed: DevicePtr, scale: DevicePtr, scale2: f32, c: DevicePtr,
-    m: usize, n: usize, k: usize,
+    gpu: &dyn GpuBackend,
+    stream: u64,
+    h: KernelHandle,
+    m_tile: usize,
+    a: DevicePtr,
+    packed: DevicePtr,
+    scale: DevicePtr,
+    scale2: f32,
+    c: DevicePtr,
+    m: usize,
+    n: usize,
+    k: usize,
 ) -> Result<()> {
     KernelLaunch::new(gpu, h)
         .grid([n.div_ceil(128) as u32, m.div_ceil(m_tile) as u32, 1])
         .block([128, 1, 1])
-        .arg_ptr(a).arg_ptr(packed).arg_ptr(scale).arg_f32(scale2).arg_ptr(c)
-        .arg_u32(m as u32).arg_u32(n as u32).arg_u32(k as u32)
+        .arg_ptr(a)
+        .arg_ptr(packed)
+        .arg_ptr(scale)
+        .arg_f32(scale2)
+        .arg_ptr(c)
+        .arg_u32(m as u32)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
         .launch(stream)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn time_it(
-    gpu: &dyn GpuBackend, stream: u64, h: KernelHandle, m_tile: usize,
-    a: DevicePtr, packed: DevicePtr, scale: DevicePtr, c: DevicePtr,
-    m: usize, n: usize, k: usize, iters: usize,
+    gpu: &dyn GpuBackend,
+    stream: u64,
+    h: KernelHandle,
+    m_tile: usize,
+    a: DevicePtr,
+    packed: DevicePtr,
+    scale: DevicePtr,
+    c: DevicePtr,
+    m: usize,
+    n: usize,
+    k: usize,
+    iters: usize,
 ) -> Result<f64> {
     for _ in 0..3 {
         run(gpu, stream, h, m_tile, a, packed, scale, 0.5, c, m, n, k)?;
@@ -90,12 +114,12 @@ fn main() -> Result<()> {
     // Qwen3.6-27B dense FFN: H=5120, inter=17408.
     // gate/up: N=17408 K=5120 (2 of the 3 GEMMs). down: N=5120 K=17408.
     let shapes: &[(&str, usize, usize, usize)] = &[
-        ("down    M=17",   17, 5120, 17408),
-        ("down    M=64",   64, 5120, 17408),
-        ("gate/up M=17",   17, 17408, 5120),
-        ("gate/up M=64",   64, 17408, 5120),
-        ("gate/up M=512",  512, 17408, 5120),
-        ("down    M=512",  512, 5120, 17408),
+        ("down    M=17", 17, 5120, 17408),
+        ("down    M=64", 64, 5120, 17408),
+        ("gate/up M=17", 17, 17408, 5120),
+        ("gate/up M=64", 64, 17408, 5120),
+        ("gate/up M=512", 512, 17408, 5120),
+        ("down    M=512", 512, 5120, 17408),
         ("gate/up M=1024", 1024, 17408, 5120),
         ("down    M=1024", 1024, 5120, 17408),
         ("gate/up M=2048", 2048, 17408, 5120),
@@ -103,8 +127,10 @@ fn main() -> Result<()> {
     ];
 
     println!("=== strix gfx1151 dense-FFN prefill GEMM (NVFP4, TFLOP/s) ===\n");
-    println!("{:<16} {:>6} {:>6} {:>6} | {:>9} {:>9} {:>9} | {:>8} {:>8}",
-             "shape", "M", "N", "K", "m128", "M64", "k64", "M64/m128", "k64/m128");
+    println!(
+        "{:<16} {:>6} {:>6} {:>6} | {:>9} {:>9} {:>9} | {:>8} {:>8}",
+        "shape", "M", "N", "K", "m128", "M64", "k64", "M64/m128", "k64/m128"
+    );
     println!("{}", "-".repeat(92));
 
     let mut rng = Rng(0x5721);
@@ -113,8 +139,12 @@ fn main() -> Result<()> {
     for &(label, m, n, k) in shapes {
         let mut packed = vec![0u8; (k / 2) * n];
         let mut scale = vec![0u8; (k / GROUP_SIZE) * n];
-        for b in packed.iter_mut() { *b = rng.next_u64() as u8; }
-        for s in scale.iter_mut() { *s = (((5 + (rng.next_u64() % 5)) as u8) << 3) & 0x7F; }
+        for b in packed.iter_mut() {
+            *b = rng.next_u64() as u8;
+        }
+        for s in scale.iter_mut() {
+            *s = (((5 + (rng.next_u64() % 5)) as u8) << 3) & 0x7F;
+        }
         let a: Vec<u8> = (0..m * k * 2).map(|_| rng.next_u64() as u8).collect();
 
         let a_ptr = upload(gpu, &a)?;
@@ -127,27 +157,51 @@ fn main() -> Result<()> {
         let flops = 2.0 * m as f64 * n as f64 * k as f64;
         let iters = if m >= 2048 { 20 } else { 40 };
 
-        let t1 = time_it(gpu, stream, m128, 128, a_ptr, p_ptr, s_ptr, c_a, m, n, k, iters)?;
-        let t2 = time_it(gpu, stream, m64, 64, a_ptr, p_ptr, s_ptr, c_b, m, n, k, iters)?;
+        let t1 = time_it(
+            gpu, stream, m128, 128, a_ptr, p_ptr, s_ptr, c_a, m, n, k, iters,
+        )?;
+        let t2 = time_it(
+            gpu, stream, m64, 64, a_ptr, p_ptr, s_ptr, c_b, m, n, k, iters,
+        )?;
         // k64 requires K % 64 == 0
         let t3 = if k % 64 == 0 {
-            time_it(gpu, stream, k64, 64, a_ptr, p_ptr, s_ptr, c_c, m, n, k, iters)?
-        } else { f64::NAN };
+            time_it(
+                gpu, stream, k64, 64, a_ptr, p_ptr, s_ptr, c_c, m, n, k, iters,
+            )?
+        } else {
+            f64::NAN
+        };
 
         // byte-compare m128 vs M64 outputs
         let mut buf_a = vec![0u8; m * n * 2];
         let mut buf_b = vec![0u8; m * n * 2];
         gpu.copy_d2h(c_a, &mut buf_a)?;
         gpu.copy_d2h(c_b, &mut buf_b)?;
-        if buf_a != buf_b { mismatch += 1; }
+        if buf_a != buf_b {
+            mismatch += 1;
+        }
 
-        println!("{label:<16} {m:>6} {n:>6} {k:>6} | {:>9.2} {:>9.2} {:>9.2} | {:>7.3}x {:>7.3}x",
-                 flops / t1 / 1e12, flops / t2 / 1e12, flops / t3 / 1e12, t1 / t2, t1 / t3);
+        println!(
+            "{label:<16} {m:>6} {n:>6} {k:>6} | {:>9.2} {:>9.2} {:>9.2} | {:>7.3}x {:>7.3}x",
+            flops / t1 / 1e12,
+            flops / t2 / 1e12,
+            flops / t3 / 1e12,
+            t1 / t2,
+            t1 / t3
+        );
 
-        for p in [a_ptr, p_ptr, s_ptr, c_a, c_b, c_c] { let _ = gpu.free(p); }
+        for p in [a_ptr, p_ptr, s_ptr, c_a, c_b, c_c] {
+            let _ = gpu.free(p);
+        }
     }
     println!("{}", "-".repeat(92));
-    println!("m128 vs M64 output byte-compare: {}",
-             if mismatch == 0 { "IDENTICAL on all shapes" } else { "MISMATCH — grids or math differ!" });
+    println!(
+        "m128 vs M64 output byte-compare: {}",
+        if mismatch == 0 {
+            "IDENTICAL on all shapes"
+        } else {
+            "MISMATCH — grids or math differ!"
+        }
+    );
     Ok(())
 }
