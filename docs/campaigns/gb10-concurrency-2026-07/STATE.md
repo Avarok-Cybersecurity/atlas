@@ -823,3 +823,47 @@ agentic epsilon >= 2.4 (measured on the agentic harness, not the synthetic probe
    benchmark AND in MLPerf-edge. The rows only need a 2-token ban mask.
 3. lm_head -> k64 tile GEMM (~7 ms; needs a ~715 MB transposed twin; also required before any
    future fused verify).
+
+## 2026-07-27 (late) — SHIPPED: GPU argmax for think_ended. lm_head tile GEMM: REVERTED (CUDA 716)
+
+### `9daec5b9` — admit `think_ended` rows to the GPU argmax fast path. **+2.4% C=16.**
+`--disable-thinking` sets `think_ended = true` for EVERY sequence at birth
+(`prefill_a_step.rs:229` + 3 siblings). The batch-wide gate at `decode_logits_step.rs:76` then
+forced the WHOLE batch onto the host path whenever any row had it — i.e. always. **The GPU
+argmax fast path was unreachable dead code in this benchmark AND in the MLPerf-edge config**,
+so every step paid a 7.95 MB D2H + n full-vocab host passes.
+Such a row needs only `PostCloseThinkMask` = TWO ids. A4's bias floor is gated on
+`inside_thinking` (`sample_step.rs:164`) so it is inert. With request penalties exactly
+neutral the pipeline reduces to the raw argmax modulo those two ids — so: run `argmax_batch`
+(64-byte D2H), and if a returned token lands on a masked id, fall THROUGH and redo the step on
+the host. `THINK_MASK_FALLBACKS` counts those.
+Measured 3 reps/leg, byte-identical: **99.60 -> 102.00 tok/s, sigma 0.26 -> 0.17, disjoint.**
+Kill switch `ATLAS_NO_THINKENDED_GPU_ARGMAX=1`.
+★ TRAP hit while writing it: the first version returned `Vec::new()` from the fall-back arm,
+which emits NO tokens and stalls every sequence. The fast path must yield an `Option` so
+"needs the host pipeline after all" genuinely falls through.
+
+### lm_head -> `w4a16_gemm_t_k64`: BUILT, FAILED, REVERTED — do not retry without reading the kernel
+Motivation was sound and stands: nsys puts lm_head at **9.68 ms/step in ONE launch**, 715 MB at
+**~66 GB/s = 29% of the 230 GB/s ceiling**, the largest non-GEMM kernel in the step. At
+N=248320 the tile GEMM launches ~1940 CTAs, so unlike the narrow-N projections it is
+well-occupied; expected ~5 ms.
+- The transposed twin builds fine: **1.8 s, ~605 MB** (`transpose_for_gemm(gpu, vocab, hidden)`).
+- The single-request identity probe **PASSED** (byte-identical).
+- Concurrent drives died: first error `argmax_batch: cuMemcpyDtoHAsync_v2 failed: status 716`
+  (CUDA_ERROR_MISALIGNED_ADDRESS, sticky — the real fault is the preceding tile GEMM), then
+  cascading 716s from `cuMemsetD8Async` in prefill.
+- Ruled OUT as causes: N=248320 = 1940x128 exactly; K=5120 = 80x64; twin layout [K/2, N]
+  matches what the kernel expects; cuMemAlloc base pointers are 256-B aligned.
+- Therefore this is a real constraint inside `w4a16_gemm_t_k64` at N=248320 (suspect the
+  epilogue's store vectorisation, or a cp.async alignment assumption that holds for the
+  projection shapes but not this one). **Read the kernel's epilogue before retrying.**
+- REVERTED rather than shipped default-off: shipping known-broken code behind a flag is not a
+  compromise, it is a landmine.
+
+### Board after this
+1. split-K on `gridDim.z` (~9 ms) — template `int8_gemm_splitk` at `w4a16_gemm.cu:2533`.
+   NOT bit-identical; pin ksplits to the WEIGHT SHAPE, never runtime concurrency.
+2. lm_head tile GEMM — blocked on the 716 above.
+3. host-leg residue: pin `DECODE_LOGITS_HOST_SCRATCH` (it is a pageable Vec, so the "async"
+   D2H is a staged sync copy), and the two O(output_len) `rposition` scans per seq per step.
