@@ -144,6 +144,7 @@ impl Qwen3AttentionLayer {
             hc_post_k: super::super::try_kernel(gpu, "hyper_connection", "hc_post"),
             hc_expand_k: super::super::try_kernel(gpu, "hyper_connection", "hc_expand"),
             hc_head_k: super::super::try_kernel(gpu, "hyper_connection", "hc_head"),
+            qkv_nvfp4_t: None,
             q_nvfp4_t: None,
             k_nvfp4_t: None,
             v_nvfp4_t: None,

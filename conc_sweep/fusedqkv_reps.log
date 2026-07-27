@@ -1,0 +1,15 @@
+--- leg: OLD (3 separate q/k/v GEMMs) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=31.3s total_tok=3072 agg=98.0 tok/s
+   rep2 C=16: wall=31.4s total_tok=3072 agg=97.8 tok/s
+   rep3 C=16: wall=31.4s total_tok=3072 agg=97.9 tok/s
+   rep4 C=16: wall=31.5s total_tok=3072 agg=97.5 tok/s
+--- leg: NEW (fused q|k|v N=14336) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=30.9s total_tok=3072 agg=99.5 tok/s
+   rep2 C=16: wall=30.9s total_tok=3072 agg=99.3 tok/s
+   rep3 C=16: wall=30.9s total_tok=3072 agg=99.3 tok/s
+   rep4 C=16: wall=30.9s total_tok=3072 agg=99.4 tok/s
+FQ_REPS_DONE

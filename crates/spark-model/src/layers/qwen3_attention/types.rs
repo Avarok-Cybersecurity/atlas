@@ -100,6 +100,10 @@ pub struct Qwen3AttentionLayer {
     /// HC `hc_head` kernel handle (NULL when HC disabled).
     pub(super) hc_head_k: KernelHandle,
     // ── Transposed weights for prefill GEMM ──
+    /// Fused [q|k|v] transposed twin (N = q_proj_dim + 2*kv_dim). Present only
+    /// when the three projections share one `weight_scale_2` — the GEMM applies
+    /// a single scale2 per launch. `None` => the three separate GEMMs run.
+    pub(super) qkv_nvfp4_t: Option<QuantizedWeight>,
     pub(super) q_nvfp4_t: Option<QuantizedWeight>,
     pub(super) k_nvfp4_t: Option<QuantizedWeight>,
     pub(super) v_nvfp4_t: Option<QuantizedWeight>,
