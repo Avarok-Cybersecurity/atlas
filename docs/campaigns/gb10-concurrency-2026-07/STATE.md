@@ -525,3 +525,67 @@ step, and it is now the best-understood remaining kernel lever.
 | out_proj K_STEP_T=64 | ~1.5-2x on the block | **-0.5%** |
 | **CUDA graphs default-on** | — | **+3.2%** ✓ |
 The one that worked is the one that removed a whole CLASS of overhead rather than a slice of it.
+
+## 2026-07-27 — DECISION: batched speculative verify is KILLED (for now). Fix batch scaling first.
+
+Stage 1a ran in ~1 hour instead of the projected 1.5 days and produced two gates, both
+pre-registered before measuring.
+
+**PASSED — byte identity.** Batched wy4 on the pointer-table pattern is bit-exact against n
+sequential single-sequence launches at n=2/4/8, across h_state, all three rollback intermediates
+and the output. **The confirmed cross-sequence corruption bug is fixed with a permanent regression
+test** — banked regardless of this decision.
+
+**FAILED — cost.** Fused wy4 at n=8/K=4 costs 723.9 us vs 214.6 us for a plain 1-token n=8 decode
+= 3.37x, past the 2.00x stop line; batching the launches is worth only 1.03x over 8 sequential.
+
+**The measurement that reframed it.** Verify step cost vs draft width at n=1:
+  K=2 (2 verify rows): 97.1 ms | K=4 (4 verify rows): 97.0 ms — IDENTICAL.
+So the +26 ms gap between the plain step (70.9 ms) and the verify step (97 ms) is NOT row cost — it
+is the FIXED drafter overhead of entering the spec path. Verify rows are FREE at n=1 because the
+whole n=1 step is weight-streaming bound (17.5 GB / 273 GB/s = 64 ms of a 70.9 ms step) AND the GDN
+kernel runs at ~8% occupancy with spare memory-level parallelism. **At n=8 the GPU is full and that
+slack is gone** — which is exactly why the same kernel measures 3.37x there. The property that makes
+speculation cheap at C=1 does not transfer.
+
+Budget at n=8 against a pre-registered 60/82 ms build/kill band: GDN +24.4 (measured), attention
++31 (fitted), drafter +26 (measured at n=1, ASSUMED flat in n) = ~81 ms, i.e. 99.5 tok/s vs vLLM's
+98.8 — dead even, one millisecond off the kill line.
+
+### Why KILLED anyway — the strategic ground, which does not depend on that arithmetic
+The adjudication argued the attention leg is OVER-counted (verify rows share a sequence's KV, so
+n=8xK=4 streams 8 KVs not 32 => +5-15 ms, not +31), which would put the budget in the BUILD band —
+and still killed, because:
+
+**Atlas C=1 non-spec is 14.1 tok/s; vLLM C=1 is 14.2. PER-SEQUENCE PARITY on identical silicon.
+Yet vLLM scales 11.9x to C=16 where Atlas scales 6.8x.** The whole C=8/C=16 deficit is
+batch-scaling efficiency — pure software, un-diagnosed. Fixing it lifts EVERY cell. Fused verify
+even optimistically flips C=4 and maybe C=8 while C=16 stays lost (~131 vs 168.9), and it would be
+built against a substrate the scaling fix moves (base step, attention batch behaviour, GDN
+saturation point), forcing a re-measure anyway.
+
+**Correct order: scaling first, then fused verify becomes the lever that WINS C=16 instead of one
+that tops out at C=8.** The verify work is shelved WITH its gate intact and its kernel fix landed.
+
+### The diagnosis is already started — per-sequence marginal, measured
+| n | total | ssm | attn | head |
+|---|---|---|---|---|
+| 4 | 81.3 | 58.6 | 19.5 | 3.2 |
+| 8 | 111.8 | 79.4 | 27.9 | 4.4 |
+| 16 | 152.2 | 104.1 | 38.4 | 9.7 |
+
+**Marginal per added sequence: 5.91 ms = ssm 3.79 + attn 1.58 + head 0.55.** vLLM's is ~1.5 ms/seq.
+The 4.4 ms/seq difference x16 = ~70 ms of a 152 ms step IS the C=16 gap.
+
+**The SSM leg owns 64% of it at 3.6x its physics floor** (1.05 ms/seq for 144 MB of h_state read+
+write at 273 GB/s). And that leg is mixer 61.7 (qkvz 15.0, out_proj 13.5, GDN recurrence ~30) +
+FFN 42.0 — i.e. mostly WEIGHT-bound work that should be FLAT in n but is scaling with rows. Same
+pattern as every win today. If the SSM marginal reached floor: total 3.18 ms/seq, step at n=16
+~119 ms, **~134 tok/s with no speculation involved.**
+
+### Carried forward
+- The drafter's +26 ms is measured at n=1 and ASSUMED flat in n. Same assumption class that went
+  1-for-8 this session. MEASURE IT at n=8 before any re-adjudication.
+- OVERTURNING MEASUREMENT: if a roofline decomposition shows the plain n=16 step is already
+  near-irreducible traffic, the scaling gap is not a days-scale fix and the verify build becomes
+  the best available use of the time. Flip back to BUILD if so.
