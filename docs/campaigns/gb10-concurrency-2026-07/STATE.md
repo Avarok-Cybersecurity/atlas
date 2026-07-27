@@ -311,3 +311,52 @@ identical, but a BFCL gate is owed before merge. Same debt applies to `ATLAS_MTP
 4. **Batched verify** — full design with trait signatures, the M<=32 metadata cap, and the
    intermediate-stride kernel bug is in the agent report; the pool's batch stride ALREADY matches
    `h_bytes`, so the wy kernels need one added `inter_batch_stride_floats` parameter.
+
+## 2026-07-27 — WIN: batched-GEMV decode lm_head (+22% C=4, +12% C=8, +6% C=16)
+
+Same root cause as the mixer and the FFN, third instance: the decode head called the base M64-tile
+`w4a16_gemm` unconditionally. On the [248320, 5120] NVFP4 head only 16 of 64 MMA tile-rows carry
+data at padded_n=16, so it ran at ~1/7 of the weight-stream floor — and being FLAT in n, it sat in
+the FIXED term at every batch size, which is why C=4 gained most.
+
+Atlas already owned the fix: the MTP verify path (`impl_a3.rs`) routes M<=8 to the batched GEMV
+with an nsys note measuring **19.3 ms for the GEMM vs ~2.5 ms** for the GEMV streaming the same
+636 MB once. The decode head never dispatched there, and the MODEL level had no batch16 handle at
+all (the SSM mixer carries one) — so there was no arm above 8 even if it had.
+
+2 reps/cell, coherence identical:
+| C | old M64 GEMM | new batched GEMV |
+|---|---|---|
+| 1 | 25.4 | 25.5 |
+| 4 | 38.0 | **46.2 (+21.6%)** |
+| 8 | 58.0 | **65.2 (+12.4%)** |
+| 16 | 86.9 | **91.8 (+5.6%)** |
+
+## SCOREBOARD — full sweep, everything landed
+
+| C | session start | now | vLLM | ratio | was |
+|---|---|---|---|---|---|
+| 1 | 27.4 | 25.5 | 14.2 | **1.80x WIN** | 1.93x |
+| 2 | 21.3 | 24.4 | 27.8 | 0.88x | 0.77x |
+| 4 | 38.6 | **46.1** | 53.3 | **0.87x** | 0.72x |
+| 8 | 55.4 | **65.2** | 98.8 | **0.66x** | 0.56x |
+| 16 | 59.9 | **92.1** | 168.9 | **0.55x** | 0.35x |
+
+C=16 has gone 59.9 -> 92.1 tok/s (**+54%**) this session; the vLLM ratio 0.35x -> 0.55x.
+C=4 is now within 13% of vLLM.
+
+## The pattern, stated plainly
+Every win this session is the SAME bug in a different place: **Atlas dispatches by M into a
+scalar-FMA GEMV/chunked path where a tensor-core tile GEMM was already available and already used
+elsewhere in the tree.** FFN (+30%), mixer projections (+9%), lm_head (+22/12/6%). vLLM never makes
+this choice — Marlin issues mma at M=1. Anywhere Atlas still selects a kernel BY M is a suspect.
+
+## Remaining, ranked
+1. GDN third h_state pass (norm clamp re-reads H after writing it) — ~8.4 ms/step at n=16,
+   bit-identical to remove. Agent gave exact file:line for all 4 kernel variants.
+2. GDN double read — algebraic identity `out = g*(H_old^T q) + vnew*(k.q)` collapses two passes to
+   one. 9 MiB -> 6 MiB per seq per layer.
+3. Batched verify (full design in the agent report; the wy kernels need one
+   `inter_batch_stride_floats` parameter — today's hardcoded stride is wrong by a factor of `ni`
+   and is dead code only because every call site passes batch_size=1).
+4. Attention branch RoPE / KV-write are still per-sequence loops (`multi_seq/attn.rs`).
