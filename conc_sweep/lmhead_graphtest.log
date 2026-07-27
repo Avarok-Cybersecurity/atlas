@@ -1,0 +1,9 @@
+--- GRAPHS OFF (ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1) ---
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+[2m2026-07-27T23:23:40.271618Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35_dense[0m[2m:[0m SSM[model.language_model.layers.41] nativ
+[2m2026-07-27T23:24:04.281700Z[0m [31mERROR[0m [2mspark::scheduler::decode_logits_step[0m[2m:[0m argmax_batch error: cuMemcpyDtoHAsync_v2 fail
+--- GRAPHS ON (default) ---
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+[2m2026-07-27T23:25:36.777165Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a2[0m[2m:[0m Captured CUDA graph for batch size 16
+[2m2026-07-27T23:25:37.027590Z[0m [31mERROR[0m [2mspark::scheduler::decode_logits_step[0m[2m:[0m argmax_batch error: cuMemcpyDtoHAsync_v2 fail
+GRAPHTEST_DONE

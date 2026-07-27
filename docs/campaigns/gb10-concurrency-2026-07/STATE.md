@@ -872,8 +872,27 @@ N=248320). That threshold was derived from projection shapes; it does not genera
   fresh allocations.
 - The remaining discriminator is that concurrency runs inside the CAPTURED multi-seq CUDA
   graph and the single request does not.
-**NEXT STEP: run a serve under `compute-sanitizer` to localise the faulting access.** Do not
-retry the wiring blind — it has now been written twice and both times looked correct.
+**compute-sanitizer HAS NOW BEEN RUN. Result: ZERO invalid memory accesses, and under the
+sanitizer the error changes from 716 (MISALIGNED_ADDRESS) to 719 (LAUNCH_FAILED).** So this
+is NOT an out-of-bounds or misaligned access at all — it is a kernel that fails to launch or
+execute, which memcheck cannot attribute to an address.
+
+SIX hypotheses eliminated, all by measurement:
+1. kernel-specific constraint at N=248320 — NO: all four variants run clean standalone.
+2. wrong dims — NO: verified against the checkpoint (`lm_head.weight [248320, 2560]`,
+   `weight_scale [248320, 320]`, K=5120, N = 1940x128 exactly).
+3. pointer misalignment — NO: every arena buffer is its own `gpu.alloc()`
+   (`buffers.rs:134-147`), i.e. a separate cuMemAlloc at 256-B alignment.
+4. CUDA-graph interaction — NO: faults identically with `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+5. unguarded epilogue store overrunning `logits` at M_TILE=64 (48 spare rows x 496,640 B =
+   23.8 MB, which WOULD explain why only the widest N faults) — NO: the store is explicitly
+   guarded, `if (r0 < M && c0 < N)`.
+6. an addressable memory error — NO: memcheck is clean.
+
+★ NEXT TOOL, not next guess: inspect the LAUNCH itself (shared-memory request vs the 48 KB
+default without `cudaFuncSetAttribute`, register/occupancy limits at grid.x=1940, or
+`--tool synccheck`). The wiring has been written THREE times and looked correct each time;
+the defect is in launch configuration or a resource limit, not in the pointers.
 
 ### (superseded) original entry
 Motivation was sound and stands: nsys puts lm_head at **9.68 ms/step in ONE launch**, 715 MB at
