@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 //! Multi-sequence batched-decode body for [`super::super::Qwen3AttentionLayer`].
 //!
 //! Split into phase modules under the `_inner` delegation pattern:
@@ -11,7 +10,6 @@
 //! The trait impl in `super::trait_impl` calls
 //! [`Qwen3AttentionLayer::decode_multi_seq_inner`] which simply builds
 //! the ctx, runs phase 1 inline (RMS norm), and dispatches the rest.
-
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
