@@ -102,6 +102,75 @@ impl TransformerModel {
         // Lock KV cache once.
         let mut kv_cache = self.kv_cache.lock();
 
+        // ── Allocation pre-flight (PURE) ──────────────────────────────────
+        // Phase A allocates blocks per stream as it walks
+        // (`ensure_blocks_through_prefill`), so a stream that runs out of KV
+        // midway returns Err — and an Err from an ADMITTED batch fails ALL N
+        // requests (batch.rs: the scheduler pushes `(i, None)` for every
+        // stream). One request's exhaustion would take its whole cohort down,
+        // and KV exhaustion is a live failure mode under concurrency: the
+        // single-stream path handles it by preempting and retrying, this path
+        // has 4-8x the blast radius and no such recovery.
+        //
+        // So establish capacity for the WHOLE cohort before touching anything,
+        // mirroring the scratch pre-flight's rule (eligible.rs): "runs before
+        // any stream mutation, so a false routes to the per-stream path from a
+        // clean state". Declining here costs a per-stream fallback, where each
+        // request gets the single-stream preempt-and-retry it deserves.
+        //
+        // Runs BEFORE the cache reservation deliberately: nothing has been
+        // acquired yet, so a decline needs no unwinding. Block counts use the
+        // read-only `peek_matched_tokens` probe rather than the reservation.
+        {
+            let bs = kv_cache.block_size();
+            let mut needed = 0usize;
+            for s in streams.iter() {
+                let through = (s.chunk_start + s.chunk_len).div_ceil(bs);
+                // Blocks this stream already has, plus the ones its prefix match
+                // will hand it (reused, never allocated).
+                let matched_blocks =
+                    self.prefix_cache
+                        .peek_matched_tokens(s.prompt_tokens, bs, s.seq.adapter_id)
+                        / bs;
+                let have = s.seq.block_table.len() + matched_blocks;
+                needed += through.saturating_sub(have);
+            }
+            // Evicting cached blocks is always safe (the cache is an
+            // optimization) and mutates no sequence, so it is fair game inside a
+            // "pure" pre-flight. Loop because one eviction can free zero blocks
+            // when a live sequence still holds the evicted node's block.
+            while kv_cache.num_free_blocks() < needed {
+                let short = needed - kv_cache.num_free_blocks();
+                let evicted = self.prefix_cache.evict(short);
+                if evicted.is_empty() {
+                    break;
+                }
+                super::super::super::block_mgmt::apply_evicted_blocks(evicted, &mut kv_cache);
+            }
+            let free = kv_cache.num_free_blocks();
+            if free < needed {
+                tracing::debug!(
+                    target: "atlas::q12",
+                    n = streams.len(),
+                    needed,
+                    free,
+                    "Q12 kernel-batched declined: cohort needs more KV than is \
+                     reclaimable — falling back to per-stream so one exhaustion \
+                     cannot fail the whole batch"
+                );
+                // This branch signals decline by bailing BEFORE any state
+                // mutation: batch.rs falls through to the per-stream body,
+                // where each request gets the single-stream preempt-and-retry.
+                // (The laguna KernelBatchResult::NotAdmitted variant and the
+                // up-front radix reservation do not exist here; Phase A below
+                // still walks the cache itself.)
+                anyhow::bail!(
+                    "kernel-batched declined: cohort KV pre-flight short {} blocks",
+                    needed - free
+                );
+            }
+        }
+
         // Zero shared buffers once (instead of N times in per-stream).
         if self.comm.is_some() {
             self.buffers.zero_all(self.gpu.as_ref(), stream)?;
