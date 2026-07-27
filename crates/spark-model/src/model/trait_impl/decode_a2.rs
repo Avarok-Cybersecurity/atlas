@@ -164,8 +164,9 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        // Pad to nearest captured graph size [2, 4, 8]
-        let padded_n = [2, 4, 8].iter().copied().find(|&s| s >= n).unwrap_or(n);
+        // Pad to the nearest captured graph size — SSOT ladder in
+        // `traits::padded_batch_n` (now includes 12 and 16 for the C-sweep).
+        let padded_n = crate::traits::padded_batch_n(n);
 
         // ── Phase 1: Pre-graph (runs every step, NOT captured) ──
 

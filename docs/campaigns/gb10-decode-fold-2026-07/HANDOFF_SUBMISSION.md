@@ -96,7 +96,10 @@ sudo docker run -d --name atlas-golden-e2e --network host --gpus all --ipc=host 
 # 4. e2e (config = the golden defaults_20260721 edge-agentic-full-run, temp 0.0 / seed 42)
 cd /workspace/endpoints-fresh && \
   ./.venv/bin/inference-endpoint benchmark from-config -c <worktree>/golden_e2e.yaml --mode both -v
-# or simply:  ND=3 bash <worktree>/run_golden_e2e.sh
+# or simply (the one reproduce entry point -- see REPLICATE.md):
+#   ATLAS_BIN=$PWD/target/release/spark HARNESS_DIR=/workspace/endpoints-fresh \
+#   BASE_CONFIG=/workspace/endpoints-fresh/results/defaults_20260721_173342/config.yaml \
+#     ND=3 bash scripts/mlperf-edge/run_golden_e2e.sh
 ```
 
 **Delta vs the golden serve line: `--num-drafts 2` → `3`. Everything else — every env flag, every
@@ -111,6 +114,7 @@ coherent output, tool-call smoke PASS. `--num-drafts` still overrides.
 
 `CAMPAIGN_LOG.md` (chronological log) · `DECODE_FOLD_LEDGER.md` (every lever + verdict) ·
 `FINDINGS.md` (the roofline analysis) · `shadow_topk_stats.json` (19k-sample acceptance) ·
-`scripts/parse_shadow_topk.py`, `scripts/tree_shape_search.py` · `run_agentic_kab.sh`,
-`run_ladder*.sh`, `run_golden_e2e.sh` · `kl_coherence_gate.py`, `ab_probe.py`, `warm_tpot_probe.py`
+`scripts/parse_shadow_topk.py`, `scripts/tree_shape_search.py` · harness now under
+`scripts/mlperf-edge/` (`run_golden_e2e.sh` is the entry point) and raw results under
+`docs/campaigns/gb10-decode-fold-2026-07/raw/`
 · `kn_ab_*.json` (per-K ladder results).

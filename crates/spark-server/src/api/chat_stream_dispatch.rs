@@ -61,9 +61,10 @@ pub(super) async fn dispatch_streaming(
     grammar_spec: Option<GrammarSpec>,
     top_logprobs: Option<u8>,
     timeout_at: Option<std::time::Instant>,
+    active_guard: crate::metrics::ActiveRequestGuard,
 ) -> super::chat::ChatOutcome {
     if req.n > 1 {
-        crate::metrics::REQUESTS_ACTIVE.dec();
+        // active_guard drops here -> gauge decremented.
         return super::chat::ChatOutcome::Http(openai_error_response(
             StatusCode::BAD_REQUEST,
             "n > 1 is not supported in streaming mode".to_string(),
@@ -122,6 +123,7 @@ pub(super) async fn dispatch_streaming(
         req_return_token_ids,
         ctx_for_stream,
         dump_seq,
+        active_guard,
     )
     .await
     {

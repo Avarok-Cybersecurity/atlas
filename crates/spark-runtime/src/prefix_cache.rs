@@ -89,6 +89,10 @@ pub struct PrefixMatch {
     /// Token depth covered by `ssm_snapshot_tier_key` (analogue of
     /// `ssm_snapshot_tokens` for a tiered anchor).
     pub ssm_snapshot_tier_tokens: usize,
+    /// Whether the matched SSM snapshot is a TAIL (bleeds past the exact
+    /// prefix). The restore site session-gates only tails; exact and
+    /// is_tail_sibling snapshots are content-addressed (safe cross-session).
+    pub ssm_snapshot_is_tail: bool,
 }
 
 impl PrefixMatch {
@@ -102,6 +106,7 @@ impl PrefixMatch {
             ssm_snapshot_tokens: 0,
             ssm_snapshot_tier_key: None,
             ssm_snapshot_tier_tokens: 0,
+            ssm_snapshot_is_tail: false,
         }
     }
 

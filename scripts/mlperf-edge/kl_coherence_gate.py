@@ -58,21 +58,30 @@ def token_logprobs(resp):
 
 
 def kl(p_lp, q_lp):
-    """KL(P||Q) over the union of top tokens, from logprob dicts. Missing => floor."""
+    """KL(P||Q) over the union of top tokens, from logprob dicts. Missing => floor.
+
+    BOTH sides are renormalized over the shared support. Normalizing P but not Q adds a
+    constant -log(sum p) to every position -- the top-k logprobs only carry ~94% of the
+    mass, so identical inputs scored ~0.061 instead of 0. That made this gate's
+    `mean_kl < 1e-3` PASS threshold unreachable even for a byte-identical config, i.e.
+    the gate could only ever return FAIL. Verified after the fix: KL(p, p) == 0.0
+    exactly, on two independent controls (same-serve A/B and a config-identical
+    re-serve). Found on dgx2, 2026-07-25, during the fp8-KV A/B.
+    """
+    import math as _m
     toks = set(p_lp) | set(q_lp)
     FLOOR = -30.0
-    # normalize P over its own support
-    import math as _m
     ps = {t: _m.exp(p_lp.get(t, FLOOR)) for t in toks}
-    z = sum(ps.values()) or 1.0
-    ps = {t: v / z for t, v in ps.items()}
+    qs = {t: _m.exp(q_lp.get(t, FLOOR)) for t in toks}
+    zp = sum(ps.values()) or 1.0
+    zq = sum(qs.values()) or 1.0
     d = 0.0
-    for t, pv in ps.items():
+    for t in toks:
+        pv = ps[t] / zp
+        qv = qs[t] / zq
         if pv <= 0:
             continue
-        qlp = q_lp.get(t, FLOOR)
-        plp = _m.log(pv)
-        d += pv * (plp - qlp)
+        d += pv * (_m.log(pv) - _m.log(qv if qv > 0 else _m.exp(FLOOR)))
     return max(d, 0.0)
 
 

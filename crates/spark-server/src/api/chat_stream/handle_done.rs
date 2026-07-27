@@ -228,8 +228,9 @@ pub(super) fn handle_done(
         token_ids: state.take_ids_if(ctx.req_return_token_ids),
     });
 
-    // Metrics.
-    crate::metrics::REQUESTS_ACTIVE.dec();
+    // Metrics. (REQUESTS_ACTIVE is released by the ActiveRequestGuard in
+    // StreamCtx when the stream is dropped — not here, so a stream that ends
+    // without a terminal event still decrements.)
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(ctx.prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(completion_tokens as u64);
     crate::metrics::TTFT_SECONDS.observe(time_to_first_token_ms / 1000.0);
