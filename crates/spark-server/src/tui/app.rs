@@ -48,6 +48,17 @@ impl Section {
             Section::Terminal => "❯",
         }
     }
+    /// Subsection labels, in sidebar order. SSOT for three things that must agree:
+    /// what the sidebar draws, what a repeat section-key press cycles, and what
+    /// `⇥` stops on. They were three separate hardcoded lists, so `⇥` skipped
+    /// straight past the subsection rows the sidebar was drawing.
+    pub fn subs(self) -> &'static [&'static str] {
+        match self {
+            Section::Main => &["Overview", "Kernels"],
+            Section::Terminal => &["Ops", "Chat"],
+            Section::Stats | Section::Network | Section::Library => &[],
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -231,38 +242,63 @@ impl App {
         }
     }
 
+    /// Which subsection of `s` is active, as an index into [`Section::subs`].
+    pub fn sub_index(&self, s: Section) -> usize {
+        match s {
+            Section::Main => (self.main_sub == MainSub::Kernels) as usize,
+            Section::Terminal => (self.term_sub == TermSub::Chat) as usize,
+            _ => 0,
+        }
+    }
+
+    fn set_sub(&mut self, s: Section, i: usize) {
+        match s {
+            Section::Main => {
+                self.main_sub = if i == 0 {
+                    MainSub::Overview
+                } else {
+                    MainSub::Kernels
+                }
+            }
+            Section::Terminal => self.term_sub = if i == 0 { TermSub::Ops } else { TermSub::Chat },
+            _ => {}
+        }
+    }
+
+    /// Every navigable sidebar row, flattened in the order the sidebar draws them:
+    /// one entry per subsection, or a single entry for a section that has none.
+    fn nav_rows() -> Vec<(Section, usize)> {
+        Section::ALL
+            .iter()
+            .flat_map(|s| (0..s.subs().len().max(1)).map(move |i| (*s, i)))
+            .collect()
+    }
+
     fn jump(&mut self, s: Section) {
         if self.section == s {
-            // Repeat-press toggles the section's subsections.
-            match s {
-                Section::Main => {
-                    self.main_sub = if self.main_sub == MainSub::Overview {
-                        MainSub::Kernels
-                    } else {
-                        MainSub::Overview
-                    };
-                }
-                Section::Terminal => {
-                    self.term_sub = if self.term_sub == TermSub::Ops {
-                        TermSub::Chat
-                    } else {
-                        TermSub::Ops
-                    };
-                }
-                _ => {}
+            // Repeat-press cycles this section's subsections.
+            let n = s.subs().len();
+            if n > 1 {
+                self.set_sub(s, (self.sub_index(s) + 1) % n);
             }
         }
         self.section = s;
         self.focus = Focus::Content;
     }
 
+    /// `⇥` / `⇧⇥` walk the sidebar exactly as drawn — subsection rows included.
+    /// Previously they stepped over top-level sections only, so Main ▸ Kernels was
+    /// reachable solely by pressing `1` a second time, which nothing on screen said.
     fn cycle_section(&mut self, dir: i32) {
-        let i = Section::ALL
+        let rows = Self::nav_rows();
+        let cur = rows
             .iter()
-            .position(|s| *s == self.section)
+            .position(|(s, i)| *s == self.section && *i == self.sub_index(*s))
             .unwrap_or(0) as i32;
-        let n = Section::ALL.len() as i32;
-        self.section = Section::ALL[((i + dir).rem_euclid(n)) as usize];
+        let (s, i) = rows[((cur + dir).rem_euclid(rows.len() as i32)) as usize];
+        self.section = s;
+        self.set_sub(s, i);
+        self.focus = Focus::Content;
     }
 
     fn on_section_key(&mut self, key: KeyEvent) {
@@ -409,5 +445,50 @@ fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
         }
         KeyCode::Char(c) => buf.push(c),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ⇥ order must contain the subsection rows, in the order the sidebar draws
+    /// them. This is the regression: the traversal list was top-level-only, so
+    /// Main ▸ Kernels and Terminal ▸ Chat could not be reached with Tab at all.
+    #[test]
+    fn nav_rows_include_subsections_in_sidebar_order() {
+        let labels: Vec<String> = App::nav_rows()
+            .iter()
+            .map(|(s, i)| match s.subs().get(*i) {
+                Some(sub) => format!("{}/{}", s.label(), sub),
+                None => s.label().to_string(),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Main/Overview",
+                "Main/Kernels",
+                "Stats",
+                "Network",
+                "Library",
+                "Terminal/Ops",
+                "Terminal/Chat",
+            ]
+        );
+    }
+
+    /// A section without subsections must still contribute exactly one stop, or ⇥
+    /// would silently skip it.
+    #[test]
+    fn every_section_is_reachable() {
+        let rows = App::nav_rows();
+        for s in Section::ALL {
+            assert!(
+                rows.iter().any(|(r, _)| *r == s),
+                "{} unreachable",
+                s.label()
+            );
+        }
     }
 }

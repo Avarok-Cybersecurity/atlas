@@ -15,7 +15,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::app::{App, Focus, MainSub, Section, TermSub};
+use super::app::{App, Focus, MainSub, Section};
 use super::{logo, theme};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -176,20 +176,12 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {
         lines.push(line);
         // Subsections under the active section (full mode).
         if full && selected {
-            let subs: &[(&str, bool)] = match s {
-                Section::Main => &[
-                    ("Overview", app.main_sub == MainSub::Overview),
-                    ("Kernels", app.main_sub == MainSub::Kernels),
-                ],
-                Section::Terminal => &[
-                    ("Ops", app.term_sub == TermSub::Ops),
-                    ("Chat", app.term_sub == TermSub::Chat),
-                ],
-                _ => &[],
-            };
-            for (i, (name, active)) in subs.iter().enumerate() {
+            let subs = s.subs();
+            let active_sub = app.sub_index(s);
+            for (i, name) in subs.iter().enumerate() {
+                let active = i == active_sub;
                 let glyph = if i + 1 == subs.len() { "└" } else { "├" };
-                let style = if *active {
+                let style = if active {
                     theme::brand_cyan()
                 } else {
                     theme::dim()
@@ -225,11 +217,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (" NORMAL ", theme::BORDER_DIM)
     };
     let hints = match app.section {
-        Section::Main => "j/k scroll · f filter · 1-5 jump · ⇥ cycle · ? help · q quit",
-        Section::Stats => "1-5 jump · ⇥ cycle · ? help · q quit",
-        Section::Network => "←/→ node · ⏎ detail · 1-5 jump · ? help",
-        Section::Library => "j/k move · / search · 1-5 jump · ? help",
-        Section::Terminal => "⏎ input · Ctrl+Enter send · Esc back · ? help",
+        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-5 jump · ? help · q quit",
+        Section::Stats => "⇥ cycle · 1-5 jump · ? help · q quit",
+        Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-5 jump · ? help",
+        Section::Library => "j/k move · / search · ⇥ cycle · 1-5 jump · ? help",
+        Section::Terminal => "⏎ input · Ctrl+Enter send · Esc back · ⇥ Ops↔Chat · ? help",
     };
     let line = Line::from(vec![
         Span::styled(
@@ -283,8 +275,11 @@ fn draw_help(f: &mut Frame, area: Rect) {
     };
     f.render_widget(Clear, modal);
     let keys = [
-        ("1-5", "jump to section (repeat toggles subsections)"),
-        ("Tab / Shift+Tab", "cycle sections"),
+        ("1-5", "jump to section (repeat cycles its subsections)"),
+        (
+            "Tab / Shift+Tab",
+            "walk every sidebar row, subsections included",
+        ),
         ("j/k ↑/↓", "move / scroll"),
         ("g / G", "top / bottom (follow)"),
         ("f", "log filter (Main)"),
