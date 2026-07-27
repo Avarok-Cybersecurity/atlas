@@ -98,6 +98,19 @@ pub fn gdn_decode_wy2(
     gb_stride: u32,
     stream: u64,
 ) -> Result<()> {
+    // `gdn_decode_wy2`'s kernel hardcodes the CONTIGUOUS state stride
+    // ((b*num_v_heads+vh)*hv) for BOTH h_state and the intermediates. That is
+    // wrong for the intermediates, whose pool stride is num_intermediates x
+    // larger — at batch_size>1 sequence 1's Hi0 lands on sequence 0's Hi1,
+    // silently corrupting cross-sequence rollback. Only wy4 has the
+    // `state_is_table` pointer-table form that sidesteps this. Refuse rather
+    // than corrupt; port the table form (see gated_delta_rule_wy4.cu) before
+    // enabling a batched verify at K<4.
+    anyhow::ensure!(
+        batch_size == 1,
+        "gdn_decode_wy2: contiguous state addressing is only valid at batch_size==1 \
+         (got {batch_size}); port the wy4 `state_is_table` pointer-table form first"
+    );
     KernelLaunch::new(gpu, kernel)
         .grid([num_v_heads, batch_size, 1])
         .block([128, 1, 1])
@@ -149,6 +162,19 @@ pub fn gdn_decode_wy3(
     gb_stride: u32,
     stream: u64,
 ) -> Result<()> {
+    // `gdn_decode_wy3`'s kernel hardcodes the CONTIGUOUS state stride
+    // ((b*num_v_heads+vh)*hv) for BOTH h_state and the intermediates. That is
+    // wrong for the intermediates, whose pool stride is num_intermediates x
+    // larger — at batch_size>1 sequence 1's Hi0 lands on sequence 0's Hi1,
+    // silently corrupting cross-sequence rollback. Only wy4 has the
+    // `state_is_table` pointer-table form that sidesteps this. Refuse rather
+    // than corrupt; port the table form (see gated_delta_rule_wy4.cu) before
+    // enabling a batched verify at K<4.
+    anyhow::ensure!(
+        batch_size == 1,
+        "gdn_decode_wy3: contiguous state addressing is only valid at batch_size==1 \
+         (got {batch_size}); port the wy4 `state_is_table` pointer-table form first"
+    );
     KernelLaunch::new(gpu, kernel)
         .grid([num_v_heads, batch_size, 1])
         .block([128, 1, 1])
@@ -212,10 +238,14 @@ pub fn gdn_decode_wy4(
     state_is_table: bool,
     stream: u64,
 ) -> Result<()> {
-    debug_assert!(
+    // HARD guard, not debug_assert: this compiles out in release, which is
+    // exactly where the corruption would be silent.
+    anyhow::ensure!(
         state_is_table || batch_size == 1,
-        "contiguous state addressing is only valid at batch_size==1 — the \
-         intermediate batch stride differs from h_state's; stage pointer tables"
+        "gdn_decode_wy4: contiguous state addressing is only valid at \
+         batch_size==1 (got {batch_size}) — the intermediates' pool stride is \
+         num_intermediates x h_state's, so sequence 1's Hi0 would land on \
+         sequence 0's Hi1. Stage pointer tables and pass state_is_table=true."
     );
     KernelLaunch::new(gpu, kernel)
         .grid([num_v_heads, batch_size, 1])
@@ -277,6 +307,19 @@ pub fn gdn_decode_wyn(
     gb_stride: u32,
     stream: u64,
 ) -> Result<()> {
+    // `gdn_decode_wyn`'s kernel hardcodes the CONTIGUOUS state stride
+    // ((b*num_v_heads+vh)*hv) for BOTH h_state and the intermediates. That is
+    // wrong for the intermediates, whose pool stride is num_intermediates x
+    // larger — at batch_size>1 sequence 1's Hi0 lands on sequence 0's Hi1,
+    // silently corrupting cross-sequence rollback. Only wy4 has the
+    // `state_is_table` pointer-table form that sidesteps this. Refuse rather
+    // than corrupt; port the table form (see gated_delta_rule_wy4.cu) before
+    // enabling a batched verify at K<4.
+    anyhow::ensure!(
+        batch_size == 1,
+        "gdn_decode_wyn: contiguous state addressing is only valid at batch_size==1 \
+         (got {batch_size}); port the wy4 `state_is_table` pointer-table form first"
+    );
     KernelLaunch::new(gpu, kernel)
         .grid([num_v_heads, batch_size, 1])
         .block([128, 1, 1])
