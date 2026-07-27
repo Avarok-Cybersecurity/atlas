@@ -136,3 +136,29 @@ apparent "C=2 slower than C=1" is entirely 25.5 -> 20.6 from spec going away.
 - **Speculative decode at C>=2** (currently structurally disabled). Worth 1.81x at C=1. Even a
   fraction of that at C=8/16 is worth more than every kernel tweak measured so far combined.
 - **Batching efficiency itself** (1.46x at n=2 where 2.0x is on the table) — the 11.2 ms/seq marginal.
+
+## 2026-07-27 — CONFIRMED on hardware: the SSM-layer FFN reads its weights TWICE above n=8
+
+Zero-edit probe (`ATLAS_SSM_MS_PROFILE=1`, one serve, drove C=4/8/16, 9168 samples per n):
+
+| n | mixer us/layer | FFN us/layer | FFN us per seq |
+|---|---|---|---|
+| 4 | 584 | 751 | 187.9 |
+| 8 | 935 | **1023** | 127.9 |
+| 16 | 1916 | **2022** | 126.3 |
+
+**n=16 costs 1.98x n=8** — and FFN-per-sequence is FLAT from 8 to 16 (127.9 -> 126.3). That is the
+exact signature of two chunked batch-8 passes: the ~7.2 GB of FFN weights are streamed twice per
+step at n=16 instead of once. A correctly batched FFN is weight-bandwidth-bound, so n=16 should cost
+about the same as n=8 (~1030 us/layer), not double it.
+
+Prediction was made from code alone (`trait_decode_multi_seq.rs:173-204`, the `4..` arm chunking
+through `forward_km`/batch-8 GEMV) at ~1010 us vs ~2020 us. Measured 1023 vs 2022. Mechanism
+CONFIRMED without touching a line of source.
+
+**Size of the prize:** ~1000 us/layer x 48 layers = **~48 ms off a 264.9 ms step (~18%)**, i.e.
+C=16 roughly 60 -> 73 tok/s, stacking with the MMQ lever. The fix is an added dispatch arm routing
+`n>8 && ffn.is_dense()` to `forward_prefill` (the NVFP4 MMQ path the ATTENTION layers already use —
+`multi_seq/ffn.rs:135`), behind an `ATLAS_NO_SSM_FFN_PREFILL` kill switch. n<=8 must keep
+`forward_km`: the recorded crossover says GEMV still wins at M=4. C=1 cannot be affected (n=1 never
+enters this arm).
