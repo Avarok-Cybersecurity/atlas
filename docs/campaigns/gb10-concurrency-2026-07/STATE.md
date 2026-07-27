@@ -104,3 +104,35 @@ full 16x192 tokens twice, where the frozen config always truncated to 2977.
 pool-exhaustion wedge tracked in open PR #373 ("decode alloc fails, scheduler livelocks in
 decode-ckpt SAVE"), which is also why `balanced_long` is excluded from the sweep. `decode_short` is
 clean (0 errors at every C in every leg), so the scoreboard above is valid for that regime only.
+
+## 2026-07-27 — the C=2 "regression" is SOLVED, and it reframes the whole campaign
+
+Probe: same serve config, one leg WITH `--speculative --num-drafts 3`, one leg with it removed
+entirely (`conc_sweep/c2_probe.log`, 192-token requests).
+
+| C | with --speculative | without --speculative |
+|---|---|---|
+| 1 | **25.5** | 14.1 |
+| 2 | 20.6 | 20.6 |
+| 3 | 27.8 | 27.7 |
+| 4 | 36.4 | 36.6 |
+
+**At C>=2 the two legs are identical.** Speculative decode is completely inert above C=1 (the gate
+is `active.len()==1`), so C=2 is not a regression in batching — it is the cliff of losing MTP. The
+apparent "C=2 slower than C=1" is entirely 25.5 -> 20.6 from spec going away.
+
+**Two consequences that should steer everything after this:**
+
+1. **Atlas non-spec at C=1 is 14.1 tok/s; vLLM at C=1 is 14.2.** Identical. At batch 1 both engines
+   sit on the same bandwidth-bound floor, and 100% of our 1.93x C=1 win is MTP speculative decoding.
+   We have no baseline decode advantage to fall back on.
+2. **Scaling, normalised to each engine's own C=1 non-spec throughput:**
+   vLLM: 1.0x -> 1.96x -> 3.75x -> 6.96x -> 11.9x  (C=1,2,4,8,16)
+   Atlas: 1.0x -> 1.46x -> 2.60x -> ~3.9x -> ~4.3x
+   vLLM scales nearly linearly to C=8; Atlas saturates around 4.3x. The gap is a BATCHING-EFFICIENCY
+   gap, and it is already visible at C=2 (1.46x where 2.0x is available).
+
+**Therefore the two levers with real headroom are:**
+- **Speculative decode at C>=2** (currently structurally disabled). Worth 1.81x at C=1. Even a
+  fraction of that at C=8/16 is worth more than every kernel tweak measured so far combined.
+- **Batching efficiency itself** (1.46x at n=2 where 2.0x is on the table) — the 11.2 ms/seq marginal.
