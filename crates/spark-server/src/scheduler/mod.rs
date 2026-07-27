@@ -167,6 +167,35 @@ pub type LoraRotation = (
 
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
+/// How many concurrent sequences may speculate. Default 2, override with
+/// `ATLAS_MTP_MAX_SEQS`.
+///
+/// `step_mtp` already takes a slice and is index-correct over it, and the verify
+/// path carries no `active[0]` assumption, so raising this runs MTP per sequence:
+/// n separate verify forwards of M=K+1 each. That is n weight sweeps per step
+/// instead of one, so it only pays where the extra accepted tokens outweigh the
+/// extra sweeps — arithmetic says n=2 wins (~2.9 accepted tokens per sweep vs 1
+/// token per sweep batched), n=4 is near break-even, n>=8 loses badly.
+///
+/// MEASURED 2026-07-27 (2 reps/cell, coherence preserved):
+///   cap=1 (old): C=2 21.1 tok/s | C=4 38.4
+///   cap=2 (new): C=2 25.2 (+19%) | C=4 38.4 (inert — gate is false at n=4)
+///   cap=4:       C=2 25.1        | C=4 25.5 (-34%, n sweeps stop paying)
+/// So 2 is the crossover and the default; 1 restores the old behaviour exactly.
+///
+/// This is the CHEAP half of batched speculation. The real fix is one fused
+/// verify of M = n*(K+1) rows, which needs a batched `decode_verify` the model
+/// trait does not have yet. Until then this knob buys the small-n cells.
+fn mtp_max_seqs() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_MTP_MAX_SEQS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+    })
+}
+
 pub fn run(
     mut model: Box<dyn Model>,
     request_rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
@@ -519,7 +548,7 @@ pub fn run(
                 // Self-speculative: draft via layer-skipping, verify with full model.
                 step_self_spec(&*model, &mut active, num_drafts, &verify_ctx);
             } else if use_mtp
-                && active.len() == 1
+                && active.len() <= mtp_max_seqs()
                 && (
                     // SPEC_THINK: speculate everywhere EXCEPT the first
                     // `dflash_resume_guard` generated tokens — every observed

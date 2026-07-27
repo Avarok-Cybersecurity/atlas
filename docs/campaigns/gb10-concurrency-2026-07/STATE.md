@@ -185,3 +185,44 @@ where the arm does not fire, which is the control this A/B needed.
 ### Cumulative C=16 progress this session
 phase-D tip 53.7 -> +batched recurrent/fused norm 55.1 -> +MMQ 61.2 -> **+wide FFN 79.4** (+48%).
 vLLM 168.9. Ratio 0.35x -> **0.47x**.
+
+## 2026-07-27 — speculation re-enabled at n=2 (+19% at C=2)
+
+`step_mtp` already takes `&mut [ActiveSeq]` and is index-correct over it, and no `active[0]`
+assumption survives in the MTP verify path — so the `active.len() == 1` gate was the ONLY thing
+stopping multi-seq speculation. Replaced with `active.len() <= mtp_max_seqs()`
+(`ATLAS_MTP_MAX_SEQS`, default 2).
+
+This runs MTP PER SEQUENCE: n verify forwards of M=K+1 each, i.e. n weight sweeps per step instead
+of one. It therefore only pays where the extra accepted tokens outweigh the extra sweeps.
+2 reps/cell, coherence preserved:
+
+| cap | C=2 | C=4 |
+|---|---|---|
+| 1 (old) | 21.2 / 21.0 | 36.1 / 38.4 |
+| **2 (new default)** | **25.3 / 25.1** | 38.4 / 38.3 (inert) |
+| 4 | 25.7 / 24.5 | 25.9 / 25.2 (**-34%**) |
+
+n=2 wins, n=4 collapses — the crossover is exactly where the sweep arithmetic put it. C=1 and C>=4
+are untouched. **Owed before this ships anywhere near a submission: the BFCL subset accuracy gate.**
+MLPerf-edge runs target_concurrency=1, so the golden submission path is unaffected either way.
+
+## Scoreboard after this session
+
+| C | session start | now | vLLM | ratio |
+|---|---|---|---|---|
+| 1 | 27.4 | 25.4 | 14.2 | **1.79x WIN** |
+| 2 | 21.3 | 25.2 | 27.8 | 0.91x |
+| 4 | 38.6 | 38.4 | 53.3 | 0.72x |
+| 8 | 55.4 | 54.4 | 98.8 | 0.55x |
+| 16 | 59.9 | **79.4** | 168.9 | 0.47x |
+
+## What is left, in order
+1. **Batched verify** — one fused forward of M = n*(K+1). Needs a new `decode_verify_batch` on the
+   Model trait. NOTE the shape already exists: `prefill_batch_chunk(&mut [PrefillSlice])` does n
+   sequences x variable tokens. Batched verify is that shape plus (a) per-seq SSM state in, not
+   fresh, (b) logits at EVERY position, (c) per-seq rollback. Build on it rather than from scratch.
+2. Mixer tensor-core projections (`ATLAS_SSM_TC_PROJ`, ssm_batched.rs) — qkvz/out_proj still run
+   scalar batch-16 GEMV at 2.3-3.0 TFLOP/s, 5-7x off the weight-stream floor. Est +10%.
+3. LM head at n>=2 off the base `w4a16_gemm` (floor ~2.6 ms vs 20 ms today). Est +5-6%.
+4. Host sampling: b1_margin gate-after-scan, f2 softmax when inert, batch-wide argmax poison.
