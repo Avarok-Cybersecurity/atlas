@@ -7,6 +7,17 @@ use super::*;
 mod ssm_batched;
 mod ssm_batched_recurrent;
 
+/// Batched dense FFN for wide SSM decode batches: **ON by default**, disabled
+/// only by `ATLAS_NO_SSM_FFN_PREFILL=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// presence-checked flags in this codebase are ENABLED by `=0`, a trap that has
+/// burned it before. Read once; the dispatch site is per-layer per-step.
+fn ssm_ffn_prefill_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_SSM_FFN_PREFILL").as_deref() != Ok("1"))
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     /// Multi-sequence decode for SSM (gated-delta-net) layers.
@@ -169,6 +180,39 @@ impl Qwen3SsmLayer {
                         stream,
                     )?;
                 }
+            }
+            // WIDE BATCH (n>8): one batched dense FFN, weights read ONCE.
+            //
+            // MEASURED 2026-07-27 (ATLAS_SSM_MS_PROFILE, 9168 samples/n): the
+            // chunked arm below costs 751 / 1023 / 2022 us per layer at
+            // n=4/8/16 — n=16 is 1.98x n=8, and FFN-per-sequence is FLAT from
+            // 8 to 16 (127.9 -> 126.3 us). That is the signature of the m<=8
+            // GEMV cap: above 8 the ~7.2 GB of FFN weights are streamed TWICE
+            // per step. A batched FFN is weight-bandwidth-bound, so n=16 should
+            // cost about what n=8 does. Worth ~1000us x 48 layers = ~48 ms of a
+            // 264.9 ms step.
+            //
+            // forward_prefill reads gate/up/down once for all n rows — the
+            // ATTENTION layers already take exactly this branch for dense
+            // models (multi_seq/ffn.rs, "WIDE-VERIFY BATCHED DENSE FFN"). This
+            // is that arm's SSM-side twin.
+            //
+            // n<=8 deliberately KEEPS the chunked GEMV: the recorded crossover
+            // has GEMV winning at M=4, and a single chunk reads the weights
+            // once anyway, so there is nothing to gain there.
+            //
+            // DENSE ONLY: on a 256-expert MoE the grouped-GEMM is a net loss at
+            // small batch (see the per-token arm below), so MoE keeps the loop.
+            n if n > 8 && self.ffn.is_dense() && ssm_ffn_prefill_enabled() => {
+                self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
+                ops::residual_add(
+                    ctx.gpu,
+                    self.residual_add_k,
+                    hidden,
+                    ctx.buffers.moe_output(),
+                    (n * h) as u32,
+                    stream,
+                )?;
             }
             4.. if self.ffn.can_forward_km(8.min(n) as u32) => {
                 // MISSING n=4..8 ARM (2026-07-26) — the SSM-side twin of the

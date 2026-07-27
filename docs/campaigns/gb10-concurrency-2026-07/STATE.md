@@ -162,3 +162,26 @@ C=16 roughly 60 -> 73 tok/s, stacking with the MMQ lever. The fix is an added di
 `multi_seq/ffn.rs:135`), behind an `ATLAS_NO_SSM_FFN_PREFILL` kill switch. n<=8 must keep
 `forward_km`: the recorded crossover says GEMV still wins at M=4. C=1 cannot be affected (n=1 never
 enters this arm).
+
+## 2026-07-27 — WIN: wide-batch dense FFN arm for the SSM stack, +30% at C=16
+
+`trait_decode_multi_seq.rs`: added an `n > 8 && ffn.is_dense()` arm routing to `forward_prefill`
+(weights read ONCE) above the chunked batch-8 GEMV arm. Direct twin of the attention ladder's
+"WIDE-VERIFY BATCHED DENSE FFN" branch. Default ON, kill switch `ATLAS_NO_SSM_FFN_PREFILL=1`
+(strict `== "1"`, not a presence check).
+
+3 reps per cell, stacked on the Tier-1 env set (MMQ on + batched recurrent + fused norm):
+
+| C | OLD chunked GEMV | NEW batched FFN |
+|---|---|---|
+| 1 | 25.4 | 25.4 — untouched, n=1 never enters the arm |
+| 8 | 54.4 / 54.0 / 54.2 | 54.3 / 52.6 / 54.4 — unchanged, arm fires only at n>8 |
+| 16 | 57.3 / 61.1 / 61.1 | **79.3 / 79.4 / 79.3** |
+
+**+30% at C=16**, above the ~18% predicted, because the batched path also beats the chunked one on
+its first chunk, not just the second. Coherence byte-identical. C=8 confirms the gate: no change
+where the arm does not fire, which is the control this A/B needed.
+
+### Cumulative C=16 progress this session
+phase-D tip 53.7 -> +batched recurrent/fused norm 55.1 -> +MMQ 61.2 -> **+wide FFN 79.4** (+48%).
+vLLM 168.9. Ratio 0.35x -> **0.47x**.
