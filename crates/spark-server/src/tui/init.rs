@@ -124,8 +124,14 @@ pub fn install_tty_subscriber(progress_tx: Sender<ProgressEvent>) {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(f) = File::create(&path) {
-        use std::os::fd::AsRawFd;
-        TEE_FD.store(f.as_raw_fd(), Ordering::Relaxed);
+        // fd juggling is a unix concept; on Windows the tee still captures the
+        // tracing stream, only the stderr redirection in `terminal_guard` is
+        // unavailable (see `tee_raw_fd`).
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            TEE_FD.store(f.as_raw_fd(), Ordering::Relaxed);
+        }
         let _ = TEE.set(Mutex::new(BufWriter::new(f)));
         let _ = TEE_PATH.set(path.display().to_string());
     }

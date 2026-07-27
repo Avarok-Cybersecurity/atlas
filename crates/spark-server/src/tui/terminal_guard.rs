@@ -36,6 +36,16 @@ static ORIG_STDERR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32:
 /// library prints); any one of them scribbles over the raw-mode frame. The
 /// writes land in the tee file instead; `restore()` puts the real stderr back
 /// BEFORE the panic hook prints, so panics stay visible on the terminal.
+/// No-op off unix: `libc::dup`/`dup2` and `std::os::fd` do not exist there, and
+/// the Windows console does not share the fd-2 aliasing this works around. The
+/// TUI still runs; stray `eprintln!`s are simply not captured.
+#[cfg(not(unix))]
+fn redirect_stderr_to_tee() {}
+
+#[cfg(not(unix))]
+fn unredirect_stderr() {}
+
+#[cfg(unix)]
 fn redirect_stderr_to_tee() {
     if let Some(tee_fd) = super::init::tee_raw_fd() {
         // SAFETY: plain fd juggling on fds we own; dup/dup2 are async-signal-
@@ -51,6 +61,7 @@ fn redirect_stderr_to_tee() {
     }
 }
 
+#[cfg(unix)]
 fn unredirect_stderr() {
     let orig = ORIG_STDERR.swap(-1, Ordering::SeqCst);
     if orig >= 0 {
