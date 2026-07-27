@@ -52,8 +52,11 @@ impl TransformerModel {
         let bf16 = 2usize;
         let fp32 = 2usize;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
-        self.pre_verify_copy_async(seq)?;
+        // Item #2 (STree-style in-place K=γ verify): `h_state` IS canonical
+        // — the verify kernel reads/writes it directly and the commit
+        // (`commit_accepted_prefix`) rewinds it in place on reject. No
+        // scratch/canonical split — dual-buffer pre-verify copy eliminated.
+        // Modeled on verify_b.rs (K=2 in-place).
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -127,6 +130,14 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
+        // Request-scoped LoRA routing (graphed γ-verify) — see verify_b.rs. One
+        // sequence → one adapter; [K]-all-equal buffer at the +128 gap, uploaded
+        // pre-`begin_capture`. γ spec depth MUST stay ≤ 32 or +128+K*4 would
+        // overrun slot@+256. `DevicePtr(0)` (no pool) → installed-pair path.
+        debug_assert!(k <= 32, "γ verify seq_slot +128 gap holds K ≤ 32");
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, k, meta_base.offset(128), stream)?;
+
         let metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -136,6 +147,7 @@ impl TransformerModel {
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
             num_seqs: k as u32,
+            seq_slot,
         };
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
@@ -144,12 +156,15 @@ impl TransformerModel {
         // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
         // to localize K=γ illegal-address crashes downstream of SSM.
         let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
-            && !force_eager;
+            && !force_eager
+            && !lora_eager;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -161,6 +176,8 @@ impl TransformerModel {
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             token_ids: None,
+            routed_lora_layers: None, // #30: decode/verify never routes prefill.
+            midchunk_capture: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──
@@ -244,6 +261,29 @@ impl TransformerModel {
                         &ctx,
                         stream,
                     )?;
+                }
+                // DFlash intermediate hidden capture: snapshot each capture
+                // layer's output at position k-1 (last verify token) into
+                // dflash_hidden_save[slot] while hidden_states still holds
+                // this layer's activation — mirrors verify_b.rs for K=2.
+                // Must be inside the graph capture region so the per-layer
+                // intermediate (not the final-layer-only post-loop value) is
+                // recorded. Under ATLAS_DFLASH_EAGLE_FIX=1 OR
+                // ATLAS_DFLASH_UNIFIED_CTX=1, capture ALL k verify rows so
+                // the scheduler can append rows 0..=num_accepted to ctx
+                // after the accept walk (EAGLE order). UNIFIED_CTX requires
+                // the same full capture: commit_ctx copies scratch rows
+                // 0..=num_accepted — with only the k-1 capture, row 0 holds
+                // the WRONG token's hidden and rows 1.. are stale garbage
+                // (2026-07-09 accept-collapse root cause: EAGLE_FIX=0 under
+                // UNIFIED=1 starved this capture and poisoned drafter ctx).
+                let capture_all = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref()
+                    == Some("1")
+                    || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1");
+                if capture_all {
+                    self.try_dflash_capture_all(layer_idx, k, stream)?;
+                } else {
+                    self.try_dflash_capture(layer_idx, k - 1, stream)?;
                 }
             }
 

@@ -16,7 +16,7 @@
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS builder
 
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev && \
+    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev libibverbs-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -45,6 +45,12 @@ RUN cargo build --release -p spark-server
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
 
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+
+# Stamp the source commit into the image so ":latest" provenance is answerable:
+#   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <tag>
+# Passed by scripts/release.sh and the atlas-release skill via --build-arg ATLAS_GIT_SHA.
+ARG ATLAS_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${ATLAS_GIT_SHA}"
 
 # NCCL for multi-GPU (EP=2), RDMA userspace for RoCE transport.
 # NCCL ≥ 2.28 is required for `ncclMemAlloc`/`ncclMemFree` symmetric memory

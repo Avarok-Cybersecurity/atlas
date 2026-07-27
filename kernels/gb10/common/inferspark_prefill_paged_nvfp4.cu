@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// ldmatrix-enabled rebuild (header content change forces kernel cache miss)
 
 // Paged Prefill Flash Attention — NVFP4 (E2M1 + FP8 group scales) KV cache variant.
 //

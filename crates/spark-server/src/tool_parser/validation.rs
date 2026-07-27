@@ -71,6 +71,56 @@ pub(crate) fn normalize_param_name(tools: &[ToolDefinition], call_name: &str, ke
         .unwrap_or_else(|| key.to_string())
 }
 
+/// Echo-attractor salvage (2026-07-09): at long context the model can emit
+/// the XML wire format shifted by one structural token —
+/// `<parameter=parameter>filePath>\n/tmp/x</parameter>` or
+/// `<parameter=write>content>…</parameter>` — so the REAL key lands as the
+/// leading `IDENT>` of the value while the key slot holds an echoed
+/// structural word (`parameter`, the function name, …). The grammar's
+/// key-slot masking makes this shape sticky once entered (`=` is masked, so
+/// the echo closes early), and the real path/content are fully present in
+/// the value. Recover them: when `key` is NOT a schema property and the
+/// value begins with `PROP>` for a schema property `PROP`, re-split into
+/// `(PROP, rest)`.
+///
+/// SSOT — used by both the buffered pipeline (`backfill_required_params`
+/// step 2.5) and live argument streaming (`streaming_emit::coerce_kv`), the
+/// same dual-wiring as [`normalize_param_name`]. Deliberately conservative:
+/// never fires when the emitted key is itself a schema property (a legit
+/// value could start with `IDENT>`), and requires the exact `PROP>` prefix.
+pub(crate) fn salvage_echoed_param(
+    tools: &[ToolDefinition],
+    call_name: &str,
+    key: &str,
+    value: &str,
+) -> Option<(String, String)> {
+    let props = tools
+        .iter()
+        .find(|t| t.function.name == call_name)?
+        .function
+        .parameters
+        .as_ref()?
+        .get("properties")?
+        .as_object()?;
+    if props.is_empty() || props.contains_key(key) {
+        return None;
+    }
+    // Longest property first so e.g. `filePath>` wins over a hypothetical
+    // `file>` prefix.
+    let mut names: Vec<&String> = props.keys().collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    for prop in names {
+        if let Some(rest) = value
+            .strip_prefix(prop.as_str())
+            .and_then(|r| r.strip_prefix('>'))
+        {
+            // Both parse paths `.trim()` parameter values; stay consistent.
+            return Some((prop.clone(), rest.trim().to_string()));
+        }
+    }
+    None
+}
+
 /// Extract agent-type names from a delegation tool's prose description.
 ///
 /// Matches lines shaped like `- <name>: …` — the convention both opencode
@@ -203,6 +253,37 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
             }
         }
 
+        // 2.5. Echo-attractor salvage: re-split `{"parameter": "filePath>…"}`
+        // shapes where the real key leaked into the value (see
+        // `salvage_echoed_param`). Runs BEFORE the missing-required backfill
+        // so the recovered key satisfies `required` instead of being
+        // synthesized as "" (which clients reject with errors the degraded
+        // model then retries verbatim — the 42.5k opencode doom loop).
+        if properties.is_some() {
+            let salvageable: Vec<(String, String, String)> = args
+                .iter()
+                .filter_map(|(k, v)| {
+                    let s = v.as_str()?;
+                    salvage_echoed_param(tools, &call.function.name, k, s)
+                        .map(|(real_key, real_val)| (k.clone(), real_key, real_val))
+                })
+                .collect();
+            for (echoed_key, real_key, real_val) in salvageable {
+                let target_empty = matches!(
+                    args.get(&real_key),
+                    None | Some(serde_json::Value::String(_))
+                ) && args
+                    .get(&real_key)
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty());
+                if target_empty {
+                    args.remove(&echoed_key);
+                    args.insert(real_key, serde_json::Value::String(real_val));
+                    changed = true;
+                }
+            }
+        }
+
         // 3. Backfill missing required string parameters.
         for key in &required {
             if !args.contains_key(*key) {
@@ -231,7 +312,11 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
                     "description" => {
                         if let Some(serde_json::Value::String(cmd)) = args.get("command") {
                             if cmd.len() > 50 {
-                                format!("Run: {}...", &cmd[..47])
+                                // Truncate on a char boundary — `cmd` is raw
+                                // model output and a byte slice at [..47] would
+                                // panic if a multibyte char straddles byte 47.
+                                let head: String = cmd.chars().take(47).collect();
+                                format!("Run: {head}...")
                             } else {
                                 format!("Run: {cmd}")
                             }
@@ -514,10 +599,13 @@ pub fn assess_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(),
         match serde_json::from_str(&call.function.arguments) {
             Ok(a) => a,
             Err(_) => {
+                // Truncate on a char boundary — `arguments` is raw model
+                // output (the hermes path stores it as a verbatim string), so
+                // a byte slice at [..100] would panic if a multibyte char
+                // straddles byte 100.
+                let preview: String = call.function.arguments.chars().take(100).collect();
                 return Err(ToolCallIssue::Hard(format!(
-                    "Error: {} arguments must be valid JSON. Got: {}",
-                    name,
-                    &call.function.arguments[..call.function.arguments.len().min(100)]
+                    "Error: {name} arguments must be valid JSON. Got: {preview}"
                 )));
             }
         };

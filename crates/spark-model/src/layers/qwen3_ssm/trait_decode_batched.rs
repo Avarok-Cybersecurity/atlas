@@ -4,6 +4,24 @@
 
 use super::*;
 
+/// ATLAS_K4_DIAG=1 phase checkpoint (see verify_c2.rs). Synchronizes the
+/// stream after a named phase of the batched GDN decode so an illegal access
+/// is attributed to the exact op. No-op (and no env read past the first call)
+/// unless the diagnostic env is set. Only legal in eager mode — verify_c2
+/// disables CUDA-graph capture whenever the env is set, and this checkpoint
+/// is only reachable from that eager path.
+fn k4_diag_checkpoint(ctx: &ForwardContext, phase: &str, stream: u64) -> Result<()> {
+    static DIAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *DIAG.get_or_init(|| std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1"));
+    if on
+        && !ctx.graph_capture
+        && let Err(e) = ctx.gpu.synchronize(stream)
+    {
+        anyhow::bail!("K4_DIAG: CUDA error after GDN phase `{phase}`: {e:#}");
+    }
+    Ok(())
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
@@ -58,6 +76,8 @@ impl Qwen3SsmLayer {
             stream,
         )?;
 
+        k4_diag_checkpoint(ctx, "1:rms_norm_residual", stream)?;
+
         // ── 2+3. QKVZ projection (+ deinterleave if needed) ──
         // For sequential_qkvz (Qwen3.5): write directly to deinterleaved buffer.
         // For interleaved (80B): write to qkvz_out, then deinterleave per token.
@@ -75,7 +95,17 @@ impl Qwen3SsmLayer {
         // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
-        if (num_tokens == 2 || num_tokens == 3)
+        // 2..=4: the K=4 verify (num_drafts=3) hits this same NULL-slot
+        // hazard — on native-FP8-GDN checkpoints (e.g. nvidia/Qwen3.6-27B-
+        // NVFP4, whose GDN layers ship FP8) `in_proj_qkvz`/`qkvz_nvfp4*` are
+        // NULL and `qkvz_fp8w` is the only live weight. The old `== 2 || == 3`
+        // guard let num_tokens=4 fall through to `dense_gemm` on the NULL
+        // dense slot → CUDA_ERROR_ILLEGAL_ADDRESS on the first K=4 verify
+        // (localized via ATLAS_K4_DIAG, 2026-07-18). `w8a16_gemv_batch4`
+        // is built for M<=4 (see w8a16_gemv_batch4.cu), so widening the
+        // guard is sufficient; the per-token `w8a16_gemv` fallback already
+        // loops over num_tokens.
+        if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.qkvz_fp8w
         {
             if self.w8a16_gemv_batch4_k.0 != 0 {
@@ -100,6 +130,65 @@ impl Qwen3SsmLayer {
                         fp8.weight,
                         fp8.row_scale,
                         proj_dst.offset(t * qkvz_size * bf16),
+                        qkvz_size as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                }
+            }
+        } else if (5..=8).contains(&num_tokens)
+            && self.w4a16_gemv_batch8_k.0 != 0
+            && let Some(ref nvfp4) = self.qkvz_nvfp4
+        {
+            // Chain-verify K=5..8: keep the NVFP4 QKVZ on the weight-streaming
+            // batched GEMV (batch8) instead of falling through to the tile
+            // GEMMs below (the M>4 projection cliff). FP8 checkpoints fall
+            // through unchanged (fp8_gemm arm below).
+            ops::w4a16_gemv_batchm(
+                ctx.gpu,
+                self.w4a16_gemv_batch8_k,
+                normed,
+                nvfp4,
+                proj_dst,
+                num_tokens as u32,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+        } else if num_tokens == 4 {
+            if let Some(ref nvfp4) = self.qkvz_nvfp4 {
+                ops::w4a16_gemv_batchm(
+                    ctx.gpu,
+                    self.w4a16_gemv_batch4_k,
+                    normed,
+                    nvfp4,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else if let Some(ref fp8w) = self.qkvz_fp8w {
+                ops::w8a16_gemv_batch4(
+                    ctx.gpu,
+                    self.w8a16_gemv_batch4_k,
+                    normed,
+                    fp8w.weight,
+                    fp8w.row_scale,
+                    proj_dst,
+                    num_tokens as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                for t in 0..4u32 {
+                    ops::dense_gemv(
+                        ctx.gpu,
+                        self.dense_gemv_k,
+                        normed.offset(t as usize * h * bf16),
+                        &self.ssm.in_proj_qkvz,
+                        proj_dst.offset(t as usize * qkvz_size * bf16),
                         qkvz_size as u32,
                         h as u32,
                         stream,
@@ -176,8 +265,23 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else if let Some(ref nvfp4_t) = self.qkvz_nvfp4_t {
-            // m128 halves B re-reads for large M (prefill); falls back to m64 for M≤128.
-            if k > 128 {
+            // Prefer the 8-warp pipelined v2 (fast even at small M — the wide
+            // DFlash verify runs M=17, where plain m128 padding loses to n128,
+            // but v2 wins; it's the same kernel the dense FFN prefill uses).
+            // Else m128 for large-M prefill; else n128.
+            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
+                ops::w4a16_gemm_n128_m128_v2(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_v2_k,
+                    normed,
+                    nvfp4_t,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else if k > 128 {
                 ops::w4a16_gemm_n128_m128(
                     ctx.gpu,
                     self.w4a16_gemm_t_m128_k,
@@ -246,6 +350,8 @@ impl Qwen3SsmLayer {
             }
         }
 
+        k4_diag_checkpoint(ctx, "2+3:qkvz_proj+deinterleave", stream)?;
+
         // ── 4. BA projection + GDN gates per token ──
         // BA output: ssm_ba buffer; gates: ssm_gates buffer [K, nv*2] FP32
         // Layout per token: [gate(nv), beta(nv)] → stride = 2*nv FP32 elements.
@@ -286,6 +392,8 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         }
+
+        k4_diag_checkpoint(ctx, "4:ba_proj+gates", stream)?;
 
         // ── 5-7. Conv1d + L2 norm + GDN per token (with intermediate checkpoints) ──
         // Reuse ssm_qkvz buffer for conv output (safe: deinterleave is done)
@@ -339,6 +447,8 @@ impl Qwen3SsmLayer {
         };
         self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
 
+        k4_diag_checkpoint(ctx, "5-7:conv1d+l2norm+gdn_wy", stream)?;
+
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
@@ -381,6 +491,8 @@ impl Qwen3SsmLayer {
             }
         }
 
+        k4_diag_checkpoint(ctx, "8:gated_rms_norm", stream)?;
+
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
         if let Some(ref dense_out) = self.out_proj_dense {
@@ -395,9 +507,13 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )?;
-        } else if (num_tokens == 2 || num_tokens == 3)
+        } else if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.out_proj_fp8w
         {
+            // 2..=4: same K=4 NULL-slot hazard as the QKVZ dispatch above —
+            // on native-FP8-GDN checkpoints `ssm.out_proj` is NULL and
+            // `out_proj_fp8w` is the only live weight; the old guard sent
+            // num_tokens=4 to `w4a16_gemm` on the NULL slot.
             // Native-FP8 build: `ssm.out_proj` is a NULL QuantizedWeight —
             // the block-scaled FP8 copy (`out_proj_fp8w`) is the only live
             // weight. Same NULL-deref hazard as the QKVZ dispatch above.
@@ -429,6 +545,25 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
+        } else if (4..=8).contains(&num_tokens)
+            && !self.ssm.out_proj.weight.is_null()
+            && self.w4a16_batchm_kernel(num_tokens).0 != 0
+        {
+            // NVFP4 out_proj at M=4..8 (K=4 verify + K=5..8 chain verify):
+            // previously fell through to the w4a16 tile GEMMs below (M>3
+            // cliff — there was no ==4 arm at all on the NVFP4 side); the
+            // batchm GEMV streams the weight once for all rows.
+            ops::w4a16_gemv_batchm(
+                ctx.gpu,
+                self.w4a16_batchm_kernel(num_tokens),
+                normed_out_buf,
+                &self.ssm.out_proj,
+                out_proj_buf,
+                num_tokens as u32,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )?;
         } else if num_tokens == 3 {
             ops::w4a16_gemv_batch3(
                 ctx.gpu,
@@ -478,17 +613,32 @@ impl Qwen3SsmLayer {
                 )?;
             }
         } else if let Some(ref nvfp4_t) = self.out_proj_nvfp4_t {
-            ops::w4a16_gemm_n128(
-                ctx.gpu,
-                self.w4a16_gemm_t_k,
-                normed_out_buf,
-                nvfp4_t,
-                out_proj_buf,
-                k,
-                h as u32,
-                value_dim as u32,
-                stream,
-            )?;
+            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
+                // 8-warp pipelined v2 (fast at M=17 wide verify; FFN's kernel).
+                ops::w4a16_gemm_n128_m128_v2(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_v2_k,
+                    normed_out_buf,
+                    nvfp4_t,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_k,
+                    normed_out_buf,
+                    nvfp4_t,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -502,6 +652,12 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         }
+
+        // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
+        // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
+        self.ssm_tp_all_reduce(out_proj_buf, num_tokens, ctx, stream)?;
+
+        k4_diag_checkpoint(ctx, "9:out_proj", stream)?;
 
         // ── 10. Batched residual + post-norm, then MoE + residual ──
         // residual_add_rms_norm supports multi-token (grid.x = num_tokens)
@@ -544,8 +700,55 @@ impl Qwen3SsmLayer {
                 (2 * h) as u32,
                 stream,
             )?;
+        } else if (4..=8).contains(&num_tokens)
+            && self
+                .ffn
+                .try_forward_km(normed2_base, num_tokens as u32, ctx, stream)
+                .inspect_err(|e| tracing::error!("ffn.try_forward_km: {e:#}"))
+                .unwrap_or(false)
+        {
+            // K=4..8 verify FFN via batched GEMV (batch4 M<=4, batch8
+            // M=5..8): one weight read per projection for all rows at
+            // near-peak stream bandwidth. nsys (2026-07-18): the
+            // forward_prefill MMQ arm below cost 54.8 ms/verify-step across
+            // the 64-layer dense FFN stack at M=4 vs the ~31 ms
+            // weight-traffic floor this path hits. Falls through to
+            // forward_prefill when unavailable (MoE / missing kernel).
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (num_tokens * h) as u32,
+                stream,
+            )?;
+        } else if self.ffn.is_dense() {
+            // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, num_tokens=17). This
+            // is the MAJORITY layer type (GDN/SSM) on the hybrid 27B, so its
+            // per-token FFN loop was the dominant remaining verify cost after
+            // the attention layers were batched. normed2_base is already
+            // [num_tokens, h] (batched residual_add_rms_norm above), so
+            // forward_prefill reads gate/up/down ONCE for all tokens.
+            //
+            // DENSE ONLY: the per-token `else` below is retained for 256-expert
+            // MoE, where grouped-GEMM is a net loss at small batch (per-expert
+            // M~1 + sort/permute overhead across the 36-layer SSM stack).
+            k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
+            self.ffn
+                .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
+            k4_diag_checkpoint(ctx, "10b:ffn_forward_prefill", stream)?;
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (num_tokens * h) as u32,
+                stream,
+            )?;
         } else {
-            // Per-token MoE fallback for K!=2.
+            // Per-token MoE fallback for K!=2 (256-expert MoE).
             // CONCURRENT-DECODE BUG (sibling of decode_multi_seq fix at line 1102):
             // hardcoded `t * h * 4` over-strides for BF16 hidden (GB10 default).
             let residual_elem = 2usize;

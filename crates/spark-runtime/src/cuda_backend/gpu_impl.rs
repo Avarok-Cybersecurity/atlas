@@ -38,10 +38,11 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2, cuMemAllocHost_v2,
-    cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemcpyDtoDAsync_v2,
-    cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
-    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
+    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
+    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
+    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
+    cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -189,6 +190,25 @@ impl GpuBackend for AtlasCudaBackend {
             registry
                 .launch_on_stream(raw_func, cfg, stream, params)
                 .map_err(|e| anyhow::anyhow!("Kernel launch failed: {e}"))
+        }
+    }
+
+    fn stream_is_capturing(&self, stream: u64) -> bool {
+        // SCALE's libcuda does not export cuStreamIsCapturing; report
+        // not-capturing there (gfx1151 telemetry taps then sample eagerly —
+        // acceptable for a default-off measurement knob).
+        #[cfg(atlas_scale)]
+        {
+            let _ = stream;
+            false
+        }
+        #[cfg(not(atlas_scale))]
+        {
+            let mut status: u32 = 0;
+            // CU_STREAM_CAPTURE_STATUS_NONE = 0; treat query failure as
+            // capturing (conservative: the tap skips its sample).
+            let rc = unsafe { super::cuStreamIsCapturing(stream, &mut status) };
+            rc != 0 || status != 0
         }
     }
 
@@ -428,6 +448,18 @@ impl GpuBackend for AtlasCudaBackend {
         let status = unsafe { cuStreamWaitEvent(stream, event, 0) };
         if status != 0 {
             bail!("cuStreamWaitEvent failed: status {status}");
+        }
+        Ok(())
+    }
+
+    fn event_synchronize(&self, event: u64) -> Result<()> {
+        // Block calling thread until all work recorded against `event`
+        // (on whatever stream `record_event` targeted) has completed.
+        // Used in Phase E.2: drafter D2H copy is recorded against this
+        // event, host blocks here just before reading the pinned buffer.
+        let status = unsafe { cuEventSynchronize(event) };
+        if status != 0 {
+            bail!("cuEventSynchronize failed: status {status}");
         }
         Ok(())
     }

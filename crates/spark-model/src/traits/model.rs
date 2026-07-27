@@ -36,7 +36,68 @@ use spark_runtime::gpu::DevicePtr;
 
 use super::{MixedBatchResult, MixedForwardResult, PrefillSlice, SequenceState};
 
+/// One beam-search request for a translation model (NLLB). Carries the resolved
+/// per-request parameters the scheduler stamps onto the sequence; the model runs
+/// the whole beam search to completion and returns the winning hypothesis.
+#[derive(Debug, Clone)]
+pub struct BeamReq {
+    /// Raw source subword ids (the model adds `[src_lang] … </s>` itself).
+    pub prompt_tokens: Vec<u32>,
+    /// Per-request source/target language token ids (`0` = deployment default).
+    pub src_lang_id: u32,
+    pub tgt_lang_id: u32,
+    /// Per-request LoRA slot (`>=0` apply, `-1` base).
+    pub adapter_slot: i32,
+    pub num_beams: usize,
+    pub max_new: usize,
+    pub length_penalty: f32,
+    pub early_stopping: bool,
+}
+
+/// The multi-sequence batch padding ladder — the SSOT for `padded_n`.
+///
+/// Batched decode pads the live sequence count up to a small set of captured
+/// sizes so that (a) CUDA graphs (`ATLAS_DECODE_GRAPHS_MULTISEQ`) are keyed by
+/// a handful of stable shapes instead of one per exact n, and (b) the batched
+/// kernels see a bounded set of widths. Padding rows point at the dummy SSM
+/// slot / dummy KV block and cost one wasted lane each.
+///
+/// This expression used to be duplicated at FOUR call sites
+/// (`decode_a2.rs:168`, `decode_b.rs:52` and `:110`,
+/// `phase_continue_prefills.rs:142` — the last one in a different crate), which
+/// is exactly how the ladder would have drifted when a step was added. All four
+/// now call here.
+///
+/// `12` and `16` were added for the `C=[1,2,4,8,16]` concurrency work
+/// (2026-07-25): previously any n ≥ 9 fell through to `padded_n = n`, so at
+/// C=16 every distinct batch composition minted its OWN CUDA graph (n=9, 10,
+/// ... 16 each a separate capture) and the buffer-fit guards were computed on
+/// exact n. Above 16 the fall-through behaviour is unchanged.
+#[inline]
+pub fn padded_batch_n(n: usize) -> usize {
+    [2usize, 4, 8, 12, 16]
+        .iter()
+        .copied()
+        .find(|&s| s >= n)
+        .unwrap_or(n)
+}
+
 pub trait Model: Send + Sync {
+    /// True when this model implements run-to-completion beam search
+    /// ([`Self::generate_beam_batch`]). Default `false` — only encoder-decoder
+    /// translation models (NLLB) override it.
+    fn supports_beam(&self) -> bool {
+        false
+    }
+
+    /// Run beam search to completion for each request, returning each one's
+    /// winning hypothesis token ids (EOS-terminated). Called from the prefill
+    /// path for `num_beams > 1` requests, bypassing the token-by-token decode
+    /// loop. Default: unsupported.
+    fn generate_beam_batch(&self, _reqs: &[BeamReq]) -> Result<Vec<Vec<u32>>> {
+        bail!("this model does not support beam search")
+    }
+
     /// Run prefill: process all prompt tokens through the model.
     ///
     /// Returns logits DevicePtr for the last token position.
@@ -203,6 +264,79 @@ pub trait Model: Send + Sync {
 
     /// Vocab size (for sampler allocation).
     fn vocab_size(&self) -> usize;
+
+    /// Runtime LoRA adapter rotation: select the resident adapter named `name`
+    /// as active (re-points the delta pool pointers). MUST be called at a
+    /// scheduler quiescent point (no in-flight decode). Graph-safety is via the
+    /// eager-on-rotate gate. Default: unsupported (non-LoRA or non-rotatable).
+    fn set_active_lora(&mut self, _name: &str) -> Result<()> {
+        bail!("this model does not support LoRA adapter rotation")
+    }
+
+    /// Task #24: stable adapter_id (KV/prefix-cache identity) for a per-request
+    /// pool-slot selector. `slot` follows `SequenceState.adapter_slot`: `>= 0`
+    /// picks that resident slot, `-1` defers to the installed active adapter.
+    /// The default (no LoRA) returns the base sentinel `0`, keeping the prefix
+    /// cache byte-identical to the pre-LoRA path.
+    fn adapter_id_for(&self, _slot: i32) -> u64 {
+        0
+    }
+
+    /// Task #25: acquire a per-slot ref when a sequence begins using its adapter
+    /// (at prefill), resolving `-1 -> active` like [`Self::adapter_id_for`].
+    /// Returns the RESOLVED pool index the ref was taken on (store it, release
+    /// EXACTLY that index at terminal free — immune to a rotate changing active).
+    /// Default (no LoRA) returns `-1` "nothing acquired" so the release guard
+    /// skips and the base path is byte-identical.
+    fn acquire_adapter_slot(&self, _slot: i32) -> i32 {
+        -1
+    }
+
+    /// Task #25: release a per-slot ref acquired by [`Self::acquire_adapter_slot`],
+    /// by the RESOLVED index it returned. `-1` is a no-op. Default: no-op.
+    fn release_adapter_slot(&self, _resolved: i32) {}
+
+    /// Runtime LoRA adapter dynamic-load: load the adapter at `dir` INTO pool
+    /// `slot` and make it resident there (pool-size-1 per-request weight change).
+    /// MUST be called at a scheduler quiescent point; needs rotation armed.
+    /// Default: unsupported (non-LoRA or non-rotatable).
+    fn swap_lora_from_disk(
+        &mut self,
+        _dir: &std::path::Path,
+        _name: &str,
+        _slot: usize,
+    ) -> Result<()> {
+        bail!("this model does not support LoRA disk swap")
+    }
+
+    /// Task #27 (demand-driven promotion): RDMA-promote the adapter `name`
+    /// (staged on `peer_addr` at `adapter_id`) from the peer into a cache pool
+    /// slot and make it active, returning `(slot, evicted_name)`. Runs at a
+    /// scheduler quiescent point. `peft` supplies the r/alpha/scaling the peer
+    /// manifest does not carry. Default: unsupported (non-LoRA / non-cuda).
+    fn promote_lora_from_peer(
+        &mut self,
+        _peer_addr: &str,
+        _adapter_id: &str,
+        _name: &str,
+        _peft: atlas_core::config::PeftAdapterConfig,
+    ) -> Result<(usize, Option<String>)> {
+        bail!("this model does not support LoRA peer promotion")
+    }
+
+    /// Demand-driven DISK promotion (no RDMA/peer): load the adapter `name` from
+    /// `adapter_dir` into a cache pool slot (LRU victim) and make it active,
+    /// returning `(slot, evicted_name)`. Local-disk sibling of
+    /// [`Self::promote_lora_from_peer`]; the swap re-parses the dir's
+    /// `adapter_config.json`, so no `peft` arg. Runs at a scheduler quiescent
+    /// point; needs rotation armed. Default: unsupported.
+    fn promote_lora_from_disk(
+        &mut self,
+        _adapter_dir: &std::path::Path,
+        _name: &str,
+    ) -> Result<(usize, Option<String>)> {
+        bail!("this model does not support LoRA disk promotion")
+    }
 
     /// Dims for the `--high-speed-swap` orchestrator (installed thread-local
     /// after `bind_gpu_to_thread`). `None` for legacy/non-attention models.
@@ -426,10 +560,107 @@ pub trait Model: Send + Sync {
         self.decode_verify_graphed_kgamma(tokens, seq, stream)
     }
 
+    /// DFlash fused decode+verify: one M=(1+k) forward replacing separate
+    /// M=1 decode + M=k verify on the DFlash path.
+    ///
+    /// `tokens[0]` = accepted/decode token; `tokens[1..]` = draft block.
+    /// `try_dflash_capture` fires at row 0 so the DFlash drafter conditions
+    /// on the confirmed-accepted token's per-layer hidden, never on a
+    /// potentially-rejected draft's hidden.
+    ///
+    /// CUDA-graph cache keyed by `(slot_idx, tokens.len())`. Default falls
+    /// back to `decode_verify_graphed_kgamma` (which itself falls back to
+    /// eager `decode_verify`) for models that don't override.
+    fn decode_and_verify_fused(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.decode_verify_graphed_kgamma(tokens, seq, stream)
+    }
+
     /// Save the post-norm hidden state at `token_idx` (0 or 1) to a
     /// dedicated MTP input buffer. Must precede `run_mtp_propose` — MTP
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
+
+    /// ATLAS_MTP_CATCHUP: ring-capture a serially decoded token's final
+    /// hidden at `pos` for the drafter catch-up feed. Default no-op.
+    fn save_hidden_for_catchup(&self, _token_idx: usize, _pos: usize) -> Result<()> {
+        Ok(())
+    }
+
+    /// Capture `hidden_states[token_idx]` from every DFlash capture layer
+    /// into `dflash_hidden_save`. Called after gamma verify Phase 3 D2H
+    /// sync (bonus position known). No-op when DFlash is disabled.
+    fn save_dflash_hidden_for_propose(&self, _token_idx: usize, _stream: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Append the accepted draft's hidden state (row 1 of dflash_hidden_save)
+    /// into the proposer context. Base primitive for both legacy and Eagle paths.
+    /// Default no-op for models without a DFlash drafter.
+    fn dflash_accept_append(&self, _seq: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+
+    /// EAGLE-fix (K=2 accept): append row 0 @ N then row 1 @ N+1 BEFORE propose
+    /// so forward_block conditions on row 1 (the hidden that generated bonus).
+    /// Default no-op for models without a DFlash drafter.
+    fn dflash_eagle_accept_append(&self, _seq: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+
+    /// EAGLE-fix (K=gamma): append rows 0..=num_accepted at positions
+    /// base_pos..=base_pos+num_accepted. Row num_accepted is appended LAST ->
+    /// freshest ctx slot = the hidden that generated the bonus (EAGLE).
+    /// Default no-op for models without a DFlash drafter.
+    fn dflash_eagle_kgamma_append(
+        &self,
+        _seq: &mut SequenceState,
+        _num_accepted: usize,
+        _base_pos: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Ctx-holes fix (serial decode): append the just-decoded token's
+    /// captured per-layer hidden (`dflash_hidden_save` row 0, filled by
+    /// `try_dflash_capture` inside the decode layer loop) into the seq's
+    /// DFlash ctx accumulator, stamped at its true position
+    /// (`seq.seq_len - 1`, matching propose.rs's decode-append convention).
+    ///
+    /// Called from the scheduler's serial bootstrap path when adaptive
+    /// speculation has SUSPENDED this seq — propose() never runs there, so
+    /// without this hook every serially-decoded token's target hidden is
+    /// overwritten (single-slot model capture) and permanently lost,
+    /// leaving holes in the drafter's ctx at spec re-entry (measured
+    /// -0.42 accepted/step on think-gated vs spec-through-think content).
+    ///
+    /// Sets `skip_next_decode_append` so a propose() firing later (re-probe)
+    /// does not double-append the same capture. Graceful no-op when DFlash
+    /// is disabled or the seq has a non-DFlash proposer state.
+    fn dflash_serial_ctx_append(&self, _seq: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+
+    /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
+    /// `num_committed` scratch rows (`dflash_hidden_save` rows
+    /// `0..num_committed`) into `ctx_hidden_acc` at the CURRENT TAIL
+    /// (`ctx_len`), stamping RoPE positions `base_pos..base_pos+num_committed`,
+    /// folding the watermark slide in first. `base_pos` is the RoPE position,
+    /// NOT the acc row index (they diverge after a watermark slide — DDD §4.1
+    /// landmine). The single structural replacement for the ~5 fragmented
+    /// appends. Default no-op for models without a DFlash drafter.
+    fn commit_ctx(
+        &self,
+        _seq: &mut SequenceState,
+        _num_committed: usize,
+        _base_pos: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Run the MTP proposer for one draft token off the saved hidden state.
     /// `None` when no proposer is wired.
@@ -553,6 +784,14 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// Tokens per paged-KV block, or `None` when the model has no paged KV.
+    /// The scheduler uses this to land a prefill chunk boundary exactly on the
+    /// block boundary a warm turn will match at (see
+    /// `spark_runtime::ssm_tail_boundary`).
+    fn kv_block_size(&self) -> Option<usize> {
+        None
+    }
+
     /// EP broadcast: send a command (u32) to all worker ranks.
     ///
     /// Called by rank 0 before each model operation to synchronize workers.
@@ -628,14 +867,6 @@ pub trait Model: Send + Sync {
         Ok(()) // No-op if no secondary stream.
     }
 
-    /// F62 (2026-04-27): copy canonical SSM state from `*_checkpoint` into
-    /// `*_state` BEFORE verify so the kernel can scratch-write it. Runs on
-    /// default_stream (FIFO ordering with the next kernel). No-op default
-    /// for non-MTP backends.
-    fn pre_verify_copy_async(&self, _seq: &mut SequenceState) -> Result<()> {
-        Ok(())
-    }
-
     /// Item #2 (STree-style in-place verify commit): commit the surviving
     /// prefix of a verify pass directly onto the canonical `h_state` /
     /// `conv_state`. Full accept (`num_accepted == k`) is a no-op (the
@@ -650,28 +881,6 @@ pub trait Model: Send + Sync {
         _k: usize,
     ) -> Result<()> {
         Ok(())
-    }
-
-    /// F62 (2026-04-27): commit a verify pass to the canonical SSM state.
-    /// `num_accepted ∈ [0, k]`: full accept → copy `h_state` → checkpoint;
-    /// partial → copy `h_state_intermediates[num_accepted-1]`; full reject →
-    /// no-op. Runs on secondary_stream; pair with `sync_secondary`.
-    fn commit_verify_state_async(
-        &self,
-        seq: &mut SequenceState,
-        num_accepted: usize,
-        k: usize,
-    ) -> Result<()> {
-        // Default: fall back to synchronous behavior compatible with the
-        // legacy NGram path. Backends without dual-buffer support use the
-        // pre-existing checkpoint/rollback machinery.
-        if num_accepted == k {
-            self.checkpoint_ssm_states(seq)
-        } else if num_accepted > 0 {
-            self.rollback_ssm_states(seq, num_accepted)
-        } else {
-            Ok(())
-        }
     }
 
     /// Save KV blocks + SSM state to writer. Does NOT free resources.

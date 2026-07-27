@@ -108,6 +108,12 @@ impl Qwen3SsmLayer {
             w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,
             w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
             w4a16_gemm_t_m128_k: gpu.kernel("w4a16", "w4a16_gemm_t_m128")?,
+            // 8-warp pipelined M128 (try_kernel: 0 when absent → falls back to m128/n128).
+            w4a16_gemm_t_m128_v2_k: super::super::try_kernel(
+                gpu,
+                "w4a16_v2",
+                "w4a16_gemm_t_m128_v2",
+            ),
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             // try_kernel: 0-handle if absent (gated at dispatch); the pipelined
@@ -207,6 +213,14 @@ impl Qwen3SsmLayer {
                 "gdn_verify_fused_k2",
                 "gdn_verify_fused_norm_k2",
             ),
+            // Generic-K fused verify conv (K=17 DFlash arm). gb10 common
+            // module; NULL on targets lacking the .cu, in which case the
+            // K=17 arm keeps its per-token conv loop.
+            gdn_verify_fused_conv_kn_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_conv_kn",
+                "gdn_verify_fused_conv_kn",
+            ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(
@@ -214,6 +228,15 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
+            // Chain-verify K=5..8 WY kernels (one templated gb10-common
+            // module). Index = K-5; NULL on targets lacking the module, in
+            // which case those widths keep the sequential per-token path.
+            gdn_wyn_k: [
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
+                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
+            ],
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,
@@ -238,6 +261,7 @@ impl Qwen3SsmLayer {
             ),
             // NVFP4 batched decode GEMV (both entries live in the w4a16_gemv module).
             w4a16_gemv_batch4_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
             per_token_group_quant_fp8_k: super::super::try_kernel(

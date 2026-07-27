@@ -147,6 +147,26 @@ impl Qwen3AttentionLayer {
         }
     }
 
+    /// Install the startup-static LoRA adapter overlay (post-construction,
+    /// mirroring [`Self::set_fp8_weights`]). `attn` carries the K/V/O pairs;
+    /// `ffn` (when Some) is routed into this layer's dense FFN component —
+    /// it lives here rather than on the model because `self.ffn` is
+    /// `pub(super)`. M0: weights are stored only; compute reads land in M1.
+    pub fn set_lora_weights(
+        &mut self,
+        attn: crate::layers::ops::lora_delta::LoraAttnWeights,
+        ffn: Option<crate::layers::ops::lora_delta::LoraFfnWeights>,
+    ) -> Result<()> {
+        self.lora = Some(attn);
+        if let Some(f) = ffn {
+            match &mut self.ffn {
+                crate::layers::FfnComponent::Dense(d) => d.set_lora_weights(f)?,
+                _ => anyhow::bail!("LoRA: FFN targets on a non-dense FFN layer"),
+            }
+        }
+        Ok(())
+    }
+
     /// Transpose FP8 weights for fast prefill (`w8a16_gemm_t`: coalesced
     /// reads). Must be called after [`Self::set_fp8_weights`]. Allocates
     /// new GPU buffers.

@@ -115,4 +115,4 @@ Atlas's 131 tok/s on Qwen3.5-35B and 104 tok/s on Qwen3-Next-80B are, in this se
 - `kernels/gb10/<model>/nvfp4/moe_prefill.cu`, `dense_gemm_nvfp4.cu` — the GEMM tiles + fragment-time dequant.
 - `kernels/gb10/<model>/nvfp4/paged_decode_attn_nvfp4.cu` — the NVFP4 KV attention.
 - `crates/atlas-quant/src/nvfp4.rs` — the Rust trait binding.
-- `docs/design/NVFP4_COHERENCE.md` — the design note on `--kv-high-precision-layers`.
+- `docs/adr/0004-nvfp4-fp8-quantization.md` — the quantization decision record covering `--kv-high-precision-layers`.

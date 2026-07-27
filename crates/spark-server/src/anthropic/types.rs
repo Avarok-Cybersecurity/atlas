@@ -114,8 +114,41 @@ pub enum ContentBlock {
         #[serde(default)]
         thinking: Option<String>,
     },
+    #[serde(rename = "image")]
+    Image { source: ImageSourceBlock },
     #[serde(other)]
     Unknown,
+}
+
+/// Anthropic image source. `type:"base64"` carries `media_type` + `data`;
+/// `type:"url"` carries `url`.
+#[derive(Debug, Deserialize)]
+pub struct ImageSourceBlock {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl ImageSourceBlock {
+    /// Build the string the vision encoder consumes: a `data:` URI for
+    /// base64 sources, or the raw URL for url sources. `None` when the
+    /// required fields are missing.
+    pub(super) fn maybe_get_image_uri(&self) -> Option<String> {
+        match self.source_type.as_str() {
+            "base64" => {
+                let data = self.data.as_ref()?;
+                let mt = self.media_type.as_deref().unwrap_or("image/png");
+                Some(format!("data:{mt};base64,{data}"))
+            }
+            "url" => self.url.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// Tool result content: string or nested blocks.
@@ -201,4 +234,8 @@ pub enum ResponseBlock {
 pub struct AnthropicUsage {
     pub input_tokens: usize,
     pub output_tokens: usize,
+    /// Prompt tokens served from the prefix cache. Always emitted (0
+    /// when the prefix cache missed) — Anthropic clients read it for
+    /// cache accounting.
+    pub cache_read_input_tokens: usize,
 }

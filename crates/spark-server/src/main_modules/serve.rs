@@ -26,6 +26,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
+    // Reject contradictory flag combinations up front (issue #288) — before the
+    // multi-minute model load — with a message that tells humans and AI agents
+    // exactly what to change. Hard error, never a warning.
+    if let Err(msg) = cli::validate_serve_args(&args) {
+        anyhow::bail!("{msg}");
+    }
+
     // 0. Resolve model directory from HF ID or path
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
@@ -295,7 +302,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // property present for fresh non-cached sequences too), not a Marconi
     // state-management defect — so no warning is emitted here.
     let prefix_cache = serve_phases::build_prefix_cache(&args);
-    let comm = serve_phases::init_nccl_comm(&args, gpu.as_ref(), world_size)?;
+    let comm = serve_phases::init_nccl_comm(
+        &args,
+        gpu.as_ref(),
+        world_size,
+        max_batch_tokens,
+        config.hidden_size,
+    )?;
     if args.profile {
         // SAFETY: called before any threads are spawned.
         unsafe {
@@ -332,6 +345,39 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         }
     }
     let dflash_drafter_state = serve_phases::load_dflash_drafter(&args, &ptx_set, gpu.as_ref())?;
+    // LoRA adapters: resolve + load BEFORE `gpu` is moved into build_model.
+    // `lora_states` must outlive build_model (lora_args borrows &l.store) and
+    // stays alive until after AppState construction (adapter name clones).
+    // NLLB uses its own encoder-decoder LoRA path (resolved below), not the
+    // decoder-only pool loader — skip the latter to avoid a family rejection.
+    let is_nllb = matches!(config.model_type.as_str(), "m2m_100" | "nllb");
+    let lora_states = if is_nllb {
+        Vec::new()
+    } else {
+        serve_phases::load_lora_adapters(&args, gpu.as_ref())?
+    };
+    if !lora_states.is_empty() && world_size > 1 {
+        anyhow::bail!(
+            "--lora-adapter requires world_size=1 in v0 (got {world_size}); \
+             TP adapter sharding is M3"
+        );
+    }
+    let lora_args = if lora_states.is_empty() {
+        None
+    } else {
+        Some(spark_model::factory::LoraBuildArgs {
+            adapters: lora_states
+                .iter()
+                .map(|l| spark_model::lora::LoraAdapterInput {
+                    name: l.name.clone(),
+                    store: &l.store,
+                    peft: l.peft_config.clone(),
+                })
+                .collect(),
+            max_lora_rank: args.max_lora_rank,
+            max_loras: args.max_loras,
+        })
+    };
     let dflash_args =
         dflash_drafter_state
             .as_ref()
@@ -345,6 +391,51 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                     None
                 },
             });
+    // NLLB / M2M-100: resolve the translation language pair to token ids from
+    // the checkpoint tokenizer (the ChatTokenizer isn't built until after the
+    // model). Only for encoder-decoder checkpoints; other models pass `None`.
+    let nllb_lang: Option<(u32, u32)> = if matches!(config.model_type.as_str(), "m2m_100" | "nllb")
+    {
+        let src = args.src_lang.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("serving an NLLB/M2M-100 checkpoint requires --src-lang")
+        })?;
+        let tgt = args.tgt_lang.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("serving an NLLB/M2M-100 checkpoint requires --tgt-lang")
+        })?;
+        let tk = tokenizers::Tokenizer::from_file(model_dir.join("tokenizer.json"))
+            .map_err(|e| anyhow::anyhow!("nllb: load tokenizer for lang resolve: {e}"))?;
+        let src_id = tk
+            .token_to_id(src)
+            .ok_or_else(|| anyhow::anyhow!("unknown --src-lang token '{src}'"))?;
+        let tgt_id = tk
+            .token_to_id(tgt)
+            .ok_or_else(|| anyhow::anyhow!("unknown --tgt-lang token '{tgt}'"))?;
+        tracing::info!("NLLB translation: {src}({src_id}) -> {tgt}({tgt_id})");
+        Some((src_id, tgt_id))
+    } else {
+        None
+    };
+    // NLLB PEFT adapter: resolve the first `--lora-adapter NAME=DIR` to a dir;
+    // NllbGpuModel loads it via its own encoder-decoder LoRA apply.
+    let nllb_lora_dir: Option<std::path::PathBuf> = if is_nllb {
+        match args.lora_adapter.first() {
+            Some((_name, spec)) => Some(
+                crate::model_resolver::resolve_adapter_dir(spec, args.cache_dir.as_deref())
+                    .context("resolving NLLB --lora-adapter")?,
+            ),
+            None => None,
+        }
+    } else {
+        None
+    };
+    // Advertise the NLLB adapter name so a request's `adapter` field validates
+    // (present → apply LoRA per-request, absent → base). Kept distinct from the
+    // model name so base routing falls through to slot -1.
+    let nllb_adapter_name: Option<String> = if nllb_lora_dir.is_some() {
+        args.lora_adapter.first().map(|(n, _)| n.clone())
+    } else {
+        None
+    };
     let model = serve_phases::build_model(
         &args,
         &config,
@@ -358,6 +449,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         prefix_cache,
         comm,
         dflash_args,
+        lora_args,
+        nllb_lang,
+        nllb_lora_dir,
     )?;
 
     // Kernel load audit: print the table of every kernel resolved during model
@@ -452,6 +546,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     // 7. Create scheduler channel + spawn scheduler
     let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>(args.max_num_seqs);
+    // LoRA adapter-rotation control channel (POST /v1/lora/active). Small: it
+    // carries only control messages, applied one-at-a-time at quiescence.
+    let (rotation_tx, rotation_rx) = mpsc::channel::<scheduler::LoraRotation>(8);
 
     let model_name = serve_phases::resolve_model_name(&args, &config_json, &model_dir);
 
@@ -561,13 +658,33 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let scheduler_spontaneous_think_budget = args
         .max_thinking_budget
         .unwrap_or(ptx_set.behavior.max_thinking_budget);
+    // DFlash mode: the drafter proposes on raw argmax, so the verify steps
+    // must judge acceptance on the same (GOLD) basis — skipping the
+    // rep_pen/DRY pre-sample pipeline — or drafter and verifier disagree by
+    // construction and accept craters. ATLAS_DFLASH_MASKED_VERIFY=1 routes
+    // verify PICKS back through the pre-sample masking (unmasked
+    // special-token leak fix); that is handled at the pick sites via
+    // `verify_pipeline_helper::dflash_masked_verify_enabled()` and must NOT
+    // flip this bool — this selects the verify architecture, not the pick
+    // basis.
+    let dflash_verify_raw_argmax = args.dflash;
+    // DS4F hard-limit lane (2026-07-21): install the served-context ceiling so
+    // the scheduler enforces `max_seq_len` per decode step (§C-3), not just as a
+    // KV-allocation ceiling trued-up on completion. Set once, before the
+    // scheduler thread spawns.
+    scheduler::set_max_seq_len(args.max_seq_len);
+    // Capture the runtime handle IN async context so the scheduler OS thread
+    // can detach terminal stream sends (Done/Error) as tokio tasks.
+    scheduler::capture_runtime_handle();
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
             request_rx,
+            rotation_rx,
             scheduler_eos,
             max_batch_size,
             use_speculative,
+            dflash_verify_raw_argmax,
             num_drafts,
             policy,
             max_prefill_tokens,
@@ -604,11 +721,144 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if let Some(max_pixels) = vision_max_pixels {
         tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
     }
+    // #27: build the STAGEABLE registry (name -> {peer_stage_id, peft}). The peer
+    // WeightManifest carries no r/alpha, so the peft scaling is parsed from each
+    // adapter's local CONFIG_DIR/adapter_config.json HERE (fail-fast at startup —
+    // a wrong/absent scale must never be discovered mid-serve).
+    let lora_peer_addr = spark_model::lora::lora_peer_env();
+    let mut lora_stageable = std::collections::HashMap::new();
+    for (name, peer_id, dir) in &args.lora_stageable {
+        let cfg_path = std::path::Path::new(dir).join("adapter_config.json");
+        let raw = std::fs::read_to_string(&cfg_path).with_context(|| {
+            format!(
+                "--lora-stageable '{name}': read peft config {}",
+                cfg_path.display()
+            )
+        })?;
+        let peft = atlas_core::config::parse_peft_adapter_config(&raw)
+            .with_context(|| format!("--lora-stageable '{name}': parse {}", cfg_path.display()))?;
+        lora_stageable.insert(
+            name.clone(),
+            crate::main_modules::promotion::StageableAdapter {
+                peer_stage_id: peer_id.clone(),
+                peft,
+            },
+        );
+    }
+    if !lora_stageable.is_empty() && lora_peer_addr.is_none() {
+        anyhow::bail!(
+            "--lora-stageable given ({} adapter(s)) but $ATLAS_LORA_PEER is unset; \
+             demand promotion needs a weight peer to RDMA-stage from",
+            lora_stageable.len()
+        );
+    }
+    if !lora_stageable.is_empty() && lora_states.is_empty() {
+        anyhow::bail!(
+            "--lora-stageable needs a resident pool to promote INTO; start with at \
+             least one --lora-adapter (and --max-loras > that count for cache headroom)"
+        );
+    }
+    // DISK-stageable registry (the no-RDMA sibling): name -> (resolved dir, peft).
+    // The dir is resolved HF-id-or-path via the model_resolver; peft is parsed +
+    // rank-checked at startup (fail-fast like load_lora_adapters). The disk swap
+    // re-reads adapter_config.json at promote time, so this copy is only for
+    // advertising + rank validation.
+    let mut lora_disk_stageable = std::collections::HashMap::new();
+    for (name, spec) in &args.lora_stageable_disk {
+        if lora_states.iter().any(|s| &s.name == name) || lora_stageable.contains_key(name) {
+            anyhow::bail!(
+                "--lora-stageable-disk '{name}' collides with a resident/peer-stageable \
+                 adapter name"
+            );
+        }
+        let dir = crate::model_resolver::resolve_adapter_dir(spec, args.cache_dir.as_deref())
+            .with_context(|| format!("--lora-stageable-disk '{name}': resolve '{spec}'"))?;
+        let cfg_path = dir.join("adapter_config.json");
+        let raw = std::fs::read_to_string(&cfg_path).with_context(|| {
+            format!(
+                "--lora-stageable-disk '{name}': read peft config {}",
+                cfg_path.display()
+            )
+        })?;
+        let peft = atlas_core::config::parse_peft_adapter_config(&raw).with_context(|| {
+            format!(
+                "--lora-stageable-disk '{name}': parse {}",
+                cfg_path.display()
+            )
+        })?;
+        if peft.r > args.max_lora_rank {
+            anyhow::bail!(
+                "--lora-stageable-disk '{name}' r={} > --max-lora-rank {}",
+                peft.r,
+                args.max_lora_rank
+            );
+        }
+        lora_disk_stageable.insert(name.clone(), (dir, peft));
+    }
+    if !lora_disk_stageable.is_empty() && lora_states.is_empty() {
+        anyhow::bail!(
+            "--lora-stageable-disk needs a resident pool to promote INTO; start with at \
+             least one --lora-adapter and --max-loras > that count"
+        );
+    }
+    // The disk swap re-points a cache slot only when rotation is armed
+    // (decode runs eager). ATLAS_LORA_ROTATE=1 arms it; a peer being set also
+    // forces eager decode, so accept either.
+    if !lora_disk_stageable.is_empty()
+        && !spark_model::lora::lora_rotate_env()
+        && lora_peer_addr.is_none()
+    {
+        anyhow::bail!(
+            "--lora-stageable-disk needs rotation armed: set ATLAS_LORA_ROTATE=1 so decode \
+             runs eager and the disk swap can re-point a cache slot"
+        );
+    }
+    // Promotion is armed when a LoRA pool is resident AND there is at least one
+    // stageable source — a peer-backed registry (needs a peer) OR a disk-backed
+    // registry. Otherwise every field is inert and a miss 404s byte-identically
+    // to today. The coalescer is backing-agnostic; peer and disk misses share it.
+    let promotion = if (!lora_stageable.is_empty() && lora_peer_addr.is_some()
+        || !lora_disk_stageable.is_empty())
+        && !lora_states.is_empty()
+    {
+        Some(Arc::new(
+            crate::main_modules::promotion::PromotionManager::default(),
+        ))
+    } else {
+        None
+    };
+    if promotion.is_some() {
+        tracing::info!(
+            "LoRA #27: {} peer + {} disk stageable adapter(s) armed for demand promotion \
+             (peer={:?}, cache headroom={} slots)",
+            lora_stageable.len(),
+            lora_disk_stageable.len(),
+            lora_peer_addr,
+            args.max_loras.saturating_sub(lora_states.len()),
+        );
+    }
+
     let state = Arc::new(AppState {
         tokenizer,
         model_name,
+        adapter_name: nllb_adapter_name
+            .clone()
+            .or_else(|| lora_states.first().map(|l| l.name.clone())),
+        adapter_names: if let Some(ref n) = nllb_adapter_name {
+            vec![n.clone()]
+        } else {
+            lora_states.iter().map(|l| l.name.clone()).collect()
+        },
+        active_adapter: std::sync::Arc::new(std::sync::Mutex::new(
+            lora_states.first().map(|l| l.name.clone()),
+        )),
         max_seq_len: args.max_seq_len,
         request_tx,
+        rotation_tx: if lora_states.is_empty() {
+            None
+        } else {
+            Some(rotation_tx)
+        },
         vision_config: config.vision.clone(),
         vision_max_pixels,
         default_temperature,
@@ -639,15 +889,21 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             b
         },
         disable_thinking: args.disable_thinking,
-        default_chat_template_kwargs: args
+        default_thinking: args
             .default_chat_template_kwargs
-            .as_ref()
-            .and_then(|s| crate::openai::ChatTemplateKwargs::from_json(s)),
+            .as_deref()
+            .map(parse_default_thinking)
+            .unwrap_or_default(),
         response_store,
         rate_limiter,
         conversation_store,
         dump_writer,
         auth,
+        lora_stageable,
+        lora_peer_addr,
+        promotion,
+        promoted_slots: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        lora_disk_stageable,
     });
 
     serve_phases::log_behavior_audit(&args, &ptx_set);
@@ -655,6 +911,41 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // 9-11. Build router + start HTTP server (extracted: serve_router.rs).
     crate::main_modules::serve_router::build_and_serve(state, model_ready, &args.bind, args.port)
         .await
+}
+
+/// Parse the vLLM-style `--default-chat-template-kwargs` JSON
+/// (`{"enable_thinking":bool,"thinking_budget":u32}`) into the neutral
+/// thinking directive. The CLI is its own edge: the JSON shape is parsed
+/// here, not in the openai wire module. Mapping matches the
+/// `chat_template_kwargs` rung of the request-body ladder: an explicit
+/// budget wins, then the enable flag; unknown/empty JSON → Unspecified
+/// (with a warning — the old code ignored bad JSON silently).
+fn parse_default_thinking(s: &str) -> crate::ir::ThinkingDirective {
+    use crate::ir::ThinkingDirective;
+
+    #[derive(serde::Deserialize)]
+    struct Kwargs {
+        enable_thinking: Option<bool>,
+        thinking_budget: Option<u32>,
+    }
+
+    if s.trim().is_empty() {
+        return ThinkingDirective::Unspecified;
+    }
+    let kw: Kwargs = match serde_json::from_str(s) {
+        Ok(kw) => kw,
+        Err(e) => {
+            tracing::warn!("--default-chat-template-kwargs is not valid JSON ({e}); ignoring");
+            return ThinkingDirective::Unspecified;
+        }
+    };
+    match (kw.thinking_budget, kw.enable_thinking) {
+        (Some(b), _) if b > 0 => ThinkingDirective::On { budget: Some(b) },
+        (Some(_), _) => ThinkingDirective::Off,
+        (None, Some(true)) => ThinkingDirective::On { budget: None },
+        (None, Some(false)) => ThinkingDirective::Off,
+        (None, None) => ThinkingDirective::Unspecified,
+    }
 }
 
 /// Resolve `--require-auth` / `--auth-tokens-file` / `--auth-token` into an

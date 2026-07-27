@@ -40,19 +40,6 @@ lazy_static! {
             &["verdict", "channel", "spinning"]
         ).unwrap();
 
-    // ── Anthropic translation-drift counter (P5.1) ──
-    //
-    // Increments whenever the Anthropic→OpenAI translator produces a
-    // round-trip diff against the original Anthropic shape. Diffs
-    // indicate translation bugs that compound across long agentic
-    // sessions. Logging the actual diff is gated behind the
-    // ATLAS_DEBUG_TRANSLATION_DRIFT env var (anthropic.rs).
-    pub static ref ANTHROPIC_TRANSLATION_DRIFTS: IntCounter =
-        register_int_counter!(
-            "atlas_anthropic_translation_drifts_total",
-            "Anthropic ↔ OpenAI translator round-trip mismatches detected"
-        ).unwrap();
-
     // ── Speculative-decode telemetry (A.2 EASD scaffolding) ──
     //
     // Per-K acceptance counters. Enables measuring baseline accept
@@ -79,4 +66,38 @@ lazy_static! {
             "atlas_tool_calls_total",
             "Total successful tool calls emitted by the server"
         ).unwrap();
+}
+
+/// RAII guard for the `atlas_requests_active` gauge: increments on construction,
+/// decrements exactly once on drop.
+///
+/// Replaces a hand-balanced `inc()` + seven scattered `dec()` calls. That shape
+/// leaked: any terminal path that forgot to decrement — or, critically, a
+/// handler future DROPPED because the client disconnected (axum drops the future
+/// on disconnect, so no `dec()` in the body ever runs) — pinned the gauge
+/// forever. Orphans then accumulate monotonically and can exhaust the scheduler's
+/// admission accounting while `/health` still reports ready.
+/// See Avarok-Cybersecurity/atlas#368.
+///
+/// For streaming the guard is moved into `StreamCtx`, which the SSE `flat_map`
+/// closure owns — so it also drops when the client hangs up mid-stream.
+pub struct ActiveRequestGuard(());
+
+impl ActiveRequestGuard {
+    pub fn new() -> Self {
+        REQUESTS_ACTIVE.inc();
+        Self(())
+    }
+}
+
+impl Default for ActiveRequestGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        REQUESTS_ACTIVE.dec();
+    }
 }

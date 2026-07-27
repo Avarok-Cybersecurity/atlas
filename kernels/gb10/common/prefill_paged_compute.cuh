@@ -119,9 +119,26 @@ __device__ __forceinline__ float sw_exp(float x) {
 #ifndef HDIM
 #define HDIM 256
 #endif
+// PAD_KV may be overridden by a kernel before including this header (e.g. the
+// FP8-smem cp.async path needs a 16-aligned row stride for 16-byte cp.async /
+// uint4 stores; FP8 elements are 1 byte so PAD_KV=8 → 264 = only 8-aligned,
+// whereas PAD_KV=16 → 272 = 16-aligned). Default 8 keeps the BF16 row stride
+// (256+8)*2 = 528 bytes 16-aligned, as before.
+#ifndef PAD_KV
 #define PAD_KV 8
+#endif
 #define HDIM_PAD (HDIM + PAD_KV)
 #define PAD_P 8
+
+// ATLAS_ATTN_LDMATRIX: use ldmatrix.x4 for the A-operand (Q for QK^T, P for PV)
+// smem loads instead of 4 scalar unsigned-int loads. One PTX instruction
+// replaces 4 manual loads, shortening the load→MMA dependency chain this
+// latency-bound prefill kernel is gated on. PROVEN on GB10/SM121 (ldmatrix_probe.cu
+// cosine 1.0; commit 7dbdfe41 "bit-identical, +2%"). Default ON — opt OUT with
+// -DATLAS_DISABLE_ATTN_LDMATRIX (the prior default-off) if a regression appears.
+#ifndef ATLAS_DISABLE_ATTN_LDMATRIX
+#define ATLAS_ATTN_LDMATRIX
+#endif
 #define N_TILES_PER_WARP ((HDIM / 8) / 2)
 #define TILE_CHUNKS (BR * (HDIM / 8))
 
@@ -161,8 +178,8 @@ extern "C" __global__ void KERNEL_NAME(
     const int* __restrict__ block_table,
 #endif
     const unsigned int q_len,
-    const unsigned int kv_len,
-    const unsigned int q_offset,
+    unsigned int kv_len,
+    unsigned int q_offset,
     const unsigned int num_q_heads,
     const unsigned int num_kv_heads,
     const unsigned int head_dim,
@@ -217,6 +234,14 @@ extern "C" __global__ void KERNEL_NAME(
     __shared__ float smem_ml[BR][2];
 
     KERNEL_PREAMBLE
+
+    // q_rope_pos: absolute position used to rotate the query block. Indirect
+    // (DFlash) declares it in KERNEL_PREAMBLE from a device u32 (= true decode
+    // position, decoupled from cache-slot base). All other variants: equals
+    // q_offset (correct for causal attention where RoPE pos == cache base).
+#ifndef Q_ROPE_POS_OVERRIDE
+    unsigned int q_rope_pos = q_offset;
+#endif
 
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid_in_group = lane_id & 3;
@@ -289,8 +314,6 @@ extern "C" __global__ void KERNEL_NAME(
             #pragma unroll
             for (unsigned int ks = 0; ks < (HDIM/16); ks++) {
                 unsigned int kb = ks*16;
-                unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
-                unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
                 unsigned int a0,a1,a2,a3;
 #ifdef ATLAS_ATTN_LDMATRIX
                 // SM121 ldmatrix.x4 NON-trans for the Q A-fragment (v47-proven on
@@ -300,8 +323,9 @@ extern "C" __global__ void KERNEL_NAME(
                 { unsigned int qb=__cvta_generic_to_shared(&sQ[(qk_warp_m+(lane_id&15))*HDIM_PAD+(lane_id>>4)*8+kb]);
                   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
                     :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(qb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
 #else
+                unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
+                unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
                 a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
                 a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
                 a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
@@ -333,7 +357,7 @@ extern "C" __global__ void KERNEL_NAME(
                 acc_s[nt][0]*=inv_sqrt_d; acc_s[nt][1]*=inv_sqrt_d;
                 acc_s[nt][2]*=inv_sqrt_d; acc_s[nt][3]*=inv_sqrt_d;
                 unsigned int c0=nt*8+tid_in_group*2, c1=c0+1;
-                unsigned int qr0=q_offset+q_start+row0, qr1=q_offset+q_start+row1;
+                unsigned int qr0=q_rope_pos+q_start+row0, qr1=q_rope_pos+q_start+row1;
                 // Causal mask: only enforce when causal_mask_enabled (default 1).
                 // DFlash γ-block runs with causal_mask_enabled=0 so the γ
                 // queries attend bidirectionally within their block; the prefix
@@ -448,16 +472,15 @@ extern "C" __global__ void KERNEL_NAME(
             #pragma unroll
             for(unsigned int ks=0;ks<2;ks++){
                 unsigned int ko=ks*16;
-                unsigned int ar0=pv_warp_m+group_id, ar1=ar0+8;
-                unsigned int ac0=ko+tid_in_group*2, ac1=ac0+8;
                 unsigned int a0,a1,a2,a3;
 #ifdef ATLAS_ATTN_LDMATRIX
                 // ldmatrix.x4 for the P (softmax-prob) A-fragment — same lever as QK.
                 { unsigned int pb=__cvta_generic_to_shared(&sP[(pv_warp_m+(lane_id&15))*p_smem_stride+(lane_id>>4)*8+ko]);
                   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
                     :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(pb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
 #else
+                unsigned int ar0=pv_warp_m+group_id, ar1=ar0+8;
+                unsigned int ac0=ko+tid_in_group*2, ac1=ac0+8;
                 a0=*(const unsigned int*)&sP[ar0*p_smem_stride+ac0];
                 a1=*(const unsigned int*)&sP[ar1*p_smem_stride+ac0];
                 a2=*(const unsigned int*)&sP[ar0*p_smem_stride+ac1];
@@ -587,8 +610,8 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     const int* __restrict__ block_table,
 #endif
     const unsigned int q_len,
-    const unsigned int kv_len,
-    const unsigned int q_offset,
+    unsigned int kv_len,
+    unsigned int q_offset,
     const unsigned int num_q_heads,
     const unsigned int num_kv_heads,
     const unsigned int head_dim,
@@ -636,6 +659,14 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     __shared__ float smem_ml64[BR64][2];
 
     KERNEL_PREAMBLE
+
+    // q_rope_pos: absolute position used to rotate the query block. Indirect
+    // (DFlash) declares it in KERNEL_PREAMBLE from a device u32 (= true decode
+    // position, decoupled from cache-slot base). All other variants: equals
+    // q_offset (correct for causal attention where RoPE pos == cache base).
+#ifndef Q_ROPE_POS_OVERRIDE
+    unsigned int q_rope_pos = q_offset;
+#endif
 
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid_in_group = lane_id & 3;
@@ -704,8 +735,6 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             #pragma unroll
             for (unsigned int ks = 0; ks < (HDIM/16); ks++) {
                 unsigned int kb = ks*16;
-                unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
-                unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
                 unsigned int a0,a1,a2,a3;
 #ifdef ATLAS_ATTN_LDMATRIX
                 // SM121 ldmatrix.x4 NON-trans for the Q A-fragment (v47-proven on
@@ -715,8 +744,9 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
                 { unsigned int qb=__cvta_generic_to_shared(&sQ[(qk_warp_m+(lane_id&15))*HDIM_PAD+(lane_id>>4)*8+kb]);
                   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
                     :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(qb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
 #else
+                unsigned int ar0=qk_warp_m+group_id, ar1=ar0+8;
+                unsigned int ac0=kb+tid_in_group*2, ac1=ac0+8;
                 a0=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac0];
                 a1=*(const unsigned int*)&sQ[ar1*HDIM_PAD+ac0];
                 a2=*(const unsigned int*)&sQ[ar0*HDIM_PAD+ac1];
@@ -748,7 +778,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
                 acc_s[nt][0]*=inv_sqrt_d; acc_s[nt][1]*=inv_sqrt_d;
                 acc_s[nt][2]*=inv_sqrt_d; acc_s[nt][3]*=inv_sqrt_d;
                 unsigned int c0=nt*8+tid_in_group*2, c1=c0+1;
-                unsigned int qr0=q_offset+q_start+row0, qr1=q_offset+q_start+row1;
+                unsigned int qr0=q_rope_pos+q_start+row0, qr1=q_rope_pos+q_start+row1;
                 // Causal mask gated for DFlash γ-block (causal_mask_enabled=0).
                 if(causal_mask_enabled){
                     if(kv_start+c0>qr0) acc_s[nt][0]=-1e30f; if(kv_start+c1>qr0) acc_s[nt][1]=-1e30f;
@@ -860,16 +890,15 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             #pragma unroll
             for(unsigned int ks=0;ks<2;ks++){
                 unsigned int ko=ks*16;
-                unsigned int ar0=pv_warp_m+group_id, ar1=ar0+8;
-                unsigned int ac0=ko+tid_in_group*2, ac1=ac0+8;
                 unsigned int a0,a1,a2,a3;
 #ifdef ATLAS_ATTN_LDMATRIX
                 // ldmatrix.x4 for the P (softmax-prob) A-fragment — same lever as QK.
                 { unsigned int pb=__cvta_generic_to_shared(&sP[(pv_warp_m+(lane_id&15))*p_smem_stride64+(lane_id>>4)*8+ko]);
                   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3},[%4];"
                     :"=r"(a0),"=r"(a1),"=r"(a2),"=r"(a3):"r"(pb)); }
-                (void)ar0;(void)ar1;(void)ac0;(void)ac1;
 #else
+                unsigned int ar0=pv_warp_m+group_id, ar1=ar0+8;
+                unsigned int ac0=ko+tid_in_group*2, ac1=ac0+8;
                 a0=*(const unsigned int*)&sP[ar0*p_smem_stride64+ac0];
                 a1=*(const unsigned int*)&sP[ar1*p_smem_stride64+ac0];
                 a2=*(const unsigned int*)&sP[ar0*p_smem_stride64+ac1];

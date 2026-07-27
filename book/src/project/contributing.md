@@ -120,4 +120,4 @@ If a task is ambiguous, ask in the issue/PR before implementing. If scope grows 
 - [`AGENTS.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/AGENTS.md) — practical contributor guide.
 - [`CLA.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/CLA.md) — the CLA text.
 - [`SECURITY.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md) — disclosure (also this book's [Security chapter](./security.md)).
-- [`docs/design/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/design) — authoritative design docs.
+- [`docs/adr/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/adr) — authoritative architecture decision records.

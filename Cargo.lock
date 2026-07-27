@@ -160,6 +160,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-rdma"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+]
+
+[[package]]
 name = "atlas-reduce"
 version = "0.1.0"
 dependencies = [
@@ -180,6 +188,15 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "atlas-tier"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.3.4",
+ "libc",
 ]
 
 [[package]]
@@ -513,9 +530,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -881,6 +898,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "h2"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "indexmap",
+ "slab",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -971,6 +1007,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "httparse",
@@ -2072,6 +2109,7 @@ dependencies = [
  "anyhow",
  "atlas-core",
  "atlas-kernels",
+ "atlas-tier",
  "base64 0.22.1",
  "half",
  "image",
@@ -2085,6 +2123,20 @@ dependencies = [
  "spark-storage",
  "tokenizers",
  "tracing",
+]
+
+[[package]]
+name = "spark-nllb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "half",
+ "memmap2",
+ "rayon",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
@@ -2121,6 +2173,8 @@ dependencies = [
  "axum",
  "clap",
  "futures",
+ "hyper",
+ "hyper-util",
  "lazy_static",
  "minijinja",
  "parking_lot",
@@ -2138,6 +2192,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -2149,6 +2204,8 @@ name = "spark-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atlas-rdma",
+ "atlas-tier",
  "cufile-sys",
  "half",
  "io-uring",
@@ -2158,6 +2215,7 @@ dependencies = [
  "rand_distr",
  "serde",
  "serde_json",
+ "spark-runtime",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2393,6 +2451,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
 dependencies = [
  "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
  "pin-project-lite",
  "tokio",
 ]

@@ -284,6 +284,23 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
+        } else if !self.attn.o_proj.is_null() {
+            // WIDE-VERIFY BATCHED O-PROJ (DFlash γ=16, n>3). One GEMM reads
+            // the o_proj weight ONCE for all n rows instead of the per-row
+            // GEMV loop below. attn_out is contiguous [n, q_dim]; o_out is
+            // contiguous [n, h]; both already laid out for a single M=n GEMM
+            // (no scatter). Uses the pipelined m128_v2 kernel when the
+            // transposed weight is present (base M64 GEMM is the slow path).
+            self.wide_verify_gemm(
+                c,
+                attn_out,
+                &self.attn.o_proj,
+                self.o_nvfp4_t.as_ref(),
+                o_out,
+                n as u32,
+                h as u32,
+                nq * hd,
+            )?;
         } else {
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
@@ -299,6 +316,29 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
+        }
+
+        // ── Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
+        // contiguous [n, q_dim]); base_out = o_out (contiguous [n, h]) folded in
+        // place — matches the single-seq apply_lora_delta on o after o_proj.
+        // No-op unless a routing table is installed AND seq_slot is non-null.
+        if let Some(ref lw) = self.lora
+            && c.seq_slot.0 != 0
+            && let Some(ref route) = lw.o_route
+        {
+            ops::lora_delta::apply_lora_bgmv(
+                fwd.gpu,
+                &lw.kernels,
+                route,
+                attn_out,
+                o_out,
+                c.seq_slot,
+                n as u32,
+                q_dim,    // x row stride (elements): attn_out is [n, q_dim]
+                h as u32, // out row stride (elements): o_out is [n, h] contiguous
+                fwd.buffers.lora_xa(),
+                stream,
+            )?;
         }
         Ok(o_out)
     }

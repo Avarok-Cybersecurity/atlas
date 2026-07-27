@@ -88,9 +88,9 @@ impl BlockDiffusionDraftHead {
         )?;
 
         // 3b. q/k/v projections from norm_buf (n_attn rows).
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.norm_buf,
             &layer.q_proj,
             self.scratch.q_buf,
@@ -99,9 +99,9 @@ impl BlockDiffusionDraftHead {
             h,
             stream,
         )?;
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.norm_buf,
             &layer.k_proj,
             self.scratch.k_buf,
@@ -110,9 +110,9 @@ impl BlockDiffusionDraftHead {
             h,
             stream,
         )?;
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.norm_buf,
             &layer.v_proj,
             self.scratch.v_buf,
@@ -125,9 +125,9 @@ impl BlockDiffusionDraftHead {
         // 3b'. Ctx K/V override (skip input_layernorm; project fc_proj
         // directly through layer.k_proj/v_proj for ctx slots).
         if eff_ctx > 0 {
-            ops::dense_gemm(
+            ops::dense_gemm_bf16_pipelined(
                 gpu,
-                self.kernels.dense_gemm,
+                self.kernels.dense_gemm_pipelined,
                 self.scratch.fc_proj,
                 &layer.k_proj,
                 self.scratch.k_buf,
@@ -136,9 +136,9 @@ impl BlockDiffusionDraftHead {
                 h,
                 stream,
             )?;
-            ops::dense_gemm(
+            ops::dense_gemm_bf16_pipelined(
                 gpu,
-                self.kernels.dense_gemm,
+                self.kernels.dense_gemm_pipelined,
                 self.scratch.fc_proj,
                 &layer.v_proj,
                 self.scratch.v_buf,
@@ -297,9 +297,9 @@ impl BlockDiffusionDraftHead {
         }
 
         // 3f. o_proj.
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.attn_out,
             &layer.o_proj,
             self.scratch.stream_acc,
@@ -366,9 +366,9 @@ impl BlockDiffusionDraftHead {
         )?;
 
         // 3i. MLP: gate + up.
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.norm_buf,
             &layer.gate_proj,
             self.scratch.mlp_intermediate,
@@ -377,9 +377,9 @@ impl BlockDiffusionDraftHead {
             h,
             stream,
         )?;
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.norm_buf,
             &layer.up_proj,
             self.scratch.mlp_up,
@@ -401,9 +401,9 @@ impl BlockDiffusionDraftHead {
         )?;
 
         // 3k. down_proj.
-        ops::dense_gemm(
+        ops::dense_gemm_bf16_pipelined(
             gpu,
-            self.kernels.dense_gemm,
+            self.kernels.dense_gemm_pipelined,
             self.scratch.mlp_intermediate,
             &layer.down_proj,
             self.scratch.stream_acc,

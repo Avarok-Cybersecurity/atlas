@@ -45,7 +45,6 @@ extern "C" __global__ void rope_forward(
     // Determine if we're processing Q or K
     const bool is_q = (head_idx < num_q_heads);
     const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
-    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
 
     if (!is_q && head >= num_kv_heads) return;
 
@@ -60,6 +59,19 @@ extern "C" __global__ void rope_forward(
     const unsigned int local_pos = tid / pairs_per_pos;   // 0..3
     const unsigned int pair_idx = tid % pairs_per_pos;     // 0..31
 
+    // freq depends ONLY on pair_idx, but the block covers pos_per_block positions, so
+    // every freq was recomputed once per thread -- pos_per_block redundant FP64 pow()s.
+    // FP64 runs at 1/64 rate on SM121, which left this kernel ~13x above its bandwidth
+    // floor (1.16 ms for 4.4M elements). Evaluate each distinct freq once and share it.
+    // Bit-identical (same FP64 pow) and it must happen BEFORE the divergent return
+    // below, or the __syncthreads() is unreachable for the exited threads.
+    __shared__ float s_freq[128];
+    if (tid < pairs_per_pos) {
+        const double fe = (double)(2 * tid) / (double)rotary_dim;
+        s_freq[tid] = (float)(1.0 / pow((double)theta, fe));
+    }
+    __syncthreads();
+
     const unsigned int seq_pos = seq_block * pos_per_block + local_pos;
     if (seq_pos >= seq_len) return;
 
@@ -69,14 +81,12 @@ extern "C" __global__ void rope_forward(
     // Compute frequency for this pair in FP64 to prevent precision loss at high positions.
     // FP32 powf() has ~1e-6 relative error; at position 30K this causes ~0.03 rad drift.
     // freq_i = 1.0 / theta^(2*pair_idx / rotary_dim)
-    const double freq_exp_d = (double)(2 * pair_idx) / (double)rotary_dim;
-    const float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
+    const float freq = s_freq[pair_idx];
     const float angle = (float)abs_pos * freq;
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 
     // Pointer to the head's data at this sequence position
-    const unsigned int stride = num_heads * head_dim;
     __nv_bfloat16* ptr;
     if (is_q) {
         ptr = Q + batch * seq_len * (num_q_heads * head_dim)
@@ -146,7 +156,6 @@ extern "C" __global__ void rope_forward_proportional(
 
     const bool is_q = (head_idx < num_q_heads);
     const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
-    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
 
     if (!is_q && head >= num_kv_heads) return;
 
@@ -227,7 +236,6 @@ extern "C" __global__ void rope_forward_yarn(
 
     const bool is_q = (head_idx < num_q_heads);
     const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
-    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
 
     if (!is_q && head >= num_kv_heads) return;
 
@@ -248,7 +256,6 @@ extern "C" __global__ void rope_forward_yarn(
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 
-    const unsigned int stride = num_heads * head_dim;
     __nv_bfloat16* ptr;
     if (is_q) {
         ptr = Q + batch * seq_len * (num_q_heads * head_dim)

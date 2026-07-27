@@ -123,6 +123,92 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
     );
 }
 
+/// Resolve a LoRA adapter specifier (local path or HF id) to a directory
+/// containing `adapter_config.json`. Mirrors `resolve_model_dir`, but PEFT
+/// adapter repos ship `adapter_config.json` + `adapter_model.safetensors`
+/// and no `config.json`, so the marker checks differ.
+pub fn resolve_adapter_dir(spec: &str, cache_dir: Option<&Path>) -> Result<PathBuf> {
+    let as_path = Path::new(spec);
+    if as_path.is_dir() {
+        if as_path.join("adapter_config.json").exists() {
+            tracing::info!("Adapter path: {} (local directory)", as_path.display());
+            return validate_adapter_dir(as_path.to_path_buf(), spec);
+        }
+        bail!(
+            "Adapter directory {} has no adapter_config.json — not a PEFT adapter",
+            as_path.display(),
+        );
+    }
+
+    let cache_root = resolve_cache_root(cache_dir)?;
+    let dir_name = format!("models--{}", spec.replace('/', "--"));
+    let model_cache = cache_root.join(&dir_name);
+    if !model_cache.is_dir() {
+        bail!(
+            "Adapter '{}' not found in HF cache at {}.\n\
+             Download it first:\n  huggingface-cli download {}",
+            spec,
+            cache_root.display(),
+            spec,
+        );
+    }
+
+    let ref_path = model_cache.join("refs/main");
+    let snapshot_hash = std::fs::read_to_string(&ref_path)
+        .with_context(|| {
+            format!(
+                "No default revision for adapter '{}'. Expected refs/main at {}.\n\
+                 The adapter may not have been fully downloaded.",
+                spec,
+                ref_path.display(),
+            )
+        })?
+        .trim()
+        .to_string();
+
+    let snapshot_dir = model_cache.join("snapshots").join(&snapshot_hash);
+    if !snapshot_dir.is_dir() {
+        bail!(
+            "Snapshot directory not found: {}\n\
+             refs/main points to hash '{}' but that snapshot doesn't exist.",
+            snapshot_dir.display(),
+            snapshot_hash,
+        );
+    }
+
+    if !snapshot_dir.join("adapter_config.json").exists() {
+        bail!(
+            "'{}' resolved to {} but it has no adapter_config.json — not a PEFT adapter repo",
+            spec,
+            snapshot_dir.display(),
+        );
+    }
+
+    tracing::info!("Adapter: {} (resolved to {})", spec, snapshot_dir.display());
+    validate_adapter_dir(snapshot_dir, spec)
+}
+
+/// Validate that a resolved adapter directory ships safetensors weights.
+/// `adapter_model.bin` (torch pickle) is rejected by name so the failure
+/// doesn't surface as a confusing missing-weights error two layers deeper.
+fn validate_adapter_dir(dir: PathBuf, spec: &str) -> Result<PathBuf> {
+    if dir.join("adapter_model.safetensors").exists() {
+        return Ok(dir);
+    }
+    if dir.join("adapter_model.bin").exists() {
+        bail!(
+            "Adapter '{}' ships adapter_model.bin (torch pickle) — unsupported. \
+             Re-export with save_pretrained(..., safe_serialization=True).",
+            spec,
+        );
+    }
+    bail!(
+        "Adapter '{}' has no adapter_model.safetensors in {}",
+        spec,
+        dir.display(),
+    );
+}
+
 /// True when the directory contains at least one weight file Atlas's
 /// safetensors loader can pick up. Mirrors the heuristic in
 /// `spark-runtime::weights::SafetensorsLoader::load`.

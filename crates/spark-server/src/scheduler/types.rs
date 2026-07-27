@@ -13,14 +13,18 @@ use std::time::Instant;
 use anyhow::Result;
 use spark_model::traits::SequenceState;
 
+use crate::api::inference_types::RepetitionDetectionParams;
 use crate::api::{InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::GrammarState;
-use crate::openai::RepetitionDetectionParams;
 
 /// Shared queue between receiver thread and scheduler.
 pub(super) struct PendingQueue {
     pub requests: Vec<InferenceRequest>,
     pub closed: bool,
+    /// Pending LoRA adapter-rotation control requests, applied by the scheduler
+    /// at a quiescent point (see [`super::LoraRotation`]). Kept OUT of
+    /// `requests` so the sequence machinery never sees a control message.
+    pub rotations: Vec<super::LoraRotation>,
 }
 
 /// Per-request slice of a co-dispatched batched-ViT encode. When >=2 image
@@ -114,6 +118,19 @@ pub(super) struct ActiveSeq {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
+    /// Which server-side guard force-finished this sequence (e.g.
+    /// "fuzzy_repetition"), if any. Surfaced in the synthesized --dump body
+    /// so a guard-cut turn is attributable without log archaeology (the
+    /// 2026-07-09 fuzzy cuts reported bare finish=length with every dump
+    /// flag false). Not part of the OpenAI wire format.
+    pub guard_stop: Option<&'static str>,
+    /// P0-1: provisional `</parameter>` close progress inside a parameter
+    /// VALUE body (0 = none, 1 = saw `</`, 2 = saw `</` `parameter`). The
+    /// body-exit commits only on the confirmed full close; HTML/Svelte
+    /// close tags in value content no longer exit the body (which
+    /// reclassified file content as envelope tokens and tripped the
+    /// stuck-envelope cap mid-write).
+    pub param_close_pending: u8,
     pub sink: ResponseSink,
     /// Cooperative cancellation flag from the streaming pipeline.
     /// `Some` for streaming requests with the flag wired through;
@@ -157,6 +174,13 @@ pub(super) struct ActiveSeq {
     pub thinking_tokens: u32,
     /// When true, the next decode step must produce the `</think>` token.
     pub force_end_thinking: bool,
+    /// Whether the `</think>` that closed the current thinking span was
+    /// FORCE-INJECTED (budget exhaustion or thinking-loop watchdog) rather
+    /// than emitted by the model. Captured at the `</think>` commit; read
+    /// by the post-think EOS guard, which must only fire on watchdog
+    /// recoveries — a naturally closed think followed by a short answer
+    /// ends the turn like vLLM does.
+    pub think_force_closed: bool,
     /// Decode-step counter incremented while `force_end_thinking` is
     /// armed but the injection is deferred (waiting for a sentence-
     /// boundary token or fence close). Reset to 0 on the false→true
@@ -184,6 +208,16 @@ pub(super) struct ActiveSeq {
     pub think_ended: bool,
     /// One-shot signal: set when `</think>` was the most recently emitted token.
     pub think_just_ended: bool,
+    /// Tokens emitted since `</think>` (0 while thinking; resets if the model
+    /// re-enters a think block). Consumed by the DFlash spec-resume guard
+    /// (ATLAS_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
+    /// serial decode, where the T=0 verify-vs-decode low-margin flips
+    /// concentrate (measured 2026-07-07).
+    pub post_think_emitted: u32,
+    /// Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): rolling accept window
+    /// + suspend/re-probe state. Transient — reset on swap/restore (a
+    /// resumed sequence re-measures). See `adaptive_spec` module docs.
+    pub spec_adapt: crate::scheduler::adaptive_spec::AdaptState,
     /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
     pub think_skip_count: u32,
     /// Token ID for `</tool_call>`. Hard-stops only NON-tool requests
@@ -353,6 +387,16 @@ pub(super) fn consume_budget(remaining: &mut usize) -> bool {
 pub(super) struct SwappedSeq {
     pub tokens: Vec<u32>,
     pub session_hash: u64,
+    /// M2 per-request LoRA routing: preserved across spill/restore so a
+    /// swapped-then-resumed sequence keeps its adapter (unlike `cancel_flag`,
+    /// which is intentionally dropped). CPU metadata, restored like `tokens`.
+    pub adapter_slot: i32,
+    /// Task #24: STABLE adapter_id preserved across spill/restore. Stored (not
+    /// recomputed) because a swapped `-1` (defer-to-active) seq's KV was computed
+    /// under the adapter that was active AT PREFILL — recomputing from
+    /// `adapter_slot == -1` after a rotation would re-bind it to a different
+    /// active id and mis-key its own already-written blocks.
+    pub adapter_id: u64,
     pub seq_len: usize,
     pub num_blocks: usize,
     pub last_token: u32,
@@ -385,6 +429,7 @@ pub(super) struct SwappedSeq {
     pub spontaneous_think_budget: u32,
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
+    pub think_force_closed: bool,
     pub sentence_defer_count: u32,
     pub consecutive_confident: u32,
     pub in_code_fence: bool,
@@ -392,6 +437,7 @@ pub(super) struct SwappedSeq {
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
     pub think_just_ended: bool,
+    pub post_think_emitted: u32,
     pub think_skip_count: u32,
     pub require_tool_call: bool,
     /// F4 (2026-06-02): sticky tool-request flag, preserved across

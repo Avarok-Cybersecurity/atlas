@@ -31,6 +31,7 @@ impl TransformerModel {
         pos_stream_bytes: usize,
         use_mrope: bool,
         needs_paged: bool,
+        midcap: Option<&super::midchunk_capture::MidCapturePlan>,
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
@@ -54,6 +55,18 @@ impl TransformerModel {
         } else {
             (meta_base, meta_base)
         };
+
+        // Request-scoped LoRA routing (chunked prefill) — dedicated arena buffer
+        // holding `proc_count` uniform slots (see prefill_a.rs). Covers both the
+        // paged-prefill layer path and the warm-prefix `use_decode_path` fork
+        // (proc_count==1): the single-seq decode apply reads slot[0], correct
+        // for the uniform buffer. `DevicePtr(0)` (no pool) → installed-pair path.
+        let seq_slot = self.upload_seq_slot_uniform(
+            seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: positions_h_dev,
@@ -63,6 +76,7 @@ impl TransformerModel {
             block_table: block_table_dev,
             max_blocks_per_seq: seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot,
         };
 
         // Consume the one-shot ATLAS_PROFILE_FIRST flag (additive).
@@ -70,6 +84,22 @@ impl TransformerModel {
             || self
                 .profile_first_pending
                 .swap(false, std::sync::atomic::Ordering::Relaxed);
+
+        // Mid-chunk tail capture (opt-in): fresh per-pass SSM-layer ordinal
+        // counter; each SSM layer's prefill increments it once, in model order,
+        // to index the plan's per-layer snapshot destinations.
+        let midcap_counter = std::sync::atomic::AtomicUsize::new(0);
+        let midchunk_capture = midcap.map(|p| crate::layer::MidchunkCapture {
+            cap_local: p.cap_local,
+            h_dsts: &p.h_dsts,
+            conv_dsts: &p.conv_dsts,
+            h_bytes: p.h_bytes,
+            conv_bytes: p.conv_bytes,
+            ssm_layer_counter: &midcap_counter,
+            cap_local_early: p.cap_local_early,
+            h_dsts_early: &p.h_dsts_early,
+            conv_dsts_early: &p.conv_dsts_early,
+        });
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -85,6 +115,9 @@ impl TransformerModel {
             // Hash-MoE: this chunk's token IDs (uploaded in prefill_b_embed_chunk
             // to the stable buffer, in chunk order matching the MoE loop).
             token_ids: Some(self.buffers.token_ids()),
+            // #30: request slot pairs (None unless routing to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
+            midchunk_capture,
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path
@@ -239,6 +272,9 @@ impl TransformerModel {
                 );
             }
         }
+        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+        // rows for the whole-prompt drafter prefill. No-op when disabled.
+        self.try_mtp_prefill_capture(effective_seq_len_start, proc_count, stream)?;
         if let Some(t0) = prefill_t0 {
             self.gpu.synchronize(stream)?;
             let total_us = t0.elapsed().as_micros();
@@ -250,12 +286,36 @@ impl TransformerModel {
                 .map(|(i, us)| format!("L{}={:.2}ms", i, *us as f64 / 1000.0))
                 .collect();
             let path_label = if use_decode_path { "decode" } else { "prefill" };
+            // Aggregate the same per-layer samples by layer type so the profile
+            // attributes cost to mamba / moe / attention instead of bare indices.
+            let mut by_type: std::collections::BTreeMap<String, (u128, usize)> =
+                std::collections::BTreeMap::new();
+            for (i, us) in layer_times.iter().copied().enumerate() {
+                let e = by_type
+                    .entry(format!("{:?}", self.config.layer_type(i)))
+                    .or_insert((0, 0));
+                e.0 += us;
+                e.1 += 1;
+            }
+            let per_type: Vec<String> = by_type
+                .iter()
+                .map(|(k, (us, n))| {
+                    format!(
+                        "{}x{}={:.0}ms(avg {:.1})",
+                        n,
+                        k,
+                        *us as f64 / 1000.0,
+                        *us as f64 / 1000.0 / *n as f64
+                    )
+                })
+                .collect();
             tracing::info!(
-                "Prefill chunk {} tok (proc {}, {}): {:.1}ms total, top5: {}",
+                "Prefill chunk {} tok (proc {}, {}): {:.1}ms total, by_type: {}, top5: {}",
                 chunk_len,
                 proc_count,
                 path_label,
                 total_us as f64 / 1000.0,
+                per_type.join(", "),
                 top5.join(", "),
             );
         }

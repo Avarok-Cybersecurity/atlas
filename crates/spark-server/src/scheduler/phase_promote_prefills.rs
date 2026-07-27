@@ -23,7 +23,7 @@ pub(super) fn promote_completed_prefills(
     // Process in reverse order so swap_remove indices stay valid.
     completed_indices.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
     for (idx, maybe_token) in completed_indices {
-        let p = prefilling.swap_remove(idx);
+        let mut p = prefilling.swap_remove(idx);
         let Some(first) = maybe_token else {
             // Error path: free the sequence.
             let mut seq = p.seq;
@@ -38,15 +38,40 @@ pub(super) fn promote_completed_prefills(
             continue;
         };
         let spontaneous_think = !p.enable_thinking && think_start_token == Some(first);
+        // Legacy echo+logprobs: prompt logprobs precede any token event.
+        if p.seq.collect_prompt_logprobs.is_some()
+            && let ResponseSink::Streaming(ref tx) = p.sink
+        {
+            let lps: Vec<crate::api::TokenLogprobs> = p
+                .seq
+                .prompt_logprobs
+                .drain(..)
+                .map(|lp| crate::api::TokenLogprobs {
+                    token_id: lp.token_id,
+                    logprob: lp.logprob,
+                    top: lp.top,
+                })
+                .collect();
+            if !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::PromptLogprobs(lps),
+                "promote prompt-logprobs",
+            ) {
+                tracing::warn!("phase_promote_prefills: prompt-logprobs send failed");
+            }
+        }
         // Only stream non-EOS tokens (OpenAI: stop seq not in output).
         if !spontaneous_think
+            && p.max_tokens > 0
             && !p.eos_tokens.contains(&first)
             && let ResponseSink::Streaming(ref tx) = p.sink
-            && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
+            && !super::mod_helpers::bounded_stream_send(
+                tx,
+                StreamEvent::Token(first),
+                "promote first token",
+            )
         {
-            tracing::warn!(
-                "phase_promote_prefills: first-token send failed (receiver dropped): {e}"
-            );
+            tracing::warn!("phase_promote_prefills: first-token send failed (receiver dropped)");
         }
         let use_legacy_tool_call =
             p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
@@ -105,7 +130,7 @@ fn build_active_seq_from_prefill(
         seq: p.seq,
         session_hash: p.session_hash,
         last_token: first,
-        output_tokens: if !immediate_finish && spontaneous_think {
+        output_tokens: if (!immediate_finish && spontaneous_think) || p.max_tokens == 0 {
             vec![]
         } else {
             vec![first]
@@ -118,6 +143,8 @@ fn build_active_seq_from_prefill(
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,
+        guard_stop: None,
+        param_close_pending: 0,
         sink: p.sink,
         cancel_flag: p.cancel_flag,
         temperature: p.temperature,
@@ -152,6 +179,7 @@ fn build_active_seq_from_prefill(
         thinking_tokens: 0,
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
+        think_force_closed: false,
         sentence_defer_count: 0,
         consecutive_confident: 0,
         in_code_fence: false,
@@ -166,6 +194,8 @@ fn build_active_seq_from_prefill(
             !p.enable_thinking && think_end_token.is_some()
         },
         think_just_ended: false,
+        post_think_emitted: 0,
+        spec_adapt: Default::default(),
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_request,

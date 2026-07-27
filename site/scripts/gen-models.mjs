@@ -121,7 +121,9 @@ const FAMILY_DISPLAY = {
   'nemotron-3-nano': 'Nemotron-3 Nano',
   'nemotron-3-super': 'Nemotron-3 Super',
   'mistral-small-4': 'Mistral-Small-4',
-  'minimax-m2.7': 'MiniMax-M2.7'
+  'minimax-m2.7': 'MiniMax-M2.7',
+  'deepseek-v4': 'DeepSeek-V4',
+  'diffusion-gemma': 'Gemma Diffusion'
 };
 function familyDisplay(fam) {
   if (FAMILY_DISPLAY[fam]) return FAMILY_DISPLAY[fam];
@@ -143,7 +145,9 @@ const VENDOR_OF_FAMILY = {
   'nemotron-3-nano': 'Nemotron',
   'nemotron-3-super': 'Nemotron',
   'mistral-small-4': 'Mistral',
-  'minimax-m2.7': 'MiniMax'
+  'minimax-m2.7': 'MiniMax',
+  'deepseek-v4': 'DeepSeek',
+  'diffusion-gemma': 'Gemma'
 };
 // Display + icon key + stable sort order, keyed by vendor brand.
 const VENDOR_META = {
@@ -151,7 +155,8 @@ const VENDOR_META = {
   Gemma: { icon: 'gemma', order: 1 },
   Nemotron: { icon: 'nemotron', order: 2 },
   Mistral: { icon: 'mistral', order: 3 },
-  MiniMax: { icon: 'minimax', order: 4 }
+  MiniMax: { icon: 'minimax', order: 4 },
+  DeepSeek: { icon: 'deepseek', order: 5 }
 };
 function vendorOf(fam) {
   const v = VENDOR_OF_FAMILY[fam];

@@ -21,7 +21,7 @@ extern "C" __global__ void inferspark_prefill_512(
     const float inv_sqrt_d,
     const unsigned int causal,
     const unsigned int sliding_window,  // Always 0 for full-attention 512-hd layers; param added for signature consistency
-    const __nv_bfloat16* __restrict__ sinks  // [num_q_heads] per-head sink logit (denominator only); nullptr = no sink
+    const float* __restrict__ sinks  // [num_q_heads] per-head sink logit (denominator only); nullptr = no sink. FP32: checkpoint-native dtype (reading as bf16 hard-zeroed 7 heads)
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int q_block = blockIdx.y;
@@ -55,6 +55,11 @@ extern "C" __global__ void inferspark_prefill_512(
     unsigned int kv_len = seq_len;
     if (causal) kv_len = min(kv_len, q_row + 1);
 
+    // Sliding-window mask (DeepSeek-V4 probe): attend only the last `sliding_window`
+    // keys ending at q_row. sliding_window==0 => full (unchanged behavior).
+    unsigned int kv_start = 0;
+    if (sliding_window > 0u && kv_len > sliding_window) kv_start = kv_len - sliding_window;
+
     // Online softmax over KV positions
     float m = -1e30f;
     float l = 0.0f;
@@ -63,7 +68,7 @@ extern "C" __global__ void inferspark_prefill_512(
         o_acc[d] = 0.0f;
     }
 
-    for (unsigned int kv_pos = 0; kv_pos < kv_len; kv_pos++) {
+    for (unsigned int kv_pos = kv_start; kv_pos < kv_len; kv_pos++) {
         const __nv_bfloat16* K_row = K + (unsigned long long)batch * seq_len * kv_stride
                                         + (unsigned long long)kv_pos * kv_stride
                                         + (unsigned long long)kv_head * head_dim;
@@ -77,7 +82,6 @@ extern "C" __global__ void inferspark_prefill_512(
         }
 
         // Reduce across 8 dim-lanes (within the 8-thread group for this row)
-        unsigned int row_base = (tid / 8) * 8;  // first thread in this row's group
         // Warp shuffle within the 8-thread group
         dot += __shfl_xor_sync(0xFFFFFFFF, dot, 1);
         dot += __shfl_xor_sync(0xFFFFFFFF, dot, 2);
@@ -113,7 +117,7 @@ extern "C" __global__ void inferspark_prefill_512(
     // attention (non-CSA) prefill layers were missing it, so prefill diverged
     // from the sink-applying decode path and corrupted the prompt's hidden/KV.
     if (sinks != nullptr) {
-        float sg = __bfloat162float(sinks[q_head]);
+        float sg = sinks[q_head];
         float m_new = fmaxf(m, sg);
         float exp_old = __expf(m - m_new);
         float exp_sink = __expf(sg - m_new);

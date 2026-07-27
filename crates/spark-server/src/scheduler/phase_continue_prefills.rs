@@ -139,11 +139,7 @@ pub(super) fn continue_in_progress_prefills(
             // B4: clamp so padded decode + prefill slice fit the hidden
             // buffer (else mixed_forward silently de-fuses to sequential
             // decode_batch + prefill_chunk — weights loaded twice).
-            let padded_n = [2usize, 4, 8]
-                .iter()
-                .copied()
-                .find(|&s| s >= active.len())
-                .unwrap_or(active.len());
+            let padded_n = spark_model::traits::padded_batch_n(active.len());
             let fuse_cap = max_batch_tokens.saturating_sub(padded_n).max(4);
             debug_assert!(
                 fuse_cap >= 4,
@@ -182,8 +178,17 @@ pub(super) fn continue_in_progress_prefills(
     let q12_dispatch_disabled = std::env::var("ATLAS_BISECT_Q12_DISABLE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    let can_batch_prefill_only =
-        !q12_dispatch_disabled && prefilling.len() >= 2 && active.is_empty() && !model.is_ep();
+    // Prompt-logprob collection (legacy echo scoring) is single-stream
+    // only: the batched dispatch's hidden-buffer stream offsets are not
+    // wired into the collection helper. Rare debug/eval traffic.
+    let any_collecting = prefilling
+        .iter()
+        .any(|p| p.seq.collect_prompt_logprobs.is_some());
+    let can_batch_prefill_only = !q12_dispatch_disabled
+        && !any_collecting
+        && prefilling.len() >= 2
+        && active.is_empty()
+        && !model.is_ep();
     // When ATLAS_HOLO_ALWAYS_MIXED is on, COLLAPSE the multi-prefill+decode
     // case onto the single-stream fused path below (FIFO head prefill fused
     // with all active decodes via mixed_forward, sized by the slice budget)
@@ -193,6 +198,7 @@ pub(super) fn continue_in_progress_prefills(
     // improvement). The non-head prefill streams advance on subsequent ticks.
     let can_batch_mixed = !always_mixed
         && !q12_dispatch_disabled
+        && !any_collecting
         && prefilling.len() >= 2
         && !active.is_empty()
         && !single_active_with_spec
@@ -293,12 +299,16 @@ pub(super) fn continue_in_progress_prefills(
                     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     // #131: grammar-constrain the FIRST token (and advance the
                     // matcher); no-op without a grammar.
+                    // P1-4 (2026-07-09): thread the resolved `min_p` —
+                    // previously a hardcoded 0.0 inside the sampler.
+                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         logits,
                         p.temperature,
                         p.top_k,
                         p.top_p,
+                        p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
                     ) {

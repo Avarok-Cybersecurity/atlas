@@ -23,7 +23,7 @@ Curated references that informed Atlas's design. Not exhaustive — just the pap
 - **NVFP4 / FP4 microscaling** — NVIDIA's blog posts on Blackwell FP4. The public docs for SM120 coverage are thin; much of Atlas's SM121 workaround has no upstream equivalent yet.
 - **SmoothQuant** — Xiao, Lin, et al. (ICML 2023). Scale factor calibration ideas used indirectly in Atlas's FP8 KV calibration.
 - **Compressed-Tensors format** — the HF `compressed-tensors` library's on-disk FP8 block-scaled layout.
-- **TurboQuant** (Atlas internal) — `docs/design/turboquant-nightjob-2026-03-31.md`. WHT + Lloyd-Max 4-bit KV cache with ~2× lower MSE than NVFP4 at the same bit rate.
+- **TurboQuant** (Atlas internal) — `docs/turboquant-plus.md`. WHT + Lloyd-Max 4-bit KV cache with ~2× lower MSE than NVFP4 at the same bit rate.
 
 ## Speculative decoding
 
@@ -39,7 +39,7 @@ Curated references that informed Atlas's design. Not exhaustive — just the pap
 ## Inference systems
 
 - **vLLM** — Kwon et al. (SOSP 2023). The PagedAttention paper. Atlas's paged KV cache follows the vLLM model with Atlas-specific kernel work below it.
-- **TensorRT-LLM** documentation and source. Atlas's TRT-LLM benchmark comparisons in `docs/history/` are informed by reading the TRT-LLM codebase; the 29.6 tok/s ceiling for NVFP4 on SM121 TRT-LLM is documented in `TRTLLM_OPTIMIZATION_RESULTS.md`.
+- **TensorRT-LLM** documentation and source. Atlas's TRT-LLM benchmark comparisons in `docs/ATLAS_SPARK_JOURNEY.md` are informed by reading the TRT-LLM codebase; that journey records the 29.6 tok/s ceiling for NVFP4 on SM121 TRT-LLM.
 - **SGLang** — structured-generation inference framework.
 - **Triton** — inference server. Peripheral; Atlas does not use it but the operational patterns are informative.
 
@@ -57,18 +57,13 @@ Curated references that informed Atlas's design. Not exhaustive — just the pap
 
 ## Atlas-internal references
 
-Inside the repo, the canonical long-form references are in [`docs/design/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/design). Notable:
+Inside the repo, the canonical long-form references are the architecture decision records in [`docs/adr/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/adr), plus the top-level notes alongside them. Notable:
 
-- `NVFP4_COHERENCE.md` — why `--kv-high-precision-layers` exists.
-- `fp8-native-design.md` — end-to-end FP8 serving design.
-- `ep2-token-dispatch-design.md` — EP=2 MoE dispatch.
-- `turboquant-nightjob-2026-03-31.md` — TurboQuant KV.
-- `xgrammar-integration-plan.md`, `xgrammar2-upgrade-plan.md` — constrained decoding history.
-- `tool-calling-gap-analysis.md` — the broader tool-call reliability story.
-- `mixkvq-design.md` — mixed-precision KV per layer.
-- `qwen35-ttft-roadmap.md` — TTFT improvements on Qwen3.5.
-- `single-kernel-prefill-proposal.md` — the theory behind prefill v47.
-- `nvfp4-quantizer-plan.md` — the quantizer's numeric path.
-- `agentic-quality-research-synthesis.md` — agent-workload quality research.
+- `docs/adr/0004-nvfp4-fp8-quantization.md` — NVFP4/FP8 quantization, including why `--kv-high-precision-layers` exists.
+- `docs/adr/0003-hybrid-ssm-attention.md` — hybrid SSM/attention design and chunked SSM prefill.
+- `docs/adr/0007-tp-ep-composition.md`, `docs/adr/0011-ep-batched-decode-optimization.md` — EP=2 MoE dispatch and batched decode.
+- `docs/adr/0010-vendor-xgrammar.md` — constrained decoding via vendored XGrammar.
+- `docs/turboquant-plus.md` — TurboQuant KV.
+- `docs/ARCHITECTURE.md`, `docs/ATLAS_KERNELS.md`, `docs/HARDWARE.md` — the system, kernel, and hardware overviews.
 
 For the broader research context that informed Atlas's direction, see `docs/atlas-spark-research-articles.md` in the repo — a rolling curated list that's longer and more current than this page.

@@ -21,6 +21,7 @@ unsafe extern "C" {
     fn cuMemFree_v2(dptr: u64) -> i32;
     fn cuMemAllocHost_v2(pp: *mut *mut c_void, bytesize: usize) -> i32;
     fn cuMemFreeHost(p: *mut c_void) -> i32;
+    fn cuMemHostGetDevicePointer_v2(pdptr: *mut u64, p: *mut c_void, flags: u32) -> i32;
     fn cuMemcpyHtoDAsync_v2(dst: u64, src: *const c_void, bytes: usize, stream: u64) -> i32;
     fn cuMemcpyDtoHAsync_v2(dst: *mut c_void, src: u64, bytes: usize, stream: u64) -> i32;
     fn cuMemGetInfo_v2(free: *mut usize, total: *mut usize) -> i32;
@@ -131,6 +132,21 @@ impl PinnedBuffer {
             bail!("cuMemAllocHost_v2({bytes}) failed: {s}");
         }
         Ok(Self { ptr: p, bytes })
+    }
+
+    /// Device pointer the GPU uses to address this pinned host allocation.
+    ///
+    /// On GB10's unified LPDDR (unified addressing) this equals the host
+    /// pointer numerically — the property the UMA zero-copy expert arena relies
+    /// on. `cuMemAllocHost` memory is portable + page-locked + device-accessible,
+    /// so no `Mapped` flag is required.
+    pub fn device_ptr(&self) -> Result<u64> {
+        let mut dptr = 0u64;
+        let s = unsafe { cuMemHostGetDevicePointer_v2(&mut dptr, self.ptr, 0) };
+        if s != 0 {
+            bail!("cuMemHostGetDevicePointer_v2 failed: {s}");
+        }
+        Ok(dptr)
     }
 }
 

@@ -23,7 +23,8 @@
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
 
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev && \
+    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev \
+      libibverbs-dev librdmacm-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -37,6 +38,10 @@ COPY crates/ crates/
 COPY kernels/ kernels/
 # Vendored cudarc 0.19.2 is a `path = "vendor/cudarc"` workspace dependency.
 COPY vendor/ vendor/
+# Per-model chat templates (resolved at serve time by model_type, e.g.
+# jinja-templates/deepseek_v4.jinja). Without this the runtime finds no
+# override and falls back to ChatML — wrong delimiters/stop for DeepSeek.
+COPY jinja-templates/ jinja-templates/
 
 ENV ATLAS_TARGET_HW=gb10
 ENV ATLAS_TARGET_MODEL=deepseek-v4-flash
@@ -61,6 +66,7 @@ RUN apt-get update -qq && \
       (echo "ERROR: NCCL $NCCL_VER < 2.28 — symmetric memory APIs unavailable" && exit 1)
 
 COPY --from=builder /build/target/release/spark /usr/local/bin/spark
+COPY --from=builder /build/jinja-templates/ /jinja-templates/
 COPY LICENSE /LICENSE
 
 ENV RUST_LOG=info

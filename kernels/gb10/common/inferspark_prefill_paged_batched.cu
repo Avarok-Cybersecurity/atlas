@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// ldmatrix-enabled rebuild (header content change forces kernel cache miss)
 
 // Q12 Phase 3: Paged Prefill Flash Attention — BF16 KV cache, batched
 // same-chunk-len variant. See inferspark_prefill_paged.cu for the

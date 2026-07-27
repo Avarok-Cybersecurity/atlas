@@ -94,6 +94,14 @@ impl MoeLayer {
             )?;
         }
 
+        super::union_stats::maybe_sample_expert_union(
+            ctx.gpu,
+            indices_dev,
+            3,
+            top_k as usize,
+            stream,
+        );
+
         // 3-5. Fused expert dispatch for 3 tokens
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
@@ -103,7 +111,7 @@ impl MoeLayer {
         let shared_down_out = ctx.buffers.attn_output();
         let output = ctx.buffers.moe_output();
 
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
 
         if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
             &self.fp8_gate_weight_ptrs,
@@ -299,7 +307,7 @@ impl MoeLayer {
 
         // EP all-reduce: sum partial outputs for 3 tokens
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, 3 * h as usize * 2)?;

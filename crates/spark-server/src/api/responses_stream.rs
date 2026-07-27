@@ -11,14 +11,14 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::chat_stream::chat_completions_stream;
+use super::chat_stream::run_chat_stream;
 use super::responses_stream_finalize::{
     CloseOpenCtx, FinalizeCtx, close_open_items, emit_responses_prologue, finalize_responses_stream,
 };
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
 };
-use super::stored::extract_assistant_incoming_message;
+use super::stored::assistant_incoming_from_ir;
 use crate::AppState;
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
@@ -87,17 +87,25 @@ pub(super) async fn responses_endpoint_stream(
 
     // Run the chat-completions streaming handler (re-using the full
     // pipeline: scheduler, tool detection, thinking, logprobs, ...).
-    let chat_resp = chat_completions_inner(state.0, None, chat_req, None).await;
-    let (parts, body) = chat_resp.into_parts();
-    if !parts.status.is_success() {
-        return Response::from_parts(parts, body);
-    }
+    let deltas = match chat_completions_inner(state.0, None, chat_req.into(), None).await {
+        super::chat::ChatOutcome::Streaming(d) => d,
+        // Error envelope — forward unchanged.
+        super::chat::ChatOutcome::Http(r) => return r,
+        // Unreachable by construction: this endpoint lowers with
+        // stream=true, so a success is always Streaming.
+        super::chat::ChatOutcome::Blocking(_) => {
+            return openai_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal: expected streaming outcome".to_string(),
+            );
+        }
+    };
 
     // Channel the transformer pushes Responses SSE events into. Sized to
     // match chat_stream/mod.rs (~30s decode buffer at 50 tok/s).
     let (tx, rx) = mpsc::channel::<Result<Event, std::convert::Infallible>>(1024);
-    let created_at = crate::openai::unix_timestamp();
-    let resp_id = format!("resp_{}", crate::openai::uuid_v4());
+    let created_at = crate::ids::unix_timestamp();
+    let resp_id = format!("resp_{}", crate::ids::uuid_v4());
     let metadata_for_done = metadata.clone();
 
     tokio::spawn(async move {
@@ -122,78 +130,34 @@ pub(super) async fn responses_endpoint_stream(
         let mut completed_items: Vec<crate::openai::ResponsesOutputItem> = Vec::new();
         let mut final_usage: Option<serde_json::Value> = None;
         let mut finish_reason = "stop".to_string();
-        let mut accumulator = Vec::<u8>::new();
         let mut refusal_text: Option<String> = None;
 
         seq = emit_responses_prologue(&tx, seq, &resp_id, created_at, &model, &metadata).await;
 
-        let mut data_stream = body.into_data_stream();
-        while let Some(next) = data_stream.next().await {
-            let bytes = match next {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!("responses stream read error: {e}");
-                    break;
-                }
-            };
-            accumulator.extend_from_slice(&bytes);
-
-            // Parse SSE frames: look for "\n\n".
-            while let Some(idx) = find_frame_end(&accumulator) {
-                let frame_bytes: Vec<u8> = accumulator.drain(..idx + 2).collect();
-                // Strip the trailing \n\n; find the data: line.
-                let frame_str = std::str::from_utf8(&frame_bytes).unwrap_or("");
-                let data_line = frame_str.lines().find_map(|l| l.strip_prefix("data: "));
-                let Some(data) = data_line else { continue };
-                if data == "[DONE]" {
-                    continue;
-                }
-                // Parse as ChatCompletionChunk JSON.
-                let Ok(chunk): Result<serde_json::Value, _> = serde_json::from_str(data) else {
-                    continue;
-                };
-                // Chat chunks: { choices: [{ delta: {content|tool_calls|reasoning_content}, finish_reason, ... }], usage }
-                if let Some(u) = chunk.get("usage")
-                    && !u.is_null()
-                {
-                    final_usage = Some(u.clone());
-                }
-                let Some(choice) = chunk
-                    .get("choices")
-                    .and_then(|c| c.as_array())
-                    .and_then(|a| a.first())
-                else {
-                    continue;
-                };
-                if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-                    finish_reason = fr.to_string();
-                }
-                let delta = choice
-                    .get("delta")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-
-                // Refusal delta (post-hoc: one chunk carries the full
-                // refusal sentence, emitted by the inner chat streamer).
-                if let Some(r) = delta.get("refusal").and_then(|v| v.as_str())
-                    && !r.is_empty()
-                {
-                    refusal_text = Some(r.to_string());
+        let mut deltas = deltas;
+        while let Some(delta) = deltas.next().await {
+            use crate::ir::StreamDelta;
+            match delta {
+                // Reasoning has no Responses-stream representation (the
+                // old transformer ignored reasoning_content chunks too).
+                StreamDelta::Reasoning { .. } => {}
+                // Refusal delta (post-hoc: one delta carries the full
+                // refusal sentence).
+                StreamDelta::Refusal { text } if !text.is_empty() => {
+                    refusal_text = Some(text.clone());
                     let ev = crate::openai::ResponsesStreamEvent::RefusalDelta {
                         sequence_number: seq,
                         item_id: message_item_id.clone(),
                         output_index,
                         content_index: 0,
-                        delta: r.to_string(),
+                        delta: text,
                     };
                     emit(&tx, &ev).await;
                     seq += 1;
                 }
-
+                StreamDelta::Refusal { .. } => {}
                 // Text content delta.
-                if let Some(text) = delta.get("content").and_then(|v| v.as_str())
-                    && !text.is_empty()
-                {
+                StreamDelta::Content { text, .. } if !text.is_empty() => {
                     // If a function_call is currently open, close it
                     // before opening a fresh message item — otherwise
                     // the message would collide with the function_call
@@ -263,107 +227,115 @@ pub(super) async fn responses_endpoint_stream(
                         emit(&tx, &ev).await;
                         seq += 1;
                     }
-                    content_text.push_str(text);
+                    content_text.push_str(&text);
                     let ev = crate::openai::ResponsesStreamEvent::OutputTextDelta {
                         sequence_number: seq,
                         item_id: message_item_id.clone(),
                         output_index,
                         content_index: 0,
-                        delta: text.to_string(),
+                        delta: text,
                     };
                     emit(&tx, &ev).await;
                     seq += 1;
                 }
-
-                // Tool-call fragments.
-                if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-                    for tc in tool_calls {
-                        let call_id = tc.get("id").and_then(|v| v.as_str()).map(str::to_string);
-                        let name = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string);
-                        let args_frag = tc
-                            .get("function")
-                            .and_then(|f| f.get("arguments"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if let Some(n) = name.clone() {
-                            current_tool_name = Some(n.clone());
-                            if let Some(id) = call_id.clone() {
-                                current_tool_call_id = Some(id);
-                            }
-                            if !fc_started {
-                                // Close any open message before starting function call.
-                                if message_started {
-                                    let ev = crate::openai::ResponsesStreamEvent::OutputTextDone {
-                                        sequence_number: seq,
-                                        item_id: message_item_id.clone(),
-                                        output_index,
-                                        content_index: 0,
-                                        text: content_text.clone(),
-                                    };
-                                    emit(&tx, &ev).await;
-                                    seq += 1;
-                                    let done = crate::openai::ResponsesOutputItem::Message {
-                                        id: message_item_id.clone(),
-                                        status: "completed",
-                                        role: "assistant",
-                                        content: vec![
-                                            crate::openai::ResponsesContentPart::OutputText {
-                                                text: content_text.clone(),
-                                                annotations: crate::citation::merged_annotations(
-                                                    &content_text,
-                                                ),
-                                            },
-                                        ],
-                                    };
-                                    completed_items.push(done.clone());
-                                    let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
-                                        sequence_number: seq,
-                                        output_index,
-                                        item: done,
-                                    };
-                                    emit(&tx, &ev).await;
-                                    seq += 1;
-                                    output_index += 1;
-                                    message_started = false;
-                                    content_text.clear();
-                                }
-                                let fcid = format!("fc_{}_{}", resp_id, output_index);
-                                fc_item_id = Some(fcid.clone());
-                                let item = crate::openai::ResponsesOutputItem::FunctionCall {
-                                    id: fcid,
-                                    call_id: current_tool_call_id.clone().unwrap_or_default(),
-                                    name: n,
-                                    arguments: String::new(),
-                                    status: "in_progress",
-                                };
-                                let ev = crate::openai::ResponsesStreamEvent::OutputItemAdded {
-                                    sequence_number: seq,
-                                    output_index,
-                                    item,
-                                };
-                                emit(&tx, &ev).await;
-                                seq += 1;
-                                fc_started = true;
-                            }
+                StreamDelta::Content { .. } => {}
+                // A tool call opens (name always present on the start
+                // delta).
+                StreamDelta::ToolCallStart { id, name, .. } => {
+                    current_tool_name = Some(name.clone());
+                    current_tool_call_id = Some(id);
+                    if !fc_started {
+                        // Close any open message before starting function call.
+                        if message_started {
+                            let ev = crate::openai::ResponsesStreamEvent::OutputTextDone {
+                                sequence_number: seq,
+                                item_id: message_item_id.clone(),
+                                output_index,
+                                content_index: 0,
+                                text: content_text.clone(),
+                            };
+                            emit(&tx, &ev).await;
+                            seq += 1;
+                            let done = crate::openai::ResponsesOutputItem::Message {
+                                id: message_item_id.clone(),
+                                status: "completed",
+                                role: "assistant",
+                                content: vec![crate::openai::ResponsesContentPart::OutputText {
+                                    text: content_text.clone(),
+                                    annotations: crate::openai::merged_annotations(&content_text),
+                                }],
+                            };
+                            completed_items.push(done.clone());
+                            let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
+                                sequence_number: seq,
+                                output_index,
+                                item: done,
+                            };
+                            emit(&tx, &ev).await;
+                            seq += 1;
+                            output_index += 1;
+                            message_started = false;
+                            content_text.clear();
                         }
-                        if !args_frag.is_empty() {
-                            tool_args.push_str(args_frag);
-                            if let Some(fcid) = fc_item_id.clone() {
-                                let ev = crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDelta {
-                                    sequence_number: seq,
-                                    item_id: fcid,
-                                    output_index,
-                                    delta: args_frag.to_string(),
-                                };
-                                emit(&tx, &ev).await;
-                                seq += 1;
-                            }
-                        }
+                        let fcid = format!("fc_{}_{}", resp_id, output_index);
+                        fc_item_id = Some(fcid.clone());
+                        let item = crate::openai::ResponsesOutputItem::FunctionCall {
+                            id: fcid,
+                            call_id: current_tool_call_id.clone().unwrap_or_default(),
+                            name,
+                            arguments: String::new(),
+                            status: "in_progress",
+                        };
+                        let ev = crate::openai::ResponsesStreamEvent::OutputItemAdded {
+                            sequence_number: seq,
+                            output_index,
+                            item,
+                        };
+                        emit(&tx, &ev).await;
+                        seq += 1;
+                        fc_started = true;
                     }
+                }
+                // Argument JSON fragment for the open tool call.
+                StreamDelta::ToolCallArgs { fragment, .. } if !fragment.is_empty() => {
+                    tool_args.push_str(&fragment);
+                    if let Some(fcid) = fc_item_id.clone() {
+                        let ev = crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDelta {
+                            sequence_number: seq,
+                            item_id: fcid,
+                            output_index,
+                            delta: fragment,
+                        };
+                        emit(&tx, &ev).await;
+                        seq += 1;
+                    }
+                }
+                StreamDelta::ToolCallArgs { .. } => {}
+                StreamDelta::Finish { reason, usage, .. } => {
+                    finish_reason = reason.as_wire().to_string();
+                    // Wire-shaped usage for the finalizer (same JSON the
+                    // OpenAI chunk carried before the delta migration).
+                    final_usage = Some(serde_json::json!({
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.prompt_tokens + usage.completion_tokens,
+                        "prompt_tokens_details": {
+                            "cached_tokens": usage.cached_prompt_tokens,
+                            "audio_tokens": 0,
+                        },
+                        "completion_tokens_details": {
+                            "reasoning_tokens": usage.reasoning_tokens,
+                            "audio_tokens": 0,
+                            "accepted_prediction_tokens": 0,
+                            "rejected_prediction_tokens": 0,
+                        },
+                    }));
+                }
+                // Stream-level error: the old transformer ignored the
+                // error payload line; the stream simply ends and the
+                // finalizer closes the response.
+                StreamDelta::Error { message } => {
+                    tracing::warn!("responses stream: upstream error delta: {message}");
                 }
             }
         }

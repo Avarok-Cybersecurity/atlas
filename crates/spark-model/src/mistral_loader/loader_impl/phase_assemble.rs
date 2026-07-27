@@ -39,6 +39,7 @@ pub(super) fn assemble_layer(
         weight_scale: spark_runtime::gpu::DevicePtr::NULL,
         weight_scale_2: 0.0,
         input_scale: spark_runtime::gpu::DevicePtr::NULL,
+        weight_scale_2_vec: spark_runtime::gpu::DevicePtr::NULL,
     };
     let attn = AttentionWeights {
         q_proj: null,
@@ -116,6 +117,7 @@ pub(super) fn assemble_layer(
         w_uk_block_diag: require(ctx.w_uk_block_diag, "w_uk_block_diag")?,
         w_uv_block_diag: require(ctx.w_uv_block_diag, "w_uv_block_diag")?,
         yarn_inv_freq,
+        main_inv_freq: yarn_inv_freq, // non-V4: no sliding/compress rope split
         q_lora_rank: q_lora,
         kv_lora_rank: kv_lora,
         o_lora_rank: 0,

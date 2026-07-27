@@ -244,6 +244,8 @@ We have to walk before we can run. Today's Atlas is targeted at a single hardwar
 
 This is a starting point, not a destination. The plug-and-play design above exists precisely so that AMD, Apple Silicon, Intel, and the next round of Blackwell parts can land here as community contributions, and so that the Llama 4s and DeepSeek V4s of next quarter slot in the same way the Qwens did this quarter. We did the hard part — bolting in the abstractions while bringing up the first fifteen targets — so that adding the sixteenth is a weekend, not a quarter.
 
+> **New to Atlas on a Spark?** The [**GB10 Deployment & Compatibility Guide**](docs/GB10_DEPLOYMENT_GUIDE.md) is the one page to read first: which model and quant fit your box and your goal, what to do when it OOMs, the known gotchas, and what "verified" means — then it hands you the exact recipe. If you're deciding *what to run*, start there.
+
 <a id="performance"></a>
 
 ## ⚡ Performance
@@ -346,9 +348,10 @@ sudo docker run -d --name atlas \
     --scheduling-policy slai \
     --enable-prefix-caching \
     --speculative \
-    --num-drafts 2 \
     --tool-call-parser qwen3_coder
 ```
+
+`--num-drafts` is omitted so it defaults to `1`, i.e. MTP **K=2** (the CLI defines `--num-drafts 1` as K=2, `2` as K=3). K=2 is the measured-fastest verify width for this model; K=3 is slower.
 
 ### Recipe C — Qwen3.5-122B-A10B (NVFP4, single Spark)
 

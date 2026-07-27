@@ -18,9 +18,7 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::layer::{
-    ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
-};
+use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState};
 use crate::layers::FfnComponent;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8Weight, QuantizedWeight, SsmWeights};
@@ -84,6 +82,7 @@ pub struct Qwen3SsmLayer {
     w4a16_gemm_t_k: KernelHandle, // Transposed B layout [K/2, N] — K_STEP_T=32
     w4a16_gemm_t_k64_k: KernelHandle, // K64 variant: K_STEP_T=64, halves outer loop
     w4a16_gemm_t_m128_k: KernelHandle, // M128 variant: 2 M-chunks per CTA, halves B re-reads
+    w4a16_gemm_t_m128_v2_k: KernelHandle, // M128 8-warp pipelined (fast at small M; the FFN's kernel)
     w4a16_gemv_batch2_k: KernelHandle,
     dense_gemm_k: KernelHandle,
     dense_gemm_pipelined_k: KernelHandle,
@@ -94,7 +93,8 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_persistent_wy4_k: KernelHandle,
     /// Register-resident token-sequential warm-replay recurrence (H in regs, >=2
     /// CTA/SM, no barriers). Token-equal to WY4 (cosine 1.0), ~2.9x faster.
-    /// Gated behind ATLAS_GDN_REGRESIDENT until serve-validated.
+    /// DEFAULT-ON since 2026-07-25 (serve-validated: full MLPerf-edge e2e, wall
+    /// −7.25%, BFCL identical); kill switch `ATLAS_NO_GDN_REGRESIDENT=1`.
     gdn_prefill_regresident_k: KernelHandle,
     /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
@@ -129,10 +129,12 @@ pub struct Qwen3SsmLayer {
     // Kernels — fused chunk3 path (3-token verification)
     gdn_chunk3_k: KernelHandle,
     w4a16_gemv_batch3_k: KernelHandle,
-    // NVFP4 batched decode GEMV (multi-seq concurrency): batch4 (M<=4) /
-    // batch16 (M<=16) — siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ +
-    // out_proj, so FP4 decode amortizes the weight read at C=4..16 like FP8.
+    // NVFP4 batched decode GEMV (multi-seq concurrency + chain verify):
+    // batch4 (M<=4) / batch8 (M<=8, K=5..8 chain verify) / batch16 (M<=16) —
+    // siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ + out_proj, so FP4
+    // decode amortizes the weight read at C=4..16 like FP8.
     w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
     w4a16_gemv_batch16_k: KernelHandle,
     // Kernels — WY-chunkwise path (2-pass verification)
     gdn_wy2_k: KernelHandle,
@@ -144,11 +146,23 @@ pub struct Qwen3SsmLayer {
     /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
     gdn_verify_fused_conv_k2_k: KernelHandle,
     gdn_verify_fused_norm_k2_k: KernelHandle,
+    /// Fused generic-K verify conv1d+L2norm (one launch for all K positions,
+    /// rollback snapshots written inline). Used by the K=17 DFlash verify arm;
+    /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
+    /// NULL handle on targets lacking the .cu → per-token loop unchanged.
+    gdn_verify_fused_conv_kn_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
     /// per-token path.
     gdn_wy17_k: KernelHandle,
+    /// WY-Chunkwise K∈{5..8} GDN verify (chain-verify widths between the
+    /// dedicated wy4 and the DFlash wy17). One K-templated source
+    /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy8 with
+    /// the same pool-layout intermediates contract as wy17. Index = K-5;
+    /// NULL handles on targets lacking the module → sequential fallback.
+    /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
+    gdn_wyn_k: [KernelHandle; 4],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
@@ -184,6 +198,19 @@ pub struct Qwen3SsmLayer {
     fp8_gemm_t_blockscaled_k: KernelHandle,
 }
 
+impl Qwen3SsmLayer {
+    /// W4A16 batchm-GEMV handle for `m` verify/decode rows: batch4 (m<=4) or
+    /// batch8 (m=5..8, chain verify). 0-handle when absent or out of range —
+    /// callers must check `.0 != 0` and fall back to the tile GEMMs.
+    fn w4a16_batchm_kernel(&self, m: usize) -> KernelHandle {
+        match m {
+            1..=4 => self.w4a16_gemv_batch4_k,
+            5..=8 => self.w4a16_gemv_batch8_k,
+            _ => KernelHandle(0),
+        }
+    }
+}
+
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
 mod init;
@@ -191,7 +218,9 @@ mod ssm_forward;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
+mod trait_decode_batched_conv_gdn_wyn;
 mod trait_decode_multi_seq;
+mod trait_layer;
 mod trait_prefill;
 mod trait_prefill_gdn;
 mod trait_prefill_helper;
@@ -201,278 +230,6 @@ mod trait_prefill_proj;
 mod trait_prefill_recur;
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
-impl TransformerLayer for Qwen3SsmLayer {
-    fn decode(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_inner(
-            hidden,
-            residual,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            ctx,
-            stream,
-        )
-    }
-
-    fn decode_batched(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_batched_inner(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            ctx,
-            stream,
-        )
-    }
-
-    fn decode_multi_seq<'a, 'b: 'a>(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_seqs: usize,
-        states: &'a mut [&'b mut (dyn LayerState + 'static)],
-        kv_cache: &mut PagedKvCache,
-        seq_lens: &[usize],
-        block_tables: &[Vec<u32>],
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_multi_seq_inner(
-            hidden,
-            residual,
-            num_seqs,
-            states,
-            kv_cache,
-            seq_lens,
-            block_tables,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len_start: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        kv_write_start: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_inner(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len_start,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            kv_write_start,
-            ctx,
-            stream,
-        )
-    }
-
-    fn is_ssm_layer(&self) -> bool {
-        self.is_ssm_layer_inner()
-    }
-
-    fn prefill_phase1(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len_start: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        kv_write_start: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        token_offset: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase1_inner(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len_start,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            kv_write_start,
-            gdn_bufs,
-            token_offset,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill_phase1_proj_batched(
-        &self,
-        hidden_stacked: DevicePtr,
-        residual_stacked: DevicePtr,
-        total_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase1_proj_batched_inner(
-            hidden_stacked,
-            residual_stacked,
-            total_tokens,
-            gdn_bufs,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill_phase1_conv1d_one(
-        &self,
-        state: &mut dyn LayerState,
-        token_offset: usize,
-        len: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase1_conv1d_one_inner(state, token_offset, len, gdn_bufs, ctx, stream)
-    }
-
-    fn prefill_phase1_l2_batched(
-        &self,
-        total_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase1_l2_batched_inner(total_tokens, gdn_bufs, ctx, stream)
-    }
-
-    fn prefill_gdn_full(
-        &self,
-        state: &mut dyn LayerState,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_gdn_full_inner(state, gdn_bufs, ctx, stream)
-    }
-
-    fn prefill_gdn_full_batched(
-        &self,
-        h_state_ptrs: DevicePtr,
-        gdn_bufs: &GdnPrefillBuffers,
-        batch_size: u32,
-        chunk_len: u32,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_gdn_full_batched_inner(
-            h_state_ptrs,
-            gdn_bufs,
-            batch_size,
-            chunk_len,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill_gdn_full_batched_fla_varlen(
-        &self,
-        h_state_ptrs: DevicePtr,
-        gdn_bufs: &GdnPrefillBuffers,
-        batch_size: u32,
-        cu_seqlens: DevicePtr,
-        max_num_chunks: u32,
-        total_nt: usize,
-        max_seqlen: u32,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<bool> {
-        self.prefill_gdn_full_batched_fla_varlen_inner(
-            h_state_ptrs,
-            gdn_bufs,
-            batch_size,
-            cu_seqlens,
-            max_num_chunks,
-            total_nt,
-            max_seqlen,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill_phase3(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        token_offset: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase3_inner(
-            hidden,
-            residual,
-            num_tokens,
-            gdn_bufs,
-            token_offset,
-            ctx,
-            stream,
-        )
-    }
-
-    fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
-        self.alloc_state_inner(gpu)
-    }
-}
 
 #[cfg(test)]
 mod tests;

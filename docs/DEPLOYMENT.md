@@ -99,7 +99,14 @@ For long contexts (>32K tokens) the on-device KV cache fills fast. Atlas
 can evict cold blocks to NVMe and stream them back as needed:
 
 ```bash
-docker run ... avarok/atlas-gb10:latest \
+# High-speed swap uses io_uring — it REQUIRES the two container flags below
+# (--security-opt seccomp=unconfined --ulimit memlock=-1). Without them the
+# io_uring setup fails and swap silently does nothing.
+docker run -d --gpus all --ipc=host -p 8888:8888 \
+  --security-opt seccomp=unconfined --ulimit memlock=-1 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -v /mnt/fast-nvme/atlas-kv:/mnt/fast-nvme/atlas-kv \
+  avarok/atlas-gb10:latest \
   serve <model> \
     --max-seq-len 65536 \
     --high-speed-swap \
@@ -151,5 +158,5 @@ you build one — happy to merge.
 ## See also
 
 - [`QUICKSTART.md`](../QUICKSTART.md) — copy-paste recipes for each supported model.
-- [`docs/EP2-TROUBLESHOOTING.md`](EP2-TROUBLESHOOTING.md) — diagnosing multi-rank issues.
+- [`docs/GB10_DEPLOYMENT_GUIDE.md`](GB10_DEPLOYMENT_GUIDE.md) — §7 diagnoses multi-rank (EP=2) issues; §2 is the model×quant compatibility matrix; §4 is the OOM / context ladder.
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — what's running inside the binary.

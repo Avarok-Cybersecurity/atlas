@@ -69,7 +69,7 @@ impl Qwen3AttentionLayer {
         )?;
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             q_latent,
             &mla.q_a_norm,
             q_latent,
@@ -127,7 +127,7 @@ impl Qwen3AttentionLayer {
         // (DeepSeek-V4: kv = kv_norm(kv_proj(h))). n*nkv rows of kv_lora dims.
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             k_out,
             &mla.kv_a_norm,
             k_out,
@@ -184,8 +184,19 @@ impl Qwen3AttentionLayer {
             nkv,
             rope,
             rope,
-            mla.yarn_inv_freq,
-            super::super::helpers::yarn_rope_mscale(ctx.config),
+            // Sliding layers (compressor==None) = main θ=10000, mscale=1; CSA/HCA
+            // = θ=160000 yarn. Matches the eq.26 de-rotation below. (V4-exclusive
+            // file, so compressor==None is a V4 sliding layer, never a non-V4 model.)
+            if mla.compressor.is_none() {
+                mla.main_inv_freq
+            } else {
+                mla.yarn_inv_freq
+            },
+            if mla.compressor.is_none() {
+                1.0f32
+            } else {
+                super::super::helpers::yarn_rope_mscale(ctx.config)
+            },
             stream,
         )?;
         ops::mla_q_rope_writeback_batched(
@@ -291,8 +302,17 @@ impl Qwen3AttentionLayer {
                 0,
                 rope,
                 rope,
-                mla.yarn_inv_freq,
-                super::super::helpers::yarn_rope_mscale(ctx.config),
+                // De-rotation must match the rope-in inv_freq above (else salad).
+                if mla.compressor.is_none() {
+                    mla.main_inv_freq
+                } else {
+                    mla.yarn_inv_freq
+                },
+                if mla.compressor.is_none() {
+                    1.0f32
+                } else {
+                    super::super::helpers::yarn_rope_mscale(ctx.config)
+                },
                 stream,
             )?;
             ops::mla_q_rope_writeback_batched(

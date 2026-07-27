@@ -45,11 +45,23 @@ fn ebnf_literal_escape(c: char) -> String {
 /// opencode webserver_ok gap. NOTE this re-permits `<`-content; BUG#1 graceful
 /// disengage keeps any residual refusal non-fatal, and the live N=10 A/B is the
 /// gate for whether the prior F2 XML-attribute-drift mode returns.
-fn ebnf_until_close_ladder(close: &str) -> String {
+/// P1-2 (2026-07-09, env `ATLAS_GRAMMAR_FORCE_CLOSE=1`): with `force_close`,
+/// the DEEPEST arm (`"</parameter" [^>]` for qwen3_coder) is omitted, so once
+/// the value contains the full close-prefix the ONLY legal continuation is the
+/// literal final char — xgrammar's mask deflects a dropped `>` at sample time
+/// (the 45k garble `</parameter<parameter=` becomes unrepresentable). Cost:
+/// value content containing `</parameter` + non-`>` (e.g. `</parameters>`)
+/// becomes unwritable — hence opt-in + BFCL A/B gate before default-on.
+fn ebnf_until_close_ladder_opts(close: &str, force_close: bool) -> String {
     let chars: Vec<char> = close.chars().collect();
     debug_assert!(!chars.is_empty(), "close delimiter must be non-empty");
     let mut alts: Vec<String> = Vec::with_capacity(chars.len().max(1));
-    for k in 0..chars.len() {
+    let depth = if force_close && chars.len() > 1 {
+        chars.len() - 1
+    } else {
+        chars.len()
+    };
+    for k in 0..depth {
         let neg = ebnf_class_escape(chars[k]);
         if k == 0 {
             alts.push(format!("[^{neg}]"));
@@ -67,6 +79,18 @@ fn ebnf_until_close_ladder(close: &str) -> String {
         return "[^\\x00]".to_string();
     }
     alts.join(" | ")
+}
+
+fn ebnf_until_close_ladder(close: &str) -> String {
+    ebnf_until_close_ladder_opts(close, false)
+}
+
+/// P1-1/P1-2 env opt-ins (read per call; set in the serving environment).
+fn grammar_allow_empty_value() -> bool {
+    std::env::var("ATLAS_GRAMMAR_ALLOW_EMPTY_VALUE").as_deref() == Ok("1")
+}
+fn grammar_force_close() -> bool {
+    std::env::var("ATLAS_GRAMMAR_FORCE_CLOSE").as_deref() == Ok("1")
 }
 
 /// F2-2a (2026-06-02): structural ceiling on a parameter VALUE's `rest`
@@ -116,21 +140,60 @@ fn short_tool_trigger_enabled() -> bool {
 /// so a drifted close still terminates the value. Routed through the same
 /// trait-supplied `value_close` (no hard-coded per-model tokens). Deferred:
 /// 2a (this) is the structural backstop; 2b is the next kill-switched step.
-fn xml_param_value_body_ebnf(value_close: &str) -> String {
-    let ladder = ebnf_until_close_ladder(value_close);
+pub(crate) fn xml_param_value_body_ebnf(
+    value_close: &str,
+    param_names: Option<&[String]>,
+) -> String {
+    xml_param_value_body_ebnf_opts(
+        value_close,
+        param_names,
+        grammar_allow_empty_value(),
+        grammar_force_close(),
+    )
+}
+
+/// Explicit-parameter core (unit-testable without env races).
+pub(crate) fn xml_param_value_body_ebnf_opts(
+    value_close: &str,
+    param_names: Option<&[String]>,
+    allow_empty_value: bool,
+    force_close: bool,
+) -> String {
+    let ladder = ebnf_until_close_ladder_opts(value_close, force_close);
     let rest_rule = if value_harden_enabled() {
         format!("rest ::= rest_part{{0,{VALUE_REST_MAX_REPEAT}}}")
     } else {
         "rest ::= rest_part*".to_string()
     };
+    // Echo-attractor fix (2026-07-09): constrain the parameter NAME to the
+    // tool schema's property names when they are known. The historical
+    // identifier rule accepted ANY identifier, so at long context a model
+    // drifting into the wire-format echo attractor could emit
+    // `<parameter=parameter>filePath>…` / `<parameter=write>content>…` —
+    // grammar-LEGAL under the old rule, and the key-slot masking of `=`
+    // actively converted a recoverable one-token echo into a permanently
+    // mis-keyed call (live opencode collapse at 42.5k tokens, 2026-07-09).
+    // With the alternation below, xgrammar's mask forces the key slot onto a
+    // real schema property, making the mis-keyed shape unrepresentable.
+    // `None` (schema-less / open schema) keeps the historical identifier rule.
+    let paramname_rule = match param_names {
+        Some(names) if !names.is_empty() => {
+            let alts: Vec<String> = names
+                .iter()
+                .map(|n| serde_json::to_string(n).unwrap_or_else(|_| "\"\"".into()))
+                .collect();
+            format!("paramname ::= {}", alts.join(" | "))
+        }
+        _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
+    };
     // Content-start rule: allow a leading whitespace run (INCLUDING `\n`),
-    // then REQUIRE at least one non-whitespace char that is NOT `<`, `=`, or
-    // `>` before the rest. Two distinct boundary bugs are closed here:
-    //  - `<` exclusion + the `leading_ws*` split: the old `[^ \t\r\n<]`
-    //    masked the model's genuine top-1 at content-start (a leading `\n`)
-    //    and — under FP8 long-ctx drift — forced the argmax onto a wrong
-    //    identifier runner-up (`lean`/`cargo`). The split unmasks `\n` while
-    //    keeping the non-empty guard.
+    // then REQUIRE at least one non-whitespace char that is NOT `=` or `>`
+    // before the rest. Boundary bugs closed here:
+    //  - `leading_ws*` split: the old `[^ \t\r\n<]` masked the model's
+    //    genuine top-1 at content-start (a leading `\n`) and — under FP8
+    //    long-ctx drift — forced the argmax onto a wrong identifier
+    //    runner-up (`lean`/`cargo`). The split unmasks `\n` while keeping
+    //    the non-empty guard.
     //  - `=`/`>` exclusion (2026-06-03, diag agent acb6cb1): the param key
     //    closes with `>` and the tokenizer has ~198 `>X` MERGE tokens
     //    (`>=`=9628, `>>`, …). At the `<parameter=KEY>`→value boundary the
@@ -143,17 +206,82 @@ fn xml_param_value_body_ebnf(value_close: &str) -> String {
     //    Legit `>a`/`>{`/`>"` merges stay legal (2nd byte passes); only a
     //    value that genuinely starts with `=`/`>` is disallowed (rare for
     //    code/TOML edit args). Parser is innocent; this is NOT numerics.
+    //  - `<`-start UNBANNED (2026-07-09): the historical blanket `<`
+    //    exclusion (Epoch-3 "close-tag-as-first-body-token" guard) made any
+    //    value whose first non-WS char is `<` UNREPRESENTABLE — the mask
+    //    deflected `<script>` / `<!DOCTYPE` at position 0, so the model
+    //    could not write Svelte/HTML/XML files AT ALL. Live opencode
+    //    session: every `.svelte` write came out script-logic-only (the
+    //    masked model fell into JS-module mode), the model noticed and
+    //    retried the identical write forever — the repeat-loop the
+    //    repetition guards then cut mid-sentence. The BUG#2 negative-prefix
+    //    ladder already prevents the original failure (the literal
+    //    `{value_close}` as body) at EVERY position, so first_content now
+    //    reuses the SAME ladder for its `<` arm: `<` is legal at content
+    //    start unless it begins the exact close delimiter.
+    // P1-1 (2026-07-09, env `ATLAS_GRAMMAR_ALLOW_EMPTY_VALUE=1`): the
+    // non-empty guard makes an EMPTY parameter value unrepresentable, so a
+    // model intending `<parameter=content></parameter>` is mask-coerced onto
+    // garbage first bytes — at 43k depth this manufactured the byte-identical
+    // `</parameter<parameter=` attractor. Opt-in allows the empty value
+    // (immediate close). Trade-off: re-opens the Epoch-3 empty-garbage-call
+    // shape — hence opt-in + BFCL A/B gate before default-on.
+    let value_rule = if allow_empty_value {
+        "value ::= leading_ws (first_content rest)?"
+    } else {
+        "value ::= leading_ws first_content rest"
+    };
     format!(
         r#"root ::= param ("\n" param)*
 param ::= "<parameter=" paramname ">" value "{value_close}"
-paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*
-value ::= leading_ws first_content rest
+{paramname_rule}
+{value_rule}
 leading_ws ::= [ \t\r\n]*
-first_content ::= [^ \t\r\n<=>]
+first_content ::= [^ \t\r\n<=>] | {first_lt_arms}
 {rest_rule}
 rest_part ::= {ladder}
-"#
+"#,
+        first_lt_arms = ladder_lt_arms(&ladder),
     )
+}
+
+/// The `<`-starting alternates of an [`ebnf_until_close_ladder`] alternation.
+///
+/// For close `</parameter>` the full ladder is
+/// `[^<] | "<" [^/] | "</" [^p] | …`; this keeps only the arms that BEGIN
+/// with the close delimiter's first char (`"<" [^/] | "</" [^p] | …`) — i.e.
+/// "a `<` is fine unless it starts the exact close sequence". Used by
+/// `first_content` so `<`-initial values (Svelte `<script>`, HTML
+/// `<!DOCTYPE`) are representable while the literal close tag still cannot
+/// open a value. Derived from the ladder (SSOT), not hard-coded per format.
+fn ladder_lt_arms(ladder: &str) -> String {
+    let arms: Vec<&str> = ladder
+        .split(" | ")
+        .filter(|arm| arm.starts_with('"'))
+        .collect();
+    if arms.is_empty() {
+        // Single-char close delimiter: its ladder is just `[^c]`, which the
+        // base `[^ \t\r\n<=>]` class already covers conservatively.
+        return "[^ \\t\\r\\n<=>]".to_string();
+    }
+    arms.join(" | ")
+}
+
+/// Extract the property names a qwen3_coder `<parameter=NAME>` key slot may
+/// take for this (sanitized) tool schema, or `None` to keep the permissive
+/// identifier rule. `None` when: no/empty `properties`, or the schema
+/// explicitly opts into arbitrary extra keys (`additionalProperties` set to
+/// anything but `false`) — constraining those would mask legitimate calls.
+pub(crate) fn schema_param_names(schema: &serde_json::Value) -> Option<Vec<String>> {
+    let props = schema.get("properties")?.as_object()?;
+    if props.is_empty() {
+        return None;
+    }
+    match schema.get("additionalProperties") {
+        None | Some(serde_json::Value::Bool(false)) => {}
+        Some(_) => return None,
+    }
+    Some(props.keys().cloned().collect())
 }
 
 impl GrammarEngine {
@@ -442,8 +570,12 @@ impl GrammarEngine {
             // content-glue it can induce is largely tolerated (Rust is
             // whitespace-insensitive; SC1 repairs TOML). The real webserver_ok
             // gap is being re-measured via the harness aggregate, not probes.
-            let body_ebnf = xml_param_value_body_ebnf(value_close);
-            let _ = &st.schema;
+            // Echo-attractor fix (2026-07-09): the sanitized schema's property
+            // names now constrain the `<parameter=NAME>` key slot (see
+            // `xml_param_value_body_ebnf`). Previously the schema was
+            // discarded here and any identifier was key-legal.
+            let param_names = schema_param_names(&st.schema);
+            let body_ebnf = xml_param_value_body_ebnf(value_close, param_names.as_deref());
             tag_entries.push(serde_json::json!({
                 "type": "tag",
                 "begin": begin,
@@ -545,11 +677,14 @@ impl GrammarEngine {
                      emitted at trace level by xgrammar.",
                     tool_names.join(", "),
                 );
-                let body_ebnf = xml_param_value_body_ebnf(value_close);
                 let tag_entries_fallback: Vec<serde_json::Value> = sanitized_tools
                     .iter()
                     .map(|st| {
-                        let _ = &st.schema;
+                        // Echo-attractor fix (2026-07-09): per-tool key-slot
+                        // constraint, mirroring the primary path above.
+                        let param_names = schema_param_names(&st.schema);
+                        let body_ebnf =
+                            xml_param_value_body_ebnf(value_close, param_names.as_deref());
                         serde_json::json!({
                             "type": "tag",
                             "begin": format!("<tool_call>\n<function={}>\n", st.name),

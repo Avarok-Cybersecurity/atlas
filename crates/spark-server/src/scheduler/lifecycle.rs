@@ -20,19 +20,23 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
             let decode_ms = a.decode_start.elapsed().as_secs_f64() * 1000.0;
-            if let Err(e) = tx.blocking_send(StreamEvent::Done {
-                finish_reason: reason.to_string(),
-                prompt_tokens: 0, // prompt_tokens tracked by API layer
-                completion_tokens: a.output_tokens.len(),
-                time_to_first_token_ms: ttft_ms,
-                decode_time_ms: decode_ms,
-                reasoning_tokens: a.thinking_tokens,
-                cached_prompt_tokens: a.cached_prompt_tokens,
-            }) {
-                tracing::warn!(
-                    "finish_sequence: streaming Done send failed (receiver dropped): {e}"
-                );
-            }
+            // Terminal frame: detached from the scheduler thread — safe
+            // because nothing follows Done on this channel and all earlier
+            // events are already queued (see spawn_terminal_send).
+            super::mod_helpers::spawn_terminal_send(
+                tx,
+                StreamEvent::Done {
+                    finish_reason: reason.to_string(),
+                    prompt_tokens: 0, // prompt_tokens tracked by API layer
+                    completion_tokens: a.output_tokens.len(),
+                    time_to_first_token_ms: ttft_ms,
+                    decode_time_ms: decode_ms,
+                    reasoning_tokens: a.thinking_tokens,
+                    cached_prompt_tokens: a.cached_prompt_tokens,
+                    guard_stop: a.guard_stop,
+                },
+                "done frame",
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take() {
@@ -47,6 +51,14 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        prompt_logprobs: std::mem::take(&mut a.seq.prompt_logprobs)
+                            .into_iter()
+                            .map(|p| crate::api::TokenLogprobs {
+                                token_id: p.token_id,
+                                logprob: p.logprob,
+                                top: p.top,
+                            })
+                            .collect(),
                     }))
                     .is_err()
                 {
@@ -83,9 +95,11 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
 pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
-            if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
-                tracing::warn!("send_error: streaming Error send failed (receiver dropped): {e}");
-            }
+            super::mod_helpers::spawn_terminal_send(
+                tx,
+                StreamEvent::Error(msg.to_string()),
+                "error frame",
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take()
@@ -111,11 +125,11 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
 pub fn send_error_to_sink(sink: &mut ResponseSink, msg: &str) {
     match sink {
         ResponseSink::Streaming(tx) => {
-            if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
-                tracing::warn!(
-                    "send_error_to_sink: streaming Error send failed (receiver dropped): {e}"
-                );
-            }
+            super::mod_helpers::spawn_terminal_send(
+                tx,
+                StreamEvent::Error(msg.to_string()),
+                "pre-seq error frame",
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take()
@@ -166,6 +180,8 @@ pub fn swap_out_sequence(
     Ok(SwappedSeq {
         tokens,
         session_hash: a.session_hash,
+        adapter_slot: a.seq.adapter_slot,
+        adapter_id: a.seq.adapter_id,
         seq_len,
         num_blocks,
         last_token: a.last_token,
@@ -203,6 +219,7 @@ pub fn swap_out_sequence(
         think_start_token: a.think_start_token,
         think_ended: a.think_ended,
         think_just_ended: a.think_just_ended,
+        post_think_emitted: a.post_think_emitted,
         think_skip_count: a.think_skip_count,
         require_tool_call: a.require_tool_call,
         tool_request: a.tool_request,
@@ -213,6 +230,7 @@ pub fn swap_out_sequence(
         content_tokens: a.content_tokens,
         prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
         think_watchdog_fires: a.think_watchdog_fires,
+        think_force_closed: a.think_force_closed,
         rollback_count: a.rollback_count,
         tool_call_start_token: a.tool_call_start_token,
         tool_call_opened: a.tool_call_opened,
@@ -246,6 +264,14 @@ pub fn resume_swapped_seq(
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
     seq.seq_len = s.seq_len;
+    seq.adapter_slot = s.adapter_slot;
+    seq.adapter_id = s.adapter_id;
+    // Task #25: swap-out released this seq's slot ref (via free_sequence); a
+    // resumed seq re-enters ACTIVE decode WITHOUT re-running the prefill stamp,
+    // so re-acquire here to balance that release and re-protect the slot for the
+    // remainder of the decode. Stores the freshly resolved index (release keys
+    // off it, so the acquire/release stay balanced regardless of any rotate).
+    seq.acquired_adapter_slot = model.acquire_adapter_slot(s.adapter_slot);
 
     Ok(ActiveSeq {
         seq,
@@ -256,6 +282,8 @@ pub fn resume_swapped_seq(
         min_tokens: s.min_tokens,
         eos_tokens: s.eos_tokens,
         finished: false,
+        guard_stop: None,
+        param_close_pending: 0,
         sink: s.sink,
         // cancel_flag isn't preserved across spill/restore — the
         // original stream is long gone by the time a swapped-out seq
@@ -290,6 +318,8 @@ pub fn resume_swapped_seq(
         think_start_token: s.think_start_token,
         think_ended: s.think_ended,
         think_just_ended: s.think_just_ended,
+        post_think_emitted: s.post_think_emitted,
+        spec_adapt: Default::default(),
         think_skip_count: s.think_skip_count,
         require_tool_call: s.require_tool_call,
         tool_request: s.tool_request,
@@ -300,6 +330,7 @@ pub fn resume_swapped_seq(
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
         think_watchdog_fires: s.think_watchdog_fires,
+        think_force_closed: s.think_force_closed,
         rollback_count: s.rollback_count,
         // Decode-rollback SSM snapshots are GPU-resident and not part of
         // the disk swap image — a resumed sequence starts with an empty

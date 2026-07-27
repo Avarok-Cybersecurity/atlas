@@ -109,6 +109,7 @@ impl Qwen3AttentionLayer {
                     .offset(i * meta.max_blocks_per_seq as usize * 4),
                 max_blocks_per_seq: meta.max_blocks_per_seq,
                 num_seqs: 1,
+                seq_slot: spark_runtime::gpu::DevicePtr(0),
             };
             let o_out_i = o_out.offset(i * c.h * bf16);
 
@@ -129,6 +130,7 @@ impl Qwen3AttentionLayer {
                 // block_table). All other ctx fields are copied verbatim.
                 let ctx_i = crate::layer::ForwardContext {
                     attn_metadata: Some(meta_i),
+                    midchunk_capture: None,
                     ..*c.fwd
                 };
                 // Q/K/V projection destinations inside `qkv_output`,
@@ -152,6 +154,10 @@ impl Qwen3AttentionLayer {
                     eps,
                     bs,
                     stream,
+                    // Batched / MTP-verify path: skip the inc-3 compressed-pool
+                    // append (a shared per-layer position counter can't track
+                    // interleaved verify tokens) → frozen inc-2 pool here.
+                    pos: None,
                 };
                 let o_v4 = self.attention_forward_v4(kv_cache, &ctx_i, &args)?;
                 // `attention_forward_v4` writes its O projection into the
@@ -260,7 +266,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             q_latent,
             &mla.q_a_norm,
             q_latent,
@@ -361,7 +367,7 @@ impl Qwen3AttentionLayer {
         }
         ops::rms_norm(
             gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             kv_latent,
             &mla.kv_a_norm,
             kv_latent,

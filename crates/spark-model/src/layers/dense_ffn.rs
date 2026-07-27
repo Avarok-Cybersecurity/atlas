@@ -95,6 +95,10 @@ pub struct DenseFfnLayer {
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
+    /// M<=4 batched GEMV (K=4 verify FFN); 0-handle when absent.
+    w4a16_gemv_batch4: KernelHandle,
+    /// M<=8 batched GEMV (chain-verify K=5..8 FFN); 0-handle when absent.
+    w4a16_gemv_batch8: KernelHandle,
     w4a16_gemm: KernelHandle,
     // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
     // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
@@ -132,6 +136,9 @@ pub struct DenseFfnLayer {
     // below) and requant the BF16 activations every call (`requant_a_bf16_int8`,
     // into `int8_a_scratch`). KernelHandle(0) on miss → arm never taken.
     int8_faith2_k: KernelHandle,
+    // faith5: int32 per-sb accumulation (breaks the MMA→scale dependency chain).
+    // Opt-in via ATLAS_INT8_FAITH5=1 (replaces faith2 for int8 prefill GEMMs).
+    int8_faith5_k: KernelHandle,
     requant_w_int8_k: KernelHandle,
     requant_a_int8_k: KernelHandle,
     // Lazily-built, process-lifetime int8 weight copies (one per projection),
@@ -174,6 +181,12 @@ pub struct DenseFfnLayer {
     fp4mmq_gate: std::sync::OnceLock<Fp4MmqWeight>,
     fp4mmq_up: std::sync::OnceLock<Fp4MmqWeight>,
     fp4mmq_down: std::sync::OnceLock<Fp4MmqWeight>,
+    // Small-M (DFlash verify M=17) routing companion to `w4a16_gemm_t_k`
+    // (declared above): deep-K variant. w4a16_m17_bench: `w4a16_gemm_t_k64`
+    // wins deep-K down_proj (554 vs 810us at K=17408); the M64-tile
+    // `w4a16_gemm_t` beats M128 tiles at M<=64 (283 vs 324us on gate/up).
+    // KernelHandle(0) → m128 dispatch.
+    w4a16_gemm_t_k64_k: KernelHandle,
     /// SiLU(gate)*up or GELU(gate)*up depending on activation.
     act_mul: KernelHandle,
     /// BF16 dense MLP weights — when `Some`, all forward paths use the
@@ -208,6 +221,13 @@ pub struct DenseFfnLayer {
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
     w8a16_gemm_t_m128_k: KernelHandle,
+    /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
+    /// where `fp8_weights` or `bf16_weights` are installed (v0 supports the
+    /// NVFP4 dispatch path only — the FP8/BF16 decode branches early-return
+    /// before the NVFP4 tail where the deltas will land; holo is NVFP4 so
+    /// it is unaffected). M0: stored only — compute reads land in M1.
+    #[allow(dead_code)]
+    lora: Option<ops::lora_delta::LoraFfnWeights>,
 }
 
 impl DenseFfnLayer {
@@ -251,6 +271,8 @@ impl DenseFfnLayer {
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
+            w4a16_gemv_batch4: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
@@ -262,6 +284,7 @@ impl DenseFfnLayer {
             ),
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             int8_faith2_k: super::try_kernel(gpu, "w4a16", "int8_gemm_faith2"),
+            int8_faith5_k: super::try_kernel(gpu, "w4a16", "int8_gemm_i32acc"),
             requant_w_int8_k: super::try_kernel(gpu, "w4a16", "requant_w_nvfp4_int8"),
             requant_a_int8_k: super::try_kernel(gpu, "w4a16", "requant_a_bf16_int8"),
             int8_gate: std::sync::OnceLock::new(),
@@ -291,6 +314,7 @@ impl DenseFfnLayer {
             fp4mmq_gate: std::sync::OnceLock::new(),
             fp4mmq_up: std::sync::OnceLock::new(),
             fp4mmq_down: std::sync::OnceLock::new(),
+            w4a16_gemm_t_k64_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64"),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,
@@ -306,6 +330,7 @@ impl DenseFfnLayer {
                 "w8a16_gemv_silu_input",
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
+            lora: None,
         };
         Ok(layer)
     }
@@ -456,7 +481,7 @@ impl DenseFfnLayer {
         let mut freed = 0usize;
         for wt in [&mut self.weights.gate_proj_t, &mut self.weights.up_proj_t]
             .into_iter()
-            .chain(down_t.take().into_iter())
+            .chain(down_t.take())
         {
             if let Some(w) = wt.as_ref()
                 && !w.weight.is_null()
@@ -522,6 +547,21 @@ impl DenseFfnLayer {
             up_proj: up,
             down_proj: down,
         });
+    }
+
+    /// Install the startup-static LoRA FFN overlay (gate/up/down deltas).
+    /// Hard-rejects when FP8/BF16 weight overlays are installed — those
+    /// decode branches early-return before the NVFP4 tail where the M1
+    /// delta insertions land, so a permissive install would silently skip
+    /// deltas. holo is NVFP4, so it is unaffected.
+    pub fn set_lora_weights(&mut self, w: ops::lora_delta::LoraFfnWeights) -> Result<()> {
+        anyhow::ensure!(
+            self.fp8_weights.is_none() && self.bf16_weights.is_none(),
+            "LoRA v0 supports only the NVFP4 dense-FFN path (FP8/BF16 weight \
+             overlays installed on this layer)"
+        );
+        self.lora = Some(w);
+        Ok(())
     }
 
     /// Install BF16 dense MLP weights. After this call, the forward paths
@@ -769,6 +809,89 @@ impl DenseFfnLayer {
             return Ok(output);
         }
 
+        // ATLAS_DECODE_FFN_VIA_GEMM=1: route decode's M=1 FFN projections
+        // through the SAME transposed-weight GEMM kernels the DFlash verify
+        // path uses (`w4a16_prefill_gemm` → w4a16_gemm_t / _t_k64), instead
+        // of the dedicated GEMV kernels. Purpose: bit-identical FFN numerics
+        // between serial decode and batched verify — the batch-K vs batch-1
+        // divergence #218's bisect isolated ("FFN non-associativity") and the
+        // root cause of the T=0 spec trajectory flips (2026-07-07 session).
+        // Split SiLU staging already matches prefill SiLU numerics (swiglu
+        // clamp), so with this arm the whole FFN block is kernel-identical to
+        // a verify row. Requires the *_proj_t transposed copies (the NVFP4-MMQ
+        // prefill arm FREES them — disable it if the warn below fires).
+        fn decode_ffn_via_gemm() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_DECODE_FFN_VIA_GEMM").ok().as_deref() == Some("1")
+            })
+        }
+        if decode_ffn_via_gemm() && self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 {
+            let wt_alive =
+                |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
+            if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
+                static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                LOGGED.get_or_init(|| {
+                    tracing::info!(
+                        "decode FFN via verify GEMM path (ATLAS_DECODE_FFN_VIA_GEMM=1): \
+                         gate/up/down through w4a16_prefill_gemm at M=1"
+                    );
+                });
+                self.w4a16_prefill_gemm(
+                    ctx,
+                    &self.weights.gate_proj,
+                    self.weights.gate_proj_t.as_ref(),
+                    input,
+                    gate_out,
+                    1,
+                    inter,
+                    h,
+                    stream,
+                )?;
+                self.w4a16_prefill_gemm(
+                    ctx,
+                    &self.weights.up_proj,
+                    self.weights.up_proj_t.as_ref(),
+                    input,
+                    up_out,
+                    1,
+                    inter,
+                    h,
+                    stream,
+                )?;
+                ops::silu_mul(
+                    ctx.gpu,
+                    self.act_mul,
+                    gate_out,
+                    up_out,
+                    gate_out,
+                    inter,
+                    stream,
+                )?;
+                let output = ctx.buffers.moe_output();
+                self.w4a16_prefill_gemm(
+                    ctx,
+                    &self.weights.down_proj,
+                    self.weights.down_proj_t.as_ref(),
+                    gate_out,
+                    output,
+                    1,
+                    h,
+                    inter,
+                    stream,
+                )?;
+                return Ok(output);
+            }
+            static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WARNED.get_or_init(|| {
+                tracing::warn!(
+                    "ATLAS_DECODE_FFN_VIA_GEMM=1 requested but transposed FFN copies \
+                     are freed/absent (NVFP4-MMQ prefill arm?) — falling back to GEMV; \
+                     the unification experiment is NOT active"
+                );
+            });
+        }
+
         // Fused gate_proj + up_proj: [1, H] → [1, inter] × 2.
         // Single-warp variant (lossless) when ATLAS_DECODE_OPT is on and the
         // _sw kernel is present; otherwise the proven 64-thread kernel.
@@ -985,7 +1108,183 @@ impl DenseFfnLayer {
         Ok(())
     }
 
+    /// Batchm-GEMV kernel for `m` verify rows: batch4 (m<=4) or batch8
+    /// (m=5..8, chain verify). 0-handle when out of range or absent.
+    fn batchm_kernel(&self, m: u32) -> KernelHandle {
+        match m {
+            1..=4 => self.w4a16_gemv_batch4,
+            5..=8 => self.w4a16_gemv_batch8,
+            _ => KernelHandle(0),
+        }
+    }
+
+    /// Whether the M-row batched-GEMV verify path is available for `m` rows
+    /// (batchm kernel present AND NVFP4 weights loaded — the batchm GEMV
+    /// reads the non-transposed NVFP4 layout).
+    pub fn can_forward_km(&self, m: u32) -> bool {
+        self.batchm_kernel(m).0 != 0 && !self.weights.gate_proj.weight.is_null()
+    }
+
+    /// K=m (m<=8) speculative verify: batched GEMV for m tokens.
+    /// 4 launches: batchm gate + batchm up + silu_mul + batchm down — each
+    /// projection weight is read ONCE for all m rows at near-peak stream
+    /// bandwidth. nsys (2026-07-18, M=4): the `forward_prefill` MMQ arm this
+    /// replaces for the K=4 verify cost 54.8 ms/step across the 64-layer
+    /// dense FFN stack (~156 GB/s effective at M=4); the batch GEMV family
+    /// measures ~290 GB/s on the same shapes (w8a16_gemv_batch4 sibling),
+    /// putting this path at the ~31 ms weight-traffic floor. m=5..8 uses
+    /// `w4a16_gemv_batch8` (batchm_bench: same weight-streaming bandwidth,
+    /// removing the M>4 tile-GEMM cliff for chain-verify K=5..8).
+    pub fn forward_km(
+        &self,
+        input: DevicePtr,
+        m: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let inter = ctx.config.intermediate_size as u32;
+        let kh = self.batchm_kernel(m);
+
+        let gate_out = ctx.buffers.expert_gate_out();
+        let up_out = ctx.buffers.expert_up_out();
+
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            kh,
+            input,
+            &self.weights.gate_proj,
+            gate_out,
+            m,
+            inter,
+            h,
+            stream,
+        )?;
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            kh,
+            input,
+            &self.weights.up_proj,
+            up_out,
+            m,
+            inter,
+            h,
+            stream,
+        )?;
+        ops::silu_mul(
+            ctx.gpu,
+            self.act_mul,
+            gate_out,
+            up_out,
+            gate_out,
+            m * inter,
+            stream,
+        )?;
+        let output = ctx.buffers.moe_output();
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            kh,
+            gate_out,
+            &self.weights.down_proj,
+            output,
+            m,
+            h,
+            inter,
+            stream,
+        )?;
+
+        Ok(())
+    }
+
     /// N-token prefill: GEMM for all projections.
+    /// W4A16 prefill/verify GEMM dispatch, routed by (M, K) per
+    /// w4a16_m17_bench measurements on GB10:
+    ///   - M<=64 (DFlash verify M=17): the M64-tile `w4a16_gemm_t` beats the
+    ///     M128-tile kernels (283 vs 324us on gate/up — 87% of an M128 tile
+    ///     is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K down_proj
+    ///     (554 vs 810us at K=17408, where N/128 CTAs can't fill the GPU and
+    ///     the halved K-loop matters).
+    ///   - M>64 (real prefill): v2 (8-warp) > t_m128 (4-warp), unchanged.
+    ///   - No transposed copy: base `w4a16_gemm` (9-12x the bandwidth floor —
+    ///     last resort).
+    ///
+    /// Kill-switch: ATLAS_FFN_SMALLM=0 restores the m128-only dispatch for A/B.
+    #[allow(clippy::too_many_arguments)]
+    fn w4a16_prefill_gemm(
+        &self,
+        ctx: &ForwardContext,
+        w: &QuantizedWeight,
+        wt: Option<&QuantizedWeight>,
+        input: DevicePtr,
+        output: DevicePtr,
+        m: u32,
+        n: u32,
+        k: u32,
+        stream: u64,
+    ) -> Result<()> {
+        fn small_m_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
+        }
+        if let Some(wt) = wt {
+            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
+                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
+                    return ops::w4a16_gemm_n128(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_k64_k,
+                        input,
+                        wt,
+                        output,
+                        m,
+                        n,
+                        k,
+                        stream,
+                    );
+                }
+                if self.w4a16_gemm_t_k.0 != 0 {
+                    return ops::w4a16_gemm_n128(
+                        ctx.gpu,
+                        self.w4a16_gemm_t_k,
+                        input,
+                        wt,
+                        output,
+                        m,
+                        n,
+                        k,
+                        stream,
+                    );
+                }
+            }
+            if self.w4a16_gemm_t_m128_v2_k.0 != 0 {
+                return ops::w4a16_gemm_n128_m128_v2(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_v2_k,
+                    input,
+                    wt,
+                    output,
+                    m,
+                    n,
+                    k,
+                    stream,
+                );
+            }
+            if self.w4a16_gemm_t_m128_k.0 != 0 {
+                return ops::w4a16_gemm_n128_m128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t_m128_k,
+                    input,
+                    wt,
+                    output,
+                    m,
+                    n,
+                    k,
+                    stream,
+                );
+            }
+        }
+        ops::w4a16_gemm(ctx.gpu, self.w4a16_gemm, input, w, output, m, n, k, stream)
+    }
+
     pub fn forward_prefill(
         &self,
         input: DevicePtr,
@@ -1343,9 +1642,19 @@ impl DenseFfnLayer {
                     // (down_faith2 && !$allow_q4k): down falls here instead of Q4_K.
                     _ if int8_prefill || (down_faith2 && !$allow_q4k) => {
                         let iw = self.ensure_int8_weight($cell, ctx.gpu, $w, $n, $k, stream)?;
+                        // faith5 (ATLAS_INT8_FAITH5=1): int32 per-sb accumulation
+                        // breaks the MMA→scale dependency chain. Same kernel signature
+                        // + grid/block as faith2 — just a different KernelHandle.
+                        let int8_kernel = if self.int8_faith5_k.0 != 0
+                            && std::env::var_os("ATLAS_INT8_FAITH5").is_some()
+                        {
+                            self.int8_faith5_k
+                        } else {
+                            self.int8_faith2_k
+                        };
                         ops::int8_gemm_faith2_prefill(
                             ctx.gpu,
-                            self.int8_faith2_k,
+                            int8_kernel,
                             self.requant_a_int8_k,
                             $in,
                             iw.w_i8,
@@ -1389,6 +1698,16 @@ impl DenseFfnLayer {
                         $k,
                         stream,
                     )?,
+                    // Small-M routing (DFlash verify, M<=64): delegate to
+                    // `w4a16_prefill_gemm`, which picks `w4a16_gemm_t` /
+                    // `w4a16_gemm_t_k64` per the w4a16_m17_bench numbers and
+                    // falls back to the same v2/m128 kernels below.
+                    // ATLAS_FFN_SMALLM=0 disables. Sits after the opt-in
+                    // quant arms so explicit MMQ/int8/FP8 experiments keep
+                    // priority.
+                    Some(wt) if m <= 64 => {
+                        self.w4a16_prefill_gemm(ctx, $w, Some(&wt), $in, $out, m, $n, $k, stream)?
+                    }
                     // Prefer v2 (8-warp) > t_m128 (4-warp) > scalar-tile base.
                     Some(wt) if self.w4a16_gemm_t_m128_v2_k.0 != 0 => ops::w4a16_gemm_n128_m128_v2(
                         ctx.gpu,

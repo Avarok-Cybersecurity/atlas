@@ -2,7 +2,15 @@
   // Data is SSOT-derived from github.com/Avarok-Cybersecurity/atlas-recipes
   // via site/scripts/gen-models.mjs -> models.generated.json.
   // 3-level tree: vendor (brand) -> subfamily (recipe dir) -> recipes.
-  import vendors from '$lib/models.generated.json';
+  import vendorsRaw from '$lib/models.generated.json';
+  import { models as mcopy, recipesUrl } from '$lib/data.js';
+
+  // Flagship first: Qwen3.6 leads its vendor, then Qwen3.5, then the rest as-is.
+  const rankSub = (n) => (n === 'Qwen3.6' ? 0 : n === 'Qwen3.5' ? 1 : 2);
+  const vendors = vendorsRaw.map((v) => ({
+    ...v,
+    subfamilies: [...v.subfamilies].sort((a, b) => rankSub(a.name) - rankSub(b.name))
+  }));
 
   // --- inline brand/model marks (no external URL/CDN — static site) ---------
   // Monochrome, viewBox 0 0 24 24, fill=currentColor -> inherits the dark
@@ -17,7 +25,8 @@
     mistral:
       'M3.428 3.4h3.429v3.428h3.429v3.429h-.002 3.431V6.828h3.427V3.4h3.43v13.714H24v3.429H13.714v-3.428h-3.428v-3.429h-3.43v3.428h3.43v3.429H0v-3.429h3.428V3.4zm10.286 13.715h3.428v-3.429h-3.427v3.429z',
     minimax:
-      'M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z'
+      'M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z',
+    deepseek: 'M12 2 4 12l8 10 8-10-8-10zm0 3.6L17.2 12 12 18.4 6.8 12 12 5.6z'
   };
 
   // selected vendor + per-vendor selected subfamily (Svelte 5 runes)
@@ -54,16 +63,11 @@
   const topoClass = (t) => (t === 'EP=2' ? 'chip chip-ep2' : t === 'TP=2' ? 'chip chip-tp2' : 'chip chip-single');
 </script>
 
-<section id="models" style="background: var(--bg2);">
+<section id="models">
   <div class="container">
-    <div class="slabel">Supported Models</div>
-    <h2 class="stitle">Model matrix</h2>
-    <p class="ssub">
-      Every model gets hand-tuned CUDA kernels. Pick a vendor, then a model
-      family; every recipe maps to a single
-      <a href="https://github.com/Avarok-Cybersecurity/atlas-recipes" class="ssub-link">sparkrun recipe</a>
-      you can copy and run as-is.
-    </p>
+    <div class="slabel">{mcopy.label}</div>
+    <h2 class="stitle">{mcopy.title}</h2>
+    <p class="ssub">{mcopy.sub}</p>
 
     <div class="mnav">
       <!-- Level 1: vendor brand tabs -->
@@ -135,11 +139,17 @@
     </div>
 
     <div class="ms-foot">
-      All recipes are the single source of truth in
-      <a href="https://github.com/Avarok-Cybersecurity/atlas-recipes" class="ssub-link">atlas-recipes</a>.
-      Run any of them with
-      <a href="https://sparkrun.dev/runtimes/atlas/" class="ssub-link">sparkrun</a>.
-      EP=2 = Expert Parallelism across two GB10 nodes.
+      Every recipe is the single source of truth in
+      <a href={recipesUrl} class="link" target="_blank" rel="noopener">atlas-recipes</a>,
+      so the site cannot list a model we do not ship. EP=2 is Expert Parallelism across two GB10 nodes.
+    </div>
+
+    <div class="qwen-block">
+      {mcopy.qwen.kernel}
+      <a href={mcopy.qwen.kernelUrl} target="_blank" rel="noopener">transformers #46423</a> ·
+      <a href={mcopy.qwen.hubUrl} target="_blank" rel="noopener">{mcopy.qwen.hubText}</a>.
+      {mcopy.qwen.ambassador}
+      <a href={mcopy.qwen.ambassadorUrl} target="_blank" rel="noopener">Qwen ambassadors ↗</a>
     </div>
   </div>
 </section>

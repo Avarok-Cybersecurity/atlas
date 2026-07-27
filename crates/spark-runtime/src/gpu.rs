@@ -168,6 +168,15 @@ pub trait GpuBackend: Send + Sync {
         self.launch(func, grid, block, shared_mem, stream, &mut params)
     }
 
+    /// Whether `stream` is inside an active CUDA-graph capture. Telemetry
+    /// taps MUST check this before any sync/D2H on a potentially-captured
+    /// stream — those calls invalidate the capture (CUDA 901) and wedge the
+    /// serve. Default `false` (backends without capture, or without a query
+    /// API, never capture through this trait's eager paths).
+    fn stream_is_capturing(&self, _stream: u64) -> bool {
+        false
+    }
+
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
 
@@ -286,6 +295,17 @@ pub trait GpuBackend: Send + Sync {
 
     /// Make a stream wait for an event (GPU-side sync, CPU does not block).
     fn stream_wait_event(&self, _stream: u64, _event: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Block the calling host thread until all work already
+    /// recorded against the event — e.g. an async D2H copy issued on the
+    /// graph stream followed by `record_event`, then `event_synchronize`
+    /// right before the host dereferences the destination pinned buffer.
+    /// Cheaper than `synchronize(stream)` when the stream has work beyond
+    /// the event you care about: this only waits for the recorded point,
+    /// not for everything subsequently enqueued.
+    fn event_synchronize(&self, _event: u64) -> Result<()> {
         Ok(())
     }
 

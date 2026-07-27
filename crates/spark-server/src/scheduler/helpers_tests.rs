@@ -348,7 +348,7 @@ fn override_loosens_content_loop_threshold() {
     );
 
     // Override path: min_count=4 ⇒ 3 repeats are insufficient.
-    let strict = crate::openai::RepetitionDetectionParams {
+    let strict = crate::api::inference_types::RepetitionDetectionParams {
         min_pattern_size: 2,
         max_pattern_size: 64,
         min_count: 4,
@@ -371,7 +371,7 @@ fn override_tightens_content_loop_threshold() {
     for _ in 0..5 {
         tokens.extend(pat.iter());
     }
-    let permissive = crate::openai::RepetitionDetectionParams {
+    let permissive = crate::api::inference_types::RepetitionDetectionParams {
         min_pattern_size: 5,
         max_pattern_size: 5,
         min_count: 3,
@@ -396,7 +396,7 @@ fn override_applies_to_thinking_loop() {
         "default thinking-loop thresholds must still fire on 4× period-10"
     );
     // Override demanding 6 repeats ⇒ 4 is insufficient ⇒ must not fire.
-    let strict = crate::openai::RepetitionDetectionParams {
+    let strict = crate::api::inference_types::RepetitionDetectionParams {
         min_pattern_size: 4,
         max_pattern_size: 20,
         min_count: 6,

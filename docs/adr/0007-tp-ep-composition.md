@@ -53,7 +53,7 @@ Implementation:
 - The launcher (`scripts/start-ep2.sh`) sets the NCCL env identically on
   both ranks. Mismatched flags between rank 0 and rank 1 (e.g. one rank
   enables `--speculative` and the other doesn't) produce SSM
-  intermediate-buffer errors at runtime — see `docs/EP2-TROUBLESHOOTING.md`.
+  intermediate-buffer errors at runtime — see `docs/GB10_DEPLOYMENT_GUIDE.md` §7.
 
 The EP+TP overlap case (TP=2, EP=2) shipped in `project_tp_phase8a_complete`
 with the unified-layout MoE rewrite, gated behind

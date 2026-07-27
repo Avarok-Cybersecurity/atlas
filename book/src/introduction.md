@@ -27,7 +27,7 @@ Three audiences, one narrative arc:
 
 ## What you get
 
-A single multi-model Docker image (`avarok/atlas-gb10:latest`), an OpenAI-compatible HTTP server, and the machinery to port Atlas to fresh `(H, M_q)` targets. Twelve models are supported today — Qwen3 through Qwen3.6, Qwen3-VL, Gemma-4, Mistral-Small-4, MiniMax-M2.7, Nemotron-3 Nano and Super — covering dense, hybrid SSM/attention, MoE, vision, and 256-expert routing. The engine ships with MTP speculative decoding, RadixAttention prefix caching with SSM snapshots, FP8 and NVFP4 KV caches, per-batch CUDA graphs, chunked prefill, tool calling in three formats, and RoCEv2-backed expert parallelism for models beyond a single GB10.
+A single multi-model Docker image (`avarok/atlas-gb10:latest`), an OpenAI-compatible HTTP server, and the machinery to port Atlas to fresh `(H, M_q)` targets. The model matrix spans Qwen3 through Qwen3.6, Qwen3-VL, Gemma-4, Mistral-Small-4, MiniMax-M2.7, Nemotron-3 Nano and Super, and DeepSeek-V4-Flash — covering dense, hybrid SSM/attention, MoE, vision, MLA, and 256-expert routing. The engine ships with MTP speculative decoding, RadixAttention prefix caching with SSM snapshots, FP8 and NVFP4 KV caches, per-batch CUDA graphs, chunked prefill, tool calling in three formats, and RoCEv2-backed expert parallelism for models beyond a single GB10.
 
 ## How to read this book
 

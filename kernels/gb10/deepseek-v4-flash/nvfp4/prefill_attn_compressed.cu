@@ -26,7 +26,7 @@ extern "C" __global__ void prefill_attn_compressed(
     const __nv_bfloat16* __restrict__ V,       // [S, num_kv_heads, head_dim]
     const __nv_bfloat16* __restrict__ Kc,      // [n_comp, head_dim]  (kv head 0)
     const __nv_bfloat16* __restrict__ Vc,      // [n_comp, head_dim]
-    const __nv_bfloat16* __restrict__ sinks,   // [num_q_heads]  per-head sink logit
+    const float* __restrict__ sinks,   // [num_q_heads]  per-head sink logit (FP32: checkpoint-native; reading as bf16 hard-zeroed 7 heads)
     __nv_bfloat16* __restrict__ O,             // [S, num_q_heads, head_dim]
     const unsigned int seq_len,
     const unsigned int num_q_heads,
@@ -34,6 +34,7 @@ extern "C" __global__ void prefill_attn_compressed(
     const unsigned int head_dim,
     const unsigned int n_comp,
     const unsigned int ratio,
+    const unsigned int sliding_window,   // raw arm attends only the last `sliding_window` keys (0 = full)
     const float inv_sqrt_d
 ) {
     const unsigned int q_head = blockIdx.x;
@@ -79,9 +80,11 @@ extern "C" __global__ void prefill_attn_compressed(
         m = m_new;                                                               \
     } while (0)
 
-    // ── raw keys (causal) ──
+    // ── raw keys (sliding-window causal: last `sliding_window` keys ending at q_row) ──
     unsigned int kv_len = valid ? (q_row + 1) : 0;
-    for (unsigned int kp = 0; kp < kv_len; ++kp) {
+    unsigned int kv_start = 0;
+    if (sliding_window > 0u && kv_len > sliding_window) kv_start = kv_len - sliding_window;
+    for (unsigned int kp = kv_start; kp < kv_len; ++kp) {
         const __nv_bfloat16* Kr = K + (size_t)kp * kv_stride + (size_t)kv_head * head_dim;
         const __nv_bfloat16* Vr = V + (size_t)kp * kv_stride + (size_t)kv_head * head_dim;
         ATTEND(Kr, Vr);
@@ -98,7 +101,7 @@ extern "C" __global__ void prefill_attn_compressed(
 
     // ── attention sink: per-head logit in the denominator only (no value) ──
     if (valid && sinks != nullptr) {
-        float sg = __bfloat162float(sinks[q_head]);
+        float sg = sinks[q_head];
         float m_new = fmaxf(m, sg);
         float eo = __expf(m - m_new);
         for (unsigned int d = 0; d < 64 && dim_start + d < head_dim; ++d) o_acc[d] *= eo;

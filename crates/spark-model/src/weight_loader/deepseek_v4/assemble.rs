@@ -14,8 +14,8 @@ use crate::layers::qwen3_attention::{
     CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
 };
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    dense_minus_one, quantized, quantized_v2,
+    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
+    quantized, quantized_v2,
 };
 
 /// Load one MoE expert projection, dispatching by the on-disk format so the V4
@@ -61,27 +61,110 @@ fn load_expert_proj(
             qctx.quantize_k,
             qctx.stream,
         ),
-        // NVFP4 4-bit (2 values/byte) + E8M0 `.scale`, no global (DeepSeek-V4
-        // ORIGINAL format, MTP module): dequant to BF16 then re-quantize to the
-        // standard NVFP4 the MoE GEMM expects. Weight shape is packed [n, k/2].
+        // NVFP4 4-bit (2 values/byte) + E8M0 `.scale`, no global — DeepSeek-V4's
+        // ORIGINAL native MXFP4 routed format. Land the bytes device-resident
+        // UNCHANGED (transcode-free): NO dequant, NO re-quantize. Tagged
+        // `Mxfp4E8m0` at the MoE-layer level (see `detect_routed_scale_kind`);
+        // the E8M0 GEMM variants (Phase-K) consume the E8M0 scales directly.
+        // WAS: `dequant_nvfp4_e8m0_to_bf16 → quantize_to_nvfp4` = TWO lossy
+        // 4-bit conversions at load (MXFP4→BF16→NVFP4) — the founding-scar path
+        // ARM-2 removes. `n`/`shape_k`/`qctx`/`gpu` unused on this arm now.
         WeightDtype::UInt8 => {
-            let k = shape_k * 2;
-            let bf16 = crate::weight_map::dequant_nvfp4_e8m0_to_bf16(store, prefix, n, k, gpu)?;
-            let qw = crate::weight_map::quantize_to_nvfp4(
-                &bf16,
-                n,
-                k,
-                gpu,
-                qctx.absmax_k,
-                qctx.quantize_k,
-                qctx.stream,
-            )?;
-            gpu.free(bf16.weight)?;
+            let qw = crate::weight_map::quantized_mxfp4_e8m0(store, prefix)?;
+            maybe_dump_expert0(prefix, &qw, gpu)?;
             Ok(qw)
         }
         other => anyhow::bail!(
             "{prefix}: unsupported expert weight dtype {other:?} (expected FP8E4M3 or UInt8)"
         ),
+    }
+}
+
+/// Phase-K STEP 0 (gating): one-shot device byte-check of the native-MXFP4
+/// loader. When `ATLAS_DUMP_EXPERT0=1`, dumps `layers.0.ffn.experts.0.w1`'s
+/// device-resident packed nibbles (`.weight`) + E8M0 scales (`.weight_scale`)
+/// to `/tmp` for sha256 vs the on-disk reference (`ARM-2-LEG1-BYTE-CHECK.md`:
+/// weight `177ac128…`, scale `ea4ac989…`). Dumps the PRE-transpose buffer (the
+/// loader output, before any `transpose_for_gemm` swizzle) — matches the Leg-1
+/// caveat. Sizes are fixed by the frozen ckpt: weight 4194304 B, scale 262144 B.
+fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) -> Result<()> {
+    if std::env::var("ATLAS_DUMP_EXPERT0").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    if !prefix.ends_with("layers.0.ffn.experts.0.w1") {
+        return Ok(());
+    }
+    let mut w = vec![0u8; 4194304];
+    gpu.copy_d2h(qw.weight, &mut w)?;
+    let mut s = vec![0u8; 262144];
+    gpu.copy_d2h(qw.weight_scale, &mut s)?;
+    std::fs::write("/tmp/atlas_expert0_w1_weight.bin", &w)?;
+    std::fs::write("/tmp/atlas_expert0_w1_scale.bin", &s)?;
+    eprintln!(
+        "ATLAS_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/atlas_expert0_w1_*.bin",
+        w.len(),
+        s.len()
+    );
+    Ok(())
+}
+
+/// Detect the landed quant format of the ROUTED experts, for the E8M0 MoE-GEMM
+/// dispatch tag (`MoeLayer::experts_scale_kind`). Mirrors `load_expert_proj`'s
+/// format dispatch: ONLY the `UInt8 .weight` + `.scale` + no-global/packed arm
+/// lands native MXFP4 (transcode-free, via `quantized_mxfp4_e8m0`); every other
+/// arm produces standard NVFP4. Probes the first locally-owned routed expert
+/// (EP-safe — each rank owns some); defaults to `Nvfp4` if none present.
+fn detect_routed_scale_kind(
+    store: &WeightStore,
+    layer_prefix: &str,
+    config: &ModelConfig,
+    force_all_experts: bool,
+) -> crate::weight_map::WeightQuantFormat {
+    use crate::weight_map::WeightQuantFormat;
+    use spark_runtime::weights::WeightDtype;
+    for e in 0..config.num_experts {
+        if force_all_experts || config.is_local_expert(e) {
+            let wp = format!("{layer_prefix}.ffn.experts.{e}.w1");
+            let native = !store.contains(&format!("{wp}.weight_packed"))
+                && !store.contains(&format!("{wp}.weight_scale_2"))
+                && store.contains(&format!("{wp}.scale"))
+                && store
+                    .get(&format!("{wp}.weight"))
+                    .map(|w| w.dtype == WeightDtype::UInt8)
+                    .unwrap_or(false);
+            return if native {
+                WeightQuantFormat::Mxfp4E8m0
+            } else {
+                WeightQuantFormat::Nvfp4
+            };
+        }
+    }
+    WeightQuantFormat::Nvfp4
+}
+
+/// Detect the SHARED expert quant format (ARM-2 Phase-K RIDER A1). Same native
+/// -MXFP4 test as `detect_routed_scale_kind`, on `ffn.shared_experts.w1`. The
+/// native V4 ckpt ships the shared expert FP8-block-scaled (`.weight` F8_E4M3,
+/// NOT UInt8) → `Nvfp4` (it is transcoded to NVFP4 at load); a genuinely native
+/// MXFP4 shared expert (UInt8 `.weight` + `.scale`) → `Mxfp4E8m0`.
+fn detect_shared_scale_kind(
+    store: &WeightStore,
+    layer_prefix: &str,
+) -> crate::weight_map::WeightQuantFormat {
+    use crate::weight_map::WeightQuantFormat;
+    use spark_runtime::weights::WeightDtype;
+    let wp = format!("{layer_prefix}.ffn.shared_experts.w1");
+    let native = !store.contains(&format!("{wp}.weight_packed"))
+        && !store.contains(&format!("{wp}.weight_scale_2"))
+        && store.contains(&format!("{wp}.scale"))
+        && store
+            .get(&format!("{wp}.weight"))
+            .map(|w| w.dtype == WeightDtype::UInt8)
+            .unwrap_or(false);
+    if native {
+        WeightQuantFormat::Mxfp4E8m0
+    } else {
+        WeightQuantFormat::Nvfp4
     }
 }
 
@@ -251,7 +334,7 @@ pub fn assemble_layer(
     } else {
         None
     };
-    let moe = MoeLayer::new_with_hash(
+    let mut moe = MoeLayer::new_with_hash(
         moe_weights,
         config.num_experts,
         gate_nvfp4,
@@ -259,6 +342,13 @@ pub fn assemble_layer(
         gpu,
         config,
     )?;
+    // Tag routed-expert quant format so the Phase-K E8M0 MoE-GEMM variants
+    // dispatch on native MXFP4 (transcode-free) vs the standard NVFP4 kernels.
+    moe.experts_scale_kind = detect_routed_scale_kind(store, p, config, force_all_experts);
+    // Tag the SHARED expert format independently (RIDER A1): the native ckpt is
+    // heterogeneous — routed E8M0-MXFP4, shared FP8→NVFP4. The dual-format decode
+    // kernel asserts shared==Nvfp4; a different shared format fires the `expect`.
+    moe.shared_experts_scale_kind = detect_shared_scale_kind(store, p);
 
     // ── MLA weights ──
     // RedHatAI checkpoint: wkv_a may only contain kv_lora_rank rows (no rope).
@@ -285,8 +375,41 @@ pub fn assemble_layer(
             let wkv = dense(store, &format!("{cp}.wkv.weight"))?;
             let wgate = dense(store, &format!("{cp}.wgate.weight"))?;
             // compressor.norm is a STANDARD RMSNorm → subtract 1 for the offset kernel.
-            let norm = dense_minus_one(store, &format!("{cp}.norm.weight"), gpu)?;
-            let ape = store.get(&format!("{cp}.ape"))?.ptr;
+            let norm = dense_auto(store, &format!("{cp}.norm.weight"), gpu)?;
+            // ape is checkpoint-native F32 [ratio, proj_dim]; csa_compress indexes it
+            // as `const float*`. Normalize here so the kernel can never misread it as
+            // bf16 (the L2–L42 window-softmax corruption fixed alongside attn_sink #341).
+            let ape = super::csa_ape::load_ape_f32(store, &format!("{cp}.ape"), gpu)?;
+            // 4b: allocate the persistent flat compressed-KV pool for this layer.
+            // Sized to the full context (max_position_embeddings // ratio blocks)
+            // so decode never overflows; each block is one hd_mla-wide FP8-E4M3
+            // comp_k. FP8 (1 byte/elem) matches the raw KV arm's dtype/scale so the
+            // decode kernel reads both arms at one scale (single online softmax).
+            // ponytail: sized from model max_pos, not the runtime --max-seq-len;
+            // tighten to the KV budget if the ~3.3GB CSA-layer total ever matters.
+            // Block width = qk_nope_head_dim + qk_rope_head_dim (= 448+64 = 512), the
+            // width cache_skip_v4 builds comp_k at (rope in-place at 448-511). NOT
+            // kv_lora_rank+rope (576, the RAW cache token) — the compressed pool and
+            // the decode compressed-arm read must both use 512, or blocks ≥1 misalign.
+            let hd_mla = config.qk_nope_head_dim + config.qk_rope_head_dim;
+            let pool_blocks = config.max_position_embeddings.div_ceil(ratio);
+            let pool = gpu.alloc(pool_blocks * hd_mla)?;
+            gpu.memset(pool, 0, pool_blocks * hd_mla)?;
+            // 4b inc-3: decode-time normed-x rings (BF16, 2 bytes/elem). `ring`
+            // holds the current window's `ratio` tokens; CSA also keeps the
+            // previous window (`prev_win`) + a 2×ratio concat stage for the
+            // overlap. HCA has no overlap → NULL prev_win/stage. Sizes are tiny
+            // (HCA r=128,h≈4096 → 1 MB ring/layer; CSA r=4 → ~kB).
+            let h = config.hidden_size;
+            let ring = gpu.alloc(ratio * h * 2)?;
+            let (prev_win, stage) = if is_csa {
+                (gpu.alloc(ratio * h * 2)?, gpu.alloc(2 * ratio * h * 2)?)
+            } else {
+                (
+                    spark_runtime::gpu::DevicePtr::NULL,
+                    spark_runtime::gpu::DevicePtr::NULL,
+                )
+            };
             Some(CompressorWeights {
                 wkv,
                 wgate,
@@ -295,6 +418,11 @@ pub fn assemble_layer(
                 ratio,
                 proj_dim,
                 is_csa,
+                pool,
+                pool_blocks,
+                ring,
+                prev_win,
+                stage,
             })
         } else {
             None
@@ -302,10 +430,11 @@ pub fn assemble_layer(
     };
 
     // Per-head attention sink logit (s_aux); present on all V4 attention layers.
-    let attn_sink = store
-        .get(&format!("{lp}.attn.attn_sink"))
-        .map(|w| w.ptr)
-        .unwrap_or(DevicePtr::NULL);
+    // Normalized to the canonical FP32 dtype contract (F32 pass-through / BF16
+    // widen / else fail); the sink-consuming kernels index it as `const float*`.
+    // Reading the checkpoint-native fp32 buffer as bf16 hard-zeroed 7 query heads.
+    let attn_sink =
+        super::attn_sink::load_attn_sink_f32(store, &format!("{lp}.attn.attn_sink"), gpu)?;
 
     // Native block-scaled FP8 weights for the hot decode GEMVs (the checkpoint
     // ships wq_a/wq_b/wo_b as FP8-E4M3 + 128×128 block scales). The decode path
@@ -358,6 +487,7 @@ pub fn assemble_layer(
         w_uk_block_diag,
         w_uv_block_diag,
         yarn_inv_freq,
+        main_inv_freq: super::compute::main_inv_freq(config, gpu)?,
         q_lora_rank: config.q_lora_rank,
         kv_lora_rank: config.kv_lora_rank,
         o_lora_rank: config.o_lora_rank,
@@ -422,6 +552,19 @@ pub fn assemble_layer(
             hc_eps: config.hc_eps,
         });
     }
+
+    // V4 loads its norm weights EXACTLY (no -1 pre-subtraction) and normalizes
+    // with `rms_norm_vanilla`. The only paths that would bypass that kernel are
+    // the fused residual+norm ones, taken when the mHC highway is absent — and
+    // they are offset-from-1 only, with no vanilla twin in-tree. They would
+    // silently compute `x * (1 + w)` on an exact weight. Fail loudly instead.
+    anyhow::ensure!(
+        layer.hc.is_some(),
+        "DeepSeek-V4 requires the mHC highway (hc_mult > 0, got {}): without it the fused \
+         residual+norm kernels would apply the offset-from-1 convention to exactly-loaded \
+         norm weights",
+        config.hc_mult
+    );
 
     Ok(Box::new(layer))
 }

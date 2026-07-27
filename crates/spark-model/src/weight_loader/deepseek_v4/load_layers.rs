@@ -8,7 +8,7 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::qwen3_attention::HcHeadWeights;
-use crate::weight_map::{DenseWeight, dense_auto, dense_minus_one};
+use crate::weight_map::{DenseWeight, dense_auto};
 
 pub fn load_all_layers(
     store: &WeightStore,
@@ -104,8 +104,8 @@ pub fn load_all_layers(
         let lp = format!("layers.{i}");
         let ap = format!("{lp}.attn");
 
-        let input_norm = dense_minus_one(store, &format!("{lp}.attn_norm.weight"), gpu)?;
-        let post_attn_norm = dense_minus_one(store, &format!("{lp}.ffn_norm.weight"), gpu)?;
+        let input_norm = dense_auto(store, &format!("{lp}.attn_norm.weight"), gpu)?;
+        let post_attn_norm = dense_auto(store, &format!("{lp}.ffn_norm.weight"), gpu)?;
 
         // DeepSeek-V4-Flash attention weights are FP8 block-quantized in the
         // checkpoint (config quant group_0: float-quantized, block [128,128]);
@@ -117,10 +117,10 @@ pub fn load_all_layers(
         // already fall back to dense_gemv/dense_gemm when the nvfp4 view is None.
         let wq_a = dense_auto(store, &format!("{ap}.wq_a.weight"), gpu)?;
         let wq_b = dense_auto(store, &format!("{ap}.wq_b.weight"), gpu)?;
-        let q_a_norm = dense_minus_one(store, &format!("{ap}.q_norm.weight"), gpu)?;
+        let q_a_norm = dense_auto(store, &format!("{ap}.q_norm.weight"), gpu)?;
 
         let wkv_a = dense_auto(store, &format!("{ap}.wkv.weight"), gpu)?;
-        let kv_a_norm = dense_minus_one(store, &format!("{ap}.kv_norm.weight"), gpu)?;
+        let kv_a_norm = dense_auto(store, &format!("{ap}.kv_norm.weight"), gpu)?;
 
         let is_v4_flash = config.o_lora_rank > 0;
         let null = DenseWeight {
