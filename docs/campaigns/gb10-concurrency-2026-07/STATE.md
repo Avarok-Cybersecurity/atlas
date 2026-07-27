@@ -497,3 +497,31 @@ validation, and it is exactly the pattern `feedback_good_defaults_not_flags` exi
 2. **Batched speculative verify** — still the only structural lever with a >2x shape. Spec is worth
    1.8x at C=1 and is inert above n=2. Full design + the latent `inter_batch_stride_floats` kernel
    bug are recorded above.
+
+## 2026-07-27 — out_proj: K_STEP_T=64 is a REGRESSION, so the diagnosis narrows to occupancy
+
+Analysis proposed a zero-new-kernel first test for out_proj's poor efficiency: route it (and qkvz)
+to `w4a16_gemm_t_k64`, the same M64/N128 kernel with K_STEP_T=64, halving the sync-bound outer-loop
+count 192 -> 96. Both projections qualify (qkvz K=5120, out_proj K=6144, both multiples of 64) and
+the handle was already compiled and bound.
+
+**MEASURED WORSE**, 2 reps/cell, SHA identical: C=8 68.0 -> 67.5, C=16 96.0 -> 95.5. **Reverted.**
+
+That is informative rather than merely negative: it rules out barrier/iteration count as out_proj's
+limiter and leaves ONLY the under-filled wave. At N=5120 the grid is 40 CTAs on ~48 SMs — 8 SMs idle
+and 1 CTA/SM on the rest, so there are no co-resident CTAs to hide any stall, and a deeper K-step
+just makes each of the 40 CTAs do more work serially. The remaining fix is the one that ADDS CTAs:
+split-K over `gridDim.z` (S=4 -> 160 CTAs -> 3.3 waves, the regime where qkvz reaches ~55% of peak),
+accumulating partials into an FP32 workspace. That is a real new kernel, est. ~8 ms of a ~150 ms
+step, and it is now the best-understood remaining kernel lever.
+
+### Running tally of measured-flat/negative levers (all with SHA-identical output)
+| lever | predicted | measured |
+|---|---|---|
+| GDN third h_state pass removed | ~3% | **+1.1%** (L2 absorbed it) |
+| M-sized MMQ tiles (mmq_x=16/32) | +7-12% | **0%** (FFN is weight-bound) |
+| Hand-batched attention gate-mul | ~0.3-0.6% | **0%** (inside noise, as predicted) |
+| Slot-sort in the mixed paths | recovers 28% of a block | **0%** on this workload |
+| out_proj K_STEP_T=64 | ~1.5-2x on the block | **-0.5%** |
+| **CUDA graphs default-on** | — | **+3.2%** ✓ |
+The one that worked is the one that removed a whole CLASS of overhead rather than a slice of it.
