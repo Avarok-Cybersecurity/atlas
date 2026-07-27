@@ -20,6 +20,16 @@ use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
+/// Batched-GEMV decode lm_head: **ON by default**, disabled by
+/// `ATLAS_NO_LM_HEAD_BATCH_GEMV=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name, not a presence check — presence
+/// flags in this codebase are ENABLED by `=0`. Read once; this is a per-step site.
+fn lm_head_batch_gemv_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_LM_HEAD_BATCH_GEMV").as_deref() != Ok("1"))
+}
+
 impl TransformerModel {
     pub(super) fn decode_batch_dispatch(
         &self,
@@ -426,17 +436,52 @@ impl TransformerModel {
                     )?;
                 }
             } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                ops::w4a16_gemm(
-                    self.gpu.as_ref(),
-                    self.w4a16_gemm_kernel,
-                    normed,
-                    nvfp4,
-                    logits,
-                    padded_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
+                // Batched GEMV for the decode head. The base M64-tile
+                // `w4a16_gemm` below wastes most of its MMA tile here: at
+                // padded_n=16 only 16 of 64 tile-rows carry data, and the same
+                // nsys note the verify path records (impl_a3.rs) measured it at
+                // 19.3 ms on this [248320, 5120] NVFP4 head vs ~2.5 ms for the
+                // batched GEMV streaming the same 636 MB once. That cost is
+                // FLAT in n, so it sits in the fixed term at every batch size.
+                //
+                // Tier by padded_n exactly as the SSM mixer does: batch4 (M<=4)
+                // / batch8 (M<=8) / batch16 (M<=16). A 0-handle on any tier
+                // falls through to the GEMM, so targets lacking the kernel are
+                // unaffected.
+                let gemv_k = if padded_n <= 4 {
+                    self.w4a16_gemv_batch4_kernel
+                } else if padded_n <= 8 {
+                    self.w4a16_gemv_batch8_kernel
+                } else if padded_n <= 16 {
+                    self.w4a16_gemv_batch16_kernel
+                } else {
+                    spark_runtime::gpu::KernelHandle(0)
+                };
+                if gemv_k.0 != 0 && lm_head_batch_gemv_enabled() {
+                    ops::w4a16_gemv_batchm(
+                        self.gpu.as_ref(),
+                        gemv_k,
+                        normed,
+                        nvfp4,
+                        logits,
+                        padded_n as u32,
+                        v as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                } else {
+                    ops::w4a16_gemm(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemm_kernel,
+                        normed,
+                        nvfp4,
+                        logits,
+                        padded_n as u32,
+                        v as u32,
+                        h as u32,
+                        stream,
+                    )?;
+                }
             } else {
                 ops::dense_gemm(
                     self.gpu.as_ref(),
