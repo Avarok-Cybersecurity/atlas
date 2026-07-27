@@ -28,8 +28,11 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> anyhow::Result<()> {
         // ATLAS_W4A16_VARIANT env: "v1", "v2", "v3" — overrides auto.
-        // Default: v2 (3 CTAs/SM, 8 warps). v3 (K_STEP=64, 1 CTA/SM) is
-        // slower in practice; keep it available for A/B but don't default.
+        // Auto: v2 (3 CTAs/SM, 8 warps) on NVIDIA; v1 (the base m128 kernel) on
+        // gfx1151, where v2 measured slower and every serve recipe on that box
+        // — including the MLPerf-edge submission — forced v1 by hand. v3
+        // (K_STEP=64, 1 CTA/SM) is slower in practice everywhere; keep it
+        // available for A/B but never default to it.
         static VARIANT: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
         let v =
             *VARIANT.get_or_init(
@@ -37,7 +40,14 @@ impl Qwen3AttentionLayer {
                     Some("v1") => 1,
                     Some("v2") => 2,
                     Some("v3") => 3,
-                    _ => 0, // auto (prefer v2)
+                    // auto: v1 on gfx1151, v2 elsewhere.
+                    _ => {
+                        if cfg!(atlas_scale) {
+                            1
+                        } else {
+                            0
+                        }
+                    }
                 },
             );
         // LOSSLESS opt-in: route QKV/o projection prefill through the BF16-TC

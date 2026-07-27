@@ -59,6 +59,19 @@ pub fn ssm_tail_boundary(total_tokens: usize, block_size: usize) -> Option<usize
     (boundary > 0).then_some(boundary)
 }
 
+/// True when this binary was built for an AMD gfx1151 target (`strix` via SCALE
+/// or `strix-hip` native HIP) — i.e. `ATLAS_TARGET_HW=strix*`.
+///
+/// SSOT for "am I on the Strix Halo target?" in crates that have no `build.rs`
+/// of their own to receive the `atlas_scale` cfg (notably `spark-server`).
+/// Prefer `cfg!(atlas_scale)` directly inside `spark-model`/`spark-runtime`.
+///
+/// Used to pick DEFAULTS that were measured on this hardware and are wrong
+/// elsewhere. It never changes a value the operator set explicitly.
+pub const fn atlas_scale_target() -> bool {
+    cfg!(atlas_scale)
+}
+
 /// OPT-IN switch for the tail checkpoint (`ATLAS_SSM_TAIL_CKPT=1`).
 ///
 /// Default OFF. The 3-traj A/B (2026-07-10, 174 samples/arm) showed it is

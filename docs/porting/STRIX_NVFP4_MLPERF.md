@@ -42,13 +42,14 @@ silently yields a binary identical to the previous one. Plain `cargo build` also
 in nccl and fails to link on a single-GPU box; `--no-default-features --features cuda`
 is what avoids that.
 
-## Serve (the `ATLAS_*` flags are load-bearing; keep `--speculative`)
+## Serve (keep `--speculative`; the `ATLAS_*` tuning is now default — see [STRIX_ENV_DEFAULTS.md](STRIX_ENV_DEFAULTS.md))
 
 ```bash
 export LD_LIBRARY_PATH=$HOME/hip-port/link:/opt/rocm/core-7.13/lib:/opt/rocm/lib
-export ATLAS_W4A16_DP4A=1 ATLAS_FORCE_GLOBAL_GDN=1 ATLAS_W4A16_VARIANT=v1 \
-       ATLAS_KV_EXTERNAL_RESERVE_GB=6 ATLAS_SSM_TAIL_MIDCHUNK=1 ATLAS_SSM_TAIL_PROTECT=1 \
-       ATLAS_MTP_GATE_REPROBE=64 ATLAS_MTP_DRAFTER_PREFILL=1 ATLAS_MTP_CARRY_DRAFTER=1
+# The gfx1151 tuning is the DEFAULT now (see STRIX_ENV_DEFAULTS.md) — this is the
+# only var left, and it is box-specific: headroom for co-tenants the auto-measure
+# cannot see yet.
+export ATLAS_KV_EXTERNAL_RESERVE_GB=6
 spark serve $SNAP --model-name nvidia/Qwen3.6-27B-NVFP4 --host 0.0.0.0 --port 8081 \
   --max-seq-len 65536 --gpu-memory-utilization 0.35 --kv-cache-dtype bf16 --max-batch-size 1 \
   --speculative --num-drafts 2 --mtp-quantization bf16 --mtp-vocab 100000 \

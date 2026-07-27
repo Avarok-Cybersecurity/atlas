@@ -7,7 +7,10 @@ cd "$(dirname "$0")"
 : "${SCALE_HOME:=$HOME/scale171/scale-1.7.1-Linux}"
 MODEL="${1:-Qwen/Qwen3.6-27B-FP8}"
 # gfx1151 runtime shims (each explained in docs §4):
-export ATLAS_FORCE_GLOBAL_GDN=1   # GDN prefill -> global-mem kernel (RDNA3.5 64KB LDS cap)
+# NOTE: ATLAS_FORCE_GLOBAL_GDN was removed — it has had no read site in the
+# source since the GDN prefill routing became unconditional under
+# `cfg!(atlas_scale)` (see layers/qwen3_ssm/trait_prefill_recur.rs). Setting it
+# did nothing.
 export ATLAS_W4A16_VARIANT=v1     # BF16-MMA NVFP4 GEMM (SCALE device FP8 encode is broken on gfx1151)
 export ATLAS_NO_FP8_PREDEQUANT=1  # skip NVFP4->FP8 predequant (same reason)
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64 (the

@@ -307,26 +307,37 @@ fn test_snapshot_index_lru_eviction() {
     assert_eq!(idx.evict_lru(), None);
 }
 
+/// The session gate applies to TAILS ONLY.
+///
+/// A tail captures state at a block-floored boundary that can reflect a partial
+/// block beyond its advertised `token_count`, so it is only sound to restore
+/// inside the session that wrote it. Every other class stores state at EXACTLY
+/// `token_count`, making it a pure function of the verified token prefix and
+/// safe cross-session -- the same contract as the KV radix.
+///
+/// This test previously asserted that plain entries were session-isolated too.
+/// That gate was deliberately narrowed to `is_tail` (it was rejecting every
+/// valid warm-turn anchor and forcing recompute-all); the test was not updated,
+/// so it has been failing since. The invariant now lives on
+/// `SnapshotEntry::is_tail`.
 #[test]
-fn test_snapshot_index_session_isolation() {
+fn test_snapshot_index_session_gate_applies_only_to_tails() {
     let mut idx = SsmSnapshotIndex::new();
     let tokens: Vec<u32> = (0..16).collect();
     let prefix_hash = hash_token_prefix(&tokens, 16, 0);
 
-    // Insert snapshot for session 100
+    // PLAIN entry written by session 100 -- reusable from ANY session.
     idx.insert(prefix_hash, 42, 100, 16);
+    assert_eq!(idx.lookup(&tokens, 16, 200, 0), Some((42, 16)));
+    assert_eq!(idx.lookup(&tokens, 16, 100, 0), Some((42, 16)));
+    assert_eq!(idx.lookup(&tokens, 16, 0, 0), Some((42, 16)));
 
-    // Lookup from session 200 — should NOT match (different session)
-    let result = idx.lookup(&tokens, 16, 200, 0);
-    assert_eq!(result, None);
-
-    // Lookup from session 100 — should match
-    let result = idx.lookup(&tokens, 16, 100, 0);
-    assert_eq!(result, Some((42, 16)));
-
-    // Lookup with session_hash=0 (legacy) — matches any session
-    let result = idx.lookup(&tokens, 16, 0, 0);
-    assert_eq!(result, Some((42, 16)));
+    // Re-home the same prefix as session 100's TAIL: now gated, and a
+    // sessionless (0) lookup never matches a tail either.
+    let _ = idx.insert_tail(prefix_hash, 43, 100, 16);
+    assert_eq!(idx.lookup(&tokens, 16, 200, 0), None);
+    assert_eq!(idx.lookup(&tokens, 16, 100, 0), Some((43, 16)));
+    assert_eq!(idx.lookup(&tokens, 16, 0, 0), None);
 }
 
 #[test]

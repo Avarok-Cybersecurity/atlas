@@ -33,9 +33,20 @@ use crate::weight_map::{
 /// `(embed(token_{i+1}), target_hidden_i)` — a single-layer drafter's K/V do
 /// not depend on its own attention outputs — so the prefill needs only the
 /// fc + k/v projections + norms + RoPE + cache write, no attention pass.
+///
+/// **Default ON for gfx1151 builds** (`atlas_scale`) — it is in every measured
+/// serve recipe on that box, including the MLPerf-edge submission. Left OFF
+/// elsewhere: GB10 has its own MTP tuning and this has not been A/B'd there.
+/// `ATLAS_MTP_DRAFTER_PREFILL=0` is the kill switch.
 pub fn mtp_drafter_prefill_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() == Some("1"))
+    *ON.get_or_init(
+        || match std::env::var("ATLAS_MTP_DRAFTER_PREFILL").ok().as_deref() {
+            Some("0") | Some("off") => false,
+            Some(_) => true,
+            None => cfg!(atlas_scale),
+        },
+    )
 }
 
 /// Dedicated scratch for the batched drafter prefill (allocated in

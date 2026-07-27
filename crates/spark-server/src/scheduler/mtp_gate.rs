@@ -63,9 +63,21 @@ fn env_usize(name: &str, default: usize) -> usize {
 
 /// Serial tokens between MTP re-probes while in Serial mode. Default
 /// matches the proven `ATLAS_DFLASH_ADAPTIVE_REPROBE` policy (256).
+///
+/// gfx1151 defaults to **64**, not 256: the shorter re-probe was measured at
+/// +3.8% there (`project_mtp_gate_serial_park`) and has been in every serve
+/// recipe on that box since. Other targets keep 256.
+/// `ATLAS_MTP_GATE_REPROBE=<n>` overrides either way.
 fn reprobe_tokens() -> usize {
     static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *C.get_or_init(|| env_usize("ATLAS_MTP_GATE_REPROBE", 256))
+    *C.get_or_init(|| {
+        let default = if spark_runtime::atlas_scale_target() {
+            64
+        } else {
+            256
+        };
+        env_usize("ATLAS_MTP_GATE_REPROBE", default)
+    })
 }
 
 /// MTP tokens between serial-baseline refreshes while in Mtp mode. One

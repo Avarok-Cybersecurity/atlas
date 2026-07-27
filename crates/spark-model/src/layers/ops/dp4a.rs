@@ -24,14 +24,29 @@ use crate::weight_map::QuantizedWeight;
 /// SSOT with `DP4A_GROUP_SIZE` in `w4a16_gemv_dp4a.cu`.
 pub const DP4A_GROUP_SIZE: u32 = 16;
 
-/// Runtime gate for the W4A8 integer-DP4A decode path. OFF by default (PCND: no
-/// implicit production default — the float E2M1-LUT path stays the default on
-/// every target). Set `ATLAS_W4A16_DP4A=1` to enable on gfx1151 builds that
-/// carry the DP4A kernels; on any other target the kernel handles miss
-/// (`KernelHandle(0)`) and callers fall back to the float path regardless.
+/// Runtime gate for the W4A8 integer-DP4A decode path.
+///
+/// **Default ON for gfx1151 builds** (`atlas_scale`), which are the only ones
+/// that carry the DP4A kernels; OFF everywhere else, where the kernel handle
+/// misses (`KernelHandle(0)`) and callers fall back to the float E2M1-LUT path
+/// anyway. `ATLAS_W4A16_DP4A=0` is the kill switch.
+///
+/// This was previously opt-in, citing PCND. That reading was too literal: PCND
+/// exists to stop a silent magic value being chosen for the operator, not to
+/// make every shipped win something they have to rediscover from a benchmark
+/// script. A hardware-gated default with a documented kill switch IS an explicit
+/// choice. The measured win on gfx1151 is +25% decode
+/// (`project_strix_e2e_regression_solved`), and it was in every serve recipe and
+/// the MLPerf submission — i.e. the "default" in practice, just undeclared.
 pub fn dp4a_enabled() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("ATLAS_W4A16_DP4A").as_deref() == Ok("1"))
+    *FLAG.get_or_init(
+        || match std::env::var("ATLAS_W4A16_DP4A").as_deref() {
+            Ok("0") | Ok("off") => false,
+            Ok(_) => true,
+            Err(_) => cfg!(atlas_scale),
+        },
+    )
 }
 
 /// Quantize one BF16 activation row `[1, K]` to int8 `[1, K]` + per-16-group
