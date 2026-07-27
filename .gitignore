@@ -129,6 +129,13 @@ bench/**/*.csv
 bench/**/*.pid
 bench/fp8_dgx2_drift/harness/oc
 
+# Pinned `spark` binaries copied out of target/release for A/B legs (~49 MB each).
+# The campaign drivers require them on disk -- an A/B is only honest against an
+# immutable baseline binary -- but they must never enter the repo. One commit
+# carried eight of them (382 MB) before this rule existed.
+/spark_*
+conc_sweep/spark_*
+
 # LoRA MVP: large fp32 reference deltas (regenerate via scripts/reference_deltas.py in seconds)
 test_data/lora-holo-tiny*/reference_deltas.safetensors
 adapters35/
