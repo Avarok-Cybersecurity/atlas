@@ -5,6 +5,13 @@
 
 use super::super::*;
 
+/// How often the batched-recurrent fast path engaged vs fell back to the per-seq
+/// loop. The precondition (pool slots contiguous AND in slice order) fails as
+/// slots fragment, and it used to fail silently.
+static BATCHED_OK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FALLBACK_ONCE: std::sync::Once = std::sync::Once::new();
+
 impl Qwen3SsmLayer {
     /// Recurrent inner of the batched-projection SSM mixer.
     ///
@@ -80,8 +87,38 @@ impl Qwen3SsmLayer {
                 }
             }
             if contiguous {
+                BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Some((h_base, conv_base))
             } else {
+                // Falling back to the per-seq loop costs ~28% on this block
+                // (measured n=16: batched 618 us/layer vs per-seq 853). It used
+                // to happen SILENTLY, so a profile could show both paths in one
+                // run with no way to tell how often or why. Report the first
+                // one with the offending slot, and keep a count.
+                let n_fb = FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                FALLBACK_ONCE.call_once(|| {
+                    let mut broke_at = usize::MAX;
+                    let mut delta = 0i64;
+                    for i in 1..n {
+                        if let Some(st) = states[i].as_any_mut().downcast_mut::<SsmLayerState>() {
+                            let want = h_base.0 + (i * self.h_state_bytes) as u64;
+                            if st.h_state.0 != want {
+                                broke_at = i;
+                                delta = st.h_state.0 as i64 - want as i64;
+                                break;
+                            }
+                        }
+                    }
+                    tracing::info!(
+                        "SSM batched recurrent DECLINED (n={n}): pool slots are not contiguous in \
+                         slice order — seq {broke_at} sits {} slot(s) from where the batch axis \
+                         expects it. The per-seq loop costs ~28% more on this block. Slots \
+                         fragment as sequences finish, so this is expected to recur; count is \
+                         logged at debug on every occurrence.",
+                        delta / self.h_state_bytes.max(1) as i64
+                    );
+                });
+                tracing::debug!("SSM batched recurrent fallback #{n_fb} (n={n})");
                 None
             }
         } else {
