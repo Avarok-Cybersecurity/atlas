@@ -360,3 +360,51 @@ this choice — Marlin issues mma at M=1. Anywhere Atlas still selects a kernel 
    `inter_batch_stride_floats` parameter — today's hardcoded stride is wrong by a factor of `ni`
    and is dead code only because every call site passes batch_size=1).
 4. Attention branch RoPE / KV-write are still per-sequence loops (`multi_seq/attn.rs`).
+
+## 2026-07-27 — GDN third pass removed (bit-identical, +1.1%) and a RE-MEASURED map
+
+### The third-pass fix landed, and under-delivered — informatively
+7 kernel variants re-read all of H after writing it, to accumulate a Frobenius norm the update loop
+already had in registers. Now accumulated in-loop, one add at a time in ascending j so the summation
+order is unchanged. **Emitted-text SHA identical across a pre/post binary A/B** (`981ca44911471b59`),
+on a real kernel rebuild (158 kernels, 0 cache hits).
+
+Measured **+1.1% at C=16** (91.65 -> 92.65) and +0.6% at C=8, against a ~3% prediction. **That
+settles the analysis's open question: the re-read was mostly absorbed by L2, so h_state traffic is
+much less DRAM-bound than the roofline model assumed.** Size the remaining GDN passes off THIS datum,
+not the model — the "collapse the double read via the algebraic identity" item should be expected to
+return ~1-2%, not the ~5% its traffic arithmetic suggests, and it is token-equal-not-bit-identical,
+so it is now a poor trade. DEPRIORITISED.
+
+### Re-measured decomposition at n=16 (eager, ATLAS_MS_PROFILE, 190 samples)
+| block | before all fixes | now | change |
+|---|---|---|---|
+| TOTAL | 264.9 ms | **150.4 ms** | -43% |
+| ssm (48L) | 189.8 | 102.2 (68%) | -46% |
+| attn (16L) | 54.7 | 38.4 (26%) | -30% |
+| head | 20.3 | 9.7 (6%) | -52% |
+
+Inside the SSM block (per layer x48): **FFN 42.0 ms | GDN recurrence ~30 ms | qkvz 15.0 ms |
+out_proj 13.5 ms**. qkvz fell 678 -> 313 us/layer from the tensor-core arm, as intended.
+
+### TWO NEW FINDINGS from that profile
+1. **`out_proj` did NOT improve** (288 -> 282 us/layer) even though its tensor-core arm shipped in
+   the same commit as qkvz's, which DID improve. The transposed twin is built by the loader
+   (`weight_loader/qwen35_dense.rs:686`), so either the arm is not firing on this checkpoint's
+   loader branch, or the tile GEMM is under-filled at N=5120 (5120/128 = 40 CTAs on ~48 SMs — a
+   single partial wave, which the analysis flagged as a range rather than a point estimate).
+   **Worth 13.5 ms and an hour of investigation.** Settle it with a one-shot log in the arm.
+2. **The batched-recurrent path is silently falling back part of the time.** The same profile shows
+   BOTH `recurrent_batched_gdn_norm` (618 us) AND the per-seq `recurrent_gdn`/`_ba`/`_conv`
+   (567+159+127 = 853 us) in one run. `ssm_batched_recurrent.rs:66-89` requires the n slots to be
+   EXACTLY contiguous and returns `None` silently otherwise; pool slots fragment as sequences
+   finish. This is the analysis's predicted failure and it means **the +2.6% batched-recurrent
+   datum was partly measuring the fallback.** Per-seq costs 853 us/layer vs 618 batched — a 28%
+   penalty on ~30 ms whenever it fires. Add the one-line diagnostic FIRST, then decide.
+
+### Scoreboard
+| C | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| Atlas | 25.5 | 24.4 | 46.1 | 65.5 | **93.2** |
+| vLLM | 14.2 | 27.8 | 53.3 | 98.8 | 168.9 |
+| ratio | **1.80x** | 0.88x | 0.87x | 0.66x | **0.55x** |
