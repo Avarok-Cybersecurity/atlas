@@ -22,10 +22,44 @@ use crate::{
     session_manager,
 };
 
+/// What the blocking startup hands to the async tail.
+type Prepared = (
+    Arc<AppState>,
+    Arc<std::sync::atomic::AtomicBool>,
+    String,
+    u16,
+);
+
+/// Bring the engine up, then serve.
+///
+/// Startup — weight load, KV allocation, kernel audit, graph capture — is ~50s of
+/// SYNCHRONOUS CPU/IO/CUDA work containing not one `await`. Running it in the body
+/// of this future would mean whatever polls the future is blocked for that whole
+/// time: an `async fn` that never yields is a blocking call wearing `async`, and
+/// it is why `q`/Ctrl+C appeared dead during a model load — nothing, not even the
+/// signal listener, could make progress until loading finished.
+///
+/// So startup runs on the blocking pool and is AWAITED here. That await is a real
+/// yield point, which is what lets `main` race this future against a shutdown
+/// channel, and it keeps the async workers free regardless of how the runtime is
+/// sized.
 pub(crate) async fn serve(
-    mut args: cli::ServeArgs,
+    args: cli::ServeArgs,
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
 ) -> Result<()> {
+    // Signal listeners belong on the runtime, not inside the blocking section.
+    let Some((state, model_ready, bind, port)) =
+        tokio::task::spawn_blocking(move || startup(args, tui_progress)).await??
+    else {
+        return Ok(()); // EP worker: no router on this rank
+    };
+    crate::main_modules::serve_router::build_and_serve(state, model_ready, &bind, port).await
+}
+
+fn startup(
+    mut args: cli::ServeArgs,
+    tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
+) -> Result<Option<Prepared>> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
     spark_runtime::progress::phase(0, "banner");
@@ -499,7 +533,9 @@ pub(crate) async fn serve(
     // EP worker: rank > 0 enters command loop, returns when head exits.
     let mut model_opt = Some(model);
     if serve_phases::maybe_run_ep_worker(&args, &mut model_opt, &early_high_speed_swap_cfg)? {
-        return Ok(());
+        // An EP worker (rank > 0) never serves HTTP: it ran its command loop and
+        // the head has exited. `None` = nothing for the async tail to do.
+        return Ok(None);
     }
     let model = model_opt.expect("head retains model on rank 0");
 
@@ -936,9 +972,8 @@ pub(crate) async fn serve(
 
     serve_phases::log_behavior_audit(&args, &ptx_set);
 
-    // 9-11. Build router + start HTTP server (extracted: serve_router.rs).
-    crate::main_modules::serve_router::build_and_serve(state, model_ready, &args.bind, args.port)
-        .await
+    // 9-11. Router + HTTP server run on the async side; hand them the pieces.
+    Ok(Some((state, model_ready, args.bind, args.port)))
 }
 
 /// Parse the vLLM-style `--default-chat-template-kwargs` JSON

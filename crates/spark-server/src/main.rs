@@ -98,25 +98,38 @@ async fn main() -> Result<()> {
         Some(progress_rx)
     };
 
-    // Race startup against shutdown. `serve()` is async but does not await
-    // between the banner and the accept loop — startup is one blocking sequence
-    // — so awaiting it inline made `q`/Ctrl+C look ignored for the whole model
-    // load: nothing could poll a shutdown future until loading finished. Spawning
-    // puts startup on its own task, so this `select!` can actually win.
+    // Race the server against shutdown. No spawn: `serve()` is a real future that
+    // yields while its blocking startup runs on the blocking pool, so pinning it
+    // here is enough for `select!` to poll the other branch. (It would NOT be
+    // enough if startup still blocked inside the future — `select!` chooses at
+    // await points, it does not preempt.)
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
     tui::shutdown::arm_startup_escape(shutdown_tx);
     let result = match cli.command {
         Command::Serve(args) => {
-            let serving = tokio::spawn(serve(args, tui_channels));
+            let serving = serve(args, tui_channels);
+            tokio::pin!(serving);
+            // A CLOSED channel is not a shutdown. `disarm_startup_escape` drops the
+            // sender once the accept loop takes over, which resolves the receiver
+            // with `Err(RecvError)` — taken at face value that fires this branch
+            // the instant the server comes up and exits a healthy process. Only an
+            // actual send means shutdown; a drop means "startup finished", so the
+            // branch parks forever instead.
+            let shutdown_signal = async {
+                match shutdown_rx.await {
+                    Ok(reason) => reason,
+                    Err(_) => std::future::pending::<&'static str>().await,
+                }
+            };
+            tokio::pin!(shutdown_signal);
             tokio::select! {
-                res = serving => res.unwrap_or_else(|e| Err(anyhow::anyhow!("serve task: {e}"))),
-                reason = shutdown_rx => {
+                res = &mut serving => res,
+                reason = &mut shutdown_signal => {
                     // Cancelled before the server came up. Nothing is in flight
                     // and no client is connected, so there is nothing to drain —
                     // the startup task is abandoned where it stands.
                     tracing::info!(
-                        "Shutdown requested ({}) during startup — exiting before the server came up",
-                        reason.unwrap_or("unknown")
+                        "Shutdown requested ({reason}) during startup — exiting before the server came up"
                     );
                     // Cleanup that would otherwise run below, then exit without
                     // waiting on the runtime: a task parked inside a synchronous
