@@ -259,3 +259,55 @@ GEMM is simply better per pass from n=5 up. n=4 regresses, so the GEMV genuinely
 | Atlas | 25.5 | 25.3 | 37.9 | **57.9** | **79.5** |
 | vLLM | 14.2 | 27.8 | 53.3 | 98.8 | 168.9 |
 | ratio | **1.80x** | 0.91x | 0.71x | 0.59x | 0.47x |
+
+## 2026-07-27 — WIN: tensor-core mixer projections (+9.2% at C=16)
+
+The five background agents converged on ONE root cause, from vLLM's installed source:
+**vLLM never lets M influence kernel selection.** Marlin runs `mma` tensor cores even at M=1
+(`gptq_marlin.cu`: `thread_m_blocks = min(ceil(M/16), 4)`, no GEMV path at all), and the CUTLASS
+FP4 SM120 path has one fixed 128x128x128 tile. So its weight cost is FLAT from M=1 to M=16.
+Atlas instead dispatches BY M into a scalar-FMA GEMV ladder whose runtime is proportional to M.
+That single design difference is the marginal-cost gap.
+
+`ATLAS_SSM_TC_PROJ` routes the mixer's qkvz/out_proj onto `w4a16_gemm_t` (M64/N128 FP8-MMA tile
+GEMM). Cost to implement: two dispatch arms. The transposed NVFP4 twins `qkvz_nvfp4_t` /
+`out_proj_nvfp4_t` are ALREADY built at load and already used by the SSM PREFILL path — no repack,
+no new kernel, no new buffer, no extra VRAM.
+
+2 reps/cell, coherence identical:
+| leg | C=8 | C=16 |
+|---|---|---|
+| GEMV (old) | 57.8 / 57.7 | 79.7 / 79.4 |
+| **TC n>=9 (new default)** | 57.5 / 57.6 | **86.9 / 86.8** |
+| TC n>=5 | 54.9 / 54.8 (**regresses**) | 86.4 / 86.5 |
+
+The mixer's crossover is **9**, not the FFN's 5 — different shapes, different crossover. Do not
+assume one transfers.
+
+**ACCURACY DEBT (tracked, not yet paid — per the standing "no gates until parity" directive):**
+`w4a16_gemm_t` is W4A8 (E4M3 activations) where the GEMV is W4A16, so it CAN move a greedy token.
+It is the production SSM prefill path for these same two weights and the coherence smoke is
+identical, but a BFCL gate is owed before merge. Same debt applies to `ATLAS_MTP_MAX_SEQS=2`.
+
+## Scoreboard
+| C | session start | now | vLLM | ratio |
+|---|---|---|---|---|
+| 1 | 27.4 | 25.5 | 14.2 | **1.80x WIN** |
+| 2 | 21.3 | 25.3 | 27.8 | 0.91x |
+| 4 | 38.6 | 37.9 | 53.3 | 0.71x |
+| 8 | 55.4 | 57.9 | 98.8 | 0.59x |
+| 16 | 59.9 | **86.9** | 168.9 | **0.51x** |
+
+## Next, from the agents (ranked, all with file:line in their reports)
+1. **LM head kernel** — `decode_a2.rs:429` calls `w4a16_gemm` unconditionally; its M64 tile wastes
+   75% of the MMA at M=16, giving a FLAT ~20 ms/step against a 2.65 ms roofline. Atlas ALREADY owns
+   `w4a16_gemv_batch4/8` and the MTP verify path (`impl_a3.rs:160-192`) already routes M<=8 there
+   with a comment measuring the same 19.3 ms. Est **10-17 ms**, ~10 lines. Cheapest item on the board.
+2. **GDN third h_state pass** — `_f32_norm`/`_f32_conv_norm`/`_f32_strided*` re-read all of H after
+   writing it, purely to compute a Frobenius norm the update loop already had in registers.
+   ~8.4 ms/step at n=16, bit-identical to remove.
+3. **GDN double read** — the decode kernel reads H twice (hk_dot, then update). An algebraic identity
+   (`out = g*(H_old^T q) + vnew*(k.q)`) collapses it to one pass. 9 MiB -> 6 MiB per seq per layer.
+4. **Batched verify** — full design with trait signatures, the M<=32 metadata cap, and the
+   intermediate-stride kernel bug is in the agent report; the pool's batch stride ALREADY matches
+   `h_bytes`, so the wy kernels need one added `inter_batch_stride_floats` parameter.
