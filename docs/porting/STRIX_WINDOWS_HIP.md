@@ -17,7 +17,23 @@ Windows AMD target.
 The `windows-x86_64-amd-hip` row in `.github/release-matrix.json` builds the same
 kernel triple the Linux golden run uses — `strix-hip` / `qwen3.6-27b` / `nvfp4` —
 with the Windows HIP SDK (installer `25.Q3`, ROCm 6.4-era, LLVM 19), and packages a
-zip containing `spark.exe`, `cuda.dll`, `nvcuda.dll` and `amdhip64_*.dll`.
+zip containing `spark.exe`, `cuda.dll`, `nvcuda.dll` and `amdhip64_6.dll`.
+
+Measured on run `30241443396` (2026-07-27), the first Windows build carrying the
+full Strix kernel set:
+
+```
+atlas-kernels: compiled 97 kernels for target 0 (strix-hip, qwen3.6-27b, nvfp4)
+atlas-kernels: dedup+parallel: 97/97 unique nvcc invocations
+atlas-kernels: built Windows HIP runtime shim (cuda.dll/nvcuda.dll + import libs, 76 exports)
+artifact spark-windows-x86_64-amd-hip, 13,612,158 bytes
+```
+
+**97 is the number to check.** main alone builds 91; the six kernels this branch
+adds (`w4a16_gemv_dp4a`, `wht_bf16`, `moe_expert_gemv_dp4a`,
+`dense_gemv_bf16_batch2`, `inferspark_prefill_paged_turbo{4,8}`) are exactly the
+set main was missing, and 97 matches the Linux tree that is known to serve the
+model. A lower count means kernels silently failed to resolve.
 
 The row is `experimental: true` + `continue-on-error`, so a Windows-clang kernel
 regression does not block a release. **That also means it can go red without
@@ -55,9 +71,11 @@ fallback.
 
 ## Getting a binary
 
-Download the `windows-x86_64-amd-hip` artifact from any green run of the release
-matrix (it runs on every PR, and on `workflow_dispatch` of `release.yml` with
-`dry_run=true`). Unzip; keep the DLLs beside `spark.exe`.
+Download the `spark-windows-x86_64-amd-hip` artifact from any green run of the
+release matrix — it runs on every PR, and on `workflow_dispatch` of `release.yml`
+with `dry_run=true` (which is how run `30241443396` above was produced, and needs
+no PR). Unzip; **keep the DLLs beside `spark.exe`** — `cudarc` `dlopen`s
+`nvcuda.dll` from the exe's directory, and that DLL imports `amdhip64_6.dll`.
 
 To build it yourself you need the Windows HIP SDK and MSVC on PATH:
 
@@ -134,8 +152,8 @@ recovers it, and that result is worth knowing before anyone invests further.
 
 Most useful first:
 
-1. Does `spark.exe` start and load all kernels? The serve log prints the count —
-   expect **97**. Fewer means kernels silently failed to resolve.
+1. Does `spark.exe` start and load all kernels? Expect **97** (see above).
+   Fewer means kernels silently failed to resolve at load time.
 2. Does it produce coherent output for a plain prompt? (Garbage output with a
    clean startup is the NVFP4-corruption signature, not a crash.)
 3. `nvidia-smi`-equivalent: what does Adrenalin report for VGM, and what
