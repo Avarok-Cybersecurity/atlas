@@ -201,8 +201,22 @@ pub fn gdn_decode_wy4(
     qk_stride: u32,
     v_stride: u32,
     gb_stride: u32,
+    // false = contiguous state bases indexed by (b*num_v_heads+vh);
+    // true  = device pointer TABLES, one entry per sequence.
+    //
+    // Contiguous is only correct at batch_size==1: it assumes the intermediates
+    // share h_state's batch stride, but the pool's intermediate stride is
+    // num_intermediates x larger, so at n>1 sequence 1's Hi0 lands on sequence
+    // 0's Hi1 — silent cross-sequence rollback corruption. Pass true with staged
+    // tables for any batched verify. false is byte-identical to the old kernel.
+    state_is_table: bool,
     stream: u64,
 ) -> Result<()> {
+    debug_assert!(
+        state_is_table || batch_size == 1,
+        "contiguous state addressing is only valid at batch_size==1 — the \
+         intermediate batch stride differs from h_state's; stage pointer tables"
+    );
     KernelLaunch::new(gpu, kernel)
         .grid([num_v_heads, batch_size, 1])
         .block([128, 1, 1])
@@ -224,6 +238,7 @@ pub fn gdn_decode_wy4(
         .arg_u32(qk_stride)
         .arg_u32(v_stride)
         .arg_u32(gb_stride)
+        .arg_u32(u32::from(state_is_table))
         .launch(stream)
 }
 
