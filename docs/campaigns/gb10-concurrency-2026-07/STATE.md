@@ -699,3 +699,62 @@ microbench.**
 | host leg                     | ~20     | ~0    | ~16 ms  |
 | rope/rms_norm fan-out        | 1.8     | ~0.2  | ~1.6 ms |
 (*FFN floor is for the full 64-layer weight stream.)
+
+## 2026-07-27 — ★ PROJECTION UNDER-FILL CONFIRMED: k/v ARE THE WORST KERNELS IN THE MODEL
+
+`w4a16_gemm_t_k64`: M_TILE 64, N_TILE_LG 128, 128 threads (4 warps), **38.19 KiB smem/CTA
+=> only 2 CTAs/SM = 96 resident slots on 48 SMs**. Grid is `(ceil(N/128), ceil(M/64), 1)` --
+`gridDim.z` is UNUSED and at M=16 `gridDim.y == 1`, so the z axis is free for a K split.
+
+Per-shape CTA counts at M=16 (decode):
+| shape        | N     | CTAs | fill                        | calls/step |
+|--------------|-------|------|-----------------------------|-----------|
+| ssm qkvz     | 16384 | 128  | 1.33 waves (tail 32/96)     | 48 |
+| ssm out_proj | 5120  | 40   | 0.83 -- 8 SMs IDLE          | 48 |
+| attn q       | 12288 | 96   | exactly one full wave       | 16 |
+| **attn k**   | 1024  | **8**| **40 of 48 SMs IDLE**       | 16 |
+| **attn v**   | 1024  | **8**| same                        | 16 |
+| attn o_proj  | 5120  | 40   | 0.83                        | 16 |
+Byte inventory: 48*(41.9+15.7) + 16*(31.5+2.6+2.6+15.7) = **3603 MB = exactly the profiled
+3.6 GB**. Shape mix independently confirmed.
+
+### Measured standalone at M=16 (w4a16_m17_bench, 230 GB/s denominator)
+| shape                    | time    | achieved   | vs floor |
+|--------------------------|---------|------------|----------|
+| **attn_k / attn_v N=1024**| 125 us | **23.6 GB/s** | **9.75x** |
+| attn_o_proj N=5120       | 166 us  | 106.6 GB/s | 2.16x |
+| ssm_out_proj N=5120      | 155 us  | 113.8 GB/s | 2.02x |
+| ssm_qkvz N=16384         | 343 us  | 137.7 GB/s | 1.67x |
+| **attn_qkv FUSED N=14336**| **332 us** | 124.3 GB/s | 1.85x |
+k/v move 2.9 MB in 125 us. Those weights fit ENTIRELY in L2, so the bench's usual ~1.5x
+optimism does not apply -- this is pure occupancy starvation, not bandwidth.
+**k+v alone = 250 us; the FUSED q+k+v = 332 us total.**
+
+### ★ WHY THE TWO PRIOR NULLS WERE NULLS
+`K_STEP_T -> 64` for out_proj (-0.5%) and M-sized MMQ tiles (0%) both re-partition work
+INSIDE the CTA. Neither changes the CTA count. The under-fill model predicts ~0 for both --
+they are evidence FOR the diagnosis, not against it. It also means occupancy tricks
+(smem/reg cuts) are provably useless for out_proj (40 CTAs) and k/v (8 CTAs): when
+CTAs < 48 you cannot fill one per SM no matter the residency.
+
+### Ranked remedies
+1. **Fuse q+k+v into one N=14336 GEMM — BIT-IDENTICAL.** 3 launches (96/8/8 CTAs) -> 1 at
+   112 CTAs. ~2.7 ms/step and -32 launches/step. Needs a fused transposed twin at load
+   (row-wise interleave: the `_t` layout is [K/2, N], so it is NOT a flat concat).
+2. **Split-K on `gridDim.z`** (ksplits=2 for out_proj/o_proj, 8 for k/v; K%(64*ksplits)==0
+   holds: 6144/2=3072, 5120/8=640). ~9.3 ms. **NOT bit-identical** -- one FP32 accumulator
+   chain becomes 2-8 chains summed in a reduce; FP32 add is non-associative. Template
+   ALREADY IN THE SAME FILE: `int8_gemm_splitk`/`int8_splitk_reduce` at
+   `w4a16_gemm.cu:2533/:2652`, whose rationale block states the identical diagnosis.
+   ★ Pin ksplits to the WEIGHT SHAPE, never to runtime concurrency -- mirroring the
+   `split_ref_seqs` determinism pin (`qwen3_attention/mod.rs:92`), or a sequence's output
+   would depend on who else is in its batch.
+3. M_TILE=16 + warp-over-N repartition: smem 39.1 -> 25.3 KiB => 3 CTAs/SM. ~3.6 ms,
+   bit-identical, qkvz only. Does nothing for out_proj/k/v.
+4. Persistent/stream-K: ~10-12 ms but high risk; split-K first. Note `mul_mat_q_stream_k_fixup`
+   exists (`q4k_vendor/mmq.cuh:3789`) but Atlas bypasses it with `fixup=false`, justified as
+   "prefill has thousands of tiles >> 48 SMs" -- that rationale is decode-blind and INVERTS
+   at M=16.
+
+DECISION: take the bit-identical fusion (1) first -- the standing accuracy-gate directive
+blocks the BFCL run needed to discharge split-K's numerical debt.
