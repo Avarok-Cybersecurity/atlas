@@ -20,6 +20,16 @@ use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
+/// Multi-seq decode CUDA graphs: **ON by default**, disabled by
+/// `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// presence-checked flags here are ENABLED by `=0`. Read once per process.
+fn multiseq_graphs_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
+}
+
 /// Batched-GEMV decode lm_head: **ON by default**, disabled by
 /// `ATLAS_NO_LM_HEAD_BATCH_GEMV=1`.
 ///
@@ -222,18 +232,23 @@ impl TransformerModel {
         // tables, embed, and all scratch buffers are at fixed device addresses
         // refreshed every step BEFORE replay. So a graph keyed by padded_n is
         // valid across replays. This is the dominant lever for n>=2 decode
-        // (eliminates ~1500 kernel launches/step). Opt-in until soaked; flip
-        // the default once validated. Verify correctness with the needle test.
+        // (eliminates ~1500 kernel launches/step).
+        //
+        // DEFAULT-ON since 2026-07-27, validated: C=8 65.75 -> 67.6 (+2.8%),
+        // C=16 92.6 -> 95.6 (+3.2%), emitted-text SHA unchanged, 2 reps/cell.
+        // Disable with ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1.
+        //
+        // This measurement also RETIRED a planned rewrite: the attention branch
+        // has ~2,300 per-sequence launches/step, and hand-batching them was
+        // estimated at 4-9 ms. Graphs capture all of them wholesale for +3.2%,
+        // so the individual batching work cannot beat what this flag already
+        // gets — the pipeline rewrite is not worth doing. (Batching the gate-mul
+        // by hand beforehand measured flat, consistent with that.)
         let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
-        let use_graphs = !ms_profile
-            && !lora_eager
-            && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
-                .ok()
-                .as_deref()
-                == Some("1");
+        let use_graphs = !ms_profile && !lora_eager && multiseq_graphs_enabled();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

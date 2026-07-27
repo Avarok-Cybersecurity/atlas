@@ -450,3 +450,50 @@ per-sequence launches/memcpys per step there (RoPE, KV-write, q/k norms, gate-mu
 scatter/re-gather round trip that batchn makes unnecessary), est. 4-9 ms — and unlike the two blocks
 above, that is LAUNCH overhead, which is not hidden behind a bandwidth wall. `sigmoid_gate_mul_batched`
 already exists and is unused. That is the next thing to try.
+
+## 2026-07-27 — multi-seq CUDA graphs DEFAULT-ON (+3.2%), and it RETIRES the attention rewrite
+
+The attention branch had ~2,300 per-sequence launches/step (RoPE, KV-write, q/k norms, gate-mul,
+plus a scatter the batched QKV then re-gathers), analysed at 4-9 ms if hand-batched. Before building
+that, two cheaper things settled it:
+
+1. **Hand-batched the gate-mul** (16 launches/layer -> 1, using `sigmoid_gate_mul_batched` which
+   already existed and which the PREFILL path already drives on these same buffers). Removed ~240
+   launches/step. **MEASURED FLAT** — consistent with the estimate (240 x ~2-4 us is inside noise),
+   not a refutation. Landed anyway: strictly less work, identical output.
+2. **CUDA graphs — a ZERO-CODE test of the whole hypothesis**, since graphs capture every launch
+   wholesale. **C=8 65.75 -> 67.6 (+2.8%), C=16 92.6 -> 95.6 (+3.2%)**, emitted-text SHA unchanged.
+
+**So the launch overhead is real but worth ~3%, and a flag already captures ALL of it.** Hand-batching
+the remaining ~2,000 calls cannot beat what graphs get for free. **The attention pipeline rewrite is
+retired** — do not re-open it without new evidence.
+
+`ATLAS_DECODE_GRAPHS_MULTISEQ` is now DEFAULT-ON (`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` disables). Its
+own comment had said "opt-in until soaked; flip the default once validated" — this is that
+validation, and it is exactly the pattern `feedback_good_defaults_not_flags` exists to catch.
+
+## SCOREBOARD — end of session
+
+| C | session start | **now** | vLLM | ratio | start ratio |
+|---|---|---|---|---|---|
+| 1 | 27.4 | 25.6 | 14.2 | **1.80x WIN** | 1.93x |
+| 2 | 21.3 | 25.3 | 27.8 | 0.91x | 0.77x |
+| 4 | 38.6 | **47.7** | 53.3 | **0.90x** | 0.72x |
+| 8 | 55.4 | **67.7** | 98.8 | **0.69x** | 0.56x |
+| 16 | 59.9 | **95.9** | 168.9 | **0.57x** | 0.35x |
+
+**C=16 +60% this session. C=4 is within 10% of vLLM.**
+
+## What is now KNOWN to be near its floor (do not re-open without new evidence)
+- **FFN** (~42 ms): weight-bandwidth-bound. M-sized MMQ tiles measured FLAT.
+- **GDN recurrence** (~30 ms): state-bandwidth-bound, ~1.5x floor. Third-pass removal 1.1%,
+  batched-recurrent 2.6%, double-read deprioritised by the same L2 calibration.
+- **Launch overhead** (~3%): fully captured by CUDA graphs, now default-on.
+
+## What is left
+1. **out_proj occupancy** — 40 CTAs on 48 SMs at N=5120, a single under-filled wave; both the GEMV
+   and the tile GEMM bottom out at ~60 GB/s for different reasons. Split-K or the already-compiled
+   `w4a16_gemm_t_k64`. Est ~8 ms.
+2. **Batched speculative verify** — still the only structural lever with a >2x shape. Spec is worth
+   1.8x at C=1 and is inert above n=2. Full design + the latent `inter_batch_stride_floats` kernel
+   bug are recorded above.
