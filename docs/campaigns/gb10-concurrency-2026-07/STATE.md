@@ -843,7 +843,39 @@ Kill switch `ATLAS_NO_THINKENDED_GPU_ARGMAX=1`.
 which emits NO tokens and stalls every sequence. The fast path must yield an `Option` so
 "needs the host pipeline after all" genuinely falls through.
 
-### lm_head -> `w4a16_gemm_t_k64`: BUILT, FAILED, REVERTED — do not retry without reading the kernel
+### lm_head -> tile GEMM: BUILT TWICE, FAILED TWICE, REVERTED. ★ NOT a kernel constraint.
+★ CORRECTION to the earlier entry below: I recorded this as "a real constraint inside
+`w4a16_gemm_t_k64` at N=248320". **That was WRONG.** Adding the lm_head shape to
+`w4a16_m17_bench` runs ALL FOUR variants clean at N=248320, M=1..64:
+| kernel | M=16 | achieved | vs floor |
+|---|---|---|---|
+| **`w4a16_gemm_t`** | **3672 us** | **194.8 GB/s (84.7% of ceiling)** | **1.18x** |
+| `w4a16_gemm_t_m128` | 3865 us | 185.0 GB/s | 1.24x |
+| `w4a16_gemm_t_k64` | 4062 us | 176.0 GB/s | 1.31x |
+| `w4a16_gemm` (N64) | 17304 us | 41.3 GB/s | 5.57x |
+| *in-model GEMV today* | *9680 us* | *66 GB/s* | *3.1x* |
+715 MB cannot sit in L2, so 84.7% is honest, not microbench optimism. **~6 ms/step is real
+and available** — the largest remaining prize.
+★ ALSO: the `K >= 4096` k64 threshold picks the WORSE kernel here (`_t` is 10% faster at
+N=248320). That threshold was derived from projection shapes; it does not generalise.
+
+**What is actually known about the fault** (three attempts, three hypotheses eliminated):
+- Fails with `w4a16_gemm_t_k64` AND plain `w4a16_gemm_t` => not kernel-specific.
+- The single-request identity probe PASSES BYTE-IDENTICALLY every time; only CONCURRENCY
+  faults. First error is always decode-side: `argmax_batch: cuMemcpyDtoHAsync_v2 failed:
+  status 716` (CUDA_ERROR_MISALIGNED_ADDRESS, sticky — the memcpy is just the first sync
+  point after the faulting kernel).
+- Dims verified against the checkpoint: `lm_head.weight [248320, 2560]`,
+  `weight_scale [248320, 320]`, K=5120. N = 1940x128 exactly. Twin layout [K/2, N] correct.
+- Alignment RULED OUT: every arena buffer is its own `gpu.alloc()` (`buffers.rs:134-147`),
+  i.e. a separate cuMemAlloc at 256-B alignment. The twin's weight and scale are likewise
+  fresh allocations.
+- The remaining discriminator is that concurrency runs inside the CAPTURED multi-seq CUDA
+  graph and the single request does not.
+**NEXT STEP: run a serve under `compute-sanitizer` to localise the faulting access.** Do not
+retry the wiring blind — it has now been written twice and both times looked correct.
+
+### (superseded) original entry
 Motivation was sound and stands: nsys puts lm_head at **9.68 ms/step in ONE launch**, 715 MB at
 **~66 GB/s = 29% of the 230 GB/s ceiling**, the largest non-GEMM kernel in the step. At
 N=248320 the tile GEMM launches ~1940 CTAs, so unlike the narrow-N projections it is

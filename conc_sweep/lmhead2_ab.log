@@ -1,0 +1,20 @@
+--- leg: OLD (lm_head GEMV) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=29.7s total_tok=3072 agg=103.4 tok/s
+   rep2 C=16: wall=29.9s total_tok=3072 agg=102.9 tok/s
+   rep3 C=16: wall=29.8s total_tok=3072 agg=103.0 tok/s
+   rep4 C=16: wall=29.8s total_tok=3072 agg=102.9 tok/s
+--- leg: NEW (lm_head w4a16_gemm_t) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+   rep2 urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+   rep3 urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+   rep4 urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+[2m2026-07-27T23:19:02.457534Z[0m [31mERROR[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill start error: cuMemsetD8Async failed: status 716
+[2m2026-07-27T23:19:02.460751Z[0m [31mERROR[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill start error: cuMemsetD8Async failed: status 716
+[2m2026-07-27T23:19:02.462697Z[0m [31mERROR[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill start error: cuMemsetD8Async failed: status 716
+[2m2026-07-27T23:19:02.463478Z[0m [31mERROR[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill start error: cuMemsetD8Async failed: status 716
+[2m2026-07-27T23:19:02.463983Z[0m [31mERROR[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill start error: cuMemsetD8Async failed: status 716
+LH2_AB_DONE
