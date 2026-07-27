@@ -321,3 +321,24 @@ fn effective_charge_still_rejects_when_sum_exceeds_arena() {
         false,
     ));
 }
+
+/// A fully-cached MIDDLE chunk stages zero tokens. It must never be admitted to
+/// the batch: a zero-length stream is degenerate in the packed cu_seqlens layout
+/// (empty segment, and `running_proc_off += 0` leaves it sharing an offset with
+/// the next stream). Observed as a hard server hang — the batched dispatch
+/// logged `n=4` and never returned.
+#[test]
+fn effective_charge_rejects_zero_length_stream() {
+    assert!(!check_kernel_batched_eligible(
+        vec![s_eff(2048, 176, 2048, false), s_eff(2048, 0, 2048, false)],
+        2,
+        8192,
+        "qwen3_next",
+        128,
+        BIG_SCRATCH,
+        TOP_K,
+        MROPE,
+        true,
+        false,
+    ));
+}

@@ -73,8 +73,12 @@ impl TransformerModel {
                     .peek_matched_tokens(s.prompt_tokens, bs, s.seq.adapter_id);
             let skip = matched.saturating_sub(s.chunk_start).min(s.chunk_len);
             // A fully-cached LAST chunk still stages one token so the LM head
-            // has a row to read (`proc_range` re-embeds it); a fully-cached
-            // middle chunk stages nothing.
+            // has a row to read (`proc_range` re-embeds it). A fully-cached
+            // MIDDLE chunk stages nothing — reported as 0 so the caller can
+            // reject the batch (see the zero-length guard below); it must never
+            // be admitted, because a zero-token stream is degenerate in the
+            // packed cu_seqlens layout (empty segment, and `running_proc_off +=
+            // 0` leaves it sharing an offset with the next stream).
             match s.chunk_len - skip {
                 0 if s.is_last_chunk => 1,
                 n => n,
@@ -211,6 +215,12 @@ where
         // arithmetically impossible no matter how warm the cache was.
         // `eff_len == chunk_len` when the caller cannot prove a hit, so this is
         // never more permissive than the old bound without evidence.
+        // Zero-token stream: degenerate in the packed layout. Reject the whole
+        // batch and let it run per-stream, where a fully-cached middle chunk is
+        // handled correctly by `proc_range`'s EarlyReturn.
+        if eff_len == 0 {
+            return false;
+        }
         total += eff_len;
         max_chunk_len = max_chunk_len.max(eff_len);
     }
