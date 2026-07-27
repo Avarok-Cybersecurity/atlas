@@ -1,0 +1,6 @@
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=29.9s total_tok=3072 agg=102.8 tok/s
+   rep2 C=16: wall=30.0s total_tok=3072 agg=102.4 tok/s
+   rep3 C=16: wall=30.0s total_tok=3072 agg=102.5 tok/s
+   rep4 C=16: wall=30.1s total_tok=3072 agg=102.2 tok/s
+MMQ_OCC_DONE

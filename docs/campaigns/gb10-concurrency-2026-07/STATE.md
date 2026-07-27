@@ -867,3 +867,40 @@ well-occupied; expected ~5 ms.
 2. lm_head tile GEMM — blocked on the 716 above.
 3. host-leg residue: pin `DECODE_LOGITS_HOST_SCRATCH` (it is a pageable Vec, so the "async"
    D2H is a staged sync copy), and the two O(output_len) `rposition` scans per seq per step.
+
+## 2026-07-27 (late) — FFN MMQ BLOCK OPENED: under-fill REFUTED, occupancy hint NULL
+
+The FFN (`atlas_nvfp4_mmq16_nc`) is the largest single block: **192 inst/step, 54.3 ms,
+35.5% of GPU time**. Grid is `[div_ceil(N,128), div_ceil(M,16), 1]`, block 256, so at decode
+M=16 `gridDim.y == 1` and gate/up (N=17408) launch **136 CTAs** while down (N=5120) launches
+**40 CTAs on 48 SMs**. That looked like the same under-fill as the projections.
+
+### ★ IT IS NOT. Splitting the 29,661 FFN launches by gridX in the nsys capture:
+| shape | gridX | count | avg | GB/s |
+|---|---|---|---|---|
+| gate/up | 136 | 19,774 | 282.3 us | 167.7 |
+| **down** | **40** | 9,887 | **284.3 us** | 166.6 |
+**Within 0.7%.** Using 40 of 48 SMs costs essentially nothing here — 40 CTAs already saturate
+the memory system. => **stream-K would buy ~nothing at decode**, so the vendored header's
+"prefill shapes have thousands of tiles >> 48 SMs so stream-k buys ~nothing" bypass
+(`fixup=false`) happens to be RIGHT at decode too, for a different reason than it states.
+A complete stream-K path (`mul_mat_q_stream_k_fixup`, `mmq.cuh:3789`, nsm-sized grid,
+`tmp_fixup` partials, and a launcher that picks it below 90% tile efficiency at `:4003`) is
+sitting unused — do NOT integrate it on under-fill grounds; the measurement says no.
+
+### Occupancy hint: NULL, reverted
+Dynamic smem is `4*(mmq_x + pad256(mmq_x*36) + 128*76)` = **41.06 KiB at mmq_x=16**, 43.1 KiB
+at 32, vs 100 KiB/SM on sm_121 — so TWO CTAs fit, yet every Atlas entry carried
+`__launch_bounds__(256, 1)`. Raised the four small-M entries to `(256, 2)` (mmq128 needs
+56.5 KiB and must stay at 1). Measured C=16, 4 reps, byte-identical:
+control 102.4/102.0 (mean 102.20) vs 102.8/102.4/102.5/102.2 (mean 102.48) — **+0.27%, ranges
+OVERLAP, indistinguishable from noise.** REVERTED: unmeasurable benefit, and `mmq32` is a
+PREFILL kernel whose register budget would tighten for an unproven decode gain.
+
+### Verdict on the FFN block
+Uniform **~167 GB/s = ~77% of the 230 GB/s achievable** across all three shapes (counting
+block_nvfp4's real 36 bytes per 64 weights). There is **no structural defect** here — no dead
+capability, no wrong dispatch, no under-fill — unlike every other win this session. Closing
+the remaining ~23% means real inner-loop work inside vendored llama MMQ (dequant/scale ALU
+overlap with the cp.async weight stream), worth ~6.7 ms. That is a genuine project, not a
+dispatch fix, and it is the code path Atlas owns least.
