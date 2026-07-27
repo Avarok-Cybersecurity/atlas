@@ -14,7 +14,7 @@ pub mod metrics_poll;
 /// breaks the metal/CPU builds — which is exactly how the dashboard shipped:
 /// two call sites, no cfg, and the macOS CI job could not compile the crate.
 /// One gated accessor means the next caller cannot repeat that.
-pub fn gpu_free_bytes() -> Option<u64> {
+pub fn gpu_free_bytes() -> Option<usize> {
     #[cfg(feature = "cuda")]
     {
         spark_runtime::cuda_backend::cuda_free_memory_bytes()
