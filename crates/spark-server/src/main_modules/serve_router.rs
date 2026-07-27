@@ -192,6 +192,10 @@ async fn serve_with_header_timeout(
 
     let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
+    // Startup is over: shutdown now means "stop accepting and drain in-flight
+    // requests", so main's startup escape must no longer short-circuit it.
+    crate::tui::shutdown::disarm_startup_escape();
+
     loop {
         let accepted = tokio::select! {
             conn = listener.accept() => conn,

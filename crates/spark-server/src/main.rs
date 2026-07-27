@@ -98,8 +98,37 @@ async fn main() -> Result<()> {
         Some(progress_rx)
     };
 
+    // Race startup against shutdown. `serve()` is async but does not await
+    // between the banner and the accept loop — startup is one blocking sequence
+    // — so awaiting it inline made `q`/Ctrl+C look ignored for the whole model
+    // load: nothing could poll a shutdown future until loading finished. Spawning
+    // puts startup on its own task, so this `select!` can actually win.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
+    tui::shutdown::arm_startup_escape(shutdown_tx);
     let result = match cli.command {
-        Command::Serve(args) => serve(args, tui_channels).await,
+        Command::Serve(args) => {
+            let serving = tokio::spawn(serve(args, tui_channels));
+            tokio::select! {
+                res = serving => res.unwrap_or_else(|e| Err(anyhow::anyhow!("serve task: {e}"))),
+                reason = shutdown_rx => {
+                    // Cancelled before the server came up. Nothing is in flight
+                    // and no client is connected, so there is nothing to drain —
+                    // the startup task is abandoned where it stands.
+                    tracing::info!(
+                        "Shutdown requested ({}) during startup — exiting before the server came up",
+                        reason.unwrap_or("unknown")
+                    );
+                    // Cleanup that would otherwise run below, then exit without
+                    // waiting on the runtime: a task parked inside a synchronous
+                    // CUDA call cannot be aborted, and dropping the runtime would
+                    // block on it — reintroducing the very wait this fixes.
+                    tui::stop_and_join(std::time::Duration::from_secs(2));
+                    tui::terminal_guard::restore();
+                    tui::init::flush_tee();
+                    std::process::exit(0);
+                }
+            }
+        }
     };
     // If serve() returned while the TUI owned the screen (startup error, clean
     // shutdown), stop the dashboard thread and wait for its TerminalGuard to

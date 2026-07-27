@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
 
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -29,10 +29,49 @@ fn notify() -> &'static Notify {
     N.get_or_init(Notify::new)
 }
 
+/// Startup escape hatch: the sending half of `main`'s one-shot, held so that
+/// whichever trigger fires FIRST takes it and the rest are no-ops.
+///
+/// `serve()` is `async` but never awaits between the banner and the accept loop
+/// — startup is one blocking sequence (weight load, KV alloc, kernel audit). So
+/// the accept loop's `select!` on [`wait`] cannot be reached while a model is
+/// loading, and Ctrl+C looked ignored for the whole load. `main` now races the
+/// spawned `serve()` task against this channel, which needs no cooperation from
+/// the blocking code at all.
+///
+/// It is DISARMED by [`disarm_startup_escape`] the moment the accept loop takes
+/// over. After that a shutdown must go through the graceful path below, or a
+/// Ctrl+C on a live server would exit while requests were still in flight.
+static STARTUP_ESCAPE: OnceLock<std::sync::Mutex<Option<oneshot::Sender<&'static str>>>> =
+    OnceLock::new();
+
+fn escape() -> &'static std::sync::Mutex<Option<oneshot::Sender<&'static str>>> {
+    STARTUP_ESCAPE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Arm the startup escape with `main`'s sender. Called once, before `serve()`.
+pub fn arm_startup_escape(tx: oneshot::Sender<&'static str>) {
+    *escape().lock().expect("shutdown escape poisoned") = Some(tx);
+}
+
+/// Drop the startup escape once the server is accepting: from here on, shutdown
+/// means "stop accepting and drain", not "return from main".
+pub fn disarm_startup_escape() {
+    escape().lock().expect("shutdown escape poisoned").take();
+}
+
 /// Request a clean shutdown. Idempotent; safe from any thread.
-pub fn request(reason: &str) {
+pub fn request(reason: &'static str) {
     if !REQUESTED.swap(true, Ordering::SeqCst) {
         tracing::info!("Shutdown requested ({reason}) — draining in-flight requests");
+    }
+    // Still in startup? Hand the reason to main's select! and let it unwind
+    // there. `take()` means only the first trigger sends; later ones fall
+    // through to the notification below, which is all the accept loop needs.
+    if let Ok(mut slot) = escape().lock()
+        && let Some(tx) = slot.take()
+    {
+        let _ = tx.send(reason);
     }
     notify().notify_waiters();
 }
