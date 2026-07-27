@@ -955,3 +955,18 @@ capability, no wrong dispatch, no under-fill — unlike every other win this ses
 the remaining ~23% means real inner-loop work inside vendored llama MMQ (dequant/scale ALU
 overlap with the cp.async weight stream), worth ~6.7 ms. That is a genuine project, not a
 dispatch fix, and it is the code path Atlas owns least.
+
+## 2026-07-27 (night) — OVERNIGHT BASELINE + a measurement artifact worth knowing
+
+**Baseline on HEAD (`b0a248f1`), settled GPU, 6 reps, identity sha `bf3a0b07`:**
+`99.8 | 102.8 103.0 102.7 103.0 102.9` => **rep1 is a WARMUP OUTLIER**; steady state is
+**102.88 tok/s, sigma 0.13** over reps 2-6.
+★ Every A/B run today included rep1 in the mean. At ~3% low it is large enough to hide or
+fake a 1% effect. The canonical harness now runs a **discarded warmup drive** before the
+measured reps (`scratchpad/ab_template.sh`).
+
+★ ALSO: a `compute-sanitizer` serve survived its own script's `kill -TERM` and held **74.6 GB**
+for ~20 minutes, starving the next container and producing 500s that looked exactly like "HEAD
+is broken after the reverts". `compute-sanitizer` runs the app under a `TreeLauncherSubreaper`,
+so the TERM went to the wrapper, not the process, while the script printed its DONE marker.
+**Verify with `nvidia-smi --query-compute-apps` — do not trust a script's completion message.**

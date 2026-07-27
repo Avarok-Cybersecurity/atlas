@@ -1,0 +1,6 @@
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=30.2s total_tok=2977 agg=98.7 tok/s
+   rep2 C=16: wall=29.8s total_tok=3072 agg=102.9 tok/s
+   rep3 C=16: wall=30.5s total_tok=3072 agg=100.8 tok/s
+   rep4 C=16: wall=34.7s total_tok=3072 agg=88.5 tok/s
+HEAD_VERIFY_DONE
