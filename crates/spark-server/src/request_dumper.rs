@@ -16,12 +16,26 @@
 //! The writer is fail-open: if the file can't be written, the error
 //! is logged once and serving continues. Dump failures MUST NOT kill
 //! live requests.
+//!
+//! **The file I/O runs on a dedicated thread.** Entries are serialised by the
+//! caller and handed to that thread over a bounded queue, because the emit
+//! points sit on async request paths — `handle_done` is a sync fn called from
+//! inside the streaming future, so it cannot `await` a `spawn_blocking`. Writing
+//! inline blocked a tokio worker on a `write + flush` for every request, which is
+//! most costly precisely when `--dump` is on and someone is measuring latency.
 
 use parking_lot::Mutex;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Queue depth for pending dump lines. Deep enough to absorb a burst without
+/// touching the request path; bounded so a stalled disk cannot grow it without
+/// limit. Overflow drops entries and says so — for a diagnostics file that is
+/// the right trade, but it must never be silent.
+const DUMP_QUEUE_DEPTH: usize = 4096;
 
 /// Shared handle installed in `AppState::dump_writer` when `--dump` is
 /// set. Cloning is cheap (Arc); all clones write to the same file
@@ -32,12 +46,36 @@ pub struct DumpHandle {
 }
 
 struct DumpInner {
-    writer: Mutex<std::io::BufWriter<std::fs::File>>,
+    /// `None` only while `Drop` is closing the queue.
+    tx: Mutex<Option<SyncSender<String>>>,
+    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     path: std::path::PathBuf,
     seq: AtomicU64,
-    /// Set once the first I/O error has been logged. Prevents the
-    /// server log from flooding if the dump target disappears.
-    io_error_logged: std::sync::atomic::AtomicBool,
+    /// Entries lost to a full queue. Logged once on the first drop so a
+    /// truncated dump file is never mistaken for a complete one.
+    dropped: AtomicU64,
+    drop_logged: std::sync::atomic::AtomicBool,
+}
+
+/// Owns the file. Runs until every `DumpHandle` is gone, then flushes and exits.
+fn writer_loop(
+    rx: std::sync::mpsc::Receiver<String>,
+    file: std::fs::File,
+    path: std::path::PathBuf,
+) {
+    let mut w = std::io::BufWriter::new(file);
+    let mut io_error_logged = false;
+    while let Ok(line) = rx.recv() {
+        // Flush per entry: a dump is read while the server is still running, and
+        // a crash must not swallow the entry that explains it.
+        if let Err(e) = w.write_all(line.as_bytes()).and_then(|_| w.flush())
+            && !io_error_logged
+        {
+            io_error_logged = true;
+            tracing::warn!(path = %path.display(), "dump write failed: {e}");
+        }
+    }
+    let _ = w.flush();
 }
 
 impl DumpHandle {
@@ -49,12 +87,19 @@ impl DumpHandle {
             .create(true)
             .append(true)
             .open(&path)?;
+        let (tx, rx) = sync_channel::<String>(DUMP_QUEUE_DEPTH);
+        let thread_path = path.clone();
+        let handle = std::thread::Builder::new()
+            .name("atlas-dump".into())
+            .spawn(move || writer_loop(rx, file, thread_path))?;
         Ok(Self {
             inner: Arc::new(DumpInner {
-                writer: Mutex::new(std::io::BufWriter::new(file)),
+                tx: Mutex::new(Some(tx)),
+                writer: Mutex::new(Some(handle)),
                 path,
                 seq: AtomicU64::new(0),
-                io_error_logged: std::sync::atomic::AtomicBool::new(false),
+                dropped: AtomicU64::new(0),
+                drop_logged: std::sync::atomic::AtomicBool::new(false),
             }),
         })
     }
@@ -131,17 +176,29 @@ impl DumpHandle {
         };
         line.push('\n');
 
-        // parking_lot::Mutex::lock() returns the guard directly and never
-        // poisons, so the prior "poisoned mutex" recovery branch is gone.
-        let mut w = self.inner.writer.lock();
-        if let Err(e) = w.write_all(line.as_bytes()).and_then(|_| w.flush()) {
-            self.log_io_error_once(&format!("dump write failed: {e}"));
+        // Hand off to the writer thread. Never blocks the caller: a full queue
+        // drops the entry rather than stalling a request on disk.
+        let guard = self.inner.tx.lock();
+        let Some(tx) = guard.as_ref() else { return };
+        if let Err(TrySendError::Full(_)) = tx.try_send(line) {
+            let n = self.inner.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            if !self.inner.drop_logged.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    path = %self.inner.path.display(),
+                    "dump queue full — dropping entries ({n} so far); the dump file is INCOMPLETE"
+                );
+            }
         }
     }
+}
 
-    fn log_io_error_once(&self, msg: &str) {
-        if !self.inner.io_error_logged.swap(true, Ordering::Relaxed) {
-            tracing::warn!(path = %self.inner.path.display(), "{msg}");
+impl Drop for DumpInner {
+    /// Close the queue and wait for the writer to flush, so a dump file is
+    /// complete once the handle is gone.
+    fn drop(&mut self) {
+        self.tx.lock().take();
+        if let Some(h) = self.writer.lock().take() {
+            let _ = h.join();
         }
     }
 }

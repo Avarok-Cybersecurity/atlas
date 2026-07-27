@@ -72,9 +72,16 @@ fn filesystem_roundtrip_survives_restart() {
 #[test]
 fn filesystem_forgets_on_eviction() {
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let store = ResponseStore::with_filesystem(1, Duration::from_secs(60), tmp.path()).expect("fs");
-    store.insert(entry("a", StoredKind::Response));
-    store.insert(entry("b", StoredKind::Response));
+    {
+        let store =
+            ResponseStore::with_filesystem(1, Duration::from_secs(60), tmp.path()).expect("fs");
+        store.insert(entry("a", StoredKind::Response));
+        store.insert(entry("b", StoredKind::Response));
+        // Disk work runs on the store's writer thread, so the observable
+        // contract is "once the store is dropped, its disk state is settled" --
+        // the same guarantee `filesystem_roundtrip_survives_restart` relies on.
+        // Asserting mid-flight would be testing scheduling, not eviction.
+    }
     // `a` evicted → file gone.
     let files: Vec<_> = std::fs::read_dir(tmp.path())
         .unwrap()
