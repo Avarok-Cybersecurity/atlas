@@ -94,6 +94,10 @@ mixer (35%) and attention (21%) — not one hotspot.
 | + batched recurrent + fused norm | 55.1 | +2.6%, coherence OK |
 | + FFN NVFP4 MMQ (drop `ATLAS_NO_FFN_NVFP4_MMQ`) | 61.2 | +11.3%, C=1 neutral, output identical |
 
+MMQ re-measured 3x per leg (the 11% was N=1): MMQ off 55.0 / 54.8 / 54.8 (mean 54.9), MMQ on
+61.4 / 59.1 / 61.2 (mean 60.6) = **+10.4%, ranges do not overlap**. The MMQ legs also completed the
+full 16x192 tokens twice, where the frozen config always truncated to 2977.
+
 `ATLAS_NO_FFN_NVFP4_MMQ` is a PRESENCE flag: `=0` does NOT enable MMQ, the variable must be absent.
 
 **Not a km-arm regression:** the balanced/prefill regime failures are the pre-existing KV
