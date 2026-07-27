@@ -23,6 +23,7 @@ pub fn bf16_gemm_act_weight_t(
     unreachable!("cutlass::bf16_gemm_act_weight_t is cuda-only (not built for metal)")
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the real CUDA entry point's arity
 pub fn nvfp4_gemm_bf16_act_weight_t(
     _act: u64,
     _weight_packed_t: u64,
@@ -37,7 +38,7 @@ pub fn nvfp4_gemm_bf16_act_weight_t(
     unreachable!("cutlass::nvfp4_gemm_bf16_act_weight_t is cuda-only (not built for metal)")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // mirrors the real CUDA entry point's arity
 pub fn nvfp4_grouped_gate_up_fused(
     _a: u64,
     _sorted_token_ids: u64,
@@ -57,6 +58,7 @@ pub fn nvfp4_grouped_gate_up_fused(
     unreachable!("cutlass::nvfp4_grouped_gate_up_fused is cuda-only (not built for metal)")
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the real CUDA entry point's arity
 pub fn nvfp4_grouped_down(
     _a: u64,
     _packed_ptrs: &[u64],
