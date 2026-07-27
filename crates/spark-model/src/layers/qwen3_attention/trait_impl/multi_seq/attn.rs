@@ -213,19 +213,29 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
         if self.gated {
-            for i in 0..n {
-                let gate_i = qkv_buf.offset(i * per_seq_qkv + q_dim as usize * bf16);
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                ops::sigmoid_gate_mul(
-                    fwd.gpu,
-                    self.sigmoid_gate_mul_k,
-                    attn_out_i,
-                    gate_i,
-                    attn_out_i,
-                    q_dim,
-                    stream,
-                )?;
-            }
+            // ONE launch for all n sequences. `attn_out` is contiguous [n, q_dim]
+            // and the gate lives at a fixed offset inside each sequence's slice of
+            // `qkv_buf`, i.e. strided by per_seq_qkv — which is exactly the layout
+            // `sigmoid_gate_mul_batched` takes (`gate[t * gate_stride + d]`, stride
+            // in ELEMENTS). The PREFILL path already drives this kernel on these
+            // same buffers (prefill/paged.rs); multi-seq decode was looping the
+            // single-token variant instead, n launches per layer x 16 layers.
+            debug_assert_eq!(
+                per_seq_qkv % bf16,
+                0,
+                "gate stride must be whole bf16 elements"
+            );
+            ops::sigmoid_gate_mul_batched(
+                fwd.gpu,
+                self.sigmoid_gate_mul_batched_k,
+                attn_out,
+                qkv_buf.offset(q_dim as usize * bf16),
+                attn_out,
+                q_dim,
+                (per_seq_qkv / bf16) as u32,
+                n as u32,
+                stream,
+            )?;
         }
 
         let o_out = fwd.buffers.moe_output();
