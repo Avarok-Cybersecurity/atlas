@@ -49,15 +49,27 @@ fn escape() -> &'static std::sync::Mutex<Option<oneshot::Sender<&'static str>>> 
     STARTUP_ESCAPE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// Whether a shutdown request should still take the startup escape. Cleared when
+/// the accept loop takes over; the SENDER itself is deliberately kept alive (see
+/// [`disarm_startup_escape`]).
+static IN_STARTUP: AtomicBool = AtomicBool::new(true);
+
 /// Arm the startup escape with `main`'s sender. Called once, before `serve()`.
 pub fn arm_startup_escape(tx: oneshot::Sender<&'static str>) {
     *escape().lock().expect("shutdown escape poisoned") = Some(tx);
 }
 
-/// Drop the startup escape once the server is accepting: from here on, shutdown
+/// Close the startup escape once the server is accepting: from here on, shutdown
 /// means "stop accepting and drain", not "return from main".
+///
+/// This only flips a flag — it must NOT drop the sender. Dropping it closes the
+/// channel, which resolves `main`'s receiver with `Err(RecvError)`; that is
+/// indistinguishable from a shutdown unless the receiving side special-cases it,
+/// and taking it at face value exits a healthy server the instant it comes up.
+/// Parking the sender here for the life of the process means the channel simply
+/// never closes and there is no such edge to get wrong.
 pub fn disarm_startup_escape() {
-    escape().lock().expect("shutdown escape poisoned").take();
+    IN_STARTUP.store(false, Ordering::SeqCst);
 }
 
 /// Request a clean shutdown. Idempotent; safe from any thread.
@@ -66,9 +78,12 @@ pub fn request(reason: &'static str) {
         tracing::info!("Shutdown requested ({reason}) — draining in-flight requests");
     }
     // Still in startup? Hand the reason to main's select! and let it unwind
-    // there. `take()` means only the first trigger sends; later ones fall
-    // through to the notification below, which is all the accept loop needs.
-    if let Ok(mut slot) = escape().lock()
+    // there. Taking the sender is the one legitimate way it is consumed — only
+    // the first trigger sends, and the process is on its way out. Once the accept
+    // loop owns shutdown the sender stays parked and untouched, so the channel
+    // never closes and the notification below is what does the work.
+    if IN_STARTUP.load(Ordering::SeqCst)
+        && let Ok(mut slot) = escape().lock()
         && let Some(tx) = slot.take()
     {
         let _ = tx.send(reason);

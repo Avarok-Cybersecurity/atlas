@@ -109,12 +109,10 @@ async fn main() -> Result<()> {
         Command::Serve(args) => {
             let serving = serve(args, tui_channels);
             tokio::pin!(serving);
-            // A CLOSED channel is not a shutdown. `disarm_startup_escape` drops the
-            // sender once the accept loop takes over, which resolves the receiver
-            // with `Err(RecvError)` — taken at face value that fires this branch
-            // the instant the server comes up and exits a healthy process. Only an
-            // actual send means shutdown; a drop means "startup finished", so the
-            // branch parks forever instead.
+            // Only a SEND means shutdown. The sender is parked for the life of the
+            // process rather than dropped when startup ends, so the channel should
+            // never close; this arm exists so that if one ever did, a closed
+            // channel could not masquerade as a shutdown and kill a healthy server.
             let shutdown_signal = async {
                 match shutdown_rx.await {
                     Ok(reason) => reason,
