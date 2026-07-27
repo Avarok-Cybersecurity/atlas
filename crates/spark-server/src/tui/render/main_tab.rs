@@ -129,12 +129,14 @@ fn draw_weight_load(f: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::default());
     if let Some((rate, eta)) = p.rate_eta() {
+        // Once the load window closes the rate is a final measurement, so report
+        // what it took instead of an ETA that is necessarily 0:00.
+        let tail = match p.load_secs() {
+            Some(s) => format!("loaded in {}:{:02}", (s as u64) / 60, (s as u64) % 60),
+            None => format!("eta {}:{:02}", (eta as u64) / 60, (eta as u64) % 60),
+        };
         lines.push(Line::from(Span::styled(
-            format!(
-                " {rate:.2} GB/s · eta {}:{:02}",
-                (eta as u64) / 60,
-                (eta as u64) % 60
-            ),
+            format!(" {rate:.2} GB/s · {tail}"),
             theme::brand_cyan(),
         )));
     }

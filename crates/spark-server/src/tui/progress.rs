@@ -62,6 +62,15 @@ pub struct ProgressModel {
     pub ready: bool,
     pub port: u16,
     pub ready_in_secs: f64,
+    /// The weight-load window, which is what GB/s must be measured over.
+    /// `load_started` is stamped by the FIRST shard event -- NOT process start,
+    /// which would fold CUDA init, model resolution and preflight into the
+    /// divisor and under-report the rate. `load_secs` freezes the window when the
+    /// last shard lands; without it a finished load keeps dividing a constant
+    /// number of bytes by a growing elapsed time, so the displayed rate decays
+    /// toward zero for as long as the server runs.
+    load_started: Option<Instant>,
+    load_secs: Option<f64>,
     /// Smoothed displayed fractions (motion spec: d += (t-d)*0.35).
     disp_overall: f64,
     disp_shard: f64,
@@ -93,6 +102,8 @@ impl Default for ProgressModel {
             ready: false,
             port: 0,
             ready_in_secs: 0.0,
+            load_started: None,
+            load_secs: None,
             disp_overall: 0.0,
             disp_shard: 0.0,
             last_shard_seen: 0,
@@ -109,6 +120,8 @@ impl ProgressModel {
                 self.gpu_free_gb = free_gb;
             }
             ProgressEvent::ShardStart { shard, total, name } => {
+                // First shard opens the load window.
+                self.load_started.get_or_insert_with(Instant::now);
                 self.shard = shard;
                 self.shard_total = total;
                 self.shard_name = name;
@@ -134,6 +147,10 @@ impl ProgressModel {
                     self.mem_history.remove(0);
                 }
                 self.disp_shard = 1.0;
+                // `shard` is 1-based: the last shard done closes the window.
+                if total > 0 && shard >= total {
+                    self.freeze_load_window();
+                }
             }
             ProgressEvent::Layer { layer, total } => {
                 self.layer = layer;
@@ -143,6 +160,9 @@ impl ProgressModel {
                 self.ready = true;
                 self.port = port;
                 self.ready_in_secs = self.started_at.elapsed().as_secs_f64();
+                // Backstop: a load that never emits its final shard_done still
+                // stops the clock here rather than running forever.
+                self.freeze_load_window();
                 for p in &mut self.phases {
                     if p.state != PhaseState::Done {
                         Self::finish(p);
@@ -206,13 +226,34 @@ impl ProgressModel {
         self.disp_overall
     }
 
-    /// Load rate estimate (GB/s) and ETA seconds, when enough is known.
+    /// Stop the load clock, keeping the first close (later events must not extend
+    /// a window that is already measured).
+    fn freeze_load_window(&mut self) {
+        if self.load_secs.is_none()
+            && let Some(t) = self.load_started
+        {
+            self.load_secs = Some(t.elapsed().as_secs_f64());
+        }
+    }
+
+    /// Seconds the weight load took, once it is over. `None` while still loading.
+    pub fn load_secs(&self) -> Option<f64> {
+        self.load_secs
+    }
+
+    /// Load rate (GB/s) and ETA seconds, both measured over the weight-load window
+    /// only. Once the window is frozen the rate is a fixed measurement of what the
+    /// load actually achieved, and the ETA is 0.
     pub fn rate_eta(&self) -> Option<(f64, f64)> {
         if self.disk_gb <= 0.0 || self.shard == 0 || self.shard_total == 0 {
             return None;
         }
-        let frac = self.shard as f64 / self.shard_total as f64;
-        let elapsed = self.started_at.elapsed().as_secs_f64().max(0.1);
+        let elapsed = match self.load_secs {
+            Some(s) => s,
+            None => self.load_started?.elapsed().as_secs_f64(),
+        }
+        .max(0.1);
+        let frac = (self.shard as f64 / self.shard_total as f64).clamp(0.0, 1.0);
         let gb_done = self.disk_gb * frac;
         let rate = gb_done / elapsed;
         if rate <= 0.0 {
@@ -282,5 +323,47 @@ mod tests {
             name: "s2".into(),
         });
         assert_eq!(m.shard_target(), 0.0);
+    }
+
+    /// GB/s must be measured over the weight-load window, not since process start,
+    /// and must stop moving once the load is over. Previously it divided a constant
+    /// number of bytes by an ever-growing elapsed time, so a finished load's rate
+    /// decayed toward zero for as long as the server ran -- and the pre-load time
+    /// (CUDA init, model resolution, preflight) was in the divisor throughout.
+    #[test]
+    fn load_rate_is_windowed_and_freezes_at_the_last_shard() {
+        let ms = |n| std::thread::sleep(std::time::Duration::from_millis(n));
+        let mut m = ProgressModel::default();
+        m.apply(ProgressEvent::Preflight {
+            disk_gb: 10.0,
+            free_gb: 100.0,
+        });
+        ms(120); // pre-load work that must NOT count against the rate
+        for shard in 1..=2u64 {
+            m.apply(ProgressEvent::ShardStart {
+                shard,
+                total: 2,
+                name: "s".into(),
+            });
+            ms(60);
+            m.apply(ProgressEvent::ShardDone {
+                shard,
+                total: 2,
+                used_gb: 1.0,
+                free_gb: 9.0,
+            });
+        }
+        let secs = m.load_secs().expect("last shard closes the window");
+        assert!(
+            secs < m.started_at.elapsed().as_secs_f64() - 0.1,
+            "window {secs}s must exclude the 120ms of pre-load work"
+        );
+        let (rate, eta) = m.rate_eta().expect("rate known once shards are in");
+        assert_eq!(eta, 0.0, "nothing left to load");
+        assert!(rate > 0.0);
+
+        ms(120);
+        let (rate_later, _) = m.rate_eta().unwrap();
+        assert_eq!(rate, rate_later, "a finished load's rate must not drift");
     }
 }
