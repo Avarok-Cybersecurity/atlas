@@ -116,3 +116,39 @@ fn filesystem_skips_expired_on_replay() {
     // Expired file was cleaned up.
     assert!(!file.exists());
 }
+
+/// A client-supplied response id must never be able to address a file outside
+/// the store directory (CWE-22). Traversal is prevented by construction: the
+/// stem allowlist has no `.`, so `..` cannot survive sanitisation.
+#[test]
+fn sanitize_id_cannot_escape_the_store_dir() {
+    use super::sanitize_id;
+    let dir = std::path::Path::new("/var/lib/atlas/responses");
+    for hostile in [
+        "../../etc/passwd",
+        "..",
+        "../..",
+        "/etc/shadow",
+        "..\\..\\windows\\system32",
+        "resp\0/../../root",
+        "résp/../../x",
+        &"a".repeat(4096),
+    ] {
+        let stem = sanitize_id(hostile);
+        assert!(
+            !stem.contains('.') && !stem.contains('/') && !stem.contains('\\'),
+            "stem {stem:?} kept a path character"
+        );
+        assert!(
+            stem.len() <= super::MAX_STEM,
+            "stem {stem:?} exceeds the cap"
+        );
+        let p = dir.join(format!("{stem}.json"));
+        assert_eq!(
+            p.parent(),
+            Some(dir),
+            "{hostile:?} escaped to {}",
+            p.display()
+        );
+    }
+}

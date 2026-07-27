@@ -216,10 +216,28 @@ impl FilesystemBackend {
 
 /// Strip any path separator or control chars. Our ids only contain
 /// `[a-zA-Z0-9_-]`, so this is a belt-and-braces check.
+/// Maximum stem length. Bounds the filename regardless of what a client sends,
+/// which also keeps us inside every filesystem's per-component limit.
+const MAX_STEM: usize = 96;
+
+/// Map a client-supplied response id to a safe filename stem.
+///
+/// Response ids reach this from request bodies, so the result must not be able
+/// to leave the store directory (CWE-22). The allowlist is `[A-Za-z0-9_-]` and
+/// everything else — including `.`, `/`, `\\`, NUL and every Unicode separator —
+/// becomes `_`. Excluding `.` is deliberate: with no dots, `..` cannot be
+/// expressed at all, so traversal is impossible by construction rather than by
+/// argument about what the join does. The length cap bounds the rest.
+///
+/// Dropping `.` changes the on-disk name for ids that contain one. Nothing reads
+/// ids back out of filenames — `replay` takes them from the JSON body — so the
+/// only effect is that a pre-existing file for such an id is no longer matched
+/// by `forget`; TTL replay removes it on the next start.
 fn sanitize_id(id: &str) -> String {
     id.chars()
+        .take(MAX_STEM)
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
                 c
             } else {
                 '_'
