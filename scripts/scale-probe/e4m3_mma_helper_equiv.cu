@@ -29,7 +29,7 @@ __device__ __forceinline__ void atlas_mma_e4m3(float* acc,
     unsigned a0,unsigned a1,unsigned a2,unsigned a3,unsigned b0,unsigned b1){
   unsigned lane=threadIdx.x&31u; unsigned tig=lane&3u; unsigned base=lane&~3u;
   // byte extract
-  auto byt=[](unsigned r,int i)->unsigned char{ return (unsigned char)(r>>(8*i)); };
+  auto byte_of=[](unsigned r,int i)->unsigned char{ return (unsigned char)(r>>(8*i)); };
   #pragma unroll
   for(int half=0;half<2;half++){
     // pick the e4m3 source reg pair for this K-half
@@ -40,7 +40,7 @@ __device__ __forceinline__ void atlas_mma_e4m3(float* acc,
     // within the 16-wide half. K-local j lives in lane base+(j/4), byte j%4.
     auto gA=[&](unsigned reg,int j)->float{
       unsigned src=base+(unsigned)(j>>2); unsigned v=__shfl_sync(0xffffffffu,reg,src);
-      return e2f(byt(v,j&3));
+      return e2f(byte_of(v,j&3));
     };
     int j0=2*tig, j1=8+2*tig;
     unsigned A0=bf2(gA(A_g ,j0),gA(A_g ,j0+1));
