@@ -1,0 +1,13 @@
+--- leg: OLD (host path for think_ended) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=30.8s total_tok=3072 agg=99.9 tok/s
+   rep2 C=16: wall=30.9s total_tok=3072 agg=99.4 tok/s
+   rep3 C=16: wall=30.9s total_tok=3072 agg=99.5 tok/s
+--- leg: NEW (GPU argmax admits think_ended) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=30.2s total_tok=3072 agg=101.8 tok/s
+   rep2 C=16: wall=30.1s total_tok=3072 agg=102.1 tok/s
+   rep3 C=16: wall=30.1s total_tok=3072 agg=102.1 tok/s
+GA_AB_DONE
