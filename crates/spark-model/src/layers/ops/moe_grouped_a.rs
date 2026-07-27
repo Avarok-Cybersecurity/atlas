@@ -12,6 +12,12 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
+const GROUPED_GEMM_N_TILE: u32 = 64;
+
+fn grouped_gemm_grid_x(n_out: u32) -> u32 {
+    div_ceil(n_out, GROUPED_GEMM_N_TILE)
+}
+
 /// MoE grouped GEMM: per-expert W4A16 matrix multiply.
 pub fn moe_w4a16_grouped_gemm(
     gpu: &dyn GpuBackend,
@@ -161,7 +167,7 @@ pub fn moe_w4a16_grouped_gemm_ptrtable(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n_out, 128), max_m_tiles, num_experts])
+        .grid([grouped_gemm_grid_x(n_out), max_m_tiles, num_experts])
         .block([128, 1, 1])
         .arg_ptr(a)
         .arg_ptr(b_packed_ptrs)
@@ -475,4 +481,18 @@ pub fn moe_silu_mul(
         .arg_ptr(output)
         .arg_u32(total_elements)
         .launch(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GROUPED_GEMM_N_TILE, grouped_gemm_grid_x};
+
+    #[test]
+    fn untransposed_grouped_grid_covers_every_output_column() {
+        for n_out in [1, 64, 65, 2048, 4096] {
+            let grid = grouped_gemm_grid_x(n_out);
+            assert!(grid * GROUPED_GEMM_N_TILE >= n_out);
+            assert!((grid - 1) * GROUPED_GEMM_N_TILE < n_out);
+        }
+    }
 }
