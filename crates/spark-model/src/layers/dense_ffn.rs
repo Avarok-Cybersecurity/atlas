@@ -173,6 +173,13 @@ pub struct DenseFfnLayer {
     // folded in the scaled SiLU-mul. KernelHandle(0) → arm skipped.
     nvfp4_mmq_nc_k: KernelHandle,
     nvfp4_mmq_wc_k: KernelHandle,
+    /// M-sized MMQ tiles for DECODE. The 128 tile issues MMAs for all 128 columns
+    /// regardless of m, so at m=16 it discards 112 of them; these size the tile to
+    /// the batch. try_kernel: 0-handle -> dispatch keeps the 128 tile.
+    nvfp4_mmq16_nc_k: KernelHandle,
+    nvfp4_mmq16_wc_k: KernelHandle,
+    nvfp4_mmq32_nc_k: KernelHandle,
+    nvfp4_mmq32_wc_k: KernelHandle,
     nvfp4_quant_act_k: KernelHandle,
     nvfp4_repack_k: KernelHandle,
     nvfp4_silu_scaled_k: KernelHandle,
@@ -230,6 +237,12 @@ pub struct DenseFfnLayer {
     lora: Option<ops::lora_delta::LoraFfnWeights>,
 }
 
+/// M-sized MMQ tiles: **ON by default**, disabled by `ATLAS_NO_MMQ_SMALL_TILE=1`.
+/// Strict `== "1"` on an `ATLAS_NO_*` name — presence flags here are enabled by `=0`.
+fn mmq_small_tile_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_MMQ_SMALL_TILE").as_deref() != Ok("1"))
+}
 impl DenseFfnLayer {
     pub fn new(weights: DenseFfnWeights, gpu: &dyn GpuBackend) -> Result<Self> {
         Self::new_with_activation(weights, FfnActivation::SiLU, gpu)
@@ -306,6 +319,10 @@ impl DenseFfnLayer {
             q4k_down: std::sync::OnceLock::new(),
             nvfp4_mmq_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq128_nc"),
             nvfp4_mmq_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq128_wc"),
+            nvfp4_mmq16_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_nc"),
+            nvfp4_mmq16_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_wc"),
+            nvfp4_mmq32_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq32_nc"),
+            nvfp4_mmq32_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq32_wc"),
             nvfp4_quant_act_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_quantize_bf16"),
             nvfp4_repack_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_repack"),
             nvfp4_silu_scaled_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_silu_mul_scaled"),
@@ -1583,17 +1600,24 @@ impl DenseFfnLayer {
                         let _ = $in;
                         let qw =
                             self.ensure_nvfp4_mmq_weight($fp4cell, ctx.gpu, $w, $n, $k, stream)?;
-                        ops::nvfp4_mmq_gemm(
-                            ctx.gpu,
-                            self.nvfp4_mmq_nc_k,
-                            self.nvfp4_mmq_wc_k,
-                            fp4_y,
-                            qw.w,
-                            $out,
-                            m,
-                            $n,
-                            $k,
-                            stream,
+                        // Size the M tile to the batch when the batch is small and
+                        // the small-tile entries are present. m must be <= mmq_x or
+                        // grid.y>1 re-streams the weights per tile.
+                        let (tk_nc, tk_wc, tile) = if m <= 16
+                            && self.nvfp4_mmq16_nc_k.0 != 0
+                            && mmq_small_tile_enabled()
+                        {
+                            (self.nvfp4_mmq16_nc_k, self.nvfp4_mmq16_wc_k, 16u32)
+                        } else if m <= 32
+                            && self.nvfp4_mmq32_nc_k.0 != 0
+                            && mmq_small_tile_enabled()
+                        {
+                            (self.nvfp4_mmq32_nc_k, self.nvfp4_mmq32_wc_k, 32u32)
+                        } else {
+                            (self.nvfp4_mmq_nc_k, self.nvfp4_mmq_wc_k, 128u32)
+                        };
+                        ops::nvfp4_mmq_gemm_tiled(
+                            ctx.gpu, tk_nc, tk_wc, tile, fp4_y, qw.w, $out, m, $n, $k, stream,
                         )?;
                     }
                     // Q4_K MMQ prefill (ATLAS_FFN_MMQ) — next priority, gated per-GEMM by

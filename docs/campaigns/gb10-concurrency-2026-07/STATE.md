@@ -408,3 +408,45 @@ out_proj 13.5 ms**. qkvz fell 678 -> 313 us/layer from the tensor-core arm, as i
 | Atlas | 25.5 | 24.4 | 46.1 | 65.5 | **93.2** |
 | vLLM | 14.2 | 27.8 | 53.3 | 98.8 | 168.9 |
 | ratio | **1.80x** | 0.88x | 0.87x | 0.66x | **0.55x** |
+
+## 2026-07-27 — NULL RESULT that reprices the whole FFN block: M-sized MMQ tiles
+
+Analysis said the FFN's MMQ tile is hard-wired to `mmq_x=128`, so at M=16 it issues MMAs for all
+128 tile columns and discards 112 in the write-back predicate — 87.5% of MMA slots. The padded-issue
+arithmetic predicted 41.1 ms against a 42.0 ms measurement, an almost exact fit, and therefore
++7-12% at C=16 from sizing the tile to the batch.
+
+Implemented: `atlas_nvfp4_mmq{16,32}_{nc,wc}` instantiations of the SAME template (mmq_x is a free
+template parameter; the vendored MMA path's granularity is 8), `nvfp4_mmq_gemm_tiled` with the smem
+size DERIVED from the vendor layout (the derivation reproduces the previously-hardcoded 57856 at
+mmq_x=128, which is the check that it matches), dispatch by m in dense_ffn, kill switch
+`ATLAS_NO_MMQ_SMALL_TILE=1`. Verified the new entries really compiled (present in t0__nvfp4_mmq.ptx).
+
+**MEASURED FLAT.** 2 reps/cell, output SHA identical (`981ca449...`):
+| C | 128 tile | M-sized tile |
+|---|---|---|
+| 4 | 45.8 / 46.2 | 46.2 / 46.3 |
+| 8 | 65.8 / 65.8 | 66.0 / 65.9 |
+| 16 | 93.1 / 89.1 | 92.5 / 92.6 |
+
+**THE CONCLUSION MATTERS MORE THAN THE CHANGE: the FFN at M=16 is WEIGHT-BANDWIDTH-bound, not
+MMA-issue-bound.** The padded MMAs are free because they hide behind the 7.22 GB weight stream
+(26-31 ms). The 41.1-vs-42.0 fit was a coincidence. Kept the code (bit-identical, strictly less
+wasted issue, and the instantiations are reusable) but it is NOT a win.
+
+### This is the second time a traffic/compute model over-predicted by ~3x
+First: the GDN third-pass removal predicted ~3%, delivered 1.1% (L2 absorbed it).
+Now: the FFN tile predicted 7-12%, delivered ~0.
+**Rule for this campaign: an analytical model that says "X% of the work is wasted" is a hypothesis
+about the BOTTLENECK, not a prediction of speedup. Wasted work behind a bandwidth wall is free.**
+Both blocks are now known to be bandwidth-bound and within ~1.5x of their floors:
+- FFN: ~42 ms actual vs 26-31 ms weight-stream floor
+- GDN: ~30 ms actual vs 17-20 ms state-traffic floor
+Neither has a 2x left in it. The remaining gap to vLLM is NOT in these two blocks.
+
+### Where that leaves the search
+The attention branch (38.4 ms, 16 layers) is the least-examined block and the analysis found ~2,300
+per-sequence launches/memcpys per step there (RoPE, KV-write, q/k norms, gate-mul, plus a
+scatter/re-gather round trip that batchn makes unnecessary), est. 4-9 ms — and unlike the two blocks
+above, that is LAUNCH overhead, which is not hidden behind a bandwidth wall. `sigmoid_gate_mul_batched`
+already exists and is unused. That is the next thing to try.

@@ -70,6 +70,36 @@ extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq128_wc(
     atlas_nvfp4_tile<128, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
 
+// SMALL-M entries. `mmq_x` is the M (token) tile and is a free template parameter --
+// the vendored MMA path's granularity is 8 (mmq_get_granularity_device), and the
+// hardware quantum is the m16n8k64 B-fragment's 8 columns, so any multiple of 8 is
+// legal. Atlas only ever instantiated 128, which meant DECODE at M=16 issued MMAs for
+// all 128 tile columns and threw away 112 of them in the write-back predicate --
+// 87.5% of the MMA issue slots. Predicted cost of that padding at n=16 across the 48
+// SSM layers was 41.1 ms against a 42.0 ms measurement, so it is the dominant term.
+// Prefill keeps 128: grid.y = ceil(M/mmq_x), so a small tile would re-stream the
+// weights once per M-tile there.
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq16_nc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<16, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq16_wc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<16, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_nc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<32, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_wc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<32, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+
 // Activation quantizer: bf16 [ne1=M rows, ne00=K] -> block_fp4_mmq (e2m1 + ue4m3 group-16
 // scales, ±2 exhaustive scale search). One thread per 16-value sub-block.
 // grid (ne1, ceil(ne0/(16*128)), 1), block (128). Mirrors llama's host launcher.
