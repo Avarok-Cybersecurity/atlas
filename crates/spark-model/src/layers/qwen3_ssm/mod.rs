@@ -214,6 +214,21 @@ impl Qwen3SsmLayer {
             _ => KernelHandle(0),
         }
     }
+
+    /// Transposed-twin tile GEMM handle for reduction depth `k`: the deep-K
+    /// `_k64` variant when the shape qualifies, else the K_STEP_T=32 default.
+    /// Same selection rule as the dense-FFN and attention-QKV paths, so all
+    /// three consume `W4A16_K64_MIN_K` rather than repeating the threshold.
+    fn deep_k_gemm(&self, k: u32) -> KernelHandle {
+        if k >= crate::layers::w4a16_k64_min_k()
+            && k.is_multiple_of(64)
+            && self.w4a16_gemm_t_k64_k.0 != 0
+        {
+            self.w4a16_gemm_t_k64_k
+        } else {
+            self.w4a16_gemm_t_k
+        }
+    }
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────

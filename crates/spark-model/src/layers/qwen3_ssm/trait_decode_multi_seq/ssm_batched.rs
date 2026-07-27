@@ -252,7 +252,7 @@ impl Qwen3SsmLayer {
                     // prefill path makes on this same weight.
                     ops::w4a16_gemm_n128(
                         ctx.gpu,
-                        self.w4a16_gemm_t_k,
+                        self.deep_k_gemm(h as u32),
                         normed_base,
                         nvfp4_t,
                         deinterleaved,
@@ -386,7 +386,7 @@ impl Qwen3SsmLayer {
                     // prefill out_proj call on this same weight.
                     ops::w4a16_gemm_n128(
                         ctx.gpu,
-                        self.w4a16_gemm_t_k,
+                        self.deep_k_gemm(value_dim as u32),
                         normed_out_base,
                         nvfp4_t,
                         ssm_out_base,

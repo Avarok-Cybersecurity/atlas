@@ -44,9 +44,13 @@ const ITERS: usize = 100;
 const SHAPES: &[(&str, u32, u32)] = &[
     ("ffn_gate/up  N=17408 K=5120 ", 17408, 5120),
     ("ffn_down     N=5120  K=17408", 5120, 17408),
+    ("ssm_qkvz     N=16384 K=5120 ", 16384, 5120),
+    ("ssm_out_proj N=5120  K=6144 ", 5120, 6144),
+    ("attn_qkv     N=8192  K=5120 ", 8192, 5120),
+    ("attn_o_proj  N=5120  K=6144 ", 5120, 6144),
 ];
 
-const M_SWEEP: &[u32] = &[17, 32, 64, 128];
+const M_SWEEP: &[u32] = &[1, 4, 8, 16, 32, 64];
 
 /// Launch geometry per kernel, mirroring the ops wrappers exactly.
 #[derive(Clone, Copy)]
