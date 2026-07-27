@@ -36,6 +36,30 @@ pub fn argmax_bf16(
         .launch(stream)
 }
 
+/// Batched argmax: ONE launch, one block per row, instead of n serial launches of
+/// the single-row `argmax_bf16` (which is a one-CTA reduction and so uses 1 of 48
+/// SMs). Byte-identical — each block runs the identical per-row body.
+#[allow(clippy::too_many_arguments)]
+pub fn argmax_bf16_batch(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    logits: DevicePtr,
+    out: DevicePtr,
+    vocab_size: u32,
+    n_rows: u32,
+    row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n_rows, 1, 1])
+        .block([1024, 1, 1])
+        .arg_ptr(logits)
+        .arg_ptr(out)
+        .arg_u32(vocab_size)
+        .arg_u32(row_stride)
+        .launch(stream)
+}
+
 /// GPU-side argmax + embedding lookup — eliminates D2H sync in MTP propose.
 ///
 /// Reads the argmax result from `argmax_out`, looks up the embedding row

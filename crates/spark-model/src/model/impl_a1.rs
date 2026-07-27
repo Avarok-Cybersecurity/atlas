@@ -106,6 +106,9 @@ impl TransformerModel {
         );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
+        let argmax_batch_kernel = gpu
+            .kernel("argmax", "argmax_bf16_batch")
+            .unwrap_or(spark_runtime::gpu::KernelHandle(0));
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
         let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
@@ -527,6 +530,7 @@ impl TransformerModel {
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             argmax_kernel,
+            argmax_batch_kernel,
             argmax_logits_kernel,
             batched_embed_kernel,
             fill_slots_kernel,

@@ -1,0 +1,15 @@
+--- leg: OLD (16 serial argmax launches) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=29.9s total_tok=3072 agg=102.6 tok/s
+   rep2 C=16: wall=30.0s total_tok=3072 agg=102.2 tok/s
+   rep3 C=16: wall=30.2s total_tok=3072 agg=101.6 tok/s
+   rep4 C=16: wall=30.1s total_tok=3072 agg=102.1 tok/s
+--- leg: NEW (one batched argmax) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   first80: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n    """\n    Compute t'
+   rep1 C=16: wall=29.7s total_tok=3072 agg=103.3 tok/s
+   rep2 C=16: wall=29.8s total_tok=3072 agg=103.0 tok/s
+   rep3 C=16: wall=29.7s total_tok=3072 agg=103.3 tok/s
+   rep4 C=16: wall=30.0s total_tok=2977 agg=99.3 tok/s
+AB_AB_DONE
