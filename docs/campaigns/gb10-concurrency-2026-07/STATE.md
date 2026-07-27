@@ -50,3 +50,53 @@
 - 2026-07-26T18:21:44Z LEG atlasC_perseq DONE -> results/atlasC_perseq.json
 - 2026-07-26T21:07:11Z LEG atlasC_batched DONE -> results/atlasC_batched.json
 - 2026-07-26T21:07:15Z PHASEC_DONE
+- 2026-07-27T02:57:15Z LEG atlasD_kmarm DONE -> results/atlasD_kmarm.json
+- 2026-07-27T05:32:37Z LEG atlasD_kmarm_graphs DONE -> results/atlasD_kmarm_graphs.json
+- 2026-07-27T05:32:41Z PHASED_DONE
+
+## 2026-07-27 — the n=16 step decomposed (this is where the gap lives)
+
+Instruments: `ATLAS_MS_PROFILE` (branch split), `ATLAS_SSM_MS_PROFILE` (mixer vs FFN inside the SSM
+layers), `ATLAS_SSM_DETAIL_PROFILE` (mixer stages). Config: phase-D binary, bs=16, fifo, slots 32.
+
+**Step at n=16 = 264.9 ms** (vLLM's is 94 ms):
+
+| block | ms | share |
+|---|---|---|
+| FFN inside the 48 SSM layers | 97 | 37% |
+| SSM mixer (qkvz 33% / recurrent 52% / out_proj 14%) | 93 | 35% |
+| Attention branch (16 layers, incl. their FFN) | 55 | 21% |
+| LM head | 20 | 8% |
+
+Head is FLAT in n (19.8 → 20.3 from n=4 → 16): it is properly batched. Everything else scales.
+
+**The per-seq projections are NOT the problem — that path is already ACTIVE.** The batched-projection
+mixer (`try_decode_multi_seq_ssm_batched`) engages for this config and reads QKVZ/out_proj once per
+step. Confirmed by a new one-shot log; it used to decline silently, which is why an earlier phase
+measured the symptom (SSM time linear in n) without being able to name the cause.
+
+**The recurrent inner is bandwidth-bound, not launch-bound.** 43 us per sequence per layer for
+6 MB of FP32 h_state traffic (3 MB read + 3 MB write) = ~140 GB/s, about half of LPDDR5X peak.
+Batching its launches therefore cannot help much, and measurement agrees:
+`ATLAS_SSM_BATCHED_RECURRENT` + `ATLAS_GDN_FUSED_NORM` = **+2.6% at C=16** (53.7 → 55.1 tok/s),
+coherence preserved. `ATLAS_GDN_FUSED_CONV` adds nothing on top. This confirms the older
+"batched-recurrent +1-2%" null was not an artifact of the FFN masking it.
+
+**Both FFN and GDN run at ~2x their own bandwidth floor**, and the whole step is ~4x the roofline
+(weights 17.5 GB / 273 GB/s = 64 ms, + ~17 ms of GDN state at n=16). vLLM at 94 ms is ~1.2x that
+floor. So the remaining 2.8x is kernel bandwidth efficiency at M=16, spread across FFN (37%),
+mixer (35%) and attention (21%) — not one hotspot.
+
+**Levers measured this session** (C=16, decode-style 192-token requests):
+| lever | C=16 tok/s | note |
+|---|---|---|
+| phase-D tip | 53.7 | |
+| + batched recurrent + fused norm | 55.1 | +2.6%, coherence OK |
+| + FFN NVFP4 MMQ (drop `ATLAS_NO_FFN_NVFP4_MMQ`) | 61.2 | +11.3%, C=1 neutral, output identical |
+
+`ATLAS_NO_FFN_NVFP4_MMQ` is a PRESENCE flag: `=0` does NOT enable MMQ, the variable must be absent.
+
+**Not a km-arm regression:** the balanced/prefill regime failures are the pre-existing KV
+pool-exhaustion wedge tracked in open PR #373 ("decode alloc fails, scheduler livelocks in
+decode-ckpt SAVE"), which is also why `balanced_long` is excluded from the sweep. `decode_short` is
+clean (0 errors at every C in every leg), so the scoreboard above is valid for that regime only.

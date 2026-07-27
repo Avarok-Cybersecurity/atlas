@@ -40,7 +40,38 @@ impl Qwen3SsmLayer {
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
         if n < 2 || !self.sequential_qkvz || !use_f32_conv || !use_f32_gdn || !qkvz_ok || !out_ok {
+            // Say WHY, once. Declining is silent otherwise, and the fallback
+            // re-streams the ~50 MB QKVZ/out_proj weights once per sequence —
+            // the difference between decode that scales with N and decode that
+            // does not. A whole campaign phase was spent measuring the symptom
+            // (SSM time linear in N) without knowing which condition failed.
+            if n >= 2 {
+                static WHY: std::sync::Once = std::sync::Once::new();
+                let (sq, fc, fg, qk, op) = (
+                    self.sequential_qkvz,
+                    use_f32_conv,
+                    use_f32_gdn,
+                    qkvz_ok,
+                    out_ok,
+                );
+                let nvfp4 = self.qkvz_nvfp4.is_some();
+                let b4 = self.w4a16_gemv_batch4_k.0 != 0;
+                WHY.call_once(|| {
+                    tracing::info!(
+                        "SSM batched projections DECLINED (n={n}): sequential_qkvz={sq} \
+                         f32_conv={fc} f32_gdn={fg} qkvz_ok={qk} out_ok={op} \
+                         [qkvz_nvfp4={nvfp4} w4a16_gemv_batch4={b4}] — falling back to the \
+                         per-seq loop, which re-reads QKVZ/out_proj weights n times"
+                    );
+                });
+            }
             return Ok(false);
+        }
+        {
+            static ON: std::sync::Once = std::sync::Once::new();
+            ON.call_once(|| {
+                tracing::info!("SSM batched projections ACTIVE — QKVZ/out_proj read once per step");
+            });
         }
 
         let h = ctx.config.hidden_size;
