@@ -1,0 +1,9 @@
+--- FROZEN (MMQ off) ---
+   rep1 C=16: wall=54.2s total_tok=2977 agg=55.0 tok/s
+   rep2 C=16: wall=54.3s total_tok=2977 agg=54.8 tok/s
+   rep3 C=16: wall=54.3s total_tok=2977 agg=54.8 tok/s
+--- MMQ ON ---
+   rep1 C=16: wall=50.0s total_tok=3072 agg=61.4 tok/s
+   rep2 C=16: wall=50.4s total_tok=2977 agg=59.1 tok/s
+   rep3 C=16: wall=50.2s total_tok=3072 agg=61.2 tok/s
+MMQ_REP_DONE

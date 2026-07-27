@@ -1,0 +1,19 @@
+--- baseline: spec at C=1 only (ATLAS_MTP_MAX_SEQS=1) ---
+   coherence: 'Paris'
+   rep1 C=2: wall=18.1s total_tok=384 agg=21.2 tok/s
+   rep2 C=2: wall=18.3s total_tok=384 agg=21.0 tok/s
+   rep1 C=4: wall=20.2s total_tok=729 agg=36.1 tok/s
+   rep2 C=4: wall=20.0s total_tok=768 agg=38.4 tok/s
+--- spec up to n=2 (ATLAS_MTP_MAX_SEQS=2) ---
+   coherence: 'Paris'
+   rep1 C=2: wall=15.2s total_tok=384 agg=25.3 tok/s
+   rep2 C=2: wall=15.3s total_tok=384 agg=25.1 tok/s
+   rep1 C=4: wall=20.0s total_tok=768 agg=38.4 tok/s
+   rep2 C=4: wall=20.0s total_tok=768 agg=38.3 tok/s
+--- spec up to n=4 (ATLAS_MTP_MAX_SEQS=4) ---
+   coherence: 'Paris'
+   rep1 C=2: wall=14.9s total_tok=384 agg=25.7 tok/s
+   rep2 C=2: wall=15.7s total_tok=384 agg=24.5 tok/s
+   rep1 C=4: wall=29.7s total_tok=768 agg=25.9 tok/s
+   rep2 C=4: wall=30.5s total_tok=768 agg=25.2 tok/s
+SPECN_AB_DONE

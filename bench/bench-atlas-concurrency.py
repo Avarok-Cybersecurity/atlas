@@ -43,7 +43,12 @@ _ALL_CONFIGS = [
     (1024,  128,  "prefill_short",  "Summarization short (NVIDIA NIM 1000/200 class)"),
     (8192,  1024, "prefill_long",   "RAG / document (SemiAnalysis 8K/1K class)"),
     (256,   256,  "balanced_short", "Short chat baseline"),
-    (1024,  1024, "balanced_long",  "Standard chat (SemiAnalysis/SGLang 1K/1K)"),
+    # balanced_long (1024/1024) EXCLUDED 2026-07-27: at high C it reliably
+    # trips the pre-existing KV pool-exhaustion wedge (open PR #373 — decode
+    # alloc fails, scheduler livelocks in decode-ckpt SAVE, bench hangs
+    # forever). Latency numbers from this config were already declared
+    # invalid in Phase A (1-5 errors/leg). Re-enable once #373 lands.
+    # (1024,  1024, "balanced_long",  "Standard chat (SemiAnalysis/SGLang 1K/1K)"),
     (128,   1024, "decode_short",   "Code generation (NVIDIA NIM 200/1000 class)"),
     (1024,  8192, "decode_long",    "Long reasoning (SemiAnalysis 1K/8K class)"),
 ]

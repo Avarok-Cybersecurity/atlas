@@ -1,0 +1,11 @@
+--- WITH --speculative (spec at C=1 only) ---
+   C=1: wall=7.5s total_tok=192 agg=25.5 tok/s
+   C=2: wall=18.7s total_tok=384 agg=20.6 tok/s
+   C=3: wall=20.8s total_tok=576 agg=27.8 tok/s
+   C=4: wall=21.1s total_tok=768 agg=36.4 tok/s
+--- NO --speculative (same path at every C) ---
+   C=1: wall=13.6s total_tok=192 agg=14.1 tok/s
+   C=2: wall=18.6s total_tok=384 agg=20.6 tok/s
+   C=3: wall=20.8s total_tok=576 agg=27.7 tok/s
+   C=4: wall=21.0s total_tok=768 agg=36.6 tok/s
+C2_PROBE_DONE

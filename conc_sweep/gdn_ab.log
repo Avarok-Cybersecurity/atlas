@@ -1,0 +1,25 @@
+--- leg: baseline (per-seq recurrent) ---
+   coherence: 'Paris'
+   C=4: wall=21.3s total_tok=768 agg=36.0 tok/s
+   C=8: wall=29.8s total_tok=1536 agg=51.5 tok/s
+   C=16: wall=55.5s total_tok=2977 agg=53.7 tok/s
+[2m2026-07-27T12:04:51.550686Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_decode_multi_seq::ssm_batched[0m[2m:[0m SSM batched projections ACTIVE — QKVZ/out_proj read once per step
+--- leg: +batched_recurrent ---
+   coherence: 'Paris'
+   C=4: wall=20.6s total_tok=768 agg=37.3 tok/s
+   C=8: wall=29.0s total_tok=1536 agg=52.9 tok/s
+   C=16: wall=55.1s total_tok=2977 agg=54.0 tok/s
+[2m2026-07-27T12:08:16.218726Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_decode_multi_seq::ssm_batched[0m[2m:[0m SSM batched projections ACTIVE — QKVZ/out_proj read once per step
+--- leg: +batched_recurrent+fused_norm ---
+   coherence: 'Paris'
+   C=4: wall=20.4s total_tok=768 agg=37.6 tok/s
+   C=8: wall=28.8s total_tok=1536 agg=53.3 tok/s
+   C=16: wall=54.0s total_tok=2977 agg=55.1 tok/s
+[2m2026-07-27T12:11:13.515936Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_decode_multi_seq::ssm_batched[0m[2m:[0m SSM batched projections ACTIVE — QKVZ/out_proj read once per step
+--- leg: +batched+fused_norm+fused_conv ---
+   coherence: 'Paris'
+   C=4: wall=20.4s total_tok=768 agg=37.6 tok/s
+   C=8: wall=28.9s total_tok=1536 agg=53.1 tok/s
+   C=16: wall=54.0s total_tok=2977 agg=55.1 tok/s
+[2m2026-07-27T12:14:09.768306Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_decode_multi_seq::ssm_batched[0m[2m:[0m SSM batched projections ACTIVE — QKVZ/out_proj read once per step
+GDN_AB_DONE

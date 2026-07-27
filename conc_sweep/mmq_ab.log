@@ -1,0 +1,13 @@
+--- leg: FROZEN (NO_FFN_NVFP4_MMQ=1) ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the nth Fi'
+   C=1: wall=7.4s total_tok=192 agg=25.9 tok/s
+   C=4: wall=20.3s total_tok=768 agg=37.9 tok/s
+   C=8: wall=28.9s total_tok=1536 agg=53.1 tok/s
+   C=16: wall=54.1s total_tok=2977 agg=55.0 tok/s
+--- leg: MMQ ON (flag omitted) ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the nth Fi'
+   C=1: wall=7.6s total_tok=192 agg=25.4 tok/s
+   C=4: wall=20.2s total_tok=768 agg=38.0 tok/s
+   C=8: wall=28.5s total_tok=1536 agg=53.9 tok/s
+   C=16: wall=50.2s total_tok=3072 agg=61.2 tok/s
+MMQ_AB_DONE

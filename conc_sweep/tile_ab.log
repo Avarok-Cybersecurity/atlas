@@ -1,0 +1,17 @@
+--- 128 tile (old) ---
+   sha: 981ca44911471b59 '```python\ndef fibonacci(n: int) -> int:\n'
+   rep1 C=4: wall=16.8s total_tok=768 agg=45.8 tok/s
+   rep2 C=4: wall=16.6s total_tok=768 agg=46.2 tok/s
+   rep1 C=8: wall=23.3s total_tok=1531 agg=65.8 tok/s
+   rep2 C=8: wall=23.3s total_tok=1536 agg=65.8 tok/s
+   rep1 C=16: wall=33.0s total_tok=3072 agg=93.1 tok/s
+   rep2 C=16: wall=33.4s total_tok=2977 agg=89.1 tok/s
+--- M-sized tile (new) ---
+   sha: 981ca44911471b59 '```python\ndef fibonacci(n: int) -> int:\n'
+   rep1 C=4: wall=16.6s total_tok=768 agg=46.2 tok/s
+   rep2 C=4: wall=16.6s total_tok=768 agg=46.3 tok/s
+   rep1 C=8: wall=23.3s total_tok=1536 agg=66.0 tok/s
+   rep2 C=8: wall=23.3s total_tok=1536 agg=65.9 tok/s
+   rep1 C=16: wall=33.2s total_tok=3072 agg=92.5 tok/s
+   rep2 C=16: wall=33.2s total_tok=3072 agg=92.6 tok/s
+TILE_AB_DONE

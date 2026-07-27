@@ -1,0 +1,3 @@
+  K=2 (num-drafts=1): verify step 97.1 ms | C=1 25.5 tok/s
+  K=4 (num-drafts=3): verify step 97.0 ms | C=1 25.5 tok/s
+KWIDTH_DONE

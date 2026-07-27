@@ -1,0 +1,13 @@
+--- PRE  (3 passes over h_state) ---
+   sha: 981ca44911471b59 '```python\ndef fibonacci(n: int) -> int:\n    """\n'
+   rep1 C=8: wall=23.5s total_tok=1536 agg=65.2 tok/s
+   rep2 C=8: wall=23.6s total_tok=1536 agg=65.1 tok/s
+   rep1 C=16: wall=33.5s total_tok=3072 agg=91.8 tok/s
+   rep2 C=16: wall=33.6s total_tok=3072 agg=91.5 tok/s
+--- POST (norm from registers) ---
+   sha: 981ca44911471b59 '```python\ndef fibonacci(n: int) -> int:\n    """\n'
+   rep1 C=8: wall=23.4s total_tok=1536 agg=65.7 tok/s
+   rep2 C=8: wall=23.5s total_tok=1536 agg=65.4 tok/s
+   rep1 C=16: wall=33.1s total_tok=3072 agg=92.7 tok/s
+   rep2 C=16: wall=33.2s total_tok=3072 agg=92.6 tok/s
+GDNPASS_AB_DONE

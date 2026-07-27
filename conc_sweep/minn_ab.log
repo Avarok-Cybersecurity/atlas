@@ -1,0 +1,19 @@
+--- MIN_N=9 ---
+   coherence: 'Paris'
+   rep1 C=4: wall=20.4s total_tok=768 agg=37.7 tok/s
+   rep2 C=4: wall=20.4s total_tok=768 agg=37.6 tok/s
+   rep1 C=8: wall=28.7s total_tok=1536 agg=53.5 tok/s
+   rep2 C=8: wall=28.8s total_tok=1536 agg=53.2 tok/s
+--- MIN_N=5 ---
+   coherence: 'Paris'
+   rep1 C=4: wall=20.3s total_tok=768 agg=37.8 tok/s
+   rep2 C=4: wall=20.3s total_tok=768 agg=37.8 tok/s
+   rep1 C=8: wall=26.6s total_tok=1536 agg=57.7 tok/s
+   rep2 C=8: wall=26.6s total_tok=1536 agg=57.8 tok/s
+--- MIN_N=4 ---
+   coherence: 'Paris'
+   rep1 C=4: wall=21.2s total_tok=768 agg=36.3 tok/s
+   rep2 C=4: wall=21.2s total_tok=768 agg=36.1 tok/s
+   rep1 C=8: wall=26.5s total_tok=1536 agg=57.9 tok/s
+   rep2 C=8: wall=26.6s total_tok=1536 agg=57.7 tok/s
+MINN_AB_DONE

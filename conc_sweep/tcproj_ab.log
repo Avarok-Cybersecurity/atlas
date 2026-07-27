@@ -1,0 +1,19 @@
+--- GEMV mixer (default) ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=8: wall=26.6s total_tok=1536 agg=57.8 tok/s
+   rep2 C=8: wall=26.6s total_tok=1536 agg=57.7 tok/s
+   rep1 C=16: wall=38.6s total_tok=3072 agg=79.7 tok/s
+   rep2 C=16: wall=38.7s total_tok=3072 agg=79.4 tok/s
+--- TC_PROJ n>=9 ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=8: wall=26.7s total_tok=1536 agg=57.5 tok/s
+   rep2 C=8: wall=26.7s total_tok=1536 agg=57.6 tok/s
+   rep1 C=16: wall=35.4s total_tok=3072 agg=86.9 tok/s
+   rep2 C=16: wall=35.4s total_tok=3072 agg=86.8 tok/s
+--- TC_PROJ n>=5 ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=8: wall=28.0s total_tok=1536 agg=54.9 tok/s
+   rep2 C=8: wall=28.1s total_tok=1536 agg=54.8 tok/s
+   rep1 C=16: wall=35.5s total_tok=3072 agg=86.4 tok/s
+   rep2 C=16: wall=35.5s total_tok=3072 agg=86.5 tok/s
+TCPROJ_AB_DONE

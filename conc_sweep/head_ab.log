@@ -1,0 +1,19 @@
+--- OLD M64-tile GEMM head ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=1: wall=7.6s total_tok=192 agg=25.4 tok/s
+   rep1 C=4: wall=20.1s total_tok=768 agg=38.2 tok/s
+   rep2 C=4: wall=20.3s total_tok=768 agg=37.8 tok/s
+   rep1 C=8: wall=26.5s total_tok=1536 agg=57.9 tok/s
+   rep2 C=8: wall=26.5s total_tok=1536 agg=58.1 tok/s
+   rep1 C=16: wall=35.4s total_tok=3072 agg=86.9 tok/s
+   rep2 C=16: wall=35.4s total_tok=3072 agg=86.8 tok/s
+--- NEW batched-GEMV head (default) ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=1: wall=7.5s total_tok=192 agg=25.5 tok/s
+   rep1 C=4: wall=16.6s total_tok=768 agg=46.2 tok/s
+   rep2 C=4: wall=16.6s total_tok=768 agg=46.2 tok/s
+   rep1 C=8: wall=23.6s total_tok=1531 agg=65.0 tok/s
+   rep2 C=8: wall=23.5s total_tok=1536 agg=65.3 tok/s
+   rep1 C=16: wall=33.5s total_tok=3072 agg=91.6 tok/s
+   rep2 C=16: wall=33.4s total_tok=3072 agg=91.9 tok/s
+HEAD_AB_DONE

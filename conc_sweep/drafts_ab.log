@@ -1,0 +1,16 @@
+--- num-drafts=1 (K=2) ---
+   rep1 C=1: wall=7.5s total_tok=192 agg=25.5 tok/s
+   rep2 C=1: wall=8.1s total_tok=192 agg=23.8 tok/s
+   rep1 C=2: wall=15.7s total_tok=384 agg=24.5 tok/s
+   rep2 C=2: wall=15.7s total_tok=384 agg=24.5 tok/s
+--- num-drafts=2 (K=3) ---
+   rep1 C=1: wall=8.0s total_tok=192 agg=24.1 tok/s
+   rep2 C=1: wall=8.3s total_tok=192 agg=23.1 tok/s
+   rep1 C=2: wall=15.7s total_tok=384 agg=24.4 tok/s
+   rep2 C=2: wall=15.8s total_tok=384 agg=24.3 tok/s
+--- num-drafts=3 (K=4) ---
+   rep1 C=1: wall=7.5s total_tok=192 agg=25.5 tok/s
+   rep2 C=1: wall=8.1s total_tok=192 agg=23.8 tok/s
+   rep1 C=2: wall=15.7s total_tok=384 agg=24.5 tok/s
+   rep2 C=2: wall=15.3s total_tok=384 agg=25.1 tok/s
+DRAFTS_AB_DONE

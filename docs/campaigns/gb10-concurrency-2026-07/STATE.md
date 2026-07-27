@@ -589,3 +589,58 @@ pattern as every win today. If the SSM marginal reached floor: total 3.18 ms/seq
 - OVERTURNING MEASUREMENT: if a roofline decomposition shows the plain n=16 step is already
   near-irreducible traffic, the scaling gap is not a days-scale fix and the verify build becomes
   the best available use of the time. Flip back to BUILD if so.
+
+## 2026-07-27 — ★ THE BANDWIDTH CEILING IS 230 GB/s, NOT 273 — AND NOT 155
+
+Measured with a STREAM microbenchmark on GB10 (48 SMs, 256-bit LPDDR5X), grid 48..384, 2 GiB
+buffers, float4 vectorized (scratchpad `stream.cu`):
+
+    READ  230 GB/s        COPY (read+write)  215 GB/s
+
+That is 84% / 79% of the 273 GB/s nominal — a normal STREAM efficiency. Use **230 (read-only
+streams) / 215 (read+write streams)** as the floor denominator from now on. Do NOT use 273.
+
+### ★ CORRECTION: "the FFN is at floor, weight-bandwidth-bound" was WRONG
+That verdict (recorded 2026-07-27 earlier, and in the m_dispatch memory) was derived against a
+floor computed from NOMINAL bandwidth and from an ASSUMED intermediate_size. Real config:
+hidden 5120, intermediate **17408**, 64 layers, head_dim **256**, kv_heads 4, vocab **248320**,
+full_attention_interval 4 (=> 16 attn + 48 GDN layers), GDN nv48/kd128/vd128 fp32.
+FFN weights = 3 x 5120 x 17408 x 0.5 B = 133.7 MB/layer = 8.56 GB over 64 layers.
+Floor at 230 GB/s = 37.2 ms. Measured ~57 ms => **1.53x over floor, ~20 ms recoverable.**
+The FFN block is RE-OPENED. (The earlier MMQ-tile null result stands as a null for THAT lever,
+not as proof the block is at its floor.)
+
+### Full step budget at C=16, eager, 190 samples/point (ATLAS_MS_PROFILE + ATLAS_SSM_DETAIL)
+Instrumented forward 152.1 ms; actual step ~167 ms (graphs on) => host leg ~20 ms.
+
+| block                | measured | floor @achieved | ratio | recoverable |
+|----------------------|----------|-----------------|-------|-------------|
+| GDN projections      | 28.7 ms  | 12.0            | 2.39x | 16.7 ms     |
+| FFN (64 L)           | ~57 ms   | 37.2            | 1.53x | 20 ms       |
+| host leg             | 20.5 ms  | ~0 overlappable | --    | 20 ms       |
+| attention mixer      | ~24 ms   | 4.6 (KV 1.05GB) | 5.2x  | 19 ms       |
+| GDN state (48 L r+w) | 29.8 ms  | 22.5            | 1.33x | 7.3 ms      |
+| lm_head              | 9.7 ms   | 2.8             | 3.5x  | 6.9 ms      |
+
+### ★ THE ROOFLINE, AND WHAT IT SAYS ABOUT vLLM
+Total traffic per decode step at n=16 = **18.4 GB** (FFN 8.56 + GDN state r+w 4.83 + GDN proj
+2.77 + KV 1.05 + attn weights 0.59 + lm_head 0.64). At achieved bandwidth that is **~82 ms/step
+= a 195 tok/s roofline at C=16**.
+- vLLM 168.9 tok/s = 94.7 ms/step = **87% of roofline** -> vLLM is essentially AT the memory wall.
+- Atlas 95.9 tok/s = 167 ms/step = **49% of roofline**.
+**To beat vLLM we need <=94 ms/step.** The six prizes above sum to more than the 73 ms required,
+so the target is arithmetically reachable without inventing a new algorithm. No single lever
+does it; this is a six-front grind, and NONE of the six is at its floor.
+
+### Instrument trap (cost one full measurement cycle)
+`ATLAS_MS_PROFILE` forces eager, but `ATLAS_SSM_MS_PROFILE` / `ATLAS_SSM_DETAIL_PROFILE` only
+skip during graph CAPTURE. Once multi-seq CUDA graphs became default-on, the step REPLAYS the
+graph and the Rust-side SSM timers never execute => zero profile lines, silently. Always pass
+`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` with the SSM profilers. (Same class as the ATLAS_MTP_TIMING
+K=2-only trap: an instrument existing != an instrument covering your config.)
+
+### Weighting trap
+The detail profile emits both batched and per-seq recurrent stage names in one run. At n=16 the
+per-seq rows had **48 samples vs 9120** for the batched rows (one warmup step, 0.2% share) --
+the batched path carries everything. Always print sample COUNTS before scaling a stage mean by
+the layer count.

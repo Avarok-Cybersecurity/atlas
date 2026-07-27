@@ -1,0 +1,19 @@
+--- OLD chunked GEMV (kill switch on) ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=1: wall=7.5s total_tok=192 agg=25.4 tok/s
+   rep1 C=8: wall=28.2s total_tok=1536 agg=54.4 tok/s
+   rep2 C=8: wall=28.4s total_tok=1536 agg=54.0 tok/s
+   rep3 C=8: wall=28.3s total_tok=1536 agg=54.2 tok/s
+   rep1 C=16: wall=53.6s total_tok=3072 agg=57.3 tok/s
+   rep2 C=16: wall=50.3s total_tok=3072 agg=61.1 tok/s
+   rep3 C=16: wall=50.2s total_tok=3072 agg=61.1 tok/s
+--- NEW batched dense FFN (default) ---
+   coherence: '```python\ndef fibonacci(n: int) -> int:\n    """\n    Returns the '
+   rep1 C=1: wall=7.6s total_tok=192 agg=25.4 tok/s
+   rep1 C=8: wall=28.3s total_tok=1536 agg=54.3 tok/s
+   rep2 C=8: wall=28.5s total_tok=1497 agg=52.6 tok/s
+   rep3 C=8: wall=28.3s total_tok=1536 agg=54.4 tok/s
+   rep1 C=16: wall=38.7s total_tok=3072 agg=79.3 tok/s
+   rep2 C=16: wall=38.7s total_tok=3072 agg=79.4 tok/s
+   rep3 C=16: wall=38.8s total_tok=3072 agg=79.3 tok/s
+FFN_AB_DONE

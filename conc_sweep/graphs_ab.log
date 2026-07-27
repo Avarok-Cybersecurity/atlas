@@ -1,0 +1,13 @@
+--- graphs OFF (default) ---
+   sha: 981ca44911471b59
+   rep1 C=8: wall=23.4s total_tok=1536 agg=65.8 tok/s
+   rep2 C=8: wall=23.4s total_tok=1536 agg=65.7 tok/s
+   rep1 C=16: wall=33.1s total_tok=3072 agg=92.8 tok/s
+   rep2 C=16: wall=33.3s total_tok=3072 agg=92.4 tok/s
+--- graphs ON ---
+   sha: 981ca44911471b59
+   rep1 C=8: wall=22.7s total_tok=1536 agg=67.6 tok/s
+   rep2 C=8: wall=22.7s total_tok=1536 agg=67.6 tok/s
+   rep1 C=16: wall=32.1s total_tok=3072 agg=95.8 tok/s
+   rep2 C=16: wall=32.2s total_tok=3072 agg=95.4 tok/s
+GRAPHS_AB_DONE

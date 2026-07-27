@@ -1,0 +1,13 @@
+--- K_STEP_T=32 (old) ---
+   sha: 981ca44911471b59
+   rep1 C=8: wall=22.6s total_tok=1536 agg=68.1 tok/s
+   rep2 C=8: wall=22.6s total_tok=1536 agg=67.9 tok/s
+   rep1 C=16: wall=32.0s total_tok=3072 agg=96.0 tok/s
+   rep2 C=16: wall=32.0s total_tok=3072 agg=95.9 tok/s
+--- K_STEP_T=64 (new) ---
+   sha: 981ca44911471b59
+   rep1 C=8: wall=22.7s total_tok=1536 agg=67.6 tok/s
+   rep2 C=8: wall=22.8s total_tok=1536 agg=67.4 tok/s
+   rep1 C=16: wall=32.2s total_tok=3072 agg=95.5 tok/s
+   rep2 C=16: wall=32.2s total_tok=3072 agg=95.4 tok/s
+K64_AB_DONE
