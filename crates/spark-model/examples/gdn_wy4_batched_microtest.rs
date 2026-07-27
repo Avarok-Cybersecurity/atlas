@@ -399,7 +399,7 @@ fn main() -> Result<()> {
     let g: &dyn GpuBackend = &backend;
     let kernel = g.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?;
     println!("wy4 batched pointer-table equivalence (nv={NV} kd={KD} vd={VD} K={K} ni={NI})");
-    for n in [2usize, 4, 8] {
+    for n in [2usize, 4, 8, 16] {
         run_for_n(g, kernel, n)?;
     }
     println!("PASS — batched wy4 is byte-identical to n sequential single-sequence launches");

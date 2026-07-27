@@ -1,0 +1,5 @@
+C=8: wall=58.8s total_tok=1536 agg=26.1 tok/s
+  samples=572
+  verify  : median 80.16 ms   mean 80.84 ms
+  propose : median 16.08 ms   mean 15.92 ms   <-- GATE: <= ~2 ms/seq
+PROPOSE_GATE_DONE

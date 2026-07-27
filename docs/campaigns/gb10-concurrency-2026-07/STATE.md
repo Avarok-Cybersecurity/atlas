@@ -758,3 +758,68 @@ CTAs < 48 you cannot fill one per SM no matter the residency.
 
 DECISION: take the bit-identical fusion (1) first -- the standing accuracy-gate directive
 blocks the BFCL run needed to discharge split-K's numerical debt.
+
+## 2026-07-27 (late) — SHIPPED: fused q/k/v; RE-ADJUDICATED spec decode: NO-GO (measured)
+
+### Shipped since the nsys profile
+- `b98ce911` w4a16_gemm_t_k64 dispatch at K>=4096 + wire into SSM projections. +1.6% C=16.
+- `4b1b9fa7` batched KV-cache write (kernel was already strided; caller passed 1 in a loop). +0.5%.
+- `2db1b349` **fused q|k|v into ONE N=14336 GEMM writing qkv_buf DIRECTLY.** 3 GEMMs
+  (96/8/8 CTAs) -> 1 (112 CTAs), AND the 48-copy per-layer scatter deleted (`per_seq_qkv`
+  already equalled the fused row width). 4 reps/leg, byte-identical: **97.80 -> 99.38 tok/s
+  (+1.6%), sigma 0.09, distributions disjoint.** Kill switch ATLAS_NO_FUSED_QKV=1.
+  ★ `n > 8` is REQUIRED: `wide_verify_gemm` early-returns on the batched-GEMV arms for m<=8
+  using the BASE weight and ignoring `w_t`, so a fused N reads past q_proj. An earlier build
+  without the gate produced truncated output + HTTP 500s — caught by BYTE-IDENTITY, not by
+  throughput.
+- `8f85418b` **fail-fast guards on GDN contiguous state addressing at batch>1.** wy2/wy3/wyN
+  still hardcode `(b*num_v_heads+vh)*hv` for the intermediates whose pool stride is
+  `ni*h_bytes`; wy4's only protection was a `debug_assert!` that COMPILES OUT IN RELEASE.
+  One call-site change from silent cross-sequence rollback corruption.
+
+### ★★ SPEC-DECODE RE-ADJUDICATION: NO-GO. Four gates, two failed on measurement.
+| gate | threshold | measured | verdict |
+|---|---|---|---|
+| acceptance epsilon at n=16 | >= 2.3 | **~2.6** (mean accepted 1.61 over six 100-step windows) | PASS |
+| batched wy4 byte-identity | exact | n=2/4/8/16 all byte-identical | PASS |
+| fused GDN cost | <= 2.5x plain | **3.92x**; batching the layer saves only 1.7% (726.6 vs 739.4 us) | **FAIL** |
+| drafter propose | <= ~2 ms/seq | **16.08 ms/seq median (n=572)** | **FAIL 8x** |
+
+**The decisive number is propose.** At n=8: verify 8x80.2 = 640 ms + propose 8x16.1 = 129 ms
+= 769 ms/step vs the 794 ms/step implied by the observed 26.1 tok/s — the model reconciles
+end to end. Fusing verify collapses the 640 -> ~225-259 ms, but **propose stays per-sequence:
+256 ms/step at n=16, on its own larger than the entire fused-verify budget.** Batching the
+drafter is NOT in the ~1-1.5k-line estimate.
+
+### What I got wrong (recorded so it is not repeated)
+I argued the failing GDN gate "measured the wrong quantity" — that the win comes from the 73%
+of the step that is weight-bound and flat in M. **That physics is CORRECT**: an adversarial
+re-run of `w4a16_m17_bench` at M=16 vs 64 shows +/-12%, with ssm_qkvz 16% FASTER at M=64.
+But the arithmetic omitted two terms the KILL had explicitly carried forward as "MEASURE IT
+before any re-adjudication": the **+26 ms drafter overhead** (measured at n=1, assumed flat —
+now measured at 16 ms/seq) and **host sampling over 64 logit rows instead of 16** (~+12 ms).
+Restoring them: ~259 ms -> 6.2 ms/tok -> 1.51x -> **~145 tok/s vs vLLM 168.9.**
+Also wrong: "head unchanged" — lm_head has NO M=64 arm, so verify would run 4x
+`w4a16_gemv_batch16` = 4 weight sweeps (~39 ms, not 9.7).
+Also wrong: epsilon 2.6 is the SYNTHETIC probe. MTP eligibility is
+`active.iter().all(...)` over thinking/tool-suppression (`scheduler/mod.rs:551`), so at n=16
+ONE sequence in a think block de-speculates the WHOLE batch. Agentic epsilon = 2.6 x an
+unmeasured eligible-step fraction.
+★ RULE: re-deriving a budget minus its flagged terms is goalpost-moving. The KILL had already
+run this exact framework and pre-registered a DIFFERENT flip-back condition, which tested FALSE.
+
+### ★ PRE-REGISTERED RE-OPEN KEY (so it cannot drift)
+Flip to BUILD only if ALL THREE hold: drafter+sampling <= ~12 ms combined at n=16 AND
+agentic epsilon >= 2.4 (measured on the agentic harness, not the synthetic probe, with the
+`all()` predicate live) AND eligible-step fraction >= 80%.
+
+### Next: the non-spec board (ranked, and each ms also lowers the future verify numerator)
+1. split-K on `gridDim.z` for the narrow-N projections (~9 ms). Template `int8_gemm_splitk`
+   at `w4a16_gemm.cu:2533`. NOT bit-identical — pin ksplits to the WEIGHT SHAPE.
+2. host-leg: split-row GPU argmax (~4-8 ms) + pin DECODE_LOGITS_HOST_SCRATCH (~1-2 ms).
+   ★ `--disable-thinking` sets `think_ended=true` for EVERY sequence at birth
+   (`prefill_a_step.rs:229` +3 siblings), and the gate at `decode_logits_step.rs:76` then
+   forces ALL rows onto the host path — so the GPU argmax fast path is DEAD CODE in this
+   benchmark AND in MLPerf-edge. The rows only need a 2-token ban mask.
+3. lm_head -> k64 tile GEMM (~7 ms; needs a ~715 MB transposed twin; also required before any
+   future fused verify).
