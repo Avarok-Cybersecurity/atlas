@@ -13,6 +13,31 @@ mod ssm_batched_recurrent;
 /// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
 /// presence-checked flags in this codebase are ENABLED by `=0`, a trap that has
 /// burned it before. Read once; the dispatch site is per-layer per-step.
+/// Smallest batch that takes the batched dense FFN. Default 5, MEASURED.
+///
+/// Tunable because the +30% measured at C=16 is LARGER than eliminating the
+/// double weight read alone predicts (~18%), which implies the tile GEMM also
+/// beats the batch-8 GEMV per pass. If that holds, the crossover is below 9 and
+/// C=4/C=8 have headroom too — `ATLAS_SSM_FFN_PREFILL_MIN_N` exists to find it
+/// by measurement rather than assertion. It was: 2 reps/cell, coherence held —
+///   MIN_N=9: C=4 37.7 | C=8 53.4
+///   MIN_N=5: C=4 37.8 | C=8 **57.8**  (+8% at C=8, C=4 untouched)
+///   MIN_N=4: C=4 36.2 | C=8 57.8      (C=4 regresses — GEMV still wins at 4)
+/// So the tile GEMM overtakes the batch-8 GEMV at n=5, not n=9: eliminating the
+/// double weight read was only part of the win, the kernel is simply better per
+/// pass. 5 is the default; 4 is a measured regression; 9 was the conservative
+/// first guess.
+fn ssm_ffn_prefill_min_n() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_SSM_FFN_PREFILL_MIN_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&v| v >= 2)
+            .unwrap_or(5)
+    })
+}
+
 fn ssm_ffn_prefill_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("ATLAS_NO_SSM_FFN_PREFILL").as_deref() != Ok("1"))
@@ -203,7 +228,10 @@ impl Qwen3SsmLayer {
             //
             // DENSE ONLY: on a 256-expert MoE the grouped-GEMM is a net loss at
             // small batch (see the per-token arm below), so MoE keeps the loop.
-            n if n > 8 && self.ffn.is_dense() && ssm_ffn_prefill_enabled() => {
+            n if n >= ssm_ffn_prefill_min_n()
+                && self.ffn.is_dense()
+                && ssm_ffn_prefill_enabled() =>
+            {
                 self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
                 ops::residual_add(
                     ctx.gpu,

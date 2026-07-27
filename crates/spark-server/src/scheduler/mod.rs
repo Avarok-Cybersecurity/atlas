@@ -556,13 +556,20 @@ pub fn run(
                     // ENTRY (sequence start or post-think resume); serial-
                     // decoding the entry window dodges the divergence while
                     // leaving the body speculated.
-                    (dflash_spec_think
-                        && active[0].output_tokens.len() as u32 >= dflash_resume_guard)
-                        || (!active[0].inside_thinking
-                            && active[0].post_think_emitted >= dflash_resume_guard)
+                    // EVERY active sequence must be eligible, not just active[0].
+                    // These are per-sequence properties: with more than one
+                    // sequence speculating, reading them off active[0] lets
+                    // sequence 1 be speculated while its own suppress_tool_call
+                    // / disable_mtp / thinking state says it must not be. At
+                    // n==1 `all()` over one element is exactly the old
+                    // predicate, so the single-sequence path is unchanged.
+                    active.iter().all(|a| {
+                        ((dflash_spec_think && a.output_tokens.len() as u32 >= dflash_resume_guard)
+                            || (!a.inside_thinking && a.post_think_emitted >= dflash_resume_guard))
+                            && !a.suppress_tool_call
+                            && !a.disable_mtp
+                    })
                 )
-                && !active[0].suppress_tool_call
-                && !active[0].disable_mtp
             {
                 // Throughput-arbitrated MTP gate: EVERY single-sequence step
                 // is timed and reported, and the gate picks whichever mode
@@ -625,7 +632,11 @@ pub fn run(
                             // A bootstrap-only step (no pending drafts) emits
                             // 1 token and proposes; its cost is charged to the
                             // MTP mode — proposing IS part of what MTP costs.
-                            let seq_len_before = active[0].seq.seq_len;
+                            // Sum over ALL speculating sequences: the gate arbitrates
+                            // on tokens-per-second, so counting only active[0]
+                            // under-reports MTP's throughput by a factor of n and
+                            // biases the gate toward serial decode.
+                            let seq_len_before: usize = active.iter().map(|a| a.seq.seq_len).sum();
                             let t0 = std::time::Instant::now();
                             step_mtp(
                                 &*model,
@@ -634,7 +645,8 @@ pub fn run(
                                 &verify_ctx,
                                 dflash_verify_raw_argmax,
                             );
-                            let emitted = active[0].seq.seq_len.saturating_sub(seq_len_before);
+                            let seq_len_after: usize = active.iter().map(|a| a.seq.seq_len).sum();
+                            let emitted = seq_len_after.saturating_sub(seq_len_before);
                             gate.record_verify_step(t0.elapsed(), emitted);
                         }
                     }

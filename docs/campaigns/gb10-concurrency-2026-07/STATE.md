@@ -226,3 +226,36 @@ MLPerf-edge runs target_concurrency=1, so the golden submission path is unaffect
    scalar batch-16 GEMV at 2.3-3.0 TFLOP/s, 5-7x off the weight-stream floor. Est +10%.
 3. LM head at n>=2 off the base `w4a16_gemm` (floor ~2.6 ms vs 20 ms today). Est +5-6%.
 4. Host sampling: b1_margin gate-after-scan, f2 softmax when inert, batch-wide argmax poison.
+
+## 2026-07-27 — correctness fix (self-inflicted) + FFN crossover is n=5, not n=9
+
+### BUG I INTRODUCED, now fixed
+Flipping `ATLAS_MTP_MAX_SEQS` to 2 exposed that the spec-eligibility predicate reads
+`inside_thinking`, `post_think_emitted`, `suppress_tool_call` and `disable_mtp` from **`active[0]`
+only** (`scheduler/mod.rs`). These are PER-SEQUENCE properties: at n=2, sequence 1 would be
+speculated even when its own `suppress_tool_call`/`disable_mtp` said it must not be. Now
+`active.iter().all(..)`. At n==1 `all()` over one element is exactly the old predicate, so the C=1
+path is unchanged by construction. Verified: tool calls still emit correctly with n=2 speculation on.
+
+Same commit fixes the MTP gate's throughput accounting: `emitted` was
+`active[0].seq_len - before`, counting ONE sequence's tokens while timing a step that produced n
+sequences' worth — under-reporting MTP throughput by ~n and biasing the gate toward serial decode.
+Now summed over all active sequences. (Inert under `ATLAS_MTP_GATE_FORCE=1`, which the benchmarks
+set, but wrong for anyone who doesn't.)
+
+### The FFN tile-GEMM crossover is n=5
+2 reps/cell, coherence held:
+| MIN_N | C=4 | C=8 |
+|---|---|---|
+| 9 | 37.7 | 53.4 |
+| **5** | 37.8 | **57.8 (+8%)** |
+| 4 | 36.2 (regresses) | 57.8 |
+Default is now 5. So eliminating the double weight read was only PART of the C=16 win — the tile
+GEMM is simply better per pass from n=5 up. n=4 regresses, so the GEMV genuinely wins at 4.
+
+### Sweep with everything landed
+| C | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| Atlas | 25.5 | 25.3 | 37.9 | **57.9** | **79.5** |
+| vLLM | 14.2 | 27.8 | 53.3 | 98.8 | 168.9 |
+| ratio | **1.80x** | 0.91x | 0.71x | 0.59x | 0.47x |
