@@ -249,10 +249,24 @@ pub fn process_decode_logits(
             gs.accept_token(tok);
         }
 
-        // Thinking tokens don't count toward remaining (thinking is "free").
+        // §C-1 (DS4F hard-limit lane, 2026-07-21): thinking tokens draw down
+        // the SAME completion budget (`remaining`) as content tokens, so a long
+        // `<think>` block can no longer run the request past its declared
+        // `max_tokens` (R1X overrun). `thinking_budget`/`max_thinking_budget`
+        // stays the separate per-BLOCK cap (armed below); this is the overall
+        // allowance. No-op for direct-mode (thinking-OFF) turns — they never
+        // enter this branch — so the 35/40 baseline is unchanged. When this
+        // decrement exhausts the budget the `remaining == 0` force-stop on the
+        // commit path (below) finishes the sequence even while inside thinking
+        // (§C-2 budget half). Every generated token (content OR thinking,
+        // including `</think>`) now decrements exactly once.
         if a.inside_thinking {
+            a.consume_generation_budget();
             if think_end_token == Some(tok) {
                 a.inside_thinking = false;
+                // Sticky: was THIS close force-injected? Read by the
+                // post-think EOS guard below.
+                a.think_force_closed = a.force_end_thinking;
                 a.force_end_thinking = false;
                 a.sentence_defer_count = 0;
                 a.consecutive_confident = 0;
@@ -409,24 +423,12 @@ pub fn process_decode_logits(
                 } else {
                     StreamEvent::Token(tok)
                 };
-                match tx.try_send(event) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::warn!(
-                            "Streaming receiver dropped during tool_call_end, finishing sequence"
-                        );
-                        a.finished = true;
-                        continue;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                        if let Err(e) = tx.blocking_send(event) {
-                            tracing::error!(
-                                "Streaming send failed during tool_call_end backpressure: {e}"
-                            );
-                            a.finished = true;
-                            continue;
-                        }
-                    }
+                if !super::mod_helpers::bounded_stream_send(tx, event, "tool_call_end") {
+                    tracing::warn!(
+                        "Streaming receiver dropped during tool_call_end, finishing sequence"
+                    );
+                    a.finished = true;
+                    continue;
                 }
             }
             if a.grammar_state.is_none() && !a.tools_present {
@@ -500,8 +502,15 @@ pub fn process_decode_logits(
         let legacy_suppresses_eos = a.require_tool_call;
         let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
         // Suppress EOS during thinking: <|im_end|> inside <think> is spurious.
-        // Only </think> (think_end_token) should end the thinking phase.
-        let thinking_suppresses_eos = a.inside_thinking;
+        // Only </think> (think_end_token) should end the thinking phase — EXCEPT
+        // at a hard ceiling. §C-2 (DS4F hard-limit lane): when the completion
+        // budget is exhausted or the served `max_seq_len` is reached, a
+        // model-sampled EOS MUST be honored regardless of `inside_thinking`, so
+        // generation cannot overrun. `remaining` already reflects this token's
+        // decrement (thinking or content branch above); `a.seq.seq_len` is the
+        // current KV position. No-op until a ceiling is actually hit.
+        let hard_ceiling = hard_ceiling_hit(a.remaining, a.seq.seq_len, max_seq_len_ceiling());
+        let thinking_suppresses_eos = eos_suppressed_by_thinking(a.inside_thinking, hard_ceiling);
         // Post-thinking EOS guard. Empirically (dump fix22b 2026-04-25
         // ses_23b4781f7ffebc7UgkKWedTmjd seq=43): when the thinking-loop
         // watchdog force-closes `</think>` mid-narration, the model can
@@ -541,8 +550,10 @@ pub fn process_decode_logits(
         // MTP-verify emit path (`emit_step.rs`) has no such guard, which is why
         // MTP-on stopped here while MTP-off leaked; this restores parity.
         let tools_armed = a.require_tool_call || a.tool_request;
-        let post_think_suppresses_eos =
-            tools_armed && a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        let post_think_suppresses_eos = tools_armed
+            && a.think_ended
+            && a.think_force_closed
+            && post_think_content_tokens < POST_THINK_MIN_CONTENT;
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
@@ -603,22 +614,9 @@ pub fn process_decode_logits(
                 } else {
                     StreamEvent::Token(tok)
                 };
-                match tx.try_send(event) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::debug!(
-                            "Streaming receiver dropped (decode_logits), finishing seq"
-                        );
-                        a.finished = true;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                        if let Err(e) = tx.blocking_send(event) {
-                            tracing::error!(
-                                "Streaming send failed during backpressure (decode_logits): {e}"
-                            );
-                            a.finished = true;
-                        }
-                    }
+                if !super::mod_helpers::bounded_stream_send(tx, event, "decode_logits token") {
+                    tracing::debug!("Streaming receiver dropped (decode_logits), finishing seq");
+                    a.finished = true;
                 }
             }
             if a.remaining == 0 {
@@ -633,6 +631,23 @@ pub fn process_decode_logits(
                     "process_decode_logits: remaining=0, output_tokens={}, thinking_tokens={}",
                     a.output_tokens.len(),
                     a.thinking_tokens
+                );
+                a.finished = true;
+            }
+            // §C-3 (DS4F hard-limit lane, 2026-07-21): per-step context-ceiling
+            // stop. Independent of thinking state and of `max_tokens` — enforces
+            // the served `max_seq_len` DURING decode instead of relying on the
+            // on-completion true-up (`middleware.rs`), which let a long `<think>`
+            // block run KV past the ceiling (R1X overrun past max_seq_len=8192).
+            // Finishes with no EOS pushed → lifecycle reports finish=length.
+            // No-op when `max_seq_len` is unset (0) or not yet reached, so
+            // direct-mode short answers are unaffected.
+            if !a.finished && seqlen_force_stop(a.seq.seq_len, max_seq_len_ceiling()) {
+                tracing::info!(
+                    seq_len = a.seq.seq_len,
+                    max_seq_len = max_seq_len_ceiling(),
+                    output_tokens = a.output_tokens.len(),
+                    "process_decode_logits: max_seq_len ceiling reached; force-stop (finish=length)"
                 );
                 a.finished = true;
             }
@@ -696,6 +711,7 @@ pub fn process_decode_logits(
                              mismatches), stopping at {} tokens (rollback declined: {reason:?})",
                             a.output_tokens.len()
                         );
+                        a.guard_stop = Some("fuzzy_repetition");
                         a.finished = true;
                     }
                 }

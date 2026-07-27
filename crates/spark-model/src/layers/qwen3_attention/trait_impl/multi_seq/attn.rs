@@ -317,6 +317,29 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         }
+
+        // ── Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
+        // contiguous [n, q_dim]); base_out = o_out (contiguous [n, h]) folded in
+        // place — matches the single-seq apply_lora_delta on o after o_proj.
+        // No-op unless a routing table is installed AND seq_slot is non-null.
+        if let Some(ref lw) = self.lora
+            && c.seq_slot.0 != 0
+            && let Some(ref route) = lw.o_route
+        {
+            ops::lora_delta::apply_lora_bgmv(
+                fwd.gpu,
+                &lw.kernels,
+                route,
+                attn_out,
+                o_out,
+                c.seq_slot,
+                n as u32,
+                q_dim,    // x row stride (elements): attn_out is [n, q_dim]
+                h as u32, // out row stride (elements): o_out is [n, h] contiguous
+                fwd.buffers.lora_xa(),
+                stream,
+            )?;
+        }
         Ok(o_out)
     }
 }

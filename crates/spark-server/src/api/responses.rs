@@ -11,12 +11,12 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::chat_stream::chat_completions_stream;
+use super::chat_stream::run_chat_stream;
 use super::responses_stream::responses_endpoint_stream;
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
 };
-use super::stored::extract_assistant_incoming_message;
+use super::stored::assistant_incoming_from_ir;
 use crate::AppState;
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
@@ -85,7 +85,7 @@ pub async fn responses_endpoint(
             Some(snap) => snap
                 .items
                 .iter()
-                .filter_map(conversation_item_to_message)
+                .filter_map(crate::openai::IncomingMessage::from_conversation_item)
                 .collect(),
             None => {
                 return openai_error_response_with_param(
@@ -144,7 +144,7 @@ pub async fn responses_endpoint(
     // request. Use the _inner variant because we already have a parsed
     // struct (no raw bytes available to dump at this layer; the Responses
     // handler dumps at its own entry point if --dump is enabled).
-    let resp = chat_completions_inner(state.0.clone(), None, chat_req, None).await;
+    let resp = chat_completions_inner(state.0.clone(), None, chat_req.into(), None).await;
     let conv_pair = conversation_id.map(|cid| (state.conversation_store.clone(), cid));
     translate_chat_response_to_responses(
         resp,
@@ -155,39 +155,4 @@ pub async fn responses_endpoint(
         conv_pair,
     )
     .await
-}
-
-/// Convert a conversation item into an IncomingMessage for pipeline
-/// replay. Items we don't recognize (tool outputs in exotic shapes)
-/// are silently dropped — they wouldn't contribute to the text
-/// context anyway.
-pub(super) fn conversation_item_to_message(
-    item: &serde_json::Value,
-) -> Option<crate::openai::IncomingMessage> {
-    let role = item.get("role").and_then(|v| v.as_str())?;
-    let content = item.get("content");
-    let text = match content {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Array(parts)) => parts
-            .iter()
-            .filter_map(|p| {
-                p.get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    };
-    Some(crate::openai::IncomingMessage {
-        role: role.to_string(),
-        content: crate::openai::ParsedContent {
-            text,
-            images: Vec::new(),
-        },
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-        reasoning_content: None,
-    })
 }

@@ -10,7 +10,7 @@ use axum::response::Response;
 use std::sync::Arc;
 
 use crate::AppState;
-use crate::openai::ChatCompletionRequest;
+use crate::ir::ChatRequest;
 use crate::tool_parser;
 
 use super::super::compact::openai_error_response;
@@ -61,7 +61,7 @@ fn tool_choice_required_for_parser(
 #[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
     state: &Arc<AppState>,
-    req: &ChatCompletionRequest,
+    req: &ChatRequest,
     enable_thinking: bool,
     tools_active: bool,
     suppress_tool_call: bool,
@@ -97,42 +97,52 @@ pub(super) fn build_sampling(
     let temperature = if force_temp_zero {
         0.0
     } else {
-        req.temperature.unwrap_or(state.default_temperature)
+        req.sampling
+            .temperature
+            .unwrap_or(state.default_temperature)
     };
     let top_k = if force_temp_zero {
         0
     } else {
-        req.top_k.unwrap_or(state.default_top_k)
+        req.sampling.top_k.unwrap_or(state.default_top_k)
     };
     let top_p = if force_temp_zero {
         1.0
     } else {
-        req.top_p.unwrap_or(state.default_top_p)
+        req.sampling.top_p.unwrap_or(state.default_top_p)
     };
     let top_n_sigma = if force_temp_zero {
         0.0
     } else {
-        req.top_n_sigma.unwrap_or(state.default_top_n_sigma)
+        req.sampling
+            .top_n_sigma
+            .unwrap_or(state.default_top_n_sigma)
     };
     let min_p = if force_temp_zero {
         0.0
     } else {
-        req.min_p.unwrap_or(state.default_min_p)
+        req.sampling.min_p.unwrap_or(state.default_min_p)
     };
     let repetition_penalty = if force_temp_zero {
         1.0
     } else {
-        req.repetition_penalty.unwrap_or(preset.repetition_penalty)
+        req.sampling
+            .repetition_penalty
+            .unwrap_or(preset.repetition_penalty)
     };
     let presence_penalty = if force_temp_zero {
         0.0
     } else {
-        req.presence_penalty.unwrap_or(preset.presence_penalty)
+        req.sampling
+            .presence_penalty
+            .unwrap_or(preset.presence_penalty)
     };
     let frequency_penalty = if force_temp_zero {
         0.0
     } else {
-        req.frequency_penalty.unwrap_or(preset.frequency_penalty)
+        req.sampling
+            .frequency_penalty
+            .unwrap_or(preset.frequency_penalty)
     };
     // Per-model server-side sampling SAFETY FLOOR/CEILING (MODEL.toml
     // [behavior]). Binds AFTER request/preset resolution so model stability
@@ -178,15 +188,11 @@ pub(super) fn build_sampling(
         ));
     }
 
-    // Logit bias from OpenAI (string keys) → Vec<(u32, f32)>.
+    // Logit bias (already parsed to typed pairs at the API edge).
     let mut logit_bias: Vec<(u32, f32)> = if force_temp_zero {
         Vec::new()
     } else {
-        req.logit_bias.as_ref().map_or(Vec::new(), |map| {
-            map.iter()
-                .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
-                .collect()
-        })
+        req.logit_bias.clone()
     };
 
     // Exponential `<tool_call>` bias decay. Skipped under ATLAS_FORCE_TEMP_ZERO
@@ -254,10 +260,9 @@ pub(super) fn build_sampling(
     //     is conventionally embedded in the user/system message by the
     //     caller, and capable models (Qwen3.6, etc.) follow it without
     //     server-side enforcement on free-text turns.
-    let has_response_format = req
-        .response_format
-        .as_ref()
-        .is_some_and(|rf| !matches!(rf, crate::openai::ResponseFormat::Text));
+    // The wire's `{"type":"text"}` was mapped to `None` at the edge, so
+    // presence alone means a real constraint.
+    let has_response_format = req.response_format.is_some();
     let tool_choice_none = req
         .tool_choice
         .as_ref()
@@ -268,13 +273,10 @@ pub(super) fn build_sampling(
     let use_triggers = !tool_choice_required;
     let grammar_spec: Option<GrammarSpec> = if response_format_only {
         match req.response_format.as_ref().unwrap() {
-            crate::openai::ResponseFormat::JsonObject => Some(GrammarSpec::JsonObject),
-            crate::openai::ResponseFormat::JsonSchema { json_schema } => {
-                Some(GrammarSpec::JsonSchema {
-                    schema: json_schema.schema.to_string(),
-                })
-            }
-            crate::openai::ResponseFormat::Text => None,
+            crate::ir::ResponseFormat::JsonObject => Some(GrammarSpec::JsonObject),
+            crate::ir::ResponseFormat::JsonSchema { schema, .. } => Some(GrammarSpec::JsonSchema {
+                schema: schema.to_string(),
+            }),
         }
     } else if tools_active && state.behavior.disable_tool_grammar {
         // Structure-snowballing escape hatch (arXiv:2604.06066): this
@@ -291,7 +293,7 @@ pub(super) fn build_sampling(
             );
         }
         let parser = state.tool_call_parser.as_ref().map(std::sync::Arc::clone);
-        let mut tools = req.tools.as_ref().cloned().unwrap_or_default();
+        let mut tools = req.tools.clone();
         if let Some(tool_parser::ToolChoice::Specific { ref function }) = req.tool_choice {
             tools.retain(|t| t.function.name == function.name);
         }
@@ -305,14 +307,15 @@ pub(super) fn build_sampling(
     };
 
     // Timeout deadline.
-    let timeout_secs = req.timeout.unwrap_or(state.request_timeout as f32);
+    let timeout_secs = req.timeout_secs.unwrap_or(state.request_timeout as f32);
     let timeout_at = if timeout_secs > 0.0 {
         Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(timeout_secs))
     } else {
         None
     };
 
-    let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
+    // Pre-resolved from the wire's logprobs/top_logprobs pair at the edge.
+    let top_logprobs = req.top_logprobs;
 
     Ok(SamplingSetup {
         temperature,
@@ -337,40 +340,12 @@ pub(super) fn build_sampling(
     })
 }
 
-/// Resolve chat logprobs params (OpenAI spec): an explicit
-/// `top_logprobs` count wins (clamped 0-20); `logprobs: true` alone
-/// enables sampled-token logprobs with no alternatives (count 0);
-/// otherwise disabled.
-pub(crate) fn resolve_top_logprobs(logprobs: Option<bool>, top_logprobs: Option<u8>) -> Option<u8> {
-    match (logprobs, top_logprobs) {
-        (_, Some(n)) => Some(n.min(20)),
-        (Some(true), None) => Some(0),
-        _ => None,
-    }
-}
+// `resolve_top_logprobs` moved to the OpenAI edge (`openai/to_ir.rs`)
+// — the envelope carries the already-resolved count.
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_top_logprobs;
     use super::tool_choice_required_for_parser;
-
-    #[test]
-    fn logprobs_true_alone_enables_with_zero_top() {
-        assert_eq!(resolve_top_logprobs(Some(true), None), Some(0));
-    }
-
-    #[test]
-    fn explicit_top_logprobs_wins_and_clamps() {
-        assert_eq!(resolve_top_logprobs(None, Some(5)), Some(5));
-        assert_eq!(resolve_top_logprobs(Some(false), Some(3)), Some(3));
-        assert_eq!(resolve_top_logprobs(Some(true), Some(99)), Some(20));
-    }
-
-    #[test]
-    fn absent_or_false_disables() {
-        assert_eq!(resolve_top_logprobs(None, None), None);
-        assert_eq!(resolve_top_logprobs(Some(false), None), None);
-    }
 
     use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
 

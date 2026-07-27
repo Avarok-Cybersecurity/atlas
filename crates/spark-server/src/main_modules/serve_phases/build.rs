@@ -41,6 +41,9 @@ pub(crate) fn build_model(
     prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
     dflash_args: Option<spark_model::factory::DflashBuildArgs<'_>>,
+    lora_args: Option<spark_model::factory::LoraBuildArgs<'_>>,
+    nllb_lang: Option<(u32, u32)>,
+    nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn spark_model::traits::Model>> {
     let mtp_quant: spark_model::layers::MtpQuantization = args
         .mtp_quantization
@@ -73,6 +76,9 @@ pub(crate) fn build_model(
         args.ssm_checkpoint_interval,
         hss_cache_blocks_per_seq,
         dflash_args,
+        lora_args,
+        nllb_lang,
+        nllb_lora_dir,
     )
     .context("Failed to build model")
 }

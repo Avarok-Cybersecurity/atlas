@@ -21,7 +21,7 @@ pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
 };
 pub use moe::MoeLayer;
-pub use mtp_head::{MtpHead, MtpQuantization};
+pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
 pub use nemotron_moe::NemotronMoeLayer;
 pub use qwen3_attention::Qwen3AttentionLayer;
@@ -106,6 +106,33 @@ impl FfnComponent {
             Self::Moe(m) => m.forward_k3(input, ctx, stream),
             Self::Dense(d) => d.forward_k3(input, ctx, stream),
             Self::None => Ok(()),
+        }
+    }
+
+    /// Whether the K=m (m<=8) batched-GEMV verify FFN is available (dense
+    /// only — MoE / missing batch4/batch8 kernel / non-NVFP4 weights →
+    /// false). Lets callers gate branch entry BEFORE computing the pre-FFN
+    /// norm, so there is no half-done fallthrough to `forward_prefill`.
+    pub fn can_forward_km(&self, m: u32) -> bool {
+        matches!(self, Self::Dense(d) if d.can_forward_km(m))
+    }
+
+    /// K=m (m=4..8) verify FFN via batched GEMV (dense only). Returns
+    /// `false` when the path is unavailable (MoE / missing batchm kernel /
+    /// non-NVFP4 weights) so the caller can fall back to `forward_prefill`.
+    pub fn try_forward_km(
+        &self,
+        input: DevicePtr,
+        m: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        match self {
+            Self::Dense(d) if d.can_forward_km(m) => {
+                d.forward_km(input, m, ctx, stream)?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 

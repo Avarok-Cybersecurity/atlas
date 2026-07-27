@@ -1,7 +1,7 @@
 {
-  "status": "preparing",
+  "status": "submitted",
   "round": "v6.1",
-  "division": "",
+  "division": "closed, edge",
   "expected_publish_date": "",
   "note": "Status-driven copy. status one of: preparing | submitted | published. Numbers only ever appear when published, in MLCommons citation format. See scripts/gen-benchmarks.mjs header.",
   "entries": []

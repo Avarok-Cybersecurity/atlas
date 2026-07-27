@@ -160,6 +160,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-rdma"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+]
+
+[[package]]
 name = "atlas-reduce"
 version = "0.1.0"
 dependencies = [
@@ -180,6 +188,15 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "atlas-tier"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.3.4",
+ "libc",
 ]
 
 [[package]]
@@ -2092,6 +2109,7 @@ dependencies = [
  "anyhow",
  "atlas-core",
  "atlas-kernels",
+ "atlas-tier",
  "base64 0.22.1",
  "half",
  "image",
@@ -2105,6 +2123,20 @@ dependencies = [
  "spark-storage",
  "tokenizers",
  "tracing",
+]
+
+[[package]]
+name = "spark-nllb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "half",
+ "memmap2",
+ "rayon",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
@@ -2172,6 +2204,8 @@ name = "spark-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atlas-rdma",
+ "atlas-tier",
  "cufile-sys",
  "half",
  "io-uring",
@@ -2181,6 +2215,7 @@ dependencies = [
  "rand_distr",
  "serde",
  "serde_json",
+ "spark-runtime",
  "tracing",
  "tracing-subscriber",
 ]

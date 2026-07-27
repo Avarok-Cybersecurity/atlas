@@ -27,6 +27,11 @@ const KERNELS: &[&str] = &[
 fn main() {
     println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
     println!("cargo:rerun-if-env-changed=SKIP_ATLAS_BUILD");
+    println!("cargo:rerun-if-env-changed=ATLAS_TARGET_HW");
+    // FIRST, before any early return: `rustc-check-cfg` does not cross crates,
+    // so this crate must declare the cfg name or every `#[cfg(atlas_rdma_verbs)]`
+    // below trips `unexpected_cfgs` (a hard error under `warnings = "deny"`).
+    println!("cargo:rustc-check-cfg=cfg(atlas_rdma_verbs)");
 
     // Apple Silicon hosts have no libcuda and no nvcc. Emit the stub and
     // skip the linker hint so `cargo check` works under
@@ -45,7 +50,26 @@ fn main() {
     // symbols resolved at link time even when the kernel registry is
     // an empty stub.
     link_libcuda();
+    // The one-sided RDMA verbs shim is built by the CUDA-free `atlas-rdma`
+    // crate; `rustc-cfg` does not cross crate boundaries, so re-emit
+    // `atlas_rdma_verbs` here for this crate's own gated code, keyed off
+    // atlas-rdma's `links` metadata (`cargo:has_verbs=1` → the DEP_ var below,
+    // visible because we depend on atlas-rdma DIRECTLY). The ON condition
+    // (Linux AND !ATLAS_SKIP_BUILD) is decided in one place — atlas-rdma/build.rs.
+    if std::env::var("DEP_ATLAS_RDMA_SHIM_HAS_VERBS").is_ok() {
+        println!("cargo:rustc-cfg=atlas_rdma_verbs");
+    }
     if skip_build() {
+        emit_stub();
+        println!("cargo:rerun-if-changed=build.rs");
+        return;
+    }
+    // The native-HIP target (strix-hip) ships hipcc, not nvcc, and these
+    // predictor kernels are NVIDIA-PTX loaded as PTX text — porting them to HIP
+    // code objects is future work. The windows/amd-hip build is compile-only
+    // (hosted runners have no AMD GPU), so emit the empty registry rather than
+    // panicking on a missing nvcc. SCALE (`strix`) keeps nvcc — it ships one.
+    if std::env::var("ATLAS_TARGET_HW").as_deref() == Ok("strix-hip") {
         emit_stub();
         println!("cargo:rerun-if-changed=build.rs");
         return;
@@ -119,9 +143,12 @@ fn compile_kernels() {
         if !status.success() {
             panic!("nvcc --ptx failed for {}", src.display());
         }
+        // `{:?}` supplies the quotes AND escapes the path: a Windows OUT_DIR
+        // like `D:\a\atlas\...` interpolated raw makes `\a` an invalid Rust
+        // escape, and the generated storage_ptx.rs fails to lex.
         emit.push_str(&format!(
-            "    StoragePtx {{ name: \"{stem}\", ptx: include_str!(\"{}\") }},\n",
-            ptx_out.display()
+            "    StoragePtx {{ name: \"{stem}\", ptx: include_str!({}) }},\n",
+            format_args!("{:?}", ptx_out.to_string_lossy())
         ));
     }
     emit.push_str("];\n");

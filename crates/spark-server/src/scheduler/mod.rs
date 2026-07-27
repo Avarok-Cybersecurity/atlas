@@ -13,6 +13,7 @@
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
 mod adaptive_spec;
+mod beam_prefill;
 mod confidence;
 mod decode_logits_content;
 mod decode_logits_seq;
@@ -26,6 +27,7 @@ mod logit_dump;
 mod logit_processors;
 mod logprobs;
 mod mod_helpers;
+pub use mod_helpers::capture_runtime_handle;
 mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
@@ -47,6 +49,7 @@ mod verify_k3_step;
 mod verify_k4_step;
 mod verify_pipeline_helper;
 
+use beam_prefill::resolve_beam_hyp;
 use confidence::*;
 use decode_logits_content::*;
 use decode_logits_seq::*;
@@ -57,6 +60,7 @@ pub use helpers::disable_watchdogs;
 pub use helpers::set_boundary_token_mask;
 pub use helpers::set_enable_loop_watchdog;
 pub use helpers::set_im_start_hard_stop;
+pub use helpers::set_max_seq_len;
 pub use helpers::set_mid_word_token_mask;
 pub use helpers::set_numeric_token_mask;
 pub use helpers::set_tool_response_hard_stop;
@@ -106,11 +110,67 @@ use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
 
+/// A runtime LoRA adapter control command, applied by the scheduler at a
+/// QUIESCENT point (no in-flight decode) so it never races a graph replay or a
+/// live delta read.
+pub enum LoraCommand {
+    /// Rotate the globally-active adapter to a RESIDENT slot by NAME.
+    Rotate(String),
+    /// Dynamically LOAD the adapter at `dir` into pool `slot` (pool-size-1
+    /// per-request weight change) and make it that slot's resident adapter.
+    LoadIntoSlot {
+        name: String,
+        dir: std::path::PathBuf,
+        slot: usize,
+    },
+    /// Task #27: demand-driven RDMA PROMOTE of a stageable-but-not-resident
+    /// adapter from the peer into a cache pool slot (victim chosen on the model
+    /// thread), then make it active. The chosen slot + any evicted name flow
+    /// back through the ack. `peft` supplies the r/alpha the peer manifest lacks.
+    Promote {
+        peer_addr: String,
+        adapter_id: String,
+        name: String,
+        peft: atlas_core::config::PeftAdapterConfig,
+    },
+    /// No-RDMA sibling of [`Self::Promote`]: demand-driven DISK promote of a
+    /// stageable-but-not-resident adapter loaded from `dir` into a cache pool
+    /// slot (victim chosen on the model thread), then made active. The chosen
+    /// slot + any evicted name flow back through the ack. No `peft`: the disk
+    /// swap re-parses the dir's `adapter_config.json`.
+    PromoteDisk {
+        name: String,
+        dir: std::path::PathBuf,
+    },
+}
+
+/// Successful result of a [`LoraCommand`] applied at quiescence. Rotate/Load
+/// return [`LoraAck::Done`]; a Promote returns the resolved cache slot (which the
+/// HTTP miss path uses as the request's `adapter_slot`) and any evicted adapter
+/// name (so the caller drops its stale name->slot overlay entry).
+#[derive(Debug, Clone)]
+pub enum LoraAck {
+    Done,
+    Promoted {
+        slot: usize,
+        evicted: Option<String>,
+    },
+}
+
+/// A LoRA control command plus the oneshot ack the HTTP handler awaits
+/// (`Ok(ack)` on success, `Err(reason)` on unknown adapter / rotation not armed /
+/// load failure / pool full).
+pub type LoraRotation = (
+    LoraCommand,
+    tokio::sync::oneshot::Sender<Result<LoraAck, String>>,
+);
+
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    model: Box<dyn Model>,
+    mut model: Box<dyn Model>,
     request_rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
+    rotation_rx: tokio::sync::mpsc::Receiver<LoraRotation>,
     eos_tokens: Vec<u32>,
     max_batch_size: usize,
     use_speculative: bool,
@@ -190,6 +250,7 @@ pub fn run(
         Mutex::new(PendingQueue {
             requests: Vec::new(),
             closed: false,
+            rotations: Vec::new(),
         }),
         Condvar::new(),
     ));
@@ -204,6 +265,18 @@ pub fn run(
         }
         p.0.lock().closed = true;
         p.1.notify_one();
+    });
+
+    // Rotation receiver thread: LoRA adapter-rotation control requests land in
+    // `pending.rotations` (never the sequence queue) and wake the scheduler via
+    // the SAME condvar. The scheduler applies them at a quiescent point.
+    let pr = Arc::clone(&pending);
+    std::thread::spawn(move || {
+        let mut rx = rotation_rx;
+        while let Some(rot) = rx.blocking_recv() {
+            pr.0.lock().rotations.push(rot);
+            pr.1.notify_one();
+        }
     });
 
     // Dedicated CUDA stream + event for prefill compute-copy overlap.
@@ -239,6 +312,68 @@ pub fn run(
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+
+        // ── Apply queued LoRA adapter rotations at a QUIESCENT point ──
+        // Only when nothing is in flight (no active decode, no in-progress
+        // prefill, no just-drained request, AND no sequence spilled to disk) so
+        // the re-point/promote never races a live delta read or a graph replay.
+        // `swapped` MUST be empty too: a spilled sequence has RELEASED its adapter
+        // ref (#25), so without this gate a Promote/swap could evict/re-stage the
+        // slot its KV was computed under and corrupt it on resume (#27 FINDING 1 /
+        // #31). Otherwise the commands stay queued and retry once the batch drains.
+        if active.is_empty() && prefilling.is_empty() && new_reqs.is_empty() && swapped.is_empty() {
+            let rotations = std::mem::take(&mut pending.0.lock().rotations);
+            for (cmd, ack) in rotations {
+                let res = match cmd {
+                    LoraCommand::Rotate(name) => {
+                        let r = model
+                            .set_active_lora(&name)
+                            .map(|()| LoraAck::Done)
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA rotation to '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::LoadIntoSlot { name, dir, slot } => {
+                        let r = model
+                            .swap_lora_from_disk(&dir, &name, slot)
+                            .map(|()| LoraAck::Done)
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA disk swap '{name}' -> slot {slot} failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::Promote {
+                        peer_addr,
+                        adapter_id,
+                        name,
+                        peft,
+                    } => {
+                        let r = model
+                            .promote_lora_from_peer(&peer_addr, &adapter_id, &name, peft)
+                            .map(|(slot, evicted)| LoraAck::Promoted { slot, evicted })
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA promote '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::PromoteDisk { name, dir } => {
+                        let r = model
+                            .promote_lora_from_disk(&dir, &name)
+                            .map(|(slot, evicted)| LoraAck::Promoted { slot, evicted })
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA disk-promote '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                };
+                let _ = ack.send(res);
+            }
+        }
         if new_reqs.is_empty() && active.is_empty() && prefilling.is_empty() {
             // Receiver thread was closed (shutdown).
             let pending_closed = pending.0.lock().closed;
@@ -400,19 +535,17 @@ pub fn run(
                 && !active[0].suppress_tool_call
                 && !active[0].disable_mtp
             {
-                // Throughput-aware MTP gate: while still measuring, run the
-                // step type the gate asks for and time it. Both step types emit
-                // real, correct tokens (MTP verify and plain decode are greedy-
-                // equivalent), so the measurement window does not waste work.
-                //
-                // The verify/decode multiplier is DEPTH-DEPENDENT (weight-bound
-                // at short context vs KV/SSM-bound at depth — see mtp_gate module
-                // docs), so a decision is only valid for the regime it was
-                // measured in: re-open measurement when the live depth leaves it.
+                // Throughput-arbitrated MTP gate: EVERY single-sequence step
+                // is timed and reported, and the gate picks whichever mode
+                // (MTP verify vs plain decode) DELIVERS more tokens/sec —
+                // with hysteresis, dwell, and periodic probing of the other
+                // mode. Both step types emit real, correct tokens, so
+                // arbitration never wastes work. See mtp_gate module docs for
+                // why component-time economics were replaced (webserver_ok
+                // A/B 2026-07-20: always-on Σ1028s/10-10 vs timing-gated
+                // Σ1846s/9-10).
                 if let Some(gate) = mtp_gate.as_mut() {
                     gate.maybe_remeasure(active[0].seq.seq_len);
-                }
-                if let Some(gate) = mtp_gate.as_mut().filter(|g| g.is_measuring()) {
                     gate.note_depth(active[0].seq.seq_len);
                     match gate.next_step() {
                         mtp_gate::GateStep::MeasureDecode => {
@@ -427,16 +560,43 @@ pub fn run(
                                 tool_call_end_token,
                                 adaptive_sampling,
                             );
-                            mtp_gate
-                                .as_mut()
-                                .expect("gate present")
-                                .record_decode(t0.elapsed());
+                            gate.record_decode(t0.elapsed());
+                            // ATLAS_MTP_CATCHUP: ring the serially decoded
+                            // token's hidden so the next MTP re-probe can
+                            // batch-feed the drafter over the serial gap
+                            // (no-op when the feature is off).
+                            //
+                            // LABEL CONVENTION (off-by-one fixed 2026-07-21).
+                            // The reader feeds drafter pair key `k` from ring
+                            // label `k + 1`, because pair key k is
+                            // `(embed(t_{k+1}), hidden_k)` — so label n must
+                            // hold `hidden_{n-1}`, the hidden that PREDICTED
+                            // token n. `step_decode_only` forwards
+                            // `last_token` at the OLD `seq_len` and only then
+                            // pushes that input token and increments
+                            // (`decode_a2.rs` / `decode_b.rs`: `tokens.push`
+                            // + `seq_len += 1`). So the hidden now in row 0 is
+                            // `hidden_{seq_len - 1}` and its label is
+                            // `seq_len`, not `seq_len - 1`.
+                            //
+                            // This previously wrote `seq_len - 1`, which handed
+                            // every serially-fed pair key the hidden of the
+                            // NEXT position. It is the same quantity the K=3
+                            // re-feed labels `base + t + 1` for verify row t at
+                            // position `base + t` — that convention is verified
+                            // by dumped hidden fingerprints (93/93 cross-step,
+                            // see `speculative::mtp_refeed_accepted_enabled`),
+                            // so the serial hook was the side that disagreed.
+                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
+                            {
+                                tracing::warn!("save_hidden_for_catchup: {e:#}");
+                            }
                         }
                         mtp_gate::GateStep::MeasureVerify => {
-                            // Only a true verify forward (drafts already
-                            // proposed) is a representative sample; a bootstrap-
-                            // only step proposes the first draft and is skipped.
-                            let had_draft = !active[0].pending_drafts.is_empty();
+                            // A bootstrap-only step (no pending drafts) emits
+                            // 1 token and proposes; its cost is charged to the
+                            // MTP mode — proposing IS part of what MTP costs.
+                            let seq_len_before = active[0].seq.seq_len;
                             let t0 = std::time::Instant::now();
                             step_mtp(
                                 &*model,
@@ -445,25 +605,16 @@ pub fn run(
                                 &verify_ctx,
                                 dflash_verify_raw_argmax,
                             );
-                            if had_draft {
-                                mtp_gate
-                                    .as_mut()
-                                    .expect("gate present")
-                                    .record_verify(t0.elapsed());
-                            }
+                            let emitted = active[0].seq.seq_len.saturating_sub(seq_len_before);
+                            gate.record_verify_step(t0.elapsed(), emitted);
                         }
                     }
-                    // One-time transition work for a freshly-reached DISABLE:
-                    // drop pending drafts and order the draft-head state resync
-                    // before the next plain decode reads it. NOT permanent —
-                    // `maybe_remeasure` above re-opens measurement when the
-                    // depth regime changes, so MTP can come back exactly where
-                    // it pays (deep agentic contexts).
-                    if mtp_gate
-                        .as_mut()
-                        .and_then(mtp_gate::MtpGate::take_fresh_decision)
-                        == Some(mtp_gate::GateDecision::DisableMtp)
-                    {
+                    // One-time transition work when the gate switches to
+                    // Serial: drop pending drafts and order the draft-head
+                    // state resync before the next plain decode reads it.
+                    // Serial->Mtp needs nothing (the next MTP step
+                    // bootstraps from empty pending_drafts).
+                    if gate.take_fresh_decision() == Some(mtp_gate::GateDecision::DisableMtp) {
                         for a in active.iter_mut() {
                             a.pending_drafts.clear();
                         }
@@ -471,25 +622,8 @@ pub fn run(
                             tracing::error!("mtp-gate→decode sync_secondary: {e:#}");
                         }
                     }
-                } else if mtp_gate
-                    .as_ref()
-                    .is_some_and(|g| g.decision() == Some(mtp_gate::GateDecision::DisableMtp))
-                {
-                    // Measured net-negative in the CURRENT depth regime: plain
-                    // decode. Consulted every step (not a latched kill switch)
-                    // so the regime re-measurement above can flip it back.
-                    step_decode_only(
-                        &*model,
-                        &mut active,
-                        think_end_token,
-                        think_start_token,
-                        code_fence_token,
-                        tool_call_start_token,
-                        tool_call_end_token,
-                        adaptive_sampling,
-                    );
                 } else {
-                    // MTP wins in this regime (or no gate): speculative decode.
+                    // Gate bypassed (ATLAS_MTP_GATE_FORCE=1): plain MTP.
                     step_mtp(
                         &*model,
                         &mut active,

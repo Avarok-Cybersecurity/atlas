@@ -21,7 +21,7 @@ extern "C" __global__ void inferspark_prefill_512(
     const float inv_sqrt_d,
     const unsigned int causal,
     const unsigned int sliding_window,  // Always 0 for full-attention 512-hd layers; param added for signature consistency
-    const __nv_bfloat16* __restrict__ sinks  // [num_q_heads] per-head sink logit (denominator only); nullptr = no sink
+    const float* __restrict__ sinks  // [num_q_heads] per-head sink logit (denominator only); nullptr = no sink. FP32: checkpoint-native dtype (reading as bf16 hard-zeroed 7 heads)
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int q_block = blockIdx.y;
@@ -82,7 +82,6 @@ extern "C" __global__ void inferspark_prefill_512(
         }
 
         // Reduce across 8 dim-lanes (within the 8-thread group for this row)
-        unsigned int row_base = (tid / 8) * 8;  // first thread in this row's group
         // Warp shuffle within the 8-thread group
         dot += __shfl_xor_sync(0xFFFFFFFF, dot, 1);
         dot += __shfl_xor_sync(0xFFFFFFFF, dot, 2);
@@ -118,7 +117,7 @@ extern "C" __global__ void inferspark_prefill_512(
     // attention (non-CSA) prefill layers were missing it, so prefill diverged
     // from the sink-applying decode path and corrupted the prompt's hidden/KV.
     if (sinks != nullptr) {
-        float sg = __bfloat162float(sinks[q_head]);
+        float sg = sinks[q_head];
         float m_new = fmaxf(m, sg);
         float exp_old = __expf(m - m_new);
         float exp_sink = __expf(sg - m_new);

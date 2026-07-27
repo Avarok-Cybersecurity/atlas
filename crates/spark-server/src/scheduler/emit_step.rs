@@ -186,11 +186,21 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         a.post_think_emitted += 1;
     }
 
-    // Thinking tokens are "free" (don't decrement remaining).
+    // §C-1 (DS4F hard-limit lane, 2026-07-21): thinking tokens draw down the
+    // SAME completion budget (`remaining`) as content tokens on the MTP/emit
+    // path too — twin of the non-MTP fix in `decode_logits_step`. A long
+    // `<think>` block can no longer run past `max_tokens`; `thinking_budget`
+    // stays the separate per-block cap (armed below). The `remaining == 0`
+    // force-stop at function end then finishes the sequence even while inside
+    // thinking. No-op for direct-mode (thinking-OFF) turns.
     // Detect </think> transition. Track thinking token count for budget enforcement.
     if a.inside_thinking {
+        a.consume_generation_budget();
         if a.think_end_token == Some(tok) {
             a.inside_thinking = false;
+            // Sticky twin of the decode-path capture — see
+            // decode_logits_step (post-think EOS guard).
+            a.think_force_closed = a.force_end_thinking;
             a.force_end_thinking = false;
             a.sentence_defer_count = 0;
             a.think_ended = true;
@@ -332,6 +342,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
                      (no tool call after budget — would otherwise burn to max_tokens)."
                 );
+                a.guard_stop = Some("inter_tool_prose_budget");
                 a.finished = true;
             }
         }
@@ -391,14 +402,22 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             return;
         }
     }
-    if a.remaining == 0 {
+    // §C-3 (DS4F hard-limit lane, 2026-07-21): the `remaining == 0` completion
+    // stop is now joined by the per-step served-`max_seq_len` ceiling stop
+    // (twin of the non-MTP guard in `decode_logits_step`), so the MTP/emit path
+    // also cannot run KV past the context ceiling. No-op when `max_seq_len` is
+    // unset (0) or not yet reached.
+    if a.remaining == 0 || seqlen_force_stop(a.seq.seq_len, max_seq_len_ceiling()) {
         // #144: before the hard length-stop, if a grammar is active and the
         // stop token is not legal at the current position (e.g. mid JSON
         // string), emit the shortest grammar-legal close so the truncated
         // `finish_reason="length"` output is still parseable.
         emit_grammar_close(a);
         tracing::info!(
-            "emit_token: remaining=0, output_tokens={}, thinking_tokens={}",
+            "emit_token: remaining={}, seq_len={}, max_seq_len={}, output_tokens={}, thinking_tokens={}",
+            a.remaining,
+            a.seq.seq_len,
+            max_seq_len_ceiling(),
             a.output_tokens.len(),
             a.thinking_tokens
         );
@@ -423,20 +442,7 @@ fn send_stream_event(a: &ActiveSeq, event: StreamEvent) -> bool {
     let ResponseSink::Streaming(ref tx) = a.sink else {
         return true;
     };
-    match tx.try_send(event) {
-        Ok(()) => true,
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            tracing::debug!("Streaming receiver dropped, finishing seq");
-            false
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => match tx.blocking_send(event) {
-            Ok(()) => true,
-            Err(e) => {
-                tracing::error!("Streaming send failed during backpressure: {e}");
-                false
-            }
-        },
-    }
+    super::mod_helpers::bounded_stream_send(tx, event, "token stream")
 }
 
 /// #144 budget-aware graceful close. At budget exhaustion, if a grammar is
@@ -652,6 +658,7 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
             streak = a.tool_body_streak_tokens,
             "Stuck in tool-call ENVELOPE for {MAX_TOOL_BODY_TOKENS}+ tokens with no </tool_call> (excludes parameter-value content); ending response (model never closed the envelope — would otherwise burn to max_tokens). Sanitizer will salvage what it can."
         );
+        a.guard_stop = Some("tool_envelope_stuck");
         a.finished = true;
     }
 
@@ -662,16 +669,58 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
     const TOK_LT_SLASH: u32 = 510;
 
     if a.inside_parameter_body {
-        if tok == TOK_LT_SLASH {
-            // Start of `</parameter>` close-tag — exit body.
-            a.inside_parameter_body = false;
-            a.param_body_chars_emitted = 0;
-        } else {
-            // Any non-close body token advances the counter. The
-            // position-0 mask in `decode_logits_seq.rs` (close-tag +
-            // AM1 attractor) fires only while this counter is 0, so it
-            // deactivates after the first emitted body token.
-            a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(1);
+        // P0-1 (2026-07-09): PROVISIONAL close detection. The old code
+        // exited the body on ANY `</` token (510) — but since the
+        // `<`-initial-value fix, parameter VALUES legitimately contain
+        // HTML/Svelte close tags (`</script>`, `</div>`, …), every one of
+        // which starts with token 510. Each false exit reclassified the
+        // rest of the file content as ENVELOPE tokens, walked the streak
+        // to MAX_TOOL_BODY_TOKENS, and force-killed legitimate writes
+        // mid-file (8 kills in the 2026-07-09 45k session). Now the exit
+        // COMMITS only on the full confirmed `</` `parameter` `>` token
+        // sequence; any other continuation re-enters the value body and
+        // back-counts the provisionally-held tokens as body chars. A
+        // merged/nonstandard tokenization of the close falls back to
+        // "stay inside" — safe: value tokens are streak-exempt, and the
+        // next exact close still exits.
+        match a.param_close_pending {
+            0 => {
+                if tok == TOK_LT_SLASH {
+                    a.param_close_pending = 1;
+                } else {
+                    // Any non-close body token advances the counter. The
+                    // position-0 mask in `decode_logits_seq.rs` (close-tag +
+                    // AM1 attractor) fires only while this counter is 0, so it
+                    // deactivates after the first emitted body token.
+                    a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(1);
+                }
+            }
+            1 => {
+                if tok == TOK_PARAMETER {
+                    a.param_close_pending = 2;
+                } else {
+                    // `</` was value content (e.g. `</div>`), not a close.
+                    a.param_close_pending = 0;
+                    a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(2);
+                }
+            }
+            _ => {
+                a.param_close_pending = 0;
+                if tok == TOK_GT {
+                    // Confirmed `</parameter>` — exit body. Also reset the
+                    // envelope streak: a confirmed close IS forward progress
+                    // (the doc comment above always claimed this reset; the
+                    // code never performed it).
+                    a.inside_parameter_body = false;
+                    a.param_body_chars_emitted = 0;
+                    a.tool_body_streak_tokens = 0;
+                } else {
+                    // `</parameter` NOT followed by `>` (e.g. the garbled
+                    // `</parameter<parameter=` reopen, or `</parameters`) —
+                    // grammar-legal value content; stay inside the body.
+                    a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(3);
+                }
+            }
         }
         return;
     }

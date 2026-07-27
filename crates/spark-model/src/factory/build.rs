@@ -11,9 +11,9 @@ use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 use spark_runtime::prefix_cache::PrefixCache;
 use spark_runtime::weights::WeightStore;
 
-use super::DflashBuildArgs;
 use super::loader_for_config;
 use super::m2_setup::maybe_run_minimax_m2_moe_transpose;
+use super::{DflashBuildArgs, LoraBuildArgs};
 use crate::layers::MtpQuantization;
 use crate::model::TransformerModel;
 use crate::traits::Model;
@@ -49,9 +49,71 @@ pub fn build_model(
     // DFlash speculative-decoding pairing. `None` = no DFlash; existing
     // MTP / no-spec paths unchanged.
     dflash_args: Option<DflashBuildArgs<'_>>,
+    // Startup-static LoRA adapter (`--lora-adapter`). `None` = base-only.
+    lora_args: Option<LoraBuildArgs<'_>>,
+    // NLLB / M2M-100 translation language pair (tokenizer-resolved
+    // `(src_lang_id, tgt_lang_id)`), resolved server-side. `None` for all other
+    // model types.
+    nllb_lang: Option<(u32, u32)>,
+    // NLLB / M2M-100 PEFT LoRA adapter directory (`--lora-adapter` for an
+    // encoder-decoder checkpoint). `None` = base model.
+    nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn Model>> {
+    // NLLB / M2M-100 is an encoder-decoder model that cannot be represented by
+    // the decoder-only TransformerModel stack. Serve it with the dedicated
+    // `NllbGpuModel`, which reads its weights from the standard `store` — this
+    // returns BEFORE `loader_for_config`, so the decoder-only weight loader
+    // (and its fail-fast) never runs on this path.
+    #[cfg(feature = "cuda")]
+    if matches!(config.model_type.as_str(), "m2m_100" | "nllb") {
+        let (src, tgt) = nllb_lang.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NLLB serving requires --src-lang and --tgt-lang (translation language pair)"
+            )
+        })?;
+        let lang = crate::model::nllb::NllbLang {
+            src_lang_id: src,
+            tgt_lang_id: tgt,
+            decoder_start_id: config.eos_token_id,
+            eos_id: config.eos_token_id,
+            pad_id: 1,
+        };
+        let model = crate::model::nllb::NllbGpuModel::new(
+            &config,
+            store,
+            gpu,
+            lang,
+            max_seq_len,
+            max_batch_size,
+            nllb_lora_dir.as_deref(),
+        )?;
+        return Ok(Box::new(model));
+    }
+    #[cfg(not(feature = "cuda"))]
+    let _ = (nllb_lang, nllb_lora_dir);
+
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
+
+    // ── LoRA adapter load (pre-arena, pre-KV-sizing) ──
+    // MUST run before `BufferArena::new` and the `gpu.free_memory()`
+    // snapshot below: the pool allocation then lands in `used_so_far`, so
+    // the KV-cache budget shrinks automatically (positional budgeting —
+    // no arithmetic edit needed). Do NOT move this later. Setting
+    // `config.adapter_max_rank` here also lets `BufferSizes` size the
+    // lora_xa/lora_delta/lora_hact scratch.
+    let lora_weights: Option<crate::lora::LoraWeights> = if let Some(ref la) = lora_args {
+        config.adapter_max_rank = la.max_lora_rank;
+        loader.load_lora_adapters(
+            &la.adapters,
+            &config,
+            gpu.as_ref(),
+            la.max_loras,
+            la.max_lora_rank,
+        )?
+    } else {
+        None
+    };
 
     // Pre-construction: when DFlash is active, populate the target's
     // capture-layer indices from the drafter's `dflash_config.target_layer_ids`
@@ -566,6 +628,12 @@ pub fn build_model(
             );
         }
     }
+
+    // ── Step 8: LoRA adapter install (optional, post-construction) ──
+    // The pool/tables were loaded up top (pre-KV-sizing); this walk copies
+    // the per-layer pairs into the layer structs. M0: layers only STORE the
+    // adapter — base output is unchanged until the M1 compute insertions.
+    model.set_lora_weights(lora_weights)?;
 
     Ok(Box::new(model))
 }

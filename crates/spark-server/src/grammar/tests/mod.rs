@@ -10,6 +10,7 @@ mod gemma4_required;
 mod minimax;
 mod misc;
 mod parallel_calls;
+mod param_key_constraint;
 mod qwen3_coder_required;
 // TODO: stale tests — reference `enforce_min_length_on_required_strings`
 // and `sanitize_schema_for_grammar` which have been refactored. File

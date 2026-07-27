@@ -96,6 +96,12 @@ pub fn shard_dense_bf16(
             // Per-row strided copy: row r of dst comes from row r of src,
             // starting at column `tp_rank * local_in`.
             let col_offset_bytes = tp_rank * local_row_bytes;
+            tracing::debug!(
+                target: "spark_model::tp_shard",
+                out_dim, in_dim, local_in, src_row_bytes, local_row_bytes,
+                tp_rank, tp_size, src = src.0,
+                "dense row-parallel shard (per-row strided)"
+            );
             for r in 0..out_dim {
                 let src_off = r * src_row_bytes + col_offset_bytes;
                 let dst_off = r * local_row_bytes;
@@ -326,6 +332,9 @@ impl TpMoeDims {
         }
     }
 }
+
+mod gdn;
+pub use gdn::*;
 
 mod quant_shard;
 pub use quant_shard::{shard_fp8_block_scaled, shard_quantized_nvfp4};

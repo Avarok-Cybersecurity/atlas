@@ -41,6 +41,14 @@ jobs:
             # external contributors. Candidate for a `traits/model/mod.rs`
             # split that pulls verify/decode default impls into siblings.
             "crates/spark-model/src/traits/model.rs"
+            # ── PR: LoRA-on-HSS-tier carry-over ──
+            # 502 LoC — `TransformerLayer` trait: the core per-layer interface
+            # (~20 methods spanning decode / prefill / SSM-phase / MoE-transpose,
+            # each with a long arg list + doc). Atomic interface, same rationale
+            # as `traits/model.rs` above. Tipped over 500 by the `as_any_mut`
+            # downcast hook the LoRA install walk needs. Clean split
+            # (SSM-prefill phases -> sibling supertrait) tracked as follow-up.
+            "crates/spark-model/src/layer/transformer_layer.rs"
             # 513 LoC — Gemma-4 weight loader (variant-dispatch family).
             # Already part of a `gemma4/` split; the leftover holds the
             # single-file dispatch entry-point + per-layer-type orchestration.
@@ -152,6 +160,7 @@ jobs:
             "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
             "crates/spark-model/src/model/block_mgmt.rs"
+            "crates/spark-model/src/model/impl_a1.rs"
             "crates/spark-model/src/model/impl_a2.rs"
             "crates/spark-model/src/model/ssm_pool.rs"
             "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
@@ -162,6 +171,12 @@ jobs:
             "crates/spark-server/src/scheduler/emit_step.rs"
             "crates/spark-server/src/scheduler/helpers.rs"
             "crates/spark-server/src/tool_parser/validation.rs"
+            # 510 LoC — prefill-b step: grew by the #283 param_close_pending
+            # field addition. Split tracked as follow-up.
+            "crates/spark-server/src/scheduler/prefill_b_step.rs"
+            # 516 LoC — verify pipeline helpers: grew by the #283
+            # mtp_verify_sample_enabled + dflash helpers. Split tracked as follow-up.
+            "crates/spark-server/src/scheduler/verify_pipeline_helper.rs"
             # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over,
             # grown by PR #223 (perf/qwen36-27b-prefill-nvfp4) ──
             # 1507 LoC — dense-FFN forward: multi-arm quantized-FFN dispatch
@@ -246,6 +261,14 @@ jobs:
             # decode dispatchers above; conv/GDN halves were already
             # extracted to trait_decode_batched_conv_gdn.rs. Clean split
             # tracked as follow-up.
+            # 548 LoC — Qwen3.5 linear-attn (SSM) loader arm; grew with the
+            # HeadParallel config-localize + per-rank segmented weight loads
+            # (FP8-dense + NVFP4 builders). Two linear load sequences read
+            # top-to-bottom; clean split tracked as follow-up.
+            "crates/spark-model/src/weight_loader/qwen35/load_layers/linear_attn_arms.rs"
+            # 503 LoC — batched-recurrent GDN decode; marginally over (added the
+            # per-seq SSM out_proj all-reduce for HeadParallel). Back under 500
+            # once the batched/graph paths consolidate. Follow-up.
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
             # -- #300/#301 (mixed-precision NVFP4 weights) carry-over --
             # 522 LoC; landed on main 2026-07-12 without an entry, so the

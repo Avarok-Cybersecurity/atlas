@@ -47,13 +47,13 @@ impl ModelWeightLoader for Qwen35WeightLoader {
     fn supports_tp(&self) -> bool {
         // FullAttention layers are TP-sharded across all 3 quant paths
         // (FP8 native, NVFP4-from-disk, BF16 → NVFP4). LinearAttention
-        // (GDN SSM) layers run full-replica per rank — functionally
-        // correct (same hidden in → same SSM out across ranks) but
-        // wastes SSM weight memory. Acceptable trade-off: SSM weights
-        // are a small fraction of total model size for Qwen3.5-A3B
-        // (most parameters are in routed MoE experts which are
-        // EP-sharded). Future work: GDN HeadParallel sharding would
-        // recover the per-rank SSM memory.
+        // (GDN SSM) layers are now TP-sharded head-parallel for the BF16
+        // and NVFP4 paths (GDN HeadParallel): linear_num_key/value_heads
+        // are divided per rank in topology.rs, each rank owns a contiguous
+        // head range, and out_proj is row-parallel with one all-reduce.
+        // Native block-scaled FP8 SSM still requires TP=1 (per-128-row
+        // scale slicing deferred) — build_linear_attention_fp8 errors
+        // clearly when tp_size > 1.
         true
     }
 

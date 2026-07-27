@@ -33,6 +33,7 @@ mod embed_chunk;
 mod finalize_last;
 mod forward_layers;
 mod h_state_ptrs;
+mod midchunk_capture;
 mod prefix_lookup;
 mod proc_range;
 mod prompt_logprobs;
@@ -103,7 +104,11 @@ impl TransformerModel {
             let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
             if cut > chunk_start
                 && cut < total
-                && (ep_active || self.prefix_cache.peek_matched_tokens(tokens, bs) > 0)
+                && (ep_active
+                    || self
+                        .prefix_cache
+                        .peek_matched_tokens(tokens, bs, seq.adapter_id)
+                        > 0)
             {
                 self.prefill_chunk_dispatch(
                     tokens,
@@ -128,9 +133,11 @@ impl TransformerModel {
             );
         }
 
-        // Use the caller-provided stream for compute-copy overlap,
-        // unless EP is active (NCCL requires the default stream).
-        let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
+        // Use the caller-provided stream for compute-copy overlap, unless
+        // a multi-rank world is active (EP or pure TP — NCCL collectives
+        // must stay stream-ordered with the cmd broadcasts, which run on
+        // the default stream).
+        let stream = if self.multi_rank_protocol_active() {
             self.gpu.default_stream()
         } else {
             stream
@@ -258,6 +265,18 @@ impl TransformerModel {
         // per chunk but prevents the illegal memory access.
         self.gpu.synchronize(stream)?;
 
+        // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
+        // pass so SSM layers split their h/conv kernels at `tb` in-pass.
+        // `None` (flag off or pass doesn't span `tb`) => no split. ──
+        let midcap_plan = self.prepare_midchunk_capture(
+            tokens,
+            seq,
+            &mut kv_cache,
+            proc_start,
+            proc_count,
+            stream,
+        );
+
         // ── Phase 4: forward through all layers ──
         self.prefill_b_forward_layers(
             seq,
@@ -274,8 +293,15 @@ impl TransformerModel {
             pos_stream_bytes,
             use_mrope,
             needs_paged,
+            midcap_plan.as_ref(),
             stream,
         )?;
+
+        // Register the reserved slot as the session tail once the full pass has
+        // captured the @tb state into it (no-op when no capture was planned).
+        if let Some(plan) = midcap_plan.as_ref() {
+            self.finalize_midchunk_capture(tokens, seq, plan);
+        }
 
         // ── Phase 5: update sequence state incrementally ──
         // Always add chunk tokens exactly once. The early-return path for

@@ -301,3 +301,65 @@ fn qwen3_coder_grammar_rejects_eq_value_start() {
         "a value starting with `=` (the `>=`-merge artifact) must be REJECTED. Input: {eq_start:?}"
     );
 }
+
+/// 2026-07-09: the historical blanket `<`-ban on the value's first
+/// content char made any `<`-initial file UNREPRESENTABLE — the mask
+/// deflected `<script>`/`<!DOCTYPE` at position 0, so the model could not
+/// write Svelte/HTML/XML files at all (live opencode session: every
+/// `.svelte` write came out script-logic-only and the model retried the
+/// identical write forever). `first_content` now reuses the negative-
+/// prefix close ladder for its `<` arm: `<` is legal at content start
+/// unless it begins the exact `</parameter>` close.
+#[test]
+fn qwen3_coder_grammar_accepts_lt_initial_value() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let tools = exec_tool_def();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
+        .expect("compile must succeed");
+
+    // A Svelte component: starts with `<script>`, has an HTML template.
+    let svelte = "<tool_call>\n<function=exec>\n<parameter=command><script>\n  let x = 1;\n</script>\n\n<main>\n  <button on:click={inc}>+</button>\n</main></parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, svelte),
+        "a `<script>`-initial value (Svelte component) must be ACCEPTED"
+    );
+
+    // An HTML document: starts with `<!DOCTYPE html>`.
+    let html = "<tool_call>\n<function=exec>\n<parameter=command><!DOCTYPE html>\n<html><body>hi</body></html></parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, html),
+        "a `<!DOCTYPE`-initial value (HTML document) must be ACCEPTED"
+    );
+
+    // A `</x`-initial value (legal `</`-prefix that is NOT the close tag).
+    let close_prefix = "<tool_call>\n<function=exec>\n<parameter=command></div> is a stray close tag</parameter>\n</function>\n</tool_call>";
+    assert!(
+        grammar_accepts(&compiled, close_prefix),
+        "a `</div`-initial value must be ACCEPTED (only the exact close is barred)"
+    );
+}
+
+/// Companion to the `<`-unban: the non-empty guard MUST survive. An empty
+/// body (the close tag as the first body token — the original Epoch-3
+/// failure the blanket ban targeted) stays rejected because every
+/// `first_content` alternative consumes at least one non-close byte.
+#[test]
+fn qwen3_coder_grammar_still_rejects_close_tag_as_first_body_token() {
+    let vocab = test_vocab();
+    let stop_ids = vec![130i32];
+    let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
+    let tools = exec_tool_def();
+    let compiled = engine
+        .compile_qwen3_coder_tool_grammar(&tools, true, "</parameter>")
+        .expect("compile must succeed");
+
+    let empty_body =
+        "<tool_call>\n<function=exec>\n<parameter=command></parameter>\n</function>\n</tool_call>";
+    assert!(
+        !grammar_accepts(&compiled, empty_body),
+        "an empty body (immediate close tag) must remain REJECTED"
+    );
+}

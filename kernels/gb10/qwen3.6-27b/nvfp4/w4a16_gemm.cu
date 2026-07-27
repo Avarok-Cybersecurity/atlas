@@ -1138,7 +1138,7 @@ void w4a16_gemm_t_m128(
 #if defined(__SCALE__)
     __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];          // BF16 (gfx1151)
 #else
-    __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T];             // 4096 B
+    __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T + 4];       // 4096 B + 512 B pad (bank conflict fix)
 #endif
     __shared__ float smem_LUT[16];                                         //   64 B
     // Total ≈ 29.8 KB → 3 blocks/SM
@@ -1583,7 +1583,23 @@ void w4a16_gemm_t_m128_bf16(
 // 2 CTAs/SM (3×34.9=104.8 > 100) — only 8 of 48 warps resident, too few to
 // hide the cp.async + dequant + MMA latency chain.
 //
-//   LEVER — OCCUPANCY via SMEM: drop the A-tile bank-conflict pad from
+//   LEVER 1 (2026-07-21) — BANK CONFLICTS, the measured #1 limiter. ncu on a
+//     standalone microbenchmark of this exact kernel at the real FFN shapes:
+//     L1/TEX throughput 92.0% (binding), tensor pipe only 24.5%, and 80% of ALL
+//     shared-memory wavefronts excessive (1,025 M of 1,279 M). `smem_B_bf16` is
+//     [128][32] bf16 => row stride 64 B = exactly 16 banks, so for a fixed k the
+//     32 lanes of a warp (which differ only in the row `my_n`) hit just 2 banks:
+//     a 16-WAY store conflict in the dequant (ncu: 16.1), plus a 4-way conflict on
+//     the B operand read (bank = 16*(group_id&1) + hh*8 + tid, 8 distinct banks).
+//     PADB_V2 = 2 makes the row 34 bf16 = 17 words, gcd(17,32) = 1, so the dequant
+//     stores become CONFLICT-FREE and the B reads drop 4-way -> 2-way, for +512 B
+//     (29,824 -> 30,336; 3*(30,336+1,044 driver) = 94,140 <= 102,400, so still
+//     3 CTAs/SM). LEVER 2 XOR-swizzles the A tile (see A_SWZ_V2) to clear the
+//     remaining 4-way A conflict at ZERO smem cost. Measured on the standalone
+//     rig, M = 256..6144, both FFN shapes: -40..-44%, 30.5 -> 52-55 TFLOP/s, and
+//     BYTE-IDENTICAL output (full-C bit compare, 5 M values x 2 shapes).
+//
+//   LEVER (v1->v2, 2026) — OCCUPANCY via SMEM: drop the A-tile bank-conflict pad from
 //     PAD_T=8 to PAD_T_V2=0 (A stride 32 instead of 40). A row is 32 bf16 =
 //     64 B = exactly 16-byte aligned, so cp.async.16 stays legal. This shaves
 //     A from 2×128×40×2=20480 B to 2×128×32×2=16384 B (−4 KB) → 30.9 KB/block
@@ -1604,6 +1620,13 @@ void w4a16_gemm_t_m128_bf16(
 // ═══════════════════════════════════════════════════════════════════
 #define M128B_STAGES 2
 #define PAD_T_V2 0
+#define PADB_V2 2
+// A-tile XOR swizzle at 16-byte (8 bf16) granularity: physical 16-B chunk
+// index = logical ^ ((row >> 1) & 3). cp.async.16 moves whole 16-B chunks, so
+// permuting chunks WITHIN a row is legal for cp.async and keeps its store side
+// conflict-free; on the MMA read side it replaces the 4-way conflict with 32
+// distinct banks. Pure addressing — the bf16 VALUE each lane reads is unchanged.
+#define A_SWZ_V2(col, row) ((((((col) >> 3) ^ (((row) >> 1) & 3u)) << 3) | ((col) & 7u)))
 extern "C" __global__
 __launch_bounds__(128, 3)
 void w4a16_gemm_t_m128_bf16_v2(
@@ -1630,7 +1653,7 @@ void w4a16_gemm_t_m128_bf16_v2(
     __shared__ __nv_bfloat16 smem_A[M128B_STAGES][2 * M_TILE][K_STEP_T + PAD_T_V2];
     __shared__ unsigned char smem_Bp[M128B_STAGES][K_STEP_T / 2][N_TILE_LG + BP_PAD];
     __shared__ unsigned char smem_Bs[M128B_STAGES][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
-    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];
+    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T + PADB_V2];
     __shared__ float smem_LUT[16];
 
     if (threadIdx.x < 16) smem_LUT[threadIdx.x] = E2M1_LUT[threadIdx.x];
@@ -1655,7 +1678,7 @@ void w4a16_gemm_t_m128_bf16_v2(
             for (int rnd = 0; rnd < 4; rnd++) { \
                 unsigned int row = (unsigned int)(rnd * 32) + a_row_base; \
                 unsigned int gr  = cta_m + row; \
-                cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                cp_async_pred_16(&smem_A[(buf)][row][A_SWZ_V2(a_col, row)], \
                     &A[(unsigned long long)gr * K + gc], \
                     (gr < M) && (gc + 7 < K)); \
             } \
@@ -1711,10 +1734,10 @@ void w4a16_gemm_t_m128_bf16_v2(
             _Pragma("unroll") \
             for (int hh = 0; hh < 2; hh++) { \
                 unsigned int fc0 = hh * 16 + tid * 2, fc1 = fc0 + 8; \
-                unsigned int a0 = *(const unsigned int*)&sA[fr0 * a_stride + fc0]; \
-                unsigned int a1 = *(const unsigned int*)&sA[fr1 * a_stride + fc0]; \
-                unsigned int a2 = *(const unsigned int*)&sA[fr0 * a_stride + fc1]; \
-                unsigned int a3 = *(const unsigned int*)&sA[fr1 * a_stride + fc1]; \
+                unsigned int a0 = *(const unsigned int*)&sA[fr0 * a_stride + A_SWZ_V2(fc0, fr0)]; \
+                unsigned int a1 = *(const unsigned int*)&sA[fr1 * a_stride + A_SWZ_V2(fc0, fr1)]; \
+                unsigned int a2 = *(const unsigned int*)&sA[fr0 * a_stride + A_SWZ_V2(fc1, fr0)]; \
+                unsigned int a3 = *(const unsigned int*)&sA[fr1 * a_stride + A_SWZ_V2(fc1, fr1)]; \
                 _Pragma("unroll") \
                 for (int nt = 0; nt < 16; nt++) { \
                     unsigned int nc = nt * 8 + group_id; \
@@ -3755,7 +3778,6 @@ void int8_gemm_faith(
         #pragma unroll
         for (int j=0;j<8;j++){
             unsigned mcol = cta_m + mh*64 + j*8 + (lane%4)*2; // M token (output row)
-            unsigned r0=mcol, r1=mcol;            // rows (M)
             unsigned cN0=nrow0, cN1=nrow0+8;      // cols (N), from l/2
             // l=0:(r=mcol,   c=nrow0)  l=1:(r=mcol+1, c=nrow0)
             // l=2:(r=mcol,   c=nrow0+8)l=3:(r=mcol+1, c=nrow0+8)
@@ -3763,7 +3785,6 @@ void int8_gemm_faith(
             if (mcol+1<M && cN0<N) C[(unsigned long long)(mcol+1)*N + cN0] = __float2bfloat16(acc[n][j][1]);
             if (mcol<M   && cN1<N) C[(unsigned long long)mcol*N + cN1]     = __float2bfloat16(acc[n][j][2]);
             if (mcol+1<M && cN1<N) C[(unsigned long long)(mcol+1)*N + cN1] = __float2bfloat16(acc[n][j][3]);
-            (void)r0;(void)r1;
         }
     }
 }
@@ -3906,7 +3927,172 @@ void int8_gemm_faith2(
 #undef F2_SB
 #undef F2W
 
-// int8 W4A8 FAITH3 — faith2 + B-fragment ILP. ncu on faith2 showed the dominant
+// int8 W4A8 I32ACC — faith2 + INT32 per-sb accumulation (break the MMA→scale
+// dependency chain). The ncu diagnosis of faith2: "pure dependency-latency
+// (Compute 26%/Mem 33%, NOTHING saturates)" — the kernel is gated on the
+// 4-deep chain MMA→int2float→mul(wsc)→mul(asc)→add(acc) that SERIALIZES each
+// MMA behind the previous one's scale. faith3 (B-frag ILP) was NEUTRAL because
+// it didn't break the chain — the scale still blocks each MMA.
+//
+// I32ACC fix: accumulate the mma.sync.s32 result in INT32 (iacc += s, 1-cycle
+// int add — no float conversion) so the 8 independent j-iteration MMAs issue
+// back-to-back without waiting for the scale. The per-block scale (wsc*asc,
+// constant within one sb) is applied ONCE at the sb boundary, converting the
+// int32 partial to float and adding to the persistent float accumulator.
+//
+// Register cost: +64 int32 (iacc[2][8][4], reused per sb) on top of faith2's
+// 64 float (facc[2][8][4], persistent). ~128 regs/thread → 1 CTA/SM (from 2).
+// OK because the kernel is latency-bound (ncu: nothing saturates) — cutting
+// occupancy doesn't hurt a kernel that's waiting on dependency chains, and
+// breaking the chain is the win.
+// ═════════════════════════════════════════════════════════════════
+#define I32A_TILE 128
+#define I32A_SB   (I32A_TILE/32)
+#define I32AW     36
+#define ATLAS_MMA_S8_I32A(d, a0,a1,a2,a3, b0,b1) \
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
+        : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
+        : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
+          "r"((d)[0]),"r"((d)[1]),"r"((d)[2]),"r"((d)[3]))
+
+extern "C" __global__
+__launch_bounds__(256, 1)
+void int8_gemm_i32acc(
+    const signed char* __restrict__ A_i8,
+    const signed char* __restrict__ B_i8,
+    const float* __restrict__ A_scale,
+    const float* __restrict__ B_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_n = blockIdx.x * 128;
+    const unsigned int cta_m = blockIdx.y * 128;
+    if (cta_m >= M || cta_n >= N) return;
+    const unsigned int t = threadIdx.x;
+    const unsigned int warp_id = t >> 5;
+    const unsigned int lane = t & 31;
+    const unsigned int ng = warp_id >> 1;
+    const unsigned int mh = warp_id & 1;
+    const unsigned int nb = K >> 5;
+
+    __shared__ int   sW[128][I32AW];
+    __shared__ int   sA[128][I32AW];
+    __shared__ float sWs[128][I32A_SB];
+    __shared__ float sAs[128][I32A_SB];
+
+    // Persistent float accumulator (survives across sb iterations).
+    float facc[2][8][4];
+    #pragma unroll
+    for (int n=0;n<2;n++) for(int j=0;j<8;j++){facc[n][j][0]=0;facc[n][j][1]=0;facc[n][j][2]=0;facc[n][j][3]=0;}
+
+    for (unsigned int kb = 0; kb < K; kb += I32A_TILE) {
+        // ── Load tile (same as faith2) ──
+        const unsigned I32A_CPR = I32A_TILE/16;
+        #pragma unroll
+        for (int c = 0; c < I32A_TILE/32; c++) {
+            unsigned lin = c*256 + t;
+            unsigned row = lin / I32A_CPR;
+            unsigned col = (lin % I32A_CPR) << 4;
+            unsigned gk = kb + col;
+            signed char* wdst = ((signed char*)&sW[row][0]) + col;
+            signed char* adst = ((signed char*)&sA[row][0]) + col;
+            cp_async_pred_16(wdst, &B_i8[(unsigned long long)(cta_n+row)*K + gk], (cta_n+row<N)&&(gk+15<K));
+            cp_async_pred_16(adst, &A_i8[(unsigned long long)(cta_m+row)*K + gk], (cta_m+row<M)&&(gk+15<K));
+        }
+        if (t < 128) {
+            unsigned blk = kb >> 5;
+            #pragma unroll
+            for (int s=0;s<I32A_SB;s++){
+                sWs[t][s] = (cta_n+t<N)?B_scale[(unsigned long long)(cta_n+t)*nb + blk + s]:0.f;
+                sAs[t][s] = (cta_m+t<M)?A_scale[(unsigned long long)(cta_m+t)*nb + blk + s]:0.f;
+            }
+        }
+        cp_async_commit(); cp_async_wait_all(); __syncthreads();
+
+        // ── sb loop: int32 accumulation, scale at sb boundary ──
+        #pragma unroll
+        for (int sb=0; sb<I32A_SB; sb++){
+            unsigned WA[2][4];
+            float    wsc[2][2];
+            #pragma unroll
+            for (int n=0;n<2;n++){
+                unsigned wbase_row = ng*32 + n*16;
+                const int* xs = &sW[wbase_row][0] + (lane%16)*I32AW + sb*8 + (lane/16)*4;
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];"
+                    : "=r"(WA[n][0]),"=r"(WA[n][1]),"=r"(WA[n][2]),"=r"(WA[n][3]) : "l"(xs));
+                wsc[n][0] = sWs[wbase_row + lane/4][sb];
+                wsc[n][1] = sWs[wbase_row + 8 + lane/4][sb];
+            }
+
+            // Int32 per-sb accumulators — live across the j-loop (no float ops).
+            int iacc[2][8][4];
+            #pragma unroll
+            for (int n=0;n<2;n++) for(int j=0;j<8;j++){iacc[n][j][0]=0;iacc[n][j][1]=0;iacc[n][j][2]=0;iacc[n][j][3]=0;}
+            // Stash asc per j for the sb-boundary scale (asc varies with j).
+            float ascs[8][2];
+
+            // j-loop: PURE int32 MMAs — no float conversion, no scale chain.
+            // The 8 independent j-iteration MMAs pipeline back-to-back.
+            #pragma unroll
+            for (int j=0;j<8;j++){
+                unsigned mcol0 = mh*64 + j*8;
+                ascs[j][0] = sAs[mcol0 + (lane%4)*2][sb];
+                ascs[j][1] = sAs[mcol0 + (lane%4)*2 + 1][sb];
+                const int* abase = &sA[mcol0 + lane/4][0] + sb*8;
+                unsigned b0 = abase[lane%4];
+                unsigned b1 = abase[lane%4 + 4];
+                #pragma unroll
+                for (int n=0;n<2;n++){
+                    int s[4]={0,0,0,0};
+                    ATLAS_MMA_S8_I32A(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    // INT32 accumulate — no float chain, MMAs pipeline freely.
+                    iacc[n][j][0] += s[0];
+                    iacc[n][j][1] += s[1];
+                    iacc[n][j][2] += s[2];
+                    iacc[n][j][3] += s[3];
+                }
+            }
+
+            // sb boundary: convert + scale ALL (n,j) at once.
+            // The float ops are OUTSIDE the MMA critical path.
+            #pragma unroll
+            for (int n=0;n<2;n++){
+                #pragma unroll
+                for (int j=0;j<8;j++){
+                    float sc0 = wsc[n][0] * ascs[j][0];
+                    float sc1 = wsc[n][0] * ascs[j][1];
+                    float sc2 = wsc[n][1] * ascs[j][0];
+                    float sc3 = wsc[n][1] * ascs[j][1];
+                    facc[n][j][0] += (float)iacc[n][j][0] * sc0;
+                    facc[n][j][1] += (float)iacc[n][j][1] * sc1;
+                    facc[n][j][2] += (float)iacc[n][j][2] * sc2;
+                    facc[n][j][3] += (float)iacc[n][j][3] * sc3;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // ── Epilogue: write facc to C (same as faith2) ──
+    #pragma unroll
+    for (int n=0;n<2;n++){
+        unsigned nrow0 = cta_n + ng*32 + n*16 + lane/4;
+        #pragma unroll
+        for (int j=0;j<8;j++){
+            unsigned mcol = cta_m + mh*64 + j*8 + (lane%4)*2;
+            unsigned cN0=nrow0, cN1=nrow0+8;
+            if (mcol<M   && cN0<N) C[(unsigned long long)mcol*N + cN0]     = __float2bfloat16(facc[n][j][0]);
+            if (mcol+1<M && cN0<N) C[(unsigned long long)(mcol+1)*N + cN0] = __float2bfloat16(facc[n][j][1]);
+            if (mcol<M   && cN1<N) C[(unsigned long long)mcol*N + cN1]     = __float2bfloat16(facc[n][j][2]);
+            if (mcol+1<M && cN1<N) C[(unsigned long long)(mcol+1)*N + cN1] = __float2bfloat16(facc[n][j][3]);
+        }
+    }
+}
+#undef ATLAS_MMA_S8_I32A
+#undef I32A_TILE
+#undef I32A_SB
+#undef I32AW
 // stall is SHORT_SCOREBOARD (smem-read latency) 47% of 7.2 cyc/instr; occupancy
 // is dead (raising CTA/SM regressed). The remaining lever is ILP on the smem reads:
 // faith2 loads the activation B-fragment (2 scalar smem loads) INSIDE the j-loop,
@@ -4186,6 +4372,13 @@ void int8_gemm_faith4(
         : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
           "r"((d)[0]),"r"((d)[1]),"r"((d)[2]),"r"((d)[3]))
 
+// gfx1151 (RDNA3.5) has 64 KiB of LDS; this kernel's double-buffered tiles
+// need ~80 KiB, so SCALE rejects it with "local memory exceeds limit".
+// Shrinking the tile is a performance decision that needs gfx1151 hardware to
+// validate, and this kernel is listed in NEITHER kernels/gb10 nor
+// kernels/strix KERNEL.toml -- nothing loads it on either platform -- so it is
+// simply not built for SCALE. NVIDIA is unaffected.
+#if !defined(__SCALE__)
 extern "C" __global__
 __launch_bounds__(256, 1)
 void int8_gemm_mmq2(
@@ -4301,6 +4494,7 @@ void int8_gemm_mmq2(
         }
     }
 }
+#endif  // !__SCALE__
 #undef ATLAS_MMA_S8
 #undef M2_TILE
 #undef M2_SB
@@ -4761,6 +4955,13 @@ void int8_gemm_faith7(
         cp_async_pred_16(_wd, &B_i8[(unsigned long long)(cta_n+_row)*K+_gk], (cta_n+_row<N)&&(_gk+15<K)); \
         cp_async_pred_16(_ad, &A_i8[(unsigned long long)(cta_m+_row)*K+_gk], (cta_m+_row<M)&&(_gk+15<K)); \
     } } while(0)
+// gfx1151 (RDNA3.5) has 64 KiB of LDS; this kernel's double-buffered tiles
+// need ~80 KiB, so SCALE rejects it with "local memory exceeds limit".
+// Shrinking the tile is a performance decision that needs gfx1151 hardware to
+// validate, and this kernel is listed in NEITHER kernels/gb10 nor
+// kernels/strix KERNEL.toml -- nothing loads it on either platform -- so it is
+// simply not built for SCALE. NVIDIA is unaffected.
+#if !defined(__SCALE__)
 extern "C" __global__
 __launch_bounds__(256, 1)
 void int8_gemm_faith8(
@@ -4867,6 +5068,7 @@ void int8_gemm_faith8(
         }
     }
 }
+#endif  // !__SCALE__
 #undef ATLAS_MMA_S8
 #undef F8_LOAD_TILE
 #undef F2_TILE
@@ -4890,6 +5092,13 @@ void int8_gemm_faith8(
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
         : "r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1), \
           "r"((d)[0]),"r"((d)[1]),"r"((d)[2]),"r"((d)[3]))
+// gfx1151 (RDNA3.5) has 64 KiB of LDS; this kernel's double-buffered tiles
+// need ~80 KiB, so SCALE rejects it with "local memory exceeds limit".
+// Shrinking the tile is a performance decision that needs gfx1151 hardware to
+// validate, and this kernel is listed in NEITHER kernels/gb10 nor
+// kernels/strix KERNEL.toml -- nothing loads it on either platform -- so it is
+// simply not built for SCALE. NVIDIA is unaffected.
+#if !defined(__SCALE__)
 extern "C" __global__
 __launch_bounds__(256, 1)
 void int8_gemm_faith9(
@@ -4991,6 +5200,7 @@ void int8_gemm_faith9(
         }
     }
 }
+#endif  // !__SCALE__
 #undef ATLAS_MMA_S8
 #undef F2_TILE
 #undef F2_SB
@@ -5946,14 +6156,12 @@ extern "C" __global__ void fp8_gemm_t_row_scaled(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            /* Same helper FP8_COMPUTE uses: on NVIDIA its #else arm is this \
+             * exact PTX (__forceinline__, so codegen is byte-identical); on \
+             * SCALE/gfx1151 it is the validated __shfl-repack -> 2x \
+             * mma.m16n8k16.bf16 replacement. Emitting the PTX inline here is \
+             * what made this .cu uncompilable for AMD. */ \
+            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 
@@ -6087,14 +6295,12 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_m16(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
-                "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
-                :"=f"(acc[nt][0]),"=f"(acc[nt][1]), \
-                 "=f"(acc[nt][2]),"=f"(acc[nt][3]) \
-                :"r"(a0),"r"(a1),"r"(a2),"r"(a3), \
-                 "r"(b0),"r"(b1), \
-                 "f"(acc[nt][0]),"f"(acc[nt][1]), \
-                 "f"(acc[nt][2]),"f"(acc[nt][3])); \
+            /* Same helper FP8_COMPUTE uses: on NVIDIA its #else arm is this \
+             * exact PTX (__forceinline__, so codegen is byte-identical); on \
+             * SCALE/gfx1151 it is the validated __shfl-repack -> 2x \
+             * mma.m16n8k16.bf16 replacement. Emitting the PTX inline here is \
+             * what made this .cu uncompilable for AMD. */ \
+            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 

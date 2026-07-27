@@ -11,4 +11,5 @@ mod group_d;
 mod group_e;
 mod group_f;
 mod group_g_parallel;
+mod group_h_salvage;
 mod streaming_frag;

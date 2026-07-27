@@ -184,8 +184,8 @@ impl TransformerModel {
             );
         }
 
-        // EP active → NCCL needs the default stream.
-        let stream = if self.comm.is_some() && self.config.ep_world_size > 1 {
+        // Multi-rank world (EP or pure TP) → NCCL needs the default stream.
+        let stream = if self.multi_rank_protocol_active() {
             self.gpu.default_stream()
         } else {
             stream
@@ -338,6 +338,8 @@ impl TransformerModel {
                     pos_stream_bytes,
                     use_mrope,
                     needs_paged,
+                    // Batched path does not do mid-chunk tail capture (single-seq only).
+                    None,
                     stream,
                 )?;
 

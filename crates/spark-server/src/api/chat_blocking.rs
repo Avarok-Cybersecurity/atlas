@@ -14,7 +14,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 
 use crate::AppState;
-use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, Usage};
+use crate::ir;
 use crate::tool_parser;
 
 use super::compact::openai_error_response;
@@ -23,11 +23,22 @@ use super::inference_types::{GrammarSpec, InferenceRequest};
 
 pub(super) struct BlockingPathArgs {
     pub state: Arc<AppState>,
-    pub req: ChatCompletionRequest,
+    pub req: crate::ir::ChatRequest,
     pub req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
-    pub dump_seq: Option<u64>,
     pub prompt_tokens: Vec<u32>,
     pub session_hash: u64,
+    /// M2 per-request LoRA routing: resolved adapter slot (`-1` = defer to active).
+    pub adapter_slot: i32,
+    /// Resolved source-language token id (0 = deployment default).
+    pub src_lang_id: u32,
+    /// Resolved target-language token id (0 = deployment default).
+    pub tgt_lang_id: u32,
+    /// NLLB beam search: beams per request (1 = greedy).
+    pub num_beams: u32,
+    /// NLLB beam search: length penalty.
+    pub length_penalty: f32,
+    /// NLLB beam search: early stopping.
+    pub early_stopping: bool,
     pub image_pixels: Vec<(Vec<f32>, usize, usize)>,
     pub max_tokens: usize,
     pub temperature: f32,
@@ -56,14 +67,19 @@ pub(super) struct BlockingPathArgs {
     pub prompt_len: usize,
 }
 
-pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
+pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::ChatOutcome {
     let BlockingPathArgs {
         state,
         req,
         req_ctx,
-        dump_seq,
         prompt_tokens,
         session_hash,
+        adapter_slot,
+        src_lang_id,
+        tgt_lang_id,
+        num_beams,
+        length_penalty,
+        early_stopping,
         image_pixels,
         max_tokens,
         temperature,
@@ -93,7 +109,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
     } = args;
 
     let n = req.n.max(1);
-    let mut all_choices: Vec<crate::openai::ChatChoice> = Vec::with_capacity(n);
+    let mut all_choices: Vec<ir::Choice> = Vec::with_capacity(n);
     let mut total_completion_tokens = 0usize;
     let mut first_ttft = 0.0f64;
     let mut last_decode_time_ms = 0.0f64;
@@ -110,6 +126,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         let request = InferenceRequest::Blocking {
             prompt_tokens: prompt_tokens.clone(),
             session_hash,
+            adapter_slot,
+            src_lang_id,
+            tgt_lang_id,
+            num_beams,
+            length_penalty,
+            early_stopping,
             image_pixels: if choice_idx == 0 {
                 image_pixels.clone()
             } else {
@@ -133,7 +155,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             stop_tokens: stop_tokens.clone(),
             enable_thinking,
             thinking_budget,
-            repetition_detection: req.repetition_detection(),
+            repetition_detection: req.repetition_detection,
             require_tool_call: tool_choice_required,
             tools_present: tools_active,
             suppress_tool_call,
@@ -148,28 +170,25 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         };
 
         if state.request_tx.send(request).await.is_err() {
-            crate::metrics::REQUESTS_ACTIVE.dec();
-            return openai_error_response(
+            return super::chat::ChatOutcome::Http(openai_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Scheduler queue full".to_string(),
-            );
+            ));
         }
 
         let response = match rx.await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
-                crate::metrics::REQUESTS_ACTIVE.dec();
-                return openai_error_response(
+                return super::chat::ChatOutcome::Http(openai_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Inference error: {e}"),
-                );
+                ));
             }
             Err(_) => {
-                crate::metrics::REQUESTS_ACTIVE.dec();
-                return openai_error_response(
+                return super::chat::ChatOutcome::Http(openai_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Inference cancelled".to_string(),
-                );
+                ));
             }
         };
 
@@ -187,9 +206,10 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
 
         let (reasoning_content_i, output_text_i) =
             decode_response_text(&state, &response, enable_thinking);
-        let output_text_i = strip_stop_sequences(output_text_i, &req.stop);
+        let (output_text_i, matched_stop) =
+            super::inference_impl::strip_stop_sequences_matched(output_text_i, &req.stop);
 
-        let (message, finish_reason_i) = build_choice_message(
+        let mut choice = build_choice_message(
             &state,
             &req,
             &response,
@@ -200,20 +220,15 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             choice_idx,
         )
         .await;
-
-        all_choices.push(crate::openai::ChatChoice {
-            index: choice_idx,
-            message,
-            finish_reason: finish_reason_i,
-            logprobs: build_logprobs(&state, &response),
-        });
+        choice.index = choice_idx;
+        choice.matched_stop = matched_stop;
+        choice.logprobs = build_logprobs(&state, &response);
+        all_choices.push(choice);
     }
 
     finalize_response(
         state,
-        req,
         req_ctx,
-        dump_seq,
         all_choices,
         total_completion_tokens,
         first_ttft,
@@ -282,23 +297,21 @@ fn decode_response_text(
 #[allow(clippy::too_many_arguments)]
 async fn build_choice_message(
     state: &AppState,
-    req: &ChatCompletionRequest,
+    req: &crate::ir::ChatRequest,
     response: &super::inference_types::InferenceResponse,
     reasoning_content_i: Option<String>,
     output_text_i: String,
     tools_active: bool,
     cwd_hint: Option<&str>,
     choice_idx: usize,
-) -> (crate::openai::ChatMessage, String) {
+) -> ir::Choice {
     let _ = response; // currently only used for finish_reason.clone() below
-    let mut message = crate::openai::ChatMessage {
-        role: "assistant".to_string(),
-        reasoning_content: reasoning_content_i,
-        annotations: crate::citation::merged_annotations(&output_text_i),
-        refusal: None,
-        content: Some(output_text_i.clone()),
-        tool_calls: None,
-    };
+    // Neutral locals — the wire annotations (URL citations) are derived
+    // at encode time by the surfaces that emit them.
+    let mut reasoning_content = reasoning_content_i;
+    let mut msg_content: Option<String> = Some(output_text_i.clone());
+    let mut msg_tool_calls: Option<Vec<tool_parser::ToolCall>> = None;
+    let mut msg_refusal: Option<String> = None;
     let mut finish_reason_i = response.finish_reason.clone();
 
     if tools_active {
@@ -318,7 +331,7 @@ async fn build_choice_message(
         // scrub the residual XML from the reasoning trace so it isn't
         // double-emitted to the client.
         let (hoisted_reasoning, hoisted_tool_calls): (Option<String>, Vec<_>) =
-            if let Some(ref rc) = message.reasoning_content {
+            if let Some(ref rc) = reasoning_content {
                 let (scrubbed, tcs) = tool_parser::parse_tool_calls(rc);
                 (scrubbed, tcs)
             } else {
@@ -329,13 +342,13 @@ async fn build_choice_message(
                 "F7: hoisted {} tool-call(s) from inside <think> block (would have been silently dropped)",
                 hoisted_tool_calls.len()
             );
-            message.reasoning_content = hoisted_reasoning;
+            reasoning_content = hoisted_reasoning;
         }
         let (content, parsed_tool_calls) = tool_parser::parse_tool_calls(&output_text_i);
         let mut tool_calls_i = hoisted_tool_calls;
         tool_calls_i.extend(parsed_tool_calls);
         if !tool_calls_i.is_empty() {
-            let tools_ref = req.tools.as_ref().cloned().unwrap_or_default();
+            let tools_ref = req.tools.clone();
             tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
             if state
                 .tool_call_parser
@@ -377,7 +390,7 @@ async fn build_choice_message(
                 }
                 c.trim().to_string()
             });
-            message.content = content;
+            msg_content = content;
             if !validated.valid.is_empty() {
                 for tc in &validated.valid {
                     let p: String = tc.function.arguments.chars().take(120).collect();
@@ -385,7 +398,7 @@ async fn build_choice_message(
                     tracing::info!("Tool call: {}({p}{s})", tc.function.name);
                     crate::metrics::TOOL_CALLS_TOTAL.inc();
                 }
-                message.tool_calls = Some(validated.valid);
+                msg_tool_calls = Some(validated.valid);
                 finish_reason_i = "tool_calls".to_string();
             }
         }
@@ -393,44 +406,62 @@ async fn build_choice_message(
 
     // Refusal classifier: when the model's assistant text opens with
     // a known refusal pattern AND no tool call fired, populate
-    // `message.refusal` and null out `content` per the OpenAI spec.
-    if message.tool_calls.is_none()
-        && let Some(content_text) = message.content.as_deref()
+    // `refusal` and null out `content` per the OpenAI spec.
+    if msg_tool_calls.is_none()
+        && let Some(content_text) = msg_content.as_deref()
         && let Some(refusal_sentence) = crate::refusal::detect(content_text)
     {
-        message.refusal = Some(refusal_sentence);
-        message.content = None;
-        message.annotations = None;
+        msg_refusal = Some(refusal_sentence);
+        msg_content = None;
     }
 
-    (message, finish_reason_i)
+    // Validated wire tool calls → IR (arguments are serde-normalized
+    // strings from the parser, so the parse here is lossless).
+    let tool_calls: Vec<ir::message::ToolCall> = msg_tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tc| ir::message::ToolCall {
+            id: tc.id,
+            name: tc.function.name,
+            arguments: serde_json::from_str(&tc.function.arguments)
+                .unwrap_or_else(|_| serde_json::Value::Object(Default::default())),
+        })
+        .collect();
+
+    ir::Choice {
+        index: choice_idx,
+        content: msg_content,
+        reasoning: reasoning_content,
+        tool_calls,
+        refusal: msg_refusal,
+        finish_reason: ir::FinishReason::from(finish_reason_i.as_str()),
+        matched_stop: None, // caller fills
+        logprobs: None,     // caller fills
+    }
 }
 
 /// Convert internal logprobs to OpenAI `ChoiceLogprobs` format.
 fn build_logprobs(
     state: &AppState,
     response: &super::inference_types::InferenceResponse,
-) -> Option<crate::openai::ChoiceLogprobs> {
+) -> Option<ir::ChoiceLogprobs> {
     if response.logprobs.is_empty() {
         return None;
     }
-    Some(crate::openai::ChoiceLogprobs {
+    Some(ir::ChoiceLogprobs {
         content: response
             .logprobs
             .iter()
             .map(|lp| {
                 let token_str = state.tokenizer.decode(&[lp.token_id]).unwrap_or_default();
-                crate::openai::TokenLogprobInfo {
+                ir::TokenLogprob {
                     token: token_str,
                     logprob: lp.logprob,
-                    bytes: None,
-                    top_logprobs: lp
+                    top: lp
                         .top
                         .iter()
-                        .map(|&(tid, lp_val)| crate::openai::TopLogprob {
-                            token: state.tokenizer.decode(&[tid]).unwrap_or_default(),
-                            logprob: lp_val,
-                            bytes: None,
+                        .map(|&(tid, lp_val)| {
+                            (state.tokenizer.decode(&[tid]).unwrap_or_default(), lp_val)
                         })
                         .collect(),
                 }
@@ -439,82 +470,39 @@ fn build_logprobs(
     })
 }
 
-/// Build the final `ChatCompletionResponse` plus metrics, store, and
-/// rate-limit refund. Returns the JSON-encoded HTTP response.
+/// Core finalization: usage assembly, metrics, and the rate-limit
+/// true-up. Returns the canonical response IR — wire encoding (plus
+/// `store:`/`--dump` handling) happens in the per-surface encoders.
 #[allow(clippy::too_many_arguments)]
 fn finalize_response(
     state: Arc<AppState>,
-    req: ChatCompletionRequest,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
-    dump_seq: Option<u64>,
-    all_choices: Vec<crate::openai::ChatChoice>,
+    all_choices: Vec<ir::Choice>,
     total_completion_tokens: usize,
     first_ttft: f64,
     last_decode_time_ms: f64,
     total_reasoning_tokens: u32,
     total_cached_prompt_tokens: u32,
     prompt_len: usize,
-) -> Response {
+) -> super::chat::ChatOutcome {
     let tokens_per_second = if last_decode_time_ms > 0.0 && total_completion_tokens > 0 {
         (total_completion_tokens.saturating_sub(1)) as f64 / (last_decode_time_ms / 1000.0)
     } else {
         0.0
     };
-    let usage = Usage {
+    let usage = ir::Usage {
         prompt_tokens: prompt_len,
         completion_tokens: total_completion_tokens,
-        total_tokens: prompt_len + total_completion_tokens,
-        prompt_tokens_details: Some(crate::openai::PromptTokensDetails {
-            cached_tokens: total_cached_prompt_tokens as usize,
-            audio_tokens: 0,
-        }),
-        completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
-            reasoning_tokens: total_reasoning_tokens as usize,
-            audio_tokens: 0,
-            accepted_prediction_tokens: 0,
-            rejected_prediction_tokens: 0,
-        }),
+        cached_prompt_tokens: total_cached_prompt_tokens as usize,
+        reasoning_tokens: total_reasoning_tokens as usize,
         time_to_first_token_ms: first_ttft,
         response_tokens_per_second: tokens_per_second,
     };
 
-    let completion_id = format!("chatcmpl-{}", crate::openai::uuid_v4());
-    let created_at = crate::openai::unix_timestamp();
-    let completion = ChatCompletionResponse {
-        id: completion_id.clone(),
-        object: "chat.completion".to_string(),
-        created: created_at,
-        model: state.model_name.clone(),
-        system_fingerprint: Some("fp_atlas".to_string()),
-        choices: all_choices,
-        usage: usage.clone(),
-        service_tier: req.service_tier.clone(),
-        metadata: req.metadata.clone(),
-    };
-
-    crate::metrics::REQUESTS_ACTIVE.dec();
+    // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(total_completion_tokens as u64);
     crate::metrics::TTFT_SECONDS.observe(first_ttft / 1000.0);
-
-    // Completion-storage backend: when `store: true`, persist the
-    // serialized body so a subsequent GET /v1/chat/completions/{id}
-    // can return it. Bounded LRU + TTL in response_store.
-    if req.store.unwrap_or(false)
-        && let Ok(body) = serde_json::to_value(&completion)
-    {
-        state
-            .response_store
-            .insert(crate::response_store::StoredEntry {
-                id: completion_id,
-                kind: crate::response_store::StoredKind::ChatCompletion,
-                model: state.model_name.clone(),
-                created_at,
-                messages: Vec::new(),
-                body,
-                last_access: std::time::Instant::now(),
-            });
-    }
 
     // Rate-limit true-up. Middleware admitted with a conservative
     // reservation of `max_seq_len` tokens; refund the difference.
@@ -526,11 +514,11 @@ fn finalize_response(
         }
     }
 
-    // --dump: record the non-streaming response body, correlated with
-    // the request via the shared seq number.
-    if let (Some(seq), Some(dump)) = (dump_seq, state.dump_writer.as_ref()) {
-        dump.dump_response("/v1/chat/completions", seq, &completion, false);
-    }
-
-    Json(completion).into_response()
+    super::chat::ChatOutcome::Blocking(Box::new(ir::ChatResponse {
+        id: crate::ids::uuid_v4(),
+        model: state.model_name.clone(),
+        created: crate::ids::unix_timestamp(),
+        choices: all_choices,
+        usage,
+    }))
 }

@@ -61,7 +61,14 @@ impl TransformerModel {
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {
-        let rms_norm_kernel = gpu.kernel("norm", "rms_norm")?;
+        // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
+        // checkpoint tensor). Models that ship HF-vanilla norm weights load it
+        // exactly and must use the vanilla kernel.
+        let rms_norm_kernel = if crate::ships_vanilla_norm_weights(&config) {
+            gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
+        } else {
+            gpu.kernel("norm", "rms_norm")?
+        };
         let dense_gemv_kernel = gpu.kernel("gemv", "dense_gemv_bf16")?;
         // FP32-output dense GEMV — the FP32 logits path required an FP32
         // residual stream, which no longer exists, so this stays
@@ -71,6 +78,14 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
+        // 0-handle on targets that predate it; dispatch falls back).
+        let w4a16_gemv_batch4_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
+        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
+        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
+        let w4a16_gemv_batch8_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -147,6 +162,11 @@ impl TransformerModel {
             gpu.as_ref(),
         )?);
 
+        // Fail fast if an SSM tier was requested (`ATLAS_SSM_TIER`) on a model
+        // with no recurrent state — a tier request there was previously a
+        // silent no-op. No-op when the tier is unset (default path).
+        super::ssm_tier::ensure_ssm_tier_capability(&config)?;
+
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
@@ -173,6 +193,13 @@ impl TransformerModel {
             // without re-running the last token through the SSM layers.
             config.hidden_size * 2,
             gpu.as_ref(),
+        )?;
+        // Optional SSM snapshot spill tier. `None` (default) keeps the reclaim
+        // drop path byte-identical; blob sizing tracks the pool's spill layout.
+        let ssm_tier_store = super::impl_a1_init::build_ssm_tier_store(
+            &config,
+            ssm_snapshots.spill_blob_bytes(),
+            ssm_pool.num_ssm_layers,
         )?;
         if ssm_checkpoint_interval > 0 && ssm_cache_slots > 0 {
             tracing::info!(
@@ -221,6 +248,50 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        // Catch-up ring: 512 rows covers the gate's serial re-probe interval
+        // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
+        // when the staged feature is enabled.
+        let mtp_catchup_ring = if crate::speculative::mtp_catchup_enabled() {
+            gpu.alloc(super::types::MTP_CATCHUP_RING_ROWS * config.hidden_size * 2)?
+        } else {
+            DevicePtr::NULL
+        };
+
+        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
+        // feature (see `crate::model::drafter_context`); NULL here disables
+        // prefill AND carry, since the carry path reads this buffer.
+        //
+        // Three conditions, all necessary: MTP must be active, the feature must
+        // not be killed, and the head must be a precision the batched prefill
+        // can actually run at — an NVFP4/FP8 MTP head would allocate this and
+        // never write it.
+        let mtp_prefill_hidden = if has_mtp
+            && mtp_quant.supports_drafter_prefill()
+            && crate::layers::mtp_drafter_prefill_enabled()
+        {
+            let bytes = max_seq_len * config.hidden_size * 2;
+            tracing::info!(
+                "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
+                 ({} x {} BF16)",
+                bytes as f64 / 1e6,
+                max_seq_len,
+                config.hidden_size,
+            );
+            gpu.alloc(bytes)?
+        } else {
+            if has_mtp
+                && !mtp_quant.supports_drafter_prefill()
+                && crate::layers::mtp_drafter_prefill_enabled()
+            {
+                tracing::info!(
+                    "MTP drafter context: INACTIVE — the batched drafter prefill \
+                     needs a BF16 MTP head (--mtp-quantization bf16); this head is \
+                     {mtp_quant:?}. No prompt-hidden capture allocated.",
+                );
+            }
+            DevicePtr::NULL
+        };
 
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
@@ -257,7 +328,17 @@ impl TransformerModel {
         // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
         let snapshot_event = gpu.create_event()?;
 
-        // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
+        // EP/TP: register the all-reduce target buffers with NCCL (caches the
+        // IB/RoCE memory registration, enabling zero-copy user-buffer
+        // collectives) and provide the bf16_add kernel for the 2-rank
+        // send/recv fast path.
+        //   - moe_output: EP MoE reduce + ALL GDN HeadParallel SSM out_proj
+        //     reduces (decode `ssm_forward`, batched decode, multi-seq
+        //     batched, prefill, prefill phase-3 all write out_proj into
+        //     `buffers.moe_output()`).
+        //   - norm_output: attention o_proj decode output
+        //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
+        //     reduced per attention layer under TP.
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -266,6 +347,12 @@ impl TransformerModel {
             match comm.register_buffer(moe_ptr, moe_bytes) {
                 Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
+            }
+            let norm_ptr = buffers.norm_output().0;
+            let norm_bytes = buffers.sizes().norm_output;
+            match comm.register_buffer(norm_ptr, norm_bytes) {
+                Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
@@ -416,6 +503,8 @@ impl TransformerModel {
             lm_head_fp8,
             layers,
             buffers,
+            lora: None,
+            lora_rotatable: false,
             kv_cache: Mutex::new(kv_cache),
             gpu,
             rms_norm_kernel,
@@ -425,6 +514,8 @@ impl TransformerModel {
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            w4a16_gemv_batch4_kernel,
+            w4a16_gemv_batch8_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
@@ -450,12 +541,24 @@ impl TransformerModel {
             ),
             ssm_pool,
             ssm_snapshots,
+            ssm_tier_store,
             max_blocks_per_seq,
             dummy_kv_block,
             profile,
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_catchup_ring,
+            mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
+            mtp_prefill_hidden,
+            mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
+                0
+            } else {
+                max_seq_len
+            },
+            mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
+            mtp_carry: parking_lot::Mutex::new(None),
+            mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
             dflash_hidden_save_rows,
             dflash_capture_layers,

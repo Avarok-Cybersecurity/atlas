@@ -139,11 +139,7 @@ pub(super) fn continue_in_progress_prefills(
             // B4: clamp so padded decode + prefill slice fit the hidden
             // buffer (else mixed_forward silently de-fuses to sequential
             // decode_batch + prefill_chunk — weights loaded twice).
-            let padded_n = [2usize, 4, 8]
-                .iter()
-                .copied()
-                .find(|&s| s >= active.len())
-                .unwrap_or(active.len());
+            let padded_n = spark_model::traits::padded_batch_n(active.len());
             let fuse_cap = max_batch_tokens.saturating_sub(padded_n).max(4);
             debug_assert!(
                 fuse_cap >= 4,
@@ -303,12 +299,16 @@ pub(super) fn continue_in_progress_prefills(
                     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     // #131: grammar-constrain the FIRST token (and advance the
                     // matcher); no-op without a grammar.
+                    // P1-4 (2026-07-09): thread the resolved `min_p` —
+                    // previously a hardcoded 0.0 inside the sampler.
+                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         logits,
                         p.temperature,
                         p.top_k,
                         p.top_p,
+                        p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
                     ) {

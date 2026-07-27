@@ -3,9 +3,7 @@
 // `StreamEvent::Done { ... }` arm of the streaming `flat_map`
 // closure (originally ~396 LoC).
 
-use axum::response::sse::Event;
-
-use crate::openai::{ChatCompletionChunk, Usage};
+use crate::ir::StreamDelta;
 use crate::tool_parser;
 
 use super::super::sanitizer::sanitize_content_chunk;
@@ -17,7 +15,7 @@ use super::tool_handlers::{
     handle_tool_call_end, handle_tool_call_start,
 };
 
-type SseVec = Vec<Result<Event, std::convert::Infallible>>;
+type DeltaVec = Vec<StreamDelta>;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_done(
@@ -29,8 +27,8 @@ pub(super) fn handle_done(
     decode_time_ms: f64,
     reasoning_tokens: u32,
     cached_prompt_tokens: u32,
-) -> SseVec {
-    let mut sse_events: SseVec = Vec::new();
+) -> DeltaVec {
+    let mut deltas: DeltaVec = Vec::new();
 
     // ── Stop-string hold-back flush ─────────────────────────────────
     // vLLM's `IncrementalDetokenizer` releases any bytes still in the
@@ -62,34 +60,27 @@ pub(super) fn handle_done(
                                 &ctx.leak_markers,
                             );
                             if !sanitized.is_empty() {
-                                let chunk = ChatCompletionChunk::content_chunk(
-                                    &ctx.model, &ctx.id, sanitized,
-                                );
-                                sse_events.push(Ok(Event::default()
-                                    .data(serde_json::to_string(&chunk).unwrap_or_default())));
+                                deltas.push(StreamDelta::Content {
+                                    text: sanitized,
+                                    token_ids: Vec::new(),
+                                });
                             }
                         }
                         tool_parser::DetectorOutput::ToolCall(mut tc, tc_idx) => {
-                            handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut sse_events);
+                            handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut deltas);
                         }
                         tool_parser::DetectorOutput::ToolCallStart {
                             id: tc_id,
                             name,
                             idx,
                         } => {
-                            handle_tool_call_start(state, ctx, tc_id, name, idx, &mut sse_events);
+                            handle_tool_call_start(state, ctx, tc_id, name, idx, &mut deltas);
                         }
                         tool_parser::DetectorOutput::ToolCallDelta { args, idx } => {
-                            handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
+                            handle_tool_call_delta(state, ctx, args, idx, &mut deltas);
                         }
                         tool_parser::DetectorOutput::ToolCallArgsFragment { fragment, idx } => {
-                            handle_tool_call_args_fragment(
-                                state,
-                                ctx,
-                                fragment,
-                                idx,
-                                &mut sse_events,
-                            );
+                            handle_tool_call_args_fragment(state, ctx, fragment, idx, &mut deltas);
                         }
                         tool_parser::DetectorOutput::ToolCallEnd { idx } => {
                             handle_tool_call_end(state, ctx, idx);
@@ -108,10 +99,10 @@ pub(super) fn handle_done(
                     if state.refusal_scan_buf.len() < 16_384 {
                         state.refusal_scan_buf.push_str(&sanitized);
                     }
-                    let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
-                    sse_events
-                        .push(Ok(Event::default()
-                            .data(serde_json::to_string(&chunk).unwrap_or_default())));
+                    deltas.push(StreamDelta::Content {
+                        text: sanitized,
+                        token_ids: Vec::new(),
+                    });
                 }
             }
         }
@@ -134,28 +125,27 @@ pub(super) fn handle_done(
                         &ctx.leak_markers,
                     );
                     if !sanitized.is_empty() {
-                        let chunk =
-                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized)
-                                .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-                        sse_events.push(Ok(Event::default()
-                            .data(serde_json::to_string(&chunk).unwrap_or_default())));
+                        deltas.push(StreamDelta::Content {
+                            text: sanitized,
+                            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+                        });
                     }
                 }
                 tool_parser::DetectorOutput::ToolCall(mut tc, tc_idx) => {
-                    handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut sse_events);
+                    handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallStart {
                     id: tc_id,
                     name,
                     idx,
                 } => {
-                    handle_tool_call_start(state, ctx, tc_id, name, idx, &mut sse_events);
+                    handle_tool_call_start(state, ctx, tc_id, name, idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallDelta { args, idx } => {
-                    handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
+                    handle_tool_call_delta(state, ctx, args, idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallArgsFragment { fragment, idx } => {
-                    handle_tool_call_args_fragment(state, ctx, fragment, idx, &mut sse_events);
+                    handle_tool_call_args_fragment(state, ctx, fragment, idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallEnd { idx } => {
                     handle_tool_call_end(state, ctx, idx);
@@ -174,33 +164,24 @@ pub(super) fn handle_done(
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(&tail);
         }
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail)
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
+        deltas.push(StreamDelta::Content {
+            text: tail,
+            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+        });
     }
 
-    // ── Usage block ─────────────────────────────────────────────────
+    // ── Usage block (neutral IR; the wire encoder derives
+    //    total_tokens and the details sub-objects from it) ───────────
     let tps = if decode_time_ms > 0.0 {
         completion_tokens.saturating_sub(1) as f64 / (decode_time_ms / 1000.0)
     } else {
         0.0
     };
-    let usage = Usage {
+    let usage = crate::ir::Usage {
         prompt_tokens: ctx.prompt_len,
         completion_tokens,
-        total_tokens: ctx.prompt_len + completion_tokens,
-        prompt_tokens_details: Some(crate::openai::PromptTokensDetails {
-            cached_tokens: cached_prompt_tokens as usize,
-            audio_tokens: 0,
-        }),
-        completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
-            reasoning_tokens: reasoning_tokens as usize,
-            audio_tokens: 0,
-            accepted_prediction_tokens: 0,
-            rejected_prediction_tokens: 0,
-        }),
+        cached_prompt_tokens: cached_prompt_tokens as usize,
+        reasoning_tokens: reasoning_tokens as usize,
         time_to_first_token_ms,
         response_tokens_per_second: tps,
     };
@@ -231,34 +212,25 @@ pub(super) fn handle_done(
         None
     };
     if let Some(ref r) = refusal_signal {
-        let chunk = ChatCompletionChunk::refusal_chunk(&ctx.model, &ctx.id, r.clone());
-        let json = serde_json::to_string(&chunk).unwrap_or_default();
-        sse_events.push(Ok(Event::default().data(json)));
+        deltas.push(StreamDelta::Refusal { text: r.clone() });
     }
 
-    // Usage emission strategy.
-    let emit_separate_usage = ctx.req_stream_include_usage;
-    let usage_for_dump = usage.clone();
-    if emit_separate_usage {
-        let usage_chunk = ChatCompletionChunk::usage_only_chunk(&ctx.model, &ctx.id, usage.clone());
-        let json = serde_json::to_string(&usage_chunk).unwrap_or_default();
-        sse_events.push(Ok(Event::default().data(json)));
-        // Residual: tokens whose decoded text was buffered/suppressed
-        // and never rode a content chunk. Stamping them here keeps
-        // Σ token_ids == completion_tokens exactly.
-        let final_chunk = ChatCompletionChunk::final_chunk_no_usage(&ctx.model, &ctx.id, fr)
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        let json = serde_json::to_string(&final_chunk).unwrap_or_default();
-        sse_events.push(Ok(Event::default().data(json)));
-    } else {
-        let chunk = ChatCompletionChunk::done_chunk(&ctx.model, &ctx.id, fr, usage)
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        let json = serde_json::to_string(&chunk).unwrap_or_default();
-        sse_events.push(Ok(Event::default().data(json)));
-    }
+    // Terminal delta: finish reason + usage. The `include_usage`
+    // two-chunk framing (usage-only chunk before a usage-less finish
+    // chunk) is the OpenAI encoder's decision
+    // (`openai::delta_to_chunk_events`), not the core's. Residual
+    // token ids — tokens whose decoded text was buffered/suppressed
+    // and never rode a content delta — ride the Finish delta so
+    // Σ token_ids == completion_tokens exactly.
+    deltas.push(StreamDelta::Finish {
+        reason: crate::ir::FinishReason::from(fr),
+        usage,
+        token_ids: state.take_ids_if(ctx.req_return_token_ids),
+    });
 
-    // Metrics.
-    crate::metrics::REQUESTS_ACTIVE.dec();
+    // Metrics. (REQUESTS_ACTIVE is released by the ActiveRequestGuard in
+    // StreamCtx when the stream is dropped — not here, so a stream that ends
+    // without a terminal event still decrements.)
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(ctx.prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(completion_tokens as u64);
     crate::metrics::TTFT_SECONDS.observe(time_to_first_token_ms / 1000.0);
@@ -272,9 +244,28 @@ pub(super) fn handle_done(
         }
     }
 
-    // --dump synthesized response entry.
+    // --dump synthesized response entry. Diagnostics, not the stream:
+    // the dump keeps the OpenAI wire-usage shape (same numbers the
+    // encoder derives for the terminal chunk).
     if let (Some(seq), Some(dump)) = (ctx.dump_seq, ctx.state.dump_writer.as_ref()) {
         let has_tool_calls = state.detector.as_ref().is_some_and(|d| d.has_tool_calls());
+        let usage_for_dump = crate::openai::Usage {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.prompt_tokens + usage.completion_tokens,
+            prompt_tokens_details: Some(crate::openai::PromptTokensDetails {
+                cached_tokens: usage.cached_prompt_tokens,
+                audio_tokens: 0,
+            }),
+            completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
+                reasoning_tokens: usage.reasoning_tokens,
+                audio_tokens: 0,
+                accepted_prediction_tokens: 0,
+                rejected_prediction_tokens: 0,
+            }),
+            time_to_first_token_ms: usage.time_to_first_token_ms,
+            response_tokens_per_second: usage.response_tokens_per_second,
+        };
         let body = serde_json::json!({
             "id": ctx.id,
             "model": ctx.model,
@@ -286,11 +277,12 @@ pub(super) fn handle_done(
             "stop_string_triggered": state.stop_string_triggered,
             "loop_watchdog_triggered": state.loop_watchdog_triggered,
             "tool_loop_capped": state.tool_loop_capped,
+            "guard_stop": state.guard_stop,
             "_note": "Synthesized from post-sanitizer accumulators; \
                       per-chunk capture is a follow-up.",
         });
         dump.dump_response("/v1/chat/completions", seq, &body, true);
     }
 
-    sse_events
+    deltas
 }

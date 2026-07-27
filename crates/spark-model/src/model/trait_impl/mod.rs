@@ -31,6 +31,7 @@ mod prefill_c;
 mod prefill_d;
 mod sequence;
 mod speculative;
+mod ssm_fault_in;
 mod verify_a;
 mod verify_b;
 mod verify_c;
@@ -152,6 +153,68 @@ impl Model for TransformerModel {
     }
     fn vocab_size(&self) -> usize {
         self.vocab_size_dispatch()
+    }
+    fn set_active_lora(&mut self, name: &str) -> Result<()> {
+        self.rotate_lora_to(name)
+    }
+    fn adapter_id_for(&self, slot: i32) -> u64 {
+        self.adapter_id_for_slot(slot)
+    }
+    fn acquire_adapter_slot(&self, slot: i32) -> i32 {
+        TransformerModel::acquire_adapter_slot(self, slot)
+    }
+    fn release_adapter_slot(&self, resolved: i32) {
+        TransformerModel::release_adapter_slot(self, resolved)
+    }
+    fn swap_lora_from_disk(
+        &mut self,
+        dir: &std::path::Path,
+        name: &str,
+        slot: usize,
+    ) -> Result<()> {
+        // Disk staging is plain file I/O and is portable; only the PEER path
+        // needs RDMA. Still cuda-gated, since it lands into a device pool.
+        #[cfg(feature = "cuda")]
+        {
+            self.swap_lora_slot_from_disk(dir, name, slot)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (dir, name, slot);
+            anyhow::bail!("LoRA disk swap requires the cuda feature")
+        }
+    }
+    fn promote_lora_from_peer(
+        &mut self,
+        peer_addr: &str,
+        adapter_id: &str,
+        name: &str,
+        peft: atlas_core::config::PeftAdapterConfig,
+    ) -> Result<(usize, Option<String>)> {
+        #[cfg(all(feature = "cuda", unix))]
+        {
+            self.promote_lora_slot_from_peer(peer_addr, adapter_id, name, peft)
+        }
+        #[cfg(not(all(feature = "cuda", unix)))]
+        {
+            let _ = (peer_addr, adapter_id, name, peft);
+            anyhow::bail!("LoRA peer promotion stages over RDMA (rdma-core); unix-only")
+        }
+    }
+    fn promote_lora_from_disk(
+        &mut self,
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Result<(usize, Option<String>)> {
+        #[cfg(feature = "cuda")]
+        {
+            self.promote_lora_slot_from_disk(dir, name)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (dir, name);
+            anyhow::bail!("LoRA disk promotion requires the cuda feature")
+        }
     }
     fn high_speed_swap_dims(&self) -> Option<spark_storage::ModelDims> {
         self.high_speed_swap_dims_dispatch()
@@ -279,6 +342,10 @@ impl Model for TransformerModel {
     ) -> Result<Vec<u32>> {
         self.decode_and_verify_fused_dispatch(tokens, seq, _stream)
     }
+    fn save_hidden_for_catchup(&self, token_idx: usize, pos: usize) -> Result<()> {
+        self.save_hidden_for_catchup_dispatch(token_idx, pos)
+    }
+
     fn save_hidden_for_mtp(&self, token_idx: usize, _stream: u64) -> Result<()> {
         self.save_hidden_for_mtp_dispatch(token_idx, _stream)
     }
@@ -629,17 +696,6 @@ impl Model for TransformerModel {
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
     }
-    fn pre_verify_copy_async(&self, seq: &mut SequenceState) -> Result<()> {
-        self.pre_verify_copy_async_dispatch(seq)
-    }
-    fn commit_verify_state_async(
-        &self,
-        seq: &mut SequenceState,
-        num_accepted: usize,
-        k: usize,
-    ) -> Result<()> {
-        self.commit_verify_state_async_dispatch(seq, num_accepted, k)
-    }
     fn commit_accepted_prefix(
         &self,
         seq: &mut SequenceState,
@@ -656,6 +712,10 @@ impl Model for TransformerModel {
     }
     fn is_mla(&self) -> bool {
         self.is_mla_dispatch()
+    }
+
+    fn kv_block_size(&self) -> Option<usize> {
+        Some(self.kv_cache.lock().block_size())
     }
     fn decode_logits_fp32(&self) -> bool {
         self.decode_logits_fp32_dispatch()

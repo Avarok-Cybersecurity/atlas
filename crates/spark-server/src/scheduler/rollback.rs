@@ -381,9 +381,12 @@ fn apply_rollback(a: &mut ActiveSeq, keep_len: usize, dropped: usize) {
         keep_len,
     );
 
-    // 3. Restore the generation budget that the dropped tokens consumed
-    //    (only content tokens decrement `remaining`; thinking is free,
-    //    and the watchdogs that call this only fire post-`</think>`).
+    // 3. Restore the generation budget that the dropped tokens consumed.
+    //    Every dropped token decremented `remaining` by one (since the §C-1
+    //    hard-limit fix, thinking tokens draw down the budget too, not just
+    //    content) — and the watchdogs that call this only ever fire
+    //    post-`</think>`, dropping content tokens, so `dropped` is an exact
+    //    count of budget to refund.
     a.remaining = a.remaining.saturating_add(dropped);
     a.content_tokens = a.content_tokens.saturating_sub(dropped as u32);
 

@@ -108,6 +108,8 @@ impl Qwen3AttentionLayer {
                     h,
                     stream,
                 )?;
+                // q_proj LoRA on the RAW interleaved [Q|gate] (BEFORE deinterleave).
+                self.apply_q_lora(ctx, normed, q_out, stream)?;
                 ops::deinterleave_qg(
                     ctx.gpu,
                     self.deinterleave_qg_k,
@@ -119,18 +121,45 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             } else if let Some(nvfp4) = self.q_weight.as_ref().and_then(|w| w.as_nvfp4()) {
-                ops::w4a16_gemv_qg(
-                    ctx.gpu,
-                    self.w4a16_gemv_qg_k,
-                    normed,
-                    nvfp4,
-                    q_out,
-                    q_proj_dim,
-                    h,
-                    nq,
-                    hd,
-                    stream,
-                )?;
+                if self.lora.as_ref().and_then(|lw| lw.q.as_ref()).is_some() {
+                    // q adapter resident: split the FUSED gemv+deinterleave into
+                    // raw interleaved gemv → q LoRA fold → deinterleave, so the
+                    // delta lands in the interleaved basis PEFT trained against.
+                    ops::w4a16_gemv(
+                        ctx.gpu,
+                        self.w4a16_gemv_k,
+                        normed,
+                        nvfp4,
+                        q_out,
+                        q_proj_dim,
+                        h,
+                        stream,
+                    )?;
+                    self.apply_q_lora(ctx, normed, q_out, stream)?;
+                    ops::deinterleave_qg(
+                        ctx.gpu,
+                        self.deinterleave_qg_k,
+                        q_out,
+                        1,
+                        nq,
+                        hd,
+                        nq * hd * 2,
+                        stream,
+                    )?;
+                } else {
+                    ops::w4a16_gemv_qg(
+                        ctx.gpu,
+                        self.w4a16_gemv_qg_k,
+                        normed,
+                        nvfp4,
+                        q_out,
+                        q_proj_dim,
+                        h,
+                        nq,
+                        hd,
+                        stream,
+                    )?;
+                }
             } else {
                 ops::dense_gemv(
                     ctx.gpu,
@@ -142,6 +171,8 @@ impl Qwen3AttentionLayer {
                     h,
                     stream,
                 )?;
+                // q_proj LoRA on the RAW interleaved [Q|gate] (BEFORE deinterleave).
+                self.apply_q_lora(ctx, normed, q_out, stream)?;
                 ops::deinterleave_qg(
                     ctx.gpu,
                     self.deinterleave_qg_k,
@@ -190,6 +221,8 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
+            // Ungated q_proj LoRA: no deinterleave — fold onto the final q_out.
+            self.apply_q_lora(ctx, normed, q_out, stream)?;
         }
 
         // DIAG: dump normed input and Q output for L0
@@ -226,6 +259,86 @@ impl Qwen3AttentionLayer {
 
         self.attention_forward_kv(normed, k_out, v_out, nkv, hd, h, ctx, stream)?;
 
+        // ── LoRA deltas on K/V (v0; Q excluded — gated [Q|gate] interleave).
+        // MUST run BEFORE the q/k RMS-norm, RoPE, and write_kv_cache below:
+        // HF computes k_norm(k_proj(x) + Δ), and the KV cache must store the
+        // ADAPTED k/v. Placed here rather than inside attention_forward_kv
+        // because that helper has three return points (MLA / FP8 / tail).
+        if let Some(ref lw) = self.lora {
+            // Request-scoped routing: when this step carries a per-seq slot
+            // buffer (`seq_slot != 0`) and the module has a routing table, fold
+            // the delta for THIS request's adapter via the fused bgmv (n=1 row,
+            // byte-identical to a single `apply_lora_delta(m=1)` at that slot).
+            // Otherwise (no pool / no route) take the installed-active-pair path
+            // — byte-identical to pre-M2.
+            let seq_slot = ctx
+                .attn_metadata
+                .map(|m| m.seq_slot)
+                .unwrap_or(DevicePtr(0));
+            if let Some(ref pair) = lw.k {
+                if seq_slot.0 != 0
+                    && let Some(ref route) = lw.k_route
+                {
+                    ops::lora_delta::apply_lora_bgmv(
+                        ctx.gpu,
+                        &lw.kernels,
+                        route,
+                        normed,
+                        k_out,
+                        seq_slot,
+                        1,
+                        pair.k_in,
+                        pair.n_out,
+                        ctx.buffers.lora_xa(),
+                        stream,
+                    )?;
+                } else {
+                    ops::lora_delta::apply_lora_delta(
+                        ctx.gpu,
+                        &lw.kernels,
+                        pair,
+                        normed,
+                        k_out,
+                        1,
+                        ctx.buffers.lora_xa(),
+                        ctx.buffers.lora_delta(),
+                        stream,
+                    )?;
+                }
+            }
+            if let Some(ref pair) = lw.v {
+                if seq_slot.0 != 0
+                    && let Some(ref route) = lw.v_route
+                {
+                    ops::lora_delta::apply_lora_bgmv(
+                        ctx.gpu,
+                        &lw.kernels,
+                        route,
+                        normed,
+                        v_out,
+                        seq_slot,
+                        1,
+                        pair.k_in,
+                        pair.n_out,
+                        ctx.buffers.lora_xa(),
+                        stream,
+                    )?;
+                } else {
+                    ops::lora_delta::apply_lora_delta(
+                        ctx.gpu,
+                        &lw.kernels,
+                        pair,
+                        normed,
+                        v_out,
+                        1,
+                        ctx.buffers.lora_xa(),
+                        ctx.buffers.lora_delta(),
+                        stream,
+                    )?;
+                }
+            }
+        }
+
         // Q/K RMS norms — three mutually-exclusive paths:
         //  1. MiniMax M2 style: RMSNorm over full projected hidden
         //     `[nq*hd]` per token, single learned weight of that shape.
@@ -240,7 +353,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref q_norm_full) = self.attn.q_norm_full {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 q_out,
                 q_norm_full,
                 q_out,
@@ -252,7 +365,7 @@ impl Qwen3AttentionLayer {
         } else if !self.attn.q_norm.weight.is_null() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 q_out,
                 &self.attn.q_norm,
                 q_out,
@@ -265,7 +378,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref k_norm_full) = self.attn.k_norm_full {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 k_out,
                 k_norm_full,
                 k_out,
@@ -277,7 +390,7 @@ impl Qwen3AttentionLayer {
         } else if !self.attn.k_norm.weight.is_null() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 k_out,
                 &self.attn.k_norm,
                 k_out,
@@ -300,7 +413,7 @@ impl Qwen3AttentionLayer {
         if let Some(v_norm_w) = self.v_norm_weight.as_ref() {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 v_out,
                 v_norm_w,
                 v_out,
@@ -567,5 +680,60 @@ impl Qwen3AttentionLayer {
         let o_out = self.attention_forward_oproj(attn_out, nq, hd, h, ctx, stream)?;
 
         Ok(o_out)
+    }
+
+    /// Fold the q_proj LoRA delta into the RAW q_proj output at `q_out`
+    /// (offset 0; on a gated model the interleaved `[Q|gate]`, width
+    /// `q_proj_dim`), BEFORE `deinterleave_qg`. Mirrors the K/V block: the
+    /// routed bgmv (per-request slot) when this step carries a `seq_slot` +
+    /// the module has a route, else the installed-active-pair dense path.
+    /// No-op when no q adapter is resident (byte-identical base).
+    fn apply_q_lora(
+        &self,
+        ctx: &ForwardContext,
+        normed: DevicePtr,
+        q_out: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        let Some(ref lw) = self.lora else {
+            return Ok(());
+        };
+        let Some(ref pair) = lw.q else {
+            return Ok(());
+        };
+        let seq_slot = ctx
+            .attn_metadata
+            .map(|m| m.seq_slot)
+            .unwrap_or(DevicePtr(0));
+        if seq_slot.0 != 0
+            && let Some(ref route) = lw.q_route
+        {
+            ops::lora_delta::apply_lora_bgmv(
+                ctx.gpu,
+                &lw.kernels,
+                route,
+                normed,
+                q_out,
+                seq_slot,
+                1,
+                pair.k_in,
+                pair.n_out,
+                ctx.buffers.lora_xa(),
+                stream,
+            )?;
+        } else {
+            ops::lora_delta::apply_lora_delta(
+                ctx.gpu,
+                &lw.kernels,
+                pair,
+                normed,
+                q_out,
+                1,
+                ctx.buffers.lora_xa(),
+                ctx.buffers.lora_delta(),
+                stream,
+            )?;
+        }
+        Ok(())
     }
 }

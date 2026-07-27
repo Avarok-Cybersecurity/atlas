@@ -49,6 +49,68 @@ pub fn tool_response_hard_stop() -> Option<u32> {
     let id = TOOL_RESPONSE_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
     if id == 0 { None } else { Some(id) }
 }
+
+// ── Hard output/length limits (2026-07-21, DS4F hard-limit lane) ─────────────
+// Three scheduler defects let generation run past its declared ceilings once a
+// long `<think>` block engaged (R1X overrun: past both max_tokens=4096 AND
+// max_seq_len=8192):
+//   C-1 thinking tokens never decremented the completion budget,
+//   C-2 EOS was suppressed for the whole thinking span,
+//   C-3 max_seq_len was only a KV-allocation ceiling trued-up on completion,
+//       never enforced per decode step.
+// The pure decision cores below back the fixes in `decode_logits_step` and
+// `emit_step`. All are no-ops until a ceiling is actually reached, so the
+// 35/40 direct-mode (thinking-OFF) baseline is byte-unchanged.
+
+/// Runtime served-context ceiling (`--max-seq-len`). Set ONCE at serve startup
+/// (`serve.rs`, before the scheduler thread spawns) and read per decode step so
+/// the scheduler HARD-STOPS a sequence at the context ceiling instead of
+/// relying on the on-completion true-up (`middleware.rs`). `0` = unset /
+/// disabled → every guard below becomes a no-op (also the default any unit
+/// test / un-inited path sees). Read with `Relaxed`: the only contract is
+/// "set once before the first request lands", guaranteed by serve init order.
+static MAX_SEQ_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Install the served-context ceiling. Called once from `serve.rs`. `0`
+/// disables the per-step seq-len guard.
+pub fn set_max_seq_len(n: usize) {
+    MAX_SEQ_LEN.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline]
+pub fn max_seq_len_ceiling() -> usize {
+    MAX_SEQ_LEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// §C-3 pure core: would the NEXT decode step reach or exceed the served
+/// context ceiling? `position` = current sequence length (prompt + generated,
+/// `SequenceState.seq_len`). `max_seq_len == 0` means unset/disabled → never
+/// fires. Fires one token BEFORE the ceiling (`position + 1 >= max_seq_len`,
+/// per the handoff §E-3) so the sequence never writes KV at `max_seq_len`.
+#[inline]
+pub fn seqlen_force_stop(position: usize, max_seq_len: usize) -> bool {
+    max_seq_len != 0 && position + 1 >= max_seq_len
+}
+
+/// §C-1/§C-2 pure core: has this sequence hit a HARD ceiling — completion
+/// budget exhausted (`remaining == 0`) OR context ceiling reached? At a hard
+/// ceiling the sequence MUST finish regardless of `inside_thinking`.
+#[inline]
+pub fn hard_ceiling_hit(remaining: usize, position: usize, max_seq_len: usize) -> bool {
+    remaining == 0 || seqlen_force_stop(position, max_seq_len)
+}
+
+/// §C-2 pure core: suppress EOS inside a `<think>` block ONLY while no hard
+/// ceiling is hit. `<|im_end|>` inside `<think>` is normally spurious (only
+/// `</think>` exits thinking), but at the budget / seq-len ceiling a
+/// model-sampled EOS MUST be honored so generation cannot run past its declared
+/// limits. Identical to the old bare `inside_thinking` gate until a ceiling is
+/// actually reached → preserves the direct-mode baseline.
+#[inline]
+pub fn eos_suppressed_by_thinking(inside_thinking: bool, hard_ceiling_hit: bool) -> bool {
+    inside_thinking && !hard_ceiling_hit
+}
+
 // ── Sampling defaults (SSOT) ────────────────────────────────────────────────
 // All SamplingParams constructors reference these constants. Change here, not
 // at each call site.
@@ -367,8 +429,28 @@ pub fn set_watchdog_params(p: WatchdogParams) {
 /// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
 /// any pre-boot caller see exactly the old hardcoded constants.
 pub fn watchdog_params() -> WatchdogParams {
-    *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS)
+    let mut p = *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS);
+    // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
+    // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on every
+    // turn, so a legitimate PLAN / analysis prose turn (`grammar_state.is_some()`
+    // ⇒ "tool turn") is subject to it and gets guillotined mid-sentence
+    // (finish=length) — the "worst run ever" 6-turn session died writing an API
+    // plan at 385 tokens. The REPEATING wander is already caught by the
+    // content-loop + SimHash watchdogs independently; this budget's residual job
+    // is only the non-repeating dormant-opener burn. Raise the effective bound
+    // to a plan-friendly value (still << max_tokens, per the ultracode do-NOT
+    // list) and expose it for tuning. Env wins over MODEL.toml.
+    if let Some(v) = *INTER_TOOL_PROSE_OVERRIDE.get_or_init(|| {
+        std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+    }) {
+        p.max_inter_tool_prose = v;
+    }
+    p
 }
+
+static INTER_TOOL_PROSE_OVERRIDE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 /// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
 /// (optionally one leading space). Built once at startup from the
@@ -449,7 +531,7 @@ pub fn mid_word_token_mask() -> Option<std::sync::Arc<[bool]>> {
 /// anything beyond is the failure mode (re-narrating the plan
 /// rather than executing it). Counted across non-thinking,
 /// non-tool-body tokens only.
-pub const MAX_INTER_TOOL_PROSE: u32 = 384;
+pub const MAX_INTER_TOOL_PROSE: u32 = 3072;
 
 /// F1 (2026-06-02): unconditional per-generation cap on post-`</think>`
 /// content tokens for tool-active requests (`grammar_state.is_some()`).
@@ -489,7 +571,7 @@ pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
 /// without per-request configuration are byte-identical to before.
 pub fn detect_thinking_token_loop_with(
     tokens: &[u32],
-    override_: Option<crate::openai::RepetitionDetectionParams>,
+    override_: Option<crate::api::inference_types::RepetitionDetectionParams>,
 ) -> bool {
     let (period_min, period_max, min_repeats) = match override_ {
         Some(p) => (
@@ -533,7 +615,7 @@ pub fn detect_content_token_loop(tokens: &[u32]) -> bool {
 /// constants. See [`detect_thinking_token_loop_with`] for rationale.
 pub fn detect_content_token_loop_with(
     tokens: &[u32],
-    override_: Option<crate::openai::RepetitionDetectionParams>,
+    override_: Option<crate::api::inference_types::RepetitionDetectionParams>,
 ) -> bool {
     let (period_min, period_max, min_repeats) = match override_ {
         Some(p) => (
@@ -580,7 +662,7 @@ pub fn detect_content_token_loop_normalized(tokens: &[u32], mask: &[bool]) -> bo
 pub fn detect_content_token_loop_normalized_with(
     tokens: &[u32],
     mask: &[bool],
-    override_: Option<crate::openai::RepetitionDetectionParams>,
+    override_: Option<crate::api::inference_types::RepetitionDetectionParams>,
 ) -> bool {
     let n = tokens.len();
     if n < CONTENT_LOOP_MIN_TOKENS as usize {
@@ -746,3 +828,90 @@ fn detect_token_loop_with_period(
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod thinking_loop_tests;
+
+#[cfg(test)]
+mod inter_tool_prose_tests {
+    #[test]
+    fn default_prose_budget_is_plan_friendly() {
+        // Regression: 384 amputated legitimate plan turns (2026-07-09).
+        const {
+            assert!(
+                super::MAX_INTER_TOOL_PROSE >= 2048,
+                "inter-tool prose budget must fit a typical plan/analysis turn"
+            );
+        };
+    }
+}
+
+#[cfg(test)]
+mod hard_limit_tests {
+    //! DS4F hard-limit lane (2026-07-21): the three guards that stop generation
+    //! running past its declared ceilings (R1X overrun: past both max_tokens
+    //! and max_seq_len once a long `<think>` block engaged). Tested on the pure
+    //! decision cores (no `ActiveSeq` fixture — mirrors `budget_tests` /
+    //! `cc6_envelope_streak_tests`). The wiring (thinking tokens calling
+    //! `consume_generation_budget`, the guards firing in the two decode paths)
+    //! is exercised by the behavioral T1 repro.
+    use super::{eos_suppressed_by_thinking, hard_ceiling_hit, seqlen_force_stop};
+
+    #[test]
+    fn seqlen_guard_disabled_when_unset() {
+        // max_seq_len == 0 → never fires, whatever the position (no-op default
+        // for un-inited paths / unit tests / the direct-mode baseline).
+        assert!(!seqlen_force_stop(0, 0));
+        assert!(!seqlen_force_stop(8191, 0));
+        assert!(!seqlen_force_stop(usize::MAX, 0));
+    }
+
+    #[test]
+    fn seqlen_guard_fires_one_token_before_ceiling() {
+        // §C-3 / §E-3: `position + 1 >= max_seq_len`. At 8192 the sequence must
+        // stop before writing KV at the ceiling, and never beyond.
+        assert!(!seqlen_force_stop(8190, 8192), "room for one more token");
+        assert!(seqlen_force_stop(8191, 8192), "next token would be at 8191");
+        assert!(seqlen_force_stop(8192, 8192), "already at the ceiling");
+        assert!(
+            seqlen_force_stop(9000, 8192),
+            "past the ceiling never continues"
+        );
+    }
+
+    #[test]
+    fn hard_ceiling_hit_on_budget_or_seqlen() {
+        // §C-1/§C-2: exhausted completion budget OR context ceiling reached.
+        assert!(
+            hard_ceiling_hit(0, 10, 8192),
+            "remaining==0 is a hard ceiling"
+        );
+        assert!(
+            hard_ceiling_hit(500, 8191, 8192),
+            "seq-len ceiling is a hard ceiling"
+        );
+        assert!(
+            !hard_ceiling_hit(500, 10, 8192),
+            "budget + room left → no ceiling"
+        );
+        assert!(
+            !hard_ceiling_hit(500, 10, 0),
+            "max_seq_len unset → only budget matters"
+        );
+    }
+
+    #[test]
+    fn eos_reachable_at_hard_ceiling_even_inside_thinking() {
+        // §C-2: EOS is suppressed inside `<think>` UNTIL a hard ceiling — then a
+        // model-sampled EOS must be honored so generation cannot overrun.
+        assert!(
+            eos_suppressed_by_thinking(true, false),
+            "inside thinking, no ceiling → suppress (unchanged baseline)"
+        );
+        assert!(
+            !eos_suppressed_by_thinking(true, true),
+            "inside thinking, hard ceiling → EOS must fire (the fix)"
+        );
+        assert!(
+            !eos_suppressed_by_thinking(false, false),
+            "outside thinking → never suppressed"
+        );
+    }
+}

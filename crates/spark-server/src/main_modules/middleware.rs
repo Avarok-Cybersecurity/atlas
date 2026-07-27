@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use crate::main_modules::AppState;
-use crate::{openai, rate_limiter};
+use crate::rate_limiter;
 
 /// OpenAI-compatible observability headers. Injects on every `/v1/*`
 /// response:
@@ -34,7 +34,7 @@ pub(crate) async fn openai_observability_middleware(
         return resp;
     }
     let headers = resp.headers_mut();
-    let rid = incoming_req_id.unwrap_or_else(|| format!("req_{}", openai::uuid_v4()));
+    let rid = incoming_req_id.unwrap_or_else(|| format!("req_{}", crate::ids::uuid_v4()));
     if let Ok(v) = HeaderValue::from_str(&rid) {
         headers.insert(HeaderName::from_static("x-request-id"), v);
     }

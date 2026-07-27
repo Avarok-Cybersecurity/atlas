@@ -14,6 +14,9 @@ use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
 mod snapshot;
+mod snapshot_insert;
+mod snapshot_stats;
+mod snapshot_tier;
 
 #[cfg(test)]
 mod tests;
@@ -21,11 +24,21 @@ mod tests;
 use inner::RadixTreeInner;
 use snapshot::SsmSnapshotIndex;
 
-/// FNV-1a-ish stable hash for the first `count` tokens — used to key
-/// snapshots independently of the radix tree (allows the same prefix
-/// hash to be reproduced across requests).
-pub(crate) fn hash_token_prefix(tokens: &[u32], count: usize) -> u64 {
+/// FNV-1a-ish stable hash for the first `count` tokens — used to key SSM
+/// snapshots independently of the radix tree (allows the same prefix hash to be
+/// reproduced across requests).
+///
+/// Task #24 (adapter-correct KV): `adapter_id` is folded in so two adapters that
+/// share a token prefix key to DIFFERENT snapshot hashes (no cross-adapter SSM
+/// restore). The fold is a strict no-op when `adapter_id == 0` (the base / no-
+/// adapter sentinel), so base keying is BYTE-IDENTICAL to the pre-LoRA hash and
+/// existing prefix-cache/snapshot hit rates are unchanged.
+pub(crate) fn hash_token_prefix(tokens: &[u32], count: usize, adapter_id: u64) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325; // FNV-1a basis
+    if adapter_id != 0 {
+        h ^= adapter_id;
+        h = h.wrapping_mul(0x100000001b3);
+    }
     for &t in &tokens[..count] {
         h ^= t as u64;
         h = h.wrapping_mul(0x100000001b3);
@@ -59,29 +72,52 @@ impl RadixTree {
 }
 
 impl PrefixCache for RadixTree {
-    fn lookup(&self, tokens: &[u32], block_size: usize, session_hash: u64) -> PrefixMatch {
+    fn lookup(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> PrefixMatch {
         // Phase 1: walk tree (lock inner, then release)
         let (matched_blocks, matched_disk_block_ids, matched_tokens) = {
             let mut inner = self.inner.lock();
-            let (blocks, disk, matched) = inner.walk(tokens, block_size);
+            let (blocks, disk, matched) = inner.walk(tokens, block_size, adapter_id);
             if matched > 0 {
-                inner.inc_refs(tokens, block_size, matched);
+                inner.inc_refs(tokens, block_size, matched, adapter_id);
                 crate::prefix_cache::record_cache_hit(matched);
             } else {
                 crate::prefix_cache::record_cache_miss();
             }
             (blocks, disk, matched)
         };
-        // Phase 2: snapshot lookup (lock snapshot_index, inner NOT held)
-        let (ssm_snapshot, ssm_snapshot_tokens) = if matched_tokens > 0 {
+        // Phase 2: snapshot lookup (lock snapshot_index, inner NOT held).
+        // Tier-aware: `lookup_tiered` returns the deepest anchor across resident
+        // AND spilled entries. A resident hit populates `ssm_snapshot` (restore
+        // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
+        // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
+        // byte-identical to the old resident-only lookup.
+        let mut ssm_snapshot = None;
+        let mut ssm_snapshot_tokens = 0;
+        let mut ssm_snapshot_tier_key = None;
+        let mut ssm_snapshot_tier_tokens = 0;
+        let mut ssm_snapshot_is_tail = false;
+        if matched_tokens > 0 {
             let mut idx = self.snapshot_index.lock();
-            match idx.lookup(tokens, matched_tokens, session_hash) {
-                Some((snap_id, tok_count)) => (Some(snap_id), tok_count),
-                None => (None, 0),
+            if let Some(m) = idx.lookup_tiered(tokens, matched_tokens, session_hash, adapter_id) {
+                ssm_snapshot_is_tail = m.is_tail;
+                match m.loc {
+                    snapshot::SnapLoc::Hbm(slot) => {
+                        ssm_snapshot = Some(slot);
+                        ssm_snapshot_tokens = m.token_count;
+                    }
+                    snapshot::SnapLoc::Tier(key) => {
+                        ssm_snapshot_tier_key = Some(key);
+                        ssm_snapshot_tier_tokens = m.token_count;
+                    }
+                }
             }
-        } else {
-            (None, 0)
-        };
+        }
         // Filter disk_block_ids to MAX-free entries when HSS isn't in use, so
         // the caller can check `!matched_disk_block_ids.is_empty()` as the
         // HSS-engaged signal. When HSS *is* in use every entry should be a
@@ -97,11 +133,14 @@ impl PrefixCache for RadixTree {
             matched_tokens,
             ssm_snapshot,
             ssm_snapshot_tokens,
+            ssm_snapshot_tier_key,
+            ssm_snapshot_tier_tokens,
+            ssm_snapshot_is_tail,
         }
     }
 
-    fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize) -> usize {
-        self.inner.lock().walk(tokens, block_size).2
+    fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize, adapter_id: u64) -> usize {
+        self.inner.lock().walk(tokens, block_size, adapter_id).2
     }
 
     fn insert(
@@ -111,6 +150,7 @@ impl PrefixCache for RadixTree {
         disk_block_ids: &[u32],
         block_size: usize,
         matched_tokens: usize,
+        adapter_id: u64,
     ) -> Vec<u32> {
         self.inner.lock().insert(
             tokens,
@@ -118,6 +158,7 @@ impl PrefixCache for RadixTree {
             disk_block_ids,
             block_size,
             matched_tokens,
+            adapter_id,
         )
     }
 
@@ -130,6 +171,7 @@ impl PrefixCache for RadixTree {
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
+        adapter_id: u64,
     ) -> (Option<usize>, Vec<u32>) {
         // Phase 1: insert tree nodes (lock inner, then release)
         let newly_acquired = self.inner.lock().insert(
@@ -138,12 +180,46 @@ impl PrefixCache for RadixTree {
             disk_block_ids,
             block_size,
             matched_tokens,
+            adapter_id,
         );
         // Phase 2: register snapshot in index (lock snapshot_index, inner NOT held)
-        let prefix_hash = hash_token_prefix(tokens, tokens.len());
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
         let mut idx = self.snapshot_index.lock();
         let displaced = idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len());
         (displaced, newly_acquired)
+    }
+
+    fn insert_tail_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Vec<usize> {
+        // Index only. The tree nodes for [0, tokens.len()) are inserted by the
+        // final chunk's `insert` (finalize_last); re-inserting the whole prefix
+        // here cost ~0.9 s/turn for zero benefit.
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
+        self.snapshot_index
+            .lock()
+            .insert_tail(prefix_hash, snapshot_id, session_hash, tokens.len())
+    }
+
+    fn insert_tail_sibling_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Option<usize> {
+        // Index only, like the tail (finalize_last's insert lays the tree nodes).
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
+        self.snapshot_index.lock().insert_tail_sibling(
+            prefix_hash,
+            snapshot_id,
+            session_hash,
+            tokens.len(),
+        )
     }
 
     fn insert_intermediate_snapshot(
@@ -155,17 +231,18 @@ impl PrefixCache for RadixTree {
         snapshot_id: usize,
         session_hash: u64,
         _matched_tokens: usize,
+        adapter_id: u64,
     ) -> Option<usize> {
         // Intermediate snapshots go directly into the index with the correct
         // token boundary (tokens.len()). Tree nodes are already inserted by
         // a prior `insert()` call, which handled the ref_count bookkeeping.
-        let prefix_hash = hash_token_prefix(tokens, tokens.len());
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
         let mut idx = self.snapshot_index.lock();
         idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len())
     }
 
-    fn release(&self, tokens: &[u32], block_size: usize) {
-        self.inner.lock().dec_refs(tokens, block_size);
+    fn release(&self, tokens: &[u32], block_size: usize, adapter_id: u64) {
+        self.inner.lock().dec_refs(tokens, block_size, adapter_id);
     }
 
     fn evict(&self, num_blocks: usize) -> EvictedBlocks {
@@ -181,6 +258,14 @@ impl PrefixCache for RadixTree {
 
     fn evict_snapshot_lru(&self) -> Option<usize> {
         self.snapshot_index.lock().evict_lru()
+    }
+
+    fn evict_snapshot_to_tier(&self) -> Option<(usize, u64)> {
+        self.snapshot_index.lock().evict_to_tier()
+    }
+
+    fn promote_snapshot(&self, key: u64, new_slot: usize) -> bool {
+        self.snapshot_index.lock().promote(key, new_slot)
     }
 
     fn snapshot_count(&self) -> usize {

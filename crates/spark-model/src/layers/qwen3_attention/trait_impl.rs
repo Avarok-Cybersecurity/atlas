@@ -88,6 +88,10 @@ pub(super) fn gemma4_diag_enabled() -> bool {
 }
 
 impl TransformerLayer for Qwen3AttentionLayer {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn decode(
         &self,
         hidden: DevicePtr,
