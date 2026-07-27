@@ -207,7 +207,7 @@ impl StatsModel {
         self.entropy_history.push(self.entropy);
 
         // Memory.
-        if let Some(free) = spark_runtime::cuda_backend::cuda_free_memory_bytes() {
+        if let Some(free) = super::gpu_free_bytes() {
             self.gpu_free_gb = free as f64 / GIB;
         }
         if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {

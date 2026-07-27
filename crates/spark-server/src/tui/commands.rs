@@ -182,7 +182,7 @@ fn cmd_kernels(app: &mut App, filter: &str) {
 
 fn cmd_gpu(app: &mut App) {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let free = spark_runtime::cuda_backend::cuda_free_memory_bytes().map(|b| b as f64 / GIB);
+    let free = super::data::gpu_free_bytes().map(|b| b as f64 / GIB);
     let baseline = spark_runtime::gpu::baseline_free_bytes()
         .map(|b| b as f64 / GIB)
         .unwrap_or(0.0);
