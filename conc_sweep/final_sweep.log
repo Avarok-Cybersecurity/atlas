@@ -1,0 +1,11 @@
+rep1 C=1: wall=7.5s total_tok=192 agg=25.5 tok/s
+rep2 C=1: wall=7.5s total_tok=192 agg=25.5 tok/s
+rep1 C=2: wall=15.3s total_tok=384 agg=25.1 tok/s
+rep2 C=2: wall=15.7s total_tok=384 agg=24.4 tok/s
+rep1 C=4: wall=15.7s total_tok=768 agg=48.8 tok/s
+rep2 C=4: wall=15.9s total_tok=768 agg=48.3 tok/s
+rep1 C=8: wall=22.1s total_tok=1536 agg=69.6 tok/s
+rep2 C=8: wall=22.2s total_tok=1536 agg=69.3 tok/s
+rep1 C=16: wall=30.0s total_tok=3072 agg=102.4 tok/s
+rep2 C=16: wall=30.1s total_tok=3072 agg=102.0 tok/s
+FINAL_SWEEP_DONE
