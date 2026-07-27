@@ -82,6 +82,7 @@ impl TransformerModel {
         // fully known before stream b is processed. (Cold / no-cache:
         // proc_count == chunk_len ⇒ proc_off == old cu_off ⇒ byte-identical.)
         let mut running_proc_off = 0usize;
+        let arena_cap_tokens = self.buffers.max_batch_tokens();
         // Largest per-stream chunk (VARLEN). All per-stream scratch slots must be
         // sized for this, not streams[0].chunk_len, or a longer stream's meta /
         // MoE topk staging overruns its slot (CUDA 700).
@@ -168,7 +169,31 @@ impl TransformerModel {
             // stream j's own embed, so correctness holds without reordering.
             let proc_off_b = running_proc_off;
             let hidden_b = hidden_base.offset(proc_off_b * h * dtype_bytes);
-            self.prefill_b_embed_chunk_at(tokens, chunk_start, cl, hidden_b, stream)?;
+            // Skip the cached prefix when the arena is charged by effective
+            // tokens: `proc_range` re-embeds exactly the uncached suffix at this
+            // same slot moments later, so embedding the cached head is pure
+            // redundant work — and, more importantly, writing `cl` tokens from
+            // `proc_off_b` is what forces the arena to hold Σ chunk_len. With
+            // the suffix-only embed the footprint is Σ proc_count, which is what
+            // the packed cu_seqlens layout actually consumes.
+            let embed_skip = if super::batch_kernel::eligible::effective_arena_charge_enabled() {
+                let bs_probe = self.kv_cache.lock().block_size();
+                self.prefix_cache
+                    .peek_matched_tokens(tokens, bs_probe, seq.adapter_id)
+                    .saturating_sub(chunk_start)
+                    .min(cl)
+            } else {
+                0
+            };
+            if embed_skip < cl {
+                self.prefill_b_embed_chunk_at(
+                    tokens,
+                    chunk_start + embed_skip,
+                    cl - embed_skip,
+                    hidden_b,
+                    stream,
+                )?;
+            }
 
             // Prefix-cache lookup, EP-sync, Marconi restore.
             let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
@@ -310,6 +335,17 @@ impl TransformerModel {
             });
             // Advance the running prefix-sum AFTER proc_count is known so the
             // next stream packs at Σ proc_count (cu_seqlens SSOT).
+            // The arena bound was pre-flighted from a PROBE of each stream's
+            // cached prefix. An eviction triggered by an earlier stream in this
+            // same batch can shrink a later match, making its real proc_count
+            // larger than predicted — so re-check against the true arena before
+            // trusting the packed layout. Bailing here routes the batch to the
+            // per-stream path rather than writing past the buffer (CUDA 700).
+            if running_proc_off + proc_count > arena_cap_tokens {
+                anyhow::bail!(
+                    "Q12 batched staging overran the arena: stream {b} needs                      {proc_count} tokens at offset {running_proc_off} > cap                      {arena_cap_tokens} (prefix match shrank after pre-flight)"
+                );
+            }
             running_proc_off += proc_count;
         }
 
