@@ -41,6 +41,10 @@ pub struct ChatState {
     pub transcript: Vec<ChatMessage>,
     pub input: String,
     pub streaming: bool,
+    /// Transcript viewport, in WRAPPED rows above the bottom. `None` follows the
+    /// streaming tip; `Some(n)` holds station n rows up. Same contract as the Main
+    /// log pane's `log_scroll`, so both panes answer to the same keys.
+    pub scroll: Option<usize>,
     rx: Option<Receiver<ChatDelta>>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     runtime: Option<tokio::runtime::Handle>,
@@ -51,6 +55,20 @@ impl ChatState {
         self.runtime = Some(handle);
     }
 
+    /// Scroll the transcript by `rows` (positive = back toward older turns).
+    /// Landing at or past the bottom restores follow, so a stream that is running
+    /// keeps painting its tip without a second keypress.
+    pub fn scroll_by(&mut self, rows: i32) {
+        let cur = self.scroll.unwrap_or(0) as i32;
+        let next = cur + rows;
+        self.scroll = if next <= 0 { None } else { Some(next as usize) };
+    }
+
+    /// Snap back to the live tip.
+    pub fn follow(&mut self) {
+        self.scroll = None;
+    }
+
     /// Send the current input as a user message and start streaming a reply.
     pub fn send(&mut self, port: u16) {
         let prompt = self.input.trim().to_string();
@@ -58,6 +76,8 @@ impl ChatState {
             return;
         }
         self.input.clear();
+        // Sending is an explicit "show me the new reply" — resume follow.
+        self.follow();
         self.transcript.push(ChatMessage {
             role: Role::User,
             text: prompt.clone(),

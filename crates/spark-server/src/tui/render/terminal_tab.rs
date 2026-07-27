@@ -8,6 +8,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::panel;
 use crate::tui::app::{App, Focus, TermSub};
@@ -98,6 +99,45 @@ fn draw_ops(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), in_inner);
 }
 
+/// Word-wrap `text` into display rows of at most `width` columns.
+///
+/// The chat pane slices its viewport on these rows, so they must be what actually
+/// renders — measured in display columns via `unicode-width`, not `str::len`, or
+/// CJK and emoji replies would compute a tail that is short by a row per line.
+/// A word longer than the pane is hard-split rather than allowed to overhang.
+fn wrap_rows(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut rows = Vec::new();
+    for logical in text.split('\n') {
+        let (mut cur, mut cur_w) = (String::new(), 0usize);
+        for word in logical.split_inclusive(' ') {
+            let w = UnicodeWidthStr::width(word);
+            if cur_w + w > width && !cur.is_empty() {
+                rows.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            if w > width {
+                for ch in word.chars() {
+                    let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if cur_w + cw > width {
+                        rows.push(std::mem::take(&mut cur));
+                        cur_w = 0;
+                    }
+                    cur.push(ch);
+                    cur_w += cw;
+                }
+            } else {
+                cur.push_str(word);
+                cur_w += w;
+            }
+        }
+        rows.push(cur);
+    }
+    rows
+}
+
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let input_h = (app.chat.input.lines().count().clamp(1, 5) + 2) as u16;
     let rows = Layout::default()
@@ -113,16 +153,18 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 .clone()
                 .or_else(|| app.args.model.clone())
                 .unwrap_or_default(),
-            if app.chat.streaming {
-                " streaming ─"
-            } else {
-                ""
+            match (app.chat.streaming, app.chat.scroll) {
+                (_, Some(n)) => format!(" ↑{n} ─ End follows ─"),
+                (true, None) => " streaming ─".to_string(),
+                (false, None) => String::new(),
             }
         ),
         false,
     );
     let inner = block.inner(rows[0]);
     f.render_widget(block, rows[0]);
+    // Body width = pane minus the 2-col gutter and the 1-col model rule.
+    let body_w = inner.width.saturating_sub(3) as usize;
     let mut lines: Vec<Line> = Vec::new();
     for m in &app.chat.transcript {
         let (gutter, gstyle) = match m.role {
@@ -133,7 +175,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Role::User => theme::text(),
             Role::Model => theme::text().bg(theme::BG_PANEL.color()),
         };
-        for (i, text_line) in m.text.split('\n').enumerate() {
+        for (i, text_line) in wrap_rows(&m.text, body_w).iter().enumerate() {
             let g = if i == 0 {
                 Span::styled(gutter, gstyle)
             } else {
@@ -174,9 +216,20 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::default());
     }
-    let skip = lines.len().saturating_sub(inner.height as usize);
-    let shown: Vec<Line> = lines.into_iter().skip(skip).collect();
-    f.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), inner);
+    // `lines` is already in DISPLAY rows (see wrap_rows), so the tail slice is
+    // exact and needs no Wrap. It used to slice on unwrapped logical lines and let
+    // the widget wrap afterwards: one long reply is a single logical line, so the
+    // slice kept everything, the wrapped result overflowed the pane, and the
+    // streaming tip rendered below the visible area — the stream "stopped
+    // following" precisely when a reply got long enough to matter.
+    let h = inner.height as usize;
+    let max_off = lines.len().saturating_sub(h);
+    let off = match app.chat.scroll {
+        None => max_off,
+        Some(n) => max_off.saturating_sub(n),
+    };
+    let shown: Vec<Line> = lines.into_iter().skip(off).take(h).collect();
+    f.render_widget(Paragraph::new(shown), inner);
     // Input.
     let focused = app.focus == Focus::Input;
     let in_block = panel(

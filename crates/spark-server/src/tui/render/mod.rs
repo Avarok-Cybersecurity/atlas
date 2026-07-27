@@ -161,12 +161,23 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {
                 theme::text2()
             };
             spans.push(Span::styled(s.label().to_string(), label_style));
-            // Badge: unresolved-kernel dot on Main.
-            if s == Section::Main
-                && let Some(k) = &app.kernels
-                && !k.missing.is_empty()
-            {
-                spans.push(Span::styled("  ●", theme::warn()));
+            // Main's dot is the startup lamp: amber while the engine is coming up,
+            // green once it is serving. It used to mean "unresolved kernel lookups"
+            // and only ever rendered amber, which read as a load that never
+            // finished. That signal is not lost — it moves to the ⚠ below, so the
+            // lamp answers "is it up?" and the glyph answers "is anything off?".
+            if s == Section::Main {
+                let lamp = if app.progress.ready {
+                    theme::brand_green()
+                } else {
+                    theme::warn()
+                };
+                spans.push(Span::styled("  ●", lamp));
+                if let Some(k) = &app.kernels
+                    && !k.missing.is_empty()
+                {
+                    spans.push(Span::styled(" ⚠", theme::warn()));
+                }
             }
         }
         let mut line = Line::from(spans);
@@ -221,7 +232,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Section::Stats => "⇥ cycle · 1-5 jump · ? help · q quit",
         Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-5 jump · ? help",
         Section::Library => "j/k move · / search · ⇥ cycle · 1-5 jump · ? help",
-        Section::Terminal => "⏎ input · Ctrl+Enter send · Esc back · ⇥ Ops↔Chat · ? help",
+        Section::Terminal => "⏎ input · Esc back · ↑/↓ scroll · End follow · ⇥ Ops↔Chat · ? help",
     };
     let line = Line::from(vec![
         Span::styled(

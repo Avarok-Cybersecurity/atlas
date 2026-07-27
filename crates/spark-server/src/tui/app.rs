@@ -347,6 +347,19 @@ impl App {
                     self.network_detail = !self.network_detail;
                 }
             }
+            Section::Terminal if self.term_sub == TermSub::Chat => {
+                if up {
+                    self.chat.scroll_by(1);
+                } else if down {
+                    self.chat.scroll_by(-1);
+                } else if matches!(key.code, KeyCode::PageUp) {
+                    self.chat.scroll_by(10);
+                } else if matches!(key.code, KeyCode::PageDown) {
+                    self.chat.scroll_by(-10);
+                } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
+                    self.chat.follow();
+                }
+            }
             Section::Terminal | Section::Stats => {}
         }
     }
@@ -409,6 +422,14 @@ impl App {
                 KeyCode::Backspace => {
                     self.chat.input.pop();
                 }
+                // Transcript scrollback stays live while the input holds focus —
+                // that is where you are while a reply streams, and Up/Down are
+                // otherwise unused here (unlike Ops, which spends them on history).
+                KeyCode::Up => self.chat.scroll_by(1),
+                KeyCode::Down => self.chat.scroll_by(-1),
+                KeyCode::PageUp => self.chat.scroll_by(10),
+                KeyCode::PageDown => self.chat.scroll_by(-10),
+                KeyCode::End => self.chat.follow(),
                 KeyCode::Char(c) => self.chat.input.push(c),
                 _ => {}
             },
@@ -448,47 +469,7 @@ fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
     }
 }
 
+// Nav-order tests live in their own mount to keep this file under the 500 LoC cap.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The ⇥ order must contain the subsection rows, in the order the sidebar draws
-    /// them. This is the regression: the traversal list was top-level-only, so
-    /// Main ▸ Kernels and Terminal ▸ Chat could not be reached with Tab at all.
-    #[test]
-    fn nav_rows_include_subsections_in_sidebar_order() {
-        let labels: Vec<String> = App::nav_rows()
-            .iter()
-            .map(|(s, i)| match s.subs().get(*i) {
-                Some(sub) => format!("{}/{}", s.label(), sub),
-                None => s.label().to_string(),
-            })
-            .collect();
-        assert_eq!(
-            labels,
-            [
-                "Main/Overview",
-                "Main/Kernels",
-                "Stats",
-                "Network",
-                "Library",
-                "Terminal/Ops",
-                "Terminal/Chat",
-            ]
-        );
-    }
-
-    /// A section without subsections must still contribute exactly one stop, or ⇥
-    /// would silently skip it.
-    #[test]
-    fn every_section_is_reachable() {
-        let rows = App::nav_rows();
-        for s in Section::ALL {
-            assert!(
-                rows.iter().any(|(r, _)| *r == s),
-                "{} unreachable",
-                s.label()
-            );
-        }
-    }
-}
+#[path = "app_tests.rs"]
+mod tests;
