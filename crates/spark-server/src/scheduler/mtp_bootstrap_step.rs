@@ -41,6 +41,14 @@ pub(super) fn bootstrap_batch_disabled() -> bool {
     *CACHED.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BATCH_BOOTSTRAP").is_some())
 }
 
+/// One batched argmax readback instead of n serialized single-CTA scans:
+/// **ON** by default, disabled by PRESENCE of `ATLAS_NO_MTP_BOOT_ARGMAX`
+/// (house convention — `=0` is NOT off). Read once per process.
+fn boot_argmax_batch_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BOOT_ARGMAX").is_none())
+}
+
 /// Whether [`step_mtp_bootstrap_batched`] can run for these sequences.
 pub(super) fn can_batch_bootstrap(
     model: &dyn Model,
@@ -123,39 +131,94 @@ pub(super) fn step_mtp_bootstrap_batched(
     let vocab = model.vocab_size();
     let elem = if model.decode_logits_fp32() { 4 } else { 2 };
 
+    // ── ONE batched argmax readback for the rows that sample greedily ──
+    // Every eligible row's `sample_token_with_grammar` takes its fast-greedy
+    // branch: `argmax_on_device` = ONE single-CTA `argmax_bf16` (grid [1,1,1],
+    // ~100 us at a 248k vocab) plus a BLOCKING 4-byte D2H — n of them,
+    // serialized on one stream, each draining the pipeline. `argmax_batch`
+    // runs the identical per-row kernel body (one block per row, same tie
+    // resolution — byte-identical by construction) in ONE launch with ONE D2H;
+    // it is the same call the non-MTP decode step makes
+    // (`decode_logits_step.rs`).
+    //
+    // Eligibility is a STRICT SUBSET of the fast-greedy branch's own gate
+    // (`sample_step.rs`): greedy temperature, no grammar (its bitmask is
+    // host-side), and EXACTLY-neutral penalties — `PenaltyGate::ReduceOnly`
+    // is excluded because its per-position immunity check needs a per-row
+    // logit read anyway. Any row failing it keeps the per-row call verbatim,
+    // so this can only change WHICH kernel produced an identical token.
+    // `decode_logits_fp32` models never reach here (`can_batch_bootstrap`).
+    // Kill switch `ATLAS_NO_MTP_BOOT_ARGMAX` (PRESENCE).
+    let pen: Vec<_> = refs
+        .iter()
+        .map(|a| {
+            crate::scheduler::sample_step::penalty_params_for(
+                a,
+                crate::scheduler::sample_step::PositionKind::Verify,
+                0.0,
+                None,
+                Vec::new(),
+            )
+        })
+        .collect();
+    let greedy: Vec<bool> = refs
+        .iter()
+        .zip(pen.iter())
+        .map(|(a, p)| {
+            boot_argmax_batch_enabled()
+                && crate::scheduler::verify_pipeline_helper::fast_greedy_grammar_enabled()
+                && (a.temperature == 0.0
+                    || crate::scheduler::decode_logits_seq::force_temp_zero_enabled())
+                && a.grammar_state.is_none()
+                && crate::scheduler::fast_greedy::classify_penalties(p)
+                    == crate::scheduler::fast_greedy::PenaltyGate::Neutral
+        })
+        .collect();
+    let batch_toks: Option<Vec<u32>> = if greedy.iter().filter(|&&g| g).count() >= 2 {
+        match model.argmax_batch(logits, n, 0) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                // Never fatal: the per-row path below produces the same token.
+                tracing::error!("batched bootstrap argmax_batch (n={n}): {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // ── Per-row sample + emit (identical to the per-seq Phase-A body) ──
     // `propose_rows[j] = Some(row)` marks a sequence that still needs drafts.
     let mut propose_rows: Vec<Option<usize>> = vec![None; n];
     for (j, a) in refs.iter_mut().enumerate() {
         let row_logits = logits.offset(j * vocab * elem);
-        let penalties = crate::scheduler::sample_step::penalty_params_for(
-            a,
-            crate::scheduler::sample_step::PositionKind::Verify,
-            0.0,
-            None,
-            Vec::new(),
-        );
-        let history = crate::scheduler::sample_step::penalty_history_scope(
-            &a.output_tokens,
-            a.tool_call_end_token,
-        )
-        .to_vec();
-        let tok = match sample_token_with_grammar(
-            model,
-            row_logits,
-            a.temperature,
-            a.top_k,
-            a.top_p,
-            &[],
-            a.grammar_state.as_mut(),
-            &penalties,
-            &history,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("batched bootstrap sample error: {e:#}");
-                a.finished = true;
-                continue;
+        let batched = batch_toks.as_ref().filter(|_| greedy[j]).map(|t| t[j]);
+        let tok = match batched {
+            Some(t) => t,
+            None => {
+                let history = crate::scheduler::sample_step::penalty_history_scope(
+                    &a.output_tokens,
+                    a.tool_call_end_token,
+                )
+                .to_vec();
+                match sample_token_with_grammar(
+                    model,
+                    row_logits,
+                    a.temperature,
+                    a.top_k,
+                    a.top_p,
+                    &[],
+                    a.grammar_state.as_mut(),
+                    &pen[j],
+                    &history,
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!("batched bootstrap sample error: {e:#}");
+                        a.finished = true;
+                        continue;
+                    }
+                }
             }
         };
         let lp = if let Some(k) = a.top_logprobs {
@@ -207,7 +270,10 @@ pub(super) fn step_mtp_bootstrap_batched(
                 if group.len() < 2 {
                     continue;
                 }
-                let tokens: Vec<u32> = group.iter().map(|&s| refs[proposing[s]].last_token).collect();
+                let tokens: Vec<u32> = group
+                    .iter()
+                    .map(|&s| refs[proposing[s]].last_token)
+                    .collect();
                 let positions: Vec<usize> = group
                     .iter()
                     .map(|&s| refs[proposing[s]].seq.seq_len)
