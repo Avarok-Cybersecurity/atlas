@@ -204,9 +204,24 @@ impl Qwen3SsmLayer {
                 && std::env::var("ATLAS_GDN_FUSED_NORM").ok().as_deref() == Some("1")
             {
                 let z_base = deinterleaved.offset((key_dim * 2 + value_dim) * bf16);
+                fn gdn_half_reg_enabled() -> bool {
+                    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    *ON.get_or_init(|| {
+                        std::env::var("ATLAS_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
+                    })
+                }
+                let gdn_norm_k = if kd == 128
+                    && vd == 128
+                    && self.gdn_f32_strided_norm_half_k.0 != 0
+                    && gdn_half_reg_enabled()
+                {
+                    self.gdn_f32_strided_norm_half_k
+                } else {
+                    self.gdn_f32_strided_norm_k
+                };
                 ops::gdn_decode_f32_strided_norm(
                     ctx.gpu,
-                    self.gdn_f32_strided_norm_k,
+                    gdn_norm_k,
                     h_state_base,
                     conv_out,
                     conv_out.offset(key_dim * 4),

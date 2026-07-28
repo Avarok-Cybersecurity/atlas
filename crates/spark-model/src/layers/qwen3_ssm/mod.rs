@@ -75,6 +75,9 @@ pub struct Qwen3SsmLayer {
     gdn_f32_conv_norm_k: KernelHandle,
     gdn_f32_strided_k: KernelHandle,
     gdn_f32_strided_norm_k: KernelHandle,
+    /// Half-width register retention (k_dim==v_dim==128): retains the first 64 H
+    /// columns so the update re-reads only the rest (2R+1W -> 1.5R+1W).
+    gdn_f32_strided_norm_half_k: KernelHandle,
     ba_gates_k: KernelHandle,
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,

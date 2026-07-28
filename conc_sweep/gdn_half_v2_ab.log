@@ -1,0 +1,16 @@
+--- leg: OLD (two-pass) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.7s total_tok=3072 agg=107.1 tok/s
+   rep2 C=16: wall=28.7s total_tok=3072 agg=106.9 tok/s
+   rep3 C=16: wall=28.9s total_tok=3072 agg=106.2 tok/s
+   rep4 C=16: wall=28.8s total_tok=3072 agg=106.5 tok/s
+--- leg: NEW (half-width, static indices) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=27.2s total_tok=3072 agg=112.8 tok/s
+   rep2 C=16: wall=27.4s total_tok=3072 agg=112.0 tok/s
+   rep3 C=16: wall=27.3s total_tok=3072 agg=112.4 tok/s
+   rep4 C=16: wall=27.3s total_tok=3072 agg=112.7 tok/s
+[2m2026-07-28T01:42:31.387196Z[0m [32m INFO[0m [2mspark::tokenizer::jinja_helpers[0m[2m:[0m Using override Jinja template from ./jinja-templates/qwen3_5
+[2m2026-07-28T01:42:57.097165Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=128 end_bloc
+[2m2026-07-28T01:43:51.716204Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=128 end_bloc
+AB_DONE

@@ -102,6 +102,11 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f32_strided_norm",
             ),
+            gdn_f32_strided_norm_half_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f32_strided_norm_half",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             l2_norm_k: gpu.kernel("norm", "l2_norm_bf16")?,
