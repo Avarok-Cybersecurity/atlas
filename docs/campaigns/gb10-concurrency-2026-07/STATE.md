@@ -1216,3 +1216,25 @@ Gate the snapshot-restore path on matched-prefix length: take it only when the t
 exceed the restore cost. Needs the restore cost measured per layer-count first — the ~0.5 s
 observed here is far above the naive 144 MB / 215 GB/s = 0.67 ms, so **something other than raw
 state bandwidth dominates it** and should be profiled before a threshold is chosen.
+
+### Prefix-cache penalty: the two hit types differ, and it is NOT the state copy
+Serve log at C=1, consecutive reps:
+```
+rep2  "Prefix cache hit: 16 tokens (1 blocks) but no SSM snapshot"  -> 24.9 tok/s  FAST
+rep3  "Marconi SSM cache hit: 26 tokens skipped (2 blocks)"         -> 23.1 tok/s  SLOW
+```
+**The slow path is exactly the one that USES the snapshot to skip prefill.** Skipping 26 tokens
+of work makes the request 0.6 s SLOWER.
+
+nsys of that run (3 reps, ~24 s) rules out the copy:
+- memcpy **375 ms total** (93,376 copies, 28.7 GB) — nowhere near 0.6 s/request
+- memset 33.7 ms
+- dominated instead by `w4a16_gemv_batch4` (66,051 launches, 13.7 s) = the MTP verify path
+=> The penalty is NOT snapshot-restore bandwidth. The most likely mechanism is DOWNSTREAM:
+spec-decode throughput is trajectory-dependent ([[reference_spec_decode_tokps_is_trajectory_dependent]]),
+so resuming from a restored state can change draft acceptance and therefore verify cost.
+★ NEXT STEP is an acceptance measurement, not a copy optimisation: run the same C=1 reps with
+`k4_record_positional` and compare mean-accepted on snapshot-hit vs cold reps. If acceptance
+drops after a restore, the fix is in the drafter/state handoff, not in the cache.
+★ Do NOT "fix" this by adding a size threshold until that is checked — a threshold would hide
+the symptom while leaving a spec-decode state-handoff bug in place.
