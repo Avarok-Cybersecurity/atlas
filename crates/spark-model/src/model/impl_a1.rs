@@ -94,12 +94,15 @@ impl TransformerModel {
         // present. lm_head launches 1938 CTAs and already sits at ~83% of
         // achievable, so the expected gain here is small; measured, not assumed.
         let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
-        // Lossless BF16-MMA sibling for lm_head. Default ON — the ~1% cost buys
-        // out an UNQUANTIFIED risk on the exact workload being optimized:
-        // activation-precision loss at the one layer where a near-tie flip
-        // changes the token. `ATLAS_NO_LMHEAD_LOSSLESS=1` reverts to the FP8 path.
+        // Lossless BF16-MMA sibling for lm_head, OPT-IN via ATLAS_LMHEAD_LOSSLESS=1.
+        // Measured cost 1.81% at C=16 (129.68 -> 127.33). Default is the faster
+        // FP8-activation path because the accuracy question it addresses CANNOT
+        // BE MEASURED until vLLM parity lifts the BFCL embargo — and the 1.81%
+        // is throughput needed to REACH parity. The risk is real but indirect:
+        // the bf16-floor finding was superseded on the WEIGHT axis, and this is
+        // the ACTIVATION axis, which was never examined. Re-decide at parity.
         let w4a16_gemm_t_bf16_kernel =
-            if std::env::var("ATLAS_NO_LMHEAD_LOSSLESS").is_err() {
+            if std::env::var("ATLAS_LMHEAD_LOSSLESS").is_ok() {
                 crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
             } else {
                 spark_runtime::gpu::KernelHandle(0)
