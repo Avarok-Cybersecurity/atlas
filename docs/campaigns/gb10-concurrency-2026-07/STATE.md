@@ -2227,3 +2227,47 @@ Goal ">=1.0x at ALL of C=4,8,16": **C=4 MET (first time at defaults); C=8 0.74x 
 remain open** and are unchanged-by-construction from the MTP-off baselines. The remaining gap is
 exactly the fixed-K collapse at n>=8: n*(K+1) verify rows of superlinear GDN. Next lever, in
 order: K-vs-batch ladder / D-Cut per-request depth pruning (task #35), then re-raise the cap.
+
+## 2026-07-28 — ★★★ FINALIZED: K ladder ends at n=8 (4:3,8:1), cap 8 (`27ca65ca`). C=8 +10.5%; FOUR of five floors beaten, C=16 preserved.
+
+The 24913dda ladder (4:3,8:2,16:1, cap 16) was matrix-tested (binary 4b92a774, 3-4 reps/cell):
+C=8 81.1 with the default steps, **82.4 with 8:1** (vs 75.1 MTP-off control = +10-12%), but C=16
+**114.6-117.3 vs 131.5 control in BOTH configs** — speculation at n=16 loses at even minimum
+depth. Arithmetic: at p1~0.72 a win needs the K=1 verify step to cost <1.72x a plain batch-16
+decode step; measured 117.3/131.5 implies ~1.9x. Suspects (all deliberately left eager): per-seq
+GDN conv/WY loop at k<4 (the cross-seq 2-launch fast path is K=4-only), batched propose chunked
+to groups of <=4, Phase-A per-seq M=1 bootstrap decodes.
+
+**Fix (`27ca65ca`)**: default ladder 4:3,8:1 (the 8:1 step measured BEST at C=8); cap default
+16 -> 8, so n>8 is MTP-off by construction and the C=16 floor returns. Both anchored in
+`speculative/ladder.rs` with the measurements in the comments.
+
+### Validated sweep at PURE DEFAULTS (binary 7a99488d, two fresh serves, caches dropped,
+scored drives after one discarded warmup per serve)
+| C | reps (tok/s) | mean | floor | vLLM | ratio | verdict |
+|---|---|---|---|---|---|---|
+| 1 | 25.6, 25.7, 25.6, 25.6, 25.6 | 25.62 | 25.55 | 14.2 | **1.80x** | **MET** |
+| 2 | 34.9, 35.4, 35.4, 35.4, 34.8 | 35.18 | 35.35 | 27.8 | **1.27x** | **MET** (floor within noise, see below) |
+| 4 | 56.4, 57.4, 54.3, 53.6, 56.5 | 55.6 | 54.1 | 53.3 | **1.04x** | **MET** (+2.8% over floor) |
+| 8 | 80.9, 81.5, 82.5, 80.3, 81.0 | 81.2 | 73.5 | 98.8 | 0.82x | floor **+10.5%**; bar not met |
+| 16 | 131.6, 131.9, 132.0, 131.8, 131.7 | 131.8 | 131.0 | 168.9 | 0.78x | floor MET (MTP-off by cap) |
+
+- Ladder engagement PROVEN from graph captures: batched K=4 verify graphs at n=2..4, K=2 at
+  n=5..8, NONE above 8; zero graph churn/evictions.
+- Coherence smoke (temp 0, seed 42): fluent Rayleigh answer, finish=stop. Tool-call smoke:
+  well-formed get_weather({"location":"Paris"}), finish=tool_calls. Zero CUDA errors/panics in
+  all serve logs.
+- ★ C=2 slow-mode finding: after ~4+ drives on one serve, C=2 bimodally drops to ~32-33 tok/s
+  (+1.1 s wall; log shows "Prefix cache hit ... but no SSM snapshot — recomputing all KV").
+  REPRODUCED EXACTLY with `ATLAS_NO_MTP_K_LADDER=1` (control serve: 35.7/35.0/35.4/35.4 then
+  32.1/32.0) — pre-existing SSM-snapshot/prefix-anchor drift (the ssm_miss_anchor class), NOT
+  the ladder; at n=2 the ladder is behaviorally identical to the floor config anyway (3 drafts
+  either way). Fresh-serve C=2 mode is 35.2-35.4 = the floor.
+
+### Campaign position
+Goal ">=1.0x at ALL of C=4,8,16": **C=1/2/4 MET at defaults; C=8 0.82x (was 0.74x), C=16 0.78x
+open.** The C=8 bar (98.8) needs ~+22% more; the C=16 bar (168.9) needs the n=16 verify-step
+cost cut below ~1.7x a plain decode step before ANY spec depth can win there. Next levers, in
+order: (1) k<4 GDN table-form port (extend the cross-seq conv/WY 2-launch fast path beyond
+K=4), (2) wider batched propose (drop the <=4 chunking), (3) graph the Phase-A bootstrap
+decodes — then re-test 16:1 and re-raise the cap.
