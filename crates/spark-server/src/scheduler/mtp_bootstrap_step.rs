@@ -174,9 +174,19 @@ pub(super) fn step_mtp_bootstrap_batched(
                     == crate::scheduler::fast_greedy::PenaltyGate::Neutral
         })
         .collect();
-    let batch_toks: Option<Vec<u32>> = if greedy.iter().filter(|&&g| g).count() >= 2 {
+    let n_greedy = greedy.iter().filter(|&&g| g).count();
+    let batch_toks: Option<Vec<u32>> = if n_greedy >= 2 {
         match model.argmax_batch(logits, n, 0) {
-            Ok(t) => Some(t),
+            Ok(t) => {
+                static LOGGED: std::sync::Once = std::sync::Once::new();
+                LOGGED.call_once(|| {
+                    tracing::info!(
+                        "MTP bootstrap batched argmax ENGAGED (n={n}, greedy_rows={n_greedy}): \
+                         one launch + one D2H replaces {n_greedy} single-CTA scans + syncs"
+                    );
+                });
+                Some(t)
+            }
             Err(e) => {
                 // Never fatal: the per-row path below produces the same token.
                 tracing::error!("batched bootstrap argmax_batch (n={n}): {e:#}");
