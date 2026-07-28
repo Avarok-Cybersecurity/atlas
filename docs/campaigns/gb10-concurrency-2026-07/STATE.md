@@ -1774,3 +1774,91 @@ Atlas >= vLLM at C=1..16. It bounds the RISK, it does not discharge the DEBT.
 it only compared FIRST LINES and reported "7/8 identical". The hashes (computed over full
 responses) said 6/8 DIFFER. When a hash comparison and a text diff disagree, the DIFF is the one
 that is probably broken.
+
+## 2026-07-28 — ★ REGRESSION I INTRODUCED, CAUGHT BY AUDIT: strix-hip missed the `ldb` fix
+
+The lm_head twin is built by PLATFORM-AGNOSTIC Rust and is DEFAULT-ON, but only the GB10 CUDA
+`w4a16_gemm_t` had gained `ldb`. `kernels/strix/` is a SYMLINK to the GB10 file and inherited the
+fix; **`kernels/strix-hip/qwen3.6-27b/nvfp4/w4a16_gemm.cu` is a real separate copy and did not.**
+On the Windows/HIP gfx1151 build (PR#353), which serves this exact NVFP4 checkpoint, decode at
+padded_n>=5 would launch `w4a16_gemm_t` against a twin built with stride 248192 while the kernel
+strides by N=248077 — shearing every row past the first and producing GARBAGE LOGITS, **silently,
+with no fault**, because RDNA tolerates the misalignment that traps on CUDA as 716.
+
+FIXED: `ldb` ported to the strix-hip copy, with a comment binding it to the CUDA original.
+★ NOT COMPILE-VERIFIED on this box (no ROCm here) — the HIP build must be run before that
+platform is trusted. Flagged, not assumed.
+
+Added a load-time WARN when `stride != vocab`, naming the `ldb` requirement — this is the
+signal that would have caught the drift immediately. Verified firing:
+`lm_head twin uses a PADDED stride (248192 != vocab 248077): this target's w4a16_gemm_t MUST
+accept the `ldb` argument...`. Post-fix C=16 119.9 tok/s, 0 errors.
+
+★★ RULE: a kernel change made for ONE target is not done until every OTHER target's copy of that
+file is checked. Symlinked targets inherit; whole-file copies DRIFT. This is the same shadow-drift
+failure mode that left 27B's multi-seq GDN kernels uncompiled (`shadowed_kernels_null`), except
+here the drift produced SILENT WRONG ANSWERS on the other platform rather than a null handle.
+★ Fleet check: every other served vocab (248320, 200064, 151936, 131072, 262144, 129280, 128896,
+100352) is a multiple of 128, so stride == N and `ldb` is a no-op — 248077 is the fleet's ONLY
+unaligned N, and only lm_head carries it. Other model dirs' 9-arg `w4a16_gemm_t` receiving a 10th
+argument is benign (the launch API reads only declared params).
+
+## 2026-07-28 — FFN MMQ: my 69% figure was WRONG. It is 76%, and the prize is ~5-6 ms not ~18 ms.
+
+★ MY ARITHMETIC ERROR: I divided (mmq16 + mmq32) TIME by mmq16-ONLY BYTES. mmq32 is not overhead
+on the same 9.63 GB — it runs on steps where m is 17..32 (MTP-verify steps at C=16) and moves its
+OWN ~50 MB/call. Per-CALL is the artifact-free metric: 54.8 ms / 192 calls = 285.4 us/call over
+50.14 MB = **175.7 GB/s = 76.4% of achievable**, which matches the earlier gridX-split nsys
+(175.6 down / 173.2 gate-up) exactly.
+
+Shape audit (the lm_head-class check): `nvfp4_mmq.cu` exists ONLY in the 27B dir (no common/ twin
+to shadow), and N/K are RUNTIME-derived from the served tensors, not hardcoded — the `_nc`
+variant is selected only when `n % 128 == 0`, and nsys gridX 136/40 confirms N=17408/5120 exactly.
+**So the sibling-checkpoint failure mode that invalidated the lm_head verdict does NOT apply here.**
+
+★ CORRECTION to the earlier entry's mechanism: STATE.md:955-956 attributed the gap to "dequant/
+scale ALU overlap with the cp.async weight stream". **There is no cp.async in this kernel at all**
+— zero hits for `cp.async|memcpy_async|__pipeline` in the vendored `q4k_vendor/mmq.cuh`. Weight
+loads are scalar 4-byte `ld.global`. The real mechanism is that the inner loop is PHASE-SERIAL:
+`[load] -> sync -> vec_dot(MMA) -> sync -> [load] -> sync -> vec_dot -> sync`, four barriers per
+512-K iteration, with DRAM IDLE during both vec_dot phases and the epilogue.
+
+Confirmed dead (do not re-litigate): stream-K/split-K for the down under-fill (down gridX=40 at
+284.3 us vs gate/up gridX=136 at 282.3 us — within 0.7% at identical bytes, so 40 CTAs already
+saturate LPDDR5X); occupancy hints (+0.27%, null); M-tile size (flat — kernel is weight-bound).
+
+Remedies, ranked: (1) cp.async 2-stage double-buffer in `mul_mat_q_process_tile` — smem
+2x(38.9+3) KiB ~= 84 KiB <= 99 KiB/CTA, numerics UNCHANGED, est. 4-5 ms/step; (2) SoA weight
+relayout in `atlas_nvfp4_repack` (Atlas owns the layout) so the x-tile fill vectorizes 16-B,
+bit-identical, ~1-2 ms and the natural enabler of (1); (3) fuse gate+up into one N=34816 launch,
+bit-identical, ~0.5-1.5 ms. Upstream llama.cpp has NO faster variant to pull — mainline MMQ has
+the identical phase-serial loop and no cp.async either, so this would be Atlas-original work.
+
+## 2026-07-28 — ★ W4A4 IS DEAD WEIGHT AT DECODE (external evidence, converging)
+- QServe/QoQ (arXiv 2405.04532): W4A4 beats W4A8 only above ~78 concurrent sequences. We run 1-16.
+- APEX4 (arXiv 2606.08761): all W4A4 wins at M>=64; concedes Marlin W4A16 is fastest at small batch.
+- QuaRot: its decode win is KV4 memory, not A4 GEMM.
+- ★ MEASURED ON GB10 ITSELF — llama.cpp PR #22196 (Blackwell native NVFP4, benchmarked on a DGX
+  Spark by NVIDIA's own engineer): prefill 506->611 t/s (+21%), decode 12.01->**11.91** t/s
+  (UNCHANGED/slightly worse), and the W4A4 tensor-core path had WORSE perplexity (4.6577) than the
+  W4Q8 fallback (4.6283).
+At decode we move ~9.63 GB of weights and ~0.5 MB of activations per step — activation precision
+is INVISIBLE in the traffic. Its only decode "win" is FP4-MMA issue rate, irrelevant when
+bandwidth-bound. => Candidate lever: keep A4 for PREFILL, run DECODE with A8/A16 activations
+against the same NVFP4 weights — same bandwidth, same speed, strictly better numerics. Must be
+gated by a measured iso-speed A/B before folding.
+
+## 2026-07-28 — m_dispatch sweep: NONE REMAIN on the 27B C=1..16 decode path
+All four fixed instances verified in place (FFN, attention projections, GDN mixer, lm_head).
+Every M>8 GEMM on the campaign model now rides a tile kernel. Residuals are in OTHER configs:
+(1) `impl_a3.rs::lm_head_batched` has no twin arm at M>8 (falls to base `w4a16_gemm`, ~19.3 ms at
+    M=16) — reached only by DFlash wide-verify (gamma=16 => M=17) and `prompt_logprobs`, NOT the
+    MTP K=4 production path. Fix is mechanical: mirror decode_a2.rs:470-486.
+(2) FP8 lm_head is still a per-row GEMV loop at every M (decode_a2.rs:441-452) — FP8 flagship
+    configs only (dgx3 256k, 80B FP8), not this campaign's NVFP4 model.
+Landmines recorded (no live exposure, all currently aligned): `mamba2_in_proj_size` adds a raw
+head count so a checkpoint with `mamba_num_heads % 16 != 0` would go unaligned into a 9-arg
+kernel; `tp_shard.rs` never checks `local_out % 16`; the FP8 tile family guards B with
+`(kb)+31 < K` so K % 32 != 0 would silently DROP the last K-chunk. The correct defensive pattern
+already exists in-tree at `w8a16_gemm_t_m128.cu:156-165` (runtime `(N & 15) == 0` check + scalar
+fallback).

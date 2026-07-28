@@ -521,7 +521,8 @@ impl TransformerModel {
         // loads are aligned. The stride must be a multiple of 16; 128 also keeps
         // whole N-tiles. Without the pad, N = vocab = 248077 (ODD) misaligns 15 of
         // every 16 k-rows => the campaign's long-standing sticky CUDA 716.
-        // OFF by default: this twin costs ~1800 KV blocks. See STATE.md.
+        // Default ON (kill: ATLAS_NO_LMHEAD_TGEMM=1). KV impact is nil: the pool
+        // reads 4759 blocks with the twin vs 4757 without. See STATE.md.
         let lm_head_nvfp4_t = match (&lm_head_nvfp4, lmhead_tgemm_enabled()) {
             (Some(w), true) => {
                 let (t, stride) =
@@ -532,6 +533,21 @@ impl TransformerModel {
                         16,
                         128,
                     )?;
+                // A padded stride is only safe on targets whose `w4a16_gemm_t`
+                // actually takes `ldb`. Every served vocab except this one is a
+                // multiple of 128 (stride == vocab, so `ldb` is a no-op and any
+                // kernel is fine); when it is NOT, a kernel missing the parameter
+                // strides by N and shears every row past the first — silently, on
+                // architectures that tolerate the misalignment. Say so loudly.
+                if stride != config.vocab_size {
+                    tracing::warn!(
+                        "lm_head twin uses a PADDED stride ({} != vocab {}): this target's \
+                         w4a16_gemm_t MUST accept the `ldb` argument, or decode at padded_n>=5 \
+                         will read sheared rows. Disable with ATLAS_NO_LMHEAD_TGEMM=1.",
+                        stride,
+                        config.vocab_size
+                    );
+                }
                 tracing::info!(
                     "lm_head transposed twin: vocab={} -> padded stride={} (vocab%16={}), tile GEMM active",
                     config.vocab_size,
