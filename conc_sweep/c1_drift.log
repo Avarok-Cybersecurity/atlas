@@ -1,0 +1,13 @@
+--- prefix caching ON (default) ---
+   rep1 C=1: wall=7.5s total_tok=192 agg=25.4 tok/s
+   rep2 C=1: wall=7.6s total_tok=192 agg=25.4 tok/s
+   rep3 C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+   rep4 C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+   rep5 C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+--- prefix caching OFF ---
+   rep1 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+   rep2 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+   rep3 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+   rep4 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+   rep5 C=1: wall=7.6s total_tok=192 agg=25.2 tok/s
+C1_DRIFT_DONE

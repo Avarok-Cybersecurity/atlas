@@ -1180,3 +1180,39 @@ copy can be freed, which is the FFN's own solution (`finalize_nvfp4_mmq_load`, d
 | GDN `_half` | 22.1 | 17% | **1.18x floor — DONE** |
 | projections `_k64` (out_proj, o_proj) | 13.8 | 10% | **84 GB/s** — the MMQ lever, VRAM-blocked above |
 | lm_head | 9.7 | 7% | 29% of achievable — launch failure, 6 hypotheses dead, memcheck clean |
+
+## 2026-07-28 (night) — ★ PREFIX CACHING IS A NET LOSS AT SHORT PROMPTS (−7% at C=1)
+
+Every C-sweep tonight showed C=1 drifting DOWN within a run (25.4 -> 23.6 -> 23.6 and then
+flat). Cause isolated with a direct A/B, 5 reps each, same binary, only `--enable-prefix-caching`
+differing:
+
+```
+prefix caching ON  : 25.4  25.4  23.6  23.6  23.6   <- degrades once the cache warms
+prefix caching OFF : 25.3  25.3  25.3  25.3  25.2   <- flat
+```
+
+**A warm prefix-cache hit costs ~0.5 s per request** here (7.6 s -> 8.1 s for a 192-token
+generation off a **26-token** prompt). Steady-state C=1 is **25.3 with caching OFF vs 23.6 with
+it ON — prefix caching is costing 7%.**
+
+### Why: no minimum-match threshold
+`prefill_a.rs:170-215` takes the snapshot-restore path on ANY match. Blocks are 16 tokens, so a
+26-token prompt matches ~1 block: it restores GDN state (3 MB x 48 layers) to avoid recomputing
+**16 tokens** of prefill. For SSM models a hit WITHOUT a usable snapshot is even worse — it
+forces `kv_write_start = 0` (full KV rewrite), so the lookup cost is paid for zero benefit.
+Same mechanism as the recorded 9-20 s snapshot-miss spikes, at small scale.
+
+### Scope / caveats before anyone "fixes" this by disabling caching
+- This benchmark uses 26-token prompts. With LONG shared prefixes the cache is surely a win —
+  the defect is the ABSENCE OF A THRESHOLD, not the feature.
+- **C=16 shows NO drift** (112.0/112.9/112.7 across reps), so the cost is hidden or amortised
+  at concurrency. It is a low-C effect on this workload.
+- MLPerf-edge runs WITH prefix caching and short-ish prompts — worth measuring there before
+  assuming the golden config is unaffected.
+
+### Suggested fix (unbuilt)
+Gate the snapshot-restore path on matched-prefix length: take it only when the tokens saved
+exceed the restore cost. Needs the restore cost measured per layer-count first — the ~0.5 s
+observed here is far above the naive 144 MB / 215 GB/s = 0.67 ms, so **something other than raw
+state bandwidth dominates it** and should be profiled before a threshold is chosen.
