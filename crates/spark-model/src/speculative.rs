@@ -64,14 +64,44 @@ pub fn shadow_topk() -> usize {
     })
 }
 
+/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`, default 1).
+/// Value-parsed, not presence-checked. Lives here (moved from
+/// `scheduler/mod.rs`) so the model-side single-sequence MTP structures
+/// (catchup ring, refeed labels, carry slot) can gate on the same value the
+/// scheduler gates dispatch on. Default 1 keeps C=1/HEAD behaviour
+/// byte-unchanged; the scheduler's copy delegates here.
+pub fn mtp_max_seqs() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_MTP_MAX_SEQS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1)
+    })
+}
+
+/// True when the MTP cap is raised above one sequence. The catchup ring
+/// (`types.rs` `mtp_catchup_ring` + meta), the refeed label convention, and
+/// the carry slot (`mtp_carry.rs`) are SINGLE-SEQUENCE structures — one ring,
+/// one label range, one slot. Running them with n concurrently-verifying
+/// sequences interleaves unrelated hiddens under one label space and breaks
+/// `after_verify`'s env-keyed trim contract (`mtp_rows_to_trim`). Disabling
+/// them process-wide when the cap > 1 is the only consistent option; a
+/// slot-keyed ring is recorded follow-up work (acceptance debt at n>1).
+pub fn mtp_multi_seq_mode() -> bool {
+    mtp_max_seqs() > 1
+}
+
 /// Drafter catch-up feed on serial->speculative transitions
 /// (`ATLAS_MTP_CATCHUP=1`, staged off). During serial-decode stretches the
 /// scheduler rings the per-step final hiddens; on the next propose the gap
 /// rows are batch-fed into the drafter KV so it never runs stale. Wrong
 /// feeds cannot corrupt output (verification rejects bad drafts) — the
 /// stake is acceptance only, which is the flip gate's metric.
+/// Force-off in multi-seq MTP mode (single-sequence ring; see
+/// [`mtp_multi_seq_mode`]).
 pub fn mtp_catchup_enabled() -> bool {
-    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1")
+    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
 }
 
 /// Re-feed ACCEPTED draft rows with the target's TRUE hidden state
@@ -191,8 +221,12 @@ pub fn mtp_catchup_enabled() -> bool {
 /// Both dwarf this flag, and (2) also changes what this flag is worth: a
 /// drafter that can actually see the prompt is a different drafter. **Build
 /// (2) first, then re-measure this.**
+///
+/// Force-off in multi-seq MTP mode: the refeed label space is single-sequence
+/// (see [`mtp_multi_seq_mode`]).
 pub fn mtp_refeed_accepted_enabled() -> bool {
     std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
+        && !mtp_multi_seq_mode()
 }
 
 /// Deliberate off-by-N perturbation of the re-feed's ring LABEL

@@ -344,6 +344,59 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Batched-verify Phase 2: copy the raw-hidden row `rows[i]` (the
+    /// accepted position of sequence i in the just-run batched verify
+    /// forward) into stash slot i, BEFORE any propose clobbers the shared
+    /// `hidden_states` buffer (every drafter `forward_one` writes into it —
+    /// mtp_multi.rs). Same RAW-hidden (pre-final-norm) contract as
+    /// `save_hidden_for_mtp_dispatch`.
+    pub(super) fn stash_verify_hidden_rows_dispatch(
+        &self,
+        rows: &[usize],
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.verify_hidden_stash.is_null(),
+            "stash_verify_hidden_rows: verify_hidden_stash not allocated (no MTP proposer)"
+        );
+        anyhow::ensure!(
+            rows.len() <= 8,
+            "stash_verify_hidden_rows: {} rows exceeds the 8-slot stash",
+            rows.len()
+        );
+        let stream = self.gpu.default_stream();
+        let h = self.config.hidden_size;
+        let bf16 = 2usize; // residual stream is BF16
+        for (i, &row) in rows.iter().enumerate() {
+            let src = self.buffers.hidden_states().offset(row * h * bf16);
+            let dst = self.verify_hidden_stash.offset(i * h * bf16);
+            self.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
+        }
+        Ok(())
+    }
+
+    /// Batched-verify Phase 3: stash slot `idx` → `mtp_hidden_save` (the MTP
+    /// head's input). Stashed-row variant of `save_hidden_for_mtp_dispatch`
+    /// for verdicts applied AFTER a propose has overwritten the live rows.
+    pub(super) fn save_hidden_for_mtp_from_stash_dispatch(
+        &self,
+        idx: usize,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.verify_hidden_stash.is_null(),
+            "save_hidden_for_mtp_from_stash: verify_hidden_stash not allocated"
+        );
+        anyhow::ensure!(idx < 8, "save_hidden_for_mtp_from_stash: idx {idx} >= 8");
+        let stream = self.gpu.default_stream();
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let src = self.verify_hidden_stash.offset(idx * h * bf16);
+        self.gpu
+            .copy_d2d_async(src, self.mtp_hidden_save, h * bf16, stream)?;
+        Ok(())
+    }
+
     /// ATLAS_MTP_CATCHUP: ring-capture the final hidden of a serially
     /// decoded token (position `pos`), keeping the ring's position range
     /// contiguous (a gap resets the range to just this row).

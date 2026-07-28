@@ -37,6 +37,7 @@ mod verify_b;
 mod verify_c;
 mod verify_c2;
 mod verify_d;
+mod verify_e;
 mod verify_fused;
 
 impl Model for TransformerModel {
@@ -325,6 +326,23 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 4]> {
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
+    }
+    fn can_batch_verify_k4(&self, n: usize) -> bool {
+        self.can_batch_verify_k4_dispatch(n)
+    }
+    fn decode_verify_batched_k4(
+        &self,
+        tokens: &[[u32; 4]],
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<Vec<[u32; 4]>> {
+        self.decode_verify_batched_k4_dispatch(tokens, seqs, _stream)
+    }
+    fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
+        self.stash_verify_hidden_rows_dispatch(rows, _stream)
+    }
+    fn save_hidden_for_mtp_from_stash(&self, idx: usize, _stream: u64) -> Result<()> {
+        self.save_hidden_for_mtp_from_stash_dispatch(idx, _stream)
     }
     fn decode_verify_graphed_kgamma(
         &self,

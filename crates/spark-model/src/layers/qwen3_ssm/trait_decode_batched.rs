@@ -22,6 +22,24 @@ fn k4_diag_checkpoint(ctx: &ForwardContext, phase: &str, stream: u64) -> Result<
     Ok(())
 }
 
+/// GDN-state routing for [`Qwen3SsmLayer::decode_batched_inner`].
+///
+/// `Single`: today's path — `num_tokens` rows belong to ONE sequence, whose
+/// conv/GDN state advances through all of them (K-token MTP verify, DFlash).
+///
+/// `Multi`: batched MTP verify — `num_tokens = n*k` seq-major rows
+/// (`r = i*k + j`); projections/FFN batch across all rows, while the
+/// stateful conv/GDN body runs per-sequence against `states[i]` with
+/// row-offset buffer bases (per-sequence math byte-identical to `Single`
+/// at `num_tokens = k`; only base addresses move).
+pub(super) enum GdnStates<'a, 'b> {
+    Single(&'a mut dyn LayerState),
+    Multi {
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        k: usize,
+    },
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
@@ -29,12 +47,7 @@ impl Qwen3SsmLayer {
         hidden: DevicePtr,
         residual: DevicePtr,
         num_tokens: usize,
-        state: &mut dyn LayerState,
-        _kv_cache: &mut PagedKvCache,
-        _seq_len: usize,
-        _block_table: &mut Vec<u32>,
-        _disk_block_ids: &mut Vec<u32>,
-        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        gdn: GdnStates<'_, '_>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -43,11 +56,6 @@ impl Qwen3SsmLayer {
         let k = num_tokens as u32;
         let bf16 = 2usize; // bytes per BF16
         let fp32 = 4usize; // bytes per FP32
-
-        let ssm_state = state
-            .as_any_mut()
-            .downcast_mut::<SsmLayerState>()
-            .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
 
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
@@ -402,50 +410,111 @@ impl Qwen3SsmLayer {
         let h_bytes = self.h_state_bytes;
         let conv_bytes = self.conv_state_bytes;
 
-        // Intermediates are pre-allocated from the pool (fixed GPU addresses for
-        // CUDA graph stability). Verify they exist BEFORE we index into them — a
-        // bare `debug_assert!` is a no-op in release and produces an opaque
-        // out-of-bounds panic instead of an actionable error (see #bugs
-        // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
-        // without `--speculative --mtp-quantization` to mirror the head.
-        if ssm_state.h_state_intermediates.len() < num_tokens
-            || ssm_state.conv_state_intermediates.len() < num_tokens
-        {
-            anyhow::bail!(
-                "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()={}, \
-                 conv_state_intermediates.len()={}, num_tokens={}). \
-                 If this is an EP=2 worker, the head node is sending MTP verify commands \
-                 but the worker was started without `--speculative` (and matching \
-                 `--mtp-quantization`/`--num-drafts`). Add those flags to the worker invocation.",
-                ssm_state.h_state_intermediates.len(),
-                ssm_state.conv_state_intermediates.len(),
-                num_tokens,
-            );
-        }
+        match gdn {
+            GdnStates::Single(state) => {
+                let ssm_state = state
+                    .as_any_mut()
+                    .downcast_mut::<SsmLayerState>()
+                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+                // Intermediates are pre-allocated from the pool (fixed GPU addresses for
+                // CUDA graph stability). Verify they exist BEFORE we index into them — a
+                // bare `debug_assert!` is a no-op in release and produces an opaque
+                // out-of-bounds panic instead of an actionable error (see #bugs
+                // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
+                // without `--speculative --mtp-quantization` to mirror the head.
+                if ssm_state.h_state_intermediates.len() < num_tokens
+                    || ssm_state.conv_state_intermediates.len() < num_tokens
+                {
+                    anyhow::bail!(
+                        "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()={}, \
+                         conv_state_intermediates.len()={}, num_tokens={}). \
+                         If this is an EP=2 worker, the head node is sending MTP verify commands \
+                         but the worker was started without `--speculative` (and matching \
+                         `--mtp-quantization`/`--num-drafts`). Add those flags to the worker invocation.",
+                        ssm_state.h_state_intermediates.len(),
+                        ssm_state.conv_state_intermediates.len(),
+                        num_tokens,
+                    );
+                }
 
-        let args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
-            num_tokens,
-            deinterleaved,
-            gates_buf,
-            conv_out_buf,
-            gdn_out_buf,
-            h_bytes,
-            conv_bytes,
-            qkvz_size,
-            conv_dim,
-            key_dim,
-            value_dim,
-            d_conv,
-            qk_ch,
-            nk,
-            nv,
-            kd,
-            vd,
-            bf16,
-            fp32,
-            stream,
-        };
-        self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
+                let args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
+                    num_tokens,
+                    deinterleaved,
+                    gates_buf,
+                    conv_out_buf,
+                    gdn_out_buf,
+                    h_bytes,
+                    conv_bytes,
+                    qkvz_size,
+                    conv_dim,
+                    key_dim,
+                    value_dim,
+                    d_conv,
+                    qk_ch,
+                    nk,
+                    nv,
+                    kd,
+                    vd,
+                    bf16,
+                    fp32,
+                    stream,
+                };
+                self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
+            }
+            GdnStates::Multi { states, k: kk } => {
+                // Batched MTP verify: the SAME per-sequence conv+GDN body, one
+                // call per sequence with row-offset buffer bases. Strides match
+                // decode_batched_conv_gdn's consumers exactly: deinterleaved
+                // rows at qkvz_size*bf16, conv_out at conv_dim*bf16, gates at
+                // nv*2*fp32, gdn_out at value_dim*bf16 per token.
+                anyhow::ensure!(
+                    !states.is_empty() && num_tokens == states.len() * kk,
+                    "decode_batched_inner Multi: num_tokens {} != n {} * k {}",
+                    num_tokens,
+                    states.len(),
+                    kk,
+                );
+                for (i, state) in states.iter_mut().enumerate() {
+                    let ssm_state = state
+                        .as_any_mut()
+                        .downcast_mut::<SsmLayerState>()
+                        .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+                    if ssm_state.h_state_intermediates.len() < kk
+                        || ssm_state.conv_state_intermediates.len() < kk
+                    {
+                        anyhow::bail!(
+                            "SSM MTP intermediate buffers not allocated for batched verify \
+                             (seq {i}: h={}, conv={}, k={kk})",
+                            ssm_state.h_state_intermediates.len(),
+                            ssm_state.conv_state_intermediates.len(),
+                        );
+                    }
+                    let args_i = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
+                        num_tokens: kk,
+                        deinterleaved: deinterleaved.offset(i * kk * qkvz_size * bf16),
+                        gates_buf: gates_buf.offset(i * kk * nv * 2 * fp32),
+                        conv_out_buf: conv_out_buf.offset(i * kk * conv_dim * bf16),
+                        gdn_out_buf: gdn_out_buf.offset(i * kk * value_dim * bf16),
+                        h_bytes,
+                        conv_bytes,
+                        qkvz_size,
+                        conv_dim,
+                        key_dim,
+                        value_dim,
+                        d_conv,
+                        qk_ch,
+                        nk,
+                        nv,
+                        kd,
+                        vd,
+                        bf16,
+                        fp32,
+                        stream,
+                    };
+                    self.decode_batched_conv_gdn(ssm_state, ctx, &args_i)?;
+                }
+            }
+        }
 
         k4_diag_checkpoint(ctx, "5-7:conv1d+l2norm+gdn_wy", stream)?;
 

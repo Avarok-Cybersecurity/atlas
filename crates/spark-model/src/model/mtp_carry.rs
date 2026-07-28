@@ -96,7 +96,10 @@ pub fn marconi_min_tokens() -> usize {
 }
 
 pub fn mtp_carry_drafter_enabled() -> bool {
-    crate::model::drafter_context::config().carry
+    // Force-off in multi-seq MTP mode: the carry slot is single-sequence by
+    // design (one slot, `active.len() == 1` assumption). See
+    // `speculative::mtp_multi_seq_mode` for the contract.
+    crate::model::drafter_context::config().carry && !crate::speculative::mtp_multi_seq_mode()
 }
 
 /// `ATLAS_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no

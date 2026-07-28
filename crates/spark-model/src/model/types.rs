@@ -165,6 +165,14 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// Batched-verify hidden stash: `[8, hidden_size]` BF16 — one RAW-hidden
+    /// row per batched-verify sequence (n ≤ 8 envelope). Every drafter
+    /// `forward_one` writes its hidden into `buffers.hidden_states()`
+    /// (mtp_multi.rs), so seq 0's propose clobbers seq 1..n's verify hidden
+    /// rows; the batched verdict path copies each sequence's accepted-row
+    /// hidden here FIRST (`stash_verify_hidden_rows`), then feeds the drafter
+    /// from the stash (`save_hidden_for_mtp_from_stash`). NULL without MTP.
+    pub(super) verify_hidden_stash: DevicePtr,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the

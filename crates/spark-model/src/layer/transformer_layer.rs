@@ -493,6 +493,31 @@ pub trait TransformerLayer: Send + Sync {
         )
     }
 
+    /// Batched MTP verify: `n_seqs` sequences × `k` tokens through this layer
+    /// in ONE weight sweep (rows seq-major, `r = i*k + j`, contiguous in
+    /// `hidden`/`residual`). Projections/FFN batch across all `n_seqs*k` rows;
+    /// the stateful recurrence (conv/GDN) runs per-sequence against
+    /// `states[i]` with row-offset buffer bases — per-sequence math is
+    /// byte-identical to the single-sequence `decode_batched` K-token body.
+    ///
+    /// Only SSM layers override (attention layers are handled by the caller
+    /// via `decode_multi_seq`, which already takes per-row block tables and
+    /// seq lens). Default: unsupported.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_verify_multi<'a, 'b: 'a>(
+        &self,
+        _hidden: DevicePtr,
+        _residual: DevicePtr,
+        _n_seqs: usize,
+        _k: usize,
+        _states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        _kv_cache: &mut PagedKvCache,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!("decode_verify_multi: unsupported for this layer type")
+    }
+
     /// Allocate per-sequence state for this layer.
     ///
     /// Called once when a new sequence is created. Returns:

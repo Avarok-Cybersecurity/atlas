@@ -531,6 +531,54 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<[u32; 4]>;
 
+    /// Whether [`Self::decode_verify_batched_k4`] can run for `n` sequences.
+    ///
+    /// Default `false`: the scheduler MUST fall back to the per-sequence
+    /// `decode_verify_graphed_k4` loop. There is deliberately NO default loop
+    /// impl of the batched form — a loop over the per-seq verify would leave
+    /// the shared logits buffer holding only the LAST sequence's rows and
+    /// silently poison row-based pipeline picks.
+    fn can_batch_verify_k4(&self, _n: usize) -> bool {
+        false
+    }
+
+    /// Batched K=4 verify: n sequences × 4 rows in ONE eager forward
+    /// (seq-major rows `r = i*4 + j`). Weight matrices are read once for all
+    /// `n*4` rows. Per sequence i: `tokens[i] = [last_verified, d0, d1, d2]`.
+    /// Returns per-sequence `[4]` argmax IDs in input order. On success each
+    /// sequence's `tokens`/`seq_len` advance by 4 (rewind is the caller's
+    /// verdict arithmetic, same as the per-seq path). On Err NO sequence
+    /// state has been advanced.
+    ///
+    /// Callers must gate on [`Self::can_batch_verify_k4`].
+    fn decode_verify_batched_k4(
+        &self,
+        tokens: &[[u32; 4]],
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Vec<[u32; 4]>> {
+        let _ = (tokens, seqs, stream);
+        bail!("decode_verify_batched_k4: unsupported by this model")
+    }
+
+    /// Copy raw-hidden rows `rows[i]` of the just-run batched verify forward
+    /// into stash slot `i` (`verify_hidden_stash`), BEFORE any propose
+    /// clobbers the shared `hidden_states` buffer. Companion of
+    /// [`Self::decode_verify_batched_k4`].
+    fn stash_verify_hidden_rows(&self, rows: &[usize], stream: u64) -> Result<()> {
+        let _ = (rows, stream);
+        bail!("stash_verify_hidden_rows: unsupported by this model")
+    }
+
+    /// Stashed-row variant of [`Self::save_hidden_for_mtp`]: copy stash slot
+    /// `idx` (written by [`Self::stash_verify_hidden_rows`]) into the MTP
+    /// input buffer. Used by the batched-verify verdict path, whose propose
+    /// calls have already overwritten the live verify rows.
+    fn save_hidden_for_mtp_from_stash(&self, idx: usize, stream: u64) -> Result<()> {
+        let _ = (idx, stream);
+        bail!("save_hidden_for_mtp_from_stash: unsupported by this model")
+    }
+
     /// DFlash K=γ graphed verify (γ+1 tokens). Specialization of the K=2/3/4
     /// pattern for arbitrary K. Default impl falls back to eager
     /// `decode_verify`. Models can override for CUDA-graph speedup keyed by

@@ -288,6 +288,14 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        // Batched-verify hidden stash: [8, hidden] BF16 (n ≤ 8 envelope).
+        // Only meaningful with an MTP proposer — NULL otherwise (the batched
+        // verify path self-gates on it via can_batch_verify_k4).
+        let verify_hidden_stash = if proposer.is_some() {
+            gpu.alloc(8 * config.hidden_size * 2)?
+        } else {
+            DevicePtr::NULL
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -634,6 +642,7 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            verify_hidden_stash,
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
