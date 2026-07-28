@@ -1330,3 +1330,32 @@ multi-turn workloads with long shared prefixes; the defect is the cold drafter a
 (`speculative.rs:194`), not the cache.
 ★ Every headline number in this campaign was measured at C=16 WITH caching on, where the
 penalty does not appear (no within-run drift at C=16), so the shipped wins are unaffected.
+
+### ★★ CORRECTION: the defect is KNOWN, and my "reject the threshold" advice above was WRONG
+`crates/spark-model/src/model/mtp_carry.rs` documents this exact mechanism from a prior
+session: on a warm turn `mtp_prefill_capture_len` stays 0, the `captured >= prompt_len` guard
+fails, `prefill_drafter` is skipped and the drafter starts EMPTY — measured there at
+**"+10% accepted tokens per verify step"**, matching tonight's -10% acceptance measured
+independently via throughput drift -> A/B -> k4 stats -> `speculative.rs:194`.
+It also PRE-REFUTES the obvious remedy with numbers: a full warm-turn `prefill_drafter` costs
+**1136 ms** against a **1134 ms** warm TTFT — it doubles TTFT to buy ~10% of decode, a
+wall-clock LOSS. Do not propose the rebuild.
+
+**What is NEW tonight is the SCOPE.** The shipped fix (`ATLAS_MTP_CARRY_DRAFTER`, on by
+default) carries the drafter's KV across turns OF THE SAME SESSION, and its premise is that
+"a turn's prompt is a strict extension of the previous turn's full sequence". That covers
+multi-turn resumes. It does NOT cover a **preamble-only hit**: a fresh request matching the
+shared chat-template prefix of a DIFFERENT conversation. There is no previous turn to carry
+from, so carry cannot fire and the drafter is cold. That is precisely what `prof_drive`
+produces, and it costs **-6.8% at C=1 and -9.2% at C=2** (inert by C=4).
+
+### => The size threshold I rejected earlier IS the right fix here. That rejection was wrong.
+- long-prefix hit that is a turn extension -> carry fires -> drafter warm -> NO penalty
+- short preamble-only hit -> carry cannot fire -> drafter cold -> penalty, while the prefill
+  saved is only ~16-26 tokens (~30 ms) against 0.5-1.7 s of lost acceptance
+So gating the Marconi skip on matched-prefix length does not hide a handoff bug for long
+prefixes — **carry already handles those** — it declines a trade that is measurably bad.
+**Proposed rule:** take the Marconi SSM skip only when the carry will fire (same session,
+strict extension) OR the matched prefix is long enough that the saved prefill exceeds the
+acceptance cost. Calibrate the threshold from the two measured points (26 tokens => -7 to -9%;
+inert at C>=4) before choosing a constant; do not guess it.
