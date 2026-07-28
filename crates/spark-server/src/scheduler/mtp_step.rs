@@ -53,6 +53,15 @@ pub fn step_mtp(
             tracing::error!("bootstrap sync_secondary: {e:#}");
         }
     }
+    // Batched form: ONE `decode_batch` for every draftless sequence plus a
+    // batched cross-sequence propose, replacing n M=1 weight sweeps of the
+    // target and n of the drafter. Falls back to the per-sequence loop below
+    // whenever the envelope does not hold (`mtp_bootstrap_step`); kill switch
+    // ATLAS_NO_MTP_BATCH_BOOTSTRAP.
+    if can_batch_bootstrap(model, bootstrap_idxs.len(), dflash_verify_raw_argmax) {
+        step_mtp_bootstrap_batched(model, active, &bootstrap_idxs, ladder_nd, verify_ctx);
+        bootstrap_idxs.clear();
+    }
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
 
