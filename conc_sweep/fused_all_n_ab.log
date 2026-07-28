@@ -1,0 +1,16 @@
+--- leg: OLD (fused only n>=9) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.8s total_tok=3072 agg=106.5 tok/s
+   rep2 C=16: wall=28.9s total_tok=3072 agg=106.4 tok/s
+   rep3 C=16: wall=28.8s total_tok=3072 agg=106.6 tok/s
+   rep4 C=16: wall=28.7s total_tok=3072 agg=106.9 tok/s
+--- leg: NEW (fused at all n) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.8s total_tok=3072 agg=106.6 tok/s
+   rep2 C=16: wall=28.8s total_tok=3072 agg=106.5 tok/s
+   rep3 C=16: wall=28.9s total_tok=3072 agg=106.5 tok/s
+   rep4 C=16: wall=28.9s total_tok=3072 agg=106.2 tok/s
+[2m2026-07-28T01:19:01.417161Z[0m [32m INFO[0m [2mspark::grammar::engine[0m[2m:[0m Grammar: detected tokenizer vocab_type=byte_level, add_prefix_space=f
+[2m2026-07-28T01:19:39.007195Z[0m [32m INFO[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Jinja rendered (147 chars): "<|im_start|>user\nWrite a detailed 
+[2m2026-07-28T01:19:40.719108Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 760
+AB_DONE

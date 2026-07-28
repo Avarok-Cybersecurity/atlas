@@ -1071,3 +1071,20 @@ the old binary in place — that bit me earlier tonight with the GDN kernel).
 ★ RULE OF THUMB now calibrated: this harness resolves ~>=0.8% reliably. A kernel-level gain
 only matters if (kernel share of step) x (kernel gain) clears that. qkvz is 10.6% of the step,
 so it needs a >7% kernel win to be worth measuring at all.
+
+### Fused q/k/v at ALL n (removing the `n > 8` gate): NULL on this benchmark, reverted
+The gate exists only because `wide_verify_gemm` early-returns on its GEMV arms for m<=8 and
+ignores `w_t`; calling `ops::w4a16_gemm_n128` DIRECTLY removes the need for it. The work
+reduction is real — nsys prices the split path at 279 us (q, gridX 96) + 218.5 + 218.5 (k/v,
+gridX 8) = **716 us vs ~273 us fused**.
+Measured 4 reps/leg, byte-identical, control pinned via a new `ATLAS_FUSED_QKV_MIN_N=9`:
+OLD **106.60** vs NEW **106.45** => -0.14%, ranges OVERLAP. NULL, reverted and rebuilt.
+★ WHY, and the sizing error to avoid repeating: I derived "~1.4 ms/step" by dividing 1024
+split-path instances by ~175 steps. Those instances are NOT spread across steps — they are
+concentrated in the brief ramp/drain tail, because `prof_drive` fires all 16 requests at once
+with identical `max_tokens`, so n stays 16 for nearly the whole run.
+**An "instances over the run / total steps" average is meaningless when the instances are
+concentrated in a few steps.** Check the step DISTRIBUTION before sizing.
+★ Worth revisiting under STAGGERED arrivals (real serving), where small-n steps are common —
+the change is strictly less work and byte-identical. It needs a benchmark with arrival jitter,
+which `prof_drive` does not model.
