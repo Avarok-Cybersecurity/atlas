@@ -970,3 +970,38 @@ for ~20 minutes, starving the next container and producing 500s that looked exac
 is broken after the reverts". `compute-sanitizer` runs the app under a `TreeLauncherSubreaper`,
 so the TERM went to the wrapper, not the process, while the script printed its DONE marker.
 **Verify with `nvidia-smi --query-compute-apps` — do not trust a script's completion message.**
+
+## 2026-07-28 — k64 THRESHOLD FIX (+3.4%, shipped) · GDN register-resident (REGRESSION, reverted)
+
+### `140be0e6` — k64 threshold 4096 -> 6144. **+3.4% C=16. Biggest single win of the session.**
+★ This fixed a regression I introduced EARLIER THE SAME DAY in `b98ce911`, which lowered the
+threshold to 4096 based on the ffn/out_proj shapes without ever benchmarking K=5120.
+Measured at M=16 on the real decode shapes (230 GB/s denominator):
+| shape | `_t` | `_k64` | `_m128` |
+|---|---|---|---|
+| ssm_qkvz     N=16384 **K=5120** | 281.9 | **341.6 (was selected)** | 272.4 |
+| attn qkv     N=14336 **K=5120** | 273.9 | **328.5 (was selected)** | 262.8 |
+| ssm_out_proj N=5120  **K=6144** | 237.7 | **163.3 (correct)** | 240.7 |
+`_k64` is the WORST variant at K=5120 and the best only at K>=6144. 48 qkvz + 16 fused-qkv
+launches/step were on the slowest kernel available for a full day.
+Measured, 4 reps/leg, warmup discarded, byte-identical:
+OLD 103.4/103.1/102.6 = **103.03** -> NEW 106.7/106.5/106.8/106.1 = **106.53**, disjoint.
+★ RULE: a threshold measured on two shapes does NOT generalise to a third. Added
+`ATLAS_W4A16_K64_MIN_K=<n>` so any A/B can pin a prior threshold exactly.
+★ `_m128` is faster still at K=5120 (272.4 / 262.8) — a further ~0.6 ms is available.
+
+### GDN single-pass register-resident decode: **REGRESSION -11.6%, REVERTED**
+The diagnosis was right: `gated_delta_rule_decode_f32_strided_norm` reads H for `hk_dot` and
+then RE-READS the identical values for the update; at batch 16 the live state is ~49 MB so the
+second read partially misses L2. A standalone prototype holding the H column in registers
+measured **927 -> 542 us (1.71x), byte-identical**.
+**In production it is 11.6% SLOWER end-to-end**: 107.13 -> 94.73 tok/s (4 reps/leg,
+byte-identical, disjoint). GDN is ~29.7 ms of a ~140 ms step, so the kernel roughly DOUBLED.
+Cause: `hreg[128]` (512 B/thread) spills to local memory. The production kernel carries far
+more register pressure than the prototype — the Frobenius norm clamp, the two-stage RMS
+reduction, and the packed-BF16 epilogue all live in the same function — so it spills where the
+isolated version did not.
+★ LESSON: an isolated kernel prototype does NOT transfer to a kernel with a larger epilogue.
+Register-residency wins are contingent on the WHOLE function's register budget, not the loop
+being optimised. Retry only with the epilogue split into a second kernel (so the hot loop's
+budget is its own), or with a smaller tile (e.g. hreg[64] and two passes over half-columns).

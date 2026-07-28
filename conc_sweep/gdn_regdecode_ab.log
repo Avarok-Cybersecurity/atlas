@@ -1,0 +1,16 @@
+--- leg: OLD (two-pass, H re-read) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.7s total_tok=3072 agg=107.0 tok/s
+   rep2 C=16: wall=28.7s total_tok=2977 agg=103.6 tok/s
+   rep3 C=16: wall=28.7s total_tok=3072 agg=107.2 tok/s
+   rep4 C=16: wall=28.6s total_tok=3072 agg=107.2 tok/s
+--- leg: NEW (single-pass, H in registers) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=32.5s total_tok=3072 agg=94.7 tok/s
+   rep2 C=16: wall=32.4s total_tok=3072 agg=94.8 tok/s
+   rep3 C=16: wall=32.4s total_tok=3072 agg=94.7 tok/s
+   rep4 C=16: wall=32.4s total_tok=3072 agg=94.7 tok/s
+[2m2026-07-28T00:14:06.719855Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Prefix cache hit: 16 tokens (1 bloc
+[2m2026-07-28T00:14:46.164716Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=64 end_block
+[2m2026-07-28T00:15:12.719399Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a2[0m[2m:[0m Captured CUDA graph for batch size 16
+AB_DONE
