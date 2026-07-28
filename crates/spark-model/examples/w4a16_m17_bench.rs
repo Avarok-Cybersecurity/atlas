@@ -116,6 +116,11 @@ fn launch(
         .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
+        // ldb: transposed-B row stride. `w4a16_gemm_t` gained this parameter when
+        // lm_head needed a padded stride (vocab 248077 is odd and broke its 16-byte
+        // cp.async). The packed case is ldb == n. Harmless for the kernels that do
+        // not declare it — the launch API only reads declared params.
+        .arg_u32(n)
         .launch(0)
 }
 

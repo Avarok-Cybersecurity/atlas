@@ -2015,3 +2015,19 @@ Implementation notes for whoever touches this next:
 C=16 **113.1 -> 126.88 tok/s (+12.2%)**, ratio 0.71x -> **0.751x** vs vLLM 168.9.
 Shipped: strided RoPE +0.87% · lm_head tile GEMM +5.50% · FFN MMQ SoA +4.6% · k64 pipeline +1.81%.
 Plus one correctness fix (strix-hip `ldb`, silent garbage logits at C>=5 on that platform).
+
+## 2026-07-28 — verification gap closed + a harness breakage I introduced
+
+★ **The `ldb` parameter silently broke two dev harnesses.** `w4a16_parity_microtest.rs` and
+`w4a16_m17_bench.rs` build their OWN `KernelLaunch` with the old 8-argument list, so after
+`w4a16_gemm_t` gained `ldb` they passed an uninitialized 9th param. PRODUCTION was unaffected (it
+routes through `w4a16_gemm_n128`, which delegates with `ldb = n`), but every future run of those
+tools would have been garbage — and the bench is the campaign's main per-shape instrument.
+Both fixed by passing `n` as the packed-case stride.
+★ RULE: when adding a kernel parameter, grep for `KernelLaunch::new` on that kernel — the ops
+wrapper is NOT the only launcher. Test harnesses bypass it by design.
+
+★ **`w4a16_gemm_t_k64_p3` added to the parity oracle and PASSES**, with cos/max|Δ| IDENTICAL to its
+`_k64` parent on every shape (attn_o 0.9991119/0.09961, attn_q 0.9991262/0.10156, ffn_down
+0.9991187/0.17969). That is kernel-level bit-identity evidence, strictly stronger than the
+single-prompt output hash the lever originally shipped on. Full gate: PASS.
