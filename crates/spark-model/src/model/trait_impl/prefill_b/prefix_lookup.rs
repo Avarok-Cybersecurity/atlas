@@ -159,21 +159,28 @@ impl TransformerModel {
                 let exact_without_hidden = snap_tok == matched
                     && matched == total
                     && !self.ssm_snapshots.has_hidden(snap_id);
-                // `ATLAS_NO_MARCONI_EXACT=1` must be decided HERE, not after the
-                // restore below. It used to be checked ~80 lines further down,
-                // where it set `skip = false` to force a full recompute — but by
-                // then `restore()` had ALREADY overwritten the SSM pool with the
-                // snapshot state. The "full recompute" then ran the prefill on top
-                // of a restored (non-zero) starting state instead of a clean one,
-                // so the flag did the opposite of what it documents.
+                // The bypass must be decided HERE, not after the restore below.
+                // It used to be checked ~80 lines further down, where it set
+                // `skip = false` to force a full recompute — but by then
+                // `restore()` had ALREADY overwritten the SSM pool with the
+                // snapshot state, so the "full recompute" ran on top of a
+                // restored (non-zero) starting state and the flag did the
+                // opposite of what it documents (measured: 2/10 -> 5/10
+                // distinct warm completions with the old position).
                 //
-                // MEASURED: with the check in its old position, warm requests went
-                // from 2/10 distinct completions to 5/10 — the bypass made
-                // determinism WORSE, which is what exposed the ordering bug.
-                // Skipping the restore too is what the flag always meant.
+                // BYPASS IS THE DEFAULT. The exact-full-prompt shortcut is UNSOUND BY
+                // CONSTRUCTION, not merely buggy: computing the last token needs
+                // SSM state@(N-1), the snapshot holds state@N, and the recurrence
+                // is not invertible, so state@(N-1) cannot be recovered. The path
+                // therefore re-runs token N-1 from state@N (a deliberate
+                // "double-advance"), patches the SSM state back afterwards — and
+                // leaves the KV it wrote for position N-1 CORRUPTED, in a block
+                // SHARED with the prefix cache. `ctx.gdn_exact_replay`'s own doc
+                // in layer.rs describes this same poisoning for the GDN path.
+                // `ATLAS_MARCONI_EXACT=1` re-enables it for A/B.
                 let bypass_exact = snap_tok == matched
                     && matched == total
-                    && std::env::var("ATLAS_NO_MARCONI_EXACT").as_deref() == Ok("1");
+                    && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
                 // Session gate applies ONLY to TAIL snapshots (their state
                 // bleeds past the exact prefix). Exact / is_tail_sibling
                 // snapshots are content-addressed by the verified token prefix
@@ -278,12 +285,12 @@ impl TransformerModel {
             if skip
                 && prefix_match.ssm_snapshot_tokens == matched
                 && matched == total
-                && std::env::var("ATLAS_NO_MARCONI_EXACT").as_deref() == Ok("1")
+                && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1")
             {
                 skip = false;
                 seq.marconi_exact_snap = None;
                 tracing::info!(
-                    "ATLAS_NO_MARCONI_EXACT: bypassing exact-leaf snapshot shortcut \
+                    "exact-leaf snapshot shortcut bypassed (default; ATLAS_MARCONI_EXACT=1 re-enables) \
                      for {matched}-token full hit — recomputing all KV+SSM"
                 );
             }
