@@ -89,7 +89,11 @@ impl TransformerModel {
         let dense_gemv_fp32out_kernel = KernelHandle(0);
         let w4a16_gemv_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
-        let w4a16_gemm_t_kernel = crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t");
+        // lm_head shares the tile GEMM, so route it through the same resolver as
+        // the SSM/attention sites — it picks the 3-deep pipeline variant when
+        // present. lm_head launches 1938 CTAs and already sits at ~83% of
+        // achievable, so the expected gain here is small; measured, not assumed.
+        let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
