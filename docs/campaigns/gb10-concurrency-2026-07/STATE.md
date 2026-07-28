@@ -2056,3 +2056,11 @@ it is a tunable with an interior optimum, and here the optimum is 3.
 C=16 **113.1 -> 129.7-130.2 tok/s (+15%)**, ratio 0.71x -> **0.768x**. C=8 71.2 -> 75.6 (0.764x).
 Shipped, ALL byte-identical except lm_head: strided RoPE +0.87% · lm_head tile GEMM +5.50% ·
 FFN MMQ SoA +4.6% · k64 3-deep pipeline +1.81% · tgemm 3-deep pipeline +2.57%.
+
+### lm_head routed through `tgemm_kernel` — MEASURED NEUTRAL (kept for consistency)
+lm_head was the last site resolving `w4a16_gemm_t` directly, so it stayed on the 2-stage parent.
+Routing it through the resolver measures **+2.55% vs +2.57% before** — i.e. contributes NOTHING,
+which is the predicted result and a check on the grid.x model: at 1938 CTAs lm_head already has the
+co-residency that covers the parent's drain. Kept because it is byte-identical, cost-free, and
+removes the last bypass of the resolver. ★ A neutral result that CONFIRMS a model is worth keeping
+and recording; it is evidence, not a wasted experiment.
