@@ -2031,3 +2031,28 @@ wrapper is NOT the only launcher. Test harnesses bypass it by design.
 `_k64` parent on every shape (attn_o 0.9991119/0.09961, attn_q 0.9991262/0.10156, ffn_down
 0.9991187/0.17969). That is kernel-level bit-identity evidence, strictly stronger than the
 single-prompt output hash the lever originally shipped on. Full gate: PASS.
+
+## 2026-07-28 — ★ SHIPPED: 3-deep weight pipeline for `w4a16_gemm_t` (+2.57% C=16)
+Same change as the k64 sibling, applied to TWICE the surface (26.5 ms/step vs 13.4).
+C=16 **126.47 -> 129.72** (4 reps/leg, 129.6-129.9 vs 126.0-126.8, DISJOINT), byte-identical
+(`bf3a0b07...` both legs). Default ON, kill `ATLAS_NO_TGEMM_PIPELINE3` (PRESENCE). Three qwen3
+handle sites route through one `layers::tgemm_kernel` helper, which falls back automatically on
+targets that do not ship `_p3`.
+
+Sweep: C=1 25.45 · C=2 25.45 · C=4 48.55 · C=8 **75.6 (0.764x)** · C=16 **129.35-130.2 (0.768x)**.
+
+### ★ NULL (with a mechanism): FOUR stages is a 5% REGRESSION — depth 3 is the optimum
+Extending the same kernel to a 4-deep pipeline measured **120.3 vs 126.5 for the 2-stage parent**,
+i.e. WORSE than doing nothing, and far worse than 3-deep's 129.7. Cause: a 4-deep weight pipeline
+also forces A to >=3 deep (step i+3 would otherwise overwrite an A buffer that MMA(i) has not read
+— caught BEFORE measuring, by index analysis). Making A 4-deep takes the tile from 5,120 to 20,480
+B and total smem from ~22 KB to ~37 KB, which drops the LARGER-grid shapes (qkvz 128 CTAs, fused
+QKV 112) from 2 CTAs/SM to 1 — destroying exactly the co-residency that was covering their latency.
+★ RULE: pipeline depth trades in-flight bytes against OCCUPANCY. On a kernel whose bigger shapes
+rely on co-residency, past ~3 stages the occupancy loss dominates. Do not assume deeper is better;
+it is a tunable with an interior optimum, and here the optimum is 3.
+
+### Running total for the night
+C=16 **113.1 -> 129.7-130.2 tok/s (+15%)**, ratio 0.71x -> **0.768x**. C=8 71.2 -> 75.6 (0.764x).
+Shipped, ALL byte-identical except lm_head: strided RoPE +0.87% · lm_head tile GEMM +5.50% ·
+FFN MMQ SoA +4.6% · k64 3-deep pipeline +1.81% · tgemm 3-deep pipeline +2.57%.
