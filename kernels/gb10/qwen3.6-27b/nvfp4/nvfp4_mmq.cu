@@ -128,6 +128,29 @@ extern "C" __global__ void atlas_nvfp4_repack(
     const uint8_t* srow = scales + (int64_t) row * (k / 16);
     block_nvfp4 dst;
 
+    // ── SoA output layout (A2) ────────────────────────────────────────────
+    // Same total bytes as the AoS `block_nvfp4[nblocks]` form (36 B/block), but
+    // split WITHIN each row: [qs: blocks_per_row*32][d: blocks_per_row*4].
+    //
+    // WHY: the AoS block interleaves 4 scale bytes with 32 nibble bytes, so the
+    // tile loader had to issue NINE 4-byte loads per block (8 qs + 1 d). With qs
+    // contiguous, the same 32 bytes are TWO 16-byte loads, and `d` is one more —
+    // 9 global ops -> 3. The consumer is `load_tiles_nvfp4_nvfp4` in
+    // q4k_vendor/mmq.cuh, which is the ONLY reader of this buffer (Atlas exposes
+    // no MMVQ entry point, so vecdotq.cuh's nvfp4 path is unreachable).
+    //
+    // The SHARED-memory tile layout is unchanged, so `vec_dot` and the MMA path
+    // are untouched and the result is bit-identical.
+    //
+    // Alignment: row_bytes = blocks_per_row*36 is 16-B aligned iff
+    // blocks_per_row % 4 == 0, i.e. K % 256 == 0. Both live K (5120 -> 80 blocks,
+    // 17408 -> 272) satisfy it, and MMQ already requires K % 512 == 0 for its
+    // 512-wide K iteration. Assert rather than assume.
+    const int qs_region = blocks_per_row * 32;
+    uint8_t* row_out = (uint8_t*) out + (int64_t) row * blocks_per_row * 36;
+    uint8_t* qs_out  = row_out + kb * 32;
+    uint8_t* d_out   = row_out + qs_region + kb * 4;
+
 #pragma unroll
     for (int s = 0; s < QK_NVFP4 / QK_NVFP4_SUB; ++s) {          // 4 sub-blocks of 16
         const int k0 = kb * QK_NVFP4 + s * QK_NVFP4_SUB;
@@ -141,7 +164,10 @@ extern "C" __global__ void atlas_nvfp4_repack(
             dst.qs[s * 8 + j] = (int8_t)(na | (nb << 4));
         }
     }
-    out[b] = dst;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) qs_out[j] = (uint8_t) dst.qs[j];
+#pragma unroll
+    for (int s2 = 0; s2 < 4; ++s2) d_out[s2] = dst.d[s2];
 }
 
 // SiLU(gate*gs)*(up*us): mirrors moe_silu_mul's math exactly (incl. the swiglu ±10 clamp)
