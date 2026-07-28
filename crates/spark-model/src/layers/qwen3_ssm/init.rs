@@ -234,6 +234,12 @@ impl Qwen3SsmLayer {
                 "gdn_verify_fused_conv_kn",
                 "gdn_verify_fused_conv_kn",
             ),
+            // Batched twin (gridDim.y = n_seq) for batched speculative decoding.
+            gdn_verify_fused_conv_kn_batched_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_conv_kn",
+                "gdn_verify_fused_conv_kn_batched",
+            ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(

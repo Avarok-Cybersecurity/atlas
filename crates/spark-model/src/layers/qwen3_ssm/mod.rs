@@ -159,6 +159,8 @@ pub struct Qwen3SsmLayer {
     /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
     /// NULL handle on targets lacking the .cu → per-token loop unchanged.
     gdn_verify_fused_conv_kn_k: KernelHandle,
+    /// Batched twin (gridDim.y = n_seq) — batched spec decode. 0 when absent.
+    gdn_verify_fused_conv_kn_batched_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
