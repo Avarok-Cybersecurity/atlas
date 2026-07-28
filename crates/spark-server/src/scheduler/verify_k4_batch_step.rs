@@ -15,9 +15,10 @@
 //! before ANY sequence's verdict/propose runs (Phase 3).
 //!
 //! Reachability: only via `step_mtp` Phase B when `ATLAS_MTP_MAX_SEQS > 1`
-//! puts >= 2 verify-ready grammarless K=4 sequences in one step AND the
-//! model says `can_batch_verify_k4(n)`. Default cap = 1 keeps this path
-//! dead and the single-seq path byte-unchanged.
+//! (default 16 since 2026-07-28) puts >= 2 verify-ready grammarless K=4
+//! sequences in one step AND the model says `can_batch_verify_k4(n)`.
+//! `ATLAS_MTP_MAX_SEQS=1` keeps this path dead and the single-seq path
+//! byte-unchanged.
 
 use super::*;
 

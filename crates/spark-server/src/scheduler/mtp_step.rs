@@ -276,9 +276,10 @@ pub fn step_mtp(
     // ── Phase B: Verify with pipelined checkpoint ──
     //
     // Batched multi-seq K=4 verify (batched-MTP E11). Only reachable when
-    // `ATLAS_MTP_MAX_SEQS > 1` puts >= 2 verify-ready sequences in one step
-    // (default cap 1 ⇒ this partition is a no-op and every seq takes the
-    // per-seq loop below, byte-identical to HEAD). Batchable = exactly-3
+    // `ATLAS_MTP_MAX_SEQS > 1` (default 16 since 2026-07-28) puts >= 2
+    // verify-ready sequences in one step (`ATLAS_MTP_MAX_SEQS=1` ⇒ this
+    // partition is a no-op and every seq takes the per-seq loop below,
+    // byte-identical to the pre-batched HEAD). Batchable = exactly-3
     // pending drafts (uniform K=4), grammarless, non-DFlash; the model
     // additionally self-gates (non-EP, non-HSS, no LoRA) via
     // `can_batch_verify_k4`. Chunks are capped at 4 seqs (R = 16 rows, the

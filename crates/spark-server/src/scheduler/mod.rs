@@ -171,8 +171,8 @@ pub type LoraRotation = (
 
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
-/// How many concurrent sequences may speculate. Default 1, override with
-/// `ATLAS_MTP_MAX_SEQS`.
+/// How many concurrent sequences may speculate. Default 16, override with
+/// `ATLAS_MTP_MAX_SEQS` (`=1` restores the single-sequence-only gate).
 ///
 /// `step_mtp` is index-correct over the active slice, so raising this runs
 /// MTP over n sequences per step. With the batched K=4 verify wired
@@ -186,11 +186,11 @@ fn mtp_max_seqs() -> usize {
     // SSOT moved to `spark_model::speculative::mtp_max_seqs()` (batched-MTP
     // E1/E2): the model-side single-sequence MTP structures (catchup ring,
     // refeed labels, carry slot) gate on the SAME value the scheduler gates
-    // dispatch on. Same parse, same MEASURED default 1 — at C=2 the per-seq
-    // MTP verify costs more than the drafting saves (26.35 tok/s OFF vs
-    // 25.45 ON), and cap=4 HALVED C=4 (48.5 -> 25.8) when the verify ran
-    // serialized. Raising the cap is what activates the batched multi-seq
-    // verify path (`verify_k4_batch_step.rs`).
+    // dispatch on. Same parse; default 16 since 2026-07-28 — the batched
+    // multi-seq verify + propose (`verify_k4_batch_step.rs`) removed the
+    // serialization that made cap=1 mandatory (C=4 cap=4: 25.8 serialized
+    // -> 49.0 batched vs 48.5 MTP-off). `ATLAS_MTP_MAX_SEQS=1` restores
+    // the old single-sequence-only gate.
     spark_model::speculative::mtp_max_seqs()
 }
 

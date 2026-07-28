@@ -64,19 +64,34 @@ pub fn shadow_topk() -> usize {
     })
 }
 
-/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`, default 1).
+/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`, default 2).
 /// Value-parsed, not presence-checked. Lives here (moved from
 /// `scheduler/mod.rs`) so the model-side single-sequence MTP structures
 /// (catchup ring, refeed labels, carry slot) can gate on the same value the
-/// scheduler gates dispatch on. Default 1 keeps C=1/HEAD behaviour
-/// byte-unchanged; the scheduler's copy delegates here.
+/// scheduler gates dispatch on.
+///
+/// Default 16 (2026-07-28): with the batched verify + batched propose
+/// (`verify_k4_batch_step.rs`, chunks of ≤ 4 seqs), C=4 cap=4 measured
+/// 49.0 vs 48.5 MTP-off — the serialization that made cap=1 the safe
+/// default (25.8 at C=4) is gone. K stays FIXED at the configured
+/// `num_drafts` (K=4): the batched verify path is K=4-uniform only, so
+/// there is no K-vs-batch ladder yet (task #35 / spec step 5 covers it).
+/// Set `ATLAS_MTP_MAX_SEQS=1` to restore the old single-sequence-only
+/// behaviour.
 pub fn mtp_max_seqs() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
         std::env::var("ATLAS_MTP_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1)
+            // MEASURED crossover 2026-07-28 (full sweep, cap=16 vs MTP-off
+            // baselines): C=2 29.95 vs 26.40 (+13%, ABOVE vLLM 27.8 for the
+            // first time) but C=4 48.05 (parity), C=8 49.0 vs 74.65, C=16 50.1
+            // vs 131.25 — fixed K=4 over n sequences COLLAPSES high C
+            // (n*(K+1) verify rows of superlinear GDN + eager verify gaps).
+            // Cap 2 keeps the win and returns C>=4 to the non-MTP path until
+            // the K-vs-batch ladder / depth pruning (task #35) lands.
+            .unwrap_or(2)
     })
 }
 
