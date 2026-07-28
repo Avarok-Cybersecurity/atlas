@@ -1,0 +1,16 @@
+--- leg: OLD (two-pass, full re-read) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.8s total_tok=3072 agg=106.7 tok/s
+   rep2 C=16: wall=28.8s total_tok=3072 agg=106.8 tok/s
+   rep3 C=16: wall=28.8s total_tok=3072 agg=106.7 tok/s
+   rep4 C=16: wall=28.8s total_tok=3072 agg=106.5 tok/s
+--- leg: NEW (half-width retention) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=30.2s total_tok=3072 agg=101.8 tok/s
+   rep2 C=16: wall=30.1s total_tok=3072 agg=102.0 tok/s
+   rep3 C=16: wall=30.2s total_tok=3072 agg=101.7 tok/s
+   rep4 C=16: wall=30.2s total_tok=3072 agg=101.6 tok/s
+[2m2026-07-28T01:31:20.858716Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=128 end_bloc
+[2m2026-07-28T01:31:33.716064Z[0m [32m INFO[0m [2mspark::scheduler::lifecycle[0m[2m:[0m Done: 192 tokens (length) 6.7 tok/s, TTFT=141.6ms
+[2m2026-07-28T01:31:33.716324Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 22 for 217 
+AB_DONE

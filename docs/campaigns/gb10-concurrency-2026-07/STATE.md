@@ -1088,3 +1088,35 @@ concentrated in a few steps.** Check the step DISTRIBUTION before sizing.
 ★ Worth revisiting under STAGGERED arrivals (real serving), where small-n steps are common —
 the change is strictly less work and byte-identical. It needs a benchmark with arrival jitter,
 which `prof_drive` does not model.
+
+### GDN register retention, attempt 2 (HALF-width, `hreg[64]`): -4.6%, reverted
+Better than full-width's -11.6% but still a regression: **106.68 -> 101.78 tok/s**, 4 reps/leg,
+byte-identical, disjoint.
+★ ROOT CAUSE IS AN IMPLEMENTATION ERROR, NOT THE IDEA. Pass 2 was left as
+`#pragma unroll 4` over `j < k_dim` (a RUNTIME bound) and indexes `hreg[j]` — a dynamic index,
+so `hreg` is placed in LOCAL memory. The conditional
+`(j + 0 < GDN_HALF_KD) ? hreg[j + 0] : H[...]` guarantees it. I avoided this trap in pass 1
+(full `#pragma unroll` over a compile-time bound) and then reintroduced it in pass 2.
+
+**The correct shape, for whoever retries:**
+```
+// pass 2a — retained half, FULLY unrolled, static indices
+#pragma unroll
+for (unsigned int j = 0; j < GDN_HALF_KD; j += 4) { h0 = hreg[j+0]; ... }
+// pass 2b — remainder, re-read from H
+#pragma unroll 4
+for (unsigned int j = GDN_HALF_KD; j < k_dim; j += 4) { h0 = H[(j+0)*v_dim + tid]; ... }
+```
+Both loops must write H and accumulate `q_dot`/`norm_acc` in ascending j so the summation order
+matches the original exactly (the Frobenius comment in the production kernel already relies on
+this for bit-identity).
+
+### ★ GDN REGISTER RETENTION: 3 attempts, all regressions. Do not retry without the above.
+| attempt | shape | e2e | mechanism |
+|---|---|---|---|
+| full-width `hreg[128]` | 512 B/thread | **-11.6%** | spills; budget shared with Frobenius clamp + RMS reduction + packed-BF16 epilogue |
+| half-width `hreg[64]` | 256 B/thread | **-4.6%** | pass 2 dynamic index -> local memory |
+| (standalone prototype) | 512 B/thread | *+71%* | carried NONE of the epilogue |
+★ The prototype's 1.71x is real and irrelevant: it measured a loop, not the function. Any
+retry should FIRST split the epilogue (Frobenius clamp + RMS reduction + BF16 pack) into a
+second kernel so the hot loop owns its register budget, THEN retain.
