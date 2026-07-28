@@ -19,8 +19,16 @@ mod default_loops;
 /// `[h_state | Hi0 | Hi1 | Hi2]`, each `VERIFY_WY_TABLE_SEQS` u64 entries
 /// (one per batched-verify sequence, unused tail entries zero). The
 /// per-layer slice handed to `decode_verify_multi` is
-/// `VERIFY_WY_LAYER_STRIDE_BYTES` long.
-pub const VERIFY_WY_TABLE_SEQS: usize = 4;
+/// `VERIFY_WY_LAYER_STRIDE_BYTES` long. At K<4 only the first `k` tables
+/// are filled (`[h | Hi_0..Hi_{k-2}]`); the layout/strides are constant so
+/// the reader's offsets never depend on the ladder step.
+///
+/// 16, not 4: the batched verify runs up to 16 sequences (ladder bottom
+/// step, R = n*2 = 32 rows). At 4 the upload returned NULL for every n>4
+/// batch, which silently declined the whole cross-sequence conv+WY fast
+/// path back to the per-sequence loop at exactly the concurrencies it was
+/// built for. 48 GDN layers x 4 tables x 16 entries x 8 B = 24 KB.
+pub const VERIFY_WY_TABLE_SEQS: usize = 16;
 /// Tables per GDN layer: h_state + Hi0..Hi2 (K=4 verify → 3 intermediates).
 pub const VERIFY_WY_TABLES_PER_LAYER: usize = 4;
 /// Bytes between consecutive tables within a layer slice.

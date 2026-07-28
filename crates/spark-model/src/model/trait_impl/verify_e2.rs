@@ -65,17 +65,27 @@ impl TransformerModel {
     /// vector; refreshing keeps replay correct by construction, not by
     /// invariant).
     ///
+    /// `k` is this step's verify width (rows per sequence, 2..=4 from the
+    /// ladder). Exactly `k` tables are filled — `[h | Hi_0 .. Hi_{k-2}]` —
+    /// because `gdn_decode_wy{2,3,4}` read one h table plus k-1 intermediate
+    /// tables. Table STRIDES are `k`-independent, so a slice offset never
+    /// depends on the ladder step.
+    ///
     /// Returns NULL — uploading nothing — unless EVERY GDN layer × sequence
-    /// provides h_state + ≥3 h intermediates (the layer-side batched arm
+    /// provides h_state + ≥ k-1 h intermediates (the layer-side batched arm
     /// re-checks per layer; defense in depth). NULL keeps the per-sequence
     /// WY loop, which is byte-identical math.
     pub(super) fn upload_verify_wy_tables(
         &self,
         seqs: &[&mut SequenceState],
+        k: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
         let n = seqs.len();
-        if self.verify_wy_tables.is_null() || n > VERIFY_WY_TABLE_SEQS {
+        if self.verify_wy_tables.is_null()
+            || n > VERIFY_WY_TABLE_SEQS
+            || !(2..=crate::layer::VERIFY_WY_TABLES_PER_LAYER).contains(&k)
+        {
             return Ok(DevicePtr::NULL);
         }
         let num_ssm = self.config.num_ssm_layers();
@@ -97,13 +107,14 @@ impl TransformerModel {
                 else {
                     return Ok(DevicePtr::NULL);
                 };
-                if st.h_state.is_null() || st.h_state_intermediates.len() < 3 {
+                if st.h_state.is_null() || st.h_state_intermediates.len() < k - 1 {
                     return Ok(DevicePtr::NULL);
                 }
                 host[base + i] = st.h_state.0;
-                host[base + VERIFY_WY_TABLE_SEQS + i] = st.h_state_intermediates[0].0;
-                host[base + 2 * VERIFY_WY_TABLE_SEQS + i] = st.h_state_intermediates[1].0;
-                host[base + 3 * VERIFY_WY_TABLE_SEQS + i] = st.h_state_intermediates[2].0;
+                for t in 0..k - 1 {
+                    host[base + (t + 1) * VERIFY_WY_TABLE_SEQS + i] =
+                        st.h_state_intermediates[t].0;
+                }
             }
             ssm_idx += 1;
         }

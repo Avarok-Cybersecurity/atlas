@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Cross-sequence batched conv+WY body for the batched K=4 MTP verify
-//! (`GdnStates::Multi`). Collapses the per-sequence loop — n × (4
-//! `conv1d_update_l2norm` + 3 conv-state `copy_d2d_async` + 1
-//! `gdn_decode_wy4`) = 8n launches per GDN layer — into TWO launches:
+//! Cross-sequence batched conv+WY body for the batched K-row MTP verify
+//! (`GdnStates::Multi`, k = 2..=4 from the K-vs-batch ladder). Collapses the
+//! per-sequence loop — n × (k `conv1d_update_l2norm` + (k-1) conv-state
+//! `copy_d2d_async` + 1 `gdn_decode_wy{k}`) = n(2k-1) launches per GDN layer
+//! — into TWO launches:
 //!
 //! 1. `gdn_verify_fused_conv_kn_batched` (gridDim.y = n): all n sequences ×
 //!    K positions of conv1d+SiLU+L2norm in one launch, every per-token
@@ -15,12 +16,21 @@
 //!    allocates `num_intermediates = K` snapshots per slot, and the
 //!    preconditions below verify index K-1 exists and is intra-slot
 //!    contiguous before the launch.
-//! 2. `gdn_decode_wy4` at `batch_size = n` with `state_is_table = true`:
+//! 2. `gdn_decode_wy{2,3,4}` at `batch_size = n` with `state_is_table = true`:
 //!    ONE launch over device pointer tables (one entry per sequence) for
-//!    h_state + the 3 Hi intermediates — the table form that sidesteps the
+//!    h_state + the k-1 Hi intermediates — the table form that sidesteps the
 //!    intermediates-stride corruption the contiguous form has at n > 1
 //!    (see the ensure! in `ops::gdn_decode_wy4`). Per-sequence math is
 //!    byte-identical (`b` only selects base addresses).
+//!
+//! K-GENERIC (2026-07-28). This path was gated to k == 4 because only wy4
+//! carried the pointer-table form; every K-vs-batch ladder step below 4
+//! therefore ran the per-sequence loop — n launches per GDN layer instead of
+//! 2 — which is a named suspect for the measured "K=1 verify step costs ~1.9x
+//! a plain batch-16 decode step" (break-even at p1~0.72 is 1.72x). wy2/wy3
+//! now take the same `state_is_table` flag, so k in {2,3,4} all take the
+//! two-launch path. The conv kernel was already K-generic (`num_tokens` is a
+//! runtime arg).
 //!
 //! The conv launch needs UNIFORM per-sequence strides, which holds iff the
 //! batch occupies CONSECUTIVE ssm-pool slots in batch order. That is checked
@@ -46,8 +56,18 @@ use crate::layers::ops;
 /// finish, so fallbacks are expected to recur).
 static BATCHED_OK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static FALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static ENGAGED_ONCE: std::sync::Once = std::sync::Once::new();
-static FALLBACK_ONCE: std::sync::Once = std::sync::Once::new();
+/// Bit `k` set once the ENGAGED / DECLINED line has been logged for verify
+/// width `k`. Per-`k` (not a single `Once`) so a serve log PROVES which
+/// ladder widths actually took the two-launch path — a single first-hit line
+/// at k=4 would say nothing about the k=2/k=3 steps this change exists for.
+static ENGAGED_KMASK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static DECLINED_KMASK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Set bit `k` in `mask`; returns true iff this call set it (first time).
+fn first_for_k(mask: &std::sync::atomic::AtomicU32, k: usize) -> bool {
+    let bit = 1u32 << (k & 31);
+    (mask.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit) == 0
+}
 
 /// Kill switch, PRESENCE check (`=0` is NOT off), read once per process.
 fn verify_gdn_batch_enabled() -> bool {
@@ -77,13 +97,20 @@ impl Qwen3SsmLayer {
     ) -> Result<bool> {
         let n = states.len();
         let kk = args.num_tokens;
-        // wy4 is the only WY kernel with the pointer-table form (wy2/wy3
-        // hard-refuse batch > 1); K != 4 declines.
-        if kk != 4
-            || n < 2
+        // wy2/wy3/wy4 all carry the `state_is_table` pointer-table form, so
+        // every K-vs-batch ladder width takes the two-launch path. The handle
+        // is selected here (try_kernel misses are a silent 0 — gate on it,
+        // never assume resolution).
+        let wy_k = match kk {
+            2 => self.gdn_wy2_k,
+            3 => self.gdn_wy3_k,
+            4 => self.gdn_wy4_k,
+            _ => return Ok(false),
+        };
+        if n < 2
             || !verify_gdn_batch_enabled()
             || self.gdn_verify_fused_conv_kn_batched_k.0 == 0
-            || self.gdn_wy4_k.0 == 0
+            || wy_k.0 == 0
             || wy_tables.is_null()
         {
             return Ok(false);
@@ -97,7 +124,7 @@ impl Qwen3SsmLayer {
         let mut inter_seq_stride = 0u64;
         for i in 0..n {
             let Some(st) = states[i].as_any().downcast_ref::<SsmLayerState>() else {
-                return Ok(self.gdn_multi_decline(n));
+                return Ok(self.gdn_multi_decline(n, kk));
             };
             // The batched conv writes snapshots t = 0..K-1 at stride
             // conv_bytes; every index must exist and be intra-slot contiguous.
@@ -105,12 +132,12 @@ impl Qwen3SsmLayer {
             // intermediates 0..2 — existence re-checked here (defense in
             // depth; the model declines the upload on the same condition).
             if st.conv_state_intermediates.len() < kk || st.h_state_intermediates.len() < kk - 1 {
-                return Ok(self.gdn_multi_decline(n));
+                return Ok(self.gdn_multi_decline(n, kk));
             }
             let i0 = st.conv_state_intermediates[0];
             for t in 1..kk {
                 if st.conv_state_intermediates[t].0 != i0.0 + (t * conv_bytes) as u64 {
-                    return Ok(self.gdn_multi_decline(n));
+                    return Ok(self.gdn_multi_decline(n, kk));
                 }
             }
             if i == 0 {
@@ -118,7 +145,7 @@ impl Qwen3SsmLayer {
                 inter_base = i0;
             } else {
                 if st.conv_state.0 != conv_base.0 + (i * conv_bytes) as u64 {
-                    return Ok(self.gdn_multi_decline(n));
+                    return Ok(self.gdn_multi_decline(n, kk));
                 }
                 if i == 1 {
                     inter_seq_stride = i0.0.wrapping_sub(inter_base.0);
@@ -127,10 +154,10 @@ impl Qwen3SsmLayer {
                     // conv_bytes with num_intermediates >= K, so this holds
                     // for pool-backed states; checked, not assumed).
                     if inter_seq_stride < (kk * conv_bytes) as u64 {
-                        return Ok(self.gdn_multi_decline(n));
+                        return Ok(self.gdn_multi_decline(n, kk));
                     }
                 } else if i0.0 != inter_base.0 + (i as u64) * inter_seq_stride {
-                    return Ok(self.gdn_multi_decline(n));
+                    return Ok(self.gdn_multi_decline(n, kk));
                 }
             }
         }
@@ -181,48 +208,98 @@ impl Qwen3SsmLayer {
             stream,
         )?;
 
-        // ── 1 launch: WY4 over all n sequences via pointer tables ──
-        // Activation rows are seq-major (`r = b*4 + t`), exactly the kernel's
-        // `(b*4+T)*stride` indexing; the 4 state args become device pointer
-        // tables (h | Hi0 | Hi1 | Hi2), one `VERIFY_WY_TABLE_STRIDE_BYTES`
-        // slab each, staged by the model pre-graph.
+        // ── 1 launch: WY over all n sequences via pointer tables ──
+        // Activation rows are seq-major (`r = b*k + t`), exactly the kernels'
+        // `(b*K+T)*stride` indexing; the state args become device pointer
+        // tables (h | Hi0 | ..), one `VERIFY_WY_TABLE_STRIDE_BYTES` slab
+        // each, staged by the model pre-graph. Only the first `kk` slabs are
+        // read (wy2 takes h+Hi0, wy3 h+Hi0+Hi1, wy4 h+Hi0..Hi2).
         let q_ptr = conv_out_buf;
         let k_ptr = conv_out_buf.offset(key_dim * bf16);
         let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
         let gate_ptr = gates_buf;
         let beta_ptr = gates_buf.offset(nv * fp32);
-        ops::gdn_decode_wy4(
-            ctx.gpu,
-            self.gdn_wy4_k,
-            wy_tables,
-            q_ptr,
-            k_ptr,
-            v_ptr,
-            gate_ptr,
-            beta_ptr,
-            gdn_out_buf,
-            wy_tables.offset(VERIFY_WY_TABLE_STRIDE_BYTES),
-            wy_tables.offset(2 * VERIFY_WY_TABLE_STRIDE_BYTES),
-            wy_tables.offset(3 * VERIFY_WY_TABLE_STRIDE_BYTES),
-            n as u32,
-            nk as u32,
-            nv as u32,
-            kd as u32,
-            vd as u32,
-            conv_dim as u32, // qk_stride
-            conv_dim as u32, // v_stride
-            (nv * 2) as u32, // gb_stride
-            true,            // state_is_table — pointer tables, one entry per sequence
-            stream,
-        )?;
+        let hi = |t: usize| wy_tables.offset(t * VERIFY_WY_TABLE_STRIDE_BYTES);
+        match kk {
+            2 => ops::gdn_decode_wy2(
+                ctx.gpu,
+                wy_k,
+                wy_tables,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                hi(1),
+                n as u32,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32, // qk_stride
+                conv_dim as u32, // v_stride
+                (nv * 2) as u32, // gb_stride
+                true,            // state_is_table — one table entry per sequence
+                stream,
+            )?,
+            3 => ops::gdn_decode_wy3(
+                ctx.gpu,
+                wy_k,
+                wy_tables,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                hi(1),
+                hi(2),
+                n as u32,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                (nv * 2) as u32,
+                true,
+                stream,
+            )?,
+            _ => ops::gdn_decode_wy4(
+                ctx.gpu,
+                wy_k,
+                wy_tables,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_out_buf,
+                hi(1),
+                hi(2),
+                hi(3),
+                n as u32,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                (nv * 2) as u32,
+                true,
+                stream,
+            )?,
+        }
 
         let ok = BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        ENGAGED_ONCE.call_once(|| {
+        if first_for_k(&ENGAGED_KMASK, kk) {
             tracing::info!(
-                "batched-verify GDN conv+WY ENGAGED (n={n}): per-layer 8n launches -> 2 \
-                 (batched conv kernel + table-form wy4); count logged at debug"
+                "batched-verify GDN conv+WY ENGAGED (n={n}, k={kk}): per-layer {} launches \
+                 -> 2 (batched conv kernel + table-form wy{kk}); count logged at debug",
+                n * (kk + kk - 1),
             );
-        });
+        }
         if ok.is_multiple_of(1024) {
             tracing::debug!("batched-verify GDN conv+WY engaged x{ok}");
         }
@@ -230,18 +307,19 @@ impl Qwen3SsmLayer {
     }
 
     /// Count + first-occurrence log for a declined batched conv+WY call.
-    /// Always returns `false` so call sites read `return Ok(self.gdn_multi_decline(n))`.
-    fn gdn_multi_decline(&self, n: usize) -> bool {
+    /// Always returns `false` so call sites read
+    /// `return Ok(self.gdn_multi_decline(n, kk))`.
+    fn gdn_multi_decline(&self, n: usize, kk: usize) -> bool {
         let n_fb = FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        FALLBACK_ONCE.call_once(|| {
+        if first_for_k(&DECLINED_KMASK, kk) {
             tracing::info!(
-                "batched-verify GDN conv+WY DECLINED (n={n}): batch is not on consecutive \
-                 ssm-pool slots (or intermediates/tables unavailable) — running the \
-                 per-sequence loop. Slots fragment as sequences finish, so this can recur; \
-                 count logged at debug."
+                "batched-verify GDN conv+WY DECLINED (n={n}, k={kk}): batch is not on \
+                 consecutive ssm-pool slots (or intermediates/tables unavailable) — running \
+                 the per-sequence loop. Slots fragment as sequences finish, so this can \
+                 recur; count logged at debug."
             );
-        });
-        tracing::debug!("batched-verify GDN conv+WY fallback #{n_fb} (n={n})");
+        }
+        tracing::debug!("batched-verify GDN conv+WY fallback #{n_fb} (n={n}, k={kk})");
         false
     }
 }

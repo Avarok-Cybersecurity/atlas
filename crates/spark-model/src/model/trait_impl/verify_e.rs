@@ -74,10 +74,11 @@ impl TransformerModel {
     /// ops (QKVZ/out_proj/FFN/lm_head) batch across all R rows via the
     /// existing M-generic arms; attention runs through `decode_multi_seq`
     /// with per-row block tables / seq lens; the GDN conv+WY body runs
-    /// per-sequence via `decode_verify_multi` (byte-identical per-seq math,
-    /// row-offset bases; the two-launch cross-seq fast path engages at k=4
-    /// only — trait_decode_batched_conv_gdn_multi.rs declines k<4 into the
-    /// per-seq loop, which captures fine under the graph).
+    /// through `decode_verify_multi`, whose two-launch cross-sequence fast
+    /// path now engages at EVERY ladder width k in 2..=4
+    /// (trait_decode_batched_conv_gdn_multi.rs), falling back to the
+    /// byte-identical per-sequence loop only when the slot layout is
+    /// fragmented.
     ///
     /// On success: per seq `tokens` += k, `seq_len` += k (verdict rewind is
     /// the caller's arithmetic, as on the per-seq path). On Err no sequence
@@ -204,15 +205,12 @@ impl TransformerModel {
 
         // Pre-graph: stage the per-GDN-layer WY pointer tables into the
         // fixed staging buffer (contents refreshed BEFORE any replay, like
-        // the attention metadata above). NULL → per-seq WY loop. k=4 only:
-        // the table-form batched WY is wy4-only (wy2/wy3 hard-refuse
-        // batch > 1) and the GDN fast path declines k<4 anyway — skip the
-        // upload rather than stage tables nothing will read.
-        let wy_tables_base = if k == 4 {
-            self.upload_verify_wy_tables(&*seqs, stream)?
-        } else {
-            DevicePtr::NULL
-        };
+        // the attention metadata above). NULL → per-seq WY loop. Staged for
+        // EVERY ladder width now that wy2/wy3 carry the same `state_is_table`
+        // pointer-table form as wy4: at k<4 the fast path used to decline
+        // into the per-seq conv/WY loop (n launches per layer instead of 2),
+        // which is exactly the k<4 verify-step cost the n=16 matrix measured.
+        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k, stream)?;
 
         // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
         // illegal access is attributed to the exact layer (same hatch as
