@@ -15,26 +15,37 @@ pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
 
-/// Minimum K at which the deep-K `w4a16_gemm_t_k64` variant (K_STEP_T=64,
-/// half the outer-loop trip count of the K_STEP_T=32 `w4a16_gemm_t`) beats the
-/// standard transposed GEMM. Measured with `w4a16_m17_bench` on the real
-/// Qwen3.6-27B shapes at M=1..64 against the STREAM-measured 230 GB/s ceiling:
+/// Minimum K at which the deep-K `w4a16_gemm_t_k64` (K_STEP_T=64) beats the
+/// K_STEP_T=32 `w4a16_gemm_t`.
 ///
-///   K=5120  (ffn gate/up, ssm qkvz, attn qkv): 166 us vs 215 us  -> 1.30x
-///   K=6144  (ssm out_proj, attn o_proj):       172 us vs 238 us  -> 1.39x
-///   K=17408 (ffn down):                        already above the old threshold
+/// ★ 6144, not 4096. Measured with `w4a16_m17_bench` on the REAL decode shapes at
+/// M=16 against the STREAM-measured 230 GB/s ceiling — `_k64` is the WORST tile
+/// variant at K=5120 and the best only at K>=6144:
 ///
-/// The previous threshold was 8192, which excluded every shape in this model
-/// except ffn_down. It was never re-measured after the transposed twins landed.
-/// `ATLAS_NO_W4A16_K64=1` restores the previous 8192 threshold (which in this
-/// model reaches only ffn_down) for A/B and as the opt-out.
+///   ssm_qkvz     N=16384 K=5120   _t 281.9us   _k64 341.6us   _m128 272.4us
+///   attn qkv     N=14336 K=5120   _t 273.9us   _k64 328.5us   _m128 262.8us
+///   ssm_out_proj N=5120  K=6144   _t 237.7us   _k64 163.3us   _m128 240.7us
+///
+/// The original 4096 threshold (this session) was derived from the ffn/out_proj
+/// shapes and wrongly generalised to K=5120, sending 48 qkvz + 16 fused-qkv
+/// launches per step to the slowest variant. Both variants accumulate K
+/// sequentially, so moving between them is byte-identical.
+///
+/// `ATLAS_NO_W4A16_K64=1` restores the pre-session 8192 threshold.
 pub(crate) fn w4a16_k64_min_k() -> u32 {
     static MIN_K: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *MIN_K.get_or_init(|| {
+        // Explicit override so an A/B can pin a previous threshold exactly.
+        if let Some(n) = std::env::var("ATLAS_W4A16_K64_MIN_K")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        {
+            return n;
+        }
         if std::env::var("ATLAS_NO_W4A16_K64").ok().as_deref() == Some("1") {
             8192
         } else {
-            4096
+            6144
         }
     })
 }

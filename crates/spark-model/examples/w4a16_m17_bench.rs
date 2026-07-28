@@ -65,6 +65,11 @@ enum Geom {
     N128M64,
     /// w4a16_gemm_t_m128 via w4a16_gemm_n128_m128: grid (N/128, M/128), block 128
     N128M128,
+    /// w4a16_gemm_t_m128_v2: grid (N/128, M/128), block 256 (8 warps, pipelined).
+    /// Lives in module `w4a16_v2`, and is dispatched today ONLY by the SSM
+    /// batched-decode and FFN paths — never by the multi-seq concurrent decode
+    /// projections, which is what this bench is here to check.
+    N128M128W256,
 }
 
 fn grid_for(g: Geom, m: u32, n: u32) -> [u32; 3] {
@@ -72,6 +77,7 @@ fn grid_for(g: Geom, m: u32, n: u32) -> [u32; 3] {
         Geom::N64M64 => [div_ceil(n, 64), div_ceil(m, 64), 1],
         Geom::N128M64 => [div_ceil(n, 128), div_ceil(m, 64), 1],
         Geom::N128M128 => [div_ceil(n, 128), div_ceil(m, 128), 1],
+        Geom::N128M128W256 => [div_ceil(n, 128), div_ceil(m, 128), 1],
     }
 }
 
@@ -90,7 +96,7 @@ fn launch(
 ) -> Result<()> {
     KernelLaunch::new(g, k_h)
         .grid(grid_for(geom, m, n))
-        .block([128, 1, 1])
+        .block([if matches!(geom, Geom::N128M128W256) { 256 } else { 128 }, 1, 1])
         .arg_ptr(a)
         .arg_ptr(b)
         .arg_ptr(b_scale)
@@ -125,9 +131,17 @@ fn main() -> Result<()> {
             "w4a16_gemm_t_m128",
             Geom::N128M128,
         ),
+        (
+            "w4a16_gemm_t_m128_v2(W256)",
+            "w4a16_gemm_t_m128_v2",
+            Geom::N128M128W256,
+        ),
     ]
     .into_iter()
-    .filter_map(|(name, func, geom)| match g.kernel("w4a16", func) {
+    .filter_map(|(name, func, geom)| match g.kernel(
+        if func == "w4a16_gemm_t_m128_v2" { "w4a16_v2" } else { "w4a16" },
+        func,
+    ) {
         Ok(h) => Some((name, h, geom)),
         Err(_) => {
             eprintln!("SKIP {name}: kernel w4a16::{func} not in this target's module set");
