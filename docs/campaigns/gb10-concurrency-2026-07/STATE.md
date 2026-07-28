@@ -1005,3 +1005,57 @@ isolated version did not.
 Register-residency wins are contingent on the WHOLE function's register budget, not the loop
 being optimised. Retry only with the epilogue split into a second kernel (so the hot loop's
 budget is its own), or with a smaller tile (e.g. hreg[64] and two passes over half-columns).
+
+## 2026-07-28 (night) — ★ THE NEXT LEVER, FULLY SPECIFIED: out_proj/o_proj -> NVFP4 MMQ
+
+### Per-shape truth (nsys of HEAD, split by gridX — do NOT reason from blended averages)
+| kernel | gridX | shape | avg | **GB/s** |
+|---|---|---|---|---|
+| `w4a16_gemm_t` | 128 | ssm_qkvz N=16384 K=5120 | 311.6 us | **151.4** |
+| `w4a16_gemm_t` | 112 | attn qkv fused N=14336 K=5120 | 296.5 us | **139.2** |
+| **`w4a16_gemm_t_k64`** | **40** | **out_proj / o_proj N=5120 K=6144** | 210.7 us | **84.0** |
+| `atlas_nvfp4_mmq16_nc` | 40 | ffn_down N=5120 K=17408 | 285.5 us | **175.6** |
+| `atlas_nvfp4_mmq16_nc` | 136 | ffn gate/up N=17408 K=5120 | 289.5 us | **173.2** |
+
+★ A blended "projections run at 102 GB/s" figure is WRONG and cost an agent-hour: qkvz and
+fused-qkv are already efficient (151/139). **The entire projection deficit is out_proj/o_proj
+at 84 GB/s.**
+★ MMQ hits ~174 GB/s at gridX=40 AND gridX=136, and at K=5120 AND K=17408 — so there is no
+shallow-K cliff between those endpoints and **out_proj's K=6144 should transfer**. That is
+2.09x `_k64` at the SAME 40-CTA occupancy, i.e. the gap is the KERNEL, not the tiling.
+
+### Prize: 64 launches x 210.7 us = 13.5 ms/step -> ~6.5 ms at 174 GB/s
+Minus 64 activation-quantize launches (~0.75 ms) and 64 `nvfp4_scale_bf16` launches
+(~0.75 ms) => **~5.4 ms net, ~+3.8%**. Roughly 4x split-K's honest prize (1.3-1.5 ms) for the
+identical shapes.
+
+### Implementation (NO SSM MMQ plumbing exists today — grep confirms zero hits)
+Mirror `dense_ffn.rs`: handles (`nvfp4_mmq16_nc/_wc`, `nvfp4_quant_act`, `nvfp4_repack`,
+`nvfp4_scale`) -> repacked twin via `ops::nvfp4_mmq_repack` (ops/nvfp4_mmq.rs:56) ->
+`ops::nvfp4_mmq_quantize_act` (:80) -> `ops::nvfp4_mmq_gemm_tiled` (:147, tile=16 at m<=16)
+-> `ops::nvfp4_scale_bf16` (:222) for the scale2 fold (the GEMM output is documented
+"missing x scale2" at :103).
+★ HAZARD: the repack MUST be eager at LOAD time, before KV sizing and before CUDA-graph
+capture — the FFN does exactly this in `finalize_nvfp4_mmq_load` (dense_ffn.rs:445). A lazy
+OnceCell repack inside the decode path would allocate during graph capture.
+★ VRAM: out_proj twin is 17.7 MB x 48 + 17.7 x 16 = **1.13 GB**. Unlike the FFN, the `_t`
+copy CANNOT be freed — it is still the SSM prefill path (`ssm_batched.rs:17-19`).
+Constraints all pass: N=5120 %128, K=6144 %64, m=16 <= mmq_x=16.
+
+### ★ ACCURACY ORDERING IS THE INVERSE OF THE OBVIOUS ONE
+MMQ is **W4A4** (activations quantized to FP4).
+- **out_proj / o_proj = LOW risk.** Their input is the post-GDN gated-norm output, so the
+  error is feed-forward-shaped and does not re-enter the recurrence. THIS is the one to build.
+- **qkvz = HIGH risk. DO NOT convert.** It feeds conv1d -> the FP32 GDN recurrent state, where
+  per-token error persists across the sequence. No cosine measurement for SSM-projection W4A4
+  exists anywhere in the repo; dense_ffn's down-proj 0.9961 does NOT transfer. Memory records
+  FP16 h_state causing ~25% trajectory divergence, so the recurrence is precision-sensitive.
+- Debt is UNDISCHARGEABLE while [[feedback_no_accuracy_gate_until_vllm_parity]] stands, and it
+  STACKS on the existing `ATLAS_SSM_TC_PROJ` W4A8 debt (ssm_batched.rs:28-32 already records
+  "a BFCL gate is owed before this merges").
+
+### Also unexplained, worth 1.4 ms: 11.3 extra `w4a16_gemm_t` launches/step
+The capture shows `w4a16_gemm_t` at gridX=8 (N=1024, 512 inst) and gridX=96 (N=12288, 256
+inst) — i.e. the fused-qkv path splitting back into separate q/k/v launches during ramp/drain
+when n<=8 (the `n > 8` gate from `2db1b349`). ~1.44 ms/step. Lowering that gate is NOT safe
+(see the gate's comment), but batching the n<=8 case differently might be.

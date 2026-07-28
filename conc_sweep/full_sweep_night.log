@@ -1,0 +1,17 @@
+identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+  rep1 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+  rep2 C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+  rep3 C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+  rep1 C=2: wall=15.8s total_tok=384 agg=24.3 tok/s
+  rep2 C=2: wall=16.6s total_tok=384 agg=23.1 tok/s
+  rep3 C=2: wall=16.6s total_tok=384 agg=23.1 tok/s
+  rep1 C=4: wall=15.8s total_tok=768 agg=48.7 tok/s
+  rep2 C=4: wall=15.7s total_tok=768 agg=49.1 tok/s
+  rep3 C=4: wall=15.9s total_tok=768 agg=48.4 tok/s
+  rep1 C=8: wall=22.2s total_tok=1527 agg=68.9 tok/s
+  rep2 C=8: wall=22.1s total_tok=1536 agg=69.5 tok/s
+  rep3 C=8: wall=22.1s total_tok=1536 agg=69.5 tok/s
+  rep1 C=16: wall=28.8s total_tok=3072 agg=106.8 tok/s
+  rep2 C=16: wall=28.7s total_tok=3072 agg=106.9 tok/s
+  rep3 C=16: wall=28.7s total_tok=3072 agg=107.0 tok/s
+FULL_SWEEP_NIGHT_DONE
