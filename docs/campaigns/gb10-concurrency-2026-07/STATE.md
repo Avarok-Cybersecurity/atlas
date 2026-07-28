@@ -1750,3 +1750,27 @@ different accumulation order. `padded_n <= 4` is unaffected and byte-identical.
 - The lossless alternative `w4a16_gemm_t_m128_bf16_v2` measures 5192 us vs 3801 us at M=16, i.e.
   ~1.05% of step — the fallback if a flip-gate later rejects FP8.
 - BFCL + IoU re-validation MANDATORY before any accuracy claim or external quote.
+
+### lm_head FP8 accuracy debt — CHARACTERIZED (not a substitute for BFCL)
+8 concurrent prompts (padded_n >= 5, so the tile GEMM IS active), temp 0.0 seed 42, tile GEMM vs
+`ATLAS_NO_LMHEAD_TGEMM=1`, same binary:
+
+| | result |
+|---|---|
+| fully byte-identical | **2 / 8** |
+| diverged | 6 / 8 |
+| divergence point | 1%-71% into the response |
+| quality of divergences | **benign paraphrase in every case** |
+
+Examples: "employees sorted by salary" vs "students sorted by name" (both valid illustrations);
+"i.e., two keys hash to the same index" vs "two keys hash to the same index"; "0.1 + 0.2 != 0.3"
+rendered with vs without code markup. Both branches stay coherent, correct and complete — no
+repetition, no collapse, no truncation, no degradation. This is the expected signature of temp-0
+tiebreak flips propagating (cf. `spec_not_output_neutral`).
+
+★ This does NOT establish accuracy parity — only BFCL/IoU can, and those stay embargoed until
+Atlas >= vLLM at C=1..16. It bounds the RISK, it does not discharge the DEBT.
+★ MEASUREMENT TRAP hit while doing this: the first comparison parsed the capture line-by-line, so
+it only compared FIRST LINES and reported "7/8 identical". The hashes (computed over full
+responses) said 6/8 DIFFER. When a hash comparison and a text diff disagree, the DIFF is the one
+that is probably broken.
