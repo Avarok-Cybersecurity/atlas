@@ -28,6 +28,15 @@
 //! in `free_sequence` (every completion empties the map), and both are
 //! reachable under continuous load. Keying on the slot vector makes replay
 //! correct by construction instead of by invariant.
+//!
+//! Multi-seq decode graphs are DEFAULT-ON since 2026-07-27
+//! (`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` disables), validated: C=8
+//! 65.75 -> 67.6 (+2.8%), C=16 92.6 -> 95.6 (+3.2%), emitted-text SHA
+//! unchanged, 2 reps/cell. That measurement RETIRED a planned rewrite: the
+//! attention branch has ~2,300 per-sequence launches/step and hand-batching
+//! them was estimated at 4-9 ms; graphs capture all of them wholesale for
+//! +3.2%, so the individual batching work cannot beat what the flag already
+//! gets. (Batching the gate-mul by hand beforehand measured flat.)
 
 use spark_runtime::gpu::{GpuBackend, GraphHandle};
 use std::collections::HashMap;

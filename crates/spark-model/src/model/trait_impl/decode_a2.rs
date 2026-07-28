@@ -222,27 +222,15 @@ impl TransformerModel {
         // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
         //
         // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
-        // capture. They are a pure function of the row's SSM pool slot, so the
-        // cache is keyed by the per-row slot VECTOR (`decode_graph_key.rs`) and
-        // replay is correct by construction. The former `padded_n` key relied
-        // on the scheduler invariant "active sequences occupy contiguous slots
-        // [0..n) in batch order" AND `n == padded_n`; the MTP Phase-A bootstrap
-        // (a slot SUBSET of the active set) and every `n < padded_n` batch
-        // break it. Attention metadata, KV block tables, embed, and all scratch
-        // buffers are at fixed device addresses refreshed every step BEFORE
-        // replay. This is the dominant lever for n>=2 decode (eliminates ~1500
-        // kernel launches/step).
+        // capture, so the cache is keyed by the per-row SSM slot VECTOR — see
+        // `decode_graph_key.rs` for why the former `padded_n` key was unsound.
+        // Everything else captured (metadata, block tables, embed, scratch) is
+        // a fixed address refreshed every step BEFORE replay. This is the
+        // dominant lever for n>=2 decode (eliminates ~1500 launches/step).
         //
-        // DEFAULT-ON since 2026-07-27, validated: C=8 65.75 -> 67.6 (+2.8%),
-        // C=16 92.6 -> 95.6 (+3.2%), emitted-text SHA unchanged, 2 reps/cell.
-        // Disable with ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1.
-        //
-        // This measurement also RETIRED a planned rewrite: the attention branch
-        // has ~2,300 per-sequence launches/step, and hand-batching them was
-        // estimated at 4-9 ms. Graphs capture all of them wholesale for +3.2%,
-        // so the individual batching work cannot beat what this flag already
-        // gets — the pipeline rewrite is not worth doing. (Batching the gate-mul
-        // by hand beforehand measured flat, consistent with that.)
+        // DEFAULT-ON since 2026-07-27; disable with
+        // ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
+        // retired: `decode_graph_key.rs`.
         let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
