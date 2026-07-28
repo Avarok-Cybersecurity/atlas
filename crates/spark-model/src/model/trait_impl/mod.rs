@@ -24,6 +24,7 @@ mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
 mod decode_graph_key;
+mod drafter_prefill;
 mod ep_misc;
 mod meta;
 mod prefill_a;
@@ -57,8 +58,16 @@ impl Model for TransformerModel {
         *self.vision_grid_base.lock() = grid_base;
         *self.vision_owned_images.lock() = owned_images;
     }
+    // The four prefill entry points each end with `try_eager_drafter_prefill`:
+    // the whole-prompt drafter capture is a single shared slot, so it must be
+    // consumed while THIS sequence still owns it — one tick later, at the
+    // first propose, a concurrent sequence's prefill has already restarted it
+    // and every sequence but the last-prefilled drafts blind. See
+    // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
-        self.prefill_dispatch(tokens, seq, stream)
+        let logits = self.prefill_dispatch(tokens, seq, stream)?;
+        self.try_eager_drafter_prefill(seq, true, stream);
+        Ok(logits)
     }
     fn prefill_chunk(
         &self,
@@ -69,7 +78,16 @@ impl Model for TransformerModel {
         is_last_chunk: bool,
         stream: u64,
     ) -> Result<DevicePtr> {
-        self.prefill_chunk_dispatch(tokens, seq, chunk_start, chunk_len, is_last_chunk, stream)
+        let logits = self.prefill_chunk_dispatch(
+            tokens,
+            seq,
+            chunk_start,
+            chunk_len,
+            is_last_chunk,
+            stream,
+        )?;
+        self.try_eager_drafter_prefill(seq, is_last_chunk, stream);
+        Ok(logits)
     }
     fn prefill_twophase(
         &self,
@@ -78,7 +96,9 @@ impl Model for TransformerModel {
         chunk_size: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
-        self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)
+        let logits = self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)?;
+        self.try_eager_drafter_prefill(seq, true, stream);
+        Ok(logits)
     }
     fn decode(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
         self.decode_dispatch(token, seq, _stream)
@@ -102,7 +122,7 @@ impl Model for TransformerModel {
         prefill_is_last: bool,
         stream: u64,
     ) -> Result<crate::traits::MixedForwardResult> {
-        self.mixed_forward_dispatch(
+        let out = self.mixed_forward_dispatch(
             decode_tokens,
             decode_seqs,
             prefill_tokens,
@@ -111,7 +131,9 @@ impl Model for TransformerModel {
             prefill_chunk_len,
             prefill_is_last,
             stream,
-        )
+        )?;
+        self.try_eager_drafter_prefill(prefill_seq, prefill_is_last, stream);
+        Ok(out)
     }
 
     /// Q12 Phase 4b override: try the model-level batched dispatch
