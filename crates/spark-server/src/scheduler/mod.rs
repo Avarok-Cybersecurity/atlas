@@ -192,7 +192,15 @@ fn mtp_max_seqs() -> usize {
         std::env::var("ATLAS_MTP_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2)
+            // MEASURED default 1, not 2. At C=2 the MTP verify costs more than
+            // the drafting saves: C=2 aggregate is 26.35 tok/s with MTP OFF vs
+            // 25.45 ON (2 reps each, disjoint), i.e. enabling it there is a
+            // -3.4% net loss. C=1 is unaffected (25.50 vs 25.45) and C>=4 never
+            // had it on. The verify is per-sequence rather than batched, so its
+            // cost scales with concurrency while the benefit does not — raising
+            // this cap makes it worse, not better (cap=4 HALVES C=4: 48.5 ->
+            // 25.8). Raise it only after batched (ragged 1+k) verify lands.
+            .unwrap_or(1)
     })
 }
 
