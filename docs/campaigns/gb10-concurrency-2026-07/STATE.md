@@ -1297,3 +1297,20 @@ the handoff broken for long-prefix resumes, which is exactly where prefix cachin
 and where the lost prefill is largest.
 ★ This also means the cross-turn carry path (`try_carry_drafter`) is what keeps multi-turn
 conversations fast; single-turn resumes off a cold cache get no drafter state at all.
+
+### ★ CORRECTION to the fix options above: "replay just the drafter" DOES NOT WORK
+`prefill_drafter(prompt_tokens, hiddens, ...)` (`speculative.rs:362`,
+`mtp_head/draft_proposer.rs:86`) consumes `hiddens` = `mtp_prefill_hidden`, the MAIN MODEL's
+per-position hidden states captured during ITS prefill. After a Marconi restore those were
+never computed, so there is nothing to feed the drafter. The drafter cannot be replayed
+independently — it is a function of the target's hidden states, not of the tokens.
+
+**So there are exactly two viable fixes:**
+1. **Extend the Marconi snapshot to carry the drafter's own state** (its KV rows / proposer
+   state), so a resume restores target AND drafter together. Correct, and preserves the whole
+   prefill saving. Snapshot-format change.
+2. **Capture hidden states for the skipped span anyway** — i.e. do not skip the target prefill
+   when MTP is active and the drafter would be left cold. This gives up the prefill saving,
+   which is the thing the cache exists to provide, so it is only sensible as a stopgap.
+Option 1 is the real fix. (An earlier note here suggested a cheap drafter-only replay; that was
+wrong and is retracted.)
