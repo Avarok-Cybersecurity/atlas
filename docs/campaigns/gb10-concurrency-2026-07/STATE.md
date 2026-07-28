@@ -2064,3 +2064,55 @@ which is the predicted result and a check on the grid.x model: at 1938 CTAs lm_h
 co-residency that covers the parent's drain. Kept because it is byte-identical, cost-free, and
 removes the last bypass of the resolver. ★ A neutral result that CONFIRMS a model is worth keeping
 and recording; it is evidence, not a wasted experiment.
+
+## 2026-07-28 — ★★★ THE STRUCTURAL LEVER, CONFIRMED: batched speculative decoding
+
+External scan (vLLM V1 source in the vendored checkout + measured literature) confirms plainly:
+**everyone runs spec decode across the FULL continuous batch; nobody gates it to one sequence.**
+The industry answer to "spec decode at batch" is SHRINK K AS BATCH GROWS, not turn it off.
+vLLM's documented EAGLE3 ladder is **K=5 for batch 1-16** — C=16 is "full speculation on" territory
+even on H100. The "batch size 1 only" folklore is TRT-LLM's LEGACY ENGINE FLOW, a dead code path.
+
+vLLM V1 shape (all in `scratchpad/vllm-src/`):
+- verification IS the normal decode forward — draft tokens appended, ragged varlen batch
+  (`gpu_model_runner.py:2743` `_calc_spec_decode_metadata`, mixed `[3,0,2,0,1]` draft lengths)
+- batched Triton rejection sampler over `[batch, k]` (`v1/sample/rejection_sampler.py`)
+- per-request rewind is scheduler arithmetic (`scheduler.py:1547-1571`)
+- ★ **GDN ROLLBACK IS SOLVED UPSTREAM**: `gdn_attn.py` allocates **num_spec+1 recurrent-state slots
+  per sequence**; the FLA kernel writes a checkpoint per draft position INLINE
+  (`INPLACE_FINAL_STATE`, `fla/ops/fused_recurrent.py:104-166`); next step loads slot
+  `num_accepted-1`. **Rollback is an index lookup.** This eliminates EXACTLY the per-token FLA
+  overhead that killed the TRT-LLM ngram v21 experiment — checkpoints are a byproduct of one fused
+  kernel, not extra passes.
+- full CUDA graph on the uniform 1+k step; dynamic K-vs-batch ladder in the scheduler.
+
+Measured elsewhere: EAGLE-3/SGLang H100 **B=32: 1.30x TPOT, 1.70x aggregate**; EAGLE-3 paper 1.38x
+at B=64; MagicDec 1.18-1.91x at B=32 and **speedup GROWS with batch in the memory-bound regime** —
+GB10 is squarely in that regime (FFN at 87% of achievable bandwidth). Against our 130 tok/s that
+projects to **169-221 at C=16**, i.e. meeting or beating vLLM's 169.
+★ Published GB10 envelope: NO source exceeds ~170 agg tok/s at C=16 for any model >=27B, and NONE
+of those runs used speculation at batch.
+
+### ★ MEASURED: `ATLAS_MTP_MAX_SEQS` is a GUARD, NOT A KNOB — raising it HALVES throughput
+| cap | C=2 | C=4 |
+|---|---|---|
+| **2 (default)** | 25.3 | **48.5** |
+| 4 | 25.7 | **25.8** |
+| 8 | 25.3 | **25.4** |
+Enabling MTP at C=4 collapses aggregate throughput to single-sequence levels (**-47%**). Output is
+COHERENT and IDENTICAL in all three legs, so this is NOT correctness — it is SERIALIZATION: the
+multi-seq MTP path runs but aggregate throughput degenerates to ~C=1's number, consistent with
+`mtp_carry.rs:37`'s `active.len()==1` assumption and the single-slot design at `types.rs:187`.
+=> **Batched MTP requires the real vLLM-shaped implementation (ragged 1+k varlen verify, batched
+rejection, per-sequence k+1 GDN state slots, per-request rewind). It is NOT a constant change.**
+★ A 20-minute experiment correctly scoped a multi-day project — run the cheap disambiguating test
+BEFORE estimating the expensive one.
+
+### Recommended order when this is picked up
+1. Batched MTP, vLLM's exact shape (expected **1.3-1.7x at C=16** — THE lever; everything else is
+   a rounding error beside it). Blueprint is in the vendored checkout.
+2. Dynamic K-vs-batch ladder shipped WITH it (prevents the fixed-K regression that produced vLLM's
+   historical 1.4-1.8x slowdowns).
+3. Overlapped scheduling + full-graph 1+k step (hides the growing host-side spec bookkeeping).
+4. GDN batched-recurrent as a STANDALONE lever: SKIP (our own +1-2% measurement stands, and vLLM's
+   design agrees) — but adopt its inline-checkpoint slot scheme as part of (1).
