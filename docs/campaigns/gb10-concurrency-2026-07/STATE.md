@@ -1404,3 +1404,35 @@ and +9.2% at C=2 on preamble-only traffic, with the +7-38% long-prefix win untou
 Caveat on the data: output lengths differ between ON/OFF at some sizes (62 vs 78, 128 vs 92)
 because a restored state changes the greedy trajectory — the known spec-decode trajectory
 dependence. tok/s is a RATE so the comparison holds, but do not compare wall times directly.
+
+## 2026-07-28 — ★★ SHIPPED `7ba11dc5`: Marconi skip floored at 256 matched tokens
+**C=1 23.65 -> 25.27 (+6.9%, predicted +6.8%) · C=2 23.10 -> 25.30 (+9.5%, predicted +9.2%) ·
+C=16 112.6 -> 112.37 (unchanged, as expected).** C=1 is now STABLE across reps
+(25.3/25.3/25.2) — the within-run drift present in every sweep tonight is gone.
+
+★ NOT byte-identical, deliberately: short-match hits now take the KV-only path instead of
+restoring a snapshot, which changes the greedy trajectory. The new path is the one that
+matches full recompute, so it is the more faithful of the two.
+`ATLAS_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores always-restore.
+
+### ★ BEFORE THE NEXT MLPerf-edge RUN: check this interacts as expected
+MLPerf-edge runs WITH prefix caching, and `mtp_carry.rs` records **987 of 1007 scored samples
+are WARM turns**. Those are turn extensions with long prefixes, so they sit above the 256-token
+floor and keep the snapshot skip — the expected impact is nil-to-positive. But:
+- any turn whose MATCHED prefix is < 256 now recomputes it (a little more TTFT) in exchange
+  for a warm drafter (better acceptance). Given the recorded wall split (decode 59.6% /
+  fixed TTFT 21.1% / marginal prefill 18.8%), that trade should be net-positive, but it is
+  UNMEASURED on the golden workload.
+- the golden leg runs `target_concurrency=1`, which is exactly where this fix is largest
+  (+6.9%), so the MLPerf wall may move more than the C=16 number suggests.
+**Measure the golden leg before folding this into a submission**, and quote the harness, not
+the serve log.
+
+### Final scoreboard (3 reps/point, warmup discarded)
+| C | start | end | vLLM | ratio |
+|---|---|---|---|---|
+| 1 | 27.4 | 25.3 | 14.2 | **1.78x WIN** |
+| 2 | 21.3 | 25.3 | 27.8 | 0.85x -> **0.91x** |
+| 4 | 38.6 | 48.7 | 53.3 | 0.91x |
+| 8 | 55.4 | 70.7 | 98.8 | 0.72x |
+| 16 | 59.9 | **112.4** | 168.9 | 0.35x -> **0.67x** |
