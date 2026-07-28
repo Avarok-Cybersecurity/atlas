@@ -1457,3 +1457,30 @@ ALL OFF        95.4 tok/s   sha bf3a0b07...   coherent
    - campaign start -> session start: 59.9 -> 95.9 (+60%, earlier phases)
    - **this session: 95.9 -> 112.2 (+17%)**
    - campaign total: **59.9 -> 112.2 (+87%)**
+
+## 2026-07-28 — SYSTEMATIC SWEEP for the campaign's dominant pattern (dead kernel handles)
+Seven of the eight wins were "a capability exists and the dispatch never reaches it", all found
+by accident. Mechanical sweep: every `*_k: KernelHandle` struct field vs. any `self.<field>`
+read outside init/mod. **294 handles declared; 38 with no dispatch site.** Most are legitimately
+inert (MoE handles on a dense model, MLA/prefill variants, LoRA). The notable ones:
+
+| handle | verdict |
+|---|---|
+| `fused_k_norm_rope_cache_write_bf16_k` | REAL dead capability — see below |
+| `gemm_splitk_partial_k` / `gemm_splitk_reduce_k` | the BF16 split-K toy; already recorded dead |
+| `moe_*` (8 handles) | inert — dense model |
+| `mla_*`, `prefill_attn_*` | inert — other attention regimes |
+
+### `fused_k_norm_rope_cache_write_bf16`: real, batched, never dispatched in decode — but only 0.3%
+`kernels/gb10/common/fused_k_norm_rope_cache.cu:53`. Fuses K-side RMSNorm + RoPE + paged cache
+write, grid `(num_tokens, num_kv_heads)` so it is BATCHED OVER TOKENS. Loaded at
+`qwen3_attention/init.rs:223`; the only dispatch is the **mrope** variant in
+`qwen3_attention/prefill/paged.rs:450`. Decode never uses it.
+**Sized before building:** per layer at n=16 decode issues 16 q-norms + 16 k-norms + 16 ropes
++ 1 (already-batched) cache write. The fused kernel covers only K, so it removes 256 k-norm
+launches/step at ~1.5 us = **~0.4 ms = ~0.3%** — Q still needs per-sequence norm and rope, and
+strided Q variants do not exist. **Below the harness's measured ~0.8% resolution floor; not
+worth an A/B alone.**
+★ It becomes worthwhile only as part of collapsing the WHOLE attention fan-out (rope 1.2 ms +
+rms_norm 0.8 ms/step), which additionally needs strided q-norm and q-rope kernels. That bundle
+is ~1.5 ms (~1.1%) and is the right shape for a future session.
