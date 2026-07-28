@@ -468,6 +468,23 @@ impl TransformerModel {
                 // 226 GB/s = 98.3% of the memory roofline on this shape and is
                 // therefore unimprovable; the tile GEMM LOSES there.
                 if padded_n >= 5
+                    && self.w4a16_gemm_t_bf16_kernel.0 != 0
+                    && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
+                {
+                    // LOSSLESS path: BF16 MMA, no activation downcast.
+                    ops::w4a16_gemm_n128_m128_bf16_ldb(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemm_t_bf16_kernel,
+                        normed,
+                        nvfp4_t,
+                        logits,
+                        padded_n as u32,
+                        v as u32,
+                        h as u32,
+                        ldb,
+                        stream,
+                    )?;
+                } else if padded_n >= 5
                     && self.w4a16_gemm_t_kernel.0 != 0
                     && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
                 {

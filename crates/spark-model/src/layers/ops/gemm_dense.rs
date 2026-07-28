@@ -344,6 +344,37 @@ pub fn w4a16_gemm_n128_m128(
 ///
 /// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
+/// `w4a16_gemm_n128_m128_bf16` with an explicit transposed-B row stride, for the
+/// LOSSLESS BF16-MMA path. Needed for the same reason as `w4a16_gemm_n128_ldb`:
+/// the B loads are 16-byte `cp.async` and lm_head's N is the vocab size (248077,
+/// odd), so an unpadded stride misaligns 15 of every 16 k-rows.
+pub fn w4a16_gemm_n128_m128_bf16_ldb(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    ldb: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_f32(weight.weight_scale_2)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(ldb)
+        .launch(stream)
+}
+
 pub fn w4a16_gemm_n128_m128_bf16(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

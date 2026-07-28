@@ -194,7 +194,7 @@ impl Qwen3AttentionLayer {
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,
             rope_strided_k: super::super::try_kernel(gpu, "rope", "rope_forward_strided"),
-            rms_norm_strided_k: super::super::try_kernel(gpu, "rms_norm", "rms_norm_strided"),
+            rms_norm_strided_k: super::super::try_kernel(gpu, "norm", "rms_norm_strided"),
             rope_mrope_interleaved_k: super::super::try_kernel(
                 gpu,
                 "rope_mrope_interleaved",

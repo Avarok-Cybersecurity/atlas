@@ -85,6 +85,13 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     /// Tile GEMM over the TRANSPOSED lm_head twin. 0 when absent.
     pub(super) w4a16_gemm_t_kernel: KernelHandle,
+    /// LOSSLESS BF16-MMA tile GEMM over the same twin. Preferred for lm_head:
+    /// `w4a16_gemm_t` downcasts activations BF16->FP8 E4M3, and lm_head is the
+    /// layer where a near-tie argmax flip changes the emitted token. Memory
+    /// records exactly that failure mode (stop/end-of-turn mis-ranking on DEEP
+    /// agentic trajectories) for sub-bf16 lm_heads. Costs ~1% of step.
+    /// 0 when absent. Kill switch: ATLAS_NO_LMHEAD_LOSSLESS=1.
+    pub(super) w4a16_gemm_t_bf16_kernel: KernelHandle,
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
     /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight

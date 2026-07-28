@@ -94,6 +94,16 @@ impl TransformerModel {
         // present. lm_head launches 1938 CTAs and already sits at ~83% of
         // achievable, so the expected gain here is small; measured, not assumed.
         let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
+        // Lossless BF16-MMA sibling for lm_head. Default ON — the ~1% cost buys
+        // out an UNQUANTIFIED risk on the exact workload being optimized:
+        // activation-precision loss at the one layer where a near-tie flip
+        // changes the token. `ATLAS_NO_LMHEAD_LOSSLESS=1` reverts to the FP8 path.
+        let w4a16_gemm_t_bf16_kernel =
+            if std::env::var("ATLAS_NO_LMHEAD_LOSSLESS").is_err() {
+                crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            };
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
@@ -582,6 +592,7 @@ impl TransformerModel {
             w4a16_gemv_kernel,
             w4a16_gemv_logits_kernel,
             w4a16_gemm_t_kernel,
+            w4a16_gemm_t_bf16_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
             w4a16_gemv_batch4_kernel,
