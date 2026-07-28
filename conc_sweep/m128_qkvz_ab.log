@@ -1,0 +1,16 @@
+--- leg: OLD (qkvz on w4a16_gemm_t) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=29.0s total_tok=3072 agg=106.1 tok/s
+   rep2 C=16: wall=28.7s total_tok=3072 agg=106.9 tok/s
+   rep3 C=16: wall=28.9s total_tok=3072 agg=106.4 tok/s
+   rep4 C=16: wall=28.8s total_tok=3072 agg=106.5 tok/s
+--- leg: NEW (qkvz on _m128) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.9s total_tok=3072 agg=106.3 tok/s
+   rep2 C=16: wall=28.8s total_tok=3072 agg=106.8 tok/s
+   rep3 C=16: wall=28.8s total_tok=3072 agg=106.7 tok/s
+   rep4 C=16: wall=28.8s total_tok=3072 agg=106.6 tok/s
+[2m2026-07-28T01:07:53.367194Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 12 for 26 tokens
+[2m2026-07-28T01:07:54.771719Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=26, remaining=191
+[2m2026-07-28T01:08:17.716188Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=192 end_bloc
+AB_DONE

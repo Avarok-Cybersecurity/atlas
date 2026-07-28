@@ -1059,3 +1059,15 @@ The capture shows `w4a16_gemm_t` at gridX=8 (N=1024, 512 inst) and gridX=96 (N=1
 inst) — i.e. the fused-qkv path splitting back into separate q/k/v launches during ramp/drain
 when n<=8 (the `n > 8` gate from `2db1b349`). ~1.44 ms/step. Lowering that gate is NOT safe
 (see the gate's comment), but batching the n<=8 case differently might be.
+
+### `_m128` for qkvz: NULL, reverted (and rebuilt)
+The bench ranks `_m128` fastest at K=5120 (272.4 us vs `_t` 281.9 / `_k64` 341.6 at M=16), and
+it affects the 48 qkvz launches/step. But qkvz is only ~14.9 ms of a ~140 ms step, so a 3.4%
+kernel gain is ~0.36% e2e — below what the harness resolves.
+Measured 4 reps/leg, warmup discarded, byte-identical:
+OLD 106.1/106.9/106.4/106.5 = **106.48** vs NEW 106.3/106.8/106.7/106.6 = **106.60**.
++0.11%, ranges fully OVERLAP => NULL. Reverted **and rebuilt** (a `git checkout` alone leaves
+the old binary in place — that bit me earlier tonight with the GDN kernel).
+★ RULE OF THUMB now calibrated: this harness resolves ~>=0.8% reliably. A kernel-level gain
+only matters if (kernel share of step) x (kernel gain) clears that. qkvz is 10.6% of the step,
+so it needs a >7% kernel win to be worth measuring at all.
