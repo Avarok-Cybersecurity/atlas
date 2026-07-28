@@ -7,11 +7,17 @@
 //! ~55 tok/s plateau at every C (cap=16 sweep, 2026-07-28): n*(K+1) verify
 //! rows of SUPERLINEAR per-sequence GDN plus graph-key churn. The ladder
 //! shrinks the per-sequence draft count as concurrency grows so the verify
-//! row total stays small (R = n*(drafts+1) <= 32) while the weight-read
-//! amortization of the batched verify keeps growing with n:
+//! row total stays small while the weight-read amortization of the batched
+//! verify keeps growing with n:
 //! n <= 4 -> 3 drafts (4 rows/seq, today's proven regime, bit-for-bit),
-//! n <= 8 -> 2 drafts (3 rows/seq, R <= 24),
-//! n <= 16 -> 1 draft (2 rows/seq, R <= 32).
+//! n <= 8 -> 1 draft (2 rows/seq, R <= 16).
+//! The ladder ENDS at n=8: the finalizer matrix (2026-07-28) measured spec
+//! at n=16 as a LOSS at even the minimum depth — C=16 114.6-117.3 vs 131.5
+//! MTP-off in BOTH the 16:1 and 8:1,16:1 configs (the K=1 verify step costs
+//! ~1.9x a plain batch-16 decode step vs the <1.72x break-even at p1~0.72;
+//! suspects: per-seq GDN conv/WY loop at k<4, chunked batched propose).
+//! At n<=8 the 8:1 step measured BEST: C=8 82.4 (+12% over 73.5 MTP-off)
+//! vs 81.1 for the 8:2 variant. n>8 is MTP-off via the cap (default 8).
 //!
 //! Overrides:
 //! * `ATLAS_MTP_K_LADDER="4:3,8:2,16:1"` — comma-separated `n_max:drafts`
@@ -43,7 +49,11 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
             }
             (!steps.is_empty()).then_some(steps)
         });
-        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 2), (16, 1)]);
+        // Default ladder (finalizer matrix 2026-07-28): 3 drafts at n<=4,
+        // 1 draft at n<=8, NO step beyond 8 — spec at n=16 measured as a
+        // regression at every depth (see module docs). The cap (default 8)
+        // makes n>8 MTP-off by construction.
+        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 1)]);
         steps.sort_by_key(|&(n, _)| n);
         steps
     })
@@ -72,7 +82,7 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
         .unwrap_or(num_drafts)
 }
 
-/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`; default 16
+/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`; default 8
 /// with the K-vs-batch ladder, 4 under `ATLAS_NO_MTP_K_LADDER`).
 /// Value-parsed, not presence-checked. Lives beside the ladder (moved from
 /// `speculative.rs`, originally `scheduler/mod.rs`) because the two are one
@@ -83,27 +93,32 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
 /// The cap IS the adaptive per-concurrency policy: the scheduler gates
 /// dispatch on `active.len() <= mtp_max_seqs()`. Per-step K comes from
 /// [`mtp_ladder_drafts`] (task #35): 3 drafts at n<=4 (the proven K=4
-/// regime, bit-for-bit), 2 at n<=8, 1 at n<=16 — the fix for the MEASURED
-/// fixed-K=4 collapse over n>=8 (cap=16 sweep 2026-07-28: ~55 tok/s
-/// plateau at every C, worse than MTP-off). `ATLAS_NO_MTP_K_LADDER`
-/// (presence) restores fixed K=4 + cap 4 — the dafd990d adaptive policy.
-/// Set `ATLAS_MTP_MAX_SEQS=1` to restore single-sequence-only.
+/// regime, bit-for-bit), 1 draft at n<=8 (finalizer matrix 2026-07-28:
+/// C=8 82.4 vs 73.5 MTP-off, +12%). Cap 8 (NOT 16): spec at n=16 measured
+/// as a 11-13% REGRESSION vs MTP-off at BOTH remaining depths (114.6-117.3
+/// vs 131.5), so n>8 falls back to the plain multi-seq decode path.
+/// `ATLAS_NO_MTP_K_LADDER` (presence) restores fixed K=4 + cap 4 — the
+/// dafd990d adaptive policy. Set `ATLAS_MTP_MAX_SEQS=1` to restore
+/// single-sequence-only.
 pub fn mtp_max_seqs() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
         std::env::var("ATLAS_MTP_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
-            // Default 16 ONLY together with the ladder: raising the cap with
-            // FIXED K=4 is strictly dominated (measured 2026-07-28: n>=8 at
-            // K=4 plateaus ~55 tok/s at EVERY C — n*(K+1) verify rows of
-            // superlinear per-seq GDN + graph-key churn past the 32-key
-            // cache). With the ladder shrinking K as n grows (R <= 32 rows
-            // total), cap 16 is the C=8/16 lever. Pre-ladder measured
-            // baseline (cap=4, binary 472ed410): C=1 25.55 (1.80x vLLM) ·
-            // C=2 35.35 (1.27x) · C=4 54.1 (1.01x) · C=8/16 MTP-off
-            // fallback 73.5/131.0.
-            .unwrap_or(if mtp_ladder_disabled() { 4 } else { 16 })
+            // Default 8, NOT 16 (finalizer matrix 2026-07-28, binary
+            // 4b92a774): with the ladder, C=8 at 1 draft = 82.4 tok/s
+            // (+12% over the 73.5 MTP-off floor), but C=16 speculation
+            // LOSES at every depth (114.6 at 16:1 defaults, 117.3 at
+            // 8:1,16:1 — vs 131.5 MTP-off): the K=1 verify step costs
+            // ~1.9x a plain batch-16 decode step, above the ~1.72x
+            // break-even at p1~0.72. Cap 8 makes n>8 MTP-off by
+            // construction, preserving the 131.0 C=16 floor. Raising the
+            // cap requires first cutting the n=16 verify-step cost (k<4
+            // GDN table-form, wider batched propose). Pre-ladder baseline
+            // (cap=4, binary 472ed410): C=1 25.55 (1.80x vLLM) · C=2
+            // 35.35 (1.27x) · C=4 54.1 (1.01x) · C=8/16 MTP-off 73.5/131.0.
+            .unwrap_or(if mtp_ladder_disabled() { 4 } else { 8 })
     })
 }
 
@@ -117,11 +132,11 @@ mod tests {
     fn default_ladder_steps_down_with_n() {
         assert_eq!(mtp_ladder_drafts(1, 3), 3);
         assert_eq!(mtp_ladder_drafts(4, 3), 3);
-        assert_eq!(mtp_ladder_drafts(5, 3), 2);
-        assert_eq!(mtp_ladder_drafts(8, 3), 2);
-        assert_eq!(mtp_ladder_drafts(9, 3), 1);
+        assert_eq!(mtp_ladder_drafts(5, 3), 1);
+        assert_eq!(mtp_ladder_drafts(8, 3), 1);
+        // Beyond the last step: last step's value (the cap — default 8 —
+        // gates dispatch, so n>8 never speculates at defaults).
         assert_eq!(mtp_ladder_drafts(16, 3), 1);
-        // Beyond the last step: last step's value.
         assert_eq!(mtp_ladder_drafts(32, 3), 1);
     }
 
