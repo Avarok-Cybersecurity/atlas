@@ -1,0 +1,9 @@
+--- ALL WINS ON (shipped default) ---
+   coherence: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n '
+   sha: bf3a0b07b0e9ee1c2db5fa8a
+   C=16: wall=27.3s total_tok=3072 agg=112.6 tok/s
+--- ALL KILL SWITCHES ENGAGED (full rollback) ---
+   coherence: '```python\ndef fibonacci(n: int, memo: dict = None) -> int:\n '
+   sha: bf3a0b07b0e9ee1c2db5fa8a
+   C=16: wall=32.2s total_tok=3072 agg=95.4 tok/s
+KILLSWITCH_DONE

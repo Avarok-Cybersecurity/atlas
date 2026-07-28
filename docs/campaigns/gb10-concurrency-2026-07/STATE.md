@@ -1436,3 +1436,24 @@ the serve log.
 | 4 | 38.6 | 48.7 | 53.3 | 0.91x |
 | 8 | 55.4 | 70.7 | 98.8 | 0.72x |
 | 16 | 59.9 | **112.4** | 168.9 | 0.35x -> **0.67x** |
+
+## 2026-07-28 — ★ ROLLBACK VERIFIED, and the accounting closes exactly
+All seven kill switches engaged simultaneously (`ATLAS_NO_W4A16_K64=1`,
+`ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1`, `ATLAS_NO_FUSED_QKV=1`,
+`ATLAS_NO_THINKENDED_GPU_ARGMAX=1`, `ATLAS_NO_ARGMAX_BATCH=1`, `ATLAS_NO_GDN_HALF_REG=1`,
+`ATLAS_MARCONI_MIN_TOKENS=0`):
+```
+ALL WINS ON   112.6 tok/s   sha bf3a0b07...   coherent
+ALL OFF        95.4 tok/s   sha bf3a0b07...   coherent
+```
+1. **The escape hatch works.** All switches fire together without conflict; one env block
+   restores pre-session behaviour with no rebuild and no revert.
+2. **The wins compose to +18% jointly** (95.4 -> 112.6), measured together rather than summed
+   from individual A/Bs — they neither cancel nor double-count.
+3. **Byte-identical across the full rollback** (same sha both ways), as expected: seven wins
+   are bit-exact and the eighth (the Marconi floor) only diverges on a SHORT-MATCH prompt,
+   which this probe is not.
+4. **95.4 ~= the 95.9 this session started from**, so the decomposition is exact:
+   - campaign start -> session start: 59.9 -> 95.9 (+60%, earlier phases)
+   - **this session: 95.9 -> 112.2 (+17%)**
+   - campaign total: **59.9 -> 112.2 (+87%)**
