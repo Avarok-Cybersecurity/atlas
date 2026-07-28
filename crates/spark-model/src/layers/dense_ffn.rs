@@ -331,7 +331,7 @@ impl DenseFfnLayer {
             fp4mmq_gate: std::sync::OnceLock::new(),
             fp4mmq_up: std::sync::OnceLock::new(),
             fp4mmq_down: std::sync::OnceLock::new(),
-            w4a16_gemm_t_k64_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64"),
+            w4a16_gemm_t_k64_k: super::k64_kernel(gpu).unwrap_or(KernelHandle(0)),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,

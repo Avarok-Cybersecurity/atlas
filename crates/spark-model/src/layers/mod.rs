@@ -74,6 +74,27 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 /// given feature: e.g. Qwen3-Coder-Next (GDN+attention) never calls MLA
 /// kernels, but the layer builder still probes them. Warning on expected
 /// misses drowned out genuine problems in startup logs.
+/// Resolve the k64 deep-K tile GEMM, preferring the 3-deep weight-pipeline
+/// variant. **ON by default**; `ATLAS_NO_K64_PIPELINE3` (presence — `=0` is NOT
+/// "off") falls back to the 2-stage parent.
+///
+/// The parent issues one cp.async group then `wait_all`s it before the dequant
+/// phase, so with a small grid there are ZERO outstanding loads across that
+/// phase. The out_proj/o_proj shapes (N=5120, K=6144) launch 40 CTAs on 48 SMs —
+/// exactly 1 CTA/SM — so nothing covers the drain, and they measure ~38% of
+/// achievable while lm_head (1938 CTAs) reaches 83% on the identical loop.
+/// `_p3` keeps step i+2's loads in flight across dequant(i+1). Bit-identical.
+pub fn k64_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
+    let want_p3 = std::env::var("ATLAS_NO_K64_PIPELINE3").is_err();
+    if want_p3 {
+        let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64_p3");
+        if h.0 != 0 {
+            return Ok(h);
+        }
+    }
+    gpu.kernel("w4a16", "w4a16_gemm_t_k64")
+}
+
 pub fn try_kernel(gpu: &dyn GpuBackend, module: &str, func: &str) -> KernelHandle {
     match gpu.kernel(module, func) {
         Ok(h) => h,
