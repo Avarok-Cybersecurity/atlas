@@ -7,11 +7,17 @@
 //! one — the structural fix for the measured MTP serialization at C>1
 //! (cap=4 at C=4: 25.8 vs 48.5 tok/s; see BATCHED_MTP_SPEC.md).
 //!
-//! EAGER ONLY: the slot-keyed `verify4_graph` cache is meaningless at n>1
-//! (a graph would bake one slot-vector's state pointers); slot-vector-keyed
-//! capture is a measured follow-up. Everything per-sequence (GDN conv+WY4
-//! body, block tables, rollback intermediates) reuses existing machinery
-//! verbatim — only base addresses move.
+//! CUDA GRAPHS (slot-VECTOR-keyed): the forward span (layer loop + final
+//! norm + lm_head + argmax) is captured per distinct ssm-slot vector — the
+//! slot-keyed `verify4_graph` cache is meaningless at n>1 because a graph
+//! bakes EVERY sequence's state pointers, which are a function of the whole
+//! vector. Pre-graph each step (embed, KV-block ensure, metadata/bt/WY-table
+//! H2D into fixed addresses) and the argmax D2H stay eager — exactly the
+//! decode_a2 padded_n-graph pattern. Kill switch `ATLAS_NO_MTP_VERIFY_GRAPHS`
+//! (PRESENCE). Everything per-sequence (GDN conv+WY4 body, block tables,
+//! rollback intermediates) reuses existing machinery verbatim — only base
+//! addresses move — with an optional cross-sequence batched conv+WY fast
+//! path in the GDN Multi arm (see trait_decode_batched_conv_gdn_multi.rs).
 //!
 //! Same `unsafe { from_raw_parts(...) }` pattern as verify_c.rs; see that
 //! file's module docs for the full safety contract.
@@ -78,13 +84,20 @@ impl TransformerModel {
         let bf16 = 2usize;
         let k = 4usize;
         let n = seqs.len();
-        ensure!(n >= 2 && tokens.len() == n, "batched verify: n={n} tokens={}", tokens.len());
+        ensure!(
+            n >= 2 && tokens.len() == n,
+            "batched verify: n={n} tokens={}",
+            tokens.len()
+        );
         let r_total = n * k;
         // R ≤ 16: the proven decode_a2 C=16 metadata envelope. The meta gaps
         // below (positions ≤128 B at +0, seq_slot at +128, slots ≤256 B at
         // +256, seq_lens at +512, bt staging sized for 32 rows in sizes.rs)
         // and the 32-row logits cap all hold at R=16 with 2x margin.
-        ensure!(r_total <= 16, "batched verify: R={r_total} exceeds the audited 16-row envelope");
+        ensure!(
+            r_total <= 16,
+            "batched verify: R={r_total} exceeds the audited 16-row envelope"
+        );
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -180,137 +193,222 @@ impl TransformerModel {
             seq_slot,
         };
 
+        // Pre-graph: stage the per-GDN-layer WY pointer tables into the
+        // fixed staging buffer (contents refreshed BEFORE any replay, like
+        // the attention metadata above). NULL → per-seq WY loop.
+        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, stream)?;
+
         // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
         // illegal access is attributed to the exact layer (same hatch as
-        // verify_c2 — this path is ALWAYS eager, so it is always legal).
+        // verify_c2). Forces EAGER — per-layer syncs are illegal under
+        // capture (verify_c2's gate pattern).
         let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
 
-        let ctx = ForwardContext {
-            buffers: &self.buffers,
-            gpu: self.gpu.as_ref(),
-            config: &self.config,
-            attn_metadata: Some(metadata),
-            profile: false,
-            comm: self.comm_ref(),
-            graph_capture: false,
-            gdn_exact_replay: false,
-            token_ids: None,
-            routed_lora_layers: None,
-            midchunk_capture: None,
+        // ── Phase 3: CUDA graph replay, or capture/eager forward ──
+        // Keyed by the ssm-slot VECTOR (verify_e2.rs): every baked SSM
+        // pointer is a function of it; meta/embeds live at fixed addresses
+        // refreshed above. can_batch already excludes EP/HSS/LoRA/DFlash.
+        let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
+        let graph_key = if graphs_on {
+            self.verify_batched_graph_key(&*seqs, wy_tables_base.is_null())
+        } else {
+            None
+        };
+        let mut graphs = graph_key
+            .as_ref()
+            .map(|_| self.verify_batched_graphs.lock());
+        let cached = match (&graphs, &graph_key) {
+            (Some(g), Some(key)) => g.get(key).copied(),
+            _ => None,
         };
 
-        // Host-side per-row attention args (verify_c2 pattern, R rows).
-        let mut seq_lens_vec: Vec<usize> = Vec::with_capacity(r_total);
-        let mut block_tables_vec: Vec<Vec<u32>> = Vec::with_capacity(r_total);
-        for seq in seqs.iter() {
-            for j in 0..k {
-                seq_lens_vec.push(seq.seq_len + j);
-                block_tables_vec.push(seq.block_table.clone());
+        if let Some(graph) = cached {
+            // Replay: kernels read this step's metadata + WY tables from the
+            // fixed addresses refreshed above; the ~4-5k launches of the
+            // layer loop + head + argmax dispatch as one graph.
+            if graph.0 != 0 {
+                self.gpu.launch_graph(graph, stream)?;
             }
-        }
+        } else {
+            // First step for this slot vector (or graphs off): run the body,
+            // capturing when a cache slot is available.
+            let capture = graphs
+                .as_ref()
+                .is_some_and(|g| g.len() < super::verify_e2::VERIFY_BATCHED_GRAPH_CAP);
 
-        // ── Phase 3: layer loop (one R-row weight sweep) ──
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            let layer_type = self.config.layer_type(layer_idx);
+            let ctx = ForwardContext {
+                buffers: &self.buffers,
+                gpu: self.gpu.as_ref(),
+                config: &self.config,
+                attn_metadata: Some(metadata),
+                profile: false,
+                comm: self.comm_ref(),
+                graph_capture: capture,
+                gdn_exact_replay: false,
+                token_ids: None,
+                routed_lora_layers: None,
+                midchunk_capture: None,
+            };
 
-            if layer_type == LayerType::FullAttention {
-                let mut dummy_states: Vec<Box<dyn LayerState>> = (0..r_total)
-                    .map(|_| layer.alloc_state(self.gpu.as_ref()))
-                    .collect::<Result<_>>()?;
-                let mut refs: Vec<&mut (dyn LayerState + 'static)> =
-                    dummy_states.iter_mut().map(|s| s.as_mut()).collect();
-                layer.decode_multi_seq(
-                    hidden,
-                    residual,
-                    r_total,
-                    &mut refs,
-                    &mut kv_cache,
-                    &seq_lens_vec,
-                    &block_tables_vec,
-                    &ctx,
-                    stream,
-                )?;
-            } else {
-                let mut state_refs: Vec<&mut (dyn LayerState + 'static)> = seqs
-                    .iter_mut()
-                    .map(|s| s.layer_states[layer_idx].as_mut())
-                    .collect();
-                layer.decode_verify_multi(
-                    hidden,
-                    residual,
-                    n,
-                    k,
-                    &mut state_refs,
-                    &mut kv_cache,
-                    &ctx,
-                    stream,
-                )?;
+            // Host-side per-row attention args (verify_c2 pattern, R rows).
+            let mut seq_lens_vec: Vec<usize> = Vec::with_capacity(r_total);
+            let mut block_tables_vec: Vec<Vec<u32>> = Vec::with_capacity(r_total);
+            for seq in seqs.iter() {
+                for j in 0..k {
+                    seq_lens_vec.push(seq.seq_len + j);
+                    block_tables_vec.push(seq.block_table.clone());
+                }
             }
 
-            if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
-                anyhow::bail!(
-                    "K4_DIAG(batched): CUDA error after layer {layer_idx} ({layer_type:?}): {e:#}"
-                );
+            // Dummy attention states are stateless (multi_seq attention
+            // ignores them) — allocated OUTSIDE the capture window.
+            let mut attn_dummy_states: Vec<Vec<Box<dyn LayerState>>> = Vec::new();
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                if self.config.layer_type(layer_idx) == LayerType::FullAttention {
+                    attn_dummy_states.push(
+                        (0..r_total)
+                            .map(|_| layer.alloc_state(self.gpu.as_ref()))
+                            .collect::<Result<_>>()?,
+                    );
+                }
             }
-        }
 
-        // ── Phase 4: final norm [R, H] + lm_head + per-row argmax ──
-        let normed = self.buffers.norm_output();
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            r_total as u32,
-            h as u32,
-            self.config.rms_norm_eps as f32,
-            stream,
-        )?;
+            if capture {
+                self.gpu.begin_capture(stream)?;
+            }
 
-        if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
-            anyhow::bail!("K4_DIAG(batched): CUDA error after final norm: {e:#}");
-        }
+            let mut attn_idx = 0usize;
+            let mut ssm_idx = 0usize;
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                let layer_type = self.config.layer_type(layer_idx);
 
-        // R ≤ 16 < the 32-row logits buffer cap (sizes.rs).
-        self.lm_head_batched(normed, r_total as u32, self.buffers.logits(), stream)?;
+                if layer_type == LayerType::FullAttention {
+                    let mut refs: Vec<&mut (dyn LayerState + 'static)> = attn_dummy_states
+                        [attn_idx]
+                        .iter_mut()
+                        .map(|s| s.as_mut())
+                        .collect();
+                    attn_idx += 1;
+                    layer.decode_multi_seq(
+                        hidden,
+                        residual,
+                        r_total,
+                        &mut refs,
+                        &mut kv_cache,
+                        &seq_lens_vec,
+                        &block_tables_vec,
+                        &ctx,
+                        stream,
+                    )?;
+                } else {
+                    let mut wy_slice = DevicePtr::NULL;
+                    if layer_type == LayerType::LinearAttention {
+                        if !wy_tables_base.is_null() {
+                            wy_slice = wy_tables_base
+                                .offset(ssm_idx * crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES);
+                        }
+                        ssm_idx += 1;
+                    }
+                    let mut state_refs: Vec<&mut (dyn LayerState + 'static)> = seqs
+                        .iter_mut()
+                        .map(|s| s.layer_states[layer_idx].as_mut())
+                        .collect();
+                    layer.decode_verify_multi(
+                        hidden,
+                        residual,
+                        n,
+                        k,
+                        &mut state_refs,
+                        &mut kv_cache,
+                        wy_slice,
+                        &ctx,
+                        stream,
+                    )?;
+                }
 
-        if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
-            anyhow::bail!("K4_DIAG(batched): CUDA error after lm_head_batched: {e:#}");
-        }
+                if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                    anyhow::bail!(
+                        "K4_DIAG(batched): CUDA error after layer {layer_idx} ({layer_type:?}): {e:#}"
+                    );
+                }
+            }
 
-        let vocab = self.config.vocab_size;
-        let argmax_out = self.buffers.scratch();
-        // ONE launch, one block per row (single-row argmax is a one-CTA scan;
-        // R serial calls = R single-SM scans, ~100 us each at this vocab).
-        // Byte-identical per-row body; loop fallback when the kernel is absent.
-        if self.argmax_batch_kernel.0 != 0 {
-            ops::argmax_bf16_batch(
+            // ── Phase 4: final norm [R, H] + lm_head + per-row argmax ──
+            let normed = self.buffers.norm_output();
+            ops::rms_norm(
                 self.gpu.as_ref(),
-                self.argmax_batch_kernel,
-                self.buffers.logits(),
-                argmax_out,
-                vocab as u32,
+                self.rms_norm_kernel,
+                hidden,
+                &self.final_norm,
+                normed,
                 r_total as u32,
-                vocab as u32,
+                h as u32,
+                self.config.rms_norm_eps as f32,
                 stream,
             )?;
-        } else {
-            for r in 0..r_total {
-                ops::argmax_bf16(
+
+            if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                anyhow::bail!("K4_DIAG(batched): CUDA error after final norm: {e:#}");
+            }
+
+            // R ≤ 16 < the 32-row logits buffer cap (sizes.rs).
+            self.lm_head_batched(normed, r_total as u32, self.buffers.logits(), stream)?;
+
+            if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
+                anyhow::bail!("K4_DIAG(batched): CUDA error after lm_head_batched: {e:#}");
+            }
+
+            let vocab = self.config.vocab_size;
+            let argmax_out = self.buffers.scratch();
+            // ONE launch, one block per row (single-row argmax is a one-CTA
+            // scan; R serial calls = R single-SM scans, ~100 us each at this
+            // vocab). Byte-identical per-row body; loop fallback when the
+            // kernel is absent.
+            if self.argmax_batch_kernel.0 != 0 {
+                ops::argmax_bf16_batch(
                     self.gpu.as_ref(),
-                    self.argmax_kernel,
-                    self.buffers.logits().offset(r * vocab * bf16),
-                    argmax_out.offset(r * 4),
+                    self.argmax_batch_kernel,
+                    self.buffers.logits(),
+                    argmax_out,
+                    vocab as u32,
+                    r_total as u32,
                     vocab as u32,
                     stream,
                 )?;
+            } else {
+                for r in 0..r_total {
+                    ops::argmax_bf16(
+                        self.gpu.as_ref(),
+                        self.argmax_kernel,
+                        self.buffers.logits().offset(r * vocab * bf16),
+                        argmax_out.offset(r * 4),
+                        vocab as u32,
+                        stream,
+                    )?;
+                }
+            }
+
+            if capture {
+                let graph = self.gpu.end_capture(stream)?;
+                if graph.0 != 0 {
+                    tracing::info!(
+                        "Captured CUDA graph for batched K=4 verify (slots={:?})",
+                        graph_key
+                    );
+                    if let (Some(ref mut g), Some(key)) = (graphs.as_mut(), graph_key) {
+                        g.insert(key, graph);
+                    }
+                    self.gpu.launch_graph(graph, stream)?;
+                }
             }
         }
+        drop(graphs);
 
         // ── Phase 5: D2H + host bookkeeping ──
+        // Argmax landed at scratch row 0 (graph replay and eager both write
+        // the same fixed address). Blocking D2H = the step's one host sync.
         let mut buf = vec![0u8; r_total * 4];
-        self.gpu.copy_d2h(argmax_out, &mut buf)?;
+        self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
 
         let mut out = Vec::with_capacity(n);
         for i in 0..n {

@@ -243,6 +243,7 @@ mod ssm_forward;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
+mod trait_decode_batched_conv_gdn_multi;
 mod trait_decode_batched_conv_gdn_wyn;
 mod trait_decode_multi_seq;
 mod trait_layer;

@@ -235,6 +235,22 @@ pub struct TransformerModel {
     pub(super) verify3_graph: Mutex<std::collections::HashMap<usize, GraphHandle>>,
     /// Cached CUDA graphs for K=4 verification, keyed by `seq.slot_idx`.
     pub(super) verify4_graph: Mutex<std::collections::HashMap<usize, GraphHandle>>,
+    /// Cached CUDA graphs for the BATCHED K=4 verify (verify_e), keyed by
+    /// the batch's ssm-pool slot VECTOR (+ a wy-tables-present sentinel).
+    /// Slot-vector keying is what a per-slot key cannot give at n>1: the
+    /// captured graph bakes every sequence's h_state/conv_state/intermediate
+    /// pointers, so it may only replay for the exact same slot assignment in
+    /// the same batch order. Attention metadata/block tables/embeds live at
+    /// fixed scratch addresses refreshed pre-replay (decode_a2 pattern).
+    /// Bounded by `VERIFY_BATCHED_GRAPH_CAP` (overflow runs eager).
+    pub(super) verify_batched_graphs: Mutex<std::collections::HashMap<Vec<u32>, GraphHandle>>,
+    /// Batched-verify WY pointer-table staging: `num_ssm_layers` slices of
+    /// `crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES` ([h|Hi0|Hi1|Hi2] × 4
+    /// u64 entries each) at a FIXED device address, refreshed pre-graph every
+    /// batched verify step (`upload_verify_wy_tables`). Enables the
+    /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
+    /// NULL without an MTP proposer (path self-gates).
+    pub(super) verify_wy_tables: DevicePtr,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.

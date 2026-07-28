@@ -296,6 +296,18 @@ impl TransformerModel {
         } else {
             DevicePtr::NULL
         };
+        // Batched-verify WY pointer-table staging (fixed address for CUDA
+        // graph stability; contents refreshed pre-graph every batched verify
+        // step). One [h|Hi0|Hi1|Hi2] x 4-entry slice per GDN layer — ~6 KB.
+        // NULL without an MTP proposer or on non-SSM models (path self-gates).
+        let verify_wy_tables = if proposer.is_some() && config.num_ssm_layers() > 0 {
+            let bytes = config.num_ssm_layers() * crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES;
+            let buf = gpu.alloc(bytes)?;
+            gpu.memset(buf, 0, bytes)?;
+            buf
+        } else {
+            DevicePtr::NULL
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -660,6 +672,8 @@ impl TransformerModel {
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
+            verify_batched_graphs: Mutex::new(std::collections::HashMap::new()),
+            verify_wy_tables,
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
             fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,

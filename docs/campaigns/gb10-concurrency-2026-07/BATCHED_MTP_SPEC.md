@@ -173,3 +173,42 @@ its own C=4 drive → 8 active > cap 4 → MTP correctly disabled by `active.len
    launch gaps at C=4.
 2. K-vs-batch ladder / D-Cut (task #35) before re-raising the cap past 4.
 3. Slot-vector-keyed CUDA graph for the batched verify (eager gaps ~22 ms/step at C=4).
+
+## IMPLEMENTED, UNMEASURED — items 1 + 3 above (2026-07-28, build green, no GPU validation yet)
+
+Both landed in one lever set (they share the verify_e forward and the same
+slot-vector stability argument):
+
+1. **Slot-vector-keyed CUDA graphs for the batched K=4 verify** (`verify_e.rs` +
+   `verify_e2.rs`, cache `verify_batched_graphs` on the model). Captured span =
+   layer loop + final norm + lm_head + argmax (the ~4-5k eager launches);
+   pre-graph each step = embed, KV-block ensure, metadata/bt H2D, WY-table H2D
+   — all into FIXED addresses (decode_a2 pattern); post-graph = the argmax D2H.
+   Key = each sequence's ssm-pool slot in batch order + a wy-tables sentinel;
+   cache capped at 32 (overflow runs eager). Kill switch
+   `ATLAS_NO_MTP_VERIFY_GRAPHS` (PRESENCE). ATLAS_K4_DIAG still forces eager.
+2. **Cross-sequence batched GDN conv+WY** (`trait_decode_batched_conv_gdn_multi.rs`):
+   the shipped-but-uncalled `gdn_verify_fused_conv_kn_batched` now has its call
+   site (one launch, gridDim.y = n, snapshots inline — kills the n×(4 conv +
+   3 D2D) loop), and the WY side batches to ONE `gdn_decode_wy4` launch at
+   batch_size = n via the existing `state_is_table` pointer-table form.
+   Tables ([h|Hi0|Hi1|Hi2] × 4 u64 entries per GDN layer, ~6 KB) are staged by
+   the model into a fixed buffer (`verify_wy_tables`) refreshed pre-graph
+   every step. Preconditions (consecutive-slot conv layout, intermediates
+   0..3 intra-slot contiguous) are checked on the ACTUAL pointers per layer;
+   any failure falls back to the per-seq loop (engage/decline logged once +
+   counted — grep serve logs for "batched-verify GDN conv+WY"). Kill switch
+   `ATLAS_NO_VERIFY_GDN_BATCH` (PRESENCE). Contract delta: the batched conv
+   also writes the dead t=K-1 snapshot (pool has num_intermediates = K slots;
+   verified before launch).
+
+Left EAGER by design: Phase-1 host picks (policy decision, not graph work),
+Phase-2 stash (verdict-dependent row), Phase-3 verdict commits (dynamic index,
+secondary stream), Phase-4 batched propose (3 per-position host syncs), the
+argmax D2H. NOT ported: table-form wy2/wy3 (K<4 batched verify still refuses
+batch>1 — irrelevant for the K=4 path).
+
+Validation still owed (validator): serve + `ATLAS_MTP_MAX_SEQS` sweep vs the
+two kill switches, coherence + tool-call smoke, PROOF the batched conv kernel
+resolves (the "ENGAGED" log line / nsys instance count), and the accept-rate
+telemetry unchanged.

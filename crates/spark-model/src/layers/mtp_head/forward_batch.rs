@@ -374,7 +374,7 @@ impl MtpHead {
                 hd,
                 bs as u32,
                 inv_sqrt_d,
-                (nq * hd) as u32,
+                nq * hd,
                 0,
                 stream,
             )?;

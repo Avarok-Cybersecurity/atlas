@@ -38,6 +38,7 @@ mod verify_c;
 mod verify_c2;
 mod verify_d;
 mod verify_e;
+mod verify_e2;
 mod verify_fused;
 
 impl Model for TransformerModel {
