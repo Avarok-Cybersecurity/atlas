@@ -108,6 +108,16 @@ pub struct SequenceState {
     /// prefill. The model uses this to tag saved snapshots and verify ownership
     /// before restoring. 0 = no session tracking (legacy behavior).
     pub session_hash: u64,
+    /// Ownership stamp for the SINGLE-SLOT whole-prompt hidden capture
+    /// (`mtp_prefill_hidden`). Written by `try_mtp_prefill_capture` when THIS
+    /// sequence's chunk 0 (re)starts the capture, with the model's monotonic
+    /// capture generation. `ensure_drafter_context` prefills the drafter only
+    /// while the stamp still matches the model's current generation — at
+    /// C>=2 interleaved prefills restart the shared capture, and without this
+    /// check a sequence's first propose could pair ITS tokens with ANOTHER
+    /// sequence's captured hiddens (poisoned drafter KV; blind is strictly
+    /// better than poisoned). 0 = never owned a capture.
+    pub mtp_capture_gen: u64,
     /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
     /// prefix hash so two adapters that share a token prefix never reuse each
     /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so

@@ -196,6 +196,17 @@ pub struct TransformerModel {
     /// restore) leaves it stale-short, which safely disables drafter-prefill
     /// for that sequence (coverage check at the propose site).
     pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
+    /// Monotonic generation of the single-slot capture above. Bumped every
+    /// time a chunk-0 prefill (re)starts the capture; the restarting
+    /// sequence is stamped with the new value (`SequenceState::
+    /// mtp_capture_gen`). Appends and the drafter-prefill consume require
+    /// `stamp == current generation`, so at C>=2 a sequence whose capture
+    /// was overwritten by ANOTHER sequence's prefill skips the drafter
+    /// prefill instead of pairing its tokens with foreign hiddens. The
+    /// current value IS the latest capture's generation (single atomic,
+    /// SSOT). 0 = no capture ever started (matches the fresh-seq stamp 0,
+    /// which is harmless: `captured >= prompt_len >= 2` fails at len 0).
+    pub(super) mtp_prefill_capture_gen: std::sync::atomic::AtomicU64,
     /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single

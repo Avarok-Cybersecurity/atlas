@@ -102,6 +102,7 @@ impl TransformerModel {
     /// prefill for that sequence via the coverage check at the propose site.
     pub(super) fn try_mtp_prefill_capture(
         &self,
+        seq: &mut SequenceState,
         chunk_start: usize,
         proc_count: usize,
         stream: u64,
@@ -114,9 +115,24 @@ impl TransformerModel {
             return Ok(());
         }
         let len = self.mtp_prefill_capture_len.load(Ordering::Relaxed);
+        // Ownership: the capture buffer is a SINGLE shared slot. Chunk 0
+        // claims it under a fresh generation; an append is valid only while
+        // this sequence still owns the current generation — at C>=2 another
+        // sequence's chunk 0 may have restarted the capture in between, and
+        // appending onto foreign rows would pair mixed hiddens under one
+        // contiguous length. Mismatch leaves the length stale-short, which
+        // safely disables the drafter prefill (coverage check at propose).
         let contiguous_from_zero = if chunk_start == 0 {
+            let generation = self
+                .mtp_prefill_capture_gen
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            seq.mtp_capture_gen = generation;
             Some(proc_count)
-        } else if chunk_start == len {
+        } else if chunk_start == len
+            && seq.mtp_capture_gen != 0
+            && seq.mtp_capture_gen == self.mtp_prefill_capture_gen.load(Ordering::Relaxed)
+        {
             Some(len + proc_count)
         } else {
             None
@@ -170,6 +186,7 @@ impl TransformerModel {
         // Disjoint field borrows: the proposer state is mutated while the
         // token slice is read. Destructuring is what makes that legal, and it
         // avoids cloning a 12k-token vector on every propose.
+        let capture_gen = seq.mtp_capture_gen;
         let SequenceState {
             tokens: seq_tokens,
             prompt_len,
@@ -191,7 +208,19 @@ impl TransformerModel {
             let captured = self
                 .mtp_prefill_capture_len
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p;
+            // Ownership check: the shared capture must still be THIS
+            // sequence's (stamp == current generation). At C>=2 the seqs
+            // prefill back-to-back before any propose, so without this the
+            // first propose of every seq but the LAST-prefilled would build
+            // drafter KV from its own tokens paired with a DIFFERENT
+            // sequence's hiddens. Blind (skip) beats poisoned.
+            let owns_capture = capture_gen != 0
+                && capture_gen
+                    == self
+                        .mtp_prefill_capture_gen
+                        .load(std::sync::atomic::Ordering::Relaxed);
+            let cold_prefill_ok =
+                p >= 2 && captured >= p && seq_tokens.len() >= p && owns_capture;
             let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
             // Both branches below are FIRST-PROPOSE only: `prefill_drafter`
             // enforces that itself (`mtp_state.seq_len != row_base` fast-return),

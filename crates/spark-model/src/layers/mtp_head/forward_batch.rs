@@ -269,17 +269,27 @@ impl MtpHead {
                 stream,
             )?;
         }
-        ops::rms_norm(
-            gpu,
-            self.rms_norm_k,
-            q_out,
-            &self.q_norm,
-            q_out,
-            n as u32 * nq,
-            hd,
-            eps,
-            stream,
-        )?;
+        // Q norm MUST loop per sequence: each sequence's row is a strided
+        // [q(q_dim) | gate(q_dim)] block at stride qg_dim, so a single packed
+        // n*nq-row launch would (a) RMS-norm seq0's sigmoid GATE with q_norm
+        // weights and (b) leave the later sequences' Q heads un-normalized —
+        // the measured batched accept-p1 divergence (0.59-0.71 vs single-seq
+        // 0.70-0.82). nq rows over exactly the q_dim span per seq is
+        // forward_one's exact call. K below is packed [n, kv_dim] and safe.
+        for i in 0..n {
+            let q_row = q_out.offset(i * qg_dim * bf16);
+            ops::rms_norm(
+                gpu,
+                self.rms_norm_k,
+                q_row,
+                &self.q_norm,
+                q_row,
+                nq,
+                hd,
+                eps,
+                stream,
+            )?;
+        }
         ops::rms_norm(
             gpu,
             self.rms_norm_k,
