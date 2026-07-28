@@ -1921,3 +1921,73 @@ It delivered ~5.5 ms ALONE — i.e. the load-ISSUE path, not load LATENCY, was t
 Implied post-fix MMQ bandwidth ~195 GB/s = ~86% of the 226 GB/s achievable at a 9.6 GB working set,
 i.e. already at w4a16 parity. **A1 (cp.async double-buffer) must be RE-SIZED against a fresh
 profile before it is built — its remaining headroom is far smaller than the original 4-5 ms.**
+
+## 2026-07-28 — NEXT LEVER, SPECIFIED AND READY: deepen the `w4a16_gemm_t_k64` pipeline
+
+NOT STARTED — specified deliberately rather than half-built (a partial vendored-kernel refactor is
+worse than nothing). Everything below is measured or computed; it should be directly executable.
+
+### The target
+`ssm_out_proj` (x48/step) + `attn_o_proj` (x16/step), both **N=5120 K=6144**, on
+`w4a16_gemm_t_k64`. 13.4 ms/step, 10.7% of GPU, and the WORST efficiency of any live kernel.
+Per call: B_packed 15.73 MB + scales 1.97 MB + A/C ~0.36 MB = **18.05 MB => 79.9 us floor at
+226 GB/s**; 64 calls => **floor 5.1 ms/step vs 13.4 measured = 38% efficient in-model.**
+Reaching 75% saves **~6.6 ms/step = ~5.3% at C=16** — larger than the MMQ cp.async lever's entire
+remaining prize.
+
+### ★ THE MECHANISM (efficiency is MONOTONE IN grid.x across the SAME kernel family)
+| grid.x | shape | % of achievable |
+|---|---|---|
+| 40 | out_proj / o_proj (N=5120) | 47-50 |
+| 112 | attn_qkv (N=8192) | 66 |
+| 128 | ssm_qkvz (N=16384) | 73 |
+| 1938 | lm_head (N=248077) | 83 |
+Same kernel, same K-loop, same scale layout — ONLY occupancy varies. At N=5120 the grid is
+(40, 1) = **40 CTAs on 48 SMs = exactly 1 CTA/SM** (128 threads resident, ~8% occupancy). The k64
+main loop is `ISSUE(nxt) -> commit -> MMA(cur) -> cp_async_wait_all -> sync -> DEQUANT(nxt) -> sync`:
+only ONE load group is ever in flight and `wait_all` drains it every step, so during DEQUANT
+(32 LUT+cvt iterations between two barriers) **every active SM has ZERO outstanding loads**.
+lm_head has the identical serial phase but a co-resident CTA covers it. That is the whole gap.
+Pure SM under-fill only accounts for 48/40 = 1.20x; the other ~1.65x is exposed latency.
+
+★ The campaign's two prior refutations DO NOT TRANSFER: (a) the 40-vs-136-CTA under-fill null was
+measured on MMQ, whose 256-thread/2-resident pipeline self-hides latency; (b) split-K was refuted
+for projections AND would break bit-identity (FP32 accumulation order). Deepening the pipeline
+attacks the same mechanism intra-CTA, BIT-IDENTICALLY.
+
+### ★ SMEM CORRECTION — a naive 3-stage does NOT fit
+With M_TILE 64, K_STEP_T64 64, PAD_T64 8, N_TILE_LG 128, BP_PAD 16:
+- 2 stages (today): A 18432 + Bp 8704 + Bs 1088 + B_fp8 10240 + LUT 64 = **37.6 KB**
+- naive 3 stages: **51.4 KB — EXCEEDS the 48 KB static limit**, would need `cudaFuncSetAttribute`
+  + `extern __shared__`, which the launch wrapper does NOT do.
+- ★ **A[2] + Bp/Bs[3] = 43.2 KB — FITS.** Only the WEIGHT tiles need the third stage: `A[cur]` is
+  free the moment `MMA(cur)` clears its barrier, so A can stay double-buffered.
+
+### Schedule (bit-identical: same MMA order, same operands, only load timing moves)
+per step i: `MMA(cur)` -> sync -> `ISSUE_LOADS(A[cur], Bp/Bs[(i+2)%3] <- kb+2)` -> commit ->
+`cp_async_wait_group(1)` -> sync -> `DEQUANT((i+1)%3)` -> sync.
+Loads for kb+2 stay in flight THROUGH DEQUANT — the memory pipe never drains.
+The existing `K64_ISSUE_LOADS(buf,kb)` / `K64_DEQUANT(buf)` / `K64_COMPUTE_MMA` macros already take
+`(buf)` as a parameter, so the change is mostly the smem declarations + loop reordering; `[2]` ->
+`[3]` on `smem_Bp_k64`/`smem_Bs_k64` only. If only `cp_async_wait_all` is wrapped in-file, add the
+`cp.async.wait_group 1` asm one-liner.
+
+### Plan
+1. Add `w4a16_gemm_t_k64_p3` BELOW the existing kernel (ADDITIVE — the old one keeps working if
+   this is abandoned). Move the macro `#undef`s below it.
+2. Resolve the new handle at `qwen3_ssm/init.rs:122` and `qwen3_attention/init.rs:419`, falling
+   back to `w4a16_gemm_t_k64` under **`ATLAS_NO_K64_PIPELINE3`** (PRESENCE check — `=0` is NOT off).
+   Call sites untouched.
+3. Gates: build with `ATLAS_TARGET_MODEL=qwen3.6-27b` and **md5 the binary vs previous** or the A/B
+   is fake; add the `_p3` row to `examples/w4a16_parity_microtest.rs` and ASSERT bit-identity;
+   `w4a16_m17_bench` on the two out_proj shapes (relative only — that bench overstates ~1.5x from
+   L2 reuse) expecting 153/164 us -> ~110; then coherence smoke + C=16/C=8 >=3 reps per leg vs the
+   kill switch, ranges must not overlap; confirm with nsys that k64 ms/step drops 13.4 -> ~8.
+4. Stretch only after D ships: A3, fuse FFN gate+up into one N=34816 MMQ launch (bit-identical,
+   ~0.5-1.5 ms).
+
+### Also re-sized tonight
+MMQ cp.async (A1) is now a ~2.0-4.6 ms lever, NOT 4-5: post-SoA `mmq16_nc` runs 257.0 us/call =
+**195.1 GB/s = 86% of achievable**, and `mmq32_nc` already hits 203.4 GB/s = 90% on the SAME
+weights with more work per byte — so what remains there is largely FIXED PER-CALL overhead, which
+a load pipeline does not fix. Do D first.
