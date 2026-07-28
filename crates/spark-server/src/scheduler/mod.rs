@@ -46,7 +46,9 @@ mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
+mod verify_k4_batch_step;
 mod verify_k4_step;
+mod verify_k4_verdict;
 mod verify_pipeline_helper;
 
 use beam_prefill::resolve_beam_hyp;
@@ -84,7 +86,9 @@ use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
+use verify_k4_batch_step::*;
 use verify_k4_step::*;
+use verify_k4_verdict::*;
 // verify_pipeline_helper is referenced via fully-qualified
 // `crate::scheduler::verify_pipeline_helper::...` from sibling step
 // files (verify_k2/k3/k4/dflash + spec_step), so no `use` import.
@@ -167,41 +171,27 @@ pub type LoraRotation = (
 
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
-/// How many concurrent sequences may speculate. Default 2, override with
+/// How many concurrent sequences may speculate. Default 1, override with
 /// `ATLAS_MTP_MAX_SEQS`.
 ///
-/// `step_mtp` already takes a slice and is index-correct over it, and the verify
-/// path carries no `active[0]` assumption, so raising this runs MTP per sequence:
-/// n separate verify forwards of M=K+1 each. That is n weight sweeps per step
-/// instead of one, so it only pays where the extra accepted tokens outweigh the
-/// extra sweeps — arithmetic says n=2 wins (~2.9 accepted tokens per sweep vs 1
-/// token per sweep batched), n=4 is near break-even, n>=8 loses badly.
-///
-/// MEASURED 2026-07-27 (2 reps/cell, coherence preserved):
-///   cap=1 (old): C=2 21.1 tok/s | C=4 38.4
-///   cap=2 (new): C=2 25.2 (+19%) | C=4 38.4 (inert — gate is false at n=4)
-///   cap=4:       C=2 25.1        | C=4 25.5 (-34%, n sweeps stop paying)
-/// So 2 is the crossover and the default; 1 restores the old behaviour exactly.
-///
-/// This is the CHEAP half of batched speculation. The real fix is one fused
-/// verify of M = n*(K+1) rows, which needs a batched `decode_verify` the model
-/// trait does not have yet. Until then this knob buys the small-n cells.
+/// `step_mtp` is index-correct over the active slice, so raising this runs
+/// MTP over n sequences per step. With the batched K=4 verify wired
+/// (`verify_k4_batch_step.rs`), verify-ready K=4 grammarless sequences are
+/// verified in ONE eager n*4-row forward (weights read once); anything the
+/// model can't batch (EP, HSS, LoRA, grammar, non-uniform K, DFlash) falls
+/// back to the serialized per-seq loop that MEASURED (2026-07-27) collapses
+/// throughput: cap=4 at C=4 25.8 vs 48.5 MTP-off. Kill switch for A/B:
+/// `ATLAS_NO_MTP_BATCH_VERIFY` (presence) forces that serialized loop.
 fn mtp_max_seqs() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("ATLAS_MTP_MAX_SEQS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            // MEASURED default 1, not 2. At C=2 the MTP verify costs more than
-            // the drafting saves: C=2 aggregate is 26.35 tok/s with MTP OFF vs
-            // 25.45 ON (2 reps each, disjoint), i.e. enabling it there is a
-            // -3.4% net loss. C=1 is unaffected (25.50 vs 25.45) and C>=4 never
-            // had it on. The verify is per-sequence rather than batched, so its
-            // cost scales with concurrency while the benefit does not — raising
-            // this cap makes it worse, not better (cap=4 HALVES C=4: 48.5 ->
-            // 25.8). Raise it only after batched (ragged 1+k) verify lands.
-            .unwrap_or(1)
-    })
+    // SSOT moved to `spark_model::speculative::mtp_max_seqs()` (batched-MTP
+    // E1/E2): the model-side single-sequence MTP structures (catchup ring,
+    // refeed labels, carry slot) gate on the SAME value the scheduler gates
+    // dispatch on. Same parse, same MEASURED default 1 — at C=2 the per-seq
+    // MTP verify costs more than the drafting saves (26.35 tok/s OFF vs
+    // 25.45 ON), and cap=4 HALVED C=4 (48.5 -> 25.8) when the verify ran
+    // serialized. Raising the cap is what activates the batched multi-seq
+    // verify path (`verify_k4_batch_step.rs`).
+    spark_model::speculative::mtp_max_seqs()
 }
 
 pub fn run(
@@ -631,7 +621,19 @@ pub fn run(
                             // by dumped hidden fingerprints (93/93 cross-step,
                             // see `speculative::mtp_refeed_accepted_enabled`),
                             // so the serial hook was the side that disagreed.
-                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
+                            //
+                            // Multi-seq guard (batched-MTP E2): the catchup
+                            // ring is a SINGLE-sequence structure (one ring,
+                            // one label space). With n active sequences the
+                            // hidden in row 0 belongs to an arbitrary member
+                            // of the batch, so ringing it would interleave
+                            // unrelated hiddens under one label space.
+                            // (`mtp_catchup_enabled` is also force-off when
+                            // ATLAS_MTP_MAX_SEQS > 1 — this guard keeps the
+                            // save itself single-seq-only regardless.)
+                            if active.len() == 1
+                                && let Err(e) =
+                                    model.save_hidden_for_catchup(0, active[0].seq.seq_len)
                             {
                                 tracing::warn!("save_hidden_for_catchup: {e:#}");
                             }

@@ -111,6 +111,7 @@ pub fn step_self_spec(
         &verified_argmax,
         a,
         verify_ctx,
+        0,
     );
 
     // 6. Compare draft vs verified, count acceptances
@@ -286,6 +287,7 @@ pub fn step_ngram_verify(
         &[v0_argmax, v1_argmax],
         a,
         verify_ctx,
+        0,
     );
     let v0 = processed.first().copied().unwrap_or(v0_argmax);
     let v1 = processed.get(1).copied().unwrap_or(v1_argmax);

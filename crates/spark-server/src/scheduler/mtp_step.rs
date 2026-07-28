@@ -274,7 +274,53 @@ pub fn step_mtp(
     }
 
     // ── Phase B: Verify with pipelined checkpoint ──
-    for &idx in &verify_idxs {
+    //
+    // Batched multi-seq K=4 verify (batched-MTP E11). Only reachable when
+    // `ATLAS_MTP_MAX_SEQS > 1` puts >= 2 verify-ready sequences in one step
+    // (default cap 1 ⇒ this partition is a no-op and every seq takes the
+    // per-seq loop below, byte-identical to HEAD). Batchable = exactly-3
+    // pending drafts (uniform K=4), grammarless, non-DFlash; the model
+    // additionally self-gates (non-EP, non-HSS, no LoRA) via
+    // `can_batch_verify_k4`. Chunks are capped at 4 seqs (R = 16 rows, the
+    // proven metadata envelope). Kill switch `ATLAS_NO_MTP_BATCH_VERIFY`
+    // (PRESENCE check) forces the serialized loop for A/B.
+    let mut serial_idxs: Vec<usize> = Vec::new();
+    let mut batchable_idxs: Vec<usize> = Vec::new();
+    if verify_idxs.len() >= 2
+        && spark_model::speculative::mtp_multi_seq_mode()
+        && !dflash_verify_raw_argmax
+        && !batch_verify_disabled()
+    {
+        for &idx in &verify_idxs {
+            let a = &active[idx];
+            if num_drafts >= 3 && a.pending_drafts.len() == 3 && a.grammar_state.is_none() {
+                batchable_idxs.push(idx);
+            } else {
+                serial_idxs.push(idx);
+            }
+        }
+    } else {
+        serial_idxs.extend_from_slice(&verify_idxs);
+    }
+    for chunk in batchable_idxs.chunks(4) {
+        if chunk.len() >= 2 && model.can_batch_verify_k4(chunk.len()) {
+            // Collect disjoint &mut refs for the chunk's (ascending) indices.
+            let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(chunk.len());
+            let mut it = active.iter_mut();
+            let mut consumed = 0usize;
+            for &i in chunk {
+                let a = it.nth(i - consumed).expect("chunk index within active");
+                consumed = i + 1;
+                refs.push(a);
+            }
+            step_verify_k4_batched(model, &mut refs, num_drafts, verify_ctx);
+        } else {
+            // Model can't batch this width (or a lone leftover): fall back
+            // to the existing per-seq dispatch for these sequences.
+            serial_idxs.extend_from_slice(chunk);
+        }
+    }
+    for &idx in &serial_idxs {
         let a = &mut active[idx];
         let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
         if drafts.is_empty() {

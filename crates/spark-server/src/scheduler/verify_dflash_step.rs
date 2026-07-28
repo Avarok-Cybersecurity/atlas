@@ -81,6 +81,7 @@ pub fn step_verify_dflash(
             &verified_argmax,
             a,
             verify_ctx,
+            0,
         )
     };
 
