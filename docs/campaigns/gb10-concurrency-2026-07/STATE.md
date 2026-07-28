@@ -1272,3 +1272,28 @@ MTP for the first few steps after a restore so a cold proposer does not waste ve
 ★ Do NOT paper over this with a minimum-prefix-size threshold — that hides the symptom on
 short prompts while leaving the handoff bug live for every long-prefix resume, which is
 exactly where prefix caching is supposed to pay.
+
+### ★★★ EXACT LOCATION: `speculative.rs:194` — the snapshot restore disables the drafter prefill
+```rust
+let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p;
+```
+`captured` is `mtp_prefill_capture_len`: positions whose hidden states were captured DURING THE
+MAIN MODEL'S PREFILL. A Marconi snapshot restore SKIPS that prefill, so nothing is captured,
+`captured >= p` is false, `cold_prefill_ok` is false, and **`prefill_drafter` never runs**. If
+the cross-turn carry (`ATLAS_MTP_CARRY_DRAFTER`) does not also apply, the proposer starts empty.
+
+**Complete causal chain, every link measured:**
+snapshot restore -> prefill skipped -> hidden-state capture skipped -> drafter prefill disabled
+(`speculative.rs:194`) -> cold proposer -> mean accepted 1.485 -> 1.33 (-10%) -> epsilon 2.485
+-> 2.33 -> **-6.2% predicted / -6.7% measured**.
+
+**Correct fix: extend the Marconi snapshot to cover the DRAFTER state**, so a resume restores
+the proposer alongside the SSM h_state/conv_state. The drafter is ONE layer against the model's
+64, so the alternative — replaying only the drafter over the skipped prefix — is also cheap
+(~1.5% of a full prefill) and needs no snapshot-format change. Either removes the penalty
+without giving up the prefill saving.
+Rejected: a minimum-prefix-size threshold. It hides the symptom on short prompts and leaves
+the handoff broken for long-prefix resumes, which is exactly where prefix caching should pay
+and where the lost prefill is largest.
+★ This also means the cross-turn carry path (`try_carry_drafter`) is what keeps multi-turn
+conversations fast; single-turn resumes off a cold cache get no drafter state at all.
