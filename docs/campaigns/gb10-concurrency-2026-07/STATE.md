@@ -1862,3 +1862,23 @@ kernel; `tp_shard.rs` never checks `local_out % 16`; the FP8 tile family guards 
 `(kb)+31 < K` so K % 32 != 0 would silently DROP the last K-chunk. The correct defensive pattern
 already exists in-tree at `w8a16_gemm_t_m128.cu:156-165` (runtime `(N & 15) == 0` check + scalar
 fallback).
+
+## 2026-07-28 — ★ RETRACTION: "W4A4 is dead weight at decode" is WRONG AT OUR M
+I recorded (above, same night) that 4-bit activations buy nothing at decode and proposed A8/A16
+decode activations as a free accuracy reclaim. **That lever is already REFUTED by an A/B in this
+very file** (2026-07-27, STATE.md:95-101): the bf16-activation path against the same NVFP4 weights
+is `ATLAS_NO_FFN_NVFP4_MMQ`, and it measures **MMQ off 55.0/54.8/54.8 (mean 54.9) vs MMQ on
+61.4/59.1/61.2 (mean 60.6) = +10.4% for MMQ, ranges NON-OVERLAPPING, output identical.**
+So dropping W4A4 at decode is a **10.4% REGRESSION**, not a free accuracy reclaim.
+
+★★ WHY I GOT IT WRONG — "DECODE" IN THE LITERATURE MEANS M=1. QServe's ~78-sequence crossover,
+APEX4's M>=64 framing, and llama.cpp PR #22196's GB10 measurement (12.01 -> 11.91 t/s) are ALL
+single-stream decode. Our C=16 decode is **M=16**, a different regime, where the FP4 MMA path
+wins on this hardware. A batched-serving campaign must translate every "decode" claim in a paper
+into the M it was measured at BEFORE importing its conclusion.
+★ Lesson compounding: I ALSO nearly imported the same class of error from the m17 bench, whose
+per-kernel numbers overstate by ~1.5x from L2 reuse (STATE.md:685-690). External and microbench
+evidence both need their regime checked against the in-model measurement before they move a
+decision.
+The accuracy question stands but is now a TRADE, not a freebie: W4A4 decode activations are
+throughput-justified at +10.4%; revisit only at vLLM parity, in the accuracy-debt ledger.

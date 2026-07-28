@@ -90,6 +90,10 @@ name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "w4a16_lmhead_716_repro"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gemv_fp4_vs_fp8_microtest"
 required-features = ["cuda", "gpu-examples"]
 
