@@ -1359,3 +1359,27 @@ prefixes — **carry already handles those** — it declines a trade that is mea
 strict extension) OR the matched prefix is long enough that the saved prefill exceeds the
 acceptance cost. Calibrate the threshold from the two measured points (26 tokens => -7 to -9%;
 inert at C>=4) before choosing a constant; do not guess it.
+
+### ★★ CALIBRATION: the crossover is between ~32 and ~629 MATCHED tokens
+Identical prompt each rep (so reps 2-3 are FULL-prompt hits), C=1, 128 max tokens:
+| prompt tokens | caching ON (warm reps) | caching OFF | delta |
+|---|---|---|---|
+| 35 | 24.8 | 24.87 | **-0.3%** (neutral) |
+| 629 | 21.85 | 20.4 | **+7.1%** |
+| 2709 | 21.55 | 15.6 | **+38%** |
+(Cold rep-1 with caching ON matches the OFF number exactly at every size — 18.9 vs 20.4 and
+15.6 vs 15.6 — confirming the benefit is entirely in the warm reps.)
+
+**Reconciles with the -6.8%/-9.2% measured earlier:** that used `prof_drive`, whose prompts
+DIFFER per rep, so the hit covered only the ~16-26-token shared chat-template preamble — a
+negligible prefill saving bought with a cold drafter. When the hit covers a real prefix the
+saving dominates and prefix caching wins decisively.
+
+=> **The threshold rule is sound and now bracketed by measurement: gate the Marconi SSM skip
+on MATCHED-prefix length, crossover between 32 and 629 tokens.** A conservative 256 sits
+inside the bracket; narrowing it further needs points at ~128/256/384 (~15 min of the same
+harness). Do NOT set it from the prompt length — set it from the MATCHED length, which is what
+determines both the saving and whether carry can fire.
+★ This also means the headline C=1/C=2 sweep numbers are pessimistic for real workloads:
+`prof_drive`'s per-rep prompt variation produces the worst case (preamble-only hits). Real
+multi-turn traffic hits long prefixes, where caching is worth +7% to +38%.

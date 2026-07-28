@@ -1,0 +1,21 @@
+--- caching ON ---
+   prompt_tok=   35 out= 108 wall= 4.34s tok/s= 24.9
+   prompt_tok=   35 out= 120 wall= 4.75s tok/s= 25.3
+   prompt_tok=   35 out= 120 wall= 4.98s tok/s= 24.1
+   prompt_tok=  629 out=  87 wall= 4.60s tok/s= 18.9
+   prompt_tok=  629 out=  87 wall= 3.99s tok/s= 21.8
+   prompt_tok=  629 out=  91 wall= 4.16s tok/s= 21.9
+   prompt_tok= 2709 out= 128 wall= 8.20s tok/s= 15.6
+   prompt_tok= 2709 out= 128 wall= 6.02s tok/s= 21.3
+   prompt_tok= 2709 out= 128 wall= 5.88s tok/s= 21.8
+--- caching OFF ---
+   prompt_tok=   35 out= 108 wall= 4.33s tok/s= 24.9
+   prompt_tok=   35 out= 108 wall= 4.34s tok/s= 24.9
+   prompt_tok=   35 out= 108 wall= 4.35s tok/s= 24.8
+   prompt_tok=  629 out=  92 wall= 4.51s tok/s= 20.4
+   prompt_tok=  629 out=  92 wall= 4.51s tok/s= 20.4
+   prompt_tok=  629 out=  92 wall= 4.50s tok/s= 20.4
+   prompt_tok= 2709 out= 128 wall= 8.18s tok/s= 15.6
+   prompt_tok= 2709 out= 128 wall= 8.20s tok/s= 15.6
+   prompt_tok= 2709 out= 128 wall= 8.19s tok/s= 15.6
+PFX_CALIB_DONE
