@@ -1,0 +1,27 @@
+--- caching ON ---
+   prompt_tok=   99 out=  98 wall= 3.71s tok/s= 26.4
+   prompt_tok=   99 out= 102 wall= 4.41s tok/s= 23.1
+   prompt_tok=   99 out=  95 wall= 3.86s tok/s= 24.6
+   prompt_tok=  219 out=  62 wall= 2.77s tok/s= 22.4
+   prompt_tok=  219 out=  62 wall= 2.59s tok/s= 23.9
+   prompt_tok=  219 out=  62 wall= 2.55s tok/s= 24.4
+   prompt_tok=  349 out= 128 wall= 5.64s tok/s= 22.7
+   prompt_tok=  349 out= 128 wall= 5.45s tok/s= 23.5
+   prompt_tok=  349 out= 128 wall= 5.41s tok/s= 23.6
+   prompt_tok=  629 out=  85 wall= 4.18s tok/s= 20.3
+   prompt_tok=  629 out=  85 wall= 3.80s tok/s= 22.3
+   prompt_tok=  629 out=  85 wall= 3.75s tok/s= 22.6
+--- caching OFF ---
+   prompt_tok=   99 out=  98 wall= 3.71s tok/s= 26.4
+   prompt_tok=   99 out=  98 wall= 3.71s tok/s= 26.4
+   prompt_tok=   99 out=  98 wall= 3.71s tok/s= 26.4
+   prompt_tok=  219 out=  78 wall= 3.55s tok/s= 22.0
+   prompt_tok=  219 out=  78 wall= 3.55s tok/s= 22.0
+   prompt_tok=  219 out=  78 wall= 3.55s tok/s= 22.0
+   prompt_tok=  349 out=  92 wall= 4.18s tok/s= 22.0
+   prompt_tok=  349 out=  92 wall= 4.20s tok/s= 21.9
+   prompt_tok=  349 out=  92 wall= 4.19s tok/s= 21.9
+   prompt_tok=  629 out=  92 wall= 4.52s tok/s= 20.3
+   prompt_tok=  629 out=  92 wall= 4.51s tok/s= 20.4
+   prompt_tok=  629 out=  92 wall= 4.53s tok/s= 20.3
+PFX_NARROW_DONE

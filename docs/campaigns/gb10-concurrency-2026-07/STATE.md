@@ -1383,3 +1383,24 @@ determines both the saving and whether carry can fire.
 ★ This also means the headline C=1/C=2 sweep numbers are pessimistic for real workloads:
 `prof_drive`'s per-rep prompt variation produces the worst case (preamble-only hits). Real
 multi-turn traffic hits long prefixes, where caching is worth +7% to +38%.
+
+### ★★★ CROSSOVER NARROWED: between ~99 and ~219 matched tokens => **threshold 256**
+Identical-prompt reps (full-prompt hits), C=1, warm reps vs caching-off:
+| matched tokens | ON (warm) | OFF | delta |
+|---|---|---|---|
+| 99 | 23.85 | 26.4 | **-9.7%** LOSS |
+| **219** | **24.15** | 22.0 | **+9.8%** WIN |
+| 349 | 23.55 | 21.9 | +7.5% |
+| 629 | 22.45 | 20.3 | +10.6% |
+Sharp crossover, not gradual. **Recommended constant: 256 matched tokens** — inside the
+measured win region, comfortably above the 99-token loss point, and block-aligned
+(16 x 16-token blocks).
+
+**The fix, now fully specified:** gate the Marconi SSM skip on `matched_tokens >= 256`. Below
+that, take the KV-only path (which measured FAST — it is the snapshot restore that costs, not
+the cache) so the drafter keeps its prefill and acceptance stays high. Expected: +6.8% at C=1
+and +9.2% at C=2 on preamble-only traffic, with the +7-38% long-prefix win untouched.
+
+Caveat on the data: output lengths differ between ON/OFF at some sizes (62 vs 78, 128 vs 92)
+because a restored state changes the greedy trajectory — the known spec-decode trajectory
+dependence. tok/s is a RATE so the comparison holds, but do not compare wall times directly.
