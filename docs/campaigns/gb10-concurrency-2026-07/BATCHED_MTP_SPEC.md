@@ -95,3 +95,42 @@ does not merely close the gap — it is how Atlas passes it.
 - Acceptance-rate telemetry per K and per batch size before tuning the ladder.
 - C-sweep vs the kill switch, >=3 reps, ranges must not overlap.
 - Accuracy (BFCL/IoU) only AFTER parity — the standing embargo.
+
+---
+
+# PROGRESS
+
+## DONE — step 1: batched verify conv (commit `5b4c40cb`)
+`gdn_verify_fused_conv_kn_batched` in `kernels/gb10/common/gdn_verify_fused_conv_kn.cu`
+(verified: NO 27B shadow, common/ is live), plus:
+- wrapper `ops::gdn_verify_fused_conv_kn_batched` (`layers/ops/ssm_mamba.rs`), grid
+  `(ceil(d_inner/256), n_seq, 1)`, four extra per-sequence stride args
+- handle `gdn_verify_fused_conv_kn_batched_k` (`qwen3_ssm/init.rs:~236`, field in `mod.rs:~162`)
+Additive and UNCALLED — HEAD behaviour unchanged (kernel audit clean, C=16 132.5).
+Bit-identical to n separate launches: per-sequence conv windows are independent, so the per-token
+sequential loop is untouched; only base addresses move.
+
+## NEXT — step 2: batch the recurrent scan
+Consumer of the conv is `qwen3_ssm/trait_decode_batched_conv_gdn_wyn.rs:89` (`fused_conv` gate).
+The recurrent/WY side needs the SAME `gridDim.y = n_seq` treatment plus per-sequence state strides.
+★ Check `ATLAS_GDN_FUSED_CONV17` (`:92`) — the fused path is gated by it; do not assume it is on.
+★ Memory records GDN multi-token VERIFY is SUPERLINEAR in K on strix (85/249/623 ms at K=1/2/3).
+   Batching across sequences does NOT fix superlinearity in K — it fixes the n-fold WEIGHT re-read.
+   Size the two separately.
+
+## THEN — steps 3-5
+3. Batched `decode_verify` on the model trait. **The multi-seq decode path
+   (`model/trait_impl/decode_a2.rs`) is the natural host** — it already carries per-row
+   `meta.positions` / `meta.slot` and `padded_n` rows, which IS vLLM's "verification is just the
+   decode forward" property. Feed it `n*(K+1)` rows: FFN/projections/lm_head are
+   position-independent and batch as-is; paged attention already takes per-row block tables and
+   seq lens, so give each of a sequence's K+1 rows that sequence's block table with
+   `seq_len = base + j`.
+4. Batched rejection (greedy suffices at temp 0.0) + per-request rewind
+   (`num_computed_tokens -= num_rejected`; rejected KV is overwritten next step).
+5. Re-raise `mtp_max_seqs` (currently 1) and add the K-vs-batch ladder. **Do not raise the cap
+   before 1-4 land** — measured, it HALVES C=4.
+
+## Gate before believing any of it
+`ATLAS_MTP_MAX_SEQS=4` at C=4 must go from 25.8 (today's serialized number) to >48.5 (today's
+MTP-off number) before the lever is real.
