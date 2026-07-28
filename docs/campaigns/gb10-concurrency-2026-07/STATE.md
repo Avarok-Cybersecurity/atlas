@@ -1238,3 +1238,37 @@ so resuming from a restored state can change draft acceptance and therefore veri
 drops after a restore, the fix is in the drafter/state handoff, not in the cache.
 ★ Do NOT "fix" this by adding a size threshold until that is checked — a threshold would hide
 the symptom while leaving a spec-decode state-handoff bug in place.
+
+### ★★ ROOT CAUSE: a snapshot restore degrades MTP DRAFT ACCEPTANCE (not the cache, not the copy)
+C=1, prefix caching on, 4 consecutive reps, hit type from the serve log:
+| rep | hit type | tok/s |
+|---|---|---|
+| 1 | cold | **25.3** |
+| 2 | `Prefix cache hit: 16 tokens` (KV-only, NO snapshot) | **25.3** |
+| 3 | `Marconi SSM cache hit: 26 tokens` (**snapshot used**) | **23.6** |
+| 4 | `Marconi SSM cache hit: 26 tokens` | 23.5 |
+
+`k4_record_outcome` summaries, chronological:
+```
+mean accepted = 1.45, 1.52   <- cold / KV-only reps
+mean accepted = 1.33         <- after snapshot restore
+```
+**Acceptance falls ~10%** (1.485 -> 1.33) => epsilon 2.485 -> 2.33 => **-6.2% predicted**.
+Measured **-6.7%**. The acceptance drop accounts for essentially the whole penalty.
+
+=> The defect is a STATE-HANDOFF GAP: the main model resumes warm from the restored SSM
+state, but the MTP drafter does not — it effectively starts cold, drafts worse, and the extra
+rejected drafts cost more than the skipped prefill saved. Ruled out along the way: the state
+copy (memcpy is 375 ms across a 24 s capture) and the prefill skip itself (the KV-only hit,
+which skips less work, is FAST).
+
+**Where to look:** the drafter consumes hidden states saved during decode
+(`save_hidden_for_mtp`, `trait_impl/speculative.rs`). A snapshot restore reinstates SSM
+h_state/conv_state but there is no corresponding restore of the drafter's hidden history, so
+the first drafts after a resume are made from a cold proposer.
+**Fix shapes:** (a) include the drafter's hidden state in the Marconi snapshot, (b) suppress
+MTP for the first few steps after a restore so a cold proposer does not waste verify slots, or
+(c) warm the proposer from the restored state before drafting.
+★ Do NOT paper over this with a minimum-prefix-size threshold — that hides the symptom on
+short prompts while leaving the handoff bug live for every long-prefix resume, which is
+exactly where prefix caching is supposed to pay.

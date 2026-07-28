@@ -1,0 +1,17 @@
+REP 1785205675.046211961
+  rep1 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+REP 1785205682.702203723
+  rep2 C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+REP 1785205690.336819001
+  rep3 C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+REP 1785205698.516383155
+  rep4 C=1: wall=8.2s total_tok=192 agg=23.5 tok/s
+--- K4 summaries (chronological) ---
+K4: 25 accept-3 / 19 accept-2 / 32 accept-1 / 24 reject in last 100 steps (mean accepted=1.45) seq_len=86
+K4: 25 accept-3 / 21 accept-2 / 35 accept-1 / 19 reject in last 100 steps (mean accepted=1.52) seq_len=152
+K4: 17 accept-3 / 24 accept-2 / 34 accept-1 / 25 reject in last 100 steps (mean accepted=1.33) seq_len=197
+--- cache-hit types (chronological) ---
+Prefix cache hit: 16 tokens
+Marconi SSM cache hit: 26 tokens
+Marconi SSM cache hit: 26 tokens
+ACCEPT_TEST_DONE
