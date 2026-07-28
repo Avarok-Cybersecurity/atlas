@@ -1,0 +1,16 @@
+--- leg: OLD (two-pass) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=28.8s total_tok=3072 agg=106.7 tok/s
+   rep2 C=16: wall=28.8s total_tok=3072 agg=106.7 tok/s
+   rep3 C=16: wall=28.8s total_tok=3072 agg=106.8 tok/s
+   rep4 C=16: wall=28.8s total_tok=3072 agg=106.7 tok/s
+--- leg: NEW (retain 96 cols) ---
+   identity_sha256: bf3a0b07b0e9ee1c2db5fa8a88078ea3
+   rep1 C=16: wall=27.4s total_tok=3072 agg=112.1 tok/s
+   rep2 C=16: wall=27.2s total_tok=3072 agg=112.7 tok/s
+   rep3 C=16: wall=27.3s total_tok=3072 agg=112.7 tok/s
+   rep4 C=16: wall=27.4s total_tok=3072 agg=112.3 tok/s
+[2m2026-07-28T01:52:10.671990Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 2 for 26 tokens 
+[2m2026-07-28T01:52:39.471622Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 28 for 27 tokens
+[2m2026-07-28T01:52:39.967199Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 760
+AB_DONE

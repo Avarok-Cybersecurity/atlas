@@ -1120,3 +1120,40 @@ this for bit-identity).
 ★ The prototype's 1.71x is real and irrelevant: it measured a loop, not the function. Any
 retry should FIRST split the epilogue (Frobenius clamp + RMS reduction + BF16 pack) into a
 second kernel so the hot loop owns its register budget, THEN retain.
+
+## 2026-07-28 (night) — ★★ GDN HALF-WIDTH REGISTER RETENTION: +5.4%, SHIPPED (`5aada944`)
+
+`gated_delta_rule_decode_f32_strided_norm` reads all of H for `hk_dot` then RE-READS it for
+the update: 2R+1W over the state each step. At batch 16 the live state is ~49 MB, past L2, so
+the second read partially reaches DRAM. Retaining the first 64 H columns makes it 1.5R+1W.
+
+**Measured 4 reps/leg, warmup discarded, byte-identical, disjoint:**
+OLD 107.1/106.9/106.2/106.5 = **106.68** -> NEW 112.8/112.0/112.4/112.7 = **112.48**. **+5.4%.**
+
+### ★ THREE ATTEMPTS — the failures were REGISTER BUDGET, not the idea
+| # | config | e2e | cause |
+|---|---|---|---|
+| 1 | `hreg[128]`, 512 B/thread, static indices | **-11.6%** | genuine spill — budget shared with the Frobenius clamp, the two-stage RMS reduction and the packed-BF16 epilogue |
+| 2 | `hreg[64]`, 256 B/thread, RUNTIME index in pass 2 | **-4.6%** | dynamic index puts `hreg` in LOCAL memory |
+| **3** | **`hreg[64]`, 256 B/thread, static throughout** | **+5.4%** | fits |
+★ I nearly stopped after #2, having written "register retention in this kernel is closed".
+What rescued it was re-reading my own summary and finding an error in it: I had blamed #1 on
+dynamic indexing, but #1 was ALREADY static. That left half-width + static as the one untested
+cell — and it was the winner. **Check your own postmortem before you accept its conclusion.**
+
+### Sweet spot is 64 — 96 buys nothing
+KD=96 (384 B/thread, 1.25R+1W = 25% traffic cut vs 64's 17%) measured **112.45** against the
+same two-pass control, i.e. IDENTICAL to KD=64's 112.48. The extra retention is exactly offset
+by register pressure. Do not chase larger tiles.
+
+### The required code shape
+```
+// pass 1: retain first GDN_HALF_KD (full unroll, compile-time bound), stream the rest
+// pass 2a: retained half from hreg — #pragma unroll, STATIC indices
+// pass 2b: remainder — re-read from H
+```
+Ascending j across both pass-2 loops keeps the `q_dot`/`norm_acc` summation order identical, so
+the Frobenius bit-identity argument in the two-pass kernel still holds.
+★ The standalone prototype of the FULL-width variant measured 1.71x on the loop alone and
+still lost 11.6% in production. **Size register-retention changes against the WHOLE function's
+budget, never the loop being optimised.**
