@@ -1882,3 +1882,42 @@ evidence both need their regime checked against the in-model measurement before 
 decision.
 The accuracy question stands but is now a TRADE, not a freebie: W4A4 decode activations are
 throughput-justified at +10.4%; revisit only at vLLM parity, in the accuracy-debt ledger.
+
+## 2026-07-28 — ★ SHIPPED: SoA weight layout for the FFN MMQ tile load (+4.6% C=16)
+
+`atlas_nvfp4_repack` emitted an array of 36-byte `block_nvfp4`, which INTERLEAVES 4 scale bytes
+with 32 nibble bytes. The tile loader therefore issued **NINE 4-byte global loads per block**
+(8 qs + 1 d). Splitting each row into `[qs: bpr*32][d: bpr*4]` makes the 32 qs bytes contiguous:
+two 16-byte loads + one 4-byte load. **9 global ops -> 3 at identical total bytes.**
+
+The SHARED tile layout is unchanged, so `vec_dot`/MMA are untouched and the output is bit-identical
+(VERIFIED: identity sha `bf3a0b07...` unchanged, not assumed).
+
+| C | before | after | delta |
+|---|---|---|---|
+| 1 | 25.4 | 25.45 | flat |
+| 2 | 25.2 | 25.3 | flat |
+| 4 | 48.25 | 48.55 | +0.6% |
+| 8 | 71.2 | **73.85** | **+3.7%** |
+| 16 | 119.3-119.9 | **125.4** (125.8/125.4/125.1) | **+4.6%, DISJOINT** |
+
+vs vLLM: C=1 **1.79x WIN** · C=2 0.91x · C=4 0.92x · C=8 **0.75x** · C=16 **0.74x** (from 0.71x).
+
+★ THE BUG THAT BROKE THE FIRST ATTEMPT (produced garbage `!</think>`): **`kbx0` is a LINEAR block
+index that ALREADY FOLDS IN THE CTA'S ROW OFFSET** (`offset_x = ... + it*mmq_y*stride_row_x`,
+mmq.cuh:3640) — it is NOT a pure k-offset. A per-ROW layout must decompose it back:
+`row0 = kbx0 / bpr`, `kb0 = kbx0 - row0*bpr`, one div+mod hoisted out of the i-loop.
+★ RULE: before changing a memory layout, determine whether the consumer's index is LINEAR or
+already DECOMPOSED. A linear index silently mixes the dimensions you are trying to separate.
+
+Alignment: row stride `bpr*36` is 16-B aligned iff `bpr % 4 == 0` i.e. `K % 256 == 0`; both live K
+qualify (5120->80, 17408->272) and MMQ already requires K % 512 == 0. Safe because Atlas exposes
+NO MMVQ entry point, so the MMQ kernels are the buffer's only consumer (`vecdotq.cuh`'s nvfp4 path
+is unreachable). No independent kill switch — the layout is internal and bit-identical; the escape
+hatch is the existing `ATLAS_NO_FFN_NVFP4_MMQ`.
+
+★ THE ESTIMATE WAS 4x LOW: this was sized at "~1-2 ms, mostly subsumed by the cp.async pipeline".
+It delivered ~5.5 ms ALONE — i.e. the load-ISSUE path, not load LATENCY, was the dominant limiter.
+Implied post-fix MMQ bandwidth ~195 GB/s = ~86% of the 226 GB/s achievable at a 9.6 GB working set,
+i.e. already at w4a16 parity. **A1 (cp.async double-buffer) must be RE-SIZED against a fresh
+profile before it is built — its remaining headroom is far smaller than the original 4-5 ms.**
