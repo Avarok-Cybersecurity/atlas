@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! K=4 verify verdict application: accept/rewind/emit/re-propose.
+//! K-row verify verdict application: accept/rewind/emit/re-propose.
 //!
 //! Extracted VERBATIM from `verify_k4_step.rs` (behavior-identical refactor,
 //! batched-MTP E9) so the single-seq `step_verify_k4` and the batched
-//! `step_verify_k4_batched` share ONE copy of the four accept branches —
-//! rewind arithmetic, `trim_proposer_state`, `commit_accepted_prefix`,
-//! emit order, and `k4_record_outcome` are the existing machinery unchanged.
+//! `step_verify_k4_batched` share ONE copy of the accept logic — rewind
+//! arithmetic, `trim_proposer_state`, `commit_accepted_prefix`, emit order,
+//! and `k4_record_outcome` are the existing machinery unchanged. The K-vs-
+//! batch ladder generalized the four hardcoded K=4 accept branches into the
+//! single formula they all instantiated (emit `drafts[0..na]` + the
+//! correction/bonus `v[na]`, rewind `nd-na`, `trim_proposer_state(na)`,
+//! `commit_accepted_prefix(na+1, k_rows)`) — behavior-identical at K=4 by
+//! construction, and now valid for the ladder's K=2/3 batched verifies.
 //! The only parameterization is WHERE the accepted-row hidden for the next
 //! propose comes from ([`K4Hidden`]): the live verify row (single-seq path,
 //! `save_hidden_for_mtp`) or the pre-propose stash slot (batched path, whose
@@ -40,17 +45,23 @@ fn save_hidden(model: &dyn Model, hidden: K4Hidden, na: usize) -> anyhow::Result
     }
 }
 
-/// Apply a K=4 verify verdict to one sequence: emit the accepted prefix +
+/// Apply a K-row verify verdict to one sequence: emit the accepted prefix +
 /// correction/bonus token, rewind `seq_len`/`tokens` for rejected drafts,
 /// roll back proposer + SSM state, save the accepted-position hidden, and
-/// re-propose. Body is the verbatim four-branch tail of the pre-refactor
-/// `step_verify_k4`.
+/// re-propose.
+///
+/// `drafts.len()` = nd (the drafts verified this step), `v.len()` = nd + 1
+/// (per-row picks incl. the bonus row), `num_accepted` in 0..=nd. At nd=3
+/// this is the verbatim four-branch tail of the pre-refactor
+/// `step_verify_k4`, branch-collapsed; the phase ORDER of each original
+/// branch is preserved exactly (full accept: emit → commit → save → trim →
+/// propose; partial/reject: rewind → trim → commit → emit → save → propose).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn k4_apply_verdict(
     model: &dyn Model,
     a: &mut ActiveSeq,
     drafts: &[u32],
-    v: [u32; 4],
+    v: &[u32],
     verify_lps: Vec<crate::api::TokenLogprobs>,
     num_drafts: usize,
     num_accepted: usize,
@@ -58,214 +69,98 @@ pub(super) fn k4_apply_verdict(
     verify_us: u128,
 ) {
     let defer = matches!(hidden, K4Hidden::DeferPropose);
-    let [v0, v1, v2, v3] = v;
-    if num_accepted == 3 {
-        emit_token(a, drafts[0], verify_lps.first().cloned());
-        if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
-        }
-        if !a.finished {
-            emit_token(a, drafts[2], verify_lps.get(2).cloned());
-        }
-        if !a.finished {
-            emit_token(a, v3, verify_lps.get(3).cloned());
-        }
-        if a.finished {
-            return;
-        }
-        a.last_token = v3;
+    let nd = drafts.len();
+    let k_rows = nd + 1;
+    debug_assert_eq!(v.len(), k_rows, "verdict picks must cover every row");
+    let na = num_accepted.min(nd);
 
-        // Item #2 (STree-style in-place K=4 verify commit). Full accept
-        // (num_accepted=k=4): the verify kernel already wrote the canonical
+    if na == nd {
+        // ── Full accept: every draft matched; v[nd] is the free bonus. ──
+        for j in 0..nd {
+            emit_token(a, drafts[j], verify_lps.get(j).cloned());
+            if a.finished {
+                return;
+            }
+        }
+        emit_token(a, v[nd], verify_lps.get(nd).cloned());
+        if a.finished {
+            return;
+        }
+        a.last_token = v[nd];
+
+        // Item #2 (STree-style in-place verify commit). Full accept
+        // (num_accepted == k): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 4, 4) {
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, k_rows, k_rows) {
             // SSM state is no longer trustworthy — terminate, do not continue.
-            tracing::error!("commit_accepted_prefix (K=4 accept-4): {e:#}");
+            tracing::error!("commit_accepted_prefix (K={k_rows} accept-{k_rows}): {e:#}");
             a.finished = true;
             return;
         }
-        if !defer && let Err(e) = save_hidden(model, hidden, 3) {
-            tracing::error!("save_hidden_for_mtp(3): {e:#}");
-            return;
-        }
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 3, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        if !defer {
-            let t_propose = Instant::now();
-            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-            match model.run_mtp_propose_multi(
-                v3,
-                a.seq.seq_len,
-                num_drafts,
-                &mut a.seq,
-                0,
-                _mtp_grammar_mask.as_deref(),
-            ) {
-                Ok(d) if !d.is_empty() => a.pending_drafts = d,
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("run_mtp_propose_multi: {e:#}");
-                }
-            }
-            let propose_us = t_propose.elapsed().as_micros();
-            tracing::debug!(
-                "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
-        k4_record_outcome(3, a.seq.seq_len);
-    } else if num_accepted == 2 {
-        a.seq.seq_len -= 1;
-        a.seq.tokens.pop();
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 2, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
-        // (num_accepted=3 < k=4): rewind live h_state to intermediate[2]
-        // (state after the third accepted token).
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 4) {
-            tracing::error!("commit_accepted_prefix (K=4 accept-3): {e:#}");
-            a.finished = true;
-            return;
-        }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
-        if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
-        }
-        if !a.finished {
-            emit_token(a, v2, verify_lps.get(2).cloned());
-        }
-        if a.finished {
-            return;
-        }
-        a.last_token = v2;
-        if !defer && let Err(e) = save_hidden(model, hidden, 2) {
-            tracing::error!("save_hidden_for_mtp(2): {e:#}");
-            return;
-        }
-        if !defer {
-            let t_propose = Instant::now();
-            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-            match model.run_mtp_propose_multi(
-                v2,
-                a.seq.seq_len,
-                num_drafts,
-                &mut a.seq,
-                0,
-                _mtp_grammar_mask.as_deref(),
-            ) {
-                Ok(d) if !d.is_empty() => a.pending_drafts = d,
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("run_mtp_propose_multi: {e:#}");
-                }
-            }
-            let propose_us = t_propose.elapsed().as_micros();
-            tracing::debug!(
-                "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
-        k4_record_outcome(2, a.seq.seq_len);
-    } else if num_accepted == 1 {
-        a.seq.seq_len -= 2;
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
-        // (num_accepted=2 < k=4): rewind live h_state to intermediate[1].
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 4) {
-            tracing::error!("commit_accepted_prefix (K=4 accept-2): {e:#}");
-            a.finished = true;
-            return;
-        }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
-        if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned());
-        }
-        if a.finished {
-            return;
-        }
-        a.last_token = v1;
-        if !defer && let Err(e) = save_hidden(model, hidden, 1) {
-            tracing::error!("save_hidden_for_mtp(1): {e:#}");
-            return;
-        }
-        if !defer {
-            let t_propose = Instant::now();
-            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-            match model.run_mtp_propose_multi(
-                v1,
-                a.seq.seq_len,
-                num_drafts,
-                &mut a.seq,
-                0,
-                _mtp_grammar_mask.as_deref(),
-            ) {
-                Ok(d) if !d.is_empty() => a.pending_drafts = d,
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("run_mtp_propose_multi: {e:#}");
-                }
-            }
-            let propose_us = t_propose.elapsed().as_micros();
-            tracing::debug!(
-                "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
-        k4_record_outcome(1, a.seq.seq_len);
     } else {
-        a.seq.seq_len -= 3;
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
+        // ── Partial accept / reject: rewind the rejected tail. ──
+        a.seq.seq_len -= nd - na;
+        for _ in 0..(nd - na) {
+            a.seq.tokens.pop();
+        }
+        if let Err(e) = model.trim_proposer_state(&mut a.seq, na, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
-        // (num_accepted=1 < k=4): rewind live h_state to intermediate[0]
-        // (state after the always-accepted bonus token).
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 4) {
-            tracing::error!("commit_accepted_prefix (K=4 accept-1): {e:#}");
+        // Item #2: rewind live h_state to intermediate[na] (state after the
+        // last accepted row — the correction token v[na] is row na).
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, na + 1, k_rows) {
+            tracing::error!(
+                "commit_accepted_prefix (K={k_rows} accept-{}): {e:#}",
+                na + 1
+            );
             a.finished = true;
             return;
         }
-        emit_token(a, v0, verify_lps.first().cloned());
+        for j in 0..na {
+            emit_token(a, drafts[j], verify_lps.get(j).cloned());
+            if a.finished {
+                return;
+            }
+        }
+        emit_token(a, v[na], verify_lps.get(na).cloned());
         if a.finished {
             return;
         }
-        a.last_token = v0;
-        if !defer && let Err(e) = save_hidden(model, hidden, 0) {
-            tracing::error!("save_hidden_for_mtp(0): {e:#}");
-            return;
-        }
-        if !defer {
-            let t_propose = Instant::now();
-            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-            match model.run_mtp_propose_multi(
-                v0,
-                a.seq.seq_len,
-                num_drafts,
-                &mut a.seq,
-                0,
-                _mtp_grammar_mask.as_deref(),
-            ) {
-                Ok(d) if !d.is_empty() => a.pending_drafts = d,
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("run_mtp_propose_multi: {e:#}");
-                }
-            }
-            let propose_us = t_propose.elapsed().as_micros();
-            tracing::debug!(
-                "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-                a.seq.seq_len
-            );
-        }
-        k4_record_outcome(0, a.seq.seq_len);
+        a.last_token = v[na];
     }
+
+    if !defer && let Err(e) = save_hidden(model, hidden, na) {
+        tracing::error!("save_hidden_for_mtp({na}): {e:#}");
+        return;
+    }
+    if na == nd {
+        // Full-accept branch trims AFTER the hidden save (original order).
+        if let Err(e) = model.trim_proposer_state(&mut a.seq, na, 0) {
+            tracing::error!("trim_proposer_state: {e:#}");
+        }
+    }
+    if !defer {
+        let t_propose = Instant::now();
+        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+        match model.run_mtp_propose_multi(
+            a.last_token,
+            a.seq.seq_len,
+            num_drafts,
+            &mut a.seq,
+            0,
+            _mtp_grammar_mask.as_deref(),
+        ) {
+            Ok(d) if !d.is_empty() => a.pending_drafts = d,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("run_mtp_propose_multi: {e:#}");
+            }
+        }
+        let propose_us = t_propose.elapsed().as_micros();
+        tracing::debug!(
+            "K{k_rows} ACCEPT-{na}: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+            a.seq.seq_len
+        );
+    }
+    k4_record_outcome(na, a.seq.seq_len);
 }

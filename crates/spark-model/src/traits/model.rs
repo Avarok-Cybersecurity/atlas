@@ -531,40 +531,44 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<[u32; 4]>;
 
-    /// Whether [`Self::decode_verify_batched_k4`] can run for `n` sequences.
+    /// Whether [`Self::decode_verify_batched`] can run for `n` sequences at
+    /// `k` verify rows per sequence (`k` = drafts + 1; the K-vs-batch ladder
+    /// passes k in 2..=4).
     ///
     /// Default `false`: the scheduler MUST fall back to the per-sequence
-    /// `decode_verify_graphed_k4` loop. There is deliberately NO default loop
-    /// impl of the batched form — a loop over the per-seq verify would leave
-    /// the shared logits buffer holding only the LAST sequence's rows and
-    /// silently poison row-based pipeline picks.
-    fn can_batch_verify_k4(&self, _n: usize) -> bool {
+    /// `decode_verify_graphed_k{2,3,4}` loop. There is deliberately NO
+    /// default loop impl of the batched form — a loop over the per-seq
+    /// verify would leave the shared logits buffer holding only the LAST
+    /// sequence's rows and silently poison row-based pipeline picks.
+    fn can_batch_verify(&self, _n: usize, _k: usize) -> bool {
         false
     }
 
-    /// Batched K=4 verify: n sequences × 4 rows in ONE eager forward
-    /// (seq-major rows `r = i*4 + j`). Weight matrices are read once for all
-    /// `n*4` rows. Per sequence i: `tokens[i] = [last_verified, d0, d1, d2]`.
-    /// Returns per-sequence `[4]` argmax IDs in input order. On success each
-    /// sequence's `tokens`/`seq_len` advance by 4 (rewind is the caller's
-    /// verdict arithmetic, same as the per-seq path). On Err NO sequence
-    /// state has been advanced.
+    /// Batched K-row verify: n sequences × k rows in ONE eager forward
+    /// (seq-major rows `r = i*k + j`, `tokens.len() == n*k`). Weight
+    /// matrices are read once for all `n*k` rows. Per sequence i:
+    /// `tokens[i*k..(i+1)*k] = [last_verified, d0, .., d_{k-2}]`.
+    /// Returns the `n*k` argmax IDs in the same flat seq-major order. On
+    /// success each sequence's `tokens`/`seq_len` advance by k (rewind is
+    /// the caller's verdict arithmetic, same as the per-seq path). On Err
+    /// NO sequence state has been advanced.
     ///
-    /// Callers must gate on [`Self::can_batch_verify_k4`].
-    fn decode_verify_batched_k4(
+    /// Callers must gate on [`Self::can_batch_verify`].
+    fn decode_verify_batched(
         &self,
-        tokens: &[[u32; 4]],
+        tokens: &[u32],
+        k: usize,
         seqs: &mut [&mut SequenceState],
         stream: u64,
-    ) -> Result<Vec<[u32; 4]>> {
-        let _ = (tokens, seqs, stream);
-        bail!("decode_verify_batched_k4: unsupported by this model")
+    ) -> Result<Vec<u32>> {
+        let _ = (tokens, k, seqs, stream);
+        bail!("decode_verify_batched: unsupported by this model")
     }
 
     /// Copy raw-hidden rows `rows[i]` of the just-run batched verify forward
     /// into stash slot `i` (`verify_hidden_stash`), BEFORE any propose
     /// clobbers the shared `hidden_states` buffer. Companion of
-    /// [`Self::decode_verify_batched_k4`].
+    /// [`Self::decode_verify_batched`].
     fn stash_verify_hidden_rows(&self, rows: &[usize], stream: u64) -> Result<()> {
         let _ = (rows, stream);
         bail!("stash_verify_hidden_rows: unsupported by this model")

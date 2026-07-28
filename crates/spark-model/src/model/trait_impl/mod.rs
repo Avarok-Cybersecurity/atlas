@@ -328,16 +328,17 @@ impl Model for TransformerModel {
     ) -> Result<[u32; 4]> {
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
-    fn can_batch_verify_k4(&self, n: usize) -> bool {
-        self.can_batch_verify_k4_dispatch(n)
+    fn can_batch_verify(&self, n: usize, k: usize) -> bool {
+        self.can_batch_verify_dispatch(n, k)
     }
-    fn decode_verify_batched_k4(
+    fn decode_verify_batched(
         &self,
-        tokens: &[[u32; 4]],
+        tokens: &[u32],
+        k: usize,
         seqs: &mut [&mut SequenceState],
         _stream: u64,
-    ) -> Result<Vec<[u32; 4]>> {
-        self.decode_verify_batched_k4_dispatch(tokens, seqs, _stream)
+    ) -> Result<Vec<u32>> {
+        self.decode_verify_batched_dispatch(tokens, k, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
         self.stash_verify_hidden_rows_dispatch(rows, _stream)

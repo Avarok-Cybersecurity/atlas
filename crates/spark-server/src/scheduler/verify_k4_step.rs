@@ -291,7 +291,7 @@ pub fn step_verify_k4(
         model,
         a,
         drafts,
-        [v0, v1, v2, v3],
+        &[v0, v1, v2, v3],
         verify_lps,
         num_drafts,
         num_accepted,

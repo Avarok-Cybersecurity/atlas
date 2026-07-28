@@ -5,7 +5,10 @@
 //! Defines the [`DraftProposer`] trait for speculative decoding strategies.
 //! MTP implements this first; EAGLE-3 can implement later without engine changes.
 
+pub mod ladder;
 pub mod tree_shape;
+
+pub use ladder::{mtp_ladder_disabled, mtp_ladder_drafts, mtp_max_seqs};
 
 use std::any::Any;
 
@@ -61,38 +64,6 @@ pub fn shadow_topk() -> usize {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0)
             .min(8)
-    })
-}
-
-/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`, default 4).
-/// Value-parsed, not presence-checked. Lives here (moved from
-/// `scheduler/mod.rs`) so the model-side single-sequence MTP structures
-/// (catchup ring, refeed labels, carry slot) can gate on the same value the
-/// scheduler gates dispatch on.
-///
-/// The cap IS the adaptive per-concurrency policy: the scheduler gates
-/// dispatch on `active.len() <= mtp_max_seqs()`, so batched K=4 MTP runs
-/// at C<=4 and C>4 falls back bit-for-bit to the non-MTP multi-seq path.
-/// K stays FIXED at the configured `num_drafts` (K=4): the batched verify
-/// path is K=4-uniform only; the K-vs-batch ladder is task #35 / spec
-/// step 5. Set `ATLAS_MTP_MAX_SEQS=1` to restore single-sequence-only.
-pub fn mtp_max_seqs() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("ATLAS_MTP_MAX_SEQS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            // MEASURED crossover 2026-07-28 (binary 7f4ffd6c, graphed batched
-            // verify + batched GDN conv/WY + propose accept fix): cap=4 serve,
-            // scored drives after warmup — C=1 25.55 (vLLM 14.2, 1.80x) ·
-            // C=2 32.65 (27.8, 1.17x) · C=4 56.5 (53.3, 1.06x — FIRST C=4
-            // crossing) · C=8 75.2 / C=16 131.8 via clean auto-off fallback
-            // (identical to the 74.85/131.75 MTP-off baselines). cap=8 and
-            // cap=16 are strictly dominated: fixed K=4 over n>=8 seqs
-            // plateaus ~55 tok/s at EVERY C (worse than MTP-off). Do not
-            // raise past 4 until the K-vs-batch ladder / depth pruning
-            // (task #35) lands.
-            .unwrap_or(4)
     })
 }
 
@@ -241,8 +212,7 @@ pub fn mtp_catchup_enabled() -> bool {
 /// Force-off in multi-seq MTP mode: the refeed label space is single-sequence
 /// (see [`mtp_multi_seq_mode`]).
 pub fn mtp_refeed_accepted_enabled() -> bool {
-    std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
-        && !mtp_multi_seq_mode()
+    std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
 }
 
 /// Deliberate off-by-N perturbation of the re-feed's ring LABEL

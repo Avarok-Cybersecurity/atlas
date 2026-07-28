@@ -101,12 +101,11 @@ impl TransformerModel {
         // is throughput needed to REACH parity. The risk is real but indirect:
         // the bf16-floor finding was superseded on the WEIGHT axis, and this is
         // the ACTIVATION axis, which was never examined. Re-decide at parity.
-        let w4a16_gemm_t_bf16_kernel =
-            if std::env::var("ATLAS_LMHEAD_LOSSLESS").is_ok() {
-                crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
-            } else {
-                spark_runtime::gpu::KernelHandle(0)
-            };
+        let w4a16_gemm_t_bf16_kernel = if std::env::var("ATLAS_LMHEAD_LOSSLESS").is_ok() {
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
+        } else {
+            spark_runtime::gpu::KernelHandle(0)
+        };
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
@@ -288,11 +287,13 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
-        // Batched-verify hidden stash: [8, hidden] BF16 (n ≤ 8 envelope).
-        // Only meaningful with an MTP proposer — NULL otherwise (the batched
-        // verify path self-gates on it via can_batch_verify_k4).
+        // Batched-verify hidden stash: [16, hidden] BF16 (n ≤ 16, the
+        // K-vs-batch ladder envelope — one slot per sequence of the widest
+        // batched verify chunk). Only meaningful with an MTP proposer — NULL
+        // otherwise (the batched verify path self-gates on it via
+        // can_batch_verify).
         let verify_hidden_stash = if proposer.is_some() {
-            gpu.alloc(8 * config.hidden_size * 2)?
+            gpu.alloc(16 * config.hidden_size * 2)?
         } else {
             DevicePtr::NULL
         };
@@ -673,7 +674,7 @@ impl TransformerModel {
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
-            verify_batched_graphs: Mutex::new(std::collections::HashMap::new()),
+            verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
             verify_wy_tables,
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
             fused_graph: Mutex::new(std::collections::HashMap::new()),

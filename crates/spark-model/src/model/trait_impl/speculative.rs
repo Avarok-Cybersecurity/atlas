@@ -123,10 +123,7 @@ impl TransformerModel {
         // contiguous length. Mismatch leaves the length stale-short, which
         // safely disables the drafter prefill (coverage check at propose).
         let contiguous_from_zero = if chunk_start == 0 {
-            let generation = self
-                .mtp_prefill_capture_gen
-                .fetch_add(1, Ordering::Relaxed)
-                + 1;
+            let generation = self.mtp_prefill_capture_gen.fetch_add(1, Ordering::Relaxed) + 1;
             seq.mtp_capture_gen = generation;
             Some(proc_count)
         } else if chunk_start == len
@@ -219,8 +216,7 @@ impl TransformerModel {
                     == self
                         .mtp_prefill_capture_gen
                         .load(std::sync::atomic::Ordering::Relaxed);
-            let cold_prefill_ok =
-                p >= 2 && captured >= p && seq_tokens.len() >= p && owns_capture;
+            let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p && owns_capture;
             let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
             // Both branches below are FIRST-PROPOSE only: `prefill_drafter`
             // enforces that itself (`mtp_state.seq_len != row_base` fast-return),
@@ -389,8 +385,8 @@ impl TransformerModel {
             "stash_verify_hidden_rows: verify_hidden_stash not allocated (no MTP proposer)"
         );
         anyhow::ensure!(
-            rows.len() <= 8,
-            "stash_verify_hidden_rows: {} rows exceeds the 8-slot stash",
+            rows.len() <= 16,
+            "stash_verify_hidden_rows: {} rows exceeds the 16-slot stash",
             rows.len()
         );
         let stream = self.gpu.default_stream();
@@ -416,7 +412,7 @@ impl TransformerModel {
             !self.verify_hidden_stash.is_null(),
             "save_hidden_for_mtp_from_stash: verify_hidden_stash not allocated"
         );
-        anyhow::ensure!(idx < 8, "save_hidden_for_mtp_from_stash: idx {idx} >= 8");
+        anyhow::ensure!(idx < 16, "save_hidden_for_mtp_from_stash: idx {idx} >= 16");
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;

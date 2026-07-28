@@ -13,10 +13,12 @@ use super::super::types::TransformerModel;
 use crate::layer::{SsmLayerState, VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS};
 use crate::traits::SequenceState;
 
-/// Bound on cached batched-verify graphs (one per distinct ssm-slot vector).
-/// Slot vectors churn as sequences finish; past the cap a step with a new
-/// vector runs eager instead of capturing (graphs are never evicted
-/// mid-serve, so the cap bounds graph memory).
+/// Bound on cached batched-verify graphs (one per distinct (ssm-slot
+/// vector, k) key). Slot vectors churn as sequences finish; at the cap the
+/// least-recently-used graph is destroyed and replaced (verify_e.rs), so
+/// the cap bounds graph memory WITHOUT ever pinning the path eager —
+/// the pre-LRU insert-only cache went permanently eager after 32 distinct
+/// vectors, which a long serve is guaranteed to produce.
 pub(super) const VERIFY_BATCHED_GRAPH_CAP: usize = 32;
 
 /// Batched-verify CUDA graphs: ON by default, disabled by PRESENCE of
@@ -32,18 +34,25 @@ impl TransformerModel {
     /// order — every SSM pointer the graph bakes (h/conv state, rollback
     /// intermediates, WY table contents) is a pure function of this vector;
     /// all other captured addresses (hidden/logits/scratch/meta) are fixed
-    /// buffers refreshed pre-replay. A wy-tables-present sentinel is
-    /// appended so a table-less capture can never replay a table-full step
-    /// or vice versa. `None` → no graph (a sequence without a pool slot).
+    /// buffers refreshed pre-replay. `k` (verify rows per sequence) is
+    /// appended because a graph bakes the R = n*k launch dimensions — the
+    /// same slot vector at a different ladder step must not replay. A
+    /// wy-tables-present sentinel is appended so a table-less capture can
+    /// never replay a table-full step or vice versa. The scheduler sorts
+    /// each chunk by ssm slot before dispatch, so keys are combinations,
+    /// not permutations (verify_k4_batch_step.rs). `None` → no graph (a
+    /// sequence without a pool slot).
     pub(super) fn verify_batched_graph_key(
         &self,
         seqs: &[&mut SequenceState],
+        k: usize,
         wy_tables_null: bool,
     ) -> Option<Vec<u32>> {
-        let mut key: Vec<u32> = Vec::with_capacity(seqs.len() + 1);
+        let mut key: Vec<u32> = Vec::with_capacity(seqs.len() + 2);
         for s in seqs.iter() {
             key.push(s.ssm_slot_idx()? as u32);
         }
+        key.push(k as u32);
         key.push(u32::MAX - u32::from(wy_tables_null));
         Some(key)
     }

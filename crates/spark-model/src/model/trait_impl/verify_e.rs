@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Batched K=4 verify: n sequences × 4 rows in ONE eager forward.
+//! Batched K-row verify: n sequences × k rows in ONE eager forward.
 //!
-//! Generalizes verify_c2's single-sequence K=4 body to `R = n*4` seq-major
-//! rows (`r = i*4 + j`) so the n weight-reading verify forwards collapse into
-//! one — the structural fix for the measured MTP serialization at C>1
-//! (cap=4 at C=4: 25.8 vs 48.5 tok/s; see BATCHED_MTP_SPEC.md).
+//! Generalizes verify_c2's single-sequence K=4 body to `R = n*k` seq-major
+//! rows (`r = i*k + j`, k = drafts+1 in 2..=4 chosen per step by the
+//! K-vs-batch ladder — `speculative::ladder`) so the n weight-reading verify
+//! forwards collapse into one — the structural fix for the measured MTP
+//! serialization at C>1 (cap=4 at C=4: 25.8 vs 48.5 tok/s; see
+//! BATCHED_MTP_SPEC.md). R is capped at 32 = the exact capacity of the
+//! logits rows / meta gaps / bt staging (sizes.rs), reached at n=16 × k=2.
 //!
 //! CUDA GRAPHS (slot-VECTOR-keyed): the forward span (layer loop + final
 //! norm + lm_head + argmax) is captured per distinct ssm-slot vector — the
@@ -36,15 +39,19 @@ use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
 impl TransformerModel {
-    /// Whether the batched K=4 verify can run for `n` sequences.
+    /// Whether the batched verify can run for `n` sequences × `k` rows.
     ///
     /// Self-gates to the envelope verify_e was built and audited for:
     /// non-EP, non-HSS, non-DFlash, no LoRA (the uniform seq_slot upload
-    /// carries ONE adapter slot), MTP proposer present (stash allocated),
-    /// n in 2..=4 (R ≤ 16 = the proven decode_a2 C=16 metadata + buffer
-    /// envelope). Everything outside falls back to the per-seq loop.
-    pub(super) fn can_batch_verify_k4_dispatch(&self, n: usize) -> bool {
-        (2..=4).contains(&n)
+    /// carries ONE adapter slot), MTP proposer present (stash allocated,
+    /// 16 slots ⇒ n ≤ 16), k in 2..=4 (the MTP ladder range; intermediates
+    /// pools are sized for the configured max K), and R = n*k ≤ 32 (the
+    /// exact logits-rows / meta-gap / bt-staging capacity — sizes.rs).
+    /// Everything outside falls back to the per-seq loop.
+    pub(super) fn can_batch_verify_dispatch(&self, n: usize, k: usize) -> bool {
+        (2..=16).contains(&n)
+            && (2..=4).contains(&k)
+            && n * k <= 32
             && self.comm.is_none()
             && self.lora.is_none()
             && self.dflash_hidden_save.is_none()
@@ -59,44 +66,48 @@ impl TransformerModel {
                 .is_none()
     }
 
-    /// Batched K=4 verify for `n = seqs.len()` sequences (R = n*4 rows).
+    /// Batched K-row verify for `n = seqs.len()` sequences (R = n*k rows,
+    /// k = drafts+1 in 2..=4).
     ///
-    /// Row r = i*4 + j is sequence i's token j (`tokens[i] = [last_verified,
-    /// d0, d1, d2]`). Weight-bearing ops (QKVZ/out_proj/FFN/lm_head) batch
-    /// across all R rows via the existing M-generic arms; attention runs
-    /// through `decode_multi_seq` with per-row block tables / seq lens; the
-    /// GDN conv+WY4 body runs per-sequence via `decode_verify_multi`
-    /// (byte-identical per-seq math, row-offset bases).
+    /// Row r = i*k + j is sequence i's token j (`tokens[i*k..(i+1)*k] =
+    /// [last_verified, d0, .., d_{k-2}]`, flat seq-major). Weight-bearing
+    /// ops (QKVZ/out_proj/FFN/lm_head) batch across all R rows via the
+    /// existing M-generic arms; attention runs through `decode_multi_seq`
+    /// with per-row block tables / seq lens; the GDN conv+WY body runs
+    /// per-sequence via `decode_verify_multi` (byte-identical per-seq math,
+    /// row-offset bases; the two-launch cross-seq fast path engages at k=4
+    /// only — trait_decode_batched_conv_gdn_multi.rs declines k<4 into the
+    /// per-seq loop, which captures fine under the graph).
     ///
-    /// On success: per seq `tokens` += 4 drafts, `seq_len` += 4 (verdict
-    /// rewind is the caller's arithmetic, as on the per-seq path). On Err no
-    /// sequence state has been advanced. Logits rows stay live for row-based
+    /// On success: per seq `tokens` += k, `seq_len` += k (verdict rewind is
+    /// the caller's arithmetic, as on the per-seq path). On Err no sequence
+    /// state has been advanced. Logits rows stay live for row-based
     /// pipeline picks until the next forward — callers must consume them
     /// (and stash hiddens) BEFORE any propose.
-    pub(super) fn decode_verify_batched_k4_dispatch(
+    pub(super) fn decode_verify_batched_dispatch(
         &self,
-        tokens: &[[u32; 4]],
+        tokens: &[u32],
+        k: usize,
         seqs: &mut [&mut SequenceState],
         _stream: u64,
-    ) -> Result<Vec<[u32; 4]>> {
+    ) -> Result<Vec<u32>> {
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
-        let k = 4usize;
         let n = seqs.len();
         ensure!(
-            n >= 2 && tokens.len() == n,
-            "batched verify: n={n} tokens={}",
+            n >= 2 && (2..=4).contains(&k) && tokens.len() == n * k,
+            "batched verify: n={n} k={k} tokens={}",
             tokens.len()
         );
         let r_total = n * k;
-        // R ≤ 16: the proven decode_a2 C=16 metadata envelope. The meta gaps
-        // below (positions ≤128 B at +0, seq_slot at +128, slots ≤256 B at
-        // +256, seq_lens at +512, bt staging sized for 32 rows in sizes.rs)
-        // and the 32-row logits cap all hold at R=16 with 2x margin.
+        // R ≤ 32: the exact capacity of the meta gaps below (positions
+        // 128 B at +0, seq_slot at +128, slots 256 B at +256, seq_lens at
+        // +512, bt staging sized for 32 rows in sizes.rs) and the 32-row
+        // logits cap. Reached at n=16 × k=2 (ladder bottom step).
         ensure!(
-            r_total <= 16,
-            "batched verify: R={r_total} exceeds the audited 16-row envelope"
+            r_total <= 32,
+            "batched verify: R={r_total} exceeds the 32-row buffer capacity"
         );
 
         let hidden = self.buffers.hidden_states();
@@ -105,10 +116,8 @@ impl TransformerModel {
         let mut kv_cache = self.kv_cache.lock();
 
         // ── Phase 1: embed R tokens + allocate KV blocks ──
-        for (i, toks) in tokens.iter().enumerate() {
-            for (j, &t) in toks.iter().enumerate() {
-                self.embed(t, hidden.offset((i * k + j) * h * bf16), stream)?;
-            }
+        for (r, &t) in tokens.iter().enumerate() {
+            self.embed(t, hidden.offset(r * h * bf16), stream)?;
         }
 
         let bs = kv_cache.block_size();
@@ -129,9 +138,9 @@ impl TransformerModel {
         let max_blocks = self.max_blocks_per_seq;
         let mb = max_blocks as usize;
 
-        let mut positions = [0u32; 16];
-        let mut slots = [0i64; 16];
-        let mut seq_lens = [0i32; 16];
+        let mut positions = [0u32; 32];
+        let mut slots = [0i64; 32];
+        let mut seq_lens = [0i32; 32];
         for (i, seq) in seqs.iter().enumerate() {
             for j in 0..k {
                 let r = i * k + j;
@@ -195,8 +204,15 @@ impl TransformerModel {
 
         // Pre-graph: stage the per-GDN-layer WY pointer tables into the
         // fixed staging buffer (contents refreshed BEFORE any replay, like
-        // the attention metadata above). NULL → per-seq WY loop.
-        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, stream)?;
+        // the attention metadata above). NULL → per-seq WY loop. k=4 only:
+        // the table-form batched WY is wy4-only (wy2/wy3 hard-refuse
+        // batch > 1) and the GDN fast path declines k<4 anyway — skip the
+        // upload rather than stage tables nothing will read.
+        let wy_tables_base = if k == 4 {
+            self.upload_verify_wy_tables(&*seqs, stream)?
+        } else {
+            DevicePtr::NULL
+        };
 
         // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
         // illegal access is attributed to the exact layer (same hatch as
@@ -210,15 +226,24 @@ impl TransformerModel {
         // refreshed above. can_batch already excludes EP/HSS/LoRA/DFlash.
         let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
         let graph_key = if graphs_on {
-            self.verify_batched_graph_key(&*seqs, wy_tables_base.is_null())
+            self.verify_batched_graph_key(&*seqs, k, wy_tables_base.is_null())
         } else {
             None
         };
         let mut graphs = graph_key
             .as_ref()
             .map(|_| self.verify_batched_graphs.lock());
-        let cached = match (&graphs, &graph_key) {
-            (Some(g), Some(key)) => g.get(key).copied(),
+        // LRU touch on hit: bump the tick so eviction always removes the
+        // least-recently-replayed slot vector.
+        let cached = match (&mut graphs, &graph_key) {
+            (Some(g), Some(key)) => {
+                g.1 += 1;
+                let tick = g.1;
+                g.0.get_mut(key).map(|e| {
+                    e.1 = tick;
+                    e.0
+                })
+            }
             _ => None,
         };
 
@@ -230,11 +255,11 @@ impl TransformerModel {
                 self.gpu.launch_graph(graph, stream)?;
             }
         } else {
-            // First step for this slot vector (or graphs off): run the body,
-            // capturing when a cache slot is available.
-            let capture = graphs
-                .as_ref()
-                .is_some_and(|g| g.len() < super::verify_e2::VERIFY_BATCHED_GRAPH_CAP);
+            // First step for this (slot vector, k) key (or graphs off): run
+            // the body, capturing. A full cache no longer disables capture —
+            // the LRU entry is destroyed at insert time (see below), so
+            // slot-vector churn can never push the path permanently eager.
+            let capture = graphs.is_some();
 
             let ctx = ForwardContext {
                 buffers: &self.buffers,
@@ -392,11 +417,28 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!(
-                        "Captured CUDA graph for batched K=4 verify (slots={:?})",
+                        "Captured CUDA graph for batched K={k} verify (n={n}, key={:?})",
                         graph_key
                     );
                     if let (Some(ref mut g), Some(key)) = (graphs.as_mut(), graph_key) {
-                        g.insert(key, graph);
+                        if g.0.len() >= super::verify_e2::VERIFY_BATCHED_GRAPH_CAP {
+                            // Evict the least-recently-used graph. Safe to
+                            // destroy: every batched verify step ends with a
+                            // blocking argmax D2H on this stream, so any
+                            // earlier step's replay has already completed.
+                            if let Some(evict) =
+                                g.0.iter()
+                                    .min_by_key(|(_, entry)| entry.1)
+                                    .map(|(key, _)| key.clone())
+                                && let Some((old, _)) = g.0.remove(&evict)
+                                && let Err(e) = self.gpu.destroy_graph(old)
+                            {
+                                tracing::warn!("batched-verify graph evict: {e:#}");
+                            }
+                        }
+                        g.1 += 1;
+                        let tick = g.1;
+                        g.0.insert(key, (graph, tick));
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
@@ -410,18 +452,19 @@ impl TransformerModel {
         let mut buf = vec![0u8; r_total * 4];
         self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
 
-        let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            let mut v = [0u32; 4];
-            for j in 0..k {
-                let o = (i * k + j) * 4;
-                v[j] = u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
-            }
-            out.push(v);
+        let mut out = Vec::with_capacity(r_total);
+        for r in 0..r_total {
+            let o = r * 4;
+            out.push(u32::from_le_bytes([
+                buf[o],
+                buf[o + 1],
+                buf[o + 2],
+                buf[o + 3],
+            ]));
         }
 
         for (i, seq) in seqs.iter_mut().enumerate() {
-            for &t in &tokens[i] {
+            for &t in &tokens[i * k..(i + 1) * k] {
                 seq.tokens.push(t);
             }
             seq.seq_len += k;
