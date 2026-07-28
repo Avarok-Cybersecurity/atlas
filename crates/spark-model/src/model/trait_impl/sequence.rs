@@ -205,10 +205,17 @@ impl TransformerModel {
                 seq.slot_idx
             );
         }
-        // batch_decode_graphs is keyed by padded_n, not slot — but the captured
-        // graphs DO contain per-slot SSM pointers from the active set at capture
-        // time. Drop them all (they'll be re-captured on next batched decode).
-        for (_, graph) in self.batch_decode_graphs.lock().drain() {
+        // batch_decode_graphs is now keyed by the per-row SSM slot VECTOR
+        // (decode_graph_key.rs), so a freed slot's entries are already
+        // unreachable unless the exact same vector recurs — at which point the
+        // slot has been re-claimed and its pool addresses are the same ones the
+        // graph baked (SSM pool addresses are per-SLOT and fixed for the life
+        // of the process). The blanket drain is therefore no longer required
+        // for correctness; it is KEPT deliberately — dropping it would extend a
+        // graph's lifetime across arbitrary request turnover, which is a
+        // separate (unmeasured) risk surface, and re-capture costs one eager
+        // step per completion.
+        for (_, (graph, _)) in self.batch_decode_graphs.lock().0.drain() {
             if let Err(e) = self.gpu.destroy_graph(graph) {
                 tracing::error!("free_sequence: destroy_graph(batch_decode_graphs entry): {e:#}");
             }

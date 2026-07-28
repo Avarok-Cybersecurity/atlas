@@ -23,6 +23,7 @@ mod decode_a2;
 mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
+mod decode_graph_key;
 mod ep_misc;
 mod meta;
 mod prefill_a;

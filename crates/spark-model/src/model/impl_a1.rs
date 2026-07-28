@@ -631,7 +631,7 @@ impl TransformerModel {
             batched_embed_kernel,
             fill_slots_kernel,
             decode_graph: Mutex::new(std::collections::HashMap::new()),
-            batch_decode_graphs: Mutex::new(HashMap::new()),
+            batch_decode_graphs: Mutex::new((HashMap::new(), 0)),
             // Suppress graphs during FP8 calibration only. MLA used to be
             // suppressed because an internal sync was placed inside the graph
             // capture region — that sync is now conditional on eager mode

@@ -207,8 +207,9 @@ impl TransformerModel {
             "batch_decode_graph",
             self.batch_decode_graphs
                 .lock()
+                .0
                 .drain()
-                .map(|(_, g)| g)
+                .map(|(_, (g, _))| g)
                 .collect(),
         );
         drain(

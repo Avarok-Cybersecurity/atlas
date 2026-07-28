@@ -50,9 +50,10 @@ impl TransformerModel {
         let n = tokens.len();
         assert_eq!(n, seqs.len(), "tokens.len() must equal seqs.len()");
 
-        // Single-sequence: delegate to decode() which uses CUDA graphs.
-        // decode_batch disables graphs for n≥2 (SSM state pointer staleness),
-        // but n=1 is safe and benefits from graph replay (2x throughput).
+        // Single-sequence: delegate to decode() which uses its own slot-keyed
+        // graph cache. (Stale comment removed: n>=2 is ALSO graphed — see the
+        // slot-vector-keyed `batch_decode_graphs` in decode_batch_compute_main,
+        // default-ON since 2026-07-27.)
         //
         // Broadcast the seq_id preamble + cmd here (rather than in the
         // scheduler) so the EP n>1 branch below can interleave broadcasts
@@ -220,19 +221,17 @@ impl TransformerModel {
 
         // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
         //
-        // The historical concern was that SSM h_state/conv_state pointers get
-        // baked into per-seq kernel args at capture, going stale when batch
-        // composition changes. That does NOT happen here: the scheduler holds
-        // the invariant that active sequences occupy contiguous SSM pool slots
-        // [0..n) in batch order (compact_sequence migrates survivors), verified
-        // empirically (slots always == [0,1,..,n-1]). So position i's state is
-        // ALWAYS at pool_base + i*stride — a fixed address baked correctly at
-        // capture; replay reads whatever sequence currently occupies slot i.
-        // Pad positions use the fixed dummy slot. Attention metadata, KV block
-        // tables, embed, and all scratch buffers are at fixed device addresses
-        // refreshed every step BEFORE replay. So a graph keyed by padded_n is
-        // valid across replays. This is the dominant lever for n>=2 decode
-        // (eliminates ~1500 kernel launches/step).
+        // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
+        // capture. They are a pure function of the row's SSM pool slot, so the
+        // cache is keyed by the per-row slot VECTOR (`decode_graph_key.rs`) and
+        // replay is correct by construction. The former `padded_n` key relied
+        // on the scheduler invariant "active sequences occupy contiguous slots
+        // [0..n) in batch order" AND `n == padded_n`; the MTP Phase-A bootstrap
+        // (a slot SUBSET of the active set) and every `n < padded_n` batch
+        // break it. Attention metadata, KV block tables, embed, and all scratch
+        // buffers are at fixed device addresses refreshed every step BEFORE
+        // replay. This is the dominant lever for n>=2 decode (eliminates ~1500
+        // kernel launches/step).
         //
         // DEFAULT-ON since 2026-07-27, validated: C=8 65.75 -> 67.6 (+2.8%),
         // C=16 92.6 -> 95.6 (+3.2%), emitted-text SHA unchanged, 2 reps/cell.
@@ -248,7 +247,12 @@ impl TransformerModel {
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
-        let use_graphs = !ms_profile && !lora_eager && multiseq_graphs_enabled();
+        let graph_key = if !ms_profile && !lora_eager && multiseq_graphs_enabled() {
+            self.batch_decode_graph_key(&*seqs, padded_n)
+        } else {
+            None
+        };
+        let use_graphs = graph_key.is_some();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -271,9 +275,20 @@ impl TransformerModel {
             None
         };
 
-        if let Some(ref graphs) = graphs
-            && let Some(&graph) = graphs.get(&padded_n)
-        {
+        // LRU touch on hit: bump the tick so eviction always removes the
+        // least-recently-replayed slot vector.
+        let cached = match (&mut graphs, &graph_key) {
+            (Some(g), Some(key)) => {
+                g.1 += 1;
+                let tick = g.1;
+                g.0.get_mut(key).map(|e| {
+                    e.1 = tick;
+                    e.0
+                })
+            }
+            _ => None,
+        };
+        if let Some(graph) = cached {
             // Graph exists — replay (kernels use updated metadata + SSM pool addresses)
             if graph.0 != 0 {
                 self.gpu.launch_graph(graph, stream)?;
@@ -501,40 +516,40 @@ impl TransformerModel {
                         stream,
                     )?;
                 } else {
-                let gemv_k = if padded_n <= 4 {
-                    self.w4a16_gemv_batch4_kernel
-                } else if padded_n <= 8 {
-                    self.w4a16_gemv_batch8_kernel
-                } else if padded_n <= 16 {
-                    self.w4a16_gemv_batch16_kernel
-                } else {
-                    spark_runtime::gpu::KernelHandle(0)
-                };
-                if gemv_k.0 != 0 && lm_head_batch_gemv_enabled() {
-                    ops::w4a16_gemv_batchm(
-                        self.gpu.as_ref(),
-                        gemv_k,
-                        normed,
-                        nvfp4,
-                        logits,
-                        padded_n as u32,
-                        v as u32,
-                        h as u32,
-                        stream,
-                    )?;
-                } else {
-                    ops::w4a16_gemm(
-                        self.gpu.as_ref(),
-                        self.w4a16_gemm_kernel,
-                        normed,
-                        nvfp4,
-                        logits,
-                        padded_n as u32,
-                        v as u32,
-                        h as u32,
-                        stream,
-                    )?;
-                }
+                    let gemv_k = if padded_n <= 4 {
+                        self.w4a16_gemv_batch4_kernel
+                    } else if padded_n <= 8 {
+                        self.w4a16_gemv_batch8_kernel
+                    } else if padded_n <= 16 {
+                        self.w4a16_gemv_batch16_kernel
+                    } else {
+                        spark_runtime::gpu::KernelHandle(0)
+                    };
+                    if gemv_k.0 != 0 && lm_head_batch_gemv_enabled() {
+                        ops::w4a16_gemv_batchm(
+                            self.gpu.as_ref(),
+                            gemv_k,
+                            normed,
+                            nvfp4,
+                            logits,
+                            padded_n as u32,
+                            v as u32,
+                            h as u32,
+                            stream,
+                        )?;
+                    } else {
+                        ops::w4a16_gemm(
+                            self.gpu.as_ref(),
+                            self.w4a16_gemm_kernel,
+                            normed,
+                            nvfp4,
+                            logits,
+                            padded_n as u32,
+                            v as u32,
+                            h as u32,
+                            stream,
+                        )?;
+                    }
                 }
             } else {
                 ops::dense_gemm(
@@ -568,9 +583,11 @@ impl TransformerModel {
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
-                    tracing::info!("Captured CUDA graph for batch size {padded_n}");
-                    if let Some(ref mut g) = graphs {
-                        g.insert(padded_n, graph);
+                    tracing::info!(
+                        "Captured CUDA graph for batch size {padded_n} (n={n}, slots={graph_key:?})"
+                    );
+                    if let (Some(g), Some(key)) = (graphs.as_mut(), graph_key.clone()) {
+                        self.insert_batch_decode_graph(g, key, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }

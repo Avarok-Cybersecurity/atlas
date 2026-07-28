@@ -127,8 +127,16 @@ pub struct TransformerModel {
     /// alternate between slots in n=1 decode (e.g. via the per-seq fresh-decode
     /// fix in scheduler::step_decode_only), so we keep one graph per slot.
     pub(super) decode_graph: Mutex<std::collections::HashMap<usize, GraphHandle>>,
-    /// Cached CUDA graphs for batched decode, keyed by padded batch size.
-    pub(super) batch_decode_graphs: Mutex<HashMap<usize, GraphHandle>>,
+    /// Cached CUDA graphs for batched decode, keyed by the per-row SSM pool
+    /// slot VECTOR (`trait_impl/decode_graph_key.rs`) — the only per-sequence
+    /// addresses a capture bakes. The old `padded_n` key was sound only while
+    /// the batch was exactly slots `[0..n)` with `n == padded_n`; the MTP
+    /// Phase-A bootstrap passes a slot SUBSET of the active set and would
+    /// replay another subset's baked GDN pointers.
+    /// Value = `(graph, last_use_tick)`; the `u64` alongside the map is the
+    /// monotonically increasing tick. At `BATCH_DECODE_GRAPH_CAP` entries the
+    /// least-recently-used graph is destroyed and replaced.
+    pub(super) batch_decode_graphs: Mutex<(HashMap<Vec<u32>, (GraphHandle, u64)>, u64)>,
     /// Pre-allocated SSM state pool for stable GPU addresses across graph replays.
     /// `Arc` so each `SequenceState` can hold a `SlotGuard` that releases its
     /// claimed slot on drop — guaranteeing the slot returns to the free list on
