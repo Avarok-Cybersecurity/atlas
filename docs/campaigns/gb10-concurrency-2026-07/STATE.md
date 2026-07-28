@@ -1157,3 +1157,26 @@ the Frobenius bit-identity argument in the two-pass kernel still holds.
 ★ The standalone prototype of the FULL-width variant measured 1.71x on the loop alone and
 still lost 11.6% in production. **Size register-retention changes against the WHOLE function's
 budget, never the loop being optimised.**
+
+### ★ out_proj -> MMQ has a VRAM BLOCKER at the benchmark's util (checked before building)
+The repacked block_nvfp4 twin is 17.7 MB x 48 layers = **850 MB**, and unlike the FFN the `_t`
+copy CANNOT be freed (SSM prefill still uses it, `ssm_batched.rs:17-19`).
+Arithmetic against the observed pool: KV is 4735 blocks (4.6 GB, 65536 B/block); batch 16 at
+`--max-seq-len 4096` needs 256 blocks/seq x 16 = **4096**. 850 MB is ~875 blocks, leaving
+~3860 — **below the requirement**, so the serve fails to build with
+"KV cache can hold at most 15 concurrent sequence(s)".
+=> The lever needs `--gpu-memory-utilization >= 0.75`, i.e. a BENCHMARK CONFIG CHANGE. Do not
+fold it in silently alongside a throughput claim; measure the config change separately first.
+Options: (a) raise util and re-baseline everything, (b) convert only attn o_proj (16 layers,
+283 MB — fits) for ~1.4 ms, (c) make the SSM prefill path use the MMQ weight too so the `_t`
+copy can be freed, which is the FFN's own solution (`finalize_nvfp4_mmq_load`, dense_ffn.rs:445).
+(c) is the right long-term shape and removes the VRAM cost entirely.
+
+### Post-GDN-win budget (nsys, 160 steps, C=16 at 112.5 tok/s)
+| block | ms/step | share | state |
+|---|---|---|---|
+| FFN `mmq16` | 55.2 | 42% | ~174 GB/s, NO structural defect — vendored inner-loop work |
+| projections `_t` (qkvz, fused qkv) | 22.9 | 17% | 139-151 GB/s, near floor |
+| GDN `_half` | 22.1 | 17% | **1.18x floor — DONE** |
+| projections `_k64` (out_proj, o_proj) | 13.8 | 10% | **84 GB/s** — the MMQ lever, VRAM-blocked above |
+| lm_head | 9.7 | 7% | 29% of achievable — launch failure, 6 hypotheses dead, memcheck clean |
