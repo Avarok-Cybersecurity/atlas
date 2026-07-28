@@ -10,14 +10,22 @@
 //! row total stays small while the weight-read amortization of the batched
 //! verify keeps growing with n:
 //! n <= 4 -> 3 drafts (4 rows/seq, today's proven regime, bit-for-bit),
-//! n <= 8 -> 1 draft (2 rows/seq, R <= 16).
+//! n <= 8 -> 2 drafts (3 rows/seq, R <= 24).
 //! The ladder ENDS at n=8: the finalizer matrix (2026-07-28) measured spec
-//! at n=16 as a LOSS at even the minimum depth — C=16 114.6-117.3 vs 131.5
-//! MTP-off in BOTH the 16:1 and 8:1,16:1 configs (the K=1 verify step costs
-//! ~1.9x a plain batch-16 decode step vs the <1.72x break-even at p1~0.72;
-//! suspects: per-seq GDN conv/WY loop at k<4, chunked batched propose).
-//! At n<=8 the 8:1 step measured BEST: C=8 82.4 (+12% over 73.5 MTP-off)
-//! vs 81.1 for the 8:2 variant. n>8 is MTP-off via the cap (default 8).
+//! at n=16 as a LOSS at every depth even AFTER the three eager-cost fixes
+//! (`b93982d9` k-parameterized cross-seq GDN conv/WY, `a83627a2` propose
+//! widened to n=16, `fa373bf4` batched Phase-A bootstrap): 16:1 -> 128.4
+//! and 16:2 -> 94.1 vs the 131.9 MTP-off control. The fixes cut the n=16
+//! spec penalty from -11% to -2.7% (implied verify-step cost ~1.9x ->
+//! ~1.77x a plain batch-16 decode step) but not past the <1.72x
+//! break-even at p1~0.72. Remaining eager cost there: the Phase-A
+//! bootstrap forward is not graph-captured (`decode_batch` disables
+//! graphs at n>=2).
+//! At n<=8 the 8:2 step measured BEST *after* those fixes: C=8 89.25 vs
+//! 82.9 for 8:1 (+7.7%) and 57.9 for 8:3 (K=4 collapse). Pre-fix the
+//! ordering was inverted (8:1 82.4 > 8:2 81.1) — the cheaper verify step
+//! is what makes the deeper draft pay at n=8. n>8 is MTP-off via the cap
+//! (default 8).
 //!
 //! Overrides:
 //! * `ATLAS_MTP_K_LADDER="4:3,8:2,16:1"` — comma-separated `n_max:drafts`
@@ -49,11 +57,13 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
             }
             (!steps.is_empty()).then_some(steps)
         });
-        // Default ladder (finalizer matrix 2026-07-28): 3 drafts at n<=4,
-        // 1 draft at n<=8, NO step beyond 8 — spec at n=16 measured as a
-        // regression at every depth (see module docs). The cap (default 8)
-        // makes n>8 MTP-off by construction.
-        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 1)]);
+        // Default ladder (finalizer matrix 2026-07-28, post eager-cost
+        // fixes): 3 drafts at n<=4, 2 drafts at n<=8, NO step beyond 8 —
+        // spec at n=16 measured as a regression at every depth (see module
+        // docs). The cap (default 8) makes n>8 MTP-off by construction.
+        // Measured at C=8 on binary fa373bf4: 8:2 89.25 > 8:1 82.9 >>
+        // 8:3 57.9.
+        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 2)]);
         steps.sort_by_key(|&(n, _)| n);
         steps
     })
@@ -93,10 +103,11 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
 /// The cap IS the adaptive per-concurrency policy: the scheduler gates
 /// dispatch on `active.len() <= mtp_max_seqs()`. Per-step K comes from
 /// [`mtp_ladder_drafts`] (task #35): 3 drafts at n<=4 (the proven K=4
-/// regime, bit-for-bit), 1 draft at n<=8 (finalizer matrix 2026-07-28:
-/// C=8 82.4 vs 73.5 MTP-off, +12%). Cap 8 (NOT 16): spec at n=16 measured
-/// as a 11-13% REGRESSION vs MTP-off at BOTH remaining depths (114.6-117.3
-/// vs 131.5), so n>8 falls back to the plain multi-seq decode path.
+/// regime, bit-for-bit), 2 drafts at n<=8 (finalizer matrix 2026-07-28:
+/// C=8 89.25 vs 81.2 at 8:1 and 73.5 MTP-off). Cap 8 (NOT 16): spec at
+/// n=16 stays a REGRESSION vs MTP-off at every depth even after the three
+/// eager-cost fixes (128.4 at 16:1, 94.1 at 16:2, vs 131.9 MTP-off), so
+/// n>8 falls back to the plain multi-seq decode path.
 /// `ATLAS_NO_MTP_K_LADDER` (presence) restores fixed K=4 + cap 4 — the
 /// dafd990d adaptive policy. Set `ATLAS_MTP_MAX_SEQS=1` to restore
 /// single-sequence-only.
@@ -107,17 +118,20 @@ pub fn mtp_max_seqs() -> usize {
             .ok()
             .and_then(|v| v.parse().ok())
             // Default 8, NOT 16 (finalizer matrix 2026-07-28, binary
-            // 4b92a774): with the ladder, C=8 at 1 draft = 82.4 tok/s
-            // (+12% over the 73.5 MTP-off floor), but C=16 speculation
-            // LOSES at every depth (114.6 at 16:1 defaults, 117.3 at
-            // 8:1,16:1 — vs 131.5 MTP-off): the K=1 verify step costs
-            // ~1.9x a plain batch-16 decode step, above the ~1.72x
-            // break-even at p1~0.72. Cap 8 makes n>8 MTP-off by
-            // construction, preserving the 131.0 C=16 floor. Raising the
-            // cap requires first cutting the n=16 verify-step cost (k<4
-            // GDN table-form, wider batched propose). Pre-ladder baseline
-            // (cap=4, binary 472ed410): C=1 25.55 (1.80x vLLM) · C=2
-            // 35.35 (1.27x) · C=4 54.1 (1.01x) · C=8/16 MTP-off 73.5/131.0.
+            // fa373bf4): with the ladder, C=8 at 2 drafts = 89.25 tok/s
+            // (+21% over the 73.5 MTP-off floor), but C=16 speculation
+            // still LOSES at every depth (128.4 at 16:1, 94.1 at 16:2 —
+            // vs the 131.9 MTP-off control): the k=2 verify step costs
+            // ~1.77x a plain batch-16 decode step, above the ~1.72x
+            // break-even at p1~0.72. The three eager-cost fixes
+            // (b93982d9/a83627a2/fa373bf4) cut that from ~1.9x but not
+            // past break-even. Cap 8 makes n>8 MTP-off by construction,
+            // preserving the C=16 floor. Raising the cap requires first
+            // graph-capturing the Phase-A bootstrap forward (it routes
+            // through `decode_batch`, which disables graphs at n>=2).
+            // Pre-ladder baseline (cap=4, binary 472ed410): C=1 25.55
+            // (1.80x vLLM) · C=2 35.35 (1.27x) · C=4 54.1 (1.01x) ·
+            // C=8/16 MTP-off 73.5/131.0.
             .unwrap_or(if mtp_ladder_disabled() { 4 } else { 8 })
     })
 }
@@ -132,12 +146,12 @@ mod tests {
     fn default_ladder_steps_down_with_n() {
         assert_eq!(mtp_ladder_drafts(1, 3), 3);
         assert_eq!(mtp_ladder_drafts(4, 3), 3);
-        assert_eq!(mtp_ladder_drafts(5, 3), 1);
-        assert_eq!(mtp_ladder_drafts(8, 3), 1);
+        assert_eq!(mtp_ladder_drafts(5, 3), 2);
+        assert_eq!(mtp_ladder_drafts(8, 3), 2);
         // Beyond the last step: last step's value (the cap — default 8 —
         // gates dispatch, so n>8 never speculates at defaults).
-        assert_eq!(mtp_ladder_drafts(16, 3), 1);
-        assert_eq!(mtp_ladder_drafts(32, 3), 1);
+        assert_eq!(mtp_ladder_drafts(16, 3), 2);
+        assert_eq!(mtp_ladder_drafts(32, 3), 2);
     }
 
     #[test]

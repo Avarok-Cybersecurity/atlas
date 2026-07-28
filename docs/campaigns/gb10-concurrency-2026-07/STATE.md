@@ -2271,3 +2271,62 @@ cost cut below ~1.7x a plain decode step before ANY spec depth can win there. Ne
 order: (1) k<4 GDN table-form port (extend the cross-seq conv/WY 2-launch fast path beyond
 K=4), (2) wider batched propose (drop the <=4 chunking), (3) graph the Phase-A bootstrap
 decodes — then re-test 16:1 and re-raise the cap.
+
+## 2026-07-28 — ★★★ FINALIZED (round 2): three eager-cost fixes + ladder `4:3,8:2` (cap 8). C=8 +9.6%, FOUR floors beaten, C=16 preserved.
+
+The three costs named by the cap-16 matrix were all fixed and all verifiably engage:
+`b93982d9` K-parameterizes the cross-seq GDN conv/WY 2-launch fast path (was K=4-only),
+`a83627a2` widens the batched propose to n=16 (was chunked to groups of <=4), `fa373bf4`
+batches the Phase-A bootstrap (was per-seq M=1 decodes). Serve-log proof, this session:
+`batched-verify GDN conv+WY ENGAGED (n=8, k=3)` and `(n=3, k=4)` — zero DECLINED for that
+path; `propose_batch active: n=8 ... lm_head_batchm=0x...4120` (ONE group, width-selected
+handle, non-zero ⇒ no `try_kernel` handle-0 fallback); `MTP batched bootstrap ENGAGED (n=7)`.
+
+★ Their measured value is NOT a direct speedup — at the shipped `8:1` ladder they were worth
+only +2.1% (82.9 vs the 81.2 floor). They pay by MOVING THE OPTIMAL LADDER POINT: pre-fix
+`8:1` (82.4) beat `8:2` (81.1); post-fix `8:2` (89.25) beats `8:1` (82.9) by +7.7%. The
+verify step got cheap enough that a deeper draft finally pays at n=8. **Default ladder is now
+`4:3,8:2`** (anchored in the `mtp_ladder_steps` function body, per the burned-twice regex
+trap); cap unchanged at 8.
+
+### C=16 still loses — the arithmetic (why the cap does NOT move)
+| config | C=16 tok/s | vs MTP-off control 131.9 |
+|---|---|---|
+| MTP-off (cap 8, pure defaults) | **131.9** | — |
+| 16:1 (cap 16) | 128.4 | 0.973x |
+| 16:2 (cap 16) | 94.1 | collapse |
+At p1~0.72 (~1.72 tok/step) the 0.973x implies a verify-step cost of ~1.77x a plain batch-16
+decode step, against the <1.72x break-even. Pre-fix the matrix implied ~1.9x: the three fixes
+bought ~0.13x of the ~0.18x needed (~70% of the way). The named remaining cost is the piece
+deliberately left undone — **the Phase-A bootstrap forward is not graph-captured** (it routes
+through `decode_batch`, which disables graphs at n>=2), plus n small argmax D2H syncs. That is
+the single next lever if C=16 is attacked again; depth at n=16 is decisively dead (16:2 = 94.1).
+
+### Validated sweep at PURE DEFAULTS (binary md5 `e65c232d49732d409339a1dccad00ae8`,
+`ATLAS_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`;
+ONE FRESH SERVE PER C, `vm.drop_caches=3` + all containers removed + `:8888` asserted dead
+before each, first drive per serve discarded as warmup)
+| C | scored reps (tok/s) | mean | floor | vLLM | ratio | verdict |
+|---|---|---|---|---|---|---|
+| 1 | 25.7, 25.6, 25.6 | **25.63** | 25.62 | 14.2 | **1.80x** | **MET** |
+| 2 | 35.8, 35.2, 35.6 | **35.53** | 35.18 | 27.8 | **1.28x** | **MET** (floor +1.0%) |
+| 4 | 59.1, 58.1, 56.7 | **57.97** | 55.6 | 53.3 | **1.09x** | **MET** (floor +4.3%) |
+| 8 | 88.5, 90.4, 88.8, 88.6 · 88.5, 89.1, 89.0 (2 serves) | **89.0** | 81.2 | 98.8 | 0.90x | floor **+9.6%**; bar not met |
+| 16 | 132.0, 131.7, 131.6 | **131.77** | 131.8 | 168.9 | 0.78x | floor MET (MTP-off by cap) |
+
+- Smoke at final defaults (temp 0, seed 42, run on two separate serves): fluent Rayleigh
+  answer `finish=stop`; `get_weather({"location":"Paris"})` `finish=tool_calls`. PASS.
+- **Zero** ERROR/panic/illegal-access/error-700/716 lines in all six serve logs, including a
+  full C=8 leg's log dumped AFTER its drives. Accept telemetry healthy at n=8, k=3:
+  ~33-41 accept-3 / 32-37 accept-2 / 22-35 reject per 100 steps, mean accepted 0.98-1.19.
+- One benign `SSM batched recurrent DECLINED (n=4): pool slots are not contiguous` — the known
+  slot-fragmentation notice, present in the floor config too.
+- ★ Harness trap re-hit and hardened: the serve helper must remove EVERY container (not just
+  its own label) and assert `:8888` is both un-listened and un-answering before launching, or
+  the readiness probe passes against the PREVIOUS engine.
+
+### Campaign position
+**C=1/2/4 MET at pure defaults (1.80x / 1.28x / 1.09x). C=8 0.90x (was 0.82x, floor +9.6%),
+C=16 0.78x.** C=8 needs a further ~+11%; C=16 needs the n=16 verify-step cost below ~1.72x a
+plain decode step before any depth can win there. Next lever, singular and named: graph-capture
+the Phase-A bootstrap forward, then re-test 16:1 and re-raise the cap.
