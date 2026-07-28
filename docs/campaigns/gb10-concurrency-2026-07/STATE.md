@@ -2157,3 +2157,38 @@ fired a second C=4 drive → 8 active > cap 4 → the scheduler correctly disabl
 as "batched propose killed MTP after one round" (36.5 tok/s, zero K4 lines, batch-8 graphs).
 `pgrep -af prof_drive` before EVERY benchmark serve; a clean-looking profile of the wrong regime
 is worse than no profile.
+
+## 2026-07-28 — ★★★ BATCHED MTP LANDED (ultracode workflow, 11 agents). C=2 BEATS vLLM — first parity crossing beyond C=1.
+
+Workflow wf_2149fd7e-81d built the full lever: batched K=4 verify forward (model side, `291bdc0b`),
+scheduler dispatch (`eb85ce41`), batched cross-sequence propose + an out_proj M>8 dispatch fix
+(`865d580a`), gate-validated (C=4 cap=4: 25.8 serialized -> ~48-49.6 batched, coherent, zero CUDA
+errors, though statistically at PARITY with the 48.5 MTP-off bar at N=8, mean 47.65).
+
+### Validated sweep (cap default = 2, commit `f49e00c9`)
+| C | Atlas | vLLM | ratio |
+|---|---|---|---|
+| 1 | 25.60 | 14.2 | **1.803x MET** |
+| 2 | **29.40** | 27.8 | **1.058x MET** — first time, +13% over the 26.4 MTP-off number |
+| 4 | 48.70 | 53.3 | 0.914x |
+| 8 | 74.85 | 98.8 | 0.758x |
+| 16 | **131.75** | 168.9 | 0.780x (best ever) |
+No regression anywhere vs the MTP-off baselines.
+
+### ★ cap=16 sweep — the fixed-K collapse, MEASURED on our own engine
+C=2 29.95 but **C=8 49.0 (vs 74.65 off) and C=16 50.1 (vs 131.25 off)** — throughput PLATEAUS at
+~50 regardless of C. n*(K+1) verify rows of SUPERLINEAR GDN + ~22 ms/step of ungraphed eager verify
+gaps. Exactly the fixed-large-K failure the literature warned about (vLLM's 1.4-1.8x slowdowns;
+D-Cut's DFlash bs=64 collapse). The cap defaults to the measured crossover (2).
+
+### What takes C=4..16 past the bar (in order)
+1. CUDA-graph the batched verify step (validator: ~22 ms/step eager gaps at cap>1).
+2. Spec step 2 remainder: per-seq GDN conv/WY batching (~5 ms/step sized by the validator).
+3. K-vs-batch ladder, then D-Cut-style per-request depth pruning (task #35) — our GDN K-superlinearity
+   makes depth cuts worth more here than on dense models.
+4. Accept-rate lift: batched accept p1 0.59-0.71 vs single-seq 0.70-0.82 — find the divergence.
+
+### ★ Trap hit AGAIN this session: a regex replaced the WRONG unwrap_or
+Blind `.unwrap_or(N)` regex edit changed `shadow_topk` default 0->2 instead of the cap. Caught by
+re-reading the file after the sweep stayed collapsed. Reverted. RULE: anchor numeric-default edits
+to the FUNCTION, never to the literal.
