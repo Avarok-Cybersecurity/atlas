@@ -139,7 +139,10 @@ impl TransformerModel {
             self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
         let marconi_skip = if let Some(snap_id) = eff_snapshot {
             let snap_tok = eff_snapshot_tokens;
-            if snap_tok > 0
+            // Below `marconi_min_tokens()` the snapshot restore costs more in lost
+            // drafter acceptance than the skipped prefill saves — see the helper.
+            if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                && snap_tok > 0
                 && kv_write_start <= n
                 && self
                     .ssm_snapshots

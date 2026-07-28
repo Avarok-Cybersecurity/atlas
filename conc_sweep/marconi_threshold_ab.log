@@ -1,0 +1,21 @@
+--- OLD (always restore) ---
+   C=1: wall=7.6s total_tok=192 agg=25.4 tok/s
+   C=1: wall=8.1s total_tok=192 agg=23.6 tok/s
+   C=1: wall=8.1s total_tok=192 agg=23.7 tok/s
+   C=2: wall=15.8s total_tok=384 agg=24.3 tok/s
+   C=2: wall=16.6s total_tok=384 agg=23.1 tok/s
+   C=2: wall=16.6s total_tok=384 agg=23.1 tok/s
+   C=16: wall=27.4s total_tok=3072 agg=112.3 tok/s
+   C=16: wall=27.2s total_tok=3072 agg=112.9 tok/s
+   C=16: wall=27.3s total_tok=3072 agg=112.6 tok/s
+--- NEW (threshold 256) ---
+   C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+   C=1: wall=7.6s total_tok=192 agg=25.3 tok/s
+   C=1: wall=7.6s total_tok=192 agg=25.2 tok/s
+   C=2: wall=15.2s total_tok=384 agg=25.2 tok/s
+   C=2: wall=15.1s total_tok=384 agg=25.5 tok/s
+   C=2: wall=15.2s total_tok=384 agg=25.2 tok/s
+   C=16: wall=27.3s total_tok=3072 agg=112.4 tok/s
+   C=16: wall=27.4s total_tok=3072 agg=112.3 tok/s
+   C=16: wall=27.3s total_tok=3072 agg=112.4 tok/s
+MARCONI_AB_DONE
