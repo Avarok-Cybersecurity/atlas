@@ -23,6 +23,7 @@ pub(crate) async fn build_and_serve(
     bind: &str,
     port: u16,
 ) -> Result<()> {
+    spark_runtime::progress::phase(10, "router");
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([
@@ -127,6 +128,9 @@ pub(crate) async fn build_and_serve(
             require_auth_middleware,
         ))
         .layer(axum::middleware::from_fn(openai_observability_middleware))
+        .layer(axum::middleware::from_fn(
+            crate::main_modules::byte_count::byte_count_middleware,
+        ))
         .layer(cors)
         .layer(catch_panic)
         .with_state(state);
@@ -154,7 +158,9 @@ pub(crate) async fn build_and_serve(
         );
     }
     tracing::info!("Listening on {addr}");
+    spark_runtime::progress::phase(11, "listening");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    spark_runtime::progress::ready(port);
     serve_with_header_timeout(listener, app).await
 }
 
@@ -186,8 +192,24 @@ async fn serve_with_header_timeout(
 
     let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
+    // Startup is over: shutdown now means "stop accepting and drain in-flight
+    // requests", so main's startup escape must no longer short-circuit it.
+    crate::tui::shutdown::disarm_startup_escape();
+
     loop {
-        let (socket, peer_addr) = match listener.accept().await {
+        let accepted = tokio::select! {
+            conn = listener.accept() => conn,
+            _ = crate::tui::shutdown::wait() => {
+                // Clean shutdown: stop accepting, give in-flight requests a
+                // bounded grace to finish, then return so `serve()` unwinds
+                // normally (Drop impls: terminal restore, tee flush).
+                crate::tui::shutdown::drain_in_flight(std::time::Duration::from_secs(15)).await;
+                crate::tui::init::flush_tee();
+                tracing::info!("Shutdown complete");
+                return Ok(());
+            }
+        };
+        let (socket, peer_addr) = match accepted {
             Ok(conn) => conn,
             Err(e) => {
                 // Transient accept errors (fd exhaustion, RST races) must not

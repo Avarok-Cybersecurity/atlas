@@ -846,6 +846,7 @@ pub(super) fn load_layers(
         if (i + 1) % 10 == 0 || i < 5 {
             let free_gb = gpu.free_memory()? as f64 / (1024.0 * 1024.0 * 1024.0);
             tracing::info!("Loaded layers 0..{} — {free_gb:.1} GB free", i + 1);
+            spark_runtime::progress::layer(i + 1, config.num_hidden_layers);
         }
     }
 

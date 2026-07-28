@@ -890,6 +890,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
             if (i + 1) % 10 == 0 {
                 tracing::info!("Loaded layers 0..{}", i + 1);
+                spark_runtime::progress::layer(i + 1, config.num_hidden_layers);
             }
         }
 

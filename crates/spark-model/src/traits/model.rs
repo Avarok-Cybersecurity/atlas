@@ -912,6 +912,12 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// Total KV blocks in the paged cache (denominator for occupancy
+    /// gauges). Default 0 for backends without a paged cache.
+    fn num_total_blocks(&self) -> usize {
+        0
+    }
+
     /// Return the default CUDA stream handle.
     fn default_stream(&self) -> u64 {
         0

@@ -52,10 +52,21 @@ axum = { version = "0.8", features = ["json"] }
 # Direct hyper/hyper-util/tower access for the manual accept loop in
 # `serve_router.rs` — `axum::serve` does not expose hyper's connection-layer
 # `header_read_timeout`, which is what bounds a slowloris (slow-header) client.
-hyper = { version = "1", features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+http-body = "1"
+hyper = { version = "1", features = ["server", "http1", "http2", "client"] }
+hyper-util = { version = "0.1", features = ["server-auto", "client-legacy", "http1", "tokio"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
+# ── Atlas TUI (crates/spark-server/src/tui/) ──
+# ratatui pins its own crossterm; the version here MUST match ratatui 0.29's
+# (crossterm 0.28) or two raw-mode stacks fight over the terminal.
+ratatui = "0.29"
+crossterm = "0.28"
+# Single/multi-line inputs (log filter, library search, REPL, chat). MIT.
+tui-textarea = "0.7"
+unicode-width = "0.2"
+# stderr redirection while the TUI owns the screen (terminal_guard).
+libc = "0.2"
 tokio-stream = "0.1"
 futures = "0.3"
 rayon = "1.12"
