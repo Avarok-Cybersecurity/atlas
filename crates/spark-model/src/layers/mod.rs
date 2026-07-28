@@ -74,6 +74,25 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 /// given feature: e.g. Qwen3-Coder-Next (GDN+attention) never calls MLA
 /// kernels, but the layer builder still probes them. Warning on expected
 /// misses drowned out genuine problems in startup logs.
+/// Resolve the N128/M64 tile GEMM, preferring the 3-deep weight-pipeline variant.
+/// **ON by default**; `ATLAS_NO_TGEMM_PIPELINE3` (presence — `=0` is NOT "off")
+/// falls back to the 2-stage parent. Falls back automatically on any target that
+/// does not ship `_p3`.
+///
+/// Same mechanism as [`k64_kernel`]: the parent drains its cp.async group before
+/// the dequant phase, which only a co-resident CTA can cover. This kernel's live
+/// shapes — ssm_qkvz (128 CTAs) and the fused QKV (112) — sit in the exposed
+/// band of the grid.x-vs-efficiency curve. Bit-identical.
+pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    if std::env::var("ATLAS_NO_TGEMM_PIPELINE3").is_err() {
+        let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_p3");
+        if h.0 != 0 {
+            return h;
+        }
+    }
+    try_kernel(gpu, "w4a16", "w4a16_gemm_t")
+}
+
 /// Resolve the k64 deep-K tile GEMM, preferring the 3-deep weight-pipeline
 /// variant. **ON by default**; `ATLAS_NO_K64_PIPELINE3` (presence — `=0` is NOT
 /// "off") falls back to the 2-stage parent.
