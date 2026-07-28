@@ -22,6 +22,11 @@ pub(super) enum K4Hidden {
     /// Read stash slot `i` written by `stash_verify_hidden_rows` BEFORE any
     /// propose ran (batched path).
     Stash(usize),
+    /// Batched-propose deferral: apply the verdict (emit / rewind / trim /
+    /// commit) but skip BOTH the hidden save and the re-propose — the caller
+    /// runs ONE cross-sequence batched propose afterwards (stash slot `i`),
+    /// falling back to per-seq save+propose when unsupported.
+    DeferPropose,
 }
 
 #[inline]
@@ -29,6 +34,9 @@ fn save_hidden(model: &dyn Model, hidden: K4Hidden, na: usize) -> anyhow::Result
     match hidden {
         K4Hidden::VerifyRow => model.save_hidden_for_mtp(na, 0),
         K4Hidden::Stash(i) => model.save_hidden_for_mtp_from_stash(i, 0),
+        // Deferred mode never saves inline (the batched propose reads the
+        // stash rows directly; the per-seq fallback re-saves per sequence).
+        K4Hidden::DeferPropose => Ok(()),
     }
 }
 
@@ -49,6 +57,7 @@ pub(super) fn k4_apply_verdict(
     hidden: K4Hidden,
     verify_us: u128,
 ) {
+    let defer = matches!(hidden, K4Hidden::DeferPropose);
     let [v0, v1, v2, v3] = v;
     if num_accepted == 3 {
         emit_token(a, drafts[0], verify_lps.first().cloned());
@@ -75,34 +84,36 @@ pub(super) fn k4_apply_verdict(
             a.finished = true;
             return;
         }
-        if let Err(e) = save_hidden(model, hidden, 3) {
+        if !defer && let Err(e) = save_hidden(model, hidden, 3) {
             tracing::error!("save_hidden_for_mtp(3): {e:#}");
             return;
         }
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 3, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v3,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
+        if !defer {
+            let t_propose = Instant::now();
+            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                v3,
+                a.seq.seq_len,
+                num_drafts,
+                &mut a.seq,
+                0,
+                _mtp_grammar_mask.as_deref(),
+            ) {
+                Ok(d) if !d.is_empty() => a.pending_drafts = d,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("run_mtp_propose_multi: {e:#}");
+                }
             }
+            let propose_us = t_propose.elapsed().as_micros();
+            tracing::debug!(
+                "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
         }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
         k4_record_outcome(3, a.seq.seq_len);
     } else if num_accepted == 2 {
         a.seq.seq_len -= 1;
@@ -129,31 +140,33 @@ pub(super) fn k4_apply_verdict(
             return;
         }
         a.last_token = v2;
-        if let Err(e) = save_hidden(model, hidden, 2) {
+        if !defer && let Err(e) = save_hidden(model, hidden, 2) {
             tracing::error!("save_hidden_for_mtp(2): {e:#}");
             return;
         }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v2,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
+        if !defer {
+            let t_propose = Instant::now();
+            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                v2,
+                a.seq.seq_len,
+                num_drafts,
+                &mut a.seq,
+                0,
+                _mtp_grammar_mask.as_deref(),
+            ) {
+                Ok(d) if !d.is_empty() => a.pending_drafts = d,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("run_mtp_propose_multi: {e:#}");
+                }
             }
+            let propose_us = t_propose.elapsed().as_micros();
+            tracing::debug!(
+                "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
         }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
         k4_record_outcome(2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 2;
@@ -177,31 +190,33 @@ pub(super) fn k4_apply_verdict(
             return;
         }
         a.last_token = v1;
-        if let Err(e) = save_hidden(model, hidden, 1) {
+        if !defer && let Err(e) = save_hidden(model, hidden, 1) {
             tracing::error!("save_hidden_for_mtp(1): {e:#}");
             return;
         }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v1,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
+        if !defer {
+            let t_propose = Instant::now();
+            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                v1,
+                a.seq.seq_len,
+                num_drafts,
+                &mut a.seq,
+                0,
+                _mtp_grammar_mask.as_deref(),
+            ) {
+                Ok(d) if !d.is_empty() => a.pending_drafts = d,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("run_mtp_propose_multi: {e:#}");
+                }
             }
+            let propose_us = t_propose.elapsed().as_micros();
+            tracing::debug!(
+                "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
         }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
         k4_record_outcome(1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 3;
@@ -224,31 +239,33 @@ pub(super) fn k4_apply_verdict(
             return;
         }
         a.last_token = v0;
-        if let Err(e) = save_hidden(model, hidden, 0) {
+        if !defer && let Err(e) = save_hidden(model, hidden, 0) {
             tracing::error!("save_hidden_for_mtp(0): {e:#}");
             return;
         }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v0,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
+        if !defer {
+            let t_propose = Instant::now();
+            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                v0,
+                a.seq.seq_len,
+                num_drafts,
+                &mut a.seq,
+                0,
+                _mtp_grammar_mask.as_deref(),
+            ) {
+                Ok(d) if !d.is_empty() => a.pending_drafts = d,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("run_mtp_propose_multi: {e:#}");
+                }
             }
+            let propose_us = t_propose.elapsed().as_micros();
+            tracing::debug!(
+                "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
+                a.seq.seq_len
+            );
         }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
         k4_record_outcome(0, a.seq.seq_len);
     }
 }

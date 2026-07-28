@@ -373,6 +373,13 @@ impl MtpHead {
             // Batched BF16 GEMM for drafter prefill; 0-handle when the
             // target's kernel set lacks it (prefill then no-ops).
             dense_gemm_k: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16"),
+            dense_gemm_pipelined_k: crate::layers::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
+            w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             prefill_scratch,
         })
     }

@@ -223,6 +223,17 @@ pub struct MtpHead {
     moe_weighted_sum_blend_k: Option<KernelHandle>,
     /// Batched BF16 GEMM for the drafter-prefill pass (0 when absent).
     dense_gemm_k: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM (`dense_gemm_bf16_pipelined`) for the
+    /// batched cross-sequence propose (0 when absent). Measured at M=4 on the
+    /// drafter shapes: 2.7x the 4x-GEMV per-seq loop (5.1 vs 14.4 ms per
+    /// draft position).
+    dense_gemm_pipelined_k: KernelHandle,
+    /// `w4a16_gemv_batch4` for the batched-propose LM head (0 when absent):
+    /// reads the shared NVFP4 LM head once for up to 4 sequences.
+    w4a16_gemv_batch4_k: KernelHandle,
+    /// `argmax_bf16_batch` for the batched-propose per-row argmax (0 when
+    /// absent; falls back to the serial per-row scan).
+    argmax_batch_k: KernelHandle,
     /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
 }
@@ -310,6 +321,7 @@ impl MtpHead {
 
 mod draft_proposer;
 mod forward;
+mod forward_batch;
 mod moe_forward;
 mod new;
 mod prefill;

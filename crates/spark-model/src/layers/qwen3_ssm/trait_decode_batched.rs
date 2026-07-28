@@ -633,6 +633,34 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )?;
+        } else if num_tokens > 8 && self.out_proj_nvfp4_t.is_some() && {
+            // Kill switch, PRESENCE check per house convention (`=0` is NOT
+            // off), cached once.
+            static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            !*OFF.get_or_init(|| std::env::var("ATLAS_NO_VERIFY_OUTPROJ_TGEMM").is_ok())
+        } {
+            // M > 8 (batched K=4 verify, R = n*4 rows; DFlash wide verify):
+            // the pre-dequanted FP8 prefill arm below reads 2x the weight
+            // bytes of NVFP4 — bandwidth-bound at this M, measured 379 us
+            // vs 182 us per call at M=16 N=5120 (fp8_fp8_gemm_ldmab vs
+            // w4a16_gemm_t_k64_p3), ~9.5 ms/step across 48 GDN layers at
+            // C=4. Route to the NVFP4 transposed-twin tile GEMM — the SAME
+            // kernel+handle the multi-seq decode out_proj uses
+            // (`deep_k_gemm`). BF16 activations (vs the FP8 arm's e4m3
+            // downcast) — equal-or-better numerics, not byte-identical.
+            // Kill switch ATLAS_NO_VERIFY_OUTPROJ_TGEMM (PRESENCE check).
+            let nvfp4_t = self.out_proj_nvfp4_t.as_ref().unwrap();
+            ops::w4a16_gemm_n128(
+                ctx.gpu,
+                self.deep_k_gemm(value_dim as u32),
+                normed_out_buf,
+                nvfp4_t,
+                out_proj_buf,
+                num_tokens as u32,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )?;
         } else if num_tokens == 3 {
             ops::w4a16_gemv_batch3(
                 ctx.gpu,

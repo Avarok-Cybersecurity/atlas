@@ -467,6 +467,74 @@ impl TransformerModel {
         self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)
     }
 
+    /// Batched cross-sequence propose (batched K=4 verify path). Target
+    /// hiddens are read DIRECTLY from the verify stash rows (`stash_idx[i]`),
+    /// so the single-slot `mtp_hidden_save` is never involved. The catchup /
+    /// refeed / carry blocks of `run_mtp_propose_inner` are force-disabled in
+    /// multi-seq MTP mode (the only mode that reaches this path), so skipping
+    /// them here matches the per-seq behavior at cap > 1 exactly.
+    pub(super) fn run_mtp_propose_batched_dispatch(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let proposer = match &self.proposer {
+            Some(p) => p.as_ref(),
+            None => return Ok(None),
+        };
+        // The confidence clamp is a per-seq propose feature; keep semantics
+        // by falling back whenever it is armed.
+        if crate::speculative::draft_conf_tau() > 0.0 {
+            return Ok(None);
+        }
+        if self.verify_hidden_stash.is_null() {
+            return Ok(None);
+        }
+        let stream = self.gpu.default_stream();
+        let ctx = ForwardContext {
+            buffers: &self.buffers,
+            gpu: self.gpu.as_ref(),
+            config: &self.config,
+            attn_metadata: None,
+            profile: false,
+            comm: None,
+            graph_capture: false,
+            gdn_exact_replay: false,
+            token_ids: None,
+            routed_lora_layers: None,
+            midchunk_capture: None,
+        };
+        // First-propose drafter context (cold-turn prefill); fast no-op on
+        // every later call — same as the per-seq path.
+        for seq in seqs.iter_mut() {
+            self.ensure_drafter_context(proposer, seq, &ctx, stream);
+        }
+        let h = self.config.hidden_size;
+        let hiddens: Vec<spark_runtime::gpu::DevicePtr> = stash_idx
+            .iter()
+            .map(|&i| self.verify_hidden_stash.offset(i * h * 2))
+            .collect();
+        let mut states: Vec<&mut dyn crate::speculative::ProposerState> = Vec::new();
+        for seq in seqs.iter_mut() {
+            match seq.proposer_state.as_mut() {
+                Some(s) => states.push(s.as_mut()),
+                None => return Ok(None),
+            }
+        }
+        proposer.propose_batch(
+            tokens,
+            &hiddens,
+            positions,
+            num_drafts,
+            &mut states,
+            &ctx,
+            stream,
+        )
+    }
+
     pub(super) fn read_deferred_draft_token_dispatch(&self) -> Result<u32> {
         let proposer = match &self.proposer {
             Some(p) => p.as_ref(),

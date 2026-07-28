@@ -344,6 +344,17 @@ impl Model for TransformerModel {
     fn save_hidden_for_mtp_from_stash(&self, idx: usize, _stream: u64) -> Result<()> {
         self.save_hidden_for_mtp_from_stash_dispatch(idx, _stream)
     }
+    fn run_mtp_propose_batched(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        self.run_mtp_propose_batched_dispatch(tokens, positions, stash_idx, num_drafts, seqs)
+    }
     fn decode_verify_graphed_kgamma(
         &self,
         tokens: &[u32],

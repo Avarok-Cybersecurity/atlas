@@ -2116,3 +2116,44 @@ BEFORE estimating the expensive one.
 3. Overlapped scheduling + full-graph 1+k step (hides the growing host-side spec bookkeeping).
 4. GDN batched-recurrent as a STANDALONE lever: SKIP (our own +1-2% measurement stands, and vLLM's
    design agrees) — but adopt its inline-checkpoint slot scheme as part of (1).
+
+## 2026-07-28 — ★ BATCHED-MTP GATE: PASS (fixer round 1) — C=4 cap=4 25.8 → 49.0
+
+The eb85ce41 batched verify left the gate 10% short (43.9 vs >48.5). nsys at C=4 showed the gap
+was NOT the per-seq GDN loop the failure report guessed — it was the PROPOSE: 12 per-seq drafter
+forwards x ~5 ms/step (~62 ms of a ~180 ms step; the BF16 drafter reads ~850 MB of weights per
+forward, `--mtp-quantization bf16`). Three fixes on binary 4d01c9a4:
+
+1. **Batched cross-seq propose** — one M=n drafter forward per draft position (drafts chain
+   WITHIN a seq, are independent ACROSS seqs). Weight-bearing GEMMs on
+   `dense_gemm_bf16_pipelined` (microbenched 2.7x the 4x-GEMV loop at M=4: 5.1 vs 14.4 ms per
+   position; scalar `dense_gemm_bf16` only 1.8x — measure before wiring), LM head on
+   `w4a16_gemv_batch4`, everything small looped per row with `forward_one`'s exact kernels.
+   A/B alone: 46.3-46.8 vs 42.9-43.6 kill-switch (`ATLAS_NO_MTP_BATCH_PROPOSE`), disjoint.
+2. **out_proj M>8 dispatch** (m_dispatch class strikes again, in reverse): R=16 verify rows fell
+   into the pre-dequanted-FP8 PREFILL arm — fp8_fp8_gemm_ldmab 379 us vs 182 us for the SAME
+   shape on w4a16_gemm_t_k64_p3 (2x weight bytes, bandwidth-bound at M=16) — x48 layers =
+   ~9.5 ms/step. Attention o_proj at the same M was ALREADY on the k64 tile GEMM, which is what
+   fingered the SSM arm. New arm via `deep_k_gemm`, kill `ATLAS_NO_VERIFY_OUTPROJ_TGEMM`.
+3. **Batched argmax** in R-row verify + batched propose (~2 ms/step; the single-row argmax is a
+   one-CTA scan, R serial calls = R single-SM passes).
+
+GATE (3 scored reps, warmup discarded): **48.8 / 48.5 / 49.6 (mean 49.0)** vs bar >48.5; from
+25.8 serialized = +90%. C=1 cap=4 25.5-25.6; C=1 default-cap unchanged (batched paths dead at
+cap=1). Coherence + tool-call smokes PASS (finish=stop / tool_calls, well-formed args). MTP
+sustained all legs (16 K4 summaries), zero ERROR/panic/716. Accept telemetry healthy at n=4:
+p1 0.70-0.82, mean accepted 1.19-1.55 — the batched drafter's drafts are as good as per-seq.
+
+★ Batched MTP at C=4 is now at PARITY-to-slightly-ahead of MTP-off (49.0 vs 48.5). The lever is
+REAL but not yet decisive at C=4; per the spec the C=8/16 regime is where the weight-read
+amortization grows. Remaining sized levers before re-raising the cap: per-seq GDN conv/WY loop
+(~5 ms/step small kernels + share of ~22 ms/step eager gaps), K-vs-batch ladder / D-Cut.
+
+★★ SELF-INTERFERENCE TRAP (cost ~1.5 h): a serve failed its KV-budget check because page cache
+from the PREVIOUS leg inflated "pre-KV" (fix: `sysctl vm.drop_caches=3` + settle before every
+serve of this config); its driver script kept polling :8888, and when the NEXT serve came up it
+fired a second C=4 drive → 8 active > cap 4 → the scheduler correctly disabled MTP
+(`active.len() <= mtp_max_seqs()`) → an entire nsys profile of the wrong regime that presented
+as "batched propose killed MTP after one round" (36.5 tok/s, zero K4 lines, batch-8 graphs).
+`pgrep -af prof_drive` before EVERY benchmark serve; a clean-looking profile of the wrong regime
+is worse than no profile.

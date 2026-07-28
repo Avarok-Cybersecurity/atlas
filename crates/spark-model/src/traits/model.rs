@@ -579,6 +579,30 @@ pub trait Model: Send + Sync {
         bail!("save_hidden_for_mtp_from_stash: unsupported by this model")
     }
 
+    /// Batched cross-sequence MTP propose for the batched K=4 verify path:
+    /// `num_drafts` drafts for each of `tokens.len()` sequences, reading
+    /// every drafter weight once per draft position instead of once per
+    /// sequence. `stash_idx[i]` names the verify-stash slot holding sequence
+    /// i's accepted-position hidden (written by
+    /// [`Self::stash_verify_hidden_rows`]); `positions[i]` is the propose
+    /// position (post-rewind `seq_len`), matching the per-seq
+    /// [`Self::run_mtp_propose_multi`] contract. Grammarless sequences only.
+    ///
+    /// `Ok(None)` = unsupported (caller falls back to the per-seq propose
+    /// loop, re-saving each stash slot first). Default: unsupported.
+    fn run_mtp_propose_batched(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let _ = (tokens, positions, stash_idx, num_drafts, seqs, stream);
+        Ok(None)
+    }
+
     /// DFlash K=γ graphed verify (γ+1 tokens). Specialization of the K=2/3/4
     /// pattern for arbitrary K. Default impl falls back to eager
     /// `decode_verify`. Models can override for CUDA-graph speedup keyed by

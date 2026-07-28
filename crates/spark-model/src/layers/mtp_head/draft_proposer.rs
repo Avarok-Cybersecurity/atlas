@@ -83,6 +83,40 @@ impl DraftProposer for MtpHead {
         Ok(drafts)
     }
 
+    fn propose_batch(
+        &self,
+        last_tokens: &[u32],
+        target_hiddens: &[DevicePtr],
+        positions: &[usize],
+        num_drafts: usize,
+        states: &mut [&mut dyn ProposerState],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        if !self.can_propose_batch(last_tokens.len()) {
+            return Ok(None);
+        }
+        // All states must downcast to MtpProposerState; any miss means a
+        // mixed-proposer batch — unsupported, fall back per-seq.
+        let mut mtp_states: Vec<&mut MtpProposerState> = Vec::with_capacity(states.len());
+        for s in states.iter_mut() {
+            match s.as_any_mut().downcast_mut::<MtpProposerState>() {
+                Some(st) => mtp_states.push(st),
+                None => return Ok(None),
+            }
+        }
+        self.propose_batch_impl(
+            last_tokens,
+            target_hiddens,
+            positions,
+            num_drafts,
+            &mut mtp_states,
+            ctx,
+            stream,
+        )
+        .map(Some)
+    }
+
     fn prefill_drafter(
         &self,
         prompt_tokens: &[u32],

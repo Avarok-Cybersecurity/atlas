@@ -134,3 +134,42 @@ The recurrent/WY side needs the SAME `gridDim.y = n_seq` treatment plus per-sequ
 ## Gate before believing any of it
 `ATLAS_MTP_MAX_SEQS=4` at C=4 must go from 25.8 (today's serialized number) to >48.5 (today's
 MTP-off number) before the lever is real.
+
+## DONE — steps 3+4 v1: batched verify + batched propose (fixer round 1, 2026-07-28)
+
+**GATE: PASS (marginal).** C=4 cap=4 = **48.8 / 48.5 / 49.6** (3 scored reps, mean 49.0) vs the
+bar 48.5 — up from 25.8 serialized (+90%) and from 43.9 with only the verify batched. C=1 cap=4
+25.5-25.6, C=1 default-cap unchanged; coherence + tool-call smokes PASS; MTP sustained (16 K4
+summaries), zero errors. Batched MTP is now at parity-to-slightly-ahead of MTP-off at C=4; the
+remaining upside (per-seq GDN conv/WY loop = spec step 2, K-vs-batch ladder = step 5) is what
+takes it decisively past.
+
+Three fixes landed on top of the eb85ce41 scheduler/model wiring:
+1. **Batched cross-sequence PROPOSE** (the measured gap: 12 per-seq drafter forwards x ~5 ms =
+   ~62 ms of a ~180 ms step — the BF16 drafter re-reads ~850 MB per forward). One M=n forward
+   per draft position: big projections on `dense_gemm_bf16_pipelined` (microbenched 2.7x the
+   4x-GEMV loop at M=4), LM head on `w4a16_gemv_batch4`, small per-row ops loop per seq with
+   `forward_one`'s exact kernels. `mtp_head/forward_batch.rs`; scheduler defers the verdict
+   propose (`K4Hidden::DeferPropose`) and batches it in Phase 4 of `verify_k4_batch_step.rs`.
+   Kill switch `ATLAS_NO_MTP_BATCH_PROPOSE`. Measured alone: 46.3-46.8 vs 42.9-43.6 control.
+2. **out_proj M>8 dispatch fix** (m_dispatch class): the R=16 verify rows fell into the
+   pre-dequanted-FP8 PREFILL arm (2x the weight bytes of NVFP4) — 379 us vs 182 us per call,
+   x48 layers = ~9.5 ms/step at C=4. New arm routes M>8 to the NVFP4 transposed-twin tile GEMM
+   via `deep_k_gemm` (same kernel the multi-seq decode out_proj uses). Kill switch
+   `ATLAS_NO_VERIFY_OUTPROJ_TGEMM`.
+3. **Batched argmax** in the R-row verify and the batched propose (1 launch vs R serial one-CTA
+   scans; ~2 ms/step).
+
+★ TRAP hit during diagnosis: a stale copy of the profiling script (from a serve whose build
+FAILED on un-drained page cache) was still polling :8888; when the next serve came up it fired
+its own C=4 drive → 8 active > cap 4 → MTP correctly disabled by `active.len() <= mtp_max_seqs()`
+→ a whole nsys profile of the WRONG regime (36.5 tok/s, zero K4 lines) that looked exactly like
+"my change killed MTP". Drop caches (`vm.drop_caches=3`) before every serve of this config, and
+`pgrep` for stale drivers before ANY benchmark serve.
+
+## NEXT (in order, each measured)
+1. Step 2 proper: batch the GDN conv/WY per-seq loop across sequences (landed
+   `gdn_verify_fused_conv_kn_batched` + a recurrent/WY sibling): ~5 ms/step of small kernels +
+   launch gaps at C=4.
+2. K-vs-batch ladder / D-Cut (task #35) before re-raising the cap past 4.
+3. Slot-vector-keyed CUDA graph for the batched verify (eager gaps ~22 ms/step at C=4).

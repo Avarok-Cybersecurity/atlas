@@ -281,15 +281,31 @@ impl TransformerModel {
 
         let vocab = self.config.vocab_size;
         let argmax_out = self.buffers.scratch();
-        for r in 0..r_total {
-            ops::argmax_bf16(
+        // ONE launch, one block per row (single-row argmax is a one-CTA scan;
+        // R serial calls = R single-SM scans, ~100 us each at this vocab).
+        // Byte-identical per-row body; loop fallback when the kernel is absent.
+        if self.argmax_batch_kernel.0 != 0 {
+            ops::argmax_bf16_batch(
                 self.gpu.as_ref(),
-                self.argmax_kernel,
-                self.buffers.logits().offset(r * vocab * bf16),
-                argmax_out.offset(r * 4),
+                self.argmax_batch_kernel,
+                self.buffers.logits(),
+                argmax_out,
+                vocab as u32,
+                r_total as u32,
                 vocab as u32,
                 stream,
             )?;
+        } else {
+            for r in 0..r_total {
+                ops::argmax_bf16(
+                    self.gpu.as_ref(),
+                    self.argmax_kernel,
+                    self.buffers.logits().offset(r * vocab * bf16),
+                    argmax_out.offset(r * 4),
+                    vocab as u32,
+                    stream,
+                )?;
+            }
         }
 
         // ── Phase 5: D2H + host bookkeeping ──

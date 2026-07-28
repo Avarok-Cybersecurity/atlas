@@ -384,6 +384,35 @@ pub trait DraftProposer: Send + Sync {
         target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>>;
 
+    /// Batched cross-sequence propose: draft `num_drafts` tokens for each of
+    /// `n = last_tokens.len()` sequences, reading every drafter weight ONCE
+    /// per draft position instead of once per sequence (the measured C=4
+    /// serialization: 12 x ~5 ms per-seq drafter forwards per batched verify
+    /// step, ~62 ms of the ~180 ms step).
+    ///
+    /// Row i of every slice belongs to sequence i; `target_hiddens[i]` is
+    /// that sequence's accepted-position hidden ([1, hidden] BF16, may be
+    /// non-contiguous across i). Chains autoregressively per sequence like
+    /// `propose` — position j uses (draft_{j-1}, drafter's own hidden row i).
+    ///
+    /// Returns `Ok(None)` when unsupported (caller falls back to the per-seq
+    /// `propose` loop); `Ok(Some(drafts))` with `drafts[i].len() ==
+    /// num_drafts` on success. Grammar-constrained sequences must not reach
+    /// this path (callers gate on grammarless).
+    #[allow(clippy::too_many_arguments)]
+    fn propose_batch(
+        &self,
+        _last_tokens: &[u32],
+        _target_hiddens: &[DevicePtr],
+        _positions: &[usize],
+        _num_drafts: usize,
+        _states: &mut [&mut dyn ProposerState],
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        Ok(None)
+    }
+
     /// Prefill the drafter's own context (KV cache) over the prompt, before
     /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).
     ///

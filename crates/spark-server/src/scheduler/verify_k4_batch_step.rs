@@ -156,8 +156,10 @@ pub(super) fn step_verify_k4_batched(
     }
 
     // ── Phase 3: per-seq verdict via the EXISTING single-seq machinery ──
-    // (greedy accept + rewind arithmetic + emit + re-propose; propose may
-    // now clobber the shared buffers freely — phases 1-2 consumed them.)
+    // (greedy accept + rewind arithmetic + emit + trim; propose is DEFERRED
+    // so Phase 4 can batch it across sequences — the per-seq drafter forward
+    // reads ~850 MB of BF16 drafter weights, so n x num_drafts serial
+    // forwards were ~62 ms of the ~180 ms C=4 step.)
     for (i, (a, (v, num_accepted, verify_lps))) in
         batch.iter_mut().zip(verdicts.into_iter()).enumerate()
     {
@@ -169,8 +171,104 @@ pub(super) fn step_verify_k4_batched(
             verify_lps,
             num_drafts,
             num_accepted,
-            K4Hidden::Stash(i),
+            K4Hidden::DeferPropose,
             verify_us,
         );
     }
+
+    // ── Phase 4: ONE batched cross-sequence propose ──
+    // Sequences still alive after their verdict need fresh drafts. The
+    // batched propose reads each sequence's accepted-position hidden straight
+    // from its stash slot; per-seq fallback re-saves the slot into the
+    // single-slot MTP input buffer immediately before each propose (the
+    // verdict loop no longer saves, and one slot cannot hold n hiddens).
+    let t_propose = Instant::now();
+    let pending: Vec<usize> = (0..n)
+        .filter(|&i| !batch[i].finished && batch[i].pending_drafts.is_empty())
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let mut batched_done = false;
+    if pending.len() >= 2 && !batch_propose_disabled() {
+        let tokens: Vec<u32> = pending.iter().map(|&i| batch[i].last_token).collect();
+        let positions: Vec<usize> = pending.iter().map(|&i| batch[i].seq.seq_len).collect();
+        let stash_idx: Vec<usize> = pending.clone();
+        let result = {
+            let mut seq_refs: Vec<&mut SequenceState> = Vec::with_capacity(pending.len());
+            let mut it = batch.iter_mut();
+            let mut prev = 0usize;
+            for (j, &i) in pending.iter().enumerate() {
+                let step = if j == 0 { i } else { i - prev - 1 };
+                let a = it.nth(step).expect("pending index in batch");
+                seq_refs.push(&mut a.seq);
+                prev = i;
+            }
+            model.run_mtp_propose_batched(
+                &tokens,
+                &positions,
+                &stash_idx,
+                num_drafts,
+                &mut seq_refs,
+                0,
+            )
+        };
+        match result {
+            Ok(Some(all)) => {
+                for (j, &i) in pending.iter().enumerate() {
+                    if !all[j].is_empty() {
+                        batch[i].pending_drafts = all[j].clone();
+                    }
+                }
+                batched_done = true;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                // Failed mid-chain: `last_num_drafted` tracks exactly the
+                // drafter rows written, so `after_verify` stays consistent —
+                // but a SECOND (fallback) propose on top would append more
+                // rows than the next trim accounts for. Skip proposing this
+                // step; the affected sequences decode serially next step.
+                tracing::error!("run_mtp_propose_batched: {e:#}");
+                batched_done = true;
+            }
+        }
+    }
+    if !batched_done {
+        for &i in &pending {
+            let a = &mut batch[i];
+            if let Err(e) = model.save_hidden_for_mtp_from_stash(i, 0) {
+                tracing::error!("save_hidden_for_mtp_from_stash({i}): {e:#}");
+                continue;
+            }
+            let _mtp_grammar_mask = mtp_grammar_mask_for(a);
+            match model.run_mtp_propose_multi(
+                a.last_token,
+                a.seq.seq_len,
+                num_drafts,
+                &mut a.seq,
+                0,
+                _mtp_grammar_mask.as_deref(),
+            ) {
+                Ok(d) if !d.is_empty() => a.pending_drafts = d,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("run_mtp_propose_multi: {e:#}");
+                }
+            }
+        }
+    }
+    tracing::debug!(
+        "K4 batched propose: n={} batched={batched_done} propose={}μs",
+        pending.len(),
+        t_propose.elapsed().as_micros()
+    );
+}
+
+/// Kill switch `ATLAS_NO_MTP_BATCH_PROPOSE` — PRESENCE check (`=0` is NOT
+/// off): forces the per-seq propose fallback inside the batched verify step,
+/// for A/B attribution of the propose-batching sub-lever.
+fn batch_propose_disabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_BATCH_PROPOSE").is_ok())
 }
