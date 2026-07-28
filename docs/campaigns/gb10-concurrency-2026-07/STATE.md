@@ -1991,3 +1991,27 @@ MMQ cp.async (A1) is now a ~2.0-4.6 ms lever, NOT 4-5: post-SoA `mmq16_nc` runs 
 **195.1 GB/s = 86% of achievable**, and `mmq32_nc` already hits 203.4 GB/s = 90% on the SAME
 weights with more work per byte — so what remains there is largely FIXED PER-CALL overhead, which
 a load pipeline does not fix. Do D first.
+
+## 2026-07-28 — ★ SHIPPED: 3-deep weight pipeline in `w4a16_gemm_t_k64` (+1.81% C=16)
+C=16 **124.62 -> 126.88** (4 reps/leg, 126.6-127.1 vs 124.5-124.7, DISJOINT), byte-identical
+(`bf3a0b07...` on both legs). Default ON, kill `ATLAS_NO_K64_PIPELINE3` (PRESENCE, not value).
+All three handle sites resolve through ONE `layers::k64_kernel` helper (SSOT).
+
+★ MEASURED +1.81%, vs the ~5.3% the drain model predicted. The MECHANISM was right (disjoint,
+byte-identical, and it moved the needle) but the SIZING was optimistic — the pipeline drain is a
+real component of the 40-CTA shapes' inefficiency, NOT the whole of it. Remaining out_proj gap is
+still open; do not assume another pipeline stage recovers it.
+
+Implementation notes for whoever touches this next:
+- smem forced the design: naive all-3-stage = 51.4 KB, OVER the 48 KB static limit (would need
+  `cudaFuncSetAttribute` + `extern __shared__`, which the launch wrapper does NOT do). Only the
+  WEIGHT tiles are tripled — `A[i&1]` is free once `MMA(i)` clears its barrier — giving 43.2 KB.
+- needed a `cp.async.wait_group 1` helper; only `wait_group 0` (wait-all) existed in-tree.
+- TRAP hit twice while generating the variant: the file defines the DEQUANT macro TWICE (a
+  `__SCALE__`-guarded pair). A blanket rename fixed only the first and the build failed on the
+  second. Grep for ALL definitions of a macro before transforming it.
+
+### Running total for the night
+C=16 **113.1 -> 126.88 tok/s (+12.2%)**, ratio 0.71x -> **0.751x** vs vLLM 168.9.
+Shipped: strided RoPE +0.87% · lm_head tile GEMM +5.50% · FFN MMQ SoA +4.6% · k64 pipeline +1.81%.
+Plus one correctness fix (strix-hip `ldb`, silent garbage logits at C>=5 on that platform).
