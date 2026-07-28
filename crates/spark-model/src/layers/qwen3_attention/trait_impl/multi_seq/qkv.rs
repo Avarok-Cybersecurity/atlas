@@ -209,11 +209,63 @@ impl Qwen3AttentionLayer {
             nkv,
             hd,
             eps,
+            bf16,
             q_proj_bytes,
             per_seq_qkv,
             qkv_buf,
             ..
         } = *c;
+        // ONE launch per norm for all n sequences. Each sequence's head-rows are
+        // packed at `hd` inside its own [Q|K|V|gate] block, and the blocks sit
+        // `per_seq_qkv` apart — exactly the (rows_per_group, num_groups,
+        // row_stride) shape `rms_norm_strided` takes. The per-sequence loop below
+        // was 516 launches/step across the 16 attention layers (0.76 ms).
+        // Bit-identical: one block per row either way. Kill: ATLAS_NO_QK_NORM_STRIDED=1.
+        fn qk_norm_strided_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_NO_QK_NORM_STRIDED").ok().as_deref() != Some("1")
+            })
+        }
+        if n > 1
+            && self.rms_norm_strided_k.0 != 0
+            && qk_norm_strided_enabled()
+            && per_seq_qkv.is_multiple_of(bf16)
+        {
+            let stride_e = (per_seq_qkv / bf16) as u32;
+            if !self.attn.q_norm.weight.is_null() {
+                ops::rms_norm_strided(
+                    fwd.gpu,
+                    self.rms_norm_strided_k,
+                    qkv_buf,
+                    &self.attn.q_norm,
+                    qkv_buf,
+                    nq,
+                    n as u32,
+                    hd,
+                    eps,
+                    stride_e,
+                    stream,
+                )?;
+            }
+            if !self.attn.k_norm.weight.is_null() {
+                let k0 = qkv_buf.offset(q_proj_bytes);
+                ops::rms_norm_strided(
+                    fwd.gpu,
+                    self.rms_norm_strided_k,
+                    k0,
+                    &self.attn.k_norm,
+                    k0,
+                    nkv,
+                    n as u32,
+                    hd,
+                    eps,
+                    stride_e,
+                    stream,
+                )?;
+            }
+            return Ok(());
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);

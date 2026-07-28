@@ -38,6 +38,19 @@ pub struct TransformerModel {
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
+    /// TRANSPOSED `[K/2, ldb]` twin of `lm_head_nvfp4` + its PADDED row stride.
+    ///
+    /// The pad is load-bearing: the tile GEMM reads B with 16-byte `cp.async`,
+    /// which needs a 16-byte-aligned source, and row r sits at `r * stride`.
+    /// This checkpoint's vocab is 248077 — ODD — so an unpadded stride misaligns
+    /// 15 of every 16 k-rows and faults with CUDA 716. Padded to 248192.
+    ///
+    /// ADDITIVE: never replaces or aliases `lm_head_nvfp4`, so every existing
+    /// holder (including the `draft_lm_head_nvfp4` copy at `impl_a1.rs:157`)
+    /// keeps a valid row-major pointer. Built once, immutable, never freed —
+    /// so each per-`padded_n` CUDA graph binds one (kernel, tensor) pair.
+    /// `None` under `ATLAS_NO_LMHEAD_TGEMM=1`.
+    pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
     /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive
     /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
@@ -70,6 +83,8 @@ pub struct TransformerModel {
     pub(super) dense_gemv_fp32out_kernel: KernelHandle,
     pub(super) w4a16_gemv_kernel: KernelHandle,
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
+    /// Tile GEMM over the TRANSPOSED lm_head twin. 0 when absent.
+    pub(super) w4a16_gemm_t_kernel: KernelHandle,
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
     /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight

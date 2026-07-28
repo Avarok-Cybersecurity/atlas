@@ -31,11 +31,46 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
+            bf16,
             q_proj_bytes,
             per_seq_qkv,
             qkv_buf,
             ..
         } = *c;
+        // ONE launch for all n sequences when the strided kernel is present. The
+        // packed `rope` derives row addresses from num_*_heads*head_dim, but these
+        // rows sit `per_seq_qkv` apart inside the interleaved [Q|K|V|gate] block,
+        // so the per-sequence loop below was calling it n times with seq_len=1 —
+        // 258 launches/step at 4.6 us = 1.18 ms across the 16 attention layers.
+        // Bit-identical: same math and ordering, only the row address differs.
+        // Kill switch: ATLAS_NO_ROPE_STRIDED=1.
+        fn rope_strided_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_NO_ROPE_STRIDED").ok().as_deref() != Some("1")
+            })
+        }
+        if n > 1 && self.rope_strided_k.0 != 0 && rope_strided_enabled() {
+            let stride_e = (per_seq_qkv / bf16) as u32;
+            return ops::rope_strided(
+                fwd.gpu,
+                self.rope_strided_k,
+                qkv_buf,
+                qkv_buf.offset(q_proj_bytes),
+                meta.positions,
+                n as u32,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(fwd.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(fwd.config.rope_theta as f32),
+                stride_e,
+                stride_e,
+                stream,
+            );
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);

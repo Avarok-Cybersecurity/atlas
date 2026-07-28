@@ -143,6 +143,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
     pub(super) rope_k: KernelHandle,
+    /// Strided sibling: rotates all n sequences in ONE launch. 0 when absent.
+    pub(super) rope_strided_k: KernelHandle,
+    /// Strided sibling of `rms_norm_w_k`: all n sequences in ONE launch. 0 when absent.
+    pub(super) rms_norm_strided_k: KernelHandle,
     /// MRoPE-interleaved kernel.
     pub(super) rope_mrope_interleaved_k: KernelHandle,
     /// K-only MRoPE kernel used when Q RoPE is fused into Q deinterleave/norm.

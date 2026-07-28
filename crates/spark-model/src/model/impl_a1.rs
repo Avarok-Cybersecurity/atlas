@@ -27,6 +27,19 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// lm_head tile-GEMM decode path: **ON by default**, disabled by
+/// `ATLAS_NO_LMHEAD_TGEMM=1`. Evaluated ONCE at construction — the switch
+/// decides whether the transposed twin is built at all, so setting it later has
+/// no effect. Presence-style check (`ATLAS_*=0` is NOT "off").
+///
+/// Measured C=16: 113.10 -> 119.32 tok/s (+5.50%, disjoint ranges, 4 reps).
+/// `padded_n <= 4` is untouched and stays byte-identical, so C=1 is unaffected.
+/// The twin costs ~681 MB and leaves the KV pool at 4759 blocks vs 4757 without
+/// it — no measurable KV impact.
+fn lmhead_tgemm_enabled() -> bool {
+    std::env::var("ATLAS_NO_LMHEAD_TGEMM").ok().as_deref() != Some("1")
+}
+
 impl TransformerModel {
     pub fn new(
         config: ModelConfig,
@@ -76,6 +89,7 @@ impl TransformerModel {
         let dense_gemv_fp32out_kernel = KernelHandle(0);
         let w4a16_gemv_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
+        let w4a16_gemm_t_kernel = crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t");
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
@@ -503,12 +517,38 @@ impl TransformerModel {
         // value is dead code and must not suppress CUDA graphs.
         let has_fp8_calibration = config.fp8_kv_calibration_tokens > 0
             && kv_cache.dtype() == spark_runtime::kv_cache::KvCacheDtype::Fp8;
+        // Transposed lm_head twin, PADDED so the tile GEMM's 16-byte cp.async B
+        // loads are aligned. The stride must be a multiple of 16; 128 also keeps
+        // whole N-tiles. Without the pad, N = vocab = 248077 (ODD) misaligns 15 of
+        // every 16 k-rows => the campaign's long-standing sticky CUDA 716.
+        // OFF by default: this twin costs ~1800 KV blocks. See STATE.md.
+        let lm_head_nvfp4_t = match (&lm_head_nvfp4, lmhead_tgemm_enabled()) {
+            (Some(w), true) => {
+                let (t, stride) =
+                    crate::weight_map::QuantizedWeight::transpose_concat_for_gemm_padded(
+                        gpu.as_ref(),
+                        &[(w, config.vocab_size)],
+                        config.hidden_size,
+                        16,
+                        128,
+                    )?;
+                tracing::info!(
+                    "lm_head transposed twin: vocab={} -> padded stride={} (vocab%16={}), tile GEMM active",
+                    config.vocab_size,
+                    stride,
+                    config.vocab_size % 16
+                );
+                Some((t, stride as u32))
+            }
+            _ => None,
+        };
         Ok(Self {
             config,
             embed_tokens,
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,
+            lm_head_nvfp4_t,
             lm_head_fp8,
             layers,
             buffers,
@@ -521,6 +561,7 @@ impl TransformerModel {
             dense_gemv_fp32out_kernel,
             w4a16_gemv_kernel,
             w4a16_gemv_logits_kernel,
+            w4a16_gemm_t_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
             w4a16_gemv_batch4_kernel,

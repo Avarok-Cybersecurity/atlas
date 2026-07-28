@@ -70,6 +70,12 @@ enum Geom {
     /// batched-decode and FFN paths — never by the multi-seq concurrent decode
     /// projections, which is what this bench is here to check.
     N128M128W256,
+    /// w4a16_gemv_batch4/8/16: grid (ceil(N/4), 1, 1), block 256.
+    /// SAME arg signature as the gemm family (A,Bp,Bs,scale2,C,M,N,K), so it
+    /// shares the launch path; only the geometry differs. This is the kernel
+    /// lm_head runs TODAY, and the one the tile-GEMM migration would replace —
+    /// its low-M curve decides whether a threshold is needed.
+    GemvN4,
 }
 
 fn grid_for(g: Geom, m: u32, n: u32) -> [u32; 3] {
@@ -78,6 +84,7 @@ fn grid_for(g: Geom, m: u32, n: u32) -> [u32; 3] {
         Geom::N128M64 => [div_ceil(n, 128), div_ceil(m, 64), 1],
         Geom::N128M128 => [div_ceil(n, 128), div_ceil(m, 128), 1],
         Geom::N128M128W256 => [div_ceil(n, 128), div_ceil(m, 128), 1],
+        Geom::GemvN4 => [div_ceil(n, 4), 1, 1],
     }
 }
 
@@ -96,7 +103,11 @@ fn launch(
 ) -> Result<()> {
     KernelLaunch::new(g, k_h)
         .grid(grid_for(geom, m, n))
-        .block([if matches!(geom, Geom::N128M128W256) { 256 } else { 128 }, 1, 1])
+        .block([
+            if matches!(geom, Geom::N128M128W256 | Geom::GemvN4) { 256 } else { 128 },
+            1,
+            1,
+        ])
         .arg_ptr(a)
         .arg_ptr(b)
         .arg_ptr(b_scale)
@@ -136,10 +147,33 @@ fn main() -> Result<()> {
             "w4a16_gemm_t_m128_v2",
             Geom::N128M128W256,
         ),
+        // LOSSLESS BF16-MMA family. Documented bit-identical to each other
+        // (w4a16_gemm.cu:1816) — the choice between them is purely perf, which
+        // is what this bench settles for the lm_head shape.
+        (
+            "w4a16_gemm_t_m64_bf16 (N128,M64)",
+            "w4a16_gemm_t_m64_bf16",
+            Geom::N128M64,
+        ),
+        (
+            "w4a16_gemm_t_m128_bf16_v2",
+            "w4a16_gemm_t_m128_bf16_v2",
+            Geom::N128M128,
+        ),
+        // The INCUMBENT. lm_head dispatches batch4/8/16 by padded_n today.
+        ("w4a16_gemv_batch4", "w4a16_gemv_batch4", Geom::GemvN4),
+        ("w4a16_gemv_batch8", "w4a16_gemv_batch8", Geom::GemvN4),
+        ("w4a16_gemv_batch16", "w4a16_gemv_batch16", Geom::GemvN4),
     ]
     .into_iter()
     .filter_map(|(name, func, geom)| match g.kernel(
-        if func == "w4a16_gemm_t_m128_v2" { "w4a16_v2" } else { "w4a16" },
+        if func == "w4a16_gemm_t_m128_v2" {
+            "w4a16_v2"
+        } else if func.starts_with("w4a16_gemv") {
+            "w4a16_gemv"
+        } else {
+            "w4a16"
+        },
         func,
     ) {
         Ok(h) => Some((name, h, geom)),

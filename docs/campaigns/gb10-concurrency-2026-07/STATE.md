@@ -1484,3 +1484,269 @@ worth an A/B alone.**
 ★ It becomes worthwhile only as part of collapsing the WHOLE attention fan-out (rope 1.2 ms +
 rms_norm 0.8 ms/step), which additionally needs strided q-norm and q-rope kernels. That bundle
 is ~1.5 ms (~1.1%) and is the right shape for a future session.
+
+## 2026-07-28 — SHIPPED: attention per-sequence fan-out collapsed (rope +0.87%, q/k-norm sub-floor)
+
+A mechanical sweep of decode paths for `for _ in 0..n` loops containing kernel launches found 17
+sites. Profiling separated per-LAYER fan-out (~70/step = 64 layers, expected) from genuinely
+per-SEQUENCE fan-out, which is the wasteful kind:
+
+| kernel | instances/step | ms/step | after |
+|---|---|---|---|
+| `rope_forward` | 258 (16 layers x 16 seqs) | 1.18 | 16 |
+| `rms_norm` (q_norm + k_norm) | 516 (16 x 16 x 2) | 0.76 | 32 |
+| **total** | **774** | **1.94 (~1.5%)** | **48** |
+
+Both needed a row-stride parameter: after the fused QKV GEMM, q/k rows sit `per_seq_qkv` apart
+inside each sequence's interleaved [Q|K|V|gate] block, NOT packed at `num_*_heads*head_dim` as the
+packed kernels assume. Same shape as the strided cache-write that already shipped.
+
+- `rope_forward_strided` (kernels/gb10/common/rope.cu) — explicit q_row_stride/k_row_stride.
+- `rms_norm_strided` (kernels/gb10/common/rms_norm.cu) — grid (rows_per_group, num_groups),
+  groups `row_stride` elements apart. One block per row either way.
+
+Both are bit-identical by construction: identical per-block math and reduction, only the base
+address differs, and no cross-row interaction is introduced.
+
+### Measured (C=16, 4 reps/leg, warmup discarded, kill switch as control)
+| lever | ON | OFF | delta | identity |
+|---|---|---|---|---|
+| `rope_forward_strided` | 113.20 (113.0-113.5) | 112.22 (112.0-112.6) | **+0.87%, ranges DISJOINT** | byte-identical |
+| `rms_norm_strided` | 113.28 (113.0-113.4) | 112.92 (112.8-113.0) | +0.31%, ranges TOUCH | byte-identical |
+
+RoPE clears the measured 0.8% harness floor and matches its 1.18 ms prediction (0.9%) almost
+exactly. **The q/k-norm result is SUB-FLOOR and is NOT claimed as a win** — kept default-on only
+because it is byte-identical, strictly less work (484 fewer launches/step), and the point estimate
+is positive with 7 of 8 reps favouring. Kill switches: `ATLAS_NO_ROPE_STRIDED=1`,
+`ATLAS_NO_QK_NORM_STRIDED=1`.
+
+**C=16 now ~113.2 tok/s** (from 112.2), ratio 0.67x vs vLLM 168.9.
+
+★ RULE CONFIRMED: per-SEQUENCE launch fan-out is a real and cheap lever class; per-LAYER fan-out
+is not (it is inherent). Separate the two before costing any "too many launches" hypothesis.
+
+## 2026-07-28 — lm_head 716: THE TILE GEMM IS EXONERATED. The fault is in the WIRING.
+
+A standalone repro (`crates/spark-model/examples/w4a16_lmhead_716_repro.rs`) reproduces the serve's
+decode step exactly — created (non-NULL) streams, the SSM `gemm_t`/`_k64` sequence, `lm_head` gemm
+alternating `_t`/`_t_k64`, cross-stream `argmax_bf16_batch` (mirroring `meta.rs:298`, which launches
+on `default_stream()`), 4*M-byte D2H per step, M cycling the 2/4/8/12/16 ladder, a concurrent
+prefill `w4a16_gemm_t_m128` + `memset_async` on a third stream, and the serve-exact 32-row logits
+buffer. **3000 iterations of the full concurrent leg: PASS.**
+
+Hypotheses 7-12 now dead, all by measurement:
+7. launch-config/resource mismatch — NO. `w4a16_gemm_t` static smem = 19,584 B, `_t_k64` = 39,104 B,
+   both under 48 KB with no `cudaFuncSetAttribute` needed; no `__launch_bounds__`; block (128,1,1)
+   matches what the kernel indexes by threadIdx.
+8. index-type overflow at N=248320 — NO. Largest intermediate is B_packed `(u64)(gk>>1)*N+gn`
+   ~= 635.7 M, in u64 and under 2^31 anyway. grid.x=1940 is far under limits. All cp.async offsets
+   are 16-B aligned given N = 15520x16.
+9. logits row mismatch — NO. `buffers/sizes.rs:113` sizes logits at `min(m,32) x vocab` = 32 rows;
+   the ladder tops at 16; the store is guarded `r0 < M`.
+10. non-NULL streams / cross-stream argmax race / concurrent prefill GEMM+memset / M changing
+    between launches — NO, 3000 iterations clean.
+11. the `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` elimination — VALID (the check is value-based,
+    `decode_a2.rs:30`, not presence-based), so hypothesis 4 stands eliminated.
+12. an output overrun masquerading as 716 — NO. A DELIBERATE 5.7 MB overrun (undersized C) yields a
+    sticky **700 ILLEGAL_ADDRESS, not 716**. So the serve's 716 cannot be an epilogue overrun.
+
+★ CONCLUSION: everything attributable to the tile GEMM's launch is measured clean at serve shape.
+The faulting kernel is NOT the lm_head GEMM. The defect is in the wiring that was written (and
+reverted) three times, or in another kernel in the step.
+★ NEXT: one run with `CUDA_LAUNCH_BLOCKING=1` — the API call that returns 716 then names the
+ACTUAL faulting kernel instead of the first downstream sync point. Cheap, and it ends the search.
+
+### Side finding (latent, not currently a bug)
+`crates/spark-model/src/model/meta.rs:296-298` `argmax_batch_dispatch` IGNORES its `_stream`
+parameter and launches on `default_stream()`. Benign today because decode runs on the default
+stream; a cross-stream race the moment that changes.
+
+### Open question that reframes the whole lever
+The reverted patch replaced `w4a16_gemv_batch16` with a tile GEMM needing a **715 MB transposed
+twin**. But the GEMV itself moves 715 MB in 9.68 ms = **74 GB/s = 32% of the 230 GB/s ceiling**, and
+a GEMV that reads each weight byte once should be bandwidth-bound near the ceiling. If the GEMV's
+own bandwidth is fixable, the ~6 ms/step prize needs NO twin, NO extra VRAM, and NO 716. Under
+investigation before the wiring is rebuilt a fourth time.
+
+## 2026-07-28 — lm_head MICROBENCH: two plan assumptions REFUTED before any wiring
+
+Real shape N=248320 K=5120, 100 iters after 20 warmup, floor 3109 us @ 230 GB/s
+(`cargo run -p spark-model --release --example w4a16_m17_bench --features cuda,gpu-examples`;
+the GEMV family and the two BF16 tile variants were ADDED to that bench for this).
+
+| kernel | M=1 | M=4 | M=8 | M=16 | numerics |
+|---|---|---|---|---|---|
+| w4a16_gemm_t | 3620 | 3727 | 3661 | **3801** | FP8 E4M3 downcast of B AND activations |
+| w4a16_gemm_t_m128 | 3821 | 3909 | 3844 | 3991 | FP8 |
+| w4a16_gemm_t_k64 | 4074 | 4152 | 4062 | 4142 | FP8 |
+| w4a16_gemm_t_m128_bf16_v2 | 5137 | 5206 | 5107 | **5192** | LOSSLESS |
+| w4a16_gemm_t_m64_bf16 | 9435 | 9427 | 9435 | **9465** | LOSSLESS |
+| w4a16_gemv_batch4 | 3174 | 3208 | -- | -- | incumbent |
+| w4a16_gemv_batch8 | -- | -- | 4465 | -- | incumbent |
+| w4a16_gemv_batch16 | -- | -- | -- | **9845** | incumbent |
+
+★ REFUTATION 1 — `w4a16_gemm_t_m64_bf16` is the WORST of the four tile GEMMs here, 1.86x slower
+than `m128_bf16_v2` and NO BETTER than the incumbent GEMV. It was chosen as primary on the theory
+that its higher occupancy (4-5 vs 3 CTAs/SM) wins at low M. That occupancy edge was tuned for
+PREFILL's large M; at N=248320 with M<=64 the grid is (1940,1) either way, so it buys nothing and
+pays for the halved tile. **The lossless option is `m128_bf16_v2` at ~5150 us, not ~4000.** That
+moves the FP8-vs-lossless gap from an assumed 0.25% of step to a real **1.05%**.
+
+★ REFUTATION 2 — the incumbent GEMV is ALREADY OPTIMAL at low M. **`batch4` runs at 3174 us =
+226 GB/s = 98.3% of peak = 1.02x the roofline floor.** It is not a broken kernel at low M; there is
+NOTHING to win there, and BOTH tile GEMMs REGRESS it (lossless by ~1960 us/call, FP8 by ~450).
+A C=1 step is ~39 ms, so the lossless kernel with no threshold is a several-percent regression at
+the ONE concurrency where Atlas already beats vLLM 1.79x (25.4 vs 14.2). Crossover is M ~= 8.
+=> "repack-and-replace, no threshold, all M" would trade C=1 away to win C=16.
+
+★★ HOW TO READ THE GEMV COLUMNS — `w4a16_gemv_batchm_impl<MAX_M>` bounds its row loop
+`for (int t = 0; t < MAX_M; t++)` at COMPILE TIME with no runtime clamp
+(kernels/gb10/common/w4a16_gemv.cu:490). A `batch4` timing at M=16 therefore computes only 4 rows
+and is INVALID WORK — it looks like a 98%-of-peak win at M=16 and is nothing of the kind. Each
+batchN kernel is meaningful ONLY at M<=N; the other cells are struck out above. Generalises: for
+any template-bounded kernel, a sweep past the bound measures a DIFFERENT, SMALLER problem.
+
+### FP32-logits concern: CLOSED, non-issue for this migration
+`w4a16_gemv_logits` (w4a16_gemv.cu:270) writes FP32 with the comment "FP32 logits are critical for
+sampling quality", and every tile GEMM writes BF16 — so this looked like a numerics regression
+beyond accumulation order. It is not. That kernel is dispatched ONLY at `impl_a3.rs:260`, under an
+`fp32` flag, on the single-row `w4a16_gemv` path (added to close a 0.125-logit BF16 tiebreak flip
+behind Gemma-4-31B's creative-collapse stop-word loop). **The multi-seq decode head being migrated
+(`decode_a2.rs:437-499`) already writes BF16** via `w4a16_gemv_batchm`. The FP32 path is a
+different kernel on a different code path and is not touched.
+
+### Consequence
+A threshold is MANDATORY, which forces one of:
+(a) resident twin (+715 MB, ~1% of the 84 GB budget at util 0.70) + M-dependent dispatch between
+    two tensors — precisely the configuration identified as the prime 716 suspect;
+(b) a NEW transposed-layout GEMV (`w4a16_gemv_t_batchm`) so ONE layout serves all M. Transposed B
+    is [K/2, N], so at fixed k a warp's 32 lanes read 32 CONSECUTIVE bytes across n — naturally
+    coalesced, which a row-major per-n GEMV cannot be. Would allow repack-and-replace (no twin, no
+    716 class) AND keep 98%-of-peak at low M AND get the tile GEMM at M>=8.
+Decision pending.
+
+## 2026-07-28 — ★★★ ROOT CAUSE OF THE CUDA 716, AFTER THREE FAILED ATTEMPTS
+
+**The transposed lm_head weight's ROW STRIDE IS THE VOCAB SIZE, and this checkpoint's vocab is
+248077 — an ODD number. The tile GEMM loads B with 16-byte `cp.async`, which REQUIRES a
+16-byte-aligned source address. Only 1 k-row in 16 is aligned; the rest fault with
+CUDA_ERROR_MISALIGNED_ADDRESS.**
+
+```c
+// kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu:392
+cp_async_pred_16(&smem_Bp[(buf)][kp][ns],
+    &B_packed[(unsigned long long)(gke >> 1) * N + gns], (gke + 1 <= K) && (gns + 15 < N));
+```
+`gns` is ALWAYS a multiple of 16 (`ns = (threadIdx.x & 7) << 4`, `cta_n = blockIdx.x * 128`), so
+alignment reduces entirely to the row stride `N`:
+
+| N | source | N mod 16 | k-row byte offsets mod 16 | verdict |
+|---|---|---|---|---|
+| **248077** | centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf (**what the benchmark actually serves**) | **13** | 0,13,10,7,4,1,... | **15 of 16 rows MISALIGNED** |
+| 248320 | nvidia/Qwen3.6-27B-NVFP4 (the bench + the standalone repro) | 0 | 0,0,0,0,... | cannot fault |
+
+### Why this defeated twelve hypotheses and three rebuild attempts
+- **The standalone repro passed 3000 iterations** because it used N=248320, on which the bug is
+  STRUCTURALLY IMPOSSIBLE. The kernel was never exonerated — it was tested on a shape that
+  excludes the defect. ★ The "dims verified against the checkpoint, `lm_head.weight [248320,2560]`"
+  note came from the WRONG CHECKPOINT.
+- **All three attempts failed identically across kernel variants** because every variant loads B
+  through the same `cp_async_pred_16` with `N` as the stride.
+- **Single requests always passed byte-identically** because `padded_n <= 4` dispatches the
+  row-major GEMV and never touches the transposed tensor. Not "M=1 is aligned" — the faulting
+  kernel never ran at all.
+- **compute-sanitizer was CLEAN and the error became 719 under it** because there is NO
+  out-of-bounds access. Every address is inside a valid allocation; they are merely unaligned.
+  That is exactly the class memcheck cannot attribute to an address.
+- It was invisible to code review because NOTHING IN THE CODE IS WRONG. The defect is an UNSTATED
+  INVARIANT between a checkpoint's vocab size and a kernel's load width.
+
+★★ RULE: when a microbenchmark and a serve disagree, DIFF THE SHAPES FIRST — not the wiring. A
+benchmark constant that "matches the model" from a different checkpoint of the same family will
+silently make the reproducer immune to the bug being chased. Assert real runtime dims IN the
+repro; never hardcode them from docs.
+★★ RULE: any kernel using `cp.async`/vector loads carries an ALIGNMENT PRECONDITION ON ITS
+STRIDES. Odd/unaligned N is a legal tensor shape; the kernel must pad or the caller must.
+
+### THE FIX (required for ANY lm_head tile-GEMM path, twin or repack-and-replace)
+Give the transposed weight a row stride padded to a multiple of 16 (128 for tiling):
+`align_up(248077, 128) = 248192`, zero-filling the pad columns. Then either
+(a) add an explicit `ldb` parameter so B uses the padded stride while C keeps the true vocab
+    stride (C stores are SCALAR 2-byte and guarded — `C[r0*N+c0] = ...` at :539-542 — so C is NOT
+    the problem and needs no padding), or
+(b) pass the padded N and pad the logits buffer + argmax count as well (wider; risks argmax
+    selecting a pad column, whose zeroed logit can beat real negative logits).
+(a) is the smaller and safer change.
+
+### Twin is DEAD on VRAM — measured, not estimated
+The 681 MB twin drops the KV pool **4757 -> 2957 blocks** (~1800 blocks, far more than the twin's
+own size) and the serve HARD-FAILS preflight:
+```
+KV cache can hold at most 11 concurrent sequence(s) at --max-seq-len=4096, but --max-batch-size=16
+was requested. KV pool has 2957 block(s) of 16 tokens each; each sequence needs 256 block(s).
+```
+★ My interim estimate of "4042 blocks, 1.3% short, recoverable with a util bump" was WRONG and too
+generous. The original KV objection stands: NO RESIDENT TWIN ON THIS BOX. The lm_head tile GEMM
+must go via repack-and-REPLACE (single layout), which also needs a transposed-layout GEMV for
+`padded_n <= 4` (where the row-major GEMV measures 98.3% of the roofline and must not be lost).
+
+### Status
+Twin implementation is BUILT and reverted-in-place (kill switch `ATLAS_NO_LMHEAD_TGEMM=1`
+defaults ON => must be left OFF/removed). Not shipped. Next: the padded-stride fix + the
+transposed GEMV, per the repack-and-replace plan.
+
+## 2026-07-28 — ★ SHIPPED: lm_head tile GEMM, +5.50% at C=16. The 716 was an ALIGNMENT bug.
+
+The padded stride ELIMINATES the 716 outright. Root cause confirmed by experiment, not just analysis:
+
+```
+lm_head transposed twin: vocab=248077 -> padded stride=248192 (vocab%16=13), tile GEMM active
+CUDA 716 / misaligned count: 0
+```
+
+### Measured (C=16, 4 reps/leg, warmup discarded, kill switch as control)
+| leg | mean | range |
+|---|---|---|
+| tile GEMM ON | **119.32** | 119.0-119.6 |
+| OFF (GEMV) | 113.10 | 112.9-113.3 |
+| **delta** | **+5.50%** | **ranges DISJOINT** |
+
+Full sweep, default-ON: C=1 **25.4** · C=2 25.2 · C=4 48.25 · C=8 **71.2** (+0.85%) · C=16 **119.1** (+5.2%).
+NO REGRESSION anywhere. C=1/2/4 are BYTE-IDENTICAL (`bf3a0b07...`, same hash both legs) because
+`padded_n <= 4` stays on the GEMV — which measures 98.3% of the memory roofline and must not be lost.
+Coherence + tool-call smoke PASS on the tile-GEMM path.
+
+vs vLLM: C=1 **1.79x WIN** · C=2 0.91x · C=4 0.91x · C=8 0.72x · C=16 **0.71x** (from 0.67x).
+
+### What shipped
+- `w4a16_gemm_t` gains an `ldb` (transposed-B row stride) parameter; B loads and their guards use
+  `ldb`, stores still use `N`. Bounding loads by `ldb` also FIXES a latent bug: bounding by `N`
+  silently dropped the real columns in the final 16-wide group whenever N % 16 != 0 (13 columns here).
+- `w4a16_gemm_n128_ldb` wrapper; the existing `w4a16_gemm_n128` DELEGATES to it with `ldb = n`, so
+  all 21 existing call sites are untouched (SSOT: one launch site).
+- `transpose_concat_for_gemm_padded` + a shared `transpose_impl` (both public helpers now route
+  through one implementation).
+- `lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>` — ADDITIVE twin, never replaces or aliases the
+  original, so `draft_lm_head_nvfp4`'s copy stays valid. Built once, immutable.
+- Dispatch at `padded_n >= 5` only. Default ON, kill switch `ATLAS_NO_LMHEAD_TGEMM=1`.
+
+### ★★ CORRECTION: the twin does NOT cost KV. My earlier "4757 -> 2957 blocks" was CONTAMINATED.
+With the twin active the pool reads **4759 blocks vs 4757 without it** — no measurable impact, and
+preflight passes at `--max-seq-len 4096 --max-batch-size 16`. The 2957-block reading came from a
+serve that computed its self-relative KV budget (`baseline-free - free-now`) while a STRAY
+CONTAINER still held ~94 GB. I built two successive wrong conclusions on that number ("twin is
+dead on VRAM", "repack-and-replace is mandatory"). BOTH ARE WITHDRAWN.
+★ RULE: `nvidia-smi --query-compute-apps` BEFORE trusting any self-relative memory budget. A
+stray serve does not just slow things down — it silently corrupts the KV sizing arithmetic, and
+that number then looks like a hard architectural constraint.
+★ Also withdrawn: an intermediate estimate of "4042 blocks, 1.3% short, recoverable with a util
+bump" — that was arithmetic on the contaminated figure.
+
+### Accuracy debt (recorded, NOT yet measured — accuracy embargo still in force)
+`w4a16_gemm_t` dequants B to FP8 E4M3 AND downcasts activations BF16->FP8 for
+`mma.m16n8k32.e4m3`. So at `padded_n >= 5` the lm_head logits carry FP8 activation precision and a
+different accumulation order. `padded_n <= 4` is unaffected and byte-identical.
+- Coherence + tool-call smoke PASS; no BFCL/IoU run (embargoed until vLLM parity).
+- The lossless alternative `w4a16_gemm_t_m128_bf16_v2` measures 5192 us vs 3801 us at M=16, i.e.
+  ~1.05% of step — the fallback if a flip-gate later rejects FP8.
+- BFCL + IoU re-validation MANDATORY before any accuracy claim or external quote.

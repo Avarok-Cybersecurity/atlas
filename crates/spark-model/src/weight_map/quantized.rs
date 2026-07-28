@@ -264,11 +264,47 @@ impl QuantizedWeight {
     }
 
     /// `transpose_concat_for_gemm` with an explicit scale block size.
+    /// `transpose_concat_for_gemm_gs` with the output ROW STRIDE padded to
+    /// `align_up(n_total, align)`, pad columns left zero.
+    ///
+    /// The transposed layout puts row r at byte offset `r * stride`, and the
+    /// tile GEMM reads B with 16-byte `cp.async`, which requires a 16-byte
+    /// aligned source. When `n_total` is not a multiple of 16 — lm_head's N is
+    /// the VOCAB SIZE, 248077 here, which is ODD — 15 of every 16 rows are
+    /// misaligned and the kernel faults with CUDA_ERROR_MISALIGNED_ADDRESS.
+    /// Padding the stride is what makes a transposed lm_head legal at all.
+    ///
+    /// Returns `(weight, stride)`; pass the stride to `w4a16_gemm_n128_ldb`.
+    pub fn transpose_concat_for_gemm_padded(
+        gpu: &dyn GpuBackend,
+        parts: &[(&QuantizedWeight, usize)],
+        k: usize,
+        group_size: usize,
+        align: usize,
+    ) -> Result<(QuantizedWeight, usize)> {
+        let n_total: usize = parts.iter().map(|(_, n)| *n).sum();
+        let stride = n_total.div_ceil(align) * align;
+        Self::transpose_impl(gpu, parts, k, group_size, stride).map(|w| (w, stride))
+    }
+
     pub fn transpose_concat_for_gemm_gs(
         gpu: &dyn GpuBackend,
         parts: &[(&QuantizedWeight, usize)],
         k: usize,
         group_size: usize,
+    ) -> Result<QuantizedWeight> {
+        let n_total: usize = parts.iter().map(|(_, n)| *n).sum();
+        Self::transpose_impl(gpu, parts, k, group_size, n_total)
+    }
+
+    /// Single implementation for both (SSOT). `stride >= n_total` is the row
+    /// pitch of the transposed output; columns `n_total..stride` stay zero.
+    fn transpose_impl(
+        gpu: &dyn GpuBackend,
+        parts: &[(&QuantizedWeight, usize)],
+        k: usize,
+        group_size: usize,
+        stride: usize,
     ) -> Result<QuantizedWeight> {
         let first = parts
             .first()
@@ -277,9 +313,10 @@ impl QuantizedWeight {
         let half_k = k / 2;
         let num_groups = k / group_size;
         let n_total: usize = parts.iter().map(|(_, n)| *n).sum();
+        debug_assert!(stride >= n_total, "transpose_impl: stride {stride} < n_total {n_total}");
 
-        let mut t_buf = vec![0u8; n_total * half_k];
-        let mut st_buf = vec![0u8; n_total * num_groups];
+        let mut t_buf = vec![0u8; stride * half_k];
+        let mut st_buf = vec![0u8; stride * num_groups];
         let mut n_off = 0usize;
         for (w, n) in parts {
             let n = *n;
@@ -287,14 +324,14 @@ impl QuantizedWeight {
             gpu.copy_d2h(w.weight, &mut buf)?;
             for i in 0..n {
                 for j in 0..half_k {
-                    t_buf[j * n_total + n_off + i] = buf[i * half_k + j];
+                    t_buf[j * stride + n_off + i] = buf[i * half_k + j];
                 }
             }
             let mut sbuf = vec![0u8; n * num_groups];
             gpu.copy_d2h(w.weight_scale, &mut sbuf)?;
             for i in 0..n {
                 for j in 0..num_groups {
-                    st_buf[j * n_total + n_off + i] = sbuf[i * num_groups + j];
+                    st_buf[j * stride + n_off + i] = sbuf[i * num_groups + j];
                 }
             }
             n_off += n;

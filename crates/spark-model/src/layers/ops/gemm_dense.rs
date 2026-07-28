@@ -175,7 +175,15 @@ pub fn w4a16_gemm(
 ///
 /// Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn w4a16_gemm_n128(
+/// `w4a16_gemm_n128` with an explicit transposed-B ROW STRIDE.
+///
+/// Needed when N is not a multiple of 16: the kernel's B loads are 16-byte
+/// `cp.async`, which requires 16-byte-aligned sources, and row r sits at
+/// `r * ldb`. lm_head is the motivating case — its N is the vocab size, 248077
+/// on this checkpoint, which is ODD and made 15 of every 16 k-rows fault with
+/// CUDA_ERROR_MISALIGNED_ADDRESS (the campaign's long-standing "716").
+/// Pass `ldb = align_up(n, 128)` with the pad columns zero-filled.
+pub fn w4a16_gemm_n128_ldb(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     input: DevicePtr,
@@ -184,6 +192,7 @@ pub fn w4a16_gemm_n128(
     m: u32,
     n: u32,
     k: u32,
+    ldb: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -197,8 +206,25 @@ pub fn w4a16_gemm_n128(
         .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
+        .arg_u32(ldb)
         .launch(stream)
 }
+
+pub fn w4a16_gemm_n128(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    // Packed case: the transposed B rows are exactly N apart.
+    w4a16_gemm_n128_ldb(gpu, kernel, input, weight, output, m, n, k, n, stream)
+}
+
 
 /// W4A16 GEMM v3: MiniMax-only shadow with K_STEP=64 (was 32 in v2).
 /// Halves K-iteration count; doubles per-iter MMA count. 1 CTA/SM

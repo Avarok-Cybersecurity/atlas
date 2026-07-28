@@ -463,6 +463,27 @@ impl TransformerModel {
                 // / batch8 (M<=8) / batch16 (M<=16). A 0-handle on any tier
                 // falls through to the GEMM, so targets lacking the kernel are
                 // unaffected.
+                // Tile GEMM at padded_n >= 5 over the PADDED transposed twin.
+                // padded_n <= 4 stays on the GEMV, which measures 3174 us =
+                // 226 GB/s = 98.3% of the memory roofline on this shape and is
+                // therefore unimprovable; the tile GEMM LOSES there.
+                if padded_n >= 5
+                    && self.w4a16_gemm_t_kernel.0 != 0
+                    && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
+                {
+                    ops::w4a16_gemm_n128_ldb(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemm_t_kernel,
+                        normed,
+                        nvfp4_t,
+                        logits,
+                        padded_n as u32,
+                        v as u32,
+                        h as u32,
+                        ldb,
+                        stream,
+                    )?;
+                } else {
                 let gemv_k = if padded_n <= 4 {
                     self.w4a16_gemv_batch4_kernel
                 } else if padded_n <= 8 {
@@ -496,6 +517,7 @@ impl TransformerModel {
                         h as u32,
                         stream,
                     )?;
+                }
                 }
             } else {
                 ops::dense_gemm(
