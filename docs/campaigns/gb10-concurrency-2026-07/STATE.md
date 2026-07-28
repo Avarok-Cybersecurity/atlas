@@ -2192,3 +2192,38 @@ D-Cut's DFlash bs=64 collapse). The cap defaults to the measured crossover (2).
 Blind `.unwrap_or(N)` regex edit changed `shadow_topk` default 0->2 instead of the cap. Caught by
 re-reading the file after the sweep stayed collapsed. Reverted. RULE: anchor numeric-default edits
 to the FUNCTION, never to the literal.
+
+## 2026-07-28 — ★★★ FINALIZED: adaptive policy = cap 4 DEFAULT (`dafd990d`). C=4 crosses vLLM — three of five levels MET.
+
+The per-C policy needs no new mechanism: `active.len() <= mtp_max_seqs()` already IS the adaptive
+gate. Batched K=4 MTP at C<=4, bit-for-bit MTP-off fallback at C>4. `ATLAS_MTP_MAX_SEQS` default
+2 -> 4 (`speculative.rs`, anchored to the function); `=1` restores single-seq-only.
+
+### Validated sweep at PURE DEFAULTS (binary 472ed410 = 7f4ffd6c + the default constant; no env
+overrides beyond the standard non-MTP flag set; scored drives after one discarded warmup per
+serve; two independent serves, caches dropped before each)
+| C | reps (tok/s) | mean | vLLM | ratio | floor (never-regress) | verdict |
+|---|---|---|---|---|---|---|
+| 1 | 25.6, 25.5 | 25.55 | 14.2 | **1.80x** | 25.60 | **MET** |
+| 2 | 35.3, 35.4 | 35.35 | 27.8 | **1.27x** | 29.40 | **MET** (+20% over floor) |
+| 4 | 52.6, 56.6, 53.6, 53.5, 54.1 | 54.1 | 53.3 | **1.01x** | 48.70 | **MET** (+11% over floor) |
+| 8 | 72.1, 74.6, 72.1, 71.4, 74.4, 71.7, 75.2, 75.1 | 73.5 | 98.8 | 0.74x | 74.85 | not met |
+| 16 | 131.4, 129.9, 131.6 | 131.0 | 168.9 | 0.78x | 131.75 | not met |
+
+- C=8/16 regime is PROVABLY the floor's own code path (8 > cap ⇒ MTP off, same scheduler branch),
+  so no policy adjustment can move them. Fast C=8 reps (75.1-75.2) reproduce the floor exactly;
+  the ~72 mode (both serves) carries ~1 s extra wall on the prefill leg — serve-to-serve /
+  prefix-cache variance, not decode. C=16 130.-131.6 sits inside the historical 129.35-132.5 spread.
+- cap=8/16 remain strictly dominated (fixed K=4 over n>=8 plateaus ~55 tok/s at EVERY C — worse
+  than MTP-off). NEVER raise the cap past 4 until the K-vs-batch ladder / D-Cut (task #35) lands.
+- Coherence smoke (temp 0, seed 42): fluent Rayleigh-scattering answer, finish=stop. Tool-call
+  smoke: well-formed get_weather({"location":"Paris"}), finish=tool_calls. Zero CUDA errors /
+  panics in either serve log (one benign content-loop watchdog, known).
+- C=2 at defaults measured 35.35 — well above the 29.40 recorded at cap=2 default; the graphed
+  batched verify + accept fix (`2070cdd6`/`684657e5`) lifted it further since that row was taken.
+
+### Campaign position
+Goal ">=1.0x at ALL of C=4,8,16": **C=4 MET (first time at defaults); C=8 0.74x and C=16 0.78x
+remain open** and are unchanged-by-construction from the MTP-off baselines. The remaining gap is
+exactly the fixed-K collapse at n>=8: n*(K+1) verify rows of superlinear GDN. Next lever, in
+order: K-vs-batch ladder / D-Cut per-request depth pruning (task #35), then re-raise the cap.
