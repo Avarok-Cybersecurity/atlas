@@ -1314,3 +1314,19 @@ independently — it is a function of the target's hidden states, not of the tok
    which is the thing the cache exists to provide, so it is only sensible as a stopgap.
 Option 1 is the real fix. (An earlier note here suggested a cheap drafter-only replay; that was
 wrong and is retracted.)
+
+### ★ THE PENALTY PEAKS AT C=2 (-9.2%) AND VANISHES BY C=4 — the scoreboard understates low-C
+Same binary, 3 reps/point after a discarded warmup, only `--enable-prefix-caching` differing:
+| C | caching ON | caching OFF | cost | corrected ratio vs vLLM |
+|---|---|---|---|---|
+| 1 | 23.6 | **25.2** | **-6.8%** | 25.2 / 14.2 = **1.77x WIN** |
+| 2 | 23.05 | **25.17** | **-9.2%** | 25.2 / 27.8 = **0.91x** (reported 0.85x) |
+| 4 | 48.4 | 48.07 | -0.7% (noise) | 0.90x |
+=> **C=2, the weakest cell in the sweep, is ~half explained by this bug rather than by an
+architectural gap.** Fixing the drafter snapshot should move C=1 and C=2 up ~7-9% with no
+kernel work at all.
+★ Do NOT respond by disabling prefix caching. It is inert at C>=4 here and REQUIRED for real
+multi-turn workloads with long shared prefixes; the defect is the cold drafter after a resume
+(`speculative.rs:194`), not the cache.
+★ Every headline number in this campaign was measured at C=16 WITH caching on, where the
+penalty does not appear (no within-run drift at C=16), so the shipped wins are unaffected.
