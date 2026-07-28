@@ -81,6 +81,20 @@ pub fn mtp_multi_seq_mode() -> bool {
     mtp_max_seqs() > 1
 }
 
+/// `ATLAS_MTP_ACCEPT_DEBUG` (PRESENCE): per-BATCH-WIDTH acceptance telemetry.
+///
+/// The shipped K ladder gives `k_drafts == 2` at n in [5, 8], and the existing
+/// positional counters (`k4_record_positional`) are gated on `k_drafts == 3`,
+/// so at the C=8 operating point NOTHING reported p1 — only the na histogram.
+/// This gate turns on a per-n line reporting p1, mean accepted and the derived
+/// tokens/step, which is the quantity the C=8 arithmetic is written in.
+/// Counters only (no D2H, no sync), but it logs per period, so keep it off in
+/// timed legs unless the leg IS the accept measurement.
+pub fn mtp_accept_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MTP_ACCEPT_DEBUG").is_ok())
+}
+
 /// Drafter catch-up feed on serial->speculative transitions
 /// (`ATLAS_MTP_CATCHUP=1`, staged off). During serial-decode stretches the
 /// scheduler rings the per-step final hiddens; on the next propose the gap

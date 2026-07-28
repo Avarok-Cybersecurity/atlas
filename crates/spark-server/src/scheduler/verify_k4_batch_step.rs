@@ -142,6 +142,10 @@ pub(super) fn step_verify_k4_batched(
                 a.seq.seq_len,
             );
         }
+        // Width-attributed accept telemetry (ATLAS_MTP_ACCEPT_DEBUG). The
+        // positional counters above are K=4-shaped and therefore SILENT at
+        // the shipped n in [5,8] ladder step (k_drafts == 2); this one is not.
+        crate::scheduler::mtp_accept_debug::record(n, k_drafts, drafts[0] == v[0], num_accepted);
         let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
             extract_verify_logprobs(model, &v, top_logprobs, i * rows)
         } else {

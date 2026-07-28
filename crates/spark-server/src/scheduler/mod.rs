@@ -28,6 +28,7 @@ mod logit_processors;
 mod logprobs;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
+mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_gate;
 mod mtp_step;

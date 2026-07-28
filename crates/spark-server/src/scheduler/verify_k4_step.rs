@@ -235,6 +235,10 @@ pub fn step_verify_k4(
         drafts[2] == v2,
         a.seq.seq_len,
     );
+    // Width-attributed accept telemetry (ATLAS_MTP_ACCEPT_DEBUG): this is the
+    // SINGLE-sequence step, i.e. the n=1 row of the same table the batched
+    // step fills for n>=2.
+    crate::scheduler::mtp_accept_debug::record(1, 3, drafts[0] == v0, num_accepted);
 
     // ATLAS_MTP_REFEED_ACCEPTED: same contract as `verify_k3_step` — ring the
     // TARGET's true hidden for verify rows 0..=num_accepted under labels
