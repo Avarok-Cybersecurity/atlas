@@ -190,28 +190,64 @@ impl Qwen3AttentionLayer {
             qkv_buf,
             ..
         } = *c;
-        // Build contiguous Q buffer [N, nq*hd] for batched attention.
-        let q_contiguous = fwd.buffers.ssm_qkvz();
-        for i in 0..n {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            fwd.gpu.copy_d2d_async(
-                q_out_i,
-                q_contiguous.offset(i * q_dim as usize * bf16),
-                q_dim as usize * bf16,
-                stream,
-            )?;
-        }
-        let attn_out = fwd.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
-
         // TurboQuant WHT bookends (mirrors decode/attention_forward.rs).
         // The cache holds WHT(K)/WHT(V) for turbo dtypes: rotate the batched
         // Q rows before the paged decode and rotate the output back after —
         // without these the multi-seq batched decode scores raw Q against
         // rotated K and returns output in the rotated-V basis.
+        // Hoisted above the Q staging below: those rotations mutate the staged
+        // buffer IN PLACE, so they are exactly what makes the copy unskippable.
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
         let k_is_turbo = wht_k_dtype.is_wht_rotated();
         let v_is_turbo = wht_v_dtype.is_wht_rotated();
+
+        // ── Q for the batched paged decode ────────────────────────────────
+        // `run_paged_decode` already takes an explicit `q_stride` and the kernel
+        // indexes `Q + seq_idx*q_stride` (paged_decode_attn.cu:96, splitk twin
+        // :364), so when nothing rewrites Q we can point it straight at the
+        // interleaved [Q|K|V|gate] block and read in place — the rows are simply
+        // `per_seq_qkv` apart instead of packed.
+        //
+        // That removes 16 layers x 16 seqs = 256 D2D copies of 12288 B per step
+        // (0.19 ms of GPU copy plus 0.23 ms of host issue measured by nsys), and
+        // 256 nodes from the captured graph. Bit-identical: same values, same
+        // kernel, only the addressing changes.
+        //
+        // NOT skippable under TurboQuant: the innerQ/WHT bookends below rotate
+        // the staged buffer in place, and `qkv_buf` must not be mutated.
+        // Kill switch: ATLAS_NO_ATTN_Q_INPLACE=1.
+        fn q_inplace_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_NO_ATTN_Q_INPLACE").ok().as_deref() != Some("1")
+            })
+        }
+        let q_inplace = !k_is_turbo
+            && !v_is_turbo
+            && q_inplace_enabled()
+            && per_seq_qkv.is_multiple_of(bf16);
+        let q_contiguous = if q_inplace {
+            qkv_buf
+        } else {
+            let staged = fwd.buffers.ssm_qkvz();
+            for i in 0..n {
+                let q_out_i = qkv_buf.offset(i * per_seq_qkv);
+                fwd.gpu.copy_d2d_async(
+                    q_out_i,
+                    staged.offset(i * q_dim as usize * bf16),
+                    q_dim as usize * bf16,
+                    stream,
+                )?;
+            }
+            staged
+        };
+        let q_stride = if q_inplace {
+            (per_seq_qkv / bf16) as u32
+        } else {
+            nq * hd
+        };
+        let attn_out = fwd.buffers.attn_output();
+        let inv_sqrt_d = self.effective_attn_scale(hd);
         let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -248,7 +284,7 @@ impl Qwen3AttentionLayer {
             hd,
             bs,
             inv_sqrt_d,
-            nq * hd,
+            q_stride,
             fwd.buffers.splitk_workspace(),
             stream,
         )?;
