@@ -228,9 +228,22 @@ pub struct MtpHead {
     /// drafter shapes: 2.7x the 4x-GEMV per-seq loop (5.1 vs 14.4 ms per
     /// draft position).
     dense_gemm_pipelined_k: KernelHandle,
-    /// `w4a16_gemv_batch4` for the batched-propose LM head (0 when absent):
-    /// reads the shared NVFP4 LM head once for up to 4 sequences.
+    /// `w4a16_gemv_batch{4,8,16}` for the batched-propose LM head (0 when
+    /// absent): reads the shared NVFP4 LM head once for up to MAX_M
+    /// sequences. Selected per batch width by
+    /// [`MtpHead::lm_head_batch_kernel`]; per-row accumulation order is
+    /// identical across instantiations (one `w4a16_gemv_batchm_impl`), so
+    /// output is bit-identical at matching M.
     w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
+    /// Drafter attention metadata for the batched propose:
+    /// `[PROPOSE_META_SEQS, PROPOSE_META_STRIDE]` bytes, one slab per
+    /// sequence. A dedicated allocation, NOT an offset into the shared
+    /// `scratch` arena — the old fixed `scratch + 49152 + i*2048` layout ran
+    /// past the end of a 27B-shaped scratch at n > 8 (silent out-of-range
+    /// H2D → sticky CUDA-700, the #110 failure mode).
+    propose_meta: DevicePtr,
     /// `argmax_bf16_batch` for the batched-propose per-row argmax (0 when
     /// absent; falls back to the serial per-row scan).
     argmax_batch_k: KernelHandle,
@@ -319,6 +332,7 @@ impl MtpHead {
     }
 }
 
+mod batch_caps;
 mod draft_proposer;
 mod forward;
 mod forward_batch;

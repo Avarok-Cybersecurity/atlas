@@ -15,7 +15,11 @@
 //! 14.4 ms per draft position (scalar `dense_gemm_bf16`: 8.1 ms). The small
 //! K/V projections (N = nkv*hd) stay on the per-row GEMV (44 us vs 194 us
 //! pipelined at N=1024 — the 128-wide tile under-fills the grid). The LM
-//! head batches through the existing `w4a16_gemv_batch4` kernel.
+//! head batches through `w4a16_gemv_batch{4,8,16}`, selected per width.
+//!
+//! WIDTH: `n` is bounded by [`super::batch_caps::MtpHead::propose_batch_max`]
+//! (up to 16), NOT by a hardcoded 4 — see that module for what actually
+//! limited it and how each limit is now checked rather than assumed.
 //!
 //! Everything non-weight-bearing (deinterleave, Q/K norms, RoPE, KV write,
 //! paged attention, sigmoid gate) LOOPS per row with `forward_one`'s exact
@@ -30,44 +34,14 @@
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::DevicePtr;
 
-use super::{MtpHead, MtpProposerState, MtpQuantization, ProjectionWeight};
+use super::{MtpHead, MtpProposerState, ProjectionWeight};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
-/// Per-sequence drafter attention metadata stride within scratch. Layout per
-/// sequence i at `scratch + META_BASE + i*META_STRIDE` mirrors `forward_one`:
-/// [0..4) position u32 | [8..16) slot i64 | [16..20) seq_len i32 |
-/// [256..) block table i32[]. 2048 bytes caps the block table at 448 entries
-/// (>= 4096-token drafter at block size 16 needs 257).
-const META_BASE: usize = 49152;
-const META_STRIDE: usize = 2048;
+use super::batch_caps::PROPOSE_META_STRIDE;
 
 impl MtpHead {
-    /// Whether the batched cross-sequence propose can run for `n` sequences.
-    /// BF16-everything scope + both batch kernels resolved (`try_kernel`
-    /// returns handle 0 silently — gate on it, never assume).
-    pub(crate) fn can_propose_batch(&self, n: usize) -> bool {
-        let bf16_proj = |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_));
-        (2..=4).contains(&n)
-            && matches!(self.quant, MtpQuantization::Bf16)
-            && self.kv_bf16
-            && bf16_proj(&self.fc)
-            && bf16_proj(&self.q_proj)
-            && bf16_proj(&self.k_proj)
-            && bf16_proj(&self.v_proj)
-            && bf16_proj(&self.o_proj)
-            && self
-                .dense_ffn_generic
-                .as_ref()
-                .is_some_and(|(g, u, d)| bf16_proj(g) && bf16_proj(u) && bf16_proj(d))
-            && self.dense_gemm_pipelined_k.0 != 0
-            && self.w4a16_gemv_batch4_k.0 != 0
-            && self.dense_gemv_k.is_some()
-            && self.deinterleave_qg_k.is_some()
-            && self.moe_silu_mul_k.is_some()
-    }
-
     /// M=n-row BF16 GEMM dispatch: pipelined tensor-core GEMM for the large
     /// weight-bearing shapes (reads B once for all rows), per-row GEMV for
     /// small N where the 128-wide tile under-fills the grid (measured).
@@ -317,11 +291,11 @@ impl MtpHead {
             }
             let bt_len = state.block_table.len() * 4;
             ensure!(
-                256 + bt_len <= META_STRIDE,
+                256 + bt_len <= PROPOSE_META_STRIDE,
                 "propose_batch: drafter block table {} exceeds meta stride",
                 bt_len
             );
-            let meta_base = scratch.offset(META_BASE + i * META_STRIDE);
+            let meta_base = self.propose_meta.offset(i * PROPOSE_META_STRIDE);
             let block_idx = state.block_table[state.seq_len / bs];
             let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
             let mut meta_buf = vec![0u8; 256 + bt_len];
@@ -478,7 +452,7 @@ impl MtpHead {
         let logits = ctx.buffers.logits();
         ops::w4a16_gemv_batchm(
             gpu,
-            self.w4a16_gemv_batch4_k,
+            self.lm_head_batch_kernel(n),
             final_normed,
             &self.lm_head_nvfp4,
             logits,
@@ -538,14 +512,19 @@ impl MtpHead {
             n == target_hiddens.len() && n == positions.len() && n == states.len(),
             "propose_batch: length mismatch"
         );
-        static LOGGED: std::sync::Once = std::sync::Once::new();
-        LOGGED.call_once(|| {
+        // Proof of engagement at the WIDE widths this lever exists for: log
+        // once per distinct n (bitmask, not a single Once — a first-hit line
+        // at n=4 would say nothing about n=8/16), naming the LM-head kernel
+        // actually selected so a handle-0 fallback cannot hide.
+        static LOGGED_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let bit = 1u32 << (n & 31);
+        if (LOGGED_N.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit) == 0 {
             tracing::info!(
-                "MTP propose_batch active: n={n} pipelined_gemm={:#x} lm_head_batch4={:#x}",
+                "MTP propose_batch active: n={n} pipelined_gemm={:#x} lm_head_batchm={:#x}",
                 self.dense_gemm_pipelined_k.0,
-                self.w4a16_gemv_batch4_k.0
+                self.lm_head_batch_kernel(n).0
             );
-        });
+        }
         // Parity with propose(): reset chain confidence (unused here — the
         // batched path is gated to draft_conf_tau() == 0).
         self.last_conf_bits

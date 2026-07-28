@@ -607,6 +607,13 @@ pub trait Model: Send + Sync {
         Ok(None)
     }
 
+    /// Widest batch [`Self::run_mtp_propose_batched`] can carry in ONE
+    /// drafter forward per draft position. `1` = per-sequence only.
+    /// Schedulers chunk their propose groups by this — never by a constant.
+    fn mtp_propose_batch_max(&self) -> usize {
+        1
+    }
+
     /// DFlash K=γ graphed verify (γ+1 tokens). Specialization of the K=2/3/4
     /// pattern for arbitrary K. Default impl falls back to eager
     /// `decode_verify`. Models can override for CUDA-graph speedup keyed by

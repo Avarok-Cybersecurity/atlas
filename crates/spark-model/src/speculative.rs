@@ -13,6 +13,8 @@ pub use ladder::{mtp_ladder_disabled, mtp_ladder_drafts, mtp_max_seqs};
 use std::any::Any;
 
 use anyhow::Result;
+use atlas_core::config::ModelConfig;
+use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use crate::layer::ForwardContext;
@@ -397,6 +399,18 @@ pub trait DraftProposer: Send + Sync {
         _stream: u64,
     ) -> Result<Option<Vec<Vec<u32>>>> {
         Ok(None)
+    }
+
+    /// The widest batch [`Self::propose_batch`] can carry in ONE drafter
+    /// forward per draft position, derived from this proposer's resolved
+    /// kernels and the arena's row capacities. `1` = per-sequence only.
+    ///
+    /// Callers chunk by this instead of a hardcoded constant: a fixed cap of
+    /// 4 made a 16-sequence step run 4 drafter forwards per position, each
+    /// re-reading the whole drafter — the batched-propose lever's own cost
+    /// re-introduced by its caller.
+    fn propose_batch_max(&self, _buffers: &BufferArena, _config: &ModelConfig) -> usize {
+        1
     }
 
     /// Prefill the drafter's own context (KV cache) over the prompt, before

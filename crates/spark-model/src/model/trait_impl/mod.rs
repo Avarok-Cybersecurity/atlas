@@ -357,6 +357,12 @@ impl Model for TransformerModel {
     ) -> Result<Option<Vec<Vec<u32>>>> {
         self.run_mtp_propose_batched_dispatch(tokens, positions, stash_idx, num_drafts, seqs)
     }
+    fn mtp_propose_batch_max(&self) -> usize {
+        match &self.proposer {
+            Some(p) => p.propose_batch_max(&self.buffers, &self.config),
+            None => 1,
+        }
+    }
     fn decode_verify_graphed_kgamma(
         &self,
         tokens: &[u32],

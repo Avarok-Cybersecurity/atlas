@@ -186,13 +186,15 @@ pub(super) fn step_verify_k4_batched(
         );
     }
 
-    // ── Phase 4: batched cross-sequence propose, chunked by 4 ──
+    // ── Phase 4: batched cross-sequence propose ──
     // Sequences still alive after their verdict need fresh drafts. The
     // batched propose reads each sequence's accepted-position hidden
-    // straight from its stash slot. `can_propose_batch` caps a propose
-    // batch at 4 sequences (drafter meta staging envelope), so wider
-    // batches run in groups of <= 4; singles and unsupported groups fall
-    // back per-seq (re-saving the stash slot into the single-slot MTP
+    // straight from its stash slot. Groups are sized by the MODEL's declared
+    // width (`mtp_propose_batch_max`, derived from the resolved LM-head
+    // batch kernel + the arena row capacities) — NOT the old hardcoded 4,
+    // which made an n=16 step run 4 drafter forwards per draft position,
+    // each re-reading the whole BF16 drafter. Singles and unsupported groups
+    // fall back per-seq (re-saving the stash slot into the single-slot MTP
     // input buffer immediately before each propose).
     let t_propose = Instant::now();
     let pending: Vec<usize> = (0..n)
@@ -203,8 +205,9 @@ pub(super) fn step_verify_k4_batched(
     }
     let mut need_fallback: Vec<usize> = Vec::new();
     let mut groups_batched = 0usize;
-    if pending.len() >= 2 && !batch_propose_disabled() {
-        for group in pending.chunks(4) {
+    let group_cap = model.mtp_propose_batch_max().max(1);
+    if pending.len() >= 2 && group_cap >= 2 && !batch_propose_disabled() {
+        for group in pending.chunks(group_cap) {
             if group.len() < 2 {
                 need_fallback.extend_from_slice(group);
                 continue;
@@ -278,7 +281,8 @@ pub(super) fn step_verify_k4_batched(
         }
     }
     tracing::debug!(
-        "K{rows} batched propose: n={} groups_batched={groups_batched} fallback={} propose={}μs",
+        "K{rows} batched propose: n={} cap={group_cap} groups_batched={groups_batched} \
+         fallback={} propose={}μs",
         pending.len(),
         need_fallback.len(),
         t_propose.elapsed().as_micros()
