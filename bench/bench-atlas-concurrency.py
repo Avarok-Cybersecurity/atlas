@@ -35,7 +35,11 @@ RESULTS_FILE = os.environ.get("BENCH_RESULTS_FILE",
 
 # SSM state pool = 32 slots. Slots leak when pool is exhausted (server bug),
 # so cap concurrency well below pool size. conc=16 leaves headroom.
-CONCURRENCY_LEVELS = [1, 2, 4, 8, 16]
+# BENCH_LEVELS: comma-separated override (e.g. "16" to A/B one level without
+# paying for the full ladder).
+CONCURRENCY_LEVELS = [
+    int(x) for x in os.environ.get("BENCH_LEVELS", "1,2,4,8,16").split(",") if x.strip()
+]
 
 # Max sequence length for the server (ISL+OSL must fit).
 MAX_SEQ_LEN = int(os.environ.get("BENCH_MAX_SEQ_LEN", "4096"))
