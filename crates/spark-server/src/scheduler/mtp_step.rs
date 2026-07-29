@@ -31,11 +31,12 @@ pub fn step_mtp(
     }
 
     // K-vs-batch ladder (task #35): the per-step draft count is a function
-    // of the CURRENT concurrency. Default ladder holds 3 drafts to the cap
-    // (`4:3,8:3`), which keeps the batched verify at R = n*(drafts+1) = 32
-    // rows at n=8 — exactly the row-buffer bound. The depth step-down that
-    // used to sit at n>4 was an artifact of the chunk cap below, not of GDN
-    // depth cost (see that comment). SSOT + overrides
+    // of the CURRENT concurrency. Default ladder `4:3,8:3,16:1` holds 3
+    // drafts through n=8 and drops to 1 through the cap (16), so R =
+    // Σ(drafts+1) tops out at exactly the 32-row buffer bound at BOTH n=8
+    // (8x4) and n=16 (16x2). The depth step-down that used to sit at n>4
+    // was an artifact of the chunk cap below, not of GDN depth cost (see
+    // that comment); the one at n>8 is real (16:2 -> 94.1). SSOT + overrides
     // (`ATLAS_MTP_K_LADDER`, `ATLAS_NO_MTP_K_LADDER`):
     // `spark_model::speculative::ladder`. DFlash keeps its own γ economics.
     let ladder_nd = if dflash_verify_raw_argmax {
@@ -302,7 +303,7 @@ pub fn step_mtp(
     // ── Phase B: Verify with pipelined checkpoint ──
     //
     // Batched multi-seq K-row verify (batched-MTP E11 + the ladder). Only
-    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 8 with the ladder)
+    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 16 with the ladder)
     // puts >= 2 verify-ready sequences in one step (`ATLAS_MTP_MAX_SEQS=1`
     // ⇒ this partition is a no-op and every seq takes the per-seq loop
     // below, byte-identical to the pre-batched HEAD). Batchable =
@@ -311,7 +312,7 @@ pub fn step_mtp(
     // grammar-boundary path already does; `after_verify`'s
     // `last_num_drafted` trim contract stays consistent). The model
     // additionally self-gates (non-EP, non-HSS, no LoRA) via
-    // `can_batch_verify(n, rows)`. Kill switch `ATLAS_NO_MTP_BATCH_VERIFY`
+    // `can_batch_verify(&ks)`. Kill switch `ATLAS_NO_MTP_BATCH_VERIFY`
     // (PRESENCE check) forces the serialized loop for A/B.
     let mut serial_idxs: Vec<usize> = Vec::new();
     let mut batchable_idxs: Vec<usize> = Vec::new();
@@ -335,41 +336,66 @@ pub fn step_mtp(
     } else {
         serial_idxs.extend_from_slice(&verify_idxs);
     }
-    // Chunk caps pinned to the row-buffer capacity (32 rows, the same bound
-    // `can_batch_verify` enforces as `n*k <= 32`): rows=4 → 8 seqs, rows=3 →
-    // 8 seqs (R=24), rows=2 → 16 seqs (R=32).
+    let rows = ladder_nd + 1;
+
+    // ── D-Cut: per-sequence verify depth from drafter confidence ──
+    // Default ON at ratio 0.75 (+2.6% at C=8; kill switch `ATLAS_NO_MTP_DCUT`,
+    // PRESENCE). Ranks every prunable draft position ACROSS the batch by its
+    // prefix-product survival score and keeps the top `ATLAS_MTP_DCUT_RATIO`
+    // fraction (`mtp_dcut`). The retained set is a per-sequence PREFIX by
+    // construction, so the only downstream effect is a RAGGED row count. OFF
+    // (or `ladder_nd < 2`, which is the whole n>8 regime) ⇒ `ks` is the uniform
+    // ladder shape and everything below reduces to the pre-D-Cut path exactly.
+    let ks = mtp_dcut::plan(active, &mut batchable_idxs, ladder_nd, rows);
+
+    // Chunking: sequence-count cap by the chunk's WIDEST row count (the
+    // pre-D-Cut table, which the uniform case reproduces exactly) AND the
+    // 32-row buffer bound `can_batch_verify` enforces. With uniform `ks` this
+    // is byte-identical to the old `batchable_idxs.chunks(chunk_cap)`:
+    // rows=4 → 8 seqs (R=32), rows=3 → 8 seqs (R=24), rows=2 → 16 seqs (R=32).
     //
     // rows=4 was previously capped at 4 seqs to keep the proven 4-seq/R=16
     // envelope byte-identical. That cap silently made the `8:3` ladder step
     // untestable: 8 batchable sequences split into TWO serialized 4-wide
     // verify forwards (2x the weight reads per step), which is what the
     // "8:3 collapses" measurements (57.9, and 62.6 on 2026-07-28) actually
-    // recorded — NOT depth-3 at width 8. No-op at the default ladder, where
-    // rows=4 occurs only at n<=4 and every chunk is already <= 4.
-    let rows = ladder_nd + 1;
-    let chunk_cap = match rows {
-        4 => 8,
-        3 => 8,
-        _ => 16,
-    };
-    for chunk in batchable_idxs.chunks(chunk_cap) {
-        if chunk.len() >= 2 && model.can_batch_verify(chunk.len(), rows) {
-            // Collect disjoint &mut refs for the chunk's (ascending) indices.
-            let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(chunk.len());
+    // recorded — NOT depth-3 at width 8.
+    for (lo, hi) in mtp_dcut::chunk_ranges(&ks) {
+        let chunk = &batchable_idxs[lo..hi];
+        let chunk_ks = &ks[lo..hi];
+        if chunk.len() >= 2 && model.can_batch_verify(chunk_ks) {
+            // Collect disjoint &mut refs — the iterator walk requires ASCENDING
+            // indices, so sort a copy of the chunk before walking and restore
+            // the batch order (with each sequence's k) immediately after.
+            let mut asc: Vec<(usize, usize)> = chunk
+                .iter()
+                .copied()
+                .zip(chunk_ks.iter().copied())
+                .collect();
+            asc.sort_unstable();
+            let mut refs: Vec<(&mut ActiveSeq, usize)> = Vec::with_capacity(chunk.len());
             let mut it = active.iter_mut();
             let mut consumed = 0usize;
-            for &i in chunk {
+            for &(i, k) in &asc {
                 let a = it.nth(i - consumed).expect("chunk index within active");
                 consumed = i + 1;
-                refs.push(a);
+                refs.push((a, k));
             }
-            // Canonical batch order: sort by ssm-pool slot so the graph key
-            // (verify_e2) is a combination, not a permutation — 24x fewer
-            // keys at n=4, and the consecutive-slot batched-GDN precondition
-            // engages more often. Verdicts are index-mapped inside the step,
-            // so batch order is free to the caller.
-            refs.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(usize::MAX));
-            step_verify_k4_batched(model, &mut refs, ladder_nd, verify_ctx);
+            // Canonical batch order: deepest first, then ssm-pool slot, so the
+            // graph key (verify_e2) is a combination, not a permutation — 24x
+            // fewer keys at n=4 — and the consecutive-slot batched-GDN
+            // precondition engages more often. Verdicts are index-mapped
+            // inside the step, so batch order is free to the caller. With
+            // uniform k this is the pre-D-Cut sort by slot.
+            refs.sort_by_key(|(a, k)| {
+                (
+                    std::cmp::Reverse(*k),
+                    a.seq.ssm_slot_idx().unwrap_or(usize::MAX),
+                )
+            });
+            let sorted_ks: Vec<usize> = refs.iter().map(|&(_, k)| k).collect();
+            let mut batch: Vec<&mut ActiveSeq> = refs.into_iter().map(|(a, _)| a).collect();
+            step_verify_k4_batched(model, &mut batch, &sorted_ks, ladder_nd, verify_ctx);
         } else {
             // Model can't batch this width (or a lone leftover): fall back
             // to the existing per-seq dispatch for these sequences.
@@ -379,6 +405,9 @@ pub fn step_mtp(
     for &idx in &serial_idxs {
         let a = &mut active[idx];
         let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+        // Confidences describe the taken drafts; clearing here is the single
+        // place the two vectors are kept in lock-step for the serial path.
+        a.pending_draft_conf.clear();
         if drafts.is_empty() {
             continue;
         }

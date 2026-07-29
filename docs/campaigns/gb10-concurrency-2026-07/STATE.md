@@ -2449,3 +2449,131 @@ Next levers, in value order:
    legal point. Going deeper requires enlarging the verify row buffer — an untested regime.
 - Still red and pre-existing: `decode_a2.rs` 598 LoC and `trait_impl/mod.rs` 800 LoC, both over
   the 500 cap and absent from `.github/workflows/file-size-cap.yml`'s allow-list.
+
+## 2026-07-29 — ★★★ FINALIZED (round 4): cap 8 → 16 + ladder rung `16:1`, D-Cut default-ON @ 0.75. C=16 +15.0%, C=8 CROSSES vLLM. FOUR of five levels MET, ALL FIVE floors beaten.
+
+Two independent defaults landed, each measured with its own kill switch by the wave-6 matrix and
+then re-validated together at pure defaults:
+
+- **`16:1` ladder rung + cap 16** — the big one. **C=16 131.4 → 151.14 (+15.0%)**.
+- **D-Cut default-ON at ratio 0.75** — **C=8 95.84 → 107.40 (+12.1%)**, which **crosses vLLM's
+  98.8 bar (1.087x)**. This is the fifth level to be attacked and the fourth to fall.
+
+### Why the cap finally moved, after three rounds of refusing to move it
+The n=16 history is a record of a COST curve, not a depth curve, and each round moved the cost:
+
+| round | verify cost @n=16 | break-even (p1) | 16:1 vs MTP-off control | verdict |
+|---|---|---|---|---|
+| after the 3 eager-cost fixes | ~1.90 → ~1.77x | 1.72x (p1 0.72) | 128.4 vs 131.9 | LOSS, cap stays 8 |
+| after the accept lift `36d340a0` | ~1.79x | 1.797x (p1 0.797) | 131.93 vs 131.42 | PARITY, cap stays 8 |
+| after `296b9674`'s 3 per-row cuts | **~1.55x** | 1.83x (p1 0.83) | **152.38 vs 131.40** | **WIN, cap → 16** |
+
+`296b9674` (wide LM-head arm at 9..32 rows, one-launch gated RMS norm, fused BA-projection+gates)
+bought ~0.20x of verify-step cost. That is what took 16:1 off break-even. ★ Note the cost cut is
+LARGER than the throughput gain, because the fused BA+gates arm is not bit-identical and costs
+accept: at C=8 its kill-switch A/B measured tok_step 2.58 → 2.50 (−3.1%) for +9.2% throughput,
+i.e. a −11.6% verify step — dead inside its predicted −11.5..−13%. The numerics change is real,
+measurable, and worth paying.
+
+### The raise is inert at n ≤ 8 BY CONSTRUCTION
+The cap only gates dispatch above 8 (`active.len() <= mtp_max_seqs()`) and the `16:1` rung only
+matches above 8 (the `n<=8` rung is found first). So C=1/2/4/8 run unchanged code paths; their
+rows below are variance measurements, not regression risk. Kill switch `ATLAS_MTP_MAX_SEQS=8`.
+
+### D-Cut: the full bucket sweep, and the one bucket that wins
+Ranked prefix-product survival scores across the batch, top-`ratio` retained (arXiv 2607.14647).
+All at C=8, one fresh serve per leg, 5 scored reps:
+
+| ratio | tok/s | kept_frac | tok_step | verdict |
+|---|---|---|---|---|
+| OFF (kill switch) | 105.56 | — | 2.50 | control |
+| 1.0 (wiring live, 0 pruned) | 105.80 | 1.000 | 2.52 | **inert, as designed** |
+| **0.75** | **108.57** (pooled 2 serves) | 0.876 | 2.54 | **+2.6% — SHIPPED** |
+| 0.5 | 107.43 | 0.750 | 2.43 | worse |
+| 0.25 | 101.56 | 0.626 | 2.16 | clear loss |
+
+The mechanism is visible in telemetry: tok_step degrades monotonically as rows are pruned while
+rows fall, and 0.75 is the ONLY point where the row saving outruns the token loss. The ratio-1.0
+control being statistically identical to OFF is the proof that the ragged-row plumbing itself is
+free. Kill switch `ATLAS_NO_MTP_DCUT` (presence).
+
+★ **D-Cut contributes exactly NOTHING at C=16, and the logs prove it rather than infer it.** Its
+v1 floor of one mandatory draft per sequence means every sequence gets ≥2 rows; 16 × 2 = 32 = the
+whole `VERIFY_ROW_BUDGET`. There is zero slack, so `select()` returns retained=1 for all 16 at
+every ratio. In this sweep the C=16 leg emitted NO D-Cut telemetry line at all (`plan` returns
+early at `ladder_nd < 2`). Running D-Cut over a 16:3 ladder is strictly WORSE (120.76): it is
+forced back to k=1 anyway while the propose still pays for 3 drafts.
+
+### Landed
+- `mtp_max_seqs` default 8 → 16, anchored in the function body (`speculative/ladder.rs`).
+  Kill switch `ATLAS_MTP_MAX_SEQS=8`.
+- Default ladder `4:3,8:3` → `4:3,8:3,16:1`, anchored in `mtp_ladder_steps`'s body (NOT a bare
+  literal regex — the burned-twice trap). Kill switch `ATLAS_MTP_K_LADDER=4:3,8:3`.
+- D-Cut `dcut_enabled` OFF-by-presence → ON-by-default with `ATLAS_NO_MTP_DCUT`; `dcut_ratio`
+  default 0.5 → 0.75.
+- Ladder unit test updated for the new rung (9 → 1 draft, 16 → 1, 32 → 1). 3 ladder + 9 D-Cut
+  tests pass; both edited crates rustfmt-clean.
+
+### Validated sweep at PURE DEFAULTS (binary md5 `fae54de95627212898f51d5a0303d61d`, built with
+`ATLAS_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`)
+ONE FRESH SERVE PER C; no `ATLAS_MTP_DCUT` / `ATLAS_MTP_MAX_SEQS` / `ATLAS_MTP_K_LADDER` anywhere
+in the environment (only `ATLAS_MTP_ACCEPT_DEBUG=1` for the telemetry columns) — the binary's own
+defaults produce these numbers. All containers removed + `:8888` asserted dead + double
+`vm.drop_caches=3` + MemAvailable ≥ 108GB settle + a ≥4300-block KV-pool gate before each; first
+drive per serve DISCARDED as warmup; 5 scored drives.
+
+| C | scored reps (tok/s) | mean | floor | vs floor | vLLM | ratio | verdict |
+|---|---|---|---|---|---|---|---|
+| 1 | 27.0, 27.0, 27.0, 27.0, 27.0 | **27.00** | 25.53 | +5.8% | 14.2 | **1.90x** | **MET** |
+| 2 | 38.4, 38.2, 38.1, 37.7, 38.3 | **38.14** | 35.37 | +7.8% | 27.8 | **1.37x** | **MET** |
+| 4 | 71.2, 67.4, 71.1, 68.0, 71.2 | **69.78** | 60.40 | +15.5% | 53.3 | **1.31x** | **MET** |
+| 8 | 107.2, 103.7, 108.8, 107.5, 109.8 | **107.40** | 95.84 | +12.1% | 98.8 | **1.087x** | **MET** |
+| 16 | 152.1, 150.6, 150.1, 151.4, 151.5 | **151.14** | 131.40 | +15.0% | 168.9 | 0.895x | floor +15.0% |
+
+**ALL FIVE floors beaten. FOUR of five levels now beat vLLM.** Only C=16 remains, needing +11.8%.
+
+### Engagement PROVEN from the serve logs, not assumed
+- C=16: `batched-verify GDN conv+WY ENGAGED (n=16, k=2)` — the cap raise AND the `16:1` rung are
+  both live at pure defaults. Accept telemetry `n=16 k_drafts=1 p1=0.820-0.845 tok_step=1.82-1.85`.
+- C=8: D-Cut ragged and live — `kept_frac=0.875-0.876`, `last_ks=[3,4,4,4,4,4,2,3]` and
+  `[3,4,4,3,3,4,3,4]` (genuinely ragged, not a uniform shape).
+- C=4/C=2: `kept_frac=0.875`, `last_ks=[3,3,4,4]` / `[4,3]`.
+- C=1: NO D-Cut line and NO batched verify — n=1 never reaches the batched partition
+  (`verify_idxs.len() >= 2`), so C=1 is provably untouched by both defaults.
+- KV pools 4372-4819 blocks on all five serves; every serve came up on attempt 1.
+
+### Hygiene
+- Coherence + tool-call smoke on ALL FIVE serves (temp 0, seed 42): fluent Rayleigh-scattering
+  answer `finish=stop`; `get_weather({"location":"Paris"})` `finish=tool_calls`. PASS.
+- **Zero** ERROR/panic/illegal-memory/error-700/716/719 lines in all five serve logs
+  (`conc_sweep/w7_c{1,2,4,8,16}.log`), each dumped while its container was alive. The twin-tile
+  GEMM's sticky-716 risk flagged for `296b9674` did NOT reproduce at any concurrency.
+- All containers removed at the end; `nvidia-smi` compute-apps empty; `:8888` dead.
+
+### Traps and caveats for the record
+- ★ **Graph-key churn is real and D-Cut wins DESPITE it.** Ragged `ks` takes captures from ~15 to
+  **407** per serve at C=8 against `VERIFY_BATCHED_GRAPH_CAP = 32`, and `batched-verify GDN
+  conv+WY DECLINED` lines appear at ragged widths (the `(k desc, slot)` sort makes the
+  consecutive-ssm-slot precondition hold less often). The +2.6% is a FLOOR, not a ceiling.
+- **C=16 spec-on reps emit 3009 tokens, not 3072**, deterministically in every rep — the
+  documented `spec_not_output_neutral` trajectory shift (one request hits a natural stop 63 tokens
+  early), not the content-loop watchdog. Token-normalized it changes nothing: 19.9s × 3072/3009 =
+  20.3s ⇒ 151.3 tok/s.
+- **C=4 is bimodal within one serve** (71.2/71.1/71.2 vs 67.4/68.0, identical 768 tokens) — the
+  known SSM-snapshot/prefix-anchor drift, present in the floor config too. Reported as the mean of
+  all five, not the fast mode.
+
+### Campaign position
+**C=1/2/4/8 MET at pure defaults (1.90x / 1.37x / 1.31x / 1.087x). C=16 0.895x.**
+Next levers, in value order:
+1. **Lift D-Cut's `rows_i >= 2` floor** so a sequence can drop out of speculation entirely. It is
+   the ONLY route by which D-Cut can ever attack C=16, where it is currently budget-locked.
+2. **Raise `VERIFY_BATCHED_GRAPH_CAP`** and re-sort by slot-then-depth — D-Cut currently pays ~27x
+   the graph captures and loses the GDN fast path at some widths. Unmeasured headroom on a win.
+3. **Prune the propose, not just the verify** (implementer-1's deviation #4): the drafter still
+   runs at full ladder width even when D-Cut throws the rows away.
+4. **L1 carry is silently OFF at every concurrency** because `mtp_multi_seq_mode()` is cap-based —
+   a LIVE REGRESSION on multi-turn/MLPerf traffic that `prof_drive`'s single-turn prompts cannot
+   see. Unchanged from round 3, and the cap raise does not fix it.
+- Still red and pre-existing: `decode_a2.rs` 598 LoC and `trait_impl/mod.rs` 800 LoC, both over the
+  500 cap and absent from `.github/workflows/file-size-cap.yml`'s allow-list.

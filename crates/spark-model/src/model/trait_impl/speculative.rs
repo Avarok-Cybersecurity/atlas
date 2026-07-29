@@ -432,6 +432,7 @@ impl TransformerModel {
         stash_idx: &[usize],
         num_drafts: usize,
         seqs: &mut [&mut SequenceState],
+        out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Option<Vec<Vec<u32>>>> {
         let proposer = match &self.proposer {
             Some(p) => p.as_ref(),
@@ -484,6 +485,7 @@ impl TransformerModel {
             &mut states,
             &ctx,
             stream,
+            out_conf,
         )
     }
 

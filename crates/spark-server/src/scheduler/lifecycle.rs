@@ -353,6 +353,7 @@ pub fn resume_swapped_seq(
         // Grammar state is not serializable; resumed sequences use legacy fallback.
         grammar_state: None,
         pending_drafts: Vec::new(),
+        pending_draft_conf: Vec::new(),
         last_token_time: Instant::now(),
         request_start: s.request_start,
         decode_start: s.decode_start,

@@ -68,7 +68,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         hidden: DevicePtr,
         residual: DevicePtr,
         n_seqs: usize,
-        k: usize,
+        ks: &[usize],
         states: &'a mut [&'b mut (dyn LayerState + 'static)],
         _kv_cache: &mut PagedKvCache,
         wy_tables: DevicePtr,
@@ -76,16 +76,17 @@ impl TransformerLayer for Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         anyhow::ensure!(
-            states.len() == n_seqs,
-            "decode_verify_multi: states/n mismatch"
+            states.len() == n_seqs && ks.len() == n_seqs,
+            "decode_verify_multi: states/ks/n mismatch"
         );
+        let num_tokens: usize = ks.iter().sum();
         self.decode_batched_inner(
             hidden,
             residual,
-            n_seqs * k,
+            num_tokens,
             super::trait_decode_batched::GdnStates::Multi {
                 states,
-                k,
+                ks,
                 wy_tables,
             },
             ctx,

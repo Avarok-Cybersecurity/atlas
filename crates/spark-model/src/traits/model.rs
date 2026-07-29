@@ -531,37 +531,38 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<[u32; 4]>;
 
-    /// Whether [`Self::decode_verify_batched`] can run for `n` sequences at
-    /// `k` verify rows per sequence (`k` = drafts + 1; the K-vs-batch ladder
-    /// passes k in 2..=4).
+    /// Whether [`Self::decode_verify_batched`] can run for `ks.len()`
+    /// sequences at `ks[i]` verify rows each (one more than that sequence's
+    /// draft count; the K-vs-batch ladder passes 2..=4, and D-Cut makes the
+    /// vector RAGGED — uniform is just the special case).
     ///
     /// Default `false`: the scheduler MUST fall back to the per-sequence
     /// `decode_verify_graphed_k{2,3,4}` loop. There is deliberately NO
     /// default loop impl of the batched form — a loop over the per-seq
     /// verify would leave the shared logits buffer holding only the LAST
     /// sequence's rows and silently poison row-based pipeline picks.
-    fn can_batch_verify(&self, _n: usize, _k: usize) -> bool {
+    fn can_batch_verify(&self, _ks: &[usize]) -> bool {
         false
     }
 
-    /// Batched K-row verify: n sequences × k rows in ONE eager forward
-    /// (seq-major rows `r = i*k + j`, `tokens.len() == n*k`). Weight
-    /// matrices are read once for all `n*k` rows. Per sequence i:
-    /// `tokens[i*k..(i+1)*k] = [last_verified, d0, .., d_{k-2}]`.
-    /// Returns the `n*k` argmax IDs in the same flat seq-major order. On
-    /// success each sequence's `tokens`/`seq_len` advance by k (rewind is
-    /// the caller's verdict arithmetic, same as the per-seq path). On Err
-    /// NO sequence state has been advanced.
+    /// Batched K-row verify: `ks.len()` sequences × `ks[i]` rows in ONE eager
+    /// forward (flat seq-major rows, `tokens.len() == Σ ks`). Weight matrices
+    /// are read once for all `Σ ks` rows. Sequence i occupies rows
+    /// `[off_i, off_i + ks[i])` where `off_i = Σ_{t<i} ks[t]`, holding
+    /// `[last_verified, d0, .., d_{ks[i]-2}]`. Returns the `Σ ks` argmax IDs
+    /// in the same flat order. On success each sequence's `tokens`/`seq_len`
+    /// advance by its own `ks[i]` (rewind is the caller's verdict arithmetic,
+    /// same as the per-seq path). On Err NO sequence state has been advanced.
     ///
     /// Callers must gate on [`Self::can_batch_verify`].
     fn decode_verify_batched(
         &self,
         tokens: &[u32],
-        k: usize,
+        ks: &[usize],
         seqs: &mut [&mut SequenceState],
         stream: u64,
     ) -> Result<Vec<u32>> {
-        let _ = (tokens, k, seqs, stream);
+        let _ = (tokens, ks, seqs, stream);
         bail!("decode_verify_batched: unsupported by this model")
     }
 
@@ -592,8 +593,15 @@ pub trait Model: Send + Sync {
     /// position (post-rewind `seq_len`), matching the per-seq
     /// [`Self::run_mtp_propose_multi`] contract. Grammarless sequences only.
     ///
+    /// `out_conf`, when `Some`, receives each draft's top-1 LOG-probability
+    /// (`ln p`, same shape as the returned drafts) — the D-Cut ranking key.
+    /// It is filled with zeros (certainty) when the drafter cannot measure
+    /// confidence, so a caller ranking by prefix product never prunes on a
+    /// value nobody produced.
+    ///
     /// `Ok(None)` = unsupported (caller falls back to the per-seq propose
     /// loop, re-saving each stash slot first). Default: unsupported.
+    #[allow(clippy::too_many_arguments)]
     fn run_mtp_propose_batched(
         &self,
         tokens: &[u32],
@@ -602,8 +610,11 @@ pub trait Model: Send + Sync {
         num_drafts: usize,
         seqs: &mut [&mut SequenceState],
         stream: u64,
+        out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Option<Vec<Vec<u32>>>> {
-        let _ = (tokens, positions, stash_idx, num_drafts, seqs, stream);
+        let _ = (
+            tokens, positions, stash_idx, num_drafts, seqs, stream, out_conf,
+        );
         Ok(None)
     }
 

@@ -386,6 +386,7 @@ impl MtpHead {
                 "w4a16_gemv_batch16",
             ),
             argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
+            argmax_batch_lp_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch_lp"),
             // Drafter attention metadata for the batched propose — a
             // dedicated 32 KB allocation, never an offset into the shared
             // scratch arena (see the `propose_meta` field docs).

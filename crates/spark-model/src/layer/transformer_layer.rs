@@ -540,7 +540,7 @@ pub trait TransformerLayer: Send + Sync {
         _hidden: DevicePtr,
         _residual: DevicePtr,
         _n_seqs: usize,
-        _k: usize,
+        _ks: &[usize],
         _states: &'a mut [&'b mut (dyn LayerState + 'static)],
         _kv_cache: &mut PagedKvCache,
         _wy_tables: DevicePtr,

@@ -30,6 +30,7 @@ mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
+mod mtp_dcut;
 mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
@@ -190,11 +191,12 @@ fn mtp_max_seqs() -> usize {
     // SSOT moved to `spark_model::speculative::mtp_max_seqs()` (batched-MTP
     // E1/E2): the model-side single-sequence MTP structures (catchup ring,
     // refeed labels, carry slot) gate on the SAME value the scheduler gates
-    // dispatch on. Same parse; default 16 since 2026-07-28 — the batched
-    // multi-seq verify + propose (`verify_k4_batch_step.rs`) removed the
-    // serialization that made cap=1 mandatory (C=4 cap=4: 25.8 serialized
-    // -> 49.0 batched vs 48.5 MTP-off). `ATLAS_MTP_MAX_SEQS=1` restores
-    // the old single-sequence-only gate.
+    // dispatch on. Same parse; default 16 since 2026-07-29 (was 8, and 1
+    // before the batched multi-seq verify + propose in
+    // `verify_k4_batch_step.rs` removed the serialization that made cap=1
+    // mandatory — C=4 cap=4: 25.8 serialized -> 49.0 batched vs 48.5
+    // MTP-off). `ATLAS_MTP_MAX_SEQS=8` restores the round-3 cap, `=1` the
+    // old single-sequence-only gate.
     spark_model::speculative::mtp_max_seqs()
 }
 
@@ -697,6 +699,7 @@ pub fn run(
                     if gate.take_fresh_decision() == Some(mtp_gate::GateDecision::DisableMtp) {
                         for a in active.iter_mut() {
                             a.pending_drafts.clear();
+                            a.pending_draft_conf.clear();
                         }
                         if let Err(e) = model.sync_secondary() {
                             tracing::error!("mtp-gate→decode sync_secondary: {e:#}");
@@ -717,6 +720,7 @@ pub fn run(
                 if use_mtp {
                     for a in active.iter_mut() {
                         a.pending_drafts.clear();
+                        a.pending_draft_conf.clear();
                     }
                     // MTP→decode-only transition: the last verify commit's
                     // live-state restore runs async on the secondary stream;

@@ -128,6 +128,7 @@ pub(super) fn run_standard_chunk_loop(
             let had_drafts = active.iter().any(|a| !a.pending_drafts.is_empty());
             for a in active.iter_mut() {
                 a.pending_drafts.clear();
+                a.pending_draft_conf.clear();
             }
             if had_drafts && let Err(e) = model.sync_secondary() {
                 tracing::error!("mtp->mixed sync_secondary: {e:#}");

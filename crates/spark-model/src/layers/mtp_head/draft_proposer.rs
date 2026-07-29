@@ -92,6 +92,7 @@ impl DraftProposer for MtpHead {
         states: &mut [&mut dyn ProposerState],
         ctx: &ForwardContext,
         stream: u64,
+        out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Option<Vec<Vec<u32>>>> {
         if !self.can_propose_batch(last_tokens.len(), ctx.buffers, ctx.config) {
             return Ok(None);
@@ -113,6 +114,7 @@ impl DraftProposer for MtpHead {
             &mut mtp_states,
             ctx,
             stream,
+            out_conf,
         )
         .map(Some)
     }

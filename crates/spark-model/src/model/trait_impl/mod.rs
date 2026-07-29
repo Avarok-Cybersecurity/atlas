@@ -351,17 +351,17 @@ impl Model for TransformerModel {
     ) -> Result<[u32; 4]> {
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
-    fn can_batch_verify(&self, n: usize, k: usize) -> bool {
-        self.can_batch_verify_dispatch(n, k)
+    fn can_batch_verify(&self, ks: &[usize]) -> bool {
+        self.can_batch_verify_dispatch(ks)
     }
     fn decode_verify_batched(
         &self,
         tokens: &[u32],
-        k: usize,
+        ks: &[usize],
         seqs: &mut [&mut SequenceState],
         _stream: u64,
     ) -> Result<Vec<u32>> {
-        self.decode_verify_batched_dispatch(tokens, k, seqs, _stream)
+        self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
         self.stash_verify_hidden_rows_dispatch(rows, _stream)
@@ -377,8 +377,11 @@ impl Model for TransformerModel {
         num_drafts: usize,
         seqs: &mut [&mut SequenceState],
         _stream: u64,
+        out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Option<Vec<Vec<u32>>>> {
-        self.run_mtp_propose_batched_dispatch(tokens, positions, stash_idx, num_drafts, seqs)
+        self.run_mtp_propose_batched_dispatch(
+            tokens, positions, stash_idx, num_drafts, seqs, out_conf,
+        )
     }
     fn mtp_propose_batch_max(&self) -> usize {
         match &self.proposer {

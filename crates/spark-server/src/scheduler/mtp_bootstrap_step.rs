@@ -24,7 +24,7 @@
 //! * >= 2 draftless sequences and multi-seq MTP mode (`ATLAS_MTP_MAX_SEQS>1`)
 //!   — at cap 1 the per-seq path must stay byte-identical;
 //! * not the DFlash bootstrap (its fused pass replaces the standalone decode);
-//! * `can_batch_verify(n, 2)` — the same non-EP / non-HSS / no-LoRA /
+//! * `can_batch_verify(&[2; n])` — the same non-EP / non-HSS / no-LoRA /
 //!   stash-allocated envelope the batched verify self-gates on, and the stash
 //!   is what makes a cross-sequence propose possible at all;
 //! * the DFlash serial-append / unified-ctx commit modes are OFF (their
@@ -70,7 +70,7 @@ pub(super) fn can_batch_bootstrap(
         // k=2 is the narrowest verify width; this call asks the model for the
         // batched-MTP envelope (stash allocated, non-EP, non-HSS, no LoRA),
         // not for a verify.
-        && model.can_batch_verify(n, 2)
+        && model.can_batch_verify(&vec![2usize; n])
 }
 
 /// Batched bootstrap for the `idxs` (ASCENDING) draftless sequences.
@@ -275,6 +275,10 @@ pub(super) fn step_mtp_bootstrap_batched(
             })
             .collect();
         let mut done = vec![false; proposing.len()];
+        // D-Cut ranking key: only requested when the lever is armed, so the
+        // default path keeps the plain batched argmax and its narrower D2H.
+        let want_conf = crate::scheduler::mtp_dcut::dcut_enabled();
+        let mut conf: Vec<Vec<f32>> = Vec::new();
         if group_cap >= 2 && ladder_nd >= 1 {
             for group in batchable.chunks(group_cap) {
                 if group.len() < 2 {
@@ -307,6 +311,7 @@ pub(super) fn step_mtp_bootstrap_batched(
                         ladder_nd,
                         &mut seq_refs,
                         0,
+                        want_conf.then_some(&mut conf),
                     )
                 };
                 match result {
@@ -314,6 +319,8 @@ pub(super) fn step_mtp_bootstrap_batched(
                         for (g, &s) in group.iter().enumerate() {
                             if !all[g].is_empty() {
                                 refs[proposing[s]].pending_drafts = all[g].clone();
+                                refs[proposing[s]].pending_draft_conf =
+                                    conf.get(g).cloned().unwrap_or_default();
                             }
                             done[s] = true;
                         }

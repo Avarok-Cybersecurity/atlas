@@ -411,6 +411,7 @@ pub trait DraftProposer: Send + Sync {
         _states: &mut [&mut dyn ProposerState],
         _ctx: &ForwardContext,
         _stream: u64,
+        _out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Option<Vec<Vec<u32>>>> {
         Ok(None)
     }

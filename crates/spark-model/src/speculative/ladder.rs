@@ -10,7 +10,8 @@
 //! row total stays small while the weight-read amortization of the batched
 //! verify keeps growing with n:
 //! n <= 4 -> 3 drafts (4 rows/seq, today's proven regime, bit-for-bit),
-//! n <= 8 -> 3 drafts (4 rows/seq, R = 32 = the exact row-buffer bound).
+//! n <= 8 -> 3 drafts (4 rows/seq, R = 32 = the exact row-buffer bound),
+//! n <= 16 -> 1 draft (2 rows/seq, R = 32 again at n=16).
 //!
 //! ★ The depth step-down that used to sit at n>4 was an artifact of the
 //! `mtp_step` chunk cap, NOT of GDN depth cost: `rows=4` was capped at 4
@@ -19,19 +20,19 @@
 //! (57.9 on 2026-07-28, and 62.6 when re-measured this session) recorded
 //! that chunking, not depth-3 at width 8. Raising the cap to the row-buffer
 //! bound makes the true 8-wide K=4 step the BEST measured point at C=8.
-//! The ladder ENDS at n=8: the finalizer matrix (2026-07-28) measured spec
-//! at n=16 as a LOSS at every depth even AFTER the three eager-cost fixes
-//! (`b93982d9` k-parameterized cross-seq GDN conv/WY, `a83627a2` propose
-//! widened to n=16, `fa373bf4` batched Phase-A bootstrap): 16:1 -> 128.4
-//! and 16:2 -> 94.1 vs the 131.9 MTP-off control. Re-measured 2026-07-28
-//! after the accept lift (`36d340a0` per-sequence drafter prefill, p1 at
-//! n=16 now 0.797): 16:1 -> 131.93 vs a same-session MTP-off control of
-//! 131.42 — spec at n=16 has reached PARITY but still buys nothing, so
-//! the cap stays 8 and n>8 remains MTP-off by construction. The implied
-//! verify-step cost at n=16 is ~1.79x a plain batch-16 decode step, and
-//! break-even at p1=0.797 is 1.797x; clearing the 168.9 bar would need
-//! ~1.40x. Remaining eager cost there: the Phase-A bootstrap forward is
-//! not graph-captured (`decode_batch` disables graphs at n>=2).
+//! ★ The n=16 rung took three rounds to earn its place, and its history is
+//! the record of a COST curve, not of a depth curve. It measured a loss
+//! (16:1 -> 128.4 vs a 131.9 MTP-off control) after the three eager-cost
+//! fixes (`b93982d9` k-parameterized cross-seq GDN conv/WY, `a83627a2`
+//! propose widened to n=16, `fa373bf4` batched Phase-A bootstrap), then
+//! exact PARITY (131.93 vs 131.42) after the accept lift (`36d340a0`
+//! per-sequence drafter prefill lifted p1 at n=16 to 0.797, making
+//! break-even 1.797x against a measured ~1.79x). `296b9674`'s three
+//! per-row verify cuts took the implied cost to ~1.55x, and the SAME 16:1
+//! shape then measured **152.01 tok/s over two serves against a
+//! same-session MTP-off control of 131.40 (+15.7%)**, p1 0.78-0.86,
+//! tok_step ~1.83. Depth at n=16 is still dead: 16:2 -> 94.1 and 16:3 ->
+//! 120.76. Clearing vLLM's 168.9 needs the cost under ~1.40x.
 //!
 //! At n<=8, measured C=8 on binary 9bef3b49 (this ladder + the raised
 //! chunk cap), one fresh serve per config: 8:3 95.84 (range 94.9-96.6,
@@ -69,10 +70,15 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
             }
             (!steps.is_empty()).then_some(steps)
         });
-        // Default ladder (matrix 2026-07-28, post accept-lift): 3 drafts
-        // at every n up to the cap. NO step beyond 8 — spec at n=16 is at
-        // best parity with MTP-off (see module docs), and the cap (default
-        // 8) makes n>8 MTP-off by construction.
+        // Default ladder (finalizer matrix 2026-07-29): 3 drafts up to the
+        // n=8 rung, then ONE draft at n<=16. The 16:1 rung was dead weight
+        // while the cap was 8; with the cap raised to 16 it is the shape
+        // that measures 152.01 tok/s at C=16 against a 131.40 MTP-off
+        // control (+15.7%). It is inert at n<=8 by construction (the n<=8
+        // rung matches first). Depth at n=16 stays dead: 16:3 measures
+        // 120.76 on the same binary, and D-Cut cannot rescue it (16 seqs x
+        // its mandatory 2 rows = the whole 32-row budget, so it is forced
+        // back to k=1 while the propose still pays for 3 drafts).
         //
         // The 8:2 step-down was an ARTIFACT of the `mtp_step` chunk cap,
         // not of depth: with `rows=4` capped at 4 sequences, an 8-wide
@@ -84,7 +90,7 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
         // same binary — disjoint ranges (94.9-96.6 vs 92.5-94.0), two
         // independent serves. tok_step 2.606 vs 2.301 (+13.3%) for a
         // verify step ~11% more expensive.
-        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 3)]);
+        let mut steps = parsed.unwrap_or_else(|| vec![(4, 3), (8, 3), (16, 1)]);
         steps.sort_by_key(|&(n, _)| n);
         steps
     })
@@ -113,7 +119,7 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
         .unwrap_or(num_drafts)
 }
 
-/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`; default 8
+/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`; default 16
 /// with the K-vs-batch ladder, 4 under `ATLAS_NO_MTP_K_LADDER`).
 /// Value-parsed, not presence-checked. Lives beside the ladder (moved from
 /// `speculative.rs`, originally `scheduler/mod.rs`) because the two are one
@@ -123,12 +129,10 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
 ///
 /// The cap IS the adaptive per-concurrency policy: the scheduler gates
 /// dispatch on `active.len() <= mtp_max_seqs()`. Per-step K comes from
-/// [`mtp_ladder_drafts`] (task #35): 3 drafts at every n up to the cap
-/// (`4:3,8:3` — matrix 2026-07-28: C=8 95.84 at 8:3 vs 93.30 at 8:2 on the
-/// same binary, and 73.5 MTP-off). Cap 8 (NOT 16): spec at
-/// n=16 stays a REGRESSION vs MTP-off at every depth even after the three
-/// eager-cost fixes (128.4 at 16:1, 94.1 at 16:2, vs 131.9 MTP-off), so
-/// n>8 falls back to the plain multi-seq decode path.
+/// [`mtp_ladder_drafts`] (task #35): `4:3,8:3,16:1` — 3 drafts through n=8
+/// (matrix 2026-07-28: C=8 95.84 at 8:3 vs 93.30 at 8:2 on the same binary,
+/// and 73.5 MTP-off), then 1 draft through n=16 (matrix 2026-07-29: C=16
+/// 152.01 vs a 131.40 MTP-off control).
 /// `ATLAS_NO_MTP_K_LADDER` (presence) restores fixed K=4 + cap 4 — the
 /// dafd990d adaptive policy. Set `ATLAS_MTP_MAX_SEQS=1` to restore
 /// single-sequence-only.
@@ -138,22 +142,24 @@ pub fn mtp_max_seqs() -> usize {
         std::env::var("ATLAS_MTP_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
-            // Default 8, NOT 16 (finalizer matrix 2026-07-28): with the
-            // ladder, C=8 at 3 drafts = 95.84 tok/s (+30% over the 73.5
-            // MTP-off floor), but C=16 speculation
-            // still LOSES at every depth (128.4 at 16:1, 94.1 at 16:2 —
-            // vs the 131.9 MTP-off control): the k=2 verify step costs
-            // ~1.77x a plain batch-16 decode step, above the ~1.72x
-            // break-even at p1~0.72. The three eager-cost fixes
-            // (b93982d9/a83627a2/fa373bf4) cut that from ~1.9x but not
-            // past break-even. Cap 8 makes n>8 MTP-off by construction,
-            // preserving the C=16 floor. Raising the cap requires first
-            // graph-capturing the Phase-A bootstrap forward (it routes
-            // through `decode_batch`, which disables graphs at n>=2).
+            // Default 16 (finalizer matrix 2026-07-29). It was 8 for three
+            // rounds because spec at n=16 measured a LOSS (128.4 at 16:1)
+            // and then a PARITY (131.93 vs a 131.42 MTP-off control): the
+            // verify step cost ~1.79x a plain batch-16 decode step against
+            // a break-even of 1.797x at p1 0.797. `296b9674`'s three
+            // per-row verify cuts (wide LM-head arm, one-launch gated RMS
+            // norm, fused BA+gates) bought ~0.20x of that cost — implied
+            // cost is now ~1.55x — and the same 16:1 shape MEASURES 152.01
+            // tok/s over two serves against a same-session MTP-off control
+            // of 131.40 (+15.7%), with p1 0.78-0.86 and tok_step ~1.83.
+            // ★ The raise is inert at n<=8: the cap only gates dispatch
+            // above 8 and the `16:1` ladder rung only matches above 8, so
+            // the C=1/2/4/8 code paths are unchanged. Set
+            // `ATLAS_MTP_MAX_SEQS=8` to restore the round-3 cap.
             // Pre-ladder baseline (cap=4, binary 472ed410): C=1 25.55
             // (1.80x vLLM) · C=2 35.35 (1.27x) · C=4 54.1 (1.01x) ·
             // C=8/16 MTP-off 73.5/131.0.
-            .unwrap_or(if mtp_ladder_disabled() { 4 } else { 8 })
+            .unwrap_or(if mtp_ladder_disabled() { 4 } else { 16 })
     })
 }
 
@@ -169,10 +175,13 @@ mod tests {
         assert_eq!(mtp_ladder_drafts(4, 3), 3);
         assert_eq!(mtp_ladder_drafts(5, 3), 3);
         assert_eq!(mtp_ladder_drafts(8, 3), 3);
-        // Beyond the last step: last step's value (the cap — default 8 —
-        // gates dispatch, so n>8 never speculates at defaults).
-        assert_eq!(mtp_ladder_drafts(16, 3), 3);
-        assert_eq!(mtp_ladder_drafts(32, 3), 3);
+        // The 16:1 rung: depth at n=16 is dead (16:2 -> 94.1, 16:3 ->
+        // 120.76 vs 152.01 at 16:1), so above the n=8 rung K drops to 2.
+        assert_eq!(mtp_ladder_drafts(9, 3), 1);
+        assert_eq!(mtp_ladder_drafts(16, 3), 1);
+        // Beyond the last step: last step's value (the cap — default 16 —
+        // gates dispatch, so n>16 never speculates at defaults).
+        assert_eq!(mtp_ladder_drafts(32, 3), 1);
     }
 
     // A step-down ladder must still be honored when asked for explicitly

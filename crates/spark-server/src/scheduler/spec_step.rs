@@ -185,6 +185,7 @@ pub fn step_ngram(
     if !a.pending_drafts.is_empty() {
         // ── Phase B: Verify pending draft ──
         let drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+        a.pending_draft_conf.clear();
         step_ngram_verify(model, a, &drafts, proposer, verify_ctx);
     } else {
         // ── Phase A: Bootstrap decode + N-gram propose ──

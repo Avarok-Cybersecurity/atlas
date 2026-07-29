@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Batched K-row verify: n sequences × k rows in ONE eager forward.
+//! Batched K-row verify: n sequences × `ks[i]` rows in ONE eager forward.
 //!
-//! Generalizes verify_c2's single-sequence K=4 body to `R = n*k` seq-major
-//! rows (`r = i*k + j`, k = drafts+1 in 2..=4 chosen per step by the
-//! K-vs-batch ladder — `speculative::ladder`) so the n weight-reading verify
+//! Generalizes verify_c2's single-sequence K=4 body to `R = Σ ks` seq-major
+//! rows (sequence i at rows `[off_i, off_i + ks[i])`, `ks[i]` = its drafts+1 in
+//! 2..=4, chosen per step by the K-vs-batch ladder — `speculative::ladder` —
+//! and made RAGGED per sequence by D-Cut) so the n weight-reading verify
 //! forwards collapse into one — the structural fix for the measured MTP
 //! serialization at C>1 (cap=4 at C=4: 25.8 vs 48.5 tok/s; see
 //! BATCHED_MTP_SPEC.md). R is capped at 32 = the exact capacity of the
@@ -39,19 +40,21 @@ use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
 impl TransformerModel {
-    /// Whether the batched verify can run for `n` sequences × `k` rows.
+    /// Whether the batched verify can run for `ks.len()` sequences at `ks[i]`
+    /// rows each (ragged since D-Cut).
     ///
     /// Self-gates to the envelope verify_e was built and audited for:
     /// non-EP, non-HSS, non-DFlash, no LoRA (the uniform seq_slot upload
     /// carries ONE adapter slot), MTP proposer present (stash allocated,
-    /// 16 slots ⇒ n ≤ 16), k in 2..=4 (the MTP ladder range; intermediates
-    /// pools are sized for the configured max K), and R = n*k ≤ 32 (the
-    /// exact logits-rows / meta-gap / bt-staging capacity — sizes.rs).
-    /// Everything outside falls back to the per-seq loop.
-    pub(super) fn can_batch_verify_dispatch(&self, n: usize, k: usize) -> bool {
+    /// 16 slots ⇒ n ≤ 16), EVERY `ks[i]` in 2..=4 (the MTP ladder range;
+    /// intermediates pools are sized for the configured max K), and
+    /// R = Σ ks ≤ 32 (the exact logits-rows / meta-gap / bt-staging capacity
+    /// — sizes.rs). Everything outside falls back to the per-seq loop.
+    pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
+        let n = ks.len();
         (2..=16).contains(&n)
-            && (2..=4).contains(&k)
-            && n * k <= 32
+            && ks.iter().all(|k| (2..=4).contains(k))
+            && ks.iter().sum::<usize>() <= 32
             && self.comm.is_none()
             && self.lora.is_none()
             && self.dflash_hidden_save.is_none()
@@ -66,11 +69,11 @@ impl TransformerModel {
                 .is_none()
     }
 
-    /// Batched K-row verify for `n = seqs.len()` sequences (R = n*k rows,
-    /// k = drafts+1 in 2..=4).
+    /// Batched K-row verify for `n = seqs.len()` sequences (R = Σ ks rows,
+    /// each `ks[i]` = that sequence's drafts+1 in 2..=4, ragged since D-Cut).
     ///
-    /// Row r = i*k + j is sequence i's token j (`tokens[i*k..(i+1)*k] =
-    /// [last_verified, d0, .., d_{k-2}]`, flat seq-major). Weight-bearing
+    /// Row `off_i + j` is sequence i's token j (its slice of `tokens` is
+    /// `[last_verified, d0, .., d_{ks[i]-2}]`, flat seq-major). Weight-bearing
     /// ops (QKVZ/out_proj/FFN/lm_head) batch across all R rows via the
     /// existing M-generic arms; attention runs through `decode_multi_seq`
     /// with per-row block tables / seq lens; the GDN conv+WY body runs
@@ -80,7 +83,7 @@ impl TransformerModel {
     /// byte-identical per-sequence loop only when the slot layout is
     /// fragmented.
     ///
-    /// On success: per seq `tokens` += k, `seq_len` += k (verdict rewind is
+    /// On success: per seq `tokens` += ks[i], `seq_len` += ks[i] (rewind is
     /// the caller's arithmetic, as on the per-seq path). On Err no sequence
     /// state has been advanced. Logits rows stay live for row-based
     /// pipeline picks until the next forward — callers must consume them
@@ -88,7 +91,7 @@ impl TransformerModel {
     pub(super) fn decode_verify_batched_dispatch(
         &self,
         tokens: &[u32],
-        k: usize,
+        ks: &[usize],
         seqs: &mut [&mut SequenceState],
         _stream: u64,
     ) -> Result<Vec<u32>> {
@@ -96,12 +99,25 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let bf16 = 2usize;
         let n = seqs.len();
+        // Row offsets: sequence i owns rows [off[i], off[i+1]). RAGGED since
+        // D-Cut; `off[i] = i*k` is the uniform special case.
+        let mut off: Vec<usize> = Vec::with_capacity(n + 1);
+        let mut acc = 0usize;
+        for &k in ks {
+            off.push(acc);
+            acc += k;
+        }
+        off.push(acc);
+        let r_total = acc;
+        let k_max = ks.iter().copied().max().unwrap_or(0);
         ensure!(
-            n >= 2 && (2..=4).contains(&k) && tokens.len() == n * k,
-            "batched verify: n={n} k={k} tokens={}",
+            n >= 2
+                && ks.len() == n
+                && ks.iter().all(|k| (2..=4).contains(k))
+                && tokens.len() == r_total,
+            "batched verify: n={n} ks={ks:?} tokens={}",
             tokens.len()
         );
-        let r_total = n * k;
         // R ≤ 32: the exact capacity of the meta gaps below (positions
         // 128 B at +0, seq_slot at +128, slots 256 B at +256, seq_lens at
         // +512, bt staging sized for 32 rows in sizes.rs) and the 32-row
@@ -122,8 +138,8 @@ impl TransformerModel {
         }
 
         let bs = kv_cache.block_size();
-        for seq in seqs.iter_mut() {
-            let last_pos = seq.seq_len + k - 1;
+        for (i, seq) in seqs.iter_mut().enumerate() {
+            let last_pos = seq.seq_len + ks[i] - 1;
             ensure_blocks_through_decode(
                 seq,
                 last_pos / bs,
@@ -143,8 +159,8 @@ impl TransformerModel {
         let mut slots = [0i64; 32];
         let mut seq_lens = [0i32; 32];
         for (i, seq) in seqs.iter().enumerate() {
-            for j in 0..k {
-                let r = i * k + j;
+            for j in 0..ks[i] {
+                let r = off[i] + j;
                 let pos = seq.seq_len + j;
                 positions[r] = pos as u32;
                 let physical_block = seq.physical_block_for(pos / bs).unwrap_or(0);
@@ -169,8 +185,8 @@ impl TransformerModel {
         let needed = r_total * mb;
         let mut bt_buf = vec![0i32; needed];
         for (i, seq) in seqs.iter().enumerate() {
-            for j in 0..k {
-                let row = i * k + j;
+            for j in 0..ks[i] {
+                let row = off[i] + j;
                 for (bi, &block) in seq.block_table.iter().enumerate().take(mb) {
                     bt_buf[row * mb + bi] = block as i32;
                 }
@@ -210,7 +226,10 @@ impl TransformerModel {
         // pointer-table form as wy4: at k<4 the fast path used to decline
         // into the per-seq conv/WY loop (n launches per layer instead of 2),
         // which is exactly the k<4 verify-step cost the n=16 matrix measured.
-        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k, stream)?;
+        // Staged at the batch's DEEPEST width: a sequence pruned to fewer rows
+        // simply leaves its tail slabs unread (the WY launch for its depth
+        // reads `k-1` intermediate tables), and the strides are k-independent.
+        let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k_max, stream)?;
 
         // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
         // illegal access is attributed to the exact layer (same hatch as
@@ -224,7 +243,7 @@ impl TransformerModel {
         // refreshed above. can_batch already excludes EP/HSS/LoRA/DFlash.
         let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
         let graph_key = if graphs_on {
-            self.verify_batched_graph_key(&*seqs, k, wy_tables_base.is_null())
+            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
         } else {
             None
         };
@@ -276,8 +295,8 @@ impl TransformerModel {
             // Host-side per-row attention args (verify_c2 pattern, R rows).
             let mut seq_lens_vec: Vec<usize> = Vec::with_capacity(r_total);
             let mut block_tables_vec: Vec<Vec<u32>> = Vec::with_capacity(r_total);
-            for seq in seqs.iter() {
-                for j in 0..k {
+            for (i, seq) in seqs.iter().enumerate() {
+                for j in 0..ks[i] {
                     seq_lens_vec.push(seq.seq_len + j);
                     block_tables_vec.push(seq.block_table.clone());
                 }
@@ -340,7 +359,7 @@ impl TransformerModel {
                         hidden,
                         residual,
                         n,
-                        k,
+                        ks,
                         &mut state_refs,
                         &mut kv_cache,
                         wy_slice,
@@ -415,7 +434,7 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!(
-                        "Captured CUDA graph for batched K={k} verify (n={n}, key={:?})",
+                        "Captured CUDA graph for batched verify ks={ks:?} (n={n}, key={:?})",
                         graph_key
                     );
                     if let (Some(ref mut g), Some(key)) = (graphs.as_mut(), graph_key) {
@@ -462,10 +481,10 @@ impl TransformerModel {
         }
 
         for (i, seq) in seqs.iter_mut().enumerate() {
-            for &t in &tokens[i * k..(i + 1) * k] {
+            for &t in &tokens[off[i]..off[i + 1]] {
                 seq.tokens.push(t);
             }
-            seq.seq_len += k;
+            seq.seq_len += ks[i];
         }
 
         Ok(out)

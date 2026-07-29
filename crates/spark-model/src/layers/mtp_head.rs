@@ -247,6 +247,11 @@ pub struct MtpHead {
     /// `argmax_bf16_batch` for the batched-propose per-row argmax (0 when
     /// absent; falls back to the serial per-row scan).
     argmax_batch_k: KernelHandle,
+    /// `argmax_bf16_batch_lp` — the same batched argmax that ALSO emits each
+    /// row's top-1 log-probability. Resolved with `try_kernel`, so 0 means the
+    /// module predates this kernel; D-Cut gates on it and declines rather than
+    /// silently proposing without confidences.
+    argmax_batch_lp_k: KernelHandle,
     /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
 }

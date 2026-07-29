@@ -41,6 +41,12 @@ use crate::weight_map::DenseWeight;
 
 use super::batch_caps::PROPOSE_META_STRIDE;
 
+/// Byte offset inside the shared scratch arena where the batched propose
+/// stages the per-row top-1 log-probabilities (FP32). The n argmax ids live at
+/// scratch[0..n*4) with n <= 16, so 256 clears them with slack; the attention
+/// metadata regions of every other consumer start at +32768.
+const LP_SCRATCH_OFF: usize = 256;
+
 impl MtpHead {
     /// M=n-row BF16 GEMM dispatch: pipelined tensor-core GEMM for the large
     /// weight-bearing shapes (reads B once for all rows), per-row GEMV for
@@ -109,6 +115,7 @@ impl MtpHead {
         ctx: &ForwardContext,
         stream: u64,
         out_ids: &mut [u32],
+        out_lp: Option<&mut [f32]>,
     ) -> Result<()> {
         let n = tokens.len();
         let h = ctx.config.hidden_size;
@@ -461,8 +468,35 @@ impl MtpHead {
             h as u32,
             stream,
         )?;
-        if self.argmax_batch_k.0 != 0 {
-            ops::argmax_bf16_batch(gpu, self.argmax_batch_k, logits, scratch, v, n as u32, v, stream)?;
+        // D-Cut confidence: the LP variant is the SAME single-pass reduction
+        // plus an online-softmax accumulator, so it replaces (never
+        // supplements) the plain batched argmax when confidences are wanted.
+        // Log-probs land at `scratch + LP_SCRATCH_OFF`, clear of the n ids at
+        // scratch[0..n*4) and far below the +32768 attention-metadata region.
+        let want_lp = out_lp.is_some() && self.argmax_batch_lp_k.0 != 0;
+        if want_lp {
+            ops::argmax_bf16_batch_lp(
+                gpu,
+                self.argmax_batch_lp_k,
+                logits,
+                scratch,
+                scratch.offset(LP_SCRATCH_OFF),
+                v,
+                n as u32,
+                v,
+                stream,
+            )?;
+        } else if self.argmax_batch_k.0 != 0 {
+            ops::argmax_bf16_batch(
+                gpu,
+                self.argmax_batch_k,
+                logits,
+                scratch,
+                v,
+                n as u32,
+                v,
+                stream,
+            )?;
         } else {
             for i in 0..n {
                 ops::argmax_bf16(
@@ -477,10 +511,29 @@ impl MtpHead {
         }
 
         // 11. One sync D2H for the n ids (the per-seq path pays n of these).
-        let mut buf = vec![0u8; n * 4];
+        // With confidences wanted the ids and the FP32 log-probs are two
+        // regions of the same scratch buffer — still ONE D2H, widened.
+        let d2h_len = if want_lp {
+            LP_SCRATCH_OFF + n * 4
+        } else {
+            n * 4
+        };
+        let mut buf = vec![0u8; d2h_len];
         gpu.copy_d2h(scratch, &mut buf)?;
         for (i, id) in out_ids.iter_mut().enumerate() {
             *id = u32::from_le_bytes([buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]]);
+        }
+        if let Some(lp) = out_lp {
+            for (i, slot) in lp.iter_mut().enumerate().take(n) {
+                *slot = if want_lp {
+                    let o = LP_SCRATCH_OFF + i * 4;
+                    f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
+                } else {
+                    // No LP kernel: report certainty so a caller ranking by
+                    // prefix product never prunes on a value it did not measure.
+                    0.0
+                };
+            }
         }
 
         // 12. Bookkeeping (forward_one's tail, per row).
@@ -506,6 +559,7 @@ impl MtpHead {
         states: &mut [&mut MtpProposerState],
         ctx: &ForwardContext,
         stream: u64,
+        mut out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Vec<Vec<u32>>> {
         let n = last_tokens.len();
         ensure!(
@@ -535,6 +589,14 @@ impl MtpHead {
         let mut cur_positions = positions.to_vec();
         let mut ids = vec![0u32; n];
         let mut all: Vec<Vec<u32>> = vec![Vec::with_capacity(num_drafts); n];
+        // D-Cut: per-sequence, per-position top-1 log-probability, filled only
+        // when the caller asked for it (the LP argmax replaces the plain one,
+        // so the cost is the widened D2H, not a second reduction).
+        let mut lp = vec![0f32; n];
+        if let Some(c) = out_conf.as_deref_mut() {
+            c.clear();
+            c.resize(n, Vec::with_capacity(num_drafts));
+        }
         for j in 0..num_drafts {
             let hiddens_j: Vec<DevicePtr> = if j == 0 {
                 target_hiddens.to_vec()
@@ -551,10 +613,20 @@ impl MtpHead {
                 ctx,
                 stream,
                 &mut ids,
+                if out_conf.is_some() {
+                    Some(&mut lp[..])
+                } else {
+                    None
+                },
             )?;
             for i in 0..n {
                 all[i].push(ids[i]);
                 cur_positions[i] += 1;
+            }
+            if let Some(c) = out_conf.as_deref_mut() {
+                for (i, row) in c.iter_mut().enumerate().take(n) {
+                    row.push(lp[i]);
+                }
             }
             cur_tokens.copy_from_slice(&ids);
             for state in states.iter_mut() {

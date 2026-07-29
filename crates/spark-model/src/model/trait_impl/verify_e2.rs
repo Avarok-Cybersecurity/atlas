@@ -34,9 +34,11 @@ impl TransformerModel {
     /// order — every SSM pointer the graph bakes (h/conv state, rollback
     /// intermediates, WY table contents) is a pure function of this vector;
     /// all other captured addresses (hidden/logits/scratch/meta) are fixed
-    /// buffers refreshed pre-replay. `k` (verify rows per sequence) is
-    /// appended because a graph bakes the R = n*k launch dimensions — the
-    /// same slot vector at a different ladder step must not replay. A
+    /// buffers refreshed pre-replay. The per-sequence ROW VECTOR `ks` is
+    /// interleaved into the key because a graph bakes both the R = Σ ks launch
+    /// dimensions AND, under D-Cut, WHICH sequence got which depth (the GDN
+    /// runs are grouped by depth) — the same slot vector at a different ladder
+    /// step or a different D-Cut shape must not replay. A
     /// wy-tables-present sentinel is appended so a table-less capture can
     /// never replay a table-full step or vice versa. The scheduler sorts
     /// each chunk by ssm slot before dispatch, so keys are combinations,
@@ -45,14 +47,14 @@ impl TransformerModel {
     pub(super) fn verify_batched_graph_key(
         &self,
         seqs: &[&mut SequenceState],
-        k: usize,
+        ks: &[usize],
         wy_tables_null: bool,
     ) -> Option<Vec<u32>> {
-        let mut key: Vec<u32> = Vec::with_capacity(seqs.len() + 2);
-        for s in seqs.iter() {
+        let mut key: Vec<u32> = Vec::with_capacity(2 * seqs.len() + 1);
+        for (i, s) in seqs.iter().enumerate() {
             key.push(s.ssm_slot_idx()? as u32);
+            key.push(*ks.get(i)? as u32);
         }
-        key.push(k as u32);
         key.push(u32::MAX - u32::from(wy_tables_null));
         Some(key)
     }
@@ -112,8 +114,7 @@ impl TransformerModel {
                 }
                 host[base + i] = st.h_state.0;
                 for t in 0..k - 1 {
-                    host[base + (t + 1) * VERIFY_WY_TABLE_SEQS + i] =
-                        st.h_state_intermediates[t].0;
+                    host[base + (t + 1) * VERIFY_WY_TABLE_SEQS + i] = st.h_state_intermediates[t].0;
                 }
             }
             ssm_idx += 1;

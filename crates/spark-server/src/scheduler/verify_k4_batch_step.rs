@@ -4,8 +4,8 @@
 //! K-vs-batch ladder, task #35).
 //!
 //! Runs the n weight-reading verify forwards of a chunk of verify-ready
-//! sequences as ONE R = n*(k+1)-row forward (`decode_verify_batched`,
-//! seq-major rows `r = i*rows + j`), then applies each sequence's verdict
+//! sequences as ONE R = Σ ks[i]-row forward (`decode_verify_batched`,
+//! seq-major rows, RAGGED per sequence since D-Cut), then applies its verdict
 //! with the EXISTING single-seq machinery (`k4_apply_verdict`, K-generic).
 //! `k_drafts` (drafts per sequence this step) comes from the ladder —
 //! `speculative::ladder::mtp_ladder_drafts(active.len())` — 3 at n<=4
@@ -20,8 +20,8 @@
 //!
 //! Reachability: only via `step_mtp` Phase B when `ATLAS_MTP_MAX_SEQS > 1`
 //! (default 16 with the ladder) puts >= 2 verify-ready grammarless
-//! sequences holding `k_drafts` drafts in one step AND the model says
-//! `can_batch_verify(n, k_drafts+1)`. `ATLAS_MTP_MAX_SEQS=1` keeps this
+//! sequences holding drafts in one step AND the model says
+//! `can_batch_verify(&ks)`. `ATLAS_MTP_MAX_SEQS=1` keeps this
 //! path dead and the single-seq path byte-unchanged.
 
 use super::*;
@@ -35,25 +35,36 @@ pub(super) fn batch_verify_disabled() -> bool {
     *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_BATCH_VERIFY").is_ok())
 }
 
-/// Batched K-row verify for `batch.len() >= 2` sequences, each holding
-/// exactly `k_drafts` pending drafts. Caller (Phase B in `mtp_step.rs`)
-/// guarantees: grammarless, non-DFlash, uniform `pending_drafts.len() ==
-/// k_drafts` (ladder-truncated), chunk size <= the per-rows cap, batch
-/// sorted by ssm slot (canonical graph key), and
-/// `model.can_batch_verify(batch.len(), k_drafts+1)` true.
+/// Batched K-row verify for `batch.len() >= 2` sequences. Sequence `i` holds
+/// exactly `ks[i] - 1` pending drafts — RAGGED since D-Cut, uniform without
+/// it. Caller (Phase B in `mtp_step.rs`) guarantees: grammarless, non-DFlash,
+/// `pending_drafts.len() == ks[i]-1`, `Σ ks <= 32`, batch sorted deepest-first
+/// then by ssm slot (canonical graph key), and `model.can_batch_verify(ks)`.
 ///
-/// `k_drafts` is also the re-propose width (Phase 4): the next round's
-/// drafts are sized for the CURRENT concurrency, so a ladder step-change
-/// truncates at most one round's surplus.
+/// `propose_nd` is the re-propose width (Phase 4) and is the LADDER width, not
+/// the pruned one: D-Cut prunes what gets VERIFIED, and must be free to
+/// re-expand a sequence next step, so the drafter always refills to the ladder
+/// depth. The next step's Phase B truncates whatever it does not want.
 pub(super) fn step_verify_k4_batched(
     model: &dyn Model,
     batch: &mut [&mut ActiveSeq],
-    k_drafts: usize,
+    ks: &[usize],
+    propose_nd: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
     let n = batch.len();
-    let rows = k_drafts + 1;
-    debug_assert!((2..=16).contains(&n) && (2..=4).contains(&rows) && n * rows <= 32);
+    debug_assert_eq!(ks.len(), n);
+    // Row offset of each sequence in the flat seq-major layout (ragged: the
+    // uniform `i*rows` is the special case where every `ks[i]` is equal).
+    let mut off: Vec<usize> = Vec::with_capacity(n + 1);
+    let mut acc = 0usize;
+    for &k in ks {
+        off.push(acc);
+        acc += k;
+    }
+    let r_total = acc;
+    off.push(r_total);
+    debug_assert!((2..=16).contains(&n) && ks.iter().all(|k| (2..=4).contains(k)) && r_total <= 32);
 
     // ATLAS_MTP_TIMING step summary (same Drop-guard pattern as the
     // single-seq step; one timer for the whole batched step).
@@ -74,12 +85,16 @@ pub(super) fn step_verify_k4_batched(
     // Drafts are taken here (not by the driver) so a batch-level bail
     // leaves no half-taken state behind.
     let mut drafts_per_seq: Vec<Vec<u32>> = Vec::with_capacity(n);
-    let mut tokens: Vec<u32> = Vec::with_capacity(n * rows);
-    for a in batch.iter_mut() {
+    let mut tokens: Vec<u32> = Vec::with_capacity(r_total);
+    for (i, a) in batch.iter_mut().enumerate() {
         let d = std::mem::take(&mut a.pending_drafts);
+        // Confidences describe the taken drafts — cleared in lock-step so a
+        // later step can never rank on a stale vector (SSOT, `mtp_dcut`).
+        a.pending_draft_conf.clear();
         debug_assert!(
-            d.len() == k_drafts,
-            "batchable classification requires exactly {k_drafts} drafts"
+            d.len() + 1 == ks[i],
+            "batchable classification requires exactly {} drafts",
+            ks[i] - 1
         );
         tokens.push(a.last_token);
         tokens.extend_from_slice(&d);
@@ -93,10 +108,10 @@ pub(super) fn step_verify_k4_batched(
     let t_verify = Instant::now();
     let results: Vec<u32> = {
         let mut seq_refs: Vec<&mut SequenceState> = batch.iter_mut().map(|a| &mut a.seq).collect();
-        match model.decode_verify_batched(&tokens, rows, &mut seq_refs, 0) {
+        match model.decode_verify_batched(&tokens, ks, &mut seq_refs, 0) {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!("decode_verify_batched (n={n} rows={rows}): {e:#}");
+                tracing::error!("decode_verify_batched (n={n} ks={ks:?}): {e:#}");
                 for a in batch.iter_mut() {
                     a.finished = true;
                 }
@@ -111,16 +126,14 @@ pub(super) fn step_verify_k4_batched(
     let mut verdicts: Vec<(Vec<u32>, usize, Vec<crate::api::TokenLogprobs>)> =
         Vec::with_capacity(n);
     for (i, a) in batch.iter_mut().enumerate() {
-        let r = &results[i * rows..(i + 1) * rows];
+        let rows = ks[i];
+        let k_drafts = rows - 1;
+        let r = &results[off[i]..off[i + 1]];
         // Full pre-sample pipeline per verify position, reading this
         // sequence's rows (row_base = i*rows) — same 8-stage semantics as
         // the single-seq MTP path.
         let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-            model,
-            r,
-            a,
-            verify_ctx,
-            i * rows,
+            model, r, a, verify_ctx, off[i],
         );
         let v: Vec<u32> = (0..rows)
             .map(|j| processed.get(j).copied().unwrap_or(r[j]))
@@ -147,7 +160,7 @@ pub(super) fn step_verify_k4_batched(
         // the shipped n in [5,8] ladder step (k_drafts == 2); this one is not.
         crate::scheduler::mtp_accept_debug::record(n, k_drafts, drafts[0] == v[0], num_accepted);
         let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
-            extract_verify_logprobs(model, &v, top_logprobs, i * rows)
+            extract_verify_logprobs(model, &v, top_logprobs, off[i])
         } else {
             Vec::new()
         };
@@ -162,7 +175,7 @@ pub(super) fn step_verify_k4_batched(
     let stash_rows: Vec<usize> = verdicts
         .iter()
         .enumerate()
-        .map(|(i, &(_, num_accepted, _))| i * rows + num_accepted)
+        .map(|(i, &(_, num_accepted, _))| off[i] + num_accepted)
         .collect();
     if let Err(e) = model.stash_verify_hidden_rows(&stash_rows, 0) {
         // Degraded, not fatal: verdicts still apply; each seq's
@@ -183,7 +196,7 @@ pub(super) fn step_verify_k4_batched(
             &drafts_per_seq[i],
             &v,
             verify_lps,
-            k_drafts,
+            ks[i] - 1,
             num_accepted,
             K4Hidden::DeferPropose,
             verify_us,
@@ -209,6 +222,10 @@ pub(super) fn step_verify_k4_batched(
     }
     let mut need_fallback: Vec<usize> = Vec::new();
     let mut groups_batched = 0usize;
+    // D-Cut ranking key: only requested when the lever is armed, so the plain
+    // batched argmax (and its narrower D2H) stays on the default path.
+    let want_conf = crate::scheduler::mtp_dcut::dcut_enabled();
+    let mut conf: Vec<Vec<f32>> = Vec::new();
     let group_cap = model.mtp_propose_batch_max().max(1);
     if pending.len() >= 2 && group_cap >= 2 && !batch_propose_disabled() {
         for group in pending.chunks(group_cap) {
@@ -233,9 +250,10 @@ pub(super) fn step_verify_k4_batched(
                     &tokens,
                     &positions,
                     &stash_idx,
-                    k_drafts,
+                    propose_nd,
                     &mut seq_refs,
                     0,
+                    want_conf.then_some(&mut conf),
                 )
             };
             match result {
@@ -243,6 +261,7 @@ pub(super) fn step_verify_k4_batched(
                     for (j, &i) in group.iter().enumerate() {
                         if !all[j].is_empty() {
                             batch[i].pending_drafts = all[j].clone();
+                            batch[i].pending_draft_conf = conf.get(j).cloned().unwrap_or_default();
                         }
                     }
                     groups_batched += 1;
@@ -272,11 +291,13 @@ pub(super) fn step_verify_k4_batched(
         match model.run_mtp_propose_multi(
             a.last_token,
             a.seq.seq_len,
-            k_drafts,
+            propose_nd,
             &mut a.seq,
             0,
             _mtp_grammar_mask.as_deref(),
         ) {
+            // No confidences on the per-seq path: leave them empty so D-Cut
+            // reads this sequence as "not measured" and keeps its full depth.
             Ok(d) if !d.is_empty() => a.pending_drafts = d,
             Ok(_) => {}
             Err(e) => {
@@ -285,7 +306,7 @@ pub(super) fn step_verify_k4_batched(
         }
     }
     tracing::debug!(
-        "K{rows} batched propose: n={} cap={group_cap} groups_batched={groups_batched} \
+        "K{propose_nd} batched propose: n={} cap={group_cap} groups_batched={groups_batched} \
          fallback={} propose={}μs",
         pending.len(),
         need_fallback.len(),
