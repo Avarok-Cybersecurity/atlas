@@ -66,6 +66,86 @@ fn disk_cap_bounds_swap_and_drops_coldest() {
     assert_eq!(get(&mut r, 8).as_deref(), Some(&blob(8)[..]));
 }
 
+/// The SWAP-FILE bound an operator actually budgets against. `disk_count` is
+/// the live-record count, but the file never shrinks (`DirectSwapFile` doesn't
+/// override `discard_record`), so its size is `disk_high_water × blob_bytes`.
+/// `locate`'s OnDisk arm pulls the faulting key out of `disk_lru` while its
+/// record is still live, so `make_disk_room` counts one fewer than exist and
+/// the high-water mark can reach `cap + 1` — never more. That "+1" is exactly
+/// what the caller-side conversion subtracts before handing a cap down, so a
+/// budget is never overshot.
+#[test]
+fn disk_high_water_never_exceeds_cap_plus_one() {
+    const CAP: usize = 4;
+    let mut r = residency_capped(2, CAP);
+    for k in 0..40u64 {
+        put(&mut r, k, k as u8);
+        // Interleave GETs of (likely) on-disk keys to exercise the transient
+        // where a faulting record is live but out of disk_lru.
+        for probe in k.saturating_sub(3)..k {
+            let _ = get(&mut r, probe);
+        }
+        assert!(
+            r.disk_count() <= CAP,
+            "live on-disk records must stay within the cap (k={k}, {} > {CAP})",
+            r.disk_count()
+        );
+        assert!(
+            r.disk_high_water() <= CAP + 1,
+            "swap file must never exceed cap+1 records (k={k}, {} > {})",
+            r.disk_high_water(),
+            CAP + 1
+        );
+    }
+    assert_eq!(r.max_disk_slots(), CAP);
+    assert!(
+        r.stats().disk_evictions > 0,
+        "the cap must actually have been load-bearing in this run"
+    );
+}
+
+/// The one correctness property a cap could genuinely break: a fault-in must
+/// never drop the very record it is faulting. The GET below triggers
+/// `acquire_slot` → `evict_coldest_to_disk` → `make_disk_room` INSIDE the same
+/// call, with the disk already at cap — so the faulting key is the coldest
+/// candidate by insertion order. `locate` self-pins it (pulling it out of
+/// `disk_lru` before acquiring a slot), so the victim is some other key and the
+/// blob comes back byte-identical. This is the achievable form of "a record
+/// something is actively using is never dropped".
+#[test]
+fn capped_fault_in_never_self_evicts() {
+    const CAP: usize = 2;
+    let mut r = residency_capped(1, CAP); // 1 hot slot ⇒ every put spills
+    for k in 0..4u64 {
+        put(&mut r, k, k as u8);
+    }
+    assert_eq!(r.disk_count(), CAP, "disk sitting exactly at the cap");
+    let evictions_before = r.stats().disk_evictions;
+    // Key 1 is on disk AND is the coldest on-disk entry — without the self-pin
+    // at locate's OnDisk arm, the nested make_disk_room would see disk_lru at
+    // the cap and drop key 1 itself, then read the record it just discarded.
+    assert_eq!(
+        get(&mut r, 1),
+        Some(blob(1)),
+        "the faulting record must survive its own fault-in, byte-identical"
+    );
+    assert_eq!(
+        r.stats().disk_evictions,
+        evictions_before,
+        "the self-pin freed the cap slot, so the fault dropped NOTHING — least \
+         of all its own record"
+    );
+    assert_eq!(
+        get(&mut r, 2),
+        Some(blob(2)),
+        "the bystander on-disk key spilled during the fault is intact too"
+    );
+    assert!(
+        r.disk_high_water() <= CAP + 1,
+        "the transient extra live record is the documented +1, not unbounded growth"
+    );
+}
+
 /// THE headline invariant: put far more keys than the arena holds; the
 /// coldest spill to the disk tier and fault back BYTE-IDENTICAL. "Infinite
 /// depth, never dropped" proven at the paging layer.
@@ -478,5 +558,74 @@ fn fault_in_read_failure_keeps_key_on_disk_and_frees_slot() {
     assert!(
         r.get_blob(21, &mut out).unwrap() && out == blob(21),
         "bystander 21 (spilled during the failed fault) is intact"
+    );
+}
+
+/// THE no-aliasing invariant: a disk record must be owned by AT MOST ONE key.
+///
+/// `alloc`'s `OnDisk` arm frees the key's disk record BEFORE `acquire_slot` has
+/// succeeded, but leaves `map[key] = OnDisk(that record)` in place. If the
+/// spill inside `acquire_slot` then fails (canonically ENOSPC on the swap file),
+/// the error propagates with the record on the free list AND still claimed by
+/// the key's map entry. The next spill hands that same record to a DIFFERENT
+/// key, and a later GET of the first key reads the second key's blob and
+/// reports `Ok(true)` — silent cross-request corruption, not an error. In
+/// production these blobs are whole SSM snapshots, so this restores one
+/// request's recurrent state into another request's sequence.
+#[test]
+fn failed_reput_of_spilled_key_must_not_alias_its_disk_record() {
+    let (swap, faults) = FaultySwap::new();
+    let mut r = Residency::new(FaultyArena::new(1), swap).unwrap(); // 1 hot slot ⇒ every new key spills
+    r.put_blob(1, &blob(1)).unwrap();
+    r.put_blob(2, &blob(2)).unwrap(); // spills key 1 → disk record 0
+    assert_eq!(r.stats().spills_to_disk, 1, "key 1 is on disk");
+
+    // Re-PUT the SPILLED key 1 with the swap file full: alloc frees record 0,
+    // then the spill of key 2 inside acquire_slot hits ENOSPC and errors.
+    faults.fail_write.store(true, Ordering::SeqCst);
+    assert!(
+        r.put_blob(1, &blob(99)).is_err(),
+        "ENOSPC during the re-PUT of a spilled key propagates"
+    );
+
+    // One more successful spill hands the (wrongly) freed record to key 2.
+    r.put_blob(3, &blob(3)).unwrap();
+
+    let mut out = vec![0u8; B];
+    let hit = r.get_blob(1, &mut out).unwrap();
+    assert!(
+        !hit || out == blob(1) || out == blob(99),
+        "GET(key 1) returned Ok(true) with {out:?} — key 2's blob. The failed \
+         re-PUT left record 0 on the free list while key 1's map entry still \
+         pointed at it, so two keys now alias one record. A clean miss or key \
+         1's own bytes are the only correct answers."
+    );
+}
+
+/// The same defect in its double-free form: because the failed re-PUT leaves
+/// `map[key] = OnDisk(d)` intact, RETRYING the re-PUT (the natural response to
+/// a transient ENOSPC) takes the `OnDisk` arm a second time and pushes `d` onto
+/// `free_disk` AGAIN. Two later spills then hand the one record to two keys.
+#[test]
+fn retried_reput_must_not_double_free_the_same_disk_record() {
+    let (swap, faults) = FaultySwap::new();
+    let mut r = Residency::new(FaultyArena::new(1), swap).unwrap();
+    r.put_blob(1, &blob(1)).unwrap();
+    r.put_blob(2, &blob(2)).unwrap(); // spills key 1 → disk record 0
+
+    faults.fail_write.store(true, Ordering::SeqCst);
+    assert!(
+        r.put_blob(1, &blob(99)).is_err(),
+        "first attempt hits ENOSPC"
+    );
+    r.put_blob(1, &blob(99)).unwrap(); // retry succeeds — and re-frees record 0
+    r.put_blob(4, &blob(4)).unwrap(); // consumes the duplicate free-list entry
+
+    let mut out = vec![0u8; B];
+    let hit = r.get_blob(2, &mut out).unwrap();
+    assert!(
+        !hit || out == blob(2),
+        "GET(key 2) returned Ok(true) with {out:?} — key 1's blob. Record 0 was \
+         freed twice and handed to both keys."
     );
 }

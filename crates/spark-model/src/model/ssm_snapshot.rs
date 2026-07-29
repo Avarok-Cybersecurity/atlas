@@ -88,6 +88,11 @@ pub(crate) struct SsmSnapshotPool {
     /// Marconi slots that currently hold a valid `hidden_snapshot` entry
     /// (only leaf saves populate it; intermediate checkpoints do not).
     pub(super) slot_has_hidden: Mutex<std::collections::HashSet<usize>>,
+    /// Reusable page-locked staging blob shared by the tier spill/fault-in
+    /// paths. See [`super::ssm_spill_staging::SpillStaging`] — a fresh
+    /// `vec![0u8; 66_846_720]` per event was part of the measured ~400 ms
+    /// spill. Freed from `TransformerModel::drop` via `free_staging`.
+    pub(super) spill_staging: super::ssm_spill_staging::SpillStaging,
 }
 
 impl SsmSnapshotPool {
@@ -128,6 +133,7 @@ impl SsmSnapshotPool {
                 hidden_snapshot: DevicePtr::NULL,
                 hidden_bytes,
                 slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
+                spill_staging: Default::default(),
             });
         }
 
@@ -185,6 +191,7 @@ impl SsmSnapshotPool {
             hidden_snapshot,
             hidden_bytes,
             slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
+            spill_staging: Default::default(),
         })
     }
 

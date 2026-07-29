@@ -39,7 +39,10 @@ use super::super::types::TransformerModel;
 /// a beneficial deep fault. Tune per template via the miss-depth histogram.
 const DEFAULT_FAULT_MIN_TOKENS: usize = 256;
 
-fn fault_in_min_tokens() -> usize {
+/// Visible to `model::ssm_spill_gate`, which clamps the SPILL gate to never sit
+/// below this one (spilling what the fault-in gate would refuse to read back is
+/// a guaranteed pure loss).
+pub(in crate::model) fn fault_in_min_tokens() -> usize {
     parse_fault_min_tokens(std::env::var("ATLAS_SSM_FAULT_MIN_TOKENS").ok())
 }
 
