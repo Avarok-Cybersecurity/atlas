@@ -118,6 +118,9 @@ mod tests {
             DEFAULT_SPILL_MIN_TOKENS,
             "DEFAULT_SPILL_MIN_TOKENS must already be >= the fault-in gate"
         );
-        assert!(SPILL_COST_MS > 0);
+        // `SPILL_COST_MS > 0` is a compile-time property of a const, so a
+        // runtime assert on it is vacuous (clippy::assertions_on_constants).
+        // Enforce it where it actually binds — at compile time.
+        const _: () = assert!(SPILL_COST_MS > 0);
     }
 }
