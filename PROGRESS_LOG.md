@@ -181,6 +181,31 @@ prefill (the point of the flag: the FP8 crush causes "length-truncations /
 accuracy risk on Qwen3.6-27B") with no crash. Strictly better than removing it,
 which is what §3a's config currently does.
 
+**RESOLVED (2026-07-29) — fix 2 found and fixed: a MISSING 9th KERNEL ARG.**
+The suspicion above was right. `e7daea87` (the #379 head commit) retrofitted a
+9th param `unsigned int ldb` (transposed-B row stride, for lm_head's odd vocab
+stride) onto exactly three kernels, all in the 27B dir only: `w4a16_gemm_t`,
+`w4a16_gemm_t_p3` and `w4a16_gemm_t_m128_bf16_v2`. The first two got their
+launchers updated (`w4a16_gemm_n128` forwards `ldb = n`); **the v2 bf16 kernel
+did not** — `dense_ffn.rs` kept launching it through the 8-arg
+`w4a16_gemm_n128_m128_bf16` helper. With `cuLaunchKernel`'s `void**` param
+form the driver reads one host word per COMPILED param, so it dereferences
+`params[8]` — one past the end of the 8-element arg array. Neighboring heap
+word null → `CUDA_ERROR_INVALID_VALUE` (the fifo HTTP 500); non-null garbage
+pointer → host SIGSEGV (the slai exit 139). One UB, both symptoms.
+
+Fixed on this branch: dense_ffn routes v2 through
+`w4a16_gemm_n128_m128_bf16_ldb` with `ldb = N` (the FFN transposed twins are
+unpadded), the gate now checks the handle actually launched (fix 1), and the
+same missing arg was fixed in `w4a16_bf16_v2_microtest.rs` /
+`w4a16_bf16_v2_bench.rs` — the microtest that "proved v2 bit-identical" had
+the identical UB, which is why v2 passed validation and shipped.
+(`w4a16_m17_bench.rs` already passed a trailing `ldb` and documents that CUDA
+ignores extra trailing args; only MISSING args are UB.) After this,
+`ATLAS_BF16_TC_PREFILL=1` alone (v2, the faster variant) is expected to work —
+re-run `v2_bisect.sh` leg B to confirm; the `DISABLE_PREFILL_V2` pairing
+remains as the escape hatch.
+
 ### 5.2 `PROPOSE_META_STRIDE` caps batched MTP propose at ~7.2K context
 
 `mtp_head/forward_batch.rs`: `ensure!(256 + block_table.len()*4 <= 2048)` →
@@ -393,13 +418,14 @@ the useful read is only that nothing in this config regressed concurrency.
 
 Ordered by what I would pick up first.
 
-1. **§5.1 fix 2 — why does `w4a16_gemm_t_m128_bf16_v2` fail to launch?** Null
-   handle, static smem and grid/block are all ruled out; check the launcher's
-   parameter pack against v2's compiled signature. Fix 1 (gate on the launched
-   handle) is a one-liner and worth doing regardless.
-2. **§5.7 — add a per-request nonce to `make_prompt`**, or stop quoting the TTFT
-   column. Then re-check whether `prefill_long` really produces 0 meta-stride
-   hits or whether caching was hiding them.
+1. ~~**§5.1 fix 2 — why does `w4a16_gemm_t_m128_bf16_v2` fail to launch?**~~
+   **DONE (2026-07-29):** missing 9th `ldb` arg — see the RESOLVED block in
+   §5.1. Both fixes landed; e2e leg-B revalidation pending.
+2. **§5.7 — add a per-request nonce to `make_prompt`**: DONE (2026-07-29) —
+   `make_prompt` now embeds a per-request nonce and is called per request, not
+   per cell. All PRIOR TTFT columns (incl. §6.1 and #379's table) predate this
+   and measured cache hits. Still open: re-check whether `prefill_long` really
+   produces 0 meta-stride hits now that prefill is cold.
 3. **§5.2 — size `propose_meta` from `max_seq_len`** instead of a fixed 2048, and
    demote the per-step `ERROR` to a once-per-sequence `debug`.
 4. **§5.6 — warn at startup when `ssm_checkpoint_interval * block_size <

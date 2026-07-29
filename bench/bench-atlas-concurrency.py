@@ -12,6 +12,7 @@ Usage:
 """
 
 import asyncio
+import itertools
 import json
 import os
 import sys
@@ -78,10 +79,19 @@ PROMPT_SUFFIX = ("\n\nProvide a very detailed and comprehensive analysis. "
                  "Do not stop early. Cover every aspect in depth.")
 
 
+_PROMPT_SEQ = itertools.count()
+
+
 def make_prompt(target_tokens: int) -> str:
-    chars_needed = target_tokens * 4
+    # Per-request nonce: with --enable-prefix-caching a repeated prompt is
+    # served from cache after the first request of a cell, so TTFT measured
+    # cache hits, not prefill (p50 340 ms on an 8K prompt was the tell).
+    # A unique prefix forces every request to do real prefill work.
+    nonce = f"[req {next(_PROMPT_SEQ):06d}] "
+    chars_needed = max(1, target_tokens * 4 - len(nonce))
     repeats = max(1, chars_needed // len(FILLER_WORD))
-    return f"Analyze the following text thoroughly:\n\n{(FILLER_WORD * repeats)[:chars_needed]}{PROMPT_SUFFIX}"
+    body = (FILLER_WORD * repeats)[:chars_needed]
+    return f"{nonce}Analyze the following text thoroughly:\n\n{body}{PROMPT_SUFFIX}"
 
 
 def percentile(data: list, p: float) -> float:
@@ -188,7 +198,6 @@ async def send_streaming_request(session, prompt: str, max_tokens: int):
 
 
 async def benchmark_config(session, isl: int, osl: int, regime: str, label: str) -> list:
-    prompt = make_prompt(isl)
     config_results = []
 
     for conc in CONCURRENCY_LEVELS:
@@ -201,7 +210,12 @@ async def benchmark_config(session, isl: int, osl: int, regime: str, label: str)
             batch_size = min(conc, total_requests - len(all_results))
             if batch_size <= 0:
                 break
-            tasks = [send_streaming_request(session, prompt, osl) for _ in range(batch_size)]
+            # make_prompt per REQUEST (not per cell): each call embeds a fresh
+            # nonce so prefix caching cannot serve repeats from cache.
+            tasks = [
+                send_streaming_request(session, make_prompt(isl), osl)
+                for _ in range(batch_size)
+            ]
             batch = await asyncio.gather(*tasks)
             all_results.extend(batch)
 
