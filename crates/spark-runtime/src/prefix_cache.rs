@@ -306,6 +306,25 @@ pub trait PrefixCache: Send + Sync {
         false
     }
 
+    /// Phase 1b spill tier: the FAILED-fault-in twin of [`Self::promote_snapshot`].
+    /// The caller's `store.get(key)` MISSED, so this entry is findable by
+    /// `lookup_tiered` with no bytes behind it. Left in place, every warm turn
+    /// on this prefix repeats the whole doomed cycle — spill a LIVE 66 MB
+    /// victim D2H to free a slot, fault in, miss, free the slot — and then
+    /// recomputes anyway; under `ATLAS_SSM_TIER_DISK_GB` that doomed spill
+    /// evicts one MORE tier record, so the cap's own pressure re-amplifies
+    /// itself. Dropping the entry degrades the prefix to a plain recompute
+    /// ONCE.
+    ///
+    /// Only removes an entry that is still `tiered`: a resident entry's
+    /// `snapshot_id` is a LIVE pool slot that only its owner may free, so a
+    /// by-key remove of one would leak it. Returns whether an entry was
+    /// dropped. Default: `false` (no tier).
+    fn forget_snapshot_tier_key(&self, key: u64) -> bool {
+        let _ = key;
+        false
+    }
+
     /// Number of SSM snapshots currently stored in the snapshot index.
     fn snapshot_count(&self) -> usize;
 

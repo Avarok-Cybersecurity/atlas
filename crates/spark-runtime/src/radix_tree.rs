@@ -268,6 +268,10 @@ impl PrefixCache for RadixTree {
         self.snapshot_index.lock().promote(key, new_slot)
     }
 
+    fn forget_snapshot_tier_key(&self, key: u64) -> bool {
+        self.snapshot_index.lock().forget_tiered(key)
+    }
+
     fn snapshot_count(&self) -> usize {
         self.snapshot_index.lock().len()
     }
