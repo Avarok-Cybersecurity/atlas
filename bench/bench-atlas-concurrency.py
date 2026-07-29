@@ -48,12 +48,30 @@ _ALL_CONFIGS = [
     (1024,  8192, "decode_long",    "Long reasoning (SemiAnalysis 1K/8K class)"),
 ]
 
+# Optional regime allow/deny list. The two long regimes both total 9216, so
+# BENCH_MAX_SEQ_LEN cannot separate them — decode_long (1024/8192) costs ~80 min
+# on a 27B while prefill_long (8192/1024) costs ~15, and you often want the
+# second without the first.
+#   BENCH_REGIMES=prefill_long,balanced_long   run only these
+#   BENCH_SKIP_REGIMES=decode_long             run everything except these
+_ONLY = {r.strip() for r in os.environ.get("BENCH_REGIMES", "").split(",") if r.strip()}
+_SKIP = {r.strip() for r in os.environ.get("BENCH_SKIP_REGIMES", "").split(",") if r.strip()}
+
 # Filter out configs that exceed max_seq_len (ISL+OSL > limit).
 # Order by ISL ascending so shorter prefills run first (less GPU state risk).
 TEST_CONFIGS = sorted(
-    [(i, o, r, l) for i, o, r, l in _ALL_CONFIGS if i + o <= MAX_SEQ_LEN],
+    [
+        (i, o, r, l)
+        for i, o, r, l in _ALL_CONFIGS
+        if i + o <= MAX_SEQ_LEN and (not _ONLY or r in _ONLY) and r not in _SKIP
+    ],
     key=lambda x: x[0],
 )
+if not TEST_CONFIGS:
+    raise SystemExit(
+        f"No regimes selected: MAX_SEQ_LEN={MAX_SEQ_LEN} "
+        f"BENCH_REGIMES={sorted(_ONLY)} BENCH_SKIP_REGIMES={sorted(_SKIP)}"
+    )
 
 FILLER_WORD = "The quick brown fox jumps over the lazy dog. "
 PROMPT_SUFFIX = ("\n\nProvide a very detailed and comprehensive analysis. "

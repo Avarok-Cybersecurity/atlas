@@ -123,25 +123,63 @@ single-rep number twice and had to retract both.
 
 ## 5. Findings
 
-### 5.1 `ATLAS_BF16_TC_PREFILL=1` fails kernel resolution — REMOVE IT
+### 5.1 `ATLAS_BF16_TC_PREFILL=1` crashes — ROOT-CAUSED to the **v2** kernel
 
-In #379's config of record but fatal here:
+In #379's config of record. Symptom:
 
 ```
 Prefill chunk layer 0 failed: cuLaunchKernel: CUDA_ERROR_INVALID_VALUE (1)
   (grid=[136,3,1], block=[128,1,1], shared_mem=0)
 ```
 
-Valid grid/block with `INVALID_VALUE` = an unresolved (null) kernel handle, not
-bad dimensions. Fires on the first request, at prefill layer 0, in the FLA
-chunked GDN path. Scheduler-independent: **slai turns it into a SIGSEGV (exit
-139) that kills the process; fifo degrades it to a per-request HTTP 500.** That
-secondary fault is worth fixing on its own — a failed prefill launch should not
-take the server down.
+`grid.x=136` = `div_ceil(N,128)` with N=17408 (the 27B `intermediate_size`), so it
+is the prefill FFN GEMM. Under **slai this becomes a SIGSEGV (exit 139) that kills
+the process**; under fifo it degrades to a per-request HTTP 500. That escalation
+is a separate bug worth fixing: a failed prefill launch should not take the
+server down.
 
-Dropping the one flag fixes it; everything else in the golden set is fine, and
-slai then works. Same class as the `rms_norm_strided` resolution bug #379 itself
-fixes (`try_kernel` swallows the miss and returns handle 0).
+**BISECTED — three legs, one request each:**
+
+| leg | env | result |
+|---|---|---|
+| A | `BF16_TC_PREFILL=1` + `DISABLE_PREFILL_V2=1` (forces **v1**) | **OK**, 55 tok, 0 launch errors |
+| B | `BF16_TC_PREFILL=1` alone (uses **v2**) | **FAIL** HTTP 500, `grid=[136,3,1]` |
+| C | neither (control) | **OK**, 35 tok |
+
+So the lossless BF16 prefill path is FINE; `w4a16_gemm_t_m128_bf16_v2` is broken
+on this target.
+
+**The latent defect — the feature gates on one kernel and launches another**
+(`layers/dense_ffn.rs`):
+
+```rust
+// guard: checks V1's handle
+let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0 && env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
+// selection: prefers V2 whenever V2 is loaded
+let use_v2 = self.w4a16_gemm_t_m128_bf16_v2_k.0 != 0 && env::var_os("ATLAS_DISABLE_PREFILL_V2").is_none();
+let bf16_kernel = if use_v2 { ...v2_k } else { ...bf16_k };
+```
+
+The flag is admitted because v1 exists, then dispatches to a v2 that fails at
+launch. The in-code comment calls v2 "bit-identical to v1" and preferred, which
+is presumably why it shipped.
+
+**Fix 1 (one line, correctness):** gate on the handle actually launched
+(`bf16_kernel.0 != 0`, after selection), not v1's handle before it.
+**Fix 2 (the real bug):** v2's launch failure itself. RULED OUT by reading: null
+handle (it resolves; the kernel is in
+`kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu`), static shared memory (v1 33,920 B
+/ v2 30,336 B vs the 49,152 limit), and grid/block (matches the kernel's own
+`blockIdx` arithmetic). Remaining suspect: the launcher's parameter pack vs v2's
+compiled signature — v1 and v2 are documented to share "the same launch helper
+(identical grid/block/args)", so a signature drift between them is the thing to
+check first.
+
+**OPERATIONAL ANSWER — do not drop the flag, pair it:**
+`ATLAS_BF16_TC_PREFILL=1 ATLAS_DISABLE_PREFILL_V2=1` gives the lossless BF16
+prefill (the point of the flag: the FP8 crush causes "length-truncations /
+accuracy risk on Qwen3.6-27B") with no crash. Strictly better than removing it,
+which is what §3a's config currently does.
 
 ### 5.2 `PROPOSE_META_STRIDE` caps batched MTP propose at ~7.2K context
 
@@ -276,6 +314,31 @@ Options, unresolved:
 - warn at startup when `interval * block_size < spill_min`, i.e. when the config
   can never spill. **This one looks unambiguously worth doing.**
 
+### 5.7 `bench-atlas-concurrency.py` measures PREFIX-CACHE HITS, not prefill
+
+`make_prompt(target_tokens)` is **deterministic** — the same filler text for every
+request at a given ISL, no per-request uniqueness. With `--enable-prefix-caching`
+(which BOTH our config and #379's `phaseA_c_sweep.sh` set), only the first request
+of a cell does real prefill; every later one is a full cache hit.
+
+The evidence is in the prefill_long row: **TTFT p50 = 340 ms for an 8192-token
+prompt** (~24K tok/s, implausible) against **p99 = 8051 ms** — the p99 is the one
+cold request, the p50 is a cache hit.
+
+Consequences:
+* The **TTFT column is not a prefill measurement** in any regime. Aggregate tok/s
+  is less affected (decode-dominated) but is still flattered.
+* It likely explains why `prefill_long` recorded **0** `exceeds meta stride` hits
+  despite 9216-token sequences (576 block-table entries vs the 448 limit): if the
+  prefill is skipped via cache, the batched propose path is not exercised the way
+  a cold 8K prefill would exercise it. **UNVERIFIED — worth confirming.**
+* Applies to #379's published numbers too, same script, same caching flag.
+
+Our own `bench/agentic/prefill_matrix.py` does this correctly and says why:
+"Every request gets a unique random prefix: with prefix caching on, a repeated
+prompt would be skipped entirely and the run would measure cache hits." Use that
+for any prefill claim, or add a per-request nonce to `make_prompt`.
+
 ## 6. Measurements
 
 27B (centml), C=4 agentic, this branch, tier inert per §5.6:
@@ -303,15 +366,91 @@ these CLI defaults.
 
 ---
 
+### 6.1 Concurrency baseline, 27B centml, 16K context (this branch)
+
+Config per §3a but `--max-seq-len 16384`, `--max-num-seqs/--max-batch-size 16`,
+`--max-prefill-tokens 8192`, SSM tier OFF. Aggregate tok/s:
+
+| regime | C=1 | C=2 | C=4 | C=8 | C=16 | C=1->16 |
+|---|---|---|---|---|---|---|
+| decode_short 128/1024   | 29.7 | 43.2 | 69.6 | 109.3 | **153.3** | 5.2x |
+| balanced_short 256/256  | 28.6 | 41.2 | 64.5 | 105.9 | **148.6** | 5.2x |
+| prefill_short 1024/128  | 26.2 | 38.7 | 58.9 |  87.8 | **127.4** | 4.9x |
+| balanced_long 1024/1024 | 26.4 | 38.8 | 63.2 |  96.6 | **150.2** | 5.7x |
+| prefill_long 8192/1024  | 25.7 | 38.7 | 59.3 |  85.8 | **123.9** | 4.8x |
+
+`n=32/32` at C=16 in every regime — zero dropped requests. TPOT degrades
+gracefully (33 -> 96 ms on decode_short); TTFT p99 tracks p50, so no long-tail
+stall. **decode_long (1024/8192) deliberately NOT run** — ~80 min for one regime
+on this model; use `BENCH_SKIP_REGIMES=decode_long`.
+
+For reference #379 reports 88.9 tok/s @C=8 and 131.9 @C=16 on this model; we
+measure 109.3/153.3 (decode_short) and 96.6/150.2 (balanced_long). NOT
+like-for-like (different flags, scheduler, context, and see §5.7 on caching) —
+the useful read is only that nothing in this config regressed concurrency.
+
 ## 7. Open
 
-- §5.6 — reconcile `ATLAS_SSM_SPILL_MIN_TOKENS` with `--ssm-checkpoint-interval`.
-- §5.5 — build a warm-reuse probe that actually exercises reaping.
-- `put_with` to remove the remaining 66 MB `store.put` memcpy was **evaluated and
-  rejected** (atlas#382): only 2 of 4 production `SnapshotBlobStore` implementors
-  could support it, and it holds the residency `Mutex` across 60 async enqueues.
-  A better hypothesis is recorded there: the 17–19 ms may be lazily-faulted calloc
-  pages (66,846,720 B = 16,320 fresh 4 KiB pages ≈ 16 ms), not memcpy bandwidth —
-  measure `store.put` vs put ordinal 1..128 before touching the trait.
-- Stale-key reaping under sustained cap pressure is still the documented
-  degradation mode; see atlas#382.
+Ordered by what I would pick up first.
+
+1. **§5.1 fix 2 — why does `w4a16_gemm_t_m128_bf16_v2` fail to launch?** Null
+   handle, static smem and grid/block are all ruled out; check the launcher's
+   parameter pack against v2's compiled signature. Fix 1 (gate on the launched
+   handle) is a one-liner and worth doing regardless.
+2. **§5.7 — add a per-request nonce to `make_prompt`**, or stop quoting the TTFT
+   column. Then re-check whether `prefill_long` really produces 0 meta-stride
+   hits or whether caching was hiding them.
+3. **§5.2 — size `propose_meta` from `max_seq_len`** instead of a fixed 2048, and
+   demote the per-step `ERROR` to a once-per-sequence `debug`.
+4. **§5.6 — warn at startup when `ssm_checkpoint_interval * block_size <
+   ATLAS_SSM_SPILL_MIN_TOKENS`**, i.e. when the config can never spill.
+5. **§5.3 — `ATLAS_SSM_TAIL_PROTECT=1` is inert** under `TAIL_MIDCHUNK=0`. Either
+   drop it from the golden set or make it warn.
+6. SSM tier reaping is still unexercised (§5.5). `bench/ssm_faultin.py` is the
+   probe; it needs a SMALL resident pool (`--ssm-cache-slots 1..2`) so 2-3
+   requests force eviction, NOT the 48-request/21 GB shape I first built.
+
+Deliberately parked: `put_with` (evaluated and rejected in atlas#382 — only 2 of
+4 `SnapshotBlobStore` implementors could support it, and it holds the residency
+`Mutex` across 60 async enqueues; a better hypothesis is that the 17-19 ms
+`store.put` is lazily-faulted calloc pages, measurable as put wall time vs put
+ordinal 1..128).
+
+---
+
+## 8. State at handoff (2026-07-29)
+
+**Branch** `perf/enterprise-concurrency-v3` on `avarok`, all commits signed:
+
+```
+30839cb7  test(bench): agentic + correctness harnesses
+5c9f9672  docs(progress): #379's benchmark cannot reach the meta-stride cap
+299c47e5  docs: PROGRESS_LOG
+1810854e  chore(ssm-tier): LoC cap
+aa233714  fix(ssm-tier): reap dead tier keys            <- atlas#382
+6e68fa8b  chore(ssm-tier): clippy + LoC cap
+a91390e4  perf(ssm-tier): 22x cheaper eviction          <- atlas#381
+2848205c  perf(mtp): D-Cut depth pruning                <- atlas#379 head
+```
+
+Worktree `/home/ms/atlas/.claude/worktrees/combo`, tracking the remote.
+
+**Related PRs** (all draft, all green): atlas#381 (spill tier),
+atlas#382 (reaping, stacked on #381), atlas-recipes#13 (Holo-3.1-35B recipe,
+from a fork — no write access to atlas-recipes). Review comment on atlas#379:
+`#issuecomment-5112240223`.
+
+**Local scratch** `/home/ms/.claude/jobs/c91b191d/tmp/`: serve scripts
+(`combo_conc.sh` = the §3a config, `combo_27b.sh`, `holo_pr382.sh`,
+`v2_bisect.sh`), binaries (`spark-combo` = this branch), and benchmark output
+(`conc_baseline_4regimes.txt`, `conc_prefill_long.txt`). NOT in git.
+
+**Environment gotchas that cost time here:**
+* `CUTLASS_HOME=/home/ms/cutlass` at build or the binary refuses to serve.
+* `RUSTFLAGS="-L <dir with libnccl.so>"`; symlink `libnccl.so -> libnccl.so.2`.
+* The binary is `target/release/spark`, not `spark-server`.
+* Piping a long-running harness through `tail` buffers ALL output until it
+  exits — write to a file and tail the file instead.
+* One test fails on `wip-laguna-lora` but passes on every PR branch:
+  `radix_tree::snapshot::tests::lease::lookup_tiered_tail_session_gate`.
+  Pre-dates this work; `cargo test --workspace` is green on the PRs.
