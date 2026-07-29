@@ -175,6 +175,7 @@ impl Qwen3SsmLayer {
                 conv_dim as u32, // qk_stride
                 conv_dim as u32, // v_stride
                 (nv * 2) as u32, // gb_stride
+                false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
         } else if num_tokens == 3 {
@@ -233,6 +234,7 @@ impl Qwen3SsmLayer {
                 conv_dim as u32, // qk_stride
                 conv_dim as u32, // v_stride
                 (nv * 2) as u32, // gb_stride
+                false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
         } else if num_tokens == 2 {
@@ -335,6 +337,7 @@ impl Qwen3SsmLayer {
                 conv_dim as u32, // qk_stride
                 conv_dim as u32, // v_stride
                 (nv * 2) as u32, // gb_stride
+                false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
         } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && wy17_enabled() {

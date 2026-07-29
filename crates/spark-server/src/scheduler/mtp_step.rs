@@ -30,6 +30,19 @@ pub fn step_mtp(
         }
     }
 
+    // K-vs-batch ladder (task #35): the per-step draft count is a function
+    // of the CURRENT concurrency — 3 drafts at n<=4 (the proven K=4 regime,
+    // bit-for-bit), 2 at n<=8, 1 at n<=16 — keeping the batched verify at
+    // R = n*(drafts+1) <= 32 rows instead of the measured fixed-K=4
+    // collapse (~55 tok/s plateau over n>=8). SSOT + overrides
+    // (`ATLAS_MTP_K_LADDER`, `ATLAS_NO_MTP_K_LADDER`):
+    // `spark_model::speculative::ladder`. DFlash keeps its own γ economics.
+    let ladder_nd = if dflash_verify_raw_argmax {
+        num_drafts
+    } else {
+        spark_model::speculative::mtp_ladder_drafts(active.len(), num_drafts)
+    };
+
     // ── Phase A: Bootstrap decode for sequences without a draft ──
     if !bootstrap_idxs.is_empty() {
         // The previous verify commit's live-state restore runs async on the
@@ -39,6 +52,15 @@ pub fn step_mtp(
         if let Err(e) = model.sync_secondary() {
             tracing::error!("bootstrap sync_secondary: {e:#}");
         }
+    }
+    // Batched form: ONE `decode_batch` for every draftless sequence plus a
+    // batched cross-sequence propose, replacing n M=1 weight sweeps of the
+    // target and n of the drafter. Falls back to the per-sequence loop below
+    // whenever the envelope does not hold (`mtp_bootstrap_step`); kill switch
+    // ATLAS_NO_MTP_BATCH_BOOTSTRAP.
+    if can_batch_bootstrap(model, bootstrap_idxs.len(), dflash_verify_raw_argmax) {
+        step_mtp_bootstrap_batched(model, active, &bootstrap_idxs, ladder_nd, verify_ctx);
+        bootstrap_idxs.clear();
     }
     for &idx in &bootstrap_idxs {
         let a = &mut active[idx];
@@ -243,8 +265,11 @@ pub fn step_mtp(
         // 2026-07-09: hoisted to the `effective_drafts_under_grammar` SSOT,
         // now also applied at the five verify-path re-propose sites that
         // previously bypassed this clamp (the "mask held fixed" warn spam).
+        // Composed with the K-vs-batch ladder: the bootstrap propose is
+        // sized for the current concurrency so the next verify is uniform
+        // at the ladder width (no surplus drafts to truncate).
         let effective_num_drafts =
-            crate::scheduler::spec_step::effective_drafts_under_grammar(a, num_drafts);
+            crate::scheduler::spec_step::effective_drafts_under_grammar(a, ladder_nd);
         // Adaptive speculation: a suspended seq skips proposing entirely and
         // stays on this serial bootstrap path until the re-probe fires.
         // (`will_propose` is the single spec_allowed evaluation above.)
@@ -274,7 +299,75 @@ pub fn step_mtp(
     }
 
     // ── Phase B: Verify with pipelined checkpoint ──
-    for &idx in &verify_idxs {
+    //
+    // Batched multi-seq K-row verify (batched-MTP E11 + the ladder). Only
+    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 16 with the ladder)
+    // puts >= 2 verify-ready sequences in one step (`ATLAS_MTP_MAX_SEQS=1`
+    // ⇒ this partition is a no-op and every seq takes the per-seq loop
+    // below, byte-identical to the pre-batched HEAD). Batchable =
+    // grammarless, non-DFlash, >= ladder_nd pending drafts (surplus from a
+    // ladder step-down is truncated — the same draft-tail truncation the
+    // grammar-boundary path already does; `after_verify`'s
+    // `last_num_drafted` trim contract stays consistent). The model
+    // additionally self-gates (non-EP, non-HSS, no LoRA) via
+    // `can_batch_verify(n, rows)`. Kill switch `ATLAS_NO_MTP_BATCH_VERIFY`
+    // (PRESENCE check) forces the serialized loop for A/B.
+    let mut serial_idxs: Vec<usize> = Vec::new();
+    let mut batchable_idxs: Vec<usize> = Vec::new();
+    if verify_idxs.len() >= 2
+        && spark_model::speculative::mtp_multi_seq_mode()
+        && !dflash_verify_raw_argmax
+        && !batch_verify_disabled()
+        && ladder_nd >= 1
+    {
+        for &idx in &verify_idxs {
+            let a = &mut active[idx];
+            if a.grammar_state.is_none() && a.pending_drafts.len() >= ladder_nd {
+                if a.pending_drafts.len() > ladder_nd {
+                    a.pending_drafts.truncate(ladder_nd);
+                }
+                batchable_idxs.push(idx);
+            } else {
+                serial_idxs.push(idx);
+            }
+        }
+    } else {
+        serial_idxs.extend_from_slice(&verify_idxs);
+    }
+    // Chunk caps pinned to the ladder plateaus: rows=4 keeps the proven
+    // 4-seq / R=16 envelope byte-identical; rows=3 → 8 seqs (R=24);
+    // rows=2 → 16 seqs (R=32, the exact buffer capacity).
+    let rows = ladder_nd + 1;
+    let chunk_cap = match rows {
+        4 => 4,
+        3 => 8,
+        _ => 16,
+    };
+    for chunk in batchable_idxs.chunks(chunk_cap) {
+        if chunk.len() >= 2 && model.can_batch_verify(chunk.len(), rows) {
+            // Collect disjoint &mut refs for the chunk's (ascending) indices.
+            let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(chunk.len());
+            let mut it = active.iter_mut();
+            let mut consumed = 0usize;
+            for &i in chunk {
+                let a = it.nth(i - consumed).expect("chunk index within active");
+                consumed = i + 1;
+                refs.push(a);
+            }
+            // Canonical batch order: sort by ssm-pool slot so the graph key
+            // (verify_e2) is a combination, not a permutation — 24x fewer
+            // keys at n=4, and the consecutive-slot batched-GDN precondition
+            // engages more often. Verdicts are index-mapped inside the step,
+            // so batch order is free to the caller.
+            refs.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(usize::MAX));
+            step_verify_k4_batched(model, &mut refs, ladder_nd, verify_ctx);
+        } else {
+            // Model can't batch this width (or a lone leftover): fall back
+            // to the existing per-seq dispatch for these sequences.
+            serial_idxs.extend_from_slice(chunk);
+        }
+    }
+    for &idx in &serial_idxs {
         let a = &mut active[idx];
         let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
         if drafts.is_empty() {

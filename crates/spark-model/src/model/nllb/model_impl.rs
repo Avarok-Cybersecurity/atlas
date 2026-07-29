@@ -178,6 +178,7 @@ impl Model for NllbGpuModel {
             marconi_skip_to: 0,
             marconi_exact_snap: None,
             session_hash: 0,
+            mtp_capture_gen: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             kv_valid_tokens: 0,

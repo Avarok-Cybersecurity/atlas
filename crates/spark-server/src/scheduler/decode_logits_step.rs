@@ -15,6 +15,20 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Admit `think_ended` rows (which need only a 2-token mask) to the GPU argmax
+/// fast path. Kill switch: `ATLAS_NO_THINKENDED_GPU_ARGMAX=1`.
+fn think_ended_gpu_argmax_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("ATLAS_NO_THINKENDED_GPU_ARGMAX").ok().as_deref() != Some("1")
+    })
+}
+
+/// Steps that fell back to the host path because a GPU argmax landed on a
+/// masked think token. Expected to be a small fraction; a large count means the
+/// fast path is not paying for itself.
+static THINK_MASK_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
@@ -71,17 +85,62 @@ pub fn process_decode_logits(
     // `argmax_batch` assumes BF16 layout and would interpret 4-byte FP32
     // values as 2-byte BF16 pairs, returning garbage tokens.
     let model_logits_fp32 = model.decode_logits_fp32();
-    let needs_host_logits = active
-        .iter()
-        .any(|a| a.inside_thinking || a.think_ended || a.grammar_state.is_some())
-        || any_logprobs
+    // `think_ended` alone does NOT need the host path. PostCloseThinkMask masks
+    // exactly TWO ids (think_end_token, think_start_token) and nothing else; A4's
+    // bias floor is gated on `inside_thinking` (sample_step.rs) so it is inert
+    // here. With request penalties exactly neutral the pipeline is then a no-op
+    // and the emission is the raw argmax — modulo those two ids, which we check
+    // after the fact and fall back for.
+    //
+    // This matters far beyond a tuning win: `--disable-thinking` sets
+    // `think_ended = true` for EVERY sequence at birth (prefill_a_step.rs:229 and
+    // three siblings), so before this change ONE such row — i.e. all of them —
+    // forced the entire batch through a 7.95 MB D2H plus n full-vocab host
+    // passes. The GPU argmax fast path was dead code in that config, which is
+    // also the MLPerf-edge config.
+    //
+    // Kill switch: ATLAS_NO_THINKENDED_GPU_ARGMAX=1.
+    let think_ended_gpu_ok = |a: &ActiveSeq| {
+        a.think_ended
+            && !a.inside_thinking
+            && a.grammar_state.is_none()
+            && a.repetition_penalty == 1.0
+            && a.presence_penalty == 0.0
+            && a.frequency_penalty == 0.0
+            && a.lz_penalty == 0.0
+            && a.dry_multiplier == 0.0
+    };
+    let admit_think_ended = think_ended_gpu_argmax_enabled();
+    let needs_host_logits = active.iter().any(|a| {
+        let excused = admit_think_ended && think_ended_gpu_ok(a);
+        (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused
+    }) || any_logprobs
         || model_logits_fp32;
 
-    let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
+    // Try the GPU argmax first. `None` here means "not eligible, or the result
+    // needs the host pipeline after all" and falls through to the host branch —
+    // it must never mean "emit nothing".
+    let fast_tokens: Option<Vec<(u32, Option<crate::api::TokenLogprobs>)>> =
         if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
-            // Fast path: all greedy, no grammar, no thinking — GPU argmax for the full batch.
             match model.argmax_batch(logits, n, 0) {
-                Ok(t) => t.into_iter().map(|tok| (tok, None)).collect(),
+                Ok(t) => {
+                    // The two masked ids are the ONLY thing the host pipeline
+                    // would have done differently for a think_ended row. If an
+                    // argmax actually landed on one (rare — the model seldom
+                    // re-opens <think> mid-response), fall through and redo the
+                    // step on the host so the emitted token is exactly what the
+                    // pipeline would produce.
+                    let hit_mask = t.iter().zip(active.iter()).any(|(&tok, a)| {
+                        a.think_ended
+                            && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
+                    });
+                    if hit_mask {
+                        THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    } else {
+                        Some(t.into_iter().map(|tok| (tok, None)).collect())
+                    }
+                }
                 Err(e) => {
                     tracing::error!("argmax_batch error: {e:#}");
                     for mut a in active.drain(..) {
@@ -90,6 +149,13 @@ pub fn process_decode_logits(
                     return;
                 }
             }
+        } else {
+            None
+        };
+
+    let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
+        if let Some(t) = fast_tokens {
+            t
         } else {
             // Host-side path: copy all batch logits to host, sample per-sequence.
             // Required when any sequence has temperature > 0 or grammar constraints.

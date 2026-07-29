@@ -64,12 +64,20 @@ pub struct Qwen3SsmLayer {
     conv1d_k: KernelHandle,
     conv1d_l2norm_k: KernelHandle,
     conv1d_l2norm_f32_k: KernelHandle,
+    /// `conv1d_l2norm_f32_k` with explicit input/output row strides, letting
+    /// the concurrent-decode path batch all N sequences into one launch.
+    /// `KernelHandle(0)` on kernel sets that predate it — the multi-seq path
+    /// then falls back to the per-sequence conv loop.
+    conv1d_l2norm_f32_strided_k: KernelHandle,
     gdn_k: KernelHandle,
     gdn_f32_k: KernelHandle,
     gdn_f32_norm_k: KernelHandle,
     gdn_f32_conv_norm_k: KernelHandle,
     gdn_f32_strided_k: KernelHandle,
     gdn_f32_strided_norm_k: KernelHandle,
+    /// Half-width register retention (k_dim==v_dim==128): retains the first 64 H
+    /// columns so the update re-reads only the rest (2R+1W -> 1.5R+1W).
+    gdn_f32_strided_norm_half_k: KernelHandle,
     ba_gates_k: KernelHandle,
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,
@@ -151,6 +159,8 @@ pub struct Qwen3SsmLayer {
     /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
     /// NULL handle on targets lacking the .cu → per-token loop unchanged.
     gdn_verify_fused_conv_kn_k: KernelHandle,
+    /// Batched twin (gridDim.y = n_seq) — batched spec decode. 0 when absent.
+    gdn_verify_fused_conv_kn_batched_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
@@ -209,6 +219,21 @@ impl Qwen3SsmLayer {
             _ => KernelHandle(0),
         }
     }
+
+    /// Transposed-twin tile GEMM handle for reduction depth `k`: the deep-K
+    /// `_k64` variant when the shape qualifies, else the K_STEP_T=32 default.
+    /// Same selection rule as the dense-FFN and attention-QKV paths, so all
+    /// three consume `W4A16_K64_MIN_K` rather than repeating the threshold.
+    fn deep_k_gemm(&self, k: u32) -> KernelHandle {
+        if k >= crate::layers::w4a16_k64_min_k()
+            && k.is_multiple_of(64)
+            && self.w4a16_gemm_t_k64_k.0 != 0
+        {
+            self.w4a16_gemm_t_k64_k
+        } else {
+            self.w4a16_gemm_t_k
+        }
+    }
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
@@ -218,6 +243,7 @@ mod ssm_forward;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
+mod trait_decode_batched_conv_gdn_multi;
 mod trait_decode_batched_conv_gdn_wyn;
 mod trait_decode_multi_seq;
 mod trait_layer;

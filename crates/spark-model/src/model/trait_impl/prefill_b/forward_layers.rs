@@ -274,7 +274,7 @@ impl TransformerModel {
         }
         // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
         // rows for the whole-prompt drafter prefill. No-op when disabled.
-        self.try_mtp_prefill_capture(effective_seq_len_start, proc_count, stream)?;
+        self.try_mtp_prefill_capture(seq, effective_seq_len_start, proc_count, stream)?;
         if let Some(t0) = prefill_t0 {
             self.gpu.synchronize(stream)?;
             let total_us = t0.elapsed().as_micros();

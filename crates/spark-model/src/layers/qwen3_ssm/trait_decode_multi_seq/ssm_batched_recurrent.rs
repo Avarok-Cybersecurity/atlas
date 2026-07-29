@@ -5,6 +5,13 @@
 
 use super::super::*;
 
+/// How often the batched-recurrent fast path engaged vs fell back to the per-seq
+/// loop. The precondition (pool slots contiguous AND in slice order) fails as
+/// slots fragment, and it used to fail silently.
+static BATCHED_OK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FALLBACK_ONCE: std::sync::Once = std::sync::Once::new();
+
 impl Qwen3SsmLayer {
     /// Recurrent inner of the batched-projection SSM mixer.
     ///
@@ -80,8 +87,38 @@ impl Qwen3SsmLayer {
                 }
             }
             if contiguous {
+                BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Some((h_base, conv_base))
             } else {
+                // Falling back to the per-seq loop costs ~28% on this block
+                // (measured n=16: batched 618 us/layer vs per-seq 853). It used
+                // to happen SILENTLY, so a profile could show both paths in one
+                // run with no way to tell how often or why. Report the first
+                // one with the offending slot, and keep a count.
+                let n_fb = FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                FALLBACK_ONCE.call_once(|| {
+                    let mut broke_at = usize::MAX;
+                    let mut delta = 0i64;
+                    for i in 1..n {
+                        if let Some(st) = states[i].as_any_mut().downcast_mut::<SsmLayerState>() {
+                            let want = h_base.0 + (i * self.h_state_bytes) as u64;
+                            if st.h_state.0 != want {
+                                broke_at = i;
+                                delta = st.h_state.0 as i64 - want as i64;
+                                break;
+                            }
+                        }
+                    }
+                    tracing::info!(
+                        "SSM batched recurrent DECLINED (n={n}): pool slots are not contiguous in \
+                         slice order — seq {broke_at} sits {} slot(s) from where the batch axis \
+                         expects it. The per-seq loop costs ~28% more on this block. Slots \
+                         fragment as sequences finish, so this is expected to recur; count is \
+                         logged at debug on every occurrence.",
+                        delta / self.h_state_bytes.max(1) as i64
+                    );
+                });
+                tracing::debug!("SSM batched recurrent fallback #{n_fb} (n={n})");
                 None
             }
         } else {
@@ -112,33 +149,54 @@ impl Qwen3SsmLayer {
             detail_step!("recurrent_batched_ba");
 
             let conv_out = ctx.buffers.ssm_conv_out_f32();
-            // CONV INPUT-STRIDE FIX: the conv kernel strides its input by `dim`
-            // (= conv_dim), but `deinterleaved` (the QKVZ-projection output) is
-            // laid out [Q|K|V|Z] with stride `qkvz_size` (> conv_dim). A single
-            // batched launch (batch=n) would read seq b>=1 from `b*conv_dim`
-            // instead of `b*qkvz_size`, pulling in the previous seq's Z-gate
-            // region → garbage into the GDN scan (correct at n=1, corrupt at
-            // n>=2). Mirror the proven per-token pattern in
-            // `trait_decode_batched_conv_gdn.rs`: run the cheap conv per-seq
-            // (batch=1) with pre-offset pointers so the qkvz_size input stride
-            // and conv_dim output stride are both honored. The expensive GDN
-            // scan below stays fully batched.
-            for i in 0..n {
-                ops::conv1d_update_l2norm(
+            // CONV INPUT-STRIDE: the conv reads `deinterleaved` (the QKVZ
+            // projection output), whose rows are `qkvz_size` apart, and writes
+            // a `conv_dim`-strided FP32 row. The plain kernel hardcodes BOTH
+            // strides as `dim` (= conv_dim), so a batch=n launch would read
+            // seq b>=1 from `b*conv_dim` instead of `b*qkvz_size` — landing in
+            // the previous seq's Z-gate region and feeding garbage into the
+            // GDN scan (correct at n=1, silently corrupt at n>=2).
+            //
+            // The strided kernel takes both strides explicitly, so the whole
+            // batch goes in ONE launch. Kernel sets that predate it report
+            // handle 0; there we keep the per-seq loop with pre-offset
+            // pointers, which honours the same two strides one row at a time.
+            if self.conv1d_l2norm_f32_strided_k.0 != 0 {
+                ops::conv1d_update_l2norm_strided(
                     ctx.gpu,
-                    self.conv1d_l2norm_f32_k,
-                    conv_state_base.offset(i * self.conv_state_bytes),
-                    deinterleaved.offset(i * qkvz_size * bf16),
+                    self.conv1d_l2norm_f32_strided_k,
+                    conv_state_base,
+                    deinterleaved,
                     &self.ssm.conv1d,
-                    conv_out.offset(i * conv_dim as usize * 4), // FP32 output, conv_dim-strided
+                    conv_out,
                     conv_dim,
                     d_conv,
-                    1,
+                    n as u32,
                     qk_channels,
                     kd as u32,
                     1e-6,
+                    qkvz_size as u32, // input row stride (BF16 elements)
+                    conv_dim,         // output row stride (FP32 elements)
                     stream,
                 )?;
+            } else {
+                for i in 0..n {
+                    ops::conv1d_update_l2norm(
+                        ctx.gpu,
+                        self.conv1d_l2norm_f32_k,
+                        conv_state_base.offset(i * self.conv_state_bytes),
+                        deinterleaved.offset(i * qkvz_size * bf16),
+                        &self.ssm.conv1d,
+                        conv_out.offset(i * conv_dim as usize * 4), // FP32, conv_dim-strided
+                        conv_dim,
+                        d_conv,
+                        1,
+                        qk_channels,
+                        kd as u32,
+                        1e-6,
+                        stream,
+                    )?;
+                }
             }
             detail_step!("recurrent_batched_conv");
 
@@ -146,9 +204,24 @@ impl Qwen3SsmLayer {
                 && std::env::var("ATLAS_GDN_FUSED_NORM").ok().as_deref() == Some("1")
             {
                 let z_base = deinterleaved.offset((key_dim * 2 + value_dim) * bf16);
+                fn gdn_half_reg_enabled() -> bool {
+                    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    *ON.get_or_init(|| {
+                        std::env::var("ATLAS_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
+                    })
+                }
+                let gdn_norm_k = if kd == 128
+                    && vd == 128
+                    && self.gdn_f32_strided_norm_half_k.0 != 0
+                    && gdn_half_reg_enabled()
+                {
+                    self.gdn_f32_strided_norm_half_k
+                } else {
+                    self.gdn_f32_strided_norm_k
+                };
                 ops::gdn_decode_f32_strided_norm(
                     ctx.gpu,
-                    self.gdn_f32_strided_norm_k,
+                    gdn_norm_k,
                     h_state_base,
                     conv_out,
                     conv_out.offset(key_dim * 4),

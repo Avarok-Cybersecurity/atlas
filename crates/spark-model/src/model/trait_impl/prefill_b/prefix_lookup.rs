@@ -140,7 +140,10 @@ impl TransformerModel {
                 // and safe cross-session — matching the KV radix. Gating them on
                 // the (unstable) session_hash is what rejected every valid warm-
                 // turn anchor and forced recompute-all. See lookup_tiered.
-                if snap_tok > 0
+                // Below `marconi_min_tokens()` the snapshot restore costs more in lost
+                // drafter acceptance than the skipped prefill saves — see the helper.
+                if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                    && snap_tok > 0
                     && matched <= total
                     && !exact_without_hidden
                     && (!prefix_match.ssm_snapshot_is_tail

@@ -175,7 +175,15 @@ pub fn w4a16_gemm(
 ///
 /// Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn w4a16_gemm_n128(
+/// `w4a16_gemm_n128` with an explicit transposed-B ROW STRIDE.
+///
+/// Needed when N is not a multiple of 16: the kernel's B loads are 16-byte
+/// `cp.async`, which requires 16-byte-aligned sources, and row r sits at
+/// `r * ldb`. lm_head is the motivating case — its N is the vocab size, 248077
+/// on this checkpoint, which is ODD and made 15 of every 16 k-rows fault with
+/// CUDA_ERROR_MISALIGNED_ADDRESS (the campaign's long-standing "716").
+/// Pass `ldb = align_up(n, 128)` with the pad columns zero-filled.
+pub fn w4a16_gemm_n128_ldb(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     input: DevicePtr,
@@ -184,6 +192,7 @@ pub fn w4a16_gemm_n128(
     m: u32,
     n: u32,
     k: u32,
+    ldb: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -197,8 +206,25 @@ pub fn w4a16_gemm_n128(
         .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
+        .arg_u32(ldb)
         .launch(stream)
 }
+
+pub fn w4a16_gemm_n128(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    // Packed case: the transposed B rows are exactly N apart.
+    w4a16_gemm_n128_ldb(gpu, kernel, input, weight, output, m, n, k, n, stream)
+}
+
 
 /// W4A16 GEMM v3: MiniMax-only shadow with K_STEP=64 (was 32 in v2).
 /// Halves K-iteration count; doubles per-iter MMA count. 1 CTA/SM
@@ -318,6 +344,37 @@ pub fn w4a16_gemm_n128_m128(
 ///
 /// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
+/// `w4a16_gemm_n128_m128_bf16` with an explicit transposed-B row stride, for the
+/// LOSSLESS BF16-MMA path. Needed for the same reason as `w4a16_gemm_n128_ldb`:
+/// the B loads are 16-byte `cp.async` and lm_head's N is the vocab size (248077,
+/// odd), so an unpadded stride misaligns 15 of every 16 k-rows.
+pub fn w4a16_gemm_n128_m128_bf16_ldb(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    ldb: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_f32(weight.weight_scale_2)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(ldb)
+        .launch(stream)
+}
+
 pub fn w4a16_gemm_n128_m128_bf16(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

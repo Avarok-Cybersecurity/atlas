@@ -55,10 +55,49 @@ pub fn audit_rows() -> Vec<(String, String, bool)> {
         .collect()
 }
 
+/// A `(module, func)` pair borrowed from the resolution audit.
+type KernelRef<'a> = &'a (String, String);
+
+/// `(module, func)` lookups that FAILED and are kernels this target dropped by
+/// shadowing `common/` — i.e. the kernel exists upstream, this model's fork of
+/// the file omitted it, and the model's own dispatch then asked for it.
+///
+/// That conjunction is the actionable one: the kernel would have been there but
+/// for the fork, and something in this model actively wanted it. A failed
+/// lookup NOT in this set is a kernel that was never compiled for this target
+/// at all (typically another architecture's — MLA, hyper-connection, CSA);
+/// those are expected and are not returned here.
+pub fn fatal_missing(shadowed_dropped: &[(&str, &str)]) -> Vec<(String, String)> {
+    let Ok(v) = AUDIT.lock() else {
+        return Vec::new();
+    };
+    let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
+    for (m, f, ok) in v.iter() {
+        let e = resolved.entry((m.clone(), f.clone())).or_insert(false);
+        *e = *e || *ok;
+    }
+    resolved
+        .into_iter()
+        .filter(|(_, ok)| !*ok)
+        .map(|(k, _)| k)
+        .filter(|(m, f)| {
+            shadowed_dropped
+                .iter()
+                .any(|(sm, sf)| *sm == m.as_str() && *sf == f.as_str())
+        })
+        .collect()
+}
+
 /// Render the embedded kernel set (`embedded` = the binary's `ptx_modules()`,
 /// passed in since spark-runtime doesn't depend on atlas-kernels) plus the
 /// runtime resolution overlay. `set_hash` is `atlas_kernels::KERNEL_SET_HASH`.
-pub fn render_kernel_table(embedded: &[(&str, &[u8])], set_hash: &str) -> String {
+/// `shadowed_dropped` is `TargetPtxSet::shadowed_dropped`, which drives the
+/// SHADOWED column and splits the failed lookups into required-vs-expected.
+pub fn render_kernel_table(
+    embedded: &[(&str, &[u8])],
+    set_hash: &str,
+    shadowed_dropped: &[(&str, &str)],
+) -> String {
     // Dedup resolution audit: (module, func) → loaded (true if ever true).
     let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
     if let Ok(v) = AUDIT.lock() {
@@ -82,10 +121,10 @@ pub fn render_kernel_table(embedded: &[(&str, &[u8])], set_hash: &str) -> String
         set_hash
     ));
     out.push_str(&format!(
-        "│ {:<34} {:<14} {}\n",
-        "MODULE (operation)", "PTX-HASH", "RESOLUTION"
+        "│ {:<34} {:<14} {:<20} {}\n",
+        "MODULE (operation)", "PTX-HASH", "RESOLUTION", "SHADOWED"
     ));
-    out.push_str(&format!("│ {}\n", "─".repeat(74)));
+    out.push_str(&format!("│ {}\n", "─".repeat(84)));
     let mut sorted: Vec<&(&str, &[u8])> = embedded.iter().collect();
     sorted.sort_by_key(|(m, _)| *m);
     for (m, blob) in sorted {
@@ -97,25 +136,62 @@ pub fn render_kernel_table(embedded: &[(&str, &[u8])], set_hash: &str) -> String
             Some((_req, false)) => "** lookup FAILED **",
             None => "-", // embedded but not requested by this model's dispatch
         };
-        out.push_str(&format!("│ {m:<34} {h:<14} {res}\n"));
+        // Y when this model's fork of the file dropped one or more kernels that
+        // `common/` defines — the module compiled, but not everything in it.
+        let n_dropped = shadowed_dropped.iter().filter(|(sm, _)| sm == m).count();
+        let shadow = if n_dropped > 0 {
+            format!("Y ({n_dropped} dropped)")
+        } else {
+            "N".to_string()
+        };
+        out.push_str(&format!("│ {m:<34} {h:<14} {res:<20} {shadow}\n"));
     }
     out.push_str("└─");
 
-    // Explicit MISSING list: (module, func) requested but never resolved →
-    // silent slower-fallback dispatch. The actionable debug signal.
+    // Split the failed lookups by CAUSE. Reporting them as one list is what let
+    // the 27B ship with concurrent decode silently disabled: the four dropped
+    // GDN kernels sat among ~26 entries for architectures the model does not
+    // have (MLA, hyper-connection, CSA), so the whole warning read as benign
+    // and everyone learned to skip it. A warning that is almost always noise
+    // trains people to ignore the one time it is not.
     let missing: Vec<&(String, String)> = resolved
         .iter()
         .filter(|(_, ok)| !**ok)
         .map(|(k, _)| k)
         .collect();
-    if !missing.is_empty() {
+    let is_dropped =
+        |m: &str, f: &str| shadowed_dropped.iter().any(|(sm, sf)| *sm == m && *sf == f);
+    let (dropped, absent): (Vec<KernelRef>, Vec<KernelRef>) = missing
+        .into_iter()
+        .partition(|(m, f)| is_dropped(m.as_str(), f.as_str()));
+
+    if !dropped.is_empty() {
         out.push_str(&format!(
-            "\n⚠ {} kernel lookup(s) MISSING — slower fallback dispatch in use:\n",
-            missing.len()
+            "\n\u{2718} {} REQUIRED kernel(s) MISSING — this model's dispatch asked for them and \
+             `common/` defines them, but this target's kernel file shadows `common/` WITHOUT \
+             them, so they were never compiled:\n",
+            dropped.len()
         ));
-        for (m, f) in &missing {
+        for (m, f) in &dropped {
             out.push_str(&format!("    - {m}::{f}\n"));
         }
+        out.push_str(
+            "  Port them into this model's kernel file (exact piecewise copy from common/).\n",
+        );
+    }
+    if !absent.is_empty() {
+        // Informational only: never compiled for this target, and the model
+        // asking is just an unconditional `try_kernel` probe.
+        out.push_str(&format!(
+            "\n\u{2139} {} optional kernel(s) not built for this target (other architectures — \
+             expected, no action):\n    {}\n",
+            absent.len(),
+            absent
+                .iter()
+                .map(|(m, f)| format!("{m}::{f}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     out
 }

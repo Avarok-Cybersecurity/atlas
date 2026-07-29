@@ -531,6 +531,89 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<[u32; 4]>;
 
+    /// Whether [`Self::decode_verify_batched`] can run for `n` sequences at
+    /// `k` verify rows per sequence (`k` = drafts + 1; the K-vs-batch ladder
+    /// passes k in 2..=4).
+    ///
+    /// Default `false`: the scheduler MUST fall back to the per-sequence
+    /// `decode_verify_graphed_k{2,3,4}` loop. There is deliberately NO
+    /// default loop impl of the batched form — a loop over the per-seq
+    /// verify would leave the shared logits buffer holding only the LAST
+    /// sequence's rows and silently poison row-based pipeline picks.
+    fn can_batch_verify(&self, _n: usize, _k: usize) -> bool {
+        false
+    }
+
+    /// Batched K-row verify: n sequences × k rows in ONE eager forward
+    /// (seq-major rows `r = i*k + j`, `tokens.len() == n*k`). Weight
+    /// matrices are read once for all `n*k` rows. Per sequence i:
+    /// `tokens[i*k..(i+1)*k] = [last_verified, d0, .., d_{k-2}]`.
+    /// Returns the `n*k` argmax IDs in the same flat seq-major order. On
+    /// success each sequence's `tokens`/`seq_len` advance by k (rewind is
+    /// the caller's verdict arithmetic, same as the per-seq path). On Err
+    /// NO sequence state has been advanced.
+    ///
+    /// Callers must gate on [`Self::can_batch_verify`].
+    fn decode_verify_batched(
+        &self,
+        tokens: &[u32],
+        k: usize,
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        let _ = (tokens, k, seqs, stream);
+        bail!("decode_verify_batched: unsupported by this model")
+    }
+
+    /// Copy raw-hidden rows `rows[i]` of the just-run batched verify forward
+    /// into stash slot `i` (`verify_hidden_stash`), BEFORE any propose
+    /// clobbers the shared `hidden_states` buffer. Companion of
+    /// [`Self::decode_verify_batched`].
+    fn stash_verify_hidden_rows(&self, rows: &[usize], stream: u64) -> Result<()> {
+        let _ = (rows, stream);
+        bail!("stash_verify_hidden_rows: unsupported by this model")
+    }
+
+    /// Stashed-row variant of [`Self::save_hidden_for_mtp`]: copy stash slot
+    /// `idx` (written by [`Self::stash_verify_hidden_rows`]) into the MTP
+    /// input buffer. Used by the batched-verify verdict path, whose propose
+    /// calls have already overwritten the live verify rows.
+    fn save_hidden_for_mtp_from_stash(&self, idx: usize, stream: u64) -> Result<()> {
+        let _ = (idx, stream);
+        bail!("save_hidden_for_mtp_from_stash: unsupported by this model")
+    }
+
+    /// Batched cross-sequence MTP propose for the batched K=4 verify path:
+    /// `num_drafts` drafts for each of `tokens.len()` sequences, reading
+    /// every drafter weight once per draft position instead of once per
+    /// sequence. `stash_idx[i]` names the verify-stash slot holding sequence
+    /// i's accepted-position hidden (written by
+    /// [`Self::stash_verify_hidden_rows`]); `positions[i]` is the propose
+    /// position (post-rewind `seq_len`), matching the per-seq
+    /// [`Self::run_mtp_propose_multi`] contract. Grammarless sequences only.
+    ///
+    /// `Ok(None)` = unsupported (caller falls back to the per-seq propose
+    /// loop, re-saving each stash slot first). Default: unsupported.
+    fn run_mtp_propose_batched(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let _ = (tokens, positions, stash_idx, num_drafts, seqs, stream);
+        Ok(None)
+    }
+
+    /// Widest batch [`Self::run_mtp_propose_batched`] can carry in ONE
+    /// drafter forward per draft position. `1` = per-sequence only.
+    /// Schedulers chunk their propose groups by this — never by a constant.
+    fn mtp_propose_batch_max(&self) -> usize {
+        1
+    }
+
     /// DFlash K=γ graphed verify (γ+1 tokens). Specialization of the K=2/3/4
     /// pattern for arbitrary K. Default impl falls back to eager
     /// `decode_verify`. Models can override for CUDA-graph speedup keyed by

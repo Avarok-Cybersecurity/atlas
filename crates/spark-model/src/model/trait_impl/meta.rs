@@ -223,6 +223,7 @@ impl TransformerModel {
             marconi_skip_to: 0,
             marconi_exact_snap: None,
             session_hash: 0,
+            mtp_capture_gen: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             kv_valid_tokens: 0,
@@ -299,17 +300,40 @@ impl TransformerModel {
         let v = self.config.vocab_size;
         let bf16 = 2usize;
         let out_ptr = self.buffers.scratch();
-        for i in 0..n {
-            let logits_i = logits_ptr.offset(i * v * bf16);
-            let out_i = out_ptr.offset(i * 4);
-            ops::argmax_bf16(
+        // ONE launch, one block per row. The single-row `argmax_bf16` is a one-CTA
+        // reduction (grid [1,1,1]), so n calls on the same stream serialise n
+        // single-SM scans: measured 16 x 100.6 us = 1.6 ms per decode step at n=16.
+        // The batched kernel runs the identical per-row body, so ties resolve the
+        // same way — byte-identical. Falls back to the loop when the kernel set
+        // lacks the batched entry.
+        fn argmax_batch_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_NO_ARGMAX_BATCH").ok().as_deref() != Some("1"))
+        }
+        if self.argmax_batch_kernel.0 != 0 && argmax_batch_enabled() {
+            ops::argmax_bf16_batch(
                 self.gpu.as_ref(),
-                self.argmax_kernel,
-                logits_i,
-                out_i,
+                self.argmax_batch_kernel,
+                logits_ptr,
+                out_ptr,
+                v as u32,
+                n as u32,
                 v as u32,
                 stream,
             )?;
+        } else {
+            for i in 0..n {
+                let logits_i = logits_ptr.offset(i * v * bf16);
+                let out_i = out_ptr.offset(i * 4);
+                ops::argmax_bf16(
+                    self.gpu.as_ref(),
+                    self.argmax_kernel,
+                    logits_i,
+                    out_i,
+                    v as u32,
+                    stream,
+                )?;
+            }
         }
         let mut buf = vec![0u8; n * 4];
         self.gpu.copy_d2h(out_ptr, &mut buf)?;

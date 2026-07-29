@@ -373,6 +373,25 @@ impl MtpHead {
             // Batched BF16 GEMM for drafter prefill; 0-handle when the
             // target's kernel set lacks it (prefill then no-ops).
             dense_gemm_k: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16"),
+            dense_gemm_pipelined_k: crate::layers::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
+            w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_gemv_batch16_k: crate::layers::try_kernel(
+                gpu,
+                "w4a16_gemv",
+                "w4a16_gemv_batch16",
+            ),
+            argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
+            // Drafter attention metadata for the batched propose — a
+            // dedicated 32 KB allocation, never an offset into the shared
+            // scratch arena (see the `propose_meta` field docs).
+            propose_meta: gpu.alloc(
+                super::batch_caps::PROPOSE_META_SEQS * super::batch_caps::PROPOSE_META_STRIDE,
+            )?,
             prefill_scratch,
         })
     }

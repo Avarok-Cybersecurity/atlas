@@ -139,6 +139,7 @@ pub fn step_verify_k2(
             &[v0_argmax, v1_argmax],
             a,
             verify_ctx,
+            0,
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),
@@ -149,7 +150,7 @@ pub fn step_verify_k2(
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
-        extract_verify_logprobs(model, &[v0, v1], top_logprobs)
+        extract_verify_logprobs(model, &[v0, v1], top_logprobs, 0)
     } else {
         Vec::new()
     };

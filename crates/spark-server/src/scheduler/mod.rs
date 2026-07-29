@@ -28,6 +28,8 @@ mod logit_processors;
 mod logprobs;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
+mod mtp_accept_debug;
+mod mtp_bootstrap_step;
 mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
@@ -47,7 +49,9 @@ mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
+mod verify_k4_batch_step;
 mod verify_k4_step;
+mod verify_k4_verdict;
 mod verify_pipeline_helper;
 
 use beam_prefill::resolve_beam_hyp;
@@ -71,6 +75,7 @@ pub use helpers::{WatchdogParams, set_watchdog_params};
 use lifecycle::*;
 use logprobs::*;
 use mod_helpers::*;
+use mtp_bootstrap_step::*;
 use mtp_step::*;
 use phase_continue_prefills::continue_in_progress_prefills;
 use phase_start_prefills::start_new_requests;
@@ -85,7 +90,9 @@ use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
+use verify_k4_batch_step::*;
 use verify_k4_step::*;
+use verify_k4_verdict::*;
 // verify_pipeline_helper is referenced via fully-qualified
 // `crate::scheduler::verify_pipeline_helper::...` from sibling step
 // files (verify_k2/k3/k4/dflash + spec_step), so no `use` import.
@@ -168,6 +175,29 @@ pub type LoraRotation = (
 
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
+/// How many concurrent sequences may speculate. Default 16, override with
+/// `ATLAS_MTP_MAX_SEQS` (`=1` restores the single-sequence-only gate).
+///
+/// `step_mtp` is index-correct over the active slice, so raising this runs
+/// MTP over n sequences per step. With the batched K=4 verify wired
+/// (`verify_k4_batch_step.rs`), verify-ready K=4 grammarless sequences are
+/// verified in ONE eager n*4-row forward (weights read once); anything the
+/// model can't batch (EP, HSS, LoRA, grammar, non-uniform K, DFlash) falls
+/// back to the serialized per-seq loop that MEASURED (2026-07-27) collapses
+/// throughput: cap=4 at C=4 25.8 vs 48.5 MTP-off. Kill switch for A/B:
+/// `ATLAS_NO_MTP_BATCH_VERIFY` (presence) forces that serialized loop.
+fn mtp_max_seqs() -> usize {
+    // SSOT moved to `spark_model::speculative::mtp_max_seqs()` (batched-MTP
+    // E1/E2): the model-side single-sequence MTP structures (catchup ring,
+    // refeed labels, carry slot) gate on the SAME value the scheduler gates
+    // dispatch on. Same parse; default 16 since 2026-07-28 — the batched
+    // multi-seq verify + propose (`verify_k4_batch_step.rs`) removed the
+    // serialization that made cap=1 mandatory (C=4 cap=4: 25.8 serialized
+    // -> 49.0 batched vs 48.5 MTP-off). `ATLAS_MTP_MAX_SEQS=1` restores
+    // the old single-sequence-only gate.
+    spark_model::speculative::mtp_max_seqs()
+}
+
 pub fn run(
     mut model: Box<dyn Model>,
     request_rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
@@ -545,7 +575,7 @@ pub fn run(
                 // Self-speculative: draft via layer-skipping, verify with full model.
                 step_self_spec(&*model, &mut active, num_drafts, &verify_ctx);
             } else if use_mtp
-                && active.len() == 1
+                && active.len() <= mtp_max_seqs()
                 && (
                     // SPEC_THINK: speculate everywhere EXCEPT the first
                     // `dflash_resume_guard` generated tokens — every observed
@@ -553,13 +583,20 @@ pub fn run(
                     // ENTRY (sequence start or post-think resume); serial-
                     // decoding the entry window dodges the divergence while
                     // leaving the body speculated.
-                    (dflash_spec_think
-                        && active[0].output_tokens.len() as u32 >= dflash_resume_guard)
-                        || (!active[0].inside_thinking
-                            && active[0].post_think_emitted >= dflash_resume_guard)
+                    // EVERY active sequence must be eligible, not just active[0].
+                    // These are per-sequence properties: with more than one
+                    // sequence speculating, reading them off active[0] lets
+                    // sequence 1 be speculated while its own suppress_tool_call
+                    // / disable_mtp / thinking state says it must not be. At
+                    // n==1 `all()` over one element is exactly the old
+                    // predicate, so the single-sequence path is unchanged.
+                    active.iter().all(|a| {
+                        ((dflash_spec_think && a.output_tokens.len() as u32 >= dflash_resume_guard)
+                            || (!a.inside_thinking && a.post_think_emitted >= dflash_resume_guard))
+                            && !a.suppress_tool_call
+                            && !a.disable_mtp
+                    })
                 )
-                && !active[0].suppress_tool_call
-                && !active[0].disable_mtp
             {
                 // Throughput-arbitrated MTP gate: EVERY single-sequence step
                 // is timed and reported, and the gate picks whichever mode
@@ -613,7 +650,19 @@ pub fn run(
                             // by dumped hidden fingerprints (93/93 cross-step,
                             // see `speculative::mtp_refeed_accepted_enabled`),
                             // so the serial hook was the side that disagreed.
-                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
+                            //
+                            // Multi-seq guard (batched-MTP E2): the catchup
+                            // ring is a SINGLE-sequence structure (one ring,
+                            // one label space). With n active sequences the
+                            // hidden in row 0 belongs to an arbitrary member
+                            // of the batch, so ringing it would interleave
+                            // unrelated hiddens under one label space.
+                            // (`mtp_catchup_enabled` is also force-off when
+                            // ATLAS_MTP_MAX_SEQS > 1 — this guard keeps the
+                            // save itself single-seq-only regardless.)
+                            if active.len() == 1
+                                && let Err(e) =
+                                    model.save_hidden_for_catchup(0, active[0].seq.seq_len)
                             {
                                 tracing::warn!("save_hidden_for_catchup: {e:#}");
                             }
@@ -622,7 +671,11 @@ pub fn run(
                             // A bootstrap-only step (no pending drafts) emits
                             // 1 token and proposes; its cost is charged to the
                             // MTP mode — proposing IS part of what MTP costs.
-                            let seq_len_before = active[0].seq.seq_len;
+                            // Sum over ALL speculating sequences: the gate arbitrates
+                            // on tokens-per-second, so counting only active[0]
+                            // under-reports MTP's throughput by a factor of n and
+                            // biases the gate toward serial decode.
+                            let seq_len_before: usize = active.iter().map(|a| a.seq.seq_len).sum();
                             let t0 = std::time::Instant::now();
                             step_mtp(
                                 &*model,
@@ -631,7 +684,8 @@ pub fn run(
                                 &verify_ctx,
                                 dflash_verify_raw_argmax,
                             );
-                            let emitted = active[0].seq.seq_len.saturating_sub(seq_len_before);
+                            let seq_len_after: usize = active.iter().map(|a| a.seq.seq_len).sum();
+                            let emitted = seq_len_after.saturating_sub(seq_len_before);
                             gate.record_verify_step(t0.elapsed(), emitted);
                         }
                     }

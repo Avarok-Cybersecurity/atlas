@@ -283,11 +283,19 @@ pub fn verify_pick_with_pipeline(
 /// `argmax_ids` is the GPU-graphed argmax already returned by
 /// `decode_verify_graphed*`; used as the fallback for the failure
 /// path and as the array length source.
+///
+/// `row_base` (batched-MTP E12): first logits row of THIS sequence's
+/// verify span within the shared `[R, vocab]` logits buffer. Single-
+/// sequence verify paths pass 0 (rows 0..K — unchanged behaviour);
+/// the batched K=4 verify passes `i*4` for sequence i so every read
+/// (fast-path single-logit probes and the slow-path D2H) targets the
+/// sequence's own rows.
 pub fn verify_pick_all_with_pipeline(
     model: &dyn Model,
     argmax_ids: &[u32],
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
+    row_base: usize,
 ) -> Vec<u32> {
     use crate::scheduler::mtp_timing::{self, Phase};
     let k = argmax_ids.len();
@@ -301,7 +309,7 @@ pub fn verify_pick_all_with_pipeline(
     // pipeline provably cannot change any pick, so the raw argmax IS the
     // masked pick and the [K, vocab] D2H is skipped entirely. Any
     // ineligible position falls through to the slow path for the call.
-    if let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx) {
+    if let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx, row_base) {
         return picks;
     }
 
@@ -397,7 +405,7 @@ pub fn verify_pick_all_with_pipeline(
                         crate::scheduler::fast_greedy::logit_is_positive(
                             model,
                             logits_base,
-                            i,
+                            row_base + i,
                             vocab,
                             tok,
                         )
@@ -448,7 +456,10 @@ pub fn verify_pick_all_with_pipeline(
     let t_d2h = std::time::Instant::now();
     let mut buf = vec![0u8; total];
     if model
-        .copy_logits_to_host(model.logits_buffer_ptr(), &mut buf)
+        .copy_logits_to_host(
+            model.logits_buffer_ptr().offset(row_base * vocab * elem_bytes),
+            &mut buf,
+        )
         .is_err()
     {
         return argmax_ids.to_vec();

@@ -15,6 +15,41 @@ pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
 
+/// Minimum K at which the deep-K `w4a16_gemm_t_k64` (K_STEP_T=64) beats the
+/// K_STEP_T=32 `w4a16_gemm_t`.
+///
+/// ★ 6144, not 4096. Measured with `w4a16_m17_bench` on the REAL decode shapes at
+/// M=16 against the STREAM-measured 230 GB/s ceiling — `_k64` is the WORST tile
+/// variant at K=5120 and the best only at K>=6144:
+///
+///   ssm_qkvz     N=16384 K=5120   _t 281.9us   _k64 341.6us   _m128 272.4us
+///   attn qkv     N=14336 K=5120   _t 273.9us   _k64 328.5us   _m128 262.8us
+///   ssm_out_proj N=5120  K=6144   _t 237.7us   _k64 163.3us   _m128 240.7us
+///
+/// The original 4096 threshold (this session) was derived from the ffn/out_proj
+/// shapes and wrongly generalised to K=5120, sending 48 qkvz + 16 fused-qkv
+/// launches per step to the slowest variant. Both variants accumulate K
+/// sequentially, so moving between them is byte-identical.
+///
+/// `ATLAS_NO_W4A16_K64=1` restores the pre-session 8192 threshold.
+pub(crate) fn w4a16_k64_min_k() -> u32 {
+    static MIN_K: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MIN_K.get_or_init(|| {
+        // Explicit override so an A/B can pin a previous threshold exactly.
+        if let Some(n) = std::env::var("ATLAS_W4A16_K64_MIN_K")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        {
+            return n;
+        }
+        if std::env::var("ATLAS_NO_W4A16_K64").ok().as_deref() == Some("1") {
+            8192
+        } else {
+            6144
+        }
+    })
+}
+
 pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
 pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
@@ -39,6 +74,46 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 /// given feature: e.g. Qwen3-Coder-Next (GDN+attention) never calls MLA
 /// kernels, but the layer builder still probes them. Warning on expected
 /// misses drowned out genuine problems in startup logs.
+/// Resolve the N128/M64 tile GEMM, preferring the 3-deep weight-pipeline variant.
+/// **ON by default**; `ATLAS_NO_TGEMM_PIPELINE3` (presence — `=0` is NOT "off")
+/// falls back to the 2-stage parent. Falls back automatically on any target that
+/// does not ship `_p3`.
+///
+/// Same mechanism as [`k64_kernel`]: the parent drains its cp.async group before
+/// the dequant phase, which only a co-resident CTA can cover. This kernel's live
+/// shapes — ssm_qkvz (128 CTAs) and the fused QKV (112) — sit in the exposed
+/// band of the grid.x-vs-efficiency curve. Bit-identical.
+pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    if std::env::var("ATLAS_NO_TGEMM_PIPELINE3").is_err() {
+        let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_p3");
+        if h.0 != 0 {
+            return h;
+        }
+    }
+    try_kernel(gpu, "w4a16", "w4a16_gemm_t")
+}
+
+/// Resolve the k64 deep-K tile GEMM, preferring the 3-deep weight-pipeline
+/// variant. **ON by default**; `ATLAS_NO_K64_PIPELINE3` (presence — `=0` is NOT
+/// "off") falls back to the 2-stage parent.
+///
+/// The parent issues one cp.async group then `wait_all`s it before the dequant
+/// phase, so with a small grid there are ZERO outstanding loads across that
+/// phase. The out_proj/o_proj shapes (N=5120, K=6144) launch 40 CTAs on 48 SMs —
+/// exactly 1 CTA/SM — so nothing covers the drain, and they measure ~38% of
+/// achievable while lm_head (1938 CTAs) reaches 83% on the identical loop.
+/// `_p3` keeps step i+2's loads in flight across dequant(i+1). Bit-identical.
+pub fn k64_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
+    let want_p3 = std::env::var("ATLAS_NO_K64_PIPELINE3").is_err();
+    if want_p3 {
+        let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64_p3");
+        if h.0 != 0 {
+            return Ok(h);
+        }
+    }
+    gpu.kernel("w4a16", "w4a16_gemm_t_k64")
+}
+
 pub fn try_kernel(gpu: &dyn GpuBackend, module: &str, func: &str) -> KernelHandle {
     match gpu.kernel(module, func) {
         Ok(h) => h,

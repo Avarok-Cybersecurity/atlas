@@ -27,6 +27,19 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// lm_head tile-GEMM decode path: **ON by default**, disabled by
+/// `ATLAS_NO_LMHEAD_TGEMM=1`. Evaluated ONCE at construction — the switch
+/// decides whether the transposed twin is built at all, so setting it later has
+/// no effect. Presence-style check (`ATLAS_*=0` is NOT "off").
+///
+/// Measured C=16: 113.10 -> 119.32 tok/s (+5.50%, disjoint ranges, 4 reps).
+/// `padded_n <= 4` is untouched and stays byte-identical, so C=1 is unaffected.
+/// The twin costs ~681 MB and leaves the KV pool at 4759 blocks vs 4757 without
+/// it — no measurable KV impact.
+fn lmhead_tgemm_enabled() -> bool {
+    std::env::var("ATLAS_NO_LMHEAD_TGEMM").ok().as_deref() != Some("1")
+}
+
 impl TransformerModel {
     pub fn new(
         config: ModelConfig,
@@ -76,6 +89,23 @@ impl TransformerModel {
         let dense_gemv_fp32out_kernel = KernelHandle(0);
         let w4a16_gemv_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
+        // lm_head shares the tile GEMM, so route it through the same resolver as
+        // the SSM/attention sites — it picks the 3-deep pipeline variant when
+        // present. lm_head launches 1938 CTAs and already sits at ~83% of
+        // achievable, so the expected gain here is small; measured, not assumed.
+        let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
+        // Lossless BF16-MMA sibling for lm_head, OPT-IN via ATLAS_LMHEAD_LOSSLESS=1.
+        // Measured cost 1.81% at C=16 (129.68 -> 127.33). Default is the faster
+        // FP8-activation path because the accuracy question it addresses CANNOT
+        // BE MEASURED until vLLM parity lifts the BFCL embargo — and the 1.81%
+        // is throughput needed to REACH parity. The risk is real but indirect:
+        // the bf16-floor finding was superseded on the WEIGHT axis, and this is
+        // the ACTIVATION axis, which was never examined. Re-decide at parity.
+        let w4a16_gemm_t_bf16_kernel = if std::env::var("ATLAS_LMHEAD_LOSSLESS").is_ok() {
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
+        } else {
+            spark_runtime::gpu::KernelHandle(0)
+        };
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
@@ -86,6 +116,12 @@ impl TransformerModel {
         // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
         let w4a16_gemv_batch8_kernel =
             crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
+        // M<=16 batched GEMV for the wide BATCHED-DECODE lm_head. The SSM mixer
+        // already carries this handle (qwen3_ssm/mod.rs); the model level did
+        // not, so the decode head had no arm above 8 and fell to the M64-tile
+        // GEMM. Same try_kernel contract: 0-handle -> dispatch falls back.
+        let w4a16_gemv_batch16_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch16");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
@@ -100,6 +136,9 @@ impl TransformerModel {
         );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
+        let argmax_batch_kernel = gpu
+            .kernel("argmax", "argmax_bf16_batch")
+            .unwrap_or(spark_runtime::gpu::KernelHandle(0));
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
         let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
@@ -248,6 +287,28 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        // Batched-verify hidden stash: [16, hidden] BF16 (n ≤ 16, the
+        // K-vs-batch ladder envelope — one slot per sequence of the widest
+        // batched verify chunk). Only meaningful with an MTP proposer — NULL
+        // otherwise (the batched verify path self-gates on it via
+        // can_batch_verify).
+        let verify_hidden_stash = if proposer.is_some() {
+            gpu.alloc(16 * config.hidden_size * 2)?
+        } else {
+            DevicePtr::NULL
+        };
+        // Batched-verify WY pointer-table staging (fixed address for CUDA
+        // graph stability; contents refreshed pre-graph every batched verify
+        // step). One [h|Hi0|Hi1|Hi2] x 4-entry slice per GDN layer — ~6 KB.
+        // NULL without an MTP proposer or on non-SSM models (path self-gates).
+        let verify_wy_tables = if proposer.is_some() && config.num_ssm_layers() > 0 {
+            let bytes = config.num_ssm_layers() * crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES;
+            let buf = gpu.alloc(bytes)?;
+            gpu.memset(buf, 0, bytes)?;
+            buf
+        } else {
+            DevicePtr::NULL
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -494,12 +555,54 @@ impl TransformerModel {
         // value is dead code and must not suppress CUDA graphs.
         let has_fp8_calibration = config.fp8_kv_calibration_tokens > 0
             && kv_cache.dtype() == spark_runtime::kv_cache::KvCacheDtype::Fp8;
+        // Transposed lm_head twin, PADDED so the tile GEMM's 16-byte cp.async B
+        // loads are aligned. The stride must be a multiple of 16; 128 also keeps
+        // whole N-tiles. Without the pad, N = vocab = 248077 (ODD) misaligns 15 of
+        // every 16 k-rows => the campaign's long-standing sticky CUDA 716.
+        // Default ON (kill: ATLAS_NO_LMHEAD_TGEMM=1). KV impact is nil: the pool
+        // reads 4759 blocks with the twin vs 4757 without. See STATE.md.
+        let lm_head_nvfp4_t = match (&lm_head_nvfp4, lmhead_tgemm_enabled()) {
+            (Some(w), true) => {
+                let (t, stride) =
+                    crate::weight_map::QuantizedWeight::transpose_concat_for_gemm_padded(
+                        gpu.as_ref(),
+                        &[(w, config.vocab_size)],
+                        config.hidden_size,
+                        16,
+                        128,
+                    )?;
+                // A padded stride is only safe on targets whose `w4a16_gemm_t`
+                // actually takes `ldb`. Every served vocab except this one is a
+                // multiple of 128 (stride == vocab, so `ldb` is a no-op and any
+                // kernel is fine); when it is NOT, a kernel missing the parameter
+                // strides by N and shears every row past the first — silently, on
+                // architectures that tolerate the misalignment. Say so loudly.
+                if stride != config.vocab_size {
+                    tracing::warn!(
+                        "lm_head twin uses a PADDED stride ({} != vocab {}): this target's \
+                         w4a16_gemm_t MUST accept the `ldb` argument, or decode at padded_n>=5 \
+                         will read sheared rows. Disable with ATLAS_NO_LMHEAD_TGEMM=1.",
+                        stride,
+                        config.vocab_size
+                    );
+                }
+                tracing::info!(
+                    "lm_head transposed twin: vocab={} -> padded stride={} (vocab%16={}), tile GEMM active",
+                    config.vocab_size,
+                    stride,
+                    config.vocab_size % 16
+                );
+                Some((t, stride as u32))
+            }
+            _ => None,
+        };
         Ok(Self {
             config,
             embed_tokens,
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,
+            lm_head_nvfp4_t,
             lm_head_fp8,
             layers,
             buffers,
@@ -512,19 +615,23 @@ impl TransformerModel {
             dense_gemv_fp32out_kernel,
             w4a16_gemv_kernel,
             w4a16_gemv_logits_kernel,
+            w4a16_gemm_t_kernel,
+            w4a16_gemm_t_bf16_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
             w4a16_gemv_batch4_kernel,
             w4a16_gemv_batch8_kernel,
+            w4a16_gemv_batch16_kernel,
             dense_gemv_fp8w_kernel,
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             argmax_kernel,
+            argmax_batch_kernel,
             argmax_logits_kernel,
             batched_embed_kernel,
             fill_slots_kernel,
             decode_graph: Mutex::new(std::collections::HashMap::new()),
-            batch_decode_graphs: Mutex::new(HashMap::new()),
+            batch_decode_graphs: Mutex::new((HashMap::new(), 0)),
             // Suppress graphs during FP8 calibration only. MLA used to be
             // suppressed because an internal sync was placed inside the graph
             // capture region — that sync is now conditional on eager mode
@@ -548,6 +655,7 @@ impl TransformerModel {
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            verify_hidden_stash,
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
@@ -557,6 +665,7 @@ impl TransformerModel {
                 max_seq_len
             },
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
+            mtp_prefill_capture_gen: std::sync::atomic::AtomicU64::new(0),
             mtp_carry: parking_lot::Mutex::new(None),
             mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
@@ -565,6 +674,8 @@ impl TransformerModel {
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
+            verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
+            verify_wy_tables,
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
             fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,

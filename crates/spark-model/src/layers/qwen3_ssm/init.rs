@@ -53,6 +53,14 @@ impl Qwen3SsmLayer {
             // BF16 kernel via the `.0 != 0` gate at the use site
             // (ssm_forward.rs). Warn instead of error: missing-on-Metal is
             // expected, and a startup `error!` would page on benign cases.
+            // Strided twin of `conv1d_l2norm_f32_k` for the batched multi-seq
+            // decode path. Optional: absent on older kernel sets, where the
+            // multi-seq conv stays a per-sequence loop.
+            conv1d_l2norm_f32_strided_k: super::super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_l2norm_f32_strided",
+            ),
             conv1d_l2norm_f32_k: {
                 let h = super::super::try_kernel(
                     gpu,
@@ -94,6 +102,11 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f32_strided_norm",
             ),
+            gdn_f32_strided_norm_half_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f32_strided_norm_half",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             l2_norm_k: gpu.kernel("norm", "l2_norm_bf16")?,
@@ -105,8 +118,8 @@ impl Qwen3SsmLayer {
             ),
             gated_rms_norm_prefill_k: gpu.kernel("norm", "gated_rms_norm_prefill")?,
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
-            w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,
-            w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
+            w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
+            w4a16_gemm_t_k64_k: crate::layers::k64_kernel(gpu)?,
             w4a16_gemm_t_m128_k: gpu.kernel("w4a16", "w4a16_gemm_t_m128")?,
             // 8-warp pipelined M128 (try_kernel: 0 when absent → falls back to m128/n128).
             w4a16_gemm_t_m128_v2_k: super::super::try_kernel(
@@ -220,6 +233,12 @@ impl Qwen3SsmLayer {
                 gpu,
                 "gdn_verify_fused_conv_kn",
                 "gdn_verify_fused_conv_kn",
+            ),
+            // Batched twin (gridDim.y = n_seq) for batched speculative decoding.
+            gdn_verify_fused_conv_kn_batched_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_conv_kn",
+                "gdn_verify_fused_conv_kn_batched",
             ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.

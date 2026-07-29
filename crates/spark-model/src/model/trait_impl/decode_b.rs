@@ -442,6 +442,23 @@ impl TransformerModel {
         // keeps its own same-stream (prefill_stream) every-chunk normalize.
         self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
 
+        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+        // rows for the whole-prompt drafter prefill — the standard prefill
+        // paths have always done this, the mixed path never did, so requests
+        // 3..n of a concurrent group (which take this path, since
+        // `spec_step_this_tick` only holds at `active.len() == 1`) drafted
+        // blind. ★ The SOURCE is `prefill_hidden`, not the buffer head: the
+        // mixed layout is [decode rows | prefill rows] and capturing from the
+        // head would store DECODE hiddens as this sequence's prompt hiddens
+        // (poison, not blindness).
+        self.try_mtp_prefill_capture_from(
+            prefill_seq,
+            effective_seq_len_start,
+            proc_count,
+            prefill_hidden,
+            stream,
+        )?;
+
         // Restore decode layer_states to sequences
         for (seq, ls) in decode_seqs
             .iter_mut()

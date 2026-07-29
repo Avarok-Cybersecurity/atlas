@@ -23,6 +23,8 @@ mod decode_a2;
 mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
+mod decode_graph_key;
+mod drafter_prefill;
 mod ep_misc;
 mod meta;
 mod prefill_a;
@@ -37,6 +39,8 @@ mod verify_b;
 mod verify_c;
 mod verify_c2;
 mod verify_d;
+mod verify_e;
+mod verify_e2;
 mod verify_fused;
 
 impl Model for TransformerModel {
@@ -54,8 +58,16 @@ impl Model for TransformerModel {
         *self.vision_grid_base.lock() = grid_base;
         *self.vision_owned_images.lock() = owned_images;
     }
+    // The four prefill entry points each end with `try_eager_drafter_prefill`:
+    // the whole-prompt drafter capture is a single shared slot, so it must be
+    // consumed while THIS sequence still owns it — one tick later, at the
+    // first propose, a concurrent sequence's prefill has already restarted it
+    // and every sequence but the last-prefilled drafts blind. See
+    // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
-        self.prefill_dispatch(tokens, seq, stream)
+        let logits = self.prefill_dispatch(tokens, seq, stream)?;
+        self.try_eager_drafter_prefill(seq, true, stream);
+        Ok(logits)
     }
     fn prefill_chunk(
         &self,
@@ -66,7 +78,16 @@ impl Model for TransformerModel {
         is_last_chunk: bool,
         stream: u64,
     ) -> Result<DevicePtr> {
-        self.prefill_chunk_dispatch(tokens, seq, chunk_start, chunk_len, is_last_chunk, stream)
+        let logits = self.prefill_chunk_dispatch(
+            tokens,
+            seq,
+            chunk_start,
+            chunk_len,
+            is_last_chunk,
+            stream,
+        )?;
+        self.try_eager_drafter_prefill(seq, is_last_chunk, stream);
+        Ok(logits)
     }
     fn prefill_twophase(
         &self,
@@ -75,7 +96,9 @@ impl Model for TransformerModel {
         chunk_size: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
-        self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)
+        let logits = self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)?;
+        self.try_eager_drafter_prefill(seq, true, stream);
+        Ok(logits)
     }
     fn decode(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
         self.decode_dispatch(token, seq, _stream)
@@ -99,7 +122,7 @@ impl Model for TransformerModel {
         prefill_is_last: bool,
         stream: u64,
     ) -> Result<crate::traits::MixedForwardResult> {
-        self.mixed_forward_dispatch(
+        let out = self.mixed_forward_dispatch(
             decode_tokens,
             decode_seqs,
             prefill_tokens,
@@ -108,7 +131,9 @@ impl Model for TransformerModel {
             prefill_chunk_len,
             prefill_is_last,
             stream,
-        )
+        )?;
+        self.try_eager_drafter_prefill(prefill_seq, prefill_is_last, stream);
+        Ok(out)
     }
 
     /// Q12 Phase 4b override: try the model-level batched dispatch
@@ -325,6 +350,41 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 4]> {
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
+    }
+    fn can_batch_verify(&self, n: usize, k: usize) -> bool {
+        self.can_batch_verify_dispatch(n, k)
+    }
+    fn decode_verify_batched(
+        &self,
+        tokens: &[u32],
+        k: usize,
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.decode_verify_batched_dispatch(tokens, k, seqs, _stream)
+    }
+    fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
+        self.stash_verify_hidden_rows_dispatch(rows, _stream)
+    }
+    fn save_hidden_for_mtp_from_stash(&self, idx: usize, _stream: u64) -> Result<()> {
+        self.save_hidden_for_mtp_from_stash_dispatch(idx, _stream)
+    }
+    fn run_mtp_propose_batched(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        _stream: u64,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        self.run_mtp_propose_batched_dispatch(tokens, positions, stash_idx, num_drafts, seqs)
+    }
+    fn mtp_propose_batch_max(&self) -> usize {
+        match &self.proposer {
+            Some(p) => p.propose_batch_max(&self.buffers, &self.config),
+            None => 1,
+        }
     }
     fn decode_verify_graphed_kgamma(
         &self,
