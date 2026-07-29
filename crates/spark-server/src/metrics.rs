@@ -21,6 +21,17 @@ lazy_static! {
     .unwrap();
     pub static ref GENERATION_TOKENS_TOTAL: IntCounter =
         register_int_counter!("atlas_generation_tokens_total", "Total tokens generated").unwrap();
+    // ── HTTP byte accounting (Atlas TUI Server Stats) ──
+    //
+    // Request side counts body bytes as received by the byte-count
+    // middleware; response side counts bytes actually written through the
+    // wrapped body (streaming/SSE included, where Content-Length lies).
+    pub static ref HTTP_BYTES_IN: IntCounter =
+        register_int_counter!("atlas_http_bytes_in_total", "Total HTTP request body bytes")
+            .unwrap();
+    pub static ref HTTP_BYTES_OUT: IntCounter =
+        register_int_counter!("atlas_http_bytes_out_total", "Total HTTP response body bytes")
+            .unwrap();
     pub static ref PROMPT_TOKENS_TOTAL: IntCounter =
         register_int_counter!("atlas_prompt_tokens_total", "Total prompt tokens processed")
             .unwrap();

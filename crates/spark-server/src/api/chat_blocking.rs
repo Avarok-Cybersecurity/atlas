@@ -218,8 +218,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
             tools_active,
             cwd_hint.as_deref(),
             choice_idx,
-        )
-        .await;
+        );
         choice.index = choice_idx;
         choice.matched_stop = matched_stop;
         choice.logprobs = build_logprobs(&state, &response);
@@ -294,8 +293,13 @@ fn decode_response_text(
 /// Build the assistant message + finish_reason for one choice. Tool
 /// parsing, validation, content-strip + refusal-classifier all live
 /// here.
+///
+/// Deliberately NOT `async`: it awaits nothing, and marking pure CPU work as
+/// async only hides where that work runs. If it ever grows expensive enough to
+/// matter, that becomes a visible decision to move it to the blocking pool
+/// rather than something already buried inside a future.
 #[allow(clippy::too_many_arguments)]
-async fn build_choice_message(
+fn build_choice_message(
     state: &AppState,
     req: &crate::ir::ChatRequest,
     response: &super::inference_types::InferenceResponse,

@@ -418,4 +418,8 @@ impl TransformerModel {
     pub(super) fn num_free_blocks_dispatch(&self) -> usize {
         self.kv_cache.lock().num_free_blocks()
     }
+
+    pub(super) fn num_total_blocks_dispatch(&self) -> usize {
+        self.kv_cache.lock().num_blocks()
+    }
 }

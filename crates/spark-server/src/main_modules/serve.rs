@@ -22,9 +22,62 @@ use crate::{
     session_manager,
 };
 
-pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
+/// What the blocking startup hands to the async tail.
+type Prepared = (
+    Arc<AppState>,
+    Arc<std::sync::atomic::AtomicBool>,
+    String,
+    u16,
+);
+
+/// Bring the engine up, then serve.
+///
+/// Startup — weight load, KV allocation, kernel audit, graph capture — is ~50s of
+/// SYNCHRONOUS CPU/IO/CUDA work containing not one `await`. Running it in the body
+/// of this future would mean whatever polls the future is blocked for that whole
+/// time: an `async fn` that never yields is a blocking call wearing `async`, and
+/// it is why `q`/Ctrl+C appeared dead during a model load — nothing, not even the
+/// signal listener, could make progress until loading finished.
+///
+/// So startup runs on the blocking pool and is AWAITED here. That await is a real
+/// yield point, which is what lets `main` race this future against a shutdown
+/// channel, and it keeps the async workers free regardless of how the runtime is
+/// sized.
+pub(crate) async fn serve(
+    args: cli::ServeArgs,
+    tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
+) -> Result<()> {
+    // Signal listeners belong on the runtime, not inside the blocking section.
+    let Some((state, model_ready, bind, port)) =
+        tokio::task::spawn_blocking(move || startup(args, tui_progress)).await??
+    else {
+        return Ok(()); // EP worker: no router on this rank
+    };
+    crate::main_modules::serve_router::build_and_serve(state, model_ready, &bind, port).await
+}
+
+fn startup(
+    mut args: cli::ServeArgs,
+    tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
+) -> Result<Option<Prepared>> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
+    spark_runtime::progress::phase(0, "banner");
+
+    // Clean shutdown: SIGINT/SIGTERM now request a drain-and-exit instead of
+    // killing the process mid-write. In TUI mode Ctrl+C additionally arrives
+    // as a key event (raw mode) and calls the same request().
+    crate::tui::shutdown::install_signal_listeners();
+
+    // Start the dashboard thread as early as possible so the operator watches
+    // the load, not a blank screen. Everything it reads is process-global
+    // (log ring, progress channel, metrics, scheduler snapshot) plus this
+    // args snapshot for the badge chips. Head node only.
+    if let Some(progress_rx) = tui_progress
+        && args.rank == 0
+    {
+        crate::tui::start(args.clone(), progress_rx);
+    }
 
     // Reject contradictory flag combinations up front (issue #288) — before the
     // multi-minute model load — with a message that tells humans and AI agents
@@ -34,6 +87,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     }
 
     // 0. Resolve model directory from HF ID or path
+    spark_runtime::progress::phase(1, "model resolve");
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
     tracing::info!("Port: {}", args.port);
@@ -41,6 +95,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("SSM decode dtype: f32 (full precision)");
 
     // 1. Load model config (supports HF config.json and Mistral params.json)
+    spark_runtime::progress::phase(2, "config");
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
     // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
@@ -93,6 +148,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     );
 
     // 2. Select kernel target and initialize GPU backend
+    spark_runtime::progress::phase(3, "gpu init");
     //
     // Each kernel target declares which (model_type, hidden_size) pairs it supports
     // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over wildcards.
@@ -197,6 +253,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("OOM watchdog started (threshold: 2 GB, interval: 2s)");
 
     // 2b. Resolve TP / EP topology and set on model config.
+    spark_runtime::progress::phase(4, "topology");
     let serve_phases::Topology {
         world_size,
         tp_size: _tp_size,
@@ -212,6 +269,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     };
 
     // 3. Load model weights
+    spark_runtime::progress::phase(5, "weight load");
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
     tracing::info!("OOM guard reserve: {} MB", args.oom_guard_mb);
     let store = serve_phases::load_weight_store(
@@ -278,6 +336,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     )?;
 
     // 5. Build model via factory.
+    spark_runtime::progress::phase(6, "kv cache");
     let serve_phases::PrefillBudget {
         prefill_budget,
         max_batch_tokens,
@@ -459,6 +518,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // (handle 0 → silent slower-fallback dispatch). Catches build/codegen
     // regressions like a dropped pipelined GEMM at load time, not as a
     // mystery slowdown.
+    spark_runtime::progress::phase(7, "kernel audit");
     tracing::info!(
         "{}",
         spark_runtime::kernel_audit::render_kernel_table(
@@ -473,7 +533,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // EP worker: rank > 0 enters command loop, returns when head exits.
     let mut model_opt = Some(model);
     if serve_phases::maybe_run_ep_worker(&args, &mut model_opt, &early_high_speed_swap_cfg)? {
-        return Ok(());
+        // An EP worker (rank > 0) never serves HTTP: it ran its command loop and
+        // the head has exited. `None` = nothing for the async tail to do.
+        return Ok(None);
     }
     let model = model_opt.expect("head retains model on rank 0");
 
@@ -508,6 +570,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     } = serve_phases::load_sampling_defaults(&model_dir, &args);
 
     // 6. Load tokenizer
+    spark_runtime::progress::phase(8, "tokenizer");
     // Thinking support is derived from model capabilities, not hardcoded model names.
     // Models with SSM layers or Qwen3.5-style architecture support <think> tokens.
     // The --enable-thinking flag controls OPEN-ENDED vs CLOSED thinking.
@@ -545,6 +608,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     );
 
     // 7. Create scheduler channel + spawn scheduler
+    spark_runtime::progress::phase(9, "scheduler");
     let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>(args.max_num_seqs);
     // LoRA adapter-rotation control channel (POST /v1/lora/active). Small: it
     // carries only control messages, applied one-at-a-time at quiescence.
@@ -908,9 +972,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     serve_phases::log_behavior_audit(&args, &ptx_set);
 
-    // 9-11. Build router + start HTTP server (extracted: serve_router.rs).
-    crate::main_modules::serve_router::build_and_serve(state, model_ready, &args.bind, args.port)
-        .await
+    // 9-11. Router + HTTP server run on the async side; hand them the pieces.
+    Ok(Some((state, model_ready, args.bind, args.port)))
 }
 
 /// Parse the vLLM-style `--default-chat-template-kwargs` JSON
