@@ -17,6 +17,7 @@
 //!      pure waste because the buffer is fully overwritten;
 //!   2. a *pageable* buffer, which forces the driver to bounce every
 //!      `cuMemcpy*Async` through its own internal staging.
+//!
 //! (The third — 60 blocking `copy_d2h` calls, one full stream drain each —
 //! is fixed in `ssm_snapshot_spill.rs` by `copy_d2h_async` + one sync.)
 
