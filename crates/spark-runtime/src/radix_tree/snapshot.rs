@@ -276,7 +276,7 @@ impl SsmSnapshotIndex {
         tracing::info!(
             "ssm-snap-stats: lookups={} hits={} hit_rate={:.2} saves={} evictions(drops)={} \
              mean_anchor={:.0}tok mean_recompute_on_hit={:.0}tok recompute_on_miss={}tok \
-             resident={} tiered={} tier_spills={} tier_hits={} tier_fault_ins={}",
+             resident={} tiered={} tier_spills={} tier_hits={} tier_fault_ins={} tier_reaps={}",
             s.lookups,
             s.hits,
             hit_rate,
@@ -290,6 +290,7 @@ impl SsmSnapshotIndex {
             s.tier_spills,
             s.tier_hits,
             s.tier_fault_ins,
+            s.tier_reaps,
         );
     }
 
