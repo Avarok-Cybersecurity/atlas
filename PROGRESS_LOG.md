@@ -414,13 +414,113 @@ measure 109.3/153.3 (decode_short) and 96.6/150.2 (balanced_long). NOT
 like-for-like (different flags, scheduler, context, and see §5.7 on caching) —
 the useful read is only that nothing in this config regressed concurrency.
 
+### 6.2 HONEST 1K baseline (nonce bench), slai/16K config — and what it broke
+
+Same §6.1 serve config (slai, 16K, batch 16), binary at `de129a3c`
+(v2-ldb fix + logits-aliasing pick, NO KV fixes yet), bench WITH the
+per-request nonce (d09d6516). Aggregate tok/s:
+
+| regime | C=8 | C=16 | §6.1 (cached) C=16 | delta |
+|---|---|---|---|---|
+| decode_short 128/1024   | 108.5 | **138.0** | 153.3 | -10% |
+| balanced_short 256/256  |  90.2 | **123.1** | 148.6 | -17% |
+| prefill_short 1024/128  |  55.2 |  **63.8** | 127.4 | **-50%** |
+| balanced_long 1024/1024 |  21.9* |  24.9* | 150.2 | broken |
+
+*balanced_long dropped requests (15/16, 30/32) and collapsed. Root cause in
+the log: `KV cache exhausted: no free blocks` ERROR-spamming every ~180 ms
+(1,074 hits) from `mtp_bootstrap_step` — with unique prompts every request
+populates NEW radix blocks, and this branch lacked every one of the
+prefix-cache refcount/eviction fixes, so the pool wedges. The cached bench
+could never see this (one shared prompt = one block set).
+
+Reading the deltas:
+* decode/balanced_short: the honest cost of removing cache flattering is
+  ~10-17% at C=16. Against #379's published vLLM bar (98.8 @C=8 / 168.9
+  @C=16, treated as FIXED per direction — we do not re-measure vLLM):
+  decode_short is 108.5/98.8 = **1.10x at C=8** and 138.0/168.9 = **0.82x at
+  C=16**. C=16 remains the gap; C=8 is at parity honestly.
+* prefill_short -50%: with real prefills, TTFT p50=p99≈18.8 s at C=16 — the
+  aggregate is TTFT-dominated (only 128 out-tokens) and prefill admission is
+  the bottleneck, not decode.
+* PRIOR C=16 CLAIMS (§6.1 and #379's table) carried the cache flattering;
+  quote 6.2 numbers from now on.
+
+### 6.3 KV-lifecycle fixes brought onto the branch (2026-07-29)
+
+Cherry-picked, in order, after 6.2 exposed the wedge:
+
+* `493df3ea` (= wip-laguna-lora d27ec6fd, = #373's first commit): stop
+  exhaustion crashing CUDA-700 + wedging the pool. VERIFIED on its own
+  binary: balanced_long C=8 recovered 21.9 (drops) → **94.6 tok/s, 16/16**.
+  Exhaustion ERRORs still fire (~1000/run) — pressure is real, the pool just
+  no longer wedges.
+* #375 complete (`2fe52169`, `000c9ba2`, `d36a54b8`): preempt on decode-time
+  and prefill-chunk KV exhaustion instead of failing the batch; make the
+  chunk-0 prefix lookup idempotent under preempt-retry. One additive struct
+  conflict union-resolved with the d27ec6fd fields.
+* #373 complete (`75d1398e`..`52222db9`, 8 commits): re-inc leak fix, the
+  InsertAcquired API (cache ref follows the radix NODE's block, not the
+  sequence's), HSS slid-window mis-filing, keep-evicting-until-alloc-succeeds
+  (this is the one that should quiet the 1000 ERROR spam), partial-suffix
+  block ownership, reclaim-from-prefix-cache before swap-out. Ported around
+  this branch's #381/#382 prefix_cache layout (`no_caching.rs` module,
+  tier methods); compile-clean. **Runtime validation on the full-family
+  binary still pending** — rebuilt but not yet benched.
+
+### 6.4 Scheduler/context A/B at C=8/16 (IN FLIGHT at write time)
+
+fifo + 4K max-seq-len (the #379 config-of-record shape) vs 6.2's slai/16K,
+same honest bench, binary at `493df3ea`. Preliminary (first two regimes):
+
+| regime | fifo/4K C=8 | slai/16K C=8 | fifo/4K C=16 | slai/16K C=16 |
+|---|---|---|---|---|
+| decode_short | 78.8 | 108.5 | **90.6** | **138.0** |
+| balanced_short | 90.3 | 90.2 | pending | 123.1 |
+
+**slai beats fifo decisively in the decode-heavy regime** (TPOT p50 110 ms
+vs 92 ms at C=16) — the phaseA "slai starves prefill admission" note argued
+for fifo in throughput sweeps, but that reasoning only bites where PREFILL
+is the bottleneck. Waiting on prefill_short/balanced_long halves before
+concluding; the emerging picture is regime-dependent scheduling, not a
+global fifo win.
+
+### 6.5 PR-survey verdict (what else is worth bringing in)
+
+Checked content-level (not merge-base) against this branch:
+
+* **Absorbed / superseded — do not pick:** #332 (lm_head batched-GEMV
+  tiering + batched multi-seq FFN default: branch's copies are NEWER, with
+  measured MIN_N=5 crossover data #332 lacks; only its `decode_b2`
+  extension has no equivalent, and that is the B-model family, not the 27B),
+  #330 (its w4a16_gemv kernel state is BEHIND this branch's #366/#369
+  lineage), #352 (drafter-context defaults landed via #356), #266 (batched
+  QKV tiling largely subsumed; 415-line rewrite of a file both branches
+  touched — re-derive, don't pick).
+* **Model-specific, irrelevant here:** #380 (deepseek-v4), #296 (Holo GDN).
+* **Brought in today:** logits-aliasing fix (wip-laguna-lora 1e85cb94),
+  d27ec6fd + full #373 + full #375 (above).
+* **Still open elsewhere:** #372 (fp8-KV calibration; only matters for fp8
+  KV configs — this config runs bf16 KV).
+
 ## 7. Open
 
 Ordered by what I would pick up first.
 
+0. **C=16 @ 1K to vLLM parity (168.9)** — the active mission. Honest position
+   after 6.2: decode_short 138.0 @C=16 (0.82x). Next levers, in order:
+   (a) finish the 6.4 scheduler A/B and keep slai unless prefill regimes
+   flip it; (b) validate the full KV-family binary (6.3) — the
+   keep-evicting fix may recover MTP-batched propose under pressure and
+   with it decode speed; (c) speculative on/off at C=16 (verify step
+   ~1.77x plain decode at n=16 vs the <=1.34x bar #379 derived) — if OFF
+   wins, wire a C-dependent auto-disable; (d) #379's own "Still open"
+   items: Phase-A bootstrap graphing, accept-rate (p1 ~0.72, refeed
+   reached 0.90 on strix).
 1. ~~**§5.1 fix 2 — why does `w4a16_gemm_t_m128_bf16_v2` fail to launch?**~~
    **DONE (2026-07-29):** missing 9th `ldb` arg — see the RESOLVED block in
-   §5.1. Both fixes landed; e2e leg-B revalidation pending.
+   §5.1. Both fixes landed AND e2e leg-B REVALIDATED: v2 path serves with 0
+   launch errors, output identical to v1 (55 tok vs control 35).
 2. **§5.7 — add a per-request nonce to `make_prompt`**: DONE (2026-07-29) —
    `make_prompt` now embeds a per-request nonce and is called per request, not
    per cell. All PRIOR TTFT columns (incl. §6.1 and #379's table) predate this
@@ -480,3 +580,37 @@ from a fork — no write access to atlas-recipes). Review comment on atlas#379:
 * One test fails on `wip-laguna-lora` but passes on every PR branch:
   `radix_tree::snapshot::tests::lease::lookup_tiered_tail_session_gate`.
   Pre-dates this work; `cargo test --workspace` is green on the PRs.
+
+## 8.1 Addendum (2026-07-29, evening session)
+
+Commits added on top of the stack above (newest first):
+
+```
+52222db9..75d1398e  8 commits: full atlas#373 (prefix-cache refcount family)
+d36a54b8..2fe52169  3 commits: full atlas#375 (KV-exhaustion preempt)
+493df3ea  fix(kv): exhaustion wedge (= wip-laguna-lora d27ec6fd)
+8a07a672  bench: BENCH_LEVELS env
+de129a3c  fix(scheduler): mixed-step logits aliasing (= 1e85cb94 ported)
+d09d6516  fix(bench): per-request nonce (§5.7 resolved)
+79522031  fix(prefill): v2 ldb param (§5.1 resolved + revalidated)
+```
+
+Cross-references: findings 6.2-6.5. Cherry-pick port notes: the aliasing fix
+was rebuilt around this branch's older prefill_b types (no KernelBatchResult);
+#373's InsertAcquired API was rebuilt around this branch's prefix_cache
+layout (`no_caching.rs`, tier methods). `cargo check` clean on
+spark-runtime/model/server; **full-workspace `cargo test` on the final stack
+still pending** — the KV refcount logic deserves the kv_cache + radix_tree +
+prefix_cache suites before any PR is cut from this.
+
+Scratch additions: `combo_conc_fifo.sh`, `combo_1k_fifo4k.sh` (fifo/4K serve),
+`conc_1k_honest.txt` (§6.2 raw), `conc_1k_fifo4k.txt` (§6.4 raw, in flight),
+`v2fix_bisect.log` (§5.1 revalidation). Binary `spark-combo` = `493df3ea`
+build at the time of the 6.4 run; `target/release/spark` in the worktree =
+full stack (post-#373) — NOT yet deployed to `spark-combo`.
+
+New session-level gotcha: launch every long-running harness with
+`python3 -u` (block-buffering hid 40 min of §6.2's output), and never `cp`
+over `spark-combo` while a container has it mounted — stop the container
+first or the copy fails with "text file busy" and the old binary keeps
+serving (§6.4's first attempt was invalidated exactly this way).
