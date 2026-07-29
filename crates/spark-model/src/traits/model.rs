@@ -202,6 +202,40 @@ pub trait Model: Send + Sync {
         Ok(out)
     }
 
+    /// Like `prefill_batch_chunk`, but each finishing stream's first-token
+    /// logits land in row `row_base + stream_idx` of the shared logits arena
+    /// instead of row `stream_idx`.
+    ///
+    /// CROSS-REQUEST CORRUPTION (the reason this exists). `decode_batch`
+    /// writes lane `i`'s logits to row `i` of `buffers.logits()`, and a
+    /// finishing prefill stream writes row `stream_idx` of the SAME arena —
+    /// byte-identical addresses. In a mixed step decode runs first and the
+    /// caller samples the decode rows AFTER the prefill sub-pass, so every
+    /// active decode lane whose index collides with a finishing prefill
+    /// stream samples THAT REQUEST'S first-token distribution instead of its
+    /// own. Symptoms are exactly what a foreign distribution looks like: a
+    /// stray `<tool_call>` opener at the head of a reply (the foreign stream
+    /// was tool-enabled), or a reply that veers onto another user's topic.
+    /// It cannot happen sequentially — a mixed step needs >=2 prefills and
+    /// >=1 active decode in the same tick.
+    ///
+    /// Giving prefill a disjoint row window is enough to fix it. The arena
+    /// holds `min(max_batch_tokens, 32)` rows against `n_decode + n_prefill
+    /// <= max_num_seqs`, so the shifted window fits with room to spare;
+    /// implementations MUST bounds-check and fall back to `row_base = 0`
+    /// rather than write past the arena.
+    ///
+    /// Default ignores `row_base` (models with no batched prefill of their
+    /// own can't alias, since the serial path returns one row).
+    fn prefill_batch_chunk_rows(
+        &self,
+        streams: &mut [PrefillSlice<'_>],
+        stream: u64,
+        _row_base: usize,
+    ) -> Result<Vec<DevicePtr>> {
+        self.prefill_batch_chunk(streams, stream)
+    }
+
     /// Generalised mixed forward: M decode tokens + N concurrent prefill
     /// chunks fused into one forward pass. Default: delegates to
     /// `decode_batch` + `prefill_batch_chunk` serially. Models that
@@ -233,7 +267,12 @@ pub trait Model: Send + Sync {
         } else {
             spark_runtime::gpu::DevicePtr::NULL
         };
-        let prefill_logits = self.prefill_batch_chunk(prefill_streams, stream)?;
+        // Prefill rows start ABOVE the decode lanes: decode owns rows
+        // 0..decode_tokens.len(), so a finishing prefill stream can no longer
+        // overwrite a lane whose logits the caller has not sampled yet. See
+        // `prefill_batch_chunk_rows`.
+        let prefill_logits =
+            self.prefill_batch_chunk_rows(prefill_streams, stream, decode_tokens.len())?;
         Ok(MixedBatchResult {
             decode_logits,
             prefill_logits,

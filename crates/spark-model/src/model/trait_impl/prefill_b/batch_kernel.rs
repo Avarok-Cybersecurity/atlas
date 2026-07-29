@@ -56,10 +56,14 @@ impl TransformerModel {
     /// `kernel_batched_eligible` before calling this; if a per-stream
     /// constraint is later detected here (e.g. proc_count mismatch from
     /// differing prefix-cache hits), this function bails Err.
+    ///
+    /// `row_base` shifts each stream's logits row clear of the decode lanes
+    /// in a mixed step; the caller bounds-checks it against the arena.
     pub(in crate::model) fn prefill_batch_chunk_kernel_batched(
         &self,
         streams: &mut [PrefillSlice<'_>],
         stream: u64,
+        row_base: usize,
     ) -> Result<Vec<DevicePtr>> {
         let n = streams.len();
         let chunk_len = streams[0].chunk_len;
@@ -472,7 +476,9 @@ impl TransformerModel {
                     // prior streams, the cu_seqlens layout) — NOT cu_off[b].
                     // finalize reads last_token = proc_off + proc_count - 1.
                     m.proc_off,
-                    b,
+                    // Shifted clear of the decode lanes in a mixed step; `b`
+                    // alone would land on decode lane `b`'s logits row.
+                    row_base + b,
                     stream,
                 )?
             } else {

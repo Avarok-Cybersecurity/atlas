@@ -146,12 +146,22 @@ impl Model for TransformerModel {
         streams: &mut [PrefillSlice<'_>],
         stream: u64,
     ) -> Result<Vec<DevicePtr>> {
+        self.prefill_batch_chunk_rows(streams, stream, 0)
+    }
+    /// Mixed-step variant: shift the finishing streams' logits rows clear of
+    /// the decode lanes. See the trait docs for the aliasing this prevents.
+    fn prefill_batch_chunk_rows(
+        &self,
+        streams: &mut [PrefillSlice<'_>],
+        stream: u64,
+        row_base: usize,
+    ) -> Result<Vec<DevicePtr>> {
         // Try the concrete dispatch. The Phase 4b stub returns Err for the
         // "not-yet-implemented" path so we transparently downgrade to the
         // single-stream-loop default impl. Once Phase 2b/3 land, the
         // dispatch returns Ok with logits and this fallback becomes dead
         // code that we can drop.
-        match self.prefill_batch_chunk_dispatch(streams, stream) {
+        match self.prefill_batch_chunk_dispatch(streams, stream, row_base) {
             Ok(v) => Ok(v),
             Err(e) => {
                 // Log at debug — under expected for this stub. Promotes to
@@ -160,6 +170,17 @@ impl Model for TransformerModel {
                     "prefill_batch_chunk_dispatch unavailable, falling back to \
                      per-stream loop: {e}"
                 );
+                if row_base > 0 {
+                    // The per-stream loop writes each stream's logits where
+                    // the single-stream path always puts them; it cannot
+                    // honor the shifted window. Mirrors pre-fix behavior —
+                    // say so instead of silently aliasing.
+                    tracing::warn!(
+                        "prefill_batch_chunk_rows: per-stream fallback cannot \
+                         honor row_base={row_base}; decode lanes may alias \
+                         prefill logits rows this step"
+                    );
+                }
                 let mut out = Vec::with_capacity(streams.len());
                 for slice in streams.iter_mut() {
                     let logits = self.prefill_chunk(
