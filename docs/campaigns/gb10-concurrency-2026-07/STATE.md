@@ -2330,3 +2330,122 @@ before each, first drive per serve discarded as warmup)
 C=16 0.78x.** C=8 needs a further ~+11%; C=16 needs the n=16 verify-step cost below ~1.72x a
 plain decode step before any depth can win there. Next lever, singular and named: graph-capture
 the Phase-A bootstrap forward, then re-test 16:1 and re-raise the cap.
+
+## 2026-07-29 — ★★★ FINALIZED (round 3): chunk-cap fix + ladder `4:3,8:3` (cap 8). C=8 95.68 (floor +7.6%), FOUR floors held, C=16 preserved.
+
+The wave's finding is a MEASUREMENT ARTIFACT, not a new optimization: **the `8:2` ladder step was
+compensating for a bug, not for GDN depth cost.** `mtp_step`'s verify chunk cap for `rows=4` was
+pinned to 4 SEQUENCES ("keeps the proven 4-seq/R=16 envelope byte-identical"), so an 8-wide K=4
+batch ran TWO serialized 4-wide verify forwards — 2x the weight reads per step. Every historical
+"8:3 collapses at n=8" number recorded that chunking, never depth-3 at width 8 (57.9 in the
+round-2 matrix; 62.6 on re-measure). The real bound is the verify row buffer, which
+`can_batch_verify` already enforces as `n*k <= 32`: 8 seqs x 4 rows fits EXACTLY.
+Raising the cap: **62.58 -> 95.68 (+53%)**, and the GDN path engages ONCE at `(n=8, k=4)` instead
+of twice at `(n=4, k=4)`.
+
+★ It was caught by INSTRUMENT ABSENCE, not by a throughput reading: the width-attributed accept
+telemetry printed ONLY `n=4` lines during a C=8 drive. The corroborating arithmetic — 62.58 is
+BELOW the 73.5 MTP-off floor, and a depth cost cannot take you below the no-speculation path
+while a doubled forward can.
+
+### Landed
+- `48fb8a11` fix(mtp): chunk cap -> row-buffer bound (`rows=4` 4 -> 8 seqs). Provably a NO-OP at
+  the pre-existing default ladder, where `rows=4` occurred only at n<=4 and every chunk was <= 4.
+- `3313a733` perf(mtp): default ladder `4:3,8:2` -> `4:3,8:3`. Kill switch
+  `ATLAS_MTP_K_LADDER=4:3,8:2`. Unit tests updated (3 pass), rustfmt clean.
+- `d4633f09` docs: the stale `8:2` prose in `ladder.rs` / `mtp_step.rs` (three comments still
+  described the superseded default). Doc-only.
+
+★ **The diff is inert everywhere except 5 <= n <= 8, by construction**: at n<=4 both ladders
+return 3 drafts AND the chunk cap was already <= 4; at n>8 the cap (8) makes the path MTP-off.
+So C=1/2/4/16 are unchanged code paths and their rows below are variance measurements, not
+regression risk.
+
+### Validated sweep at PURE DEFAULTS (binary md5 `f134f6fa267cdc257197d092f113089a`, built with
+`ATLAS_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`; ONE FRESH
+SERVE PER C, all containers removed + `:8888` asserted dead + `vm.drop_caches=3` + a MemAvailable
+>= 108GB settle gate before each; first drive per serve DISCARDED as warmup; 5 scored drives)
+| C | scored reps (tok/s) | mean | floor | vLLM | ratio | verdict |
+|---|---|---|---|---|---|---|
+| 1 | 25.6, 25.6, 25.6, 25.6, 25.6 | **25.60** | 25.62 | 14.2 | **1.80x** | **MET** |
+| 2 | 35.2, 35.6, 35.6, 35.4, 35.4 | **35.44** | 35.18 | 27.8 | **1.27x** | **MET** (floor +0.7%) |
+| 4 | 60.5, 59.9, 58.2, 59.7, 59.9 | **59.64** | 55.6 | 53.3 | **1.12x** | **MET** (floor +7.3%) |
+| 8 | 95.7, 94.8, 95.7, 96.1, 96.1 | **95.68** | 88.9 | 98.8 | 0.968x | floor **+7.6%**; bar not met |
+| 16 | 131.4, 131.5, 131.0, 131.1, 131.1 | **131.22** | 131.9 | 168.9 | 0.777x | MTP-off by cap |
+
+Confirming second serves for the two levels that read at/under their reference floor (both on
+code paths this diff does not touch): **C=16 131.7, 132.0, 131.3, 131.5, 131.0 = 131.50** and
+**C=1 25.5, 25.6, 25.6, 25.6, 25.5 = 25.56**. Pooled two-serve: C=16 **131.36** (10 reps,
+131.0-132.0, inside the documented 129.35-132.5 C=16 spread), C=1 **25.58** (wall 7.5s and 192
+tokens on every single rep — the spread is 1-decimal print quantization on a constant wall).
+Both levels are serve-to-serve variance around their floors, not movement.
+
+### Hygiene
+- Smoke at final defaults (temp 0, seed 42) on the C=1 and C=8 serves: fluent Rayleigh-scattering
+  answer `finish=stop`; `get_weather({"location":"Paris"})` `finish=tool_calls`. PASS.
+- **Zero** ERROR/panic/illegal-memory/error-700/716 lines in all seven serve logs, each dumped
+  while its container was still alive (`conc_sweep/fin2_c{1,2,4,8,16}.log`,
+  `fin2b_c{1,16}.log`).
+- Engagement PROVEN from the logs: `batched-verify GDN conv+WY ENGAGED (n=8, k=4)` at C=8 (56
+  launches/layer -> batched) and `(n=2, k=4)` at C=2/C=4; **zero DECLINED on the verify path**;
+  `MTP batched bootstrap ENGAGED`; zero `graphs OFF`; zero graph evictions. At C=16 there is NO
+  batched verify at all (only a ramp/tail bootstrap at n=2) — MTP-off by cap, as designed.
+- The one recurring `SSM batched recurrent DECLINED (n=...): pool slots are not contiguous` is
+  the known benign slot-fragmentation notice, present in the floor config too.
+
+### Multiplier arithmetic, with measured numbers
+- **(B) ACCEPT was the real lever and is now largely banked.** Implementer-2's per-sequence
+  drafter-prefill fix (`36d340a0`) reproduces exactly: p1 **0.740 -> 0.780** at n=8, and the
+  throughput ratio equals the tok_step ratio to 0.1% (1.0529 vs 1.0516, disjoint rep ranges
+  88.4-90.8 vs 92.8-96.9).
+- **Depth at n=8 is worth only ~+2%**: tok_step 2.301 -> 2.606 (+13.3%) buys +2.3% throughput,
+  so the K=4 verify step costs ~10.7% more than the K=3 one. Consistent in sign across 5 serves
+  (8:3 = 95.84/95.68/94.93 vs 8:2 = 93.40/93.30) but rep ranges overlap at the tails — treat it
+  as a ~2% effect, NOT a step change. Shipped as a default because the sign is consistent and the
+  mechanism is measured.
+- **C=8 remaining gap: 98.8/95.68 = 1.033x.** At the current verify cost that needs tok_step 2.69
+  (mean_na 1.69 from 1.606), i.e. p1 ~0.85 at K=4 — or a ~3% cheaper verify step.
+- **C=16 is now PARITY, not a loss**: 16:1 = 131.93 vs a same-session MTP-off control of 131.42
+  (was 128.4 = 0.973x). Parity buys nothing, so the cap stays 8. p1 at n=16 = 0.797 => break-even
+  cost 1.797x and the measured implied cost is ~1.79x — sitting exactly on it. Clearing 168.9
+  needs <= 1.40x. Depth at n=16 remains dead (16:2 = 94.1).
+
+### Accept telemetry by width (`ATLAS_MTP_ACCEPT_DEBUG`)
+| width | p1 | mean_na | tok_step |
+|---|---|---|---|
+| n=4, k_drafts=3 | 0.776 | 1.533 | 2.533 |
+| n=8, k_drafts=2 (old default) | 0.780 | 1.301 | 2.301 |
+| n=8, k_drafts=3 (new default) | 0.793 | 1.606 | 2.606 |
+| n=16, k_drafts=1 | 0.797 | 0.797 | 1.797 |
+
+### Traps re-burned this wave (all previously documented)
+1. `pkill -f prof_drive.py` SELF-MATCHES the caller's own command line and killed the harness
+   mid-run. Match only real python interpreters.
+2. **Stale concurrent driver**: a backgrounded drive loop still firing C=8 during a C=8 leg =>
+   16 active > cap 8 => MTP correctly off => a flat 65.5 tok/s plateau that would have been
+   reported as "the 8:2 control". Detected by the 65.5 signature; leg discarded and re-run.
+3. **KV-budget knife edge (new)**: the engine sizes its KV pool from system MemAvailable at
+   startup and a just-removed container's memory is still being reclaimed. Pools measured
+   3746-5056 blocks across IDENTICAL launches; `--max-batch-size 16` needs 4096, so two serves
+   DIED at build. Worse than dying is coming up just under and silently running a different
+   regime. The harness now double `sync`+`drop_caches`, gates on MemAvailable >= 108GB, and
+   RETRIES until the pool is >= 4300 blocks (one retry fired this session at 4225 blocks). Every
+   reported serve got 4225-5056; all measured ones 4387-4923.
+4. **Log loss**: each serve removes ALL containers, so `docker logs` after the NEXT serve returns
+   "No such container". Dump logs while the container is alive.
+
+### Campaign position
+**C=1/2/4 MET at pure defaults (1.80x / 1.27x / 1.12x). C=8 0.968x (floor +7.6%, was 0.90x),
+C=16 0.777x (MTP-off by cap).** C=8 needs a further ~3.3%.
+Next levers, in value order:
+1. **L3 refeed made slot-keyed** — powered A/B measured +0.016 p1 / +2.3% tokens/step.
+2. **L1 carry is silently OFF at EVERY concurrency including C=1**, because `mtp_multi_seq_mode()`
+   is cap-based. This is a LIVE REGRESSION on multi-turn/MLPerf traffic that `prof_drive`'s
+   single-turn prompts cannot see.
+3. **L6 drafter-pool sizing** (`mtp_head/new.rs:228` still sizes for ONE sequence) is now MORE
+   urgent: every sequence allocates drafter KV at prefill. Fine at this bench's 26-token prompts,
+   a silent accept->0 collapse at C=8 with long contexts.
+4. The row buffer (`n*k <= 32`) is now the binding constraint at C=8: K=4 at n=8 is the deepest
+   legal point. Going deeper requires enlarging the verify row buffer — an untested regime.
+- Still red and pre-existing: `decode_a2.rs` 598 LoC and `trait_impl/mod.rs` 800 LoC, both over
+  the 500 cap and absent from `.github/workflows/file-size-cap.yml`'s allow-list.

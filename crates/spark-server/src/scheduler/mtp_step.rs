@@ -31,10 +31,11 @@ pub fn step_mtp(
     }
 
     // K-vs-batch ladder (task #35): the per-step draft count is a function
-    // of the CURRENT concurrency — 3 drafts at n<=4 (the proven K=4 regime,
-    // bit-for-bit), 2 at n<=8, 1 at n<=16 — keeping the batched verify at
-    // R = n*(drafts+1) <= 32 rows instead of the measured fixed-K=4
-    // collapse (~55 tok/s plateau over n>=8). SSOT + overrides
+    // of the CURRENT concurrency. Default ladder holds 3 drafts to the cap
+    // (`4:3,8:3`), which keeps the batched verify at R = n*(drafts+1) = 32
+    // rows at n=8 — exactly the row-buffer bound. The depth step-down that
+    // used to sit at n>4 was an artifact of the chunk cap below, not of GDN
+    // depth cost (see that comment). SSOT + overrides
     // (`ATLAS_MTP_K_LADDER`, `ATLAS_NO_MTP_K_LADDER`):
     // `spark_model::speculative::ladder`. DFlash keeps its own γ economics.
     let ladder_nd = if dflash_verify_raw_argmax {
@@ -301,7 +302,7 @@ pub fn step_mtp(
     // ── Phase B: Verify with pipelined checkpoint ──
     //
     // Batched multi-seq K-row verify (batched-MTP E11 + the ladder). Only
-    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 16 with the ladder)
+    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 8 with the ladder)
     // puts >= 2 verify-ready sequences in one step (`ATLAS_MTP_MAX_SEQS=1`
     // ⇒ this partition is a no-op and every seq takes the per-seq loop
     // below, byte-identical to the pre-batched HEAD). Batchable =
@@ -334,12 +335,20 @@ pub fn step_mtp(
     } else {
         serial_idxs.extend_from_slice(&verify_idxs);
     }
-    // Chunk caps pinned to the ladder plateaus: rows=4 keeps the proven
-    // 4-seq / R=16 envelope byte-identical; rows=3 → 8 seqs (R=24);
-    // rows=2 → 16 seqs (R=32, the exact buffer capacity).
+    // Chunk caps pinned to the row-buffer capacity (32 rows, the same bound
+    // `can_batch_verify` enforces as `n*k <= 32`): rows=4 → 8 seqs, rows=3 →
+    // 8 seqs (R=24), rows=2 → 16 seqs (R=32).
+    //
+    // rows=4 was previously capped at 4 seqs to keep the proven 4-seq/R=16
+    // envelope byte-identical. That cap silently made the `8:3` ladder step
+    // untestable: 8 batchable sequences split into TWO serialized 4-wide
+    // verify forwards (2x the weight reads per step), which is what the
+    // "8:3 collapses" measurements (57.9, and 62.6 on 2026-07-28) actually
+    // recorded — NOT depth-3 at width 8. No-op at the default ladder, where
+    // rows=4 occurs only at n<=4 and every chunk is already <= 4.
     let rows = ladder_nd + 1;
     let chunk_cap = match rows {
-        4 => 4,
+        4 => 8,
         3 => 8,
         _ => 16,
     };
