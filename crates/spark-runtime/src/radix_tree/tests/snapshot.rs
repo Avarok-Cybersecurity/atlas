@@ -362,8 +362,12 @@ fn test_spill_tier_lookup_transitions() {
     assert_eq!(m.ssm_snapshot_tokens, 64);
     assert_eq!(m.ssm_snapshot_tier_key, None);
 
-    // Spill: evict_to_tier KEEPS the entry and returns (freed_slot, key).
-    let (freed, key) = tree.evict_snapshot_to_tier().expect("resident victim");
+    // Spill (gate off): evict_to_tier KEEPS the entry, reports slot + key.
+    let ev = tree.evict_snapshot_to_tier(0).expect("resident victim");
+    let (freed, key) = match ev {
+        crate::prefix_cache::TierEvict::Spill { slot, key, .. } => (slot, key),
+        other => panic!("an ungated evict must SPILL, not drop: {other:?}"),
+    };
     assert_eq!(freed, 99, "the resident slot is freed for reuse");
 
     // Spilled: lookup now reports the anchor as tiered — ssm_snapshot is None
@@ -389,6 +393,6 @@ fn test_spill_tier_lookup_transitions() {
 fn test_no_tier_default_impl() {
     use crate::prefix_cache::NoPrefixCaching;
     let c = NoPrefixCaching;
-    assert_eq!(c.evict_snapshot_to_tier(), None);
+    assert_eq!(c.evict_snapshot_to_tier(/*min_tokens*/ 0), None);
     assert!(!c.promote_snapshot(123, 0));
 }

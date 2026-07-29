@@ -154,6 +154,22 @@ impl GpuBackend for AtlasCudaBackend {
         Ok(())
     }
 
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
+        // Deliberately NO cuStreamSynchronize — that is the entire point.
+        // `copy_d2h`/`copy_d2h_on_stream` drain the stream inside every call,
+        // so a multi-chunk gather pays one full drain per chunk (the SSM spill's
+        // 60 chunks × 66 MB measured ~400 ms = ~165 MB/s, vs ~28 ms for the
+        // async H2D scatter of the same bytes). The caller MUST issue exactly
+        // one `synchronize(stream)` before touching `dst`.
+        let status = unsafe {
+            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
+        };
+        if status != 0 {
+            bail!("cuMemcpyDtoHAsync_v2 (async) failed: status {status}");
+        }
+        Ok(())
+    }
+
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
         let status = unsafe { cuMemcpyDtoDAsync_v2(dst.0, src.0, bytes, self.default_stream) };
         if status != 0 {

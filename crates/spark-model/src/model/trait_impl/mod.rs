@@ -31,7 +31,7 @@ mod prefill_c;
 mod prefill_d;
 mod sequence;
 mod speculative;
-mod ssm_fault_in;
+pub(in crate::model) mod ssm_fault_in;
 mod verify_a;
 mod verify_b;
 mod verify_c;

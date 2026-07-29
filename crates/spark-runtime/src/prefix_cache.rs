@@ -12,6 +12,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod tier_evict;
+pub use tier_evict::TierEvict;
+
 // ── Global prefix cache counters (one RadixTree per server) ──
 
 static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -285,11 +288,13 @@ pub trait PrefixCache: Send + Sync {
     fn evict_snapshot_lru(&self) -> Option<usize>;
 
     /// Phase 1b spill tier: pick a spill victim (same policy as
-    /// `evict_snapshot_lru`, HBM-resident only), **keep** its index entry
-    /// (findable so a warm turn faults it back), and return `(freed_slot, key)`
-    /// so the caller moves its bytes to the tier and reuses the slot. `None`
-    /// when nothing resident remains. Default: `None` (caches without a tier).
-    fn evict_snapshot_to_tier(&self) -> Option<(usize, u64)> {
+    /// `evict_snapshot_lru`, HBM-resident only) and decide whether it is worth
+    /// spilling — see [`TierEvict`]. A victim shallower than `min_tokens`
+    /// cannot repay the spill's fixed cost, so its entry is dropped outright
+    /// rather than left findable-but-empty. `min_tokens == 0` disables the
+    /// gate. `None` when nothing resident remains; default `None` (no tier).
+    fn evict_snapshot_to_tier(&self, min_tokens: usize) -> Option<TierEvict> {
+        let _ = min_tokens;
         None
     }
 

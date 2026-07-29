@@ -260,8 +260,8 @@ impl PrefixCache for RadixTree {
         self.snapshot_index.lock().evict_lru()
     }
 
-    fn evict_snapshot_to_tier(&self) -> Option<(usize, u64)> {
-        self.snapshot_index.lock().evict_to_tier()
+    fn evict_snapshot_to_tier(&self, min_tokens: usize) -> Option<crate::prefix_cache::TierEvict> {
+        self.snapshot_index.lock().evict_to_tier(min_tokens)
     }
 
     fn promote_snapshot(&self, key: u64, new_slot: usize) -> bool {
