@@ -38,6 +38,7 @@ pub(crate) mod impl_lora_swap;
 pub(crate) mod mtp_carry;
 pub(crate) mod ssm_pool;
 pub(crate) mod ssm_snapshot;
+pub(crate) mod ssm_snapshot_faultin;
 pub(crate) mod ssm_snapshot_spill;
 pub(crate) mod ssm_spill_gate;
 pub(crate) mod ssm_spill_staging;
