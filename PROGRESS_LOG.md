@@ -166,6 +166,31 @@ sizing it from `max_seq_len` looks cheap. Also: it logs at `ERROR` per step.
 
 **8192 is the sweet spot.** Both 4K and 16K were worse.
 
+**And #379's benchmark cannot reach this cap by construction.**
+`bench/bench-atlas-concurrency.py` defines 6 ISL/OSL regimes but then filters
+`[... if isl + osl <= MAX_SEQ_LEN]` with `MAX_SEQ_LEN` defaulting to 4096. At the
+config of record that silently drops the only two long-context regimes:
+
+| regime | ISL/OSL | total | survives at 4096 |
+|---|---|---|---|
+| prefill_short  | 1024/128  | 1152 | yes |
+| balanced_short | 256/256   |  512 | yes |
+| balanced_long  | 1024/1024 | 2048 | yes |
+| decode_short   | 128/1024  | 1152 | yes |
+| prefill_long "RAG / document 8K/1K" | 8192/1024 | 9216 | **DROPPED** |
+| decode_long "Long reasoning 1K/8K"  | 1024/8192 | 9216 | **DROPPED** |
+
+So every measured regime has **ISL <= 1024, total <= 2048** -> a block table of
+`2048/16 = 128` entries against the 448-entry limit, **3.5x of headroom**. The
+`exceeds meta stride` path is unreachable there, which is why 1650 hits at 16K
+prefill never showed up upstream. Nothing logs the filter; `TEST_CONFIGS` just
+comes back with 4 entries instead of 6.
+
+Consequence for reading #379's table: "four of five levels beat vLLM" is a
+short-prompt, short-generation result. It does not speak to >7.2K context, and
+the batched-verify path it optimises is the one we measured falling back to
+`verify_k2_step` once agentic contexts reach ~15K.
+
 ### 5.3 `ATLAS_SSM_TAIL_PROTECT=1` is inert in this config
 
 `radix_tree/snapshot.rs` says so in-code: the lease only shields `is_tail`
