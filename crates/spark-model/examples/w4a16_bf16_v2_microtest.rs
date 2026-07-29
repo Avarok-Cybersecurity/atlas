@@ -119,7 +119,7 @@ struct Nvfp4Weight {
 /// Build a random NVFP4 weight [N, K] directly in packed form, then derive the
 /// transposed layout with the EXACT loop from `transpose_for_gemm`.
 fn gen_weight(rng: &mut Rng, n: usize, k: usize) -> Nvfp4Weight {
-    assert!(k % GROUP_SIZE == 0, "K must be a multiple of {GROUP_SIZE}");
+    assert!(k.is_multiple_of(GROUP_SIZE), "K must be a multiple of {GROUP_SIZE}");
     let half_k = k / 2;
     let num_groups = k / GROUP_SIZE;
     let mut packed_nt = vec![0u8; n * half_k];
@@ -290,7 +290,10 @@ fn run_shape(
         .arg_u32(k as u32)
         .launch(stream)?;
 
-    // ── w4a16_gemm_t_m128_bf16_v2: SAME launch config + weight layout as v1 ──
+    // ── w4a16_gemm_t_m128_bf16_v2: SAME launch config + weight layout as v1,
+    // PLUS the 9th `ldb` param (transposed-B row stride; == N here, the twin is
+    // unpadded). Omitting it is UB: cuLaunchKernel reads past the end of the
+    // param array for the missing arg. ──
     KernelLaunch::new(gpu, v2_h)
         .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
         .block([128, 1, 1])
@@ -302,6 +305,7 @@ fn run_shape(
         .arg_u32(m as u32)
         .arg_u32(n as u32)
         .arg_u32(k as u32)
+        .arg_u32(n as u32)
         .launch(stream)?;
 
     gpu.synchronize(stream)?;

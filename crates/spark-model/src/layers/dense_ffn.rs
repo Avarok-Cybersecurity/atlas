@@ -1450,8 +1450,11 @@ impl DenseFfnLayer {
         // keeps the same 128x128 cp.async speed at base-kernel precision.
         // Unset (default) → every arm below is byte-for-byte the prior behavior
         // (PCND: explicit opt-in, no silent default change). Read once per call.
-        let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0
-            && std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
+        // Env read only here; the usable gate (`bf16_tc_prefill`) is derived
+        // below AFTER v1/v2 selection, from the handle actually launched.
+        // Gating on v1's handle while dispatching v2 admitted launches of a
+        // kernel this target may not carry.
+        let bf16_tc_env = std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
         // FP8 M64 fast-prefill opt-in: route prefill GEMMs through the m16n8k32
         // e4m3 M64 kernel (~1.47x vs v2 BF16, smem-relieved). Lossy (cosine 0.9997)
         // → highest priority when set, so it overrides the BF16/FP8 t_m128 arms.
@@ -1591,6 +1594,9 @@ impl DenseFfnLayer {
         } else {
             self.w4a16_gemm_t_m128_bf16_k
         };
+        // Final gate: the flag is honored only when the SELECTED kernel is
+        // loaded (v2 when preferred, else v1) — not v1's handle unconditionally.
+        let bf16_tc_prefill = bf16_kernel.0 != 0 && bf16_tc_env;
 
         macro_rules! w4_gemm {
             ($w:expr, $wt:expr, $cell:expr, $qcell:expr, $fp4cell:expr, $allow_fp4:expr, $in:expr, $out:expr, $n:expr, $k:expr, $allow_q4k:expr) => {
@@ -1712,6 +1718,26 @@ impl DenseFfnLayer {
                         m,
                         $n,
                         $k,
+                        stream,
+                    )?,
+                    // v2's COMPILED signature carries a 9th param, `ldb`
+                    // (transposed-B row stride; == N for the FFN twins, which
+                    // are built unpadded). It MUST go through the `_ldb`
+                    // launcher: the 8-arg helper leaves cuLaunchKernel reading
+                    // one-past-the-end of the param array for `ldb` —
+                    // CUDA_ERROR_INVALID_VALUE or a host SIGSEGV depending on
+                    // the neighboring heap word. v1 takes exactly 8 params and
+                    // stays on the 8-arg helper.
+                    Some(wt) if bf16_tc_prefill && use_v2 => ops::w4a16_gemm_n128_m128_bf16_ldb(
+                        ctx.gpu,
+                        bf16_kernel,
+                        $in,
+                        &wt,
+                        $out,
+                        m,
+                        $n,
+                        $k,
+                        $n,
                         stream,
                     )?,
                     Some(wt) if bf16_tc_prefill => ops::w4a16_gemm_n128_m128_bf16(

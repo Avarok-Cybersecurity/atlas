@@ -45,11 +45,14 @@ fn time_kernel(
     m: usize,
     n: usize,
     k: usize,
+    // 9th `ldb` param for kernels compiled with it (v2). None for v1 —
+    // omitting a compiled param is UB (cuLaunchKernel reads past the end of
+    // the param array), so the caller must match the kernel's signature.
+    ldb: Option<u32>,
     iters: usize,
 ) -> Result<f64> {
-    // Warmup
-    for _ in 0..3 {
-        KernelLaunch::new(gpu, h)
+    let launch_once = |c: DevicePtr| -> Result<()> {
+        let mut l = KernelLaunch::new(gpu, h)
             .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
             .block([128, 1, 1])
             .arg_ptr(a)
@@ -59,25 +62,21 @@ fn time_kernel(
             .arg_ptr(c)
             .arg_u32(m as u32)
             .arg_u32(n as u32)
-            .arg_u32(k as u32)
-            .launch(stream)?;
+            .arg_u32(k as u32);
+        if let Some(ldb) = ldb {
+            l = l.arg_u32(ldb);
+        }
+        l.launch(stream)
+    };
+    // Warmup
+    for _ in 0..3 {
+        launch_once(c)?;
     }
     gpu.synchronize(stream)?;
 
     let t0 = Instant::now();
     for _ in 0..iters {
-        KernelLaunch::new(gpu, h)
-            .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
-            .block([128, 1, 1])
-            .arg_ptr(a)
-            .arg_ptr(packed)
-            .arg_ptr(scale)
-            .arg_f32(scale2)
-            .arg_ptr(c)
-            .arg_u32(m as u32)
-            .arg_u32(n as u32)
-            .arg_u32(k as u32)
-            .launch(stream)?;
+        launch_once(c)?;
     }
     gpu.synchronize(stream)?;
     Ok(t0.elapsed().as_secs_f64() / iters as f64)
@@ -224,10 +223,22 @@ fn main() -> Result<()> {
         let c3 = gpu.alloc(m * n * 2)?;
 
         let t1 = time_kernel(
-            gpu, stream, v1, a_ptr, p_ptr, s_ptr, 0.5, c1, m, n, k, iters,
+            gpu, stream, v1, a_ptr, p_ptr, s_ptr, 0.5, c1, m, n, k, None, iters,
         )?;
         let t2 = time_kernel(
-            gpu, stream, v2, a_ptr, p_ptr, s_ptr, 0.5, c2, m, n, k, iters,
+            gpu,
+            stream,
+            v2,
+            a_ptr,
+            p_ptr,
+            s_ptr,
+            0.5,
+            c2,
+            m,
+            n,
+            k,
+            Some(n as u32),
+            iters,
         )?;
         let t3 = time_kernel_fp8(gpu, stream, fp8, a_ptr, bf8_ptr, c3, m, n, k, iters)?;
         // fp8_fp8: both operands FP8 -> true m16n8k32.e4m3 MMA (2x candidate)

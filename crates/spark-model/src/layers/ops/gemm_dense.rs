@@ -375,6 +375,12 @@ pub fn w4a16_gemm_n128_m128_bf16_ldb(
         .launch(stream)
 }
 
+/// 8-arg launcher for `w4a16_gemm_t_m128_bf16` (v1) ONLY. The `_v2` sibling's
+/// compiled signature has a 9th `ldb` param — launching it through this helper
+/// makes cuLaunchKernel read one-past-the-end of the param array (observed as
+/// CUDA_ERROR_INVALID_VALUE or a host SIGSEGV depending on the neighboring
+/// heap word). Launch v2 via `w4a16_gemm_n128_m128_bf16_ldb` (ldb = N when the
+/// transposed twin is unpadded).
 pub fn w4a16_gemm_n128_m128_bf16(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
