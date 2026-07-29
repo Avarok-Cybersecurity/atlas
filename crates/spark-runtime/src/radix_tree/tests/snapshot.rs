@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Snapshot-side tests: intermediate snapshots, partial-suffix matching,
-//! and the standalone snapshot index LRU/session/overwrite behaviours.
+//! Snapshot-side tests: intermediate snapshots and partial-suffix matching.
+//! The standalone `SsmSnapshotIndex` LRU/session/overwrite behaviours live in
+//! `snapshot_index.rs` (mounted as `radix_tree::snapshot`'s unit tests).
 
 use crate::prefix_cache::PrefixCache;
 use crate::radix_tree::RadixTree;
@@ -267,108 +268,6 @@ fn test_partial_suffix_sub_block_only() {
     assert_eq!(tree.stats(), (0, 0));
     let m = tree.lookup(&tokens, 16, 0, 0);
     assert_eq!(m.matched_tokens, 0);
-}
-
-// ── SsmSnapshotIndex tests ──
-
-#[test]
-fn test_snapshot_index_insert_lookup_roundtrip() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..32).collect();
-    let prefix_hash = hash_token_prefix(&tokens, 32, 0);
-
-    assert!(idx.insert(prefix_hash, 42, 100, 32).is_none());
-    let result = idx.lookup(&tokens, 32, 100, 0);
-    assert_eq!(result, Some((42, 32)));
-}
-
-#[test]
-fn test_snapshot_index_lru_eviction() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens_a: Vec<u32> = (0..16).collect();
-    let tokens_b: Vec<u32> = (100..116).collect();
-    let ha = hash_token_prefix(&tokens_a, 16, 0);
-    let hb = hash_token_prefix(&tokens_b, 16, 0);
-
-    idx.insert(ha, 1, 0, 16); // older
-    idx.insert(hb, 2, 0, 16); // newer
-
-    // LRU eviction should evict snapshot 1 (older)
-    let evicted = idx.evict_lru();
-    assert_eq!(evicted, Some(1));
-    assert_eq!(idx.len(), 1);
-
-    // Only snapshot 2 remains
-    let evicted = idx.evict_lru();
-    assert_eq!(evicted, Some(2));
-    assert_eq!(idx.len(), 0);
-
-    // Empty
-    assert_eq!(idx.evict_lru(), None);
-}
-
-#[test]
-fn test_snapshot_index_session_isolation() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..16).collect();
-    let prefix_hash = hash_token_prefix(&tokens, 16, 0);
-
-    // Insert snapshot for session 100
-    idx.insert(prefix_hash, 42, 100, 16);
-
-    // Lookup from session 200 — should NOT match (different session)
-    let result = idx.lookup(&tokens, 16, 200, 0);
-    assert_eq!(result, None);
-
-    // Lookup from session 100 — should match
-    let result = idx.lookup(&tokens, 16, 100, 0);
-    assert_eq!(result, Some((42, 16)));
-
-    // Lookup with session_hash=0 (legacy) — matches any session
-    let result = idx.lookup(&tokens, 16, 0, 0);
-    assert_eq!(result, Some((42, 16)));
-}
-
-#[test]
-fn test_snapshot_index_overwrite_existing() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..16).collect();
-    let prefix_hash = hash_token_prefix(&tokens, 16, 0);
-
-    // Insert first
-    assert!(idx.insert(prefix_hash, 5, 0, 16).is_none());
-    assert_eq!(idx.len(), 1);
-
-    // Overwrite same prefix_hash — returns old snapshot_id
-    let old = idx.insert(prefix_hash, 8, 0, 16);
-    assert_eq!(old, Some(5));
-    assert_eq!(idx.len(), 1); // still 1 entry, not 2
-
-    // Lookup returns new value
-    let result = idx.lookup(&tokens, 16, 0, 0);
-    assert_eq!(result, Some((8, 16)));
-}
-
-#[test]
-fn test_snapshot_index_deepest_match() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..64).collect();
-
-    // Snapshot at token 16
-    let h16 = hash_token_prefix(&tokens, 16, 0);
-    idx.insert(h16, 10, 0, 16);
-
-    // Snapshot at token 32
-    let h32 = hash_token_prefix(&tokens, 32, 0);
-    idx.insert(h32, 20, 0, 32);
-
-    // Lookup with 48 matched tokens — deepest snapshot at 32 wins
-    let result = idx.lookup(&tokens, 48, 0, 0);
-    assert_eq!(result, Some((20, 32)));
-
-    // Lookup with 20 matched tokens — only snapshot at 16 qualifies
-    let result = idx.lookup(&tokens, 20, 0, 0);
-    assert_eq!(result, Some((10, 16)));
 }
 
 // ── Task #24: adapter-correct SSM snapshots + base hash byte-identity ──

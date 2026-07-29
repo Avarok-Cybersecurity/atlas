@@ -16,6 +16,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage:
+  release-notes.sh current               print the current [workspace.package].version
   release-notes.sh bump <version>       rewrite workspace version + Cargo.lock
   release-notes.sh preview <version>    print the release notes GitHub would generate
 EOF
@@ -23,6 +24,24 @@ EOF
 }
 
 repo_root() { git rev-parse --show-toplevel; }
+
+# Print the current [workspace.package].version. Uses the SAME table-aware scan
+# as `bump`, so "what the version is" and "how the version is written" share one
+# parser and can never disagree. The release workflow calls this to reject a
+# new_version that does not advance the tree BEFORE the matrix builds, instead
+# of discovering it at the publish `git commit` an hour later.
+current() {
+    local root manifest
+    root="$(repo_root)"
+    manifest="$root/Cargo.toml"
+    awk '
+        /^\[/ { in_wp = ($0 == "[workspace.package]") }
+        in_wp && /^version[[:space:]]*=/ {
+            if (match($0, /"[^"]*"/)) { print substr($0, RSTART + 1, RLENGTH - 2); found = 1; exit }
+        }
+        END { if (!found) { print "error: [workspace.package].version not found" > "/dev/stderr"; exit 1 } }
+    ' "$manifest"
+}
 
 # Rewrite only the `version` key inside the `[workspace.package]` table.
 # A blind `s/version = ...//` would also rewrite `rust-version`, every
@@ -70,6 +89,7 @@ preview() {
 }
 
 case "${1:-}" in
+    current) shift; current ;;
     bump)    shift; bump "${1:-}" ;;
     preview) shift; preview "${1:-}" ;;
     *)       usage ;;

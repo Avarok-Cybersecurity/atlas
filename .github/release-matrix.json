@@ -90,5 +90,20 @@
     "toolchain": "cuda",
     "experimental": true,
     "pr_validate": true
+  },
+  {
+    "id": "windows-x86_64-amd-hip",
+    "os": "windows",
+    "runner": "windows-2022",
+    "target": "x86_64-pc-windows-msvc",
+    "platform": "amd",
+    "cargo_features": "--no-default-features --features cuda",
+    "toolchain": "hip",
+    "experimental": true,
+    "pr_validate": true,
+    "note": "Native-HIP AMD (gfx1151) build via the Windows HIP SDK (clang/hipcc, ROCm 6.4 / installer 25.Q3). SCALE, Atlas's other AMD toolchain, is Linux-only, so HIP is the only conceivable Windows AMD path. COMPILE-ONLY: hosted runners have no AMD GPU, so the binary is built and packaged but never executed — the CUDA/cuBLASLt link symbols are satisfied by stub import libs (crates/atlas-kernels/hip/win_link_stubs.cpp) and the spark-storage predictor PTX registry is empty. A runnable Windows AMD binary would need real HIP/hipBLASLt runtime mappings + the predictor kernels ported to HIP (see crates/atlas-kernels/hip/README-HIP.md). Kept experimental so a Windows-clang kernel-compile regression does not block a release.",
+    "scale_arch": "gfx1151",
+    "target_model": "qwen3.6-27b",
+    "target_quant": "nvfp4"
   }
 ]

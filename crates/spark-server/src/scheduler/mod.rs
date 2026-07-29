@@ -27,6 +27,7 @@ mod logit_dump;
 mod logit_processors;
 mod logprobs;
 mod mod_helpers;
+pub use mod_helpers::capture_runtime_handle;
 mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
@@ -39,6 +40,7 @@ mod prefill_b_step;
 mod repetition;
 mod rollback;
 mod sample_step;
+pub mod snapshot;
 mod spec_step;
 mod ssm_decode_ring;
 mod types;
@@ -308,10 +310,35 @@ pub fn run(
 
     install_high_speed_swap(&*model, high_speed_swap_cfg);
 
+    let mut snapshot_steps: u64 = 0;
     loop {
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+
+        // ── Publish the observability snapshot (one uncontended lock + a
+        // ~72-byte memcpy per tick; see scheduler/snapshot.rs). ──
+        snapshot_steps += 1;
+        {
+            let (mtp_mode, delivered_tps) = match mtp_gate.as_ref() {
+                Some(g) => g.observe(),
+                None => (snapshot::MtpModeSnap::Off, 0.0),
+            };
+            snapshot::publish(snapshot::SchedulerSnapshot {
+                active_seqs: active.len() as u32,
+                prefilling_seqs: prefilling.len() as u32,
+                swapped_seqs: swapped.len() as u32,
+                pending_len: new_reqs.len() as u32,
+                kv_blocks_free: model.num_free_blocks() as u32,
+                kv_blocks_total: model.num_total_blocks() as u32,
+                ssm_slots_used: session_manager.session_count() as u32,
+                ssm_slots_total: session_manager.total_slots() as u32,
+                mtp_mode,
+                delivered_tps,
+                steps_total: snapshot_steps,
+                published_at: std::time::Instant::now(),
+            });
+        }
 
         // ── Apply queued LoRA adapter rotations at a QUIESCENT point ──
         // Only when nothing is in flight (no active decode, no in-progress
@@ -565,8 +592,29 @@ pub fn run(
                             // token's hidden so the next MTP re-probe can
                             // batch-feed the drafter over the serial gap
                             // (no-op when the feature is off).
-                            if let Some(pos) = active[0].seq.seq_len.checked_sub(1)
-                                && let Err(e) = model.save_hidden_for_catchup(0, pos)
+                            //
+                            // LABEL CONVENTION (off-by-one fixed 2026-07-21).
+                            // The reader feeds drafter pair key `k` from ring
+                            // label `k + 1`, because pair key k is
+                            // `(embed(t_{k+1}), hidden_k)` — so label n must
+                            // hold `hidden_{n-1}`, the hidden that PREDICTED
+                            // token n. `step_decode_only` forwards
+                            // `last_token` at the OLD `seq_len` and only then
+                            // pushes that input token and increments
+                            // (`decode_a2.rs` / `decode_b.rs`: `tokens.push`
+                            // + `seq_len += 1`). So the hidden now in row 0 is
+                            // `hidden_{seq_len - 1}` and its label is
+                            // `seq_len`, not `seq_len - 1`.
+                            //
+                            // This previously wrote `seq_len - 1`, which handed
+                            // every serially-fed pair key the hidden of the
+                            // NEXT position. It is the same quantity the K=3
+                            // re-feed labels `base + t + 1` for verify row t at
+                            // position `base + t` — that convention is verified
+                            // by dumped hidden fingerprints (93/93 cross-step,
+                            // see `speculative::mtp_refeed_accepted_enabled`),
+                            // so the serial hook was the side that disagreed.
+                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
                             {
                                 tracing::warn!("save_hidden_for_catchup: {e:#}");
                             }

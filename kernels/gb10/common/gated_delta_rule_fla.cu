@@ -555,8 +555,11 @@ __device__ __forceinline__ void cdh_ksplit_core(
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
 
-    extern __shared__ char smem_raw[];
-    __nv_bfloat16* buf = (__nv_bfloat16*)smem_raw;          // buf[2][CDH_BUFSZ]
+    // Distinct name from the sibling `extern __shared__ char smem_raw[]` in this
+    // same kernel (~L445): two decls of one dynamic-smem symbol in a function trip
+    // nvcc #1556-D. All `extern __shared__` views alias the same base — byte-identical.
+    extern __shared__ char smem_raw_dhc[];
+    __nv_bfloat16* buf = (__nv_bfloat16*)smem_raw_dhc;          // buf[2][CDH_BUFSZ]
     float* gcb = (float*)(buf + 2 * CDH_BUFSZ);             // gcb[2][CHUNK]
     float* decb = gcb + 2 * CHUNK;                          // decb[2][CHUNK+1], [0]=exp(gc_last)
 
@@ -902,8 +905,11 @@ __device__ __forceinline__ void cdh_ksplit_vblock_core(
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
 
-    extern __shared__ char smem_raw[];
-    __nv_bfloat16* buf = (__nv_bfloat16*)smem_raw;          // buf[2][CDH_BUFSZ]
+    // Distinct name from the sibling `extern __shared__ char smem_raw[]` in this
+    // same kernel (~L719): two decls of one dynamic-smem symbol in a function trip
+    // nvcc #1556-D. All `extern __shared__` views alias the same base — byte-identical.
+    extern __shared__ char smem_raw_dhc[];
+    __nv_bfloat16* buf = (__nv_bfloat16*)smem_raw_dhc;          // buf[2][CDH_BUFSZ]
     float* gcb = (float*)(buf + 2 * CDH_BUFSZ);             // gcb[2][CHUNK]
     float* decb = gcb + 2 * CHUNK;                          // decb[2][CHUNK+1]
 

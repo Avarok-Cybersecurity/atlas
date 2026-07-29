@@ -312,10 +312,21 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          # bindgen (xgrammar) needs libclang; windows-2022 ships LLVM.
+          # bindgen (xgrammar) needs libclang; windows-2022 ships LLVM. Needed by
+          # EVERY windows toolchain (cuda and hip alike), so it is not gated.
           $llvm = "C:\Program Files\LLVM\bin"
           if (Test-Path $llvm) { "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append }
           cmake --version
+
+      - name: Put CUDA import libs on the linker path (windows, cuda)
+        # cuda-only: the CUDA import libraries live in the NVIDIA toolkit. The
+        # AMD/hip toolchain has no $CUDA_PATH\lib\x64, so this check (and its
+        # `throw` on a missing cuda.lib) must NOT run for it — the hip row
+        # supplies its own linker inputs and walls at kernel compile long before
+        # linking anyway.
+        if: matrix.os == 'windows' && startsWith(matrix.toolchain, 'cuda')
+        shell: pwsh
+        run: |
           # The CUDA import libraries (cuda.lib, cudart.lib, nvrtc.lib,
           # cublasLt.lib -- everything the build scripts emit
           # `rustc-link-lib=dylib=` for) live in $CUDA_PATH\lib\x64, which is
@@ -378,6 +389,65 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
 
+      - name: Install HIP SDK (AMD, windows)
+        if: matrix.toolchain == 'hip' && matrix.os == 'windows'
+        shell: pwsh
+        timeout-minutes: 30
+        env:
+          # AMD's PRO-Edition HIP SDK installer. There is no documented stable
+          # direct-download link (the download page is JS-gated), so the URL is
+          # pinned here as the single knob to bump. NOTE the filename carries the
+          # AMD *driver* version (25.Q3), NOT the ROCm version — a `6.x` string
+          # 404s. 25.Q3 is the newest published as of 2026-07 (ROCm 6.4-era,
+          # LLVM 19), which has gfx1151 (Strix Halo, RDNA3.5) in its target list.
+          HIP_SDK_URL: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe
+        run: |
+          $ErrorActionPreference = "Stop"
+          # ATLAS_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
+          # kernel build defaults to qwen3-next-80b-a3b, which has no
+          # kernels/strix-hip/<model> dir, so build.rs panics resolving it.
+          Write-Host "Downloading HIP SDK: $env:HIP_SDK_URL"
+          $exe = "$env:RUNNER_TEMP\hip-sdk-setup.exe"
+          # Legible failure if AMD rotates the URL (they carry the driver
+          # version, e.g. 25.Q3 — a ROCm-version string 404s) instead of an
+          # opaque WebRequest stack trace.
+          try { Invoke-WebRequest -Uri $env:HIP_SDK_URL -OutFile $exe -UseBasicParsing }
+          catch { throw "HIP SDK download failed for $env:HIP_SDK_URL — bump HIP_SDK_URL to a currently-published AMD-Software-PRO-Edition-<ver>-Win10-Win11-For-HIP.exe" }
+          # The installer is a GUI app even from the command line; `-install`
+          # runs it headless. -Wait blocks; the step timeout bounds a hung
+          # window (a known failure mode of this installer on headless runners).
+          Write-Host "Installing HIP SDK silently (-install)..."
+          $p = Start-Process -FilePath $exe -ArgumentList "-install" -Wait -PassThru -NoNewWindow
+          Write-Host "installer exit code: $($p.ExitCode)"
+          # Locate hipcc under the ROCm install root. The Windows HIP SDK ships
+          # hipcc as hipcc.bin.exe (native) beside a perl wrapper; prefer the
+          # native exe so build.rs's Command::new can invoke it directly (no perl).
+          $root = "C:\Program Files\AMD\ROCm"
+          if (-not (Test-Path $root)) {
+            throw "HIP SDK install root not found at $root (installer exit $($p.ExitCode))"
+          }
+          $hipcc = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @("hipcc.bin.exe", "hipcc.exe") } |
+            Select-Object -First 1
+          if (-not $hipcc) {
+            Get-ChildItem -Path $root -Recurse -Filter "hipcc*" -ErrorAction SilentlyContinue |
+              Select-Object -First 20 FullName
+            throw "hipcc not found under $root after install"
+          }
+          $hipBin  = Split-Path $hipcc.FullName
+          $hipRoot = Split-Path $hipBin
+          Write-Host "hipcc: $($hipcc.FullName)"
+          & $hipcc.FullName --version 2>&1 | Select-Object -First 5
+          @(
+            "ATLAS_HIPCC=$($hipcc.FullName)",
+            "HIP_PATH=$hipRoot",
+            "ATLAS_TARGET_HW=strix-hip",
+            "ATLAS_TARGET_MODEL=${{ matrix.target_model }}",
+            "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}",
+            "CUDARC_CUDA_VERSION=12080"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append
+          $hipBin | Out-File -FilePath $env:GITHUB_PATH -Append
+
       - name: Build spark (unix)
         if: matrix.os != 'windows'
         shell: bash
@@ -413,6 +483,21 @@ jobs:
           [ "${{ matrix.os }}" = windows ] && bin="$bin.exe"
           cp "$bin" "$staging/"
           cp LICENSE README.md "$staging/" 2>/dev/null || true
+          # Native-HIP Windows target: bundle the runtime shim + HIP runtime DLL
+          # so spark.exe can drive the AMD GPU (cudarc dlopens nvcuda.dll, which
+          # imports amdhip64.dll). Built/staged into atlas-kernels' OUT_DIR by
+          # build_hip_shim_windows.
+          if [ "${{ matrix.toolchain }}" = hip ]; then
+            bdir="target/${{ matrix.target }}/release/build"
+            # Shim DLLs we build — required.
+            for dll in nvcuda.dll cuda.dll; do
+              found=$(find "$bdir" -name "$dll" -print -quit 2>/dev/null || true)
+              if [ -n "$found" ]; then cp "$found" "$staging/"; else echo "::warning::$dll not found to bundle"; fi
+            done
+            # HIP runtime DLL (versioned, e.g. amdhip64_6.dll) if the SDK shipped
+            # one; otherwise it is an AMD-driver component present on the target.
+            find "$bdir" -name 'amdhip64*.dll' -exec cp {} "$staging/" \; 2>/dev/null || true
+          fi
           if [ "${{ matrix.os }}" = windows ]; then
             (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
             asset="dist/$name.zip"

@@ -155,20 +155,33 @@ impl TransformerModel {
                     stream,
                 )?;
             }
-        } else if (num_tokens == 3 || num_tokens == 4)
-            && self.w4a16_gemv_batch4_kernel.0 != 0
+        } else if (3..=8).contains(&num_tokens)
+            && {
+                if num_tokens <= 4 {
+                    self.w4a16_gemv_batch4_kernel.0 != 0
+                } else {
+                    self.w4a16_gemv_batch8_kernel.0 != 0
+                }
+            }
             && let Some(ref nvfp4) = self.lm_head_nvfp4
         {
-            // K=3/K=4 verify lm_head: one weight read for all rows via the
-            // M<=4 batched GEMV. nsys (2026-07-18, drafts=3 serve): the base
-            // M64-tile `w4a16_gemm` below cost 19.3 ms/verify-step on the
-            // [248320, 5120] NVFP4 lm_head at M=4 — 94% of the M-tile is
-            // padding, ~33 GB/s effective. The batch GEMV streams the same
-            // 636 MB once at near-peak (~2.5 ms), the single largest slice
-            // of the K=4 verify-vs-K=2 cost gap.
+            // K=3..8 verify lm_head: one weight read for all rows via the
+            // batched GEMV (batch4 M<=4, batch8 M=5..8 chain verify). nsys
+            // (2026-07-18, drafts=3 serve): the base M64-tile `w4a16_gemm`
+            // below cost 19.3 ms/verify-step on the [248320, 5120] NVFP4
+            // lm_head at M=4 — 94% of the M-tile is padding, ~33 GB/s
+            // effective. The batch GEMV streams the same 636 MB once at
+            // near-peak (~2.5 ms), the single largest slice of the K=4
+            // verify-vs-K=2 cost gap; batch8 extends that to the K=5..8
+            // chain-verify rows (batchm_bench).
+            let kh = if num_tokens <= 4 {
+                self.w4a16_gemv_batch4_kernel
+            } else {
+                self.w4a16_gemv_batch8_kernel
+            };
             ops::w4a16_gemv_batchm(
                 self.gpu.as_ref(),
-                self.w4a16_gemv_batch4_kernel,
+                kh,
                 hidden,
                 nvfp4,
                 logits,

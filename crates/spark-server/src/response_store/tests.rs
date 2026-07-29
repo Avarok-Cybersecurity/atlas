@@ -72,9 +72,16 @@ fn filesystem_roundtrip_survives_restart() {
 #[test]
 fn filesystem_forgets_on_eviction() {
     let tmp = tempfile::tempdir().expect("tmpdir");
-    let store = ResponseStore::with_filesystem(1, Duration::from_secs(60), tmp.path()).expect("fs");
-    store.insert(entry("a", StoredKind::Response));
-    store.insert(entry("b", StoredKind::Response));
+    {
+        let store =
+            ResponseStore::with_filesystem(1, Duration::from_secs(60), tmp.path()).expect("fs");
+        store.insert(entry("a", StoredKind::Response));
+        store.insert(entry("b", StoredKind::Response));
+        // Disk work runs on the store's writer thread, so the observable
+        // contract is "once the store is dropped, its disk state is settled" --
+        // the same guarantee `filesystem_roundtrip_survives_restart` relies on.
+        // Asserting mid-flight would be testing scheduling, not eviction.
+    }
     // `a` evicted → file gone.
     let files: Vec<_> = std::fs::read_dir(tmp.path())
         .unwrap()
@@ -108,4 +115,40 @@ fn filesystem_skips_expired_on_replay() {
     assert!(store.get("old", StoredKind::Response).is_none());
     // Expired file was cleaned up.
     assert!(!file.exists());
+}
+
+/// A client-supplied response id must never be able to address a file outside
+/// the store directory (CWE-22). Traversal is prevented by construction: the
+/// stem allowlist has no `.`, so `..` cannot survive sanitisation.
+#[test]
+fn sanitize_id_cannot_escape_the_store_dir() {
+    use super::sanitize_id;
+    let dir = std::path::Path::new("/var/lib/atlas/responses");
+    for hostile in [
+        "../../etc/passwd",
+        "..",
+        "../..",
+        "/etc/shadow",
+        "..\\..\\windows\\system32",
+        "resp\0/../../root",
+        "résp/../../x",
+        &"a".repeat(4096),
+    ] {
+        let stem = sanitize_id(hostile);
+        assert!(
+            !stem.contains('.') && !stem.contains('/') && !stem.contains('\\'),
+            "stem {stem:?} kept a path character"
+        );
+        assert!(
+            stem.len() <= super::MAX_STEM,
+            "stem {stem:?} exceeds the cap"
+        );
+        let p = dir.join(format!("{stem}.json"));
+        assert_eq!(
+            p.parent(),
+            Some(dir),
+            "{hostile:?} escaped to {}",
+            p.display()
+        );
+    }
 }

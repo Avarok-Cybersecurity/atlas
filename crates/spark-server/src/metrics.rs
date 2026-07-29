@@ -21,6 +21,17 @@ lazy_static! {
     .unwrap();
     pub static ref GENERATION_TOKENS_TOTAL: IntCounter =
         register_int_counter!("atlas_generation_tokens_total", "Total tokens generated").unwrap();
+    // ── HTTP byte accounting (Atlas TUI Server Stats) ──
+    //
+    // Request side counts body bytes as received by the byte-count
+    // middleware; response side counts bytes actually written through the
+    // wrapped body (streaming/SSE included, where Content-Length lies).
+    pub static ref HTTP_BYTES_IN: IntCounter =
+        register_int_counter!("atlas_http_bytes_in_total", "Total HTTP request body bytes")
+            .unwrap();
+    pub static ref HTTP_BYTES_OUT: IntCounter =
+        register_int_counter!("atlas_http_bytes_out_total", "Total HTTP response body bytes")
+            .unwrap();
     pub static ref PROMPT_TOKENS_TOTAL: IntCounter =
         register_int_counter!("atlas_prompt_tokens_total", "Total prompt tokens processed")
             .unwrap();
@@ -66,4 +77,38 @@ lazy_static! {
             "atlas_tool_calls_total",
             "Total successful tool calls emitted by the server"
         ).unwrap();
+}
+
+/// RAII guard for the `atlas_requests_active` gauge: increments on construction,
+/// decrements exactly once on drop.
+///
+/// Replaces a hand-balanced `inc()` + seven scattered `dec()` calls. That shape
+/// leaked: any terminal path that forgot to decrement — or, critically, a
+/// handler future DROPPED because the client disconnected (axum drops the future
+/// on disconnect, so no `dec()` in the body ever runs) — pinned the gauge
+/// forever. Orphans then accumulate monotonically and can exhaust the scheduler's
+/// admission accounting while `/health` still reports ready.
+/// See Avarok-Cybersecurity/atlas#368.
+///
+/// For streaming the guard is moved into `StreamCtx`, which the SSE `flat_map`
+/// closure owns — so it also drops when the client hangs up mid-stream.
+pub struct ActiveRequestGuard(());
+
+impl ActiveRequestGuard {
+    pub fn new() -> Self {
+        REQUESTS_ACTIVE.inc();
+        Self(())
+    }
+}
+
+impl Default for ActiveRequestGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        REQUESTS_ACTIVE.dec();
+    }
 }

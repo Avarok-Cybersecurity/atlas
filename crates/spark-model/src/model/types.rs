@@ -77,6 +77,9 @@ pub struct TransformerModel {
     /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
     /// 0-handle when the target lacks the kernel (dispatch falls back).
     pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
+    /// M<=8 batched GEMV for the K=5..8 chain-verify lm_head (batch8 —
+    /// removes the M>4 tile-GEMM cliff). 0-handle when absent.
+    pub(super) w4a16_gemv_batch8_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.
@@ -164,6 +167,20 @@ pub struct TransformerModel {
     /// restore) leaves it stale-short, which safely disables drafter-prefill
     /// for that sequence (coverage check at the propose site).
     pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
+    /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
+    /// next turn of the same session can adopt it instead of rebuilding
+    /// (1136 ms at 12k rows) or — as today — silently going without. Single
+    /// slot: MTP is gated `active.len() == 1` on every spec path, and one slot
+    /// makes block ownership unambiguous (blocks are owned here XOR by a live
+    /// sequence). `None` when the feature is off or nothing has been carried.
+    pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
+    /// Absolute position interval `[lo, hi)` of `mtp_prefill_hidden` rows
+    /// written by the CURRENT sequence's prefill chunks. Reset per
+    /// `alloc_sequence`, so a warm-turn append can only ever read hiddens this
+    /// turn computed — which is why the carry path cannot inherit another
+    /// sequence's hiddens the way the legacy `mtp_prefill_capture_len` path
+    /// can. Only maintained when ATLAS_MTP_CARRY_DRAFTER is on.
+    pub(super) mtp_store_range: parking_lot::Mutex<(usize, usize)>,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices

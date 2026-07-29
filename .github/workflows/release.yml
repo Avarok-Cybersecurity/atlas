@@ -47,6 +47,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Check out the ref being RELEASED, not the ref the workflow was
+          # dispatched from: the version guard below reads that ref's
+          # Cargo.toml, and it is the version the publish job will bump. The
+          # remote-facing guards (`git ls-remote origin`) are unaffected by
+          # which ref is checked out.
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Validate new_version is bare semver
         run: |
@@ -65,6 +72,35 @@ jobs:
             echo "::error::tag v$v already exists"
             exit 1
           fi
+
+      - name: Reject a version that does not advance the workspace
+        env:
+          NEW_VERSION: ${{ github.event.inputs.new_version }}
+          REF: ${{ github.event.inputs.ref }}
+        run: |
+          set -euo pipefail
+          # The publish job bumps [workspace.package].version to NEW_VERSION and
+          # then `git commit`s the change. If NEW_VERSION already equals the
+          # version on REF, the bump is a no-op, there is nothing to commit, and
+          # the release dies at that commit — AFTER the whole matrix has built
+          # (~17 min). The tag guard above does NOT catch this: a first release
+          # has Cargo.toml at 0.1.0 with no v0.1.0 tag yet, so `new_version=0.1.0`
+          # sails past it and detonates at the end. Catch it here in seconds,
+          # from the SAME parser the bump uses (SSOT).
+          current="$(bash scripts/release-notes.sh current)"
+          [ -n "$current" ] || { echo "::error::could not read [workspace.package].version from '$REF'"; exit 1; }
+          # Equality is the exact failure this guard exists for: bump-to-same is
+          # a no-op, so `git commit` fails with 'nothing to commit'. A strict
+          # `>` (monotonic) check is deliberately NOT added here — `sort -V`
+          # orders pre-releases opposite to semver (it ranks 0.1.0-rc1 ABOVE
+          # 0.1.0), so it would reject a legitimate rc→GA release. Equality is
+          # unambiguous and catches the reported end-of-run detonation.
+          if [ "$current" = "$NEW_VERSION" ]; then
+            echo "::error::new_version ($NEW_VERSION) already equals the version on '$REF'."
+            echo "::error::The publish step bumps Cargo.toml then commits; an unchanged version makes 'git commit' fail with 'nothing to commit' after the full matrix build. Pick a higher version."
+            exit 1
+          fi
+          echo "version check OK: $current -> $NEW_VERSION"
 
       - name: Require a branch ref for a real publish
         if: github.event.inputs.dry_run == 'false'

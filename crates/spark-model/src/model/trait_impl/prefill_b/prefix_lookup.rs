@@ -139,12 +139,19 @@ impl TransformerModel {
                 let exact_without_hidden = snap_tok == matched
                     && matched == total
                     && !self.ssm_snapshots.has_hidden(snap_id);
+                // Session gate applies ONLY to TAIL snapshots (their state
+                // bleeds past the exact prefix). Exact / is_tail_sibling
+                // snapshots are content-addressed by the verified token prefix
+                // and safe cross-session — matching the KV radix. Gating them on
+                // the (unstable) session_hash is what rejected every valid warm-
+                // turn anchor and forced recompute-all. See lookup_tiered.
                 if snap_tok > 0
                     && matched <= total
                     && !exact_without_hidden
-                    && self
-                        .ssm_snapshots
-                        .session_matches(snap_id, seq.session_hash)
+                    && (!prefix_match.ssm_snapshot_is_tail
+                        || self
+                            .ssm_snapshots
+                            .session_matches(snap_id, seq.session_hash))
                 {
                     // Cross-stream ordering: the snapshot we are about to read
                     // was SAVED on the default stream (decode_marconi_checkpoint
@@ -171,20 +178,38 @@ impl TransformerModel {
                         );
                     }
                     if snap_tok < matched {
+                        // Report the REAL SSM replay length. The suffix
+                        // prefill resumes at `marconi_skip_to == snap_tok`
+                        // and runs the recurrence forward to `total`, so the
+                        // replay is `total - snap_tok`. This line used to
+                        // print `matched - snap_tok`, which silently omits
+                        // the whole `[matched, total)` suffix — on a warm
+                        // agentic turn that suffix IS the new user message,
+                        // so the logged cost understated the true replay by
+                        // exactly the part that grows with the conversation.
+                        // Both numbers are printed: the anchor->match gap is
+                        // the part attributable to snapshot granularity, the
+                        // total is what actually runs.
                         tracing::info!(
                             "Marconi intermediate hit: restored from checkpoint at token {} \
-                             (skipping {} tokens, recomputing {} SSM tokens to match point {})",
+                             (skipping {} tokens, replaying {} SSM tokens to reach {}; \
+                             {} of those are the anchor->match gap to {})",
                             snap_tok,
                             snap_tok,
-                            matched - snap_tok,
+                            total.saturating_sub(snap_tok),
+                            total,
+                            matched.saturating_sub(snap_tok),
                             matched,
                         );
                     } else {
                         tracing::info!(
-                            "Marconi SSM cache hit: {} tokens skipped ({} blocks), snapshot {}",
+                            "Marconi SSM cache hit: {} tokens skipped ({} blocks), \
+                             snapshot {}, replaying {} SSM tokens to reach {}",
                             matched,
                             prefix_match.matched_blocks.len(),
                             snap_id,
+                            total.saturating_sub(snap_tok),
+                            total,
                         );
                         // Exact full-prompt leaf hit (snap_tok == matched ==
                         // total): the last prompt token is re-run for logits,

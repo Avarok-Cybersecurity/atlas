@@ -73,8 +73,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
     // KV cache dimensions for MLA
     // K and V are stored as [latent(512) | rope(64)] = 576 dims
     const unsigned int kv_latent_dim = KV_LORA_DIM;  // 512
-    const unsigned int kv_rope_dim = ROPE_DIM;       // 64
-    
+
     // Token stride in cache (576 dims per token, 1 byte per FP8 element)
     const unsigned int token_stride = num_kv_heads * kv_cache_dim;
     

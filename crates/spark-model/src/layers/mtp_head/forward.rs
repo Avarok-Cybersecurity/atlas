@@ -527,6 +527,45 @@ impl MtpHead {
             }
         }
 
+        // 13b. Shadow top-k (ATLAS_MTP_SHADOW_TOPK=k): observational only.
+        // Logs this position's top-k candidate ids + softmax probs so an
+        // offline join against the verify steps' SHADOW_TGT lines yields
+        // per-depth conditional top-k coverage (tree-spec Phase 0 gate).
+        let shadow_k = crate::speculative::shadow_topk();
+        if shadow_k > 0 {
+            let vocab = v as usize;
+            let mut bf16_buf = vec![0u8; vocab * 2];
+            if ctx.gpu.copy_d2h(logits, &mut bf16_buf).is_ok() {
+                let at = |i: usize| -> f32 {
+                    let hi = u16::from_le_bytes([bf16_buf[2 * i], bf16_buf[2 * i + 1]]);
+                    f32::from_bits((hi as u32) << 16)
+                };
+                // Single pass keeping k maxima (k ≤ 8): insertion into a
+                // small sorted array beats a full-vocab sort at this size.
+                let mut top: Vec<(f32, usize)> = Vec::with_capacity(shadow_k + 1);
+                for i in 0..vocab {
+                    let x = at(i);
+                    if top.len() < shadow_k || x > top.last().map(|t| t.0).unwrap_or(f32::MIN) {
+                        let pos = top.partition_point(|t| t.0 >= x);
+                        top.insert(pos, (x, i));
+                        top.truncate(shadow_k);
+                    }
+                }
+                // Softmax denominator over the full vocab (stable: max-shift).
+                let max = top.first().map(|t| t.0).unwrap_or(0.0);
+                let mut denom = 0.0f64;
+                for i in 0..vocab {
+                    denom += ((at(i) - max) as f64).exp();
+                }
+                let ids: Vec<usize> = top.iter().map(|t| t.1).collect();
+                let probs: Vec<f32> = top
+                    .iter()
+                    .map(|t| (((t.0 - max) as f64).exp() / denom.max(1e-30)) as f32)
+                    .collect();
+                tracing::info!("SHADOW_TOPK pos={position} ids={ids:?} probs={probs:?}");
+            }
+        }
+
         // 13. Argmax
         let out_ptr = ctx.buffers.scratch();
 

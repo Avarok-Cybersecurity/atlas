@@ -212,7 +212,7 @@ fn validate_adapter_dir(dir: PathBuf, spec: &str) -> Result<PathBuf> {
 /// True when the directory contains at least one weight file Atlas's
 /// safetensors loader can pick up. Mirrors the heuristic in
 /// `spark-runtime::weights::SafetensorsLoader::load`.
-fn snapshot_has_weights(dir: &Path) -> bool {
+pub(crate) fn snapshot_has_weights(dir: &Path) -> bool {
     let direct = [
         "model.safetensors",
         "model.safetensors.index.json",
@@ -235,7 +235,7 @@ fn snapshot_has_weights(dir: &Path) -> bool {
 
 /// Pick the most-recently-modified snapshot under `snapshots/` that actually
 /// contains weights. Returns `None` if none of the siblings have weights.
-fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
+pub(crate) fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
     let entries: Vec<_> = std::fs::read_dir(snapshots_root)
         .ok()?
         .filter_map(|e| e.ok())
@@ -261,7 +261,7 @@ fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
 /// 2. `$HF_HUB_CACHE` env var
 /// 3. `$HF_HOME/hub` env var
 /// 4. `~/.cache/huggingface/hub`
-fn resolve_cache_root(cache_dir: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn resolve_cache_root(cache_dir: Option<&Path>) -> Result<PathBuf> {
     if let Some(dir) = cache_dir {
         return Ok(dir.to_path_buf());
     }

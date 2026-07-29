@@ -220,3 +220,89 @@ impl StreamingToolDetector {
         outputs
     }
 }
+
+impl StreamingToolDetector {
+    /// Handle a bare `<function...` block (no `<tool_call>` wrapper).
+    ///
+    /// Returns `true` when the caller's scan loop should `continue` (a complete
+    /// block was consumed), `false` when it should `break` and wait for tokens.
+    ///
+    /// Split out of `streaming_impl.rs::process` to stay under the 500 LoC cap.
+    ///
+    /// ## Why this streams now
+    /// The bare `<function=NAME>` shape is what the `qwen3_xml` parser — the
+    /// shipped GB10 config — actually receives. It used to fall straight through
+    /// to `break`, so a client saw NOTHING of a tool call until the whole block
+    /// had been generated and parsed, while the `<tool_call>`-wrapped shape had
+    /// been streaming its header and each completed parameter all along. This
+    /// closes that asymmetry with the SAME machinery rather than a second copy.
+    ///
+    /// Measured caveat: this moves FIRST-BYTE latency only. A `stream=False` A/B
+    /// showed total request latency is unchanged (+1.4 ms), so it improves
+    /// responsiveness and reported TTFT, NOT wall.
+    pub(super) fn process_bare_function(&mut self, outputs: &mut Vec<DetectorOutput>) -> bool {
+        let Some(func_pos) = self.buffer.find("<function") else {
+            return false;
+        };
+        if func_pos > 0 {
+            let before = self.buffer[..func_pos].to_string();
+            self.buffer = self.buffer[func_pos..].to_string();
+            outputs.push(DetectorOutput::Content(before));
+        }
+
+        if let Some(end) = bare_function_end(&self.buffer) {
+            // If this call was already streamed incrementally below, its header
+            // and completed params are ALREADY on the wire. Re-emitting a whole
+            // `ToolCall` here would deliver the call TWICE, so close it the way
+            // the `<tool_call>` arm does: residual fragments + `ToolCallEnd`.
+            // These two paths MUST stay mutually exclusive.
+            if !self.buffer_args && self.incremental_emitted {
+                let idx = self.call_counter as usize;
+                let frags = self.stream_ready_fragments(end, true);
+                outputs.extend(frags);
+                outputs.push(DetectorOutput::ToolCallEnd { idx });
+                self.call_counter += 1;
+                self.emitted_tool_calls = true;
+                self.buffer = self.buffer[end..].to_string();
+                self.reset_call_state();
+                return true;
+            }
+            let block = self.buffer[..end].to_string();
+            self.buffer = self.buffer[end..].to_string();
+            let (_, calls) = parse_bare_function_calls(&block);
+            for tc in calls {
+                let idx = self.call_counter as usize;
+                self.call_counter += 1;
+                self.emitted_tool_calls = true;
+                outputs.push(DetectorOutput::ToolCall(tc, idx));
+            }
+            self.reset_call_state();
+            return true;
+        }
+
+        // Block not closed yet — emit the header as soon as the name is known,
+        // then any newly-complete `<parameter=...>` fragments.
+        //
+        // `stream_ready_fragments` scans from `current_tc_emitted` for
+        // `<parameter=` / `</parameter>` pairs, so the leading `<function=NAME>`
+        // still sitting in the buffer is simply skipped — no stripping needed.
+        if self.current_tc_name.is_none()
+            && let Some(name) = extract_streaming_name(&self.buffer)
+        {
+            let id = next_tool_call_id();
+            let idx = self.call_counter as usize;
+            outputs.push(DetectorOutput::ToolCallStart {
+                id: id.clone(),
+                name: name.clone(),
+                idx,
+            });
+            self.current_tc_name = Some(name);
+            self.current_tc_id = Some(id);
+        }
+        if !self.buffer_args && self.current_tc_name.is_some() {
+            let frags = self.stream_ready_fragments(self.buffer.len(), false);
+            outputs.extend(frags);
+        }
+        false
+    }
+}

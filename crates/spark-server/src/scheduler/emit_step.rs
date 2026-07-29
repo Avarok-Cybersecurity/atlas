@@ -442,20 +442,7 @@ fn send_stream_event(a: &ActiveSeq, event: StreamEvent) -> bool {
     let ResponseSink::Streaming(ref tx) = a.sink else {
         return true;
     };
-    match tx.try_send(event) {
-        Ok(()) => true,
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            tracing::debug!("Streaming receiver dropped, finishing seq");
-            false
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => match tx.blocking_send(event) {
-            Ok(()) => true,
-            Err(e) => {
-                tracing::error!("Streaming send failed during backpressure: {e}");
-                false
-            }
-        },
-    }
+    super::mod_helpers::bounded_stream_send(tx, event, "token stream")
 }
 
 /// #144 budget-aware graceful close. At budget exhaustion, if a grammar is

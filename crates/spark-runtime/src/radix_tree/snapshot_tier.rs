@@ -46,14 +46,16 @@ impl SsmSnapshotIndex {
             if entry.token_count > matched_tokens {
                 continue;
             }
-            if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
-                continue;
-            }
-            // TAIL snapshots bleed past the exact prefix — byte-safe ONLY for
-            // the same non-zero session (ported from `lookup`; the serving
-            // path previously had NO is_tail gate, so a sessionless lookup
-            // could restore another session's tail — the exact cross-request
-            // corruption the session-gate exists to prevent).
+            // Session gate applies ONLY to is_tail entries. A tail's SSM state
+            // bleeds past its advertised token_count (a partial block beyond the
+            // exact prefix), so it is byte-safe only within the same non-zero
+            // session. Exact snapshots and is_tail_sibling early captures are a
+            // pure function of the verified token prefix — safe cross-session,
+            // exactly like the KV radix (which shares blocks on token match with
+            // no session gate). The old blanket gate rejected every otherwise-
+            // valid non-tail anchor from a prior turn because session_hash =
+            // hash(first min(len,1024) prompt tokens) is UNSTABLE across turns of
+            // a growing conversation — the warm-TTFT-climb root cause.
             if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
                 continue;
             }
@@ -73,6 +75,7 @@ impl SsmSnapshotIndex {
             e.last_access = ac;
             let tiered = e.tiered;
             let depth = e.token_count;
+            let is_tail = e.is_tail;
             let loc = if tiered {
                 SnapLoc::Tier(e.prefix_hash)
             } else {
@@ -87,6 +90,7 @@ impl SsmSnapshotIndex {
             Some(SnapMatch {
                 token_count: depth,
                 loc,
+                is_tail,
             })
         } else {
             self.stats.recompute_tokens_on_miss += matched_tokens as u64;

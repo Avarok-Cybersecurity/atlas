@@ -1,0 +1,158 @@
+{
+  "tag": "conglom",
+  "turns": 16,
+  "ttft_warm_median": 906.4924716949463,
+  "ttft_warm_mean": 935.5858053479876,
+  "ttft_warm_p90": 1049.3488311767578,
+  "ttft_warm_max": 1144.5131301879883,
+  "tpot_warm_median": 43.615728452633306,
+  "tpot_warm_mean": 43.26131615759368,
+  "max_ctx_chars": 25668,
+  "combined_sha": "b5d6a89aab5528ea",
+  "runs": [
+    {
+      "turn": 0,
+      "warm": false,
+      "ttft": 2648.968458175659,
+      "tpot": 44.755816893144086,
+      "ntok": 276,
+      "ctx_chars": 9069,
+      "sha": "9d1041c74ba15f84"
+    },
+    {
+      "turn": 1,
+      "warm": false,
+      "ttft": 3241.4321899414062,
+      "tpot": 41.38833488348319,
+      "ntok": 264,
+      "ctx_chars": 10487,
+      "sha": "87f4645b03134e82"
+    },
+    {
+      "turn": 2,
+      "warm": true,
+      "ttft": 1022.8869915008545,
+      "tpot": 44.32120072214227,
+      "ntok": 286,
+      "ctx_chars": 11732,
+      "sha": "daf27c7963335d5a"
+    },
+    {
+      "turn": 3,
+      "warm": true,
+      "ttft": 1144.5131301879883,
+      "tpot": 41.323843884141475,
+      "ntok": 293,
+      "ctx_chars": 13338,
+      "sha": "04c57ebb34237138"
+    },
+    {
+      "turn": 4,
+      "warm": true,
+      "ttft": 1049.3488311767578,
+      "tpot": 43.594588752554245,
+      "ntok": 239,
+      "ctx_chars": 14556,
+      "sha": "3e91c5bfe0a140f2"
+    },
+    {
+      "turn": 5,
+      "warm": true,
+      "ttft": 1004.5604705810547,
+      "tpot": 44.67456777330855,
+      "ntok": 214,
+      "ctx_chars": 15751,
+      "sha": "a0c59f2b7535a9db"
+    },
+    {
+      "turn": 6,
+      "warm": true,
+      "ttft": 900.9032249450684,
+      "tpot": 37.8961292738767,
+      "ntok": 195,
+      "ctx_chars": 16894,
+      "sha": "b061fc96fb25d10b"
+    },
+    {
+      "turn": 7,
+      "warm": true,
+      "ttft": 876.6748905181885,
+      "tpot": 47.00351881500858,
+      "ntok": 150,
+      "ctx_chars": 17798,
+      "sha": "9b57a97a213f495f"
+    },
+    {
+      "turn": 8,
+      "warm": true,
+      "ttft": 850.5234718322754,
+      "tpot": 45.02123647981936,
+      "ntok": 223,
+      "ctx_chars": 18730,
+      "sha": "87cb59e3e82472c3"
+    },
+    {
+      "turn": 9,
+      "warm": true,
+      "ttft": 912.0817184448242,
+      "tpot": 40.622590119356936,
+      "ntok": 194,
+      "ctx_chars": 19857,
+      "sha": "fe1c7eaeb75fb44c"
+    },
+    {
+      "turn": 10,
+      "warm": true,
+      "ttft": 874.687910079956,
+      "tpot": 39.35740495982923,
+      "ntok": 153,
+      "ctx_chars": 20839,
+      "sha": "4e021e3d797f07e4"
+    },
+    {
+      "turn": 11,
+      "warm": true,
+      "ttft": 857.6765060424805,
+      "tpot": 42.894312115602716,
+      "ntok": 173,
+      "ctx_chars": 21485,
+      "sha": "3650b5ee5ba98334"
+    },
+    {
+      "turn": 12,
+      "warm": true,
+      "ttft": 855.9749126434326,
+      "tpot": 42.88550407167465,
+      "ntok": 190,
+      "ctx_chars": 22390,
+      "sha": "aca54936a5835b8a"
+    },
+    {
+      "turn": 13,
+      "warm": true,
+      "ttft": 896.878719329834,
+      "tpot": 43.63686815271237,
+      "ntok": 204,
+      "ctx_chars": 23483,
+      "sha": "da6ed674459e8188"
+    },
+    {
+      "turn": 14,
+      "warm": true,
+      "ttft": 920.6972122192383,
+      "tpot": 46.12421585341632,
+      "ntok": 237,
+      "ctx_chars": 24653,
+      "sha": "207892a9cd697d37"
+    },
+    {
+      "turn": 15,
+      "warm": true,
+      "ttft": 930.793285369873,
+      "tpot": 46.302445232868195,
+      "ntok": 225,
+      "ctx_chars": 25668,
+      "sha": "f3b78708b2e1b4c7"
+    }
+  ]
+}

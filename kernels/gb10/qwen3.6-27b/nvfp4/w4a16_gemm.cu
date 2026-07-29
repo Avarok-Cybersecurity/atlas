@@ -1138,7 +1138,7 @@ void w4a16_gemm_t_m128(
 #if defined(__SCALE__)
     __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];          // BF16 (gfx1151)
 #else
-    __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T];             // 4096 B
+    __shared__ unsigned char smem_B_fp8[N_TILE_LG][K_STEP_T + 4];       // 4096 B + 512 B pad (bank conflict fix)
 #endif
     __shared__ float smem_LUT[16];                                         //   64 B
     // Total ≈ 29.8 KB → 3 blocks/SM
@@ -1583,7 +1583,23 @@ void w4a16_gemm_t_m128_bf16(
 // 2 CTAs/SM (3×34.9=104.8 > 100) — only 8 of 48 warps resident, too few to
 // hide the cp.async + dequant + MMA latency chain.
 //
-//   LEVER — OCCUPANCY via SMEM: drop the A-tile bank-conflict pad from
+//   LEVER 1 (2026-07-21) — BANK CONFLICTS, the measured #1 limiter. ncu on a
+//     standalone microbenchmark of this exact kernel at the real FFN shapes:
+//     L1/TEX throughput 92.0% (binding), tensor pipe only 24.5%, and 80% of ALL
+//     shared-memory wavefronts excessive (1,025 M of 1,279 M). `smem_B_bf16` is
+//     [128][32] bf16 => row stride 64 B = exactly 16 banks, so for a fixed k the
+//     32 lanes of a warp (which differ only in the row `my_n`) hit just 2 banks:
+//     a 16-WAY store conflict in the dequant (ncu: 16.1), plus a 4-way conflict on
+//     the B operand read (bank = 16*(group_id&1) + hh*8 + tid, 8 distinct banks).
+//     PADB_V2 = 2 makes the row 34 bf16 = 17 words, gcd(17,32) = 1, so the dequant
+//     stores become CONFLICT-FREE and the B reads drop 4-way -> 2-way, for +512 B
+//     (29,824 -> 30,336; 3*(30,336+1,044 driver) = 94,140 <= 102,400, so still
+//     3 CTAs/SM). LEVER 2 XOR-swizzles the A tile (see A_SWZ_V2) to clear the
+//     remaining 4-way A conflict at ZERO smem cost. Measured on the standalone
+//     rig, M = 256..6144, both FFN shapes: -40..-44%, 30.5 -> 52-55 TFLOP/s, and
+//     BYTE-IDENTICAL output (full-C bit compare, 5 M values x 2 shapes).
+//
+//   LEVER (v1->v2, 2026) — OCCUPANCY via SMEM: drop the A-tile bank-conflict pad from
 //     PAD_T=8 to PAD_T_V2=0 (A stride 32 instead of 40). A row is 32 bf16 =
 //     64 B = exactly 16-byte aligned, so cp.async.16 stays legal. This shaves
 //     A from 2×128×40×2=20480 B to 2×128×32×2=16384 B (−4 KB) → 30.9 KB/block
@@ -1604,6 +1620,13 @@ void w4a16_gemm_t_m128_bf16(
 // ═══════════════════════════════════════════════════════════════════
 #define M128B_STAGES 2
 #define PAD_T_V2 0
+#define PADB_V2 2
+// A-tile XOR swizzle at 16-byte (8 bf16) granularity: physical 16-B chunk
+// index = logical ^ ((row >> 1) & 3). cp.async.16 moves whole 16-B chunks, so
+// permuting chunks WITHIN a row is legal for cp.async and keeps its store side
+// conflict-free; on the MMA read side it replaces the 4-way conflict with 32
+// distinct banks. Pure addressing — the bf16 VALUE each lane reads is unchanged.
+#define A_SWZ_V2(col, row) ((((((col) >> 3) ^ (((row) >> 1) & 3u)) << 3) | ((col) & 7u)))
 extern "C" __global__
 __launch_bounds__(128, 3)
 void w4a16_gemm_t_m128_bf16_v2(
@@ -1630,7 +1653,7 @@ void w4a16_gemm_t_m128_bf16_v2(
     __shared__ __nv_bfloat16 smem_A[M128B_STAGES][2 * M_TILE][K_STEP_T + PAD_T_V2];
     __shared__ unsigned char smem_Bp[M128B_STAGES][K_STEP_T / 2][N_TILE_LG + BP_PAD];
     __shared__ unsigned char smem_Bs[M128B_STAGES][K_STEP_T / GROUP_SIZE][N_TILE_LG + BP_PAD];
-    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T];
+    __shared__ __nv_bfloat16 smem_B_bf16[N_TILE_LG][K_STEP_T + PADB_V2];
     __shared__ float smem_LUT[16];
 
     if (threadIdx.x < 16) smem_LUT[threadIdx.x] = E2M1_LUT[threadIdx.x];
@@ -1655,7 +1678,7 @@ void w4a16_gemm_t_m128_bf16_v2(
             for (int rnd = 0; rnd < 4; rnd++) { \
                 unsigned int row = (unsigned int)(rnd * 32) + a_row_base; \
                 unsigned int gr  = cta_m + row; \
-                cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                cp_async_pred_16(&smem_A[(buf)][row][A_SWZ_V2(a_col, row)], \
                     &A[(unsigned long long)gr * K + gc], \
                     (gr < M) && (gc + 7 < K)); \
             } \
@@ -1711,10 +1734,10 @@ void w4a16_gemm_t_m128_bf16_v2(
             _Pragma("unroll") \
             for (int hh = 0; hh < 2; hh++) { \
                 unsigned int fc0 = hh * 16 + tid * 2, fc1 = fc0 + 8; \
-                unsigned int a0 = *(const unsigned int*)&sA[fr0 * a_stride + fc0]; \
-                unsigned int a1 = *(const unsigned int*)&sA[fr1 * a_stride + fc0]; \
-                unsigned int a2 = *(const unsigned int*)&sA[fr0 * a_stride + fc1]; \
-                unsigned int a3 = *(const unsigned int*)&sA[fr1 * a_stride + fc1]; \
+                unsigned int a0 = *(const unsigned int*)&sA[fr0 * a_stride + A_SWZ_V2(fc0, fr0)]; \
+                unsigned int a1 = *(const unsigned int*)&sA[fr1 * a_stride + A_SWZ_V2(fc0, fr1)]; \
+                unsigned int a2 = *(const unsigned int*)&sA[fr0 * a_stride + A_SWZ_V2(fc1, fr0)]; \
+                unsigned int a3 = *(const unsigned int*)&sA[fr1 * a_stride + A_SWZ_V2(fc1, fr1)]; \
                 _Pragma("unroll") \
                 for (int nt = 0; nt < 16; nt++) { \
                     unsigned int nc = nt * 8 + group_id; \
@@ -3755,7 +3778,6 @@ void int8_gemm_faith(
         #pragma unroll
         for (int j=0;j<8;j++){
             unsigned mcol = cta_m + mh*64 + j*8 + (lane%4)*2; // M token (output row)
-            unsigned r0=mcol, r1=mcol;            // rows (M)
             unsigned cN0=nrow0, cN1=nrow0+8;      // cols (N), from l/2
             // l=0:(r=mcol,   c=nrow0)  l=1:(r=mcol+1, c=nrow0)
             // l=2:(r=mcol,   c=nrow0+8)l=3:(r=mcol+1, c=nrow0+8)
@@ -3763,7 +3785,6 @@ void int8_gemm_faith(
             if (mcol+1<M && cN0<N) C[(unsigned long long)(mcol+1)*N + cN0] = __float2bfloat16(acc[n][j][1]);
             if (mcol<M   && cN1<N) C[(unsigned long long)mcol*N + cN1]     = __float2bfloat16(acc[n][j][2]);
             if (mcol+1<M && cN1<N) C[(unsigned long long)(mcol+1)*N + cN1] = __float2bfloat16(acc[n][j][3]);
-            (void)r0;(void)r1;
         }
     }
 }

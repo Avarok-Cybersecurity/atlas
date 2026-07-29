@@ -101,9 +101,11 @@ impl PrefixCache for RadixTree {
         let mut ssm_snapshot_tokens = 0;
         let mut ssm_snapshot_tier_key = None;
         let mut ssm_snapshot_tier_tokens = 0;
+        let mut ssm_snapshot_is_tail = false;
         if matched_tokens > 0 {
             let mut idx = self.snapshot_index.lock();
             if let Some(m) = idx.lookup_tiered(tokens, matched_tokens, session_hash, adapter_id) {
+                ssm_snapshot_is_tail = m.is_tail;
                 match m.loc {
                     snapshot::SnapLoc::Hbm(slot) => {
                         ssm_snapshot = Some(slot);
@@ -133,6 +135,7 @@ impl PrefixCache for RadixTree {
             ssm_snapshot_tokens,
             ssm_snapshot_tier_key,
             ssm_snapshot_tier_tokens,
+            ssm_snapshot_is_tail,
         }
     }
 

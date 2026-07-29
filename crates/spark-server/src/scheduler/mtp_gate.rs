@@ -162,6 +162,25 @@ pub struct MtpGate {
 }
 
 impl MtpGate {
+    /// Observability accessor for the scheduler snapshot: current mode and
+    /// the delivered-throughput EWMA of that mode (0.0 until measured).
+    pub fn observe(&self) -> (super::snapshot::MtpModeSnap, f32) {
+        use super::snapshot::MtpModeSnap;
+        let mode = if self.probing {
+            MtpModeSnap::Probing
+        } else {
+            match self.mode {
+                Mode::Mtp => MtpModeSnap::Mtp,
+                Mode::Serial => MtpModeSnap::Serial,
+            }
+        };
+        let stats = match self.mode {
+            Mode::Mtp => &self.mtp,
+            Mode::Serial => &self.serial,
+        };
+        (mode, stats.tps.unwrap_or(0.0) as f32)
+    }
+
     /// `num_drafts` is retained for construction-site compatibility and
     /// logging; arbitration is measurement-driven and does not model K.
     pub fn new(num_drafts: usize) -> Self {

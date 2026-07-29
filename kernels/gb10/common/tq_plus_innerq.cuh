@@ -31,8 +31,16 @@ namespace tq_plus {
 // Bump if porting to head_dim > 128 models without splitting the array.
 #define INNERQ_MAX_CHANNELS 128
 
-// Device state — driven by host-side calibration controller.
-// Defined in tq_plus_innerq.cu (one TU only).
+// Device state — driven by the host-side calibration controller
+// (innerq_driver.rs). Defined in tq_plus_innerq_apply.cu, the SAME TU as the
+// only kernels that read/write it: Atlas loads each .cu as its own PTX module
+// with no -rdc device linking, so `extern __device__` never resolves across
+// modules — state and its consumers must share one TU. If a new TU includes
+// this header without carrying the definitions, nvcc #20044-D ("extern
+// declaration treated as static definition") fires under the strict kernel
+// build: that error means the new TU would get a private zero-init copy the
+// host driver never uploads to. Don't suppress it — move the code needing the
+// state into tq_plus_innerq_apply.cu (or give the new module its own uploads).
 extern __device__ float d_innerq_scale[INNERQ_MAX_CHANNELS];
 extern __device__ float d_innerq_scale_inv[INNERQ_MAX_CHANNELS];
 extern __device__ float d_innerq_sq_accum[INNERQ_MAX_CHANNELS];
