@@ -68,6 +68,15 @@ pub(crate) fn fast_greedy_grammar_enabled() -> bool {
     *CACHED.get_or_init(|| std::env::var("ATLAS_DISABLE_FAST_GREEDY").ok().as_deref() != Some("1"))
 }
 
+/// GRAMMARLESS verify fast-greedy (the chat sibling of the #237 grammar arm).
+/// Default ON; `ATLAS_NO_FAST_GREEDY_CHAT=1` restores the per-seq
+/// [K,vocab]-D2H slow path (the byte-invariant tie-breaking arm).
+pub(crate) fn fast_greedy_chat_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED
+        .get_or_init(|| std::env::var("ATLAS_NO_FAST_GREEDY_CHAT").ok().as_deref() != Some("1"))
+}
+
 /// ATLAS_DFLASH_MASKED_VERIFY=1: route DFlash verify PICKS through the
 /// pre-sample pipeline so structural specials (`</think>`, `<think>`,
 /// `<tool_call>`) can never leak unmasked into the output — the T=0
@@ -445,6 +454,78 @@ pub fn verify_pick_all_with_pipeline(
             return fast; // no D2H, no CPU pipeline — all positions GPU-greedy + grammar-legal
         }
         // else: fall through to the slow path (matcher restored above).
+    }
+
+    // ── GRAMMARLESS fast-greedy (2026-07-30): the same #237 gate, minus the
+    // bitmask ──
+    //
+    // The fast path above required `grammar_state.is_some()`, so plain chat —
+    // the EASIEST regime (no mask to consult at all) — unconditionally paid
+    // the slow tail below: per SEQUENCE per STEP, a blocking D2H of its
+    // [K+1, vocab] logits rows (2 x 248,077 x BF16 = 992,308 B on the 27B at
+    // the 16:1 ladder). The C=16 profile (PROGRESS_LOG 6.12) measured 2,541
+    // such copies = 2.5 GB per 16x300-token burst, ~16 stream-drain waits per
+    // step — the single largest slice of the host-bound decode wall.
+    //
+    // Eligibility mirrors the grammar arm exactly: greedy (temp==0 or forced),
+    // not inside thinking, penalties classified by the SSOT `fast_greedy`
+    // gate (Neutral, or ReduceOnly with the per-token immunity proof — same
+    // scoped history, same `logit_is_positive` 2-byte probe). When every
+    // position qualifies, the GPU argmax IS the masked-greedy pick and the
+    // [K,vocab] D2H is skipped entirely.
+    //
+    // Same behavioral trade #237 shipped for grammar sequences: GPU-argmax
+    // tie-breaking near equal logits can differ from the host FP32 scan, so
+    // emitted tokens are NOT byte-invariant vs the slow path at near-ties.
+    // Kill switch: ATLAS_NO_FAST_GREEDY_CHAT=1 restores the slow path.
+    let chat_fast_gate = if fast_greedy_chat_enabled()
+        && a.grammar_state.is_none()
+        && !a.inside_thinking
+        && (a.temperature == 0.0 || force_temp_zero_enabled())
+    {
+        crate::scheduler::fast_greedy::classify_penalties(
+            &crate::scheduler::sample_step::penalty_params_for(
+                a,
+                crate::scheduler::sample_step::PositionKind::Verify,
+                0.0,
+                None,
+                Vec::new(),
+            ),
+        )
+    } else {
+        crate::scheduler::fast_greedy::PenaltyGate::Blocked
+    };
+    if chat_fast_gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
+        let t_fast = std::time::Instant::now();
+        let vocab = model.vocab_size();
+        let logits_base = model.logits_buffer_ptr();
+        let scoped_history: Vec<u32> =
+            if chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly {
+                crate::scheduler::sample_step::penalty_history_scope(
+                    &a.output_tokens,
+                    ctx.tool_call_end_token,
+                )
+                .to_vec()
+            } else {
+                Vec::new()
+            };
+        let all_immune = argmax_ids.iter().enumerate().all(|(i, &tok)| {
+            chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
+                || crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
+                    crate::scheduler::fast_greedy::logit_is_positive(
+                        model,
+                        logits_base,
+                        row_base + i,
+                        vocab,
+                        tok,
+                    )
+                })
+        });
+        mtp_timing::record(Phase::FastGreedy, t_fast);
+        if all_immune {
+            return argmax_ids.to_vec(); // no D2H, no CPU pipeline
+        }
+        // else: some position needs the penalty-aware pipeline — slow path.
     }
 
     let vocab = model.vocab_size();

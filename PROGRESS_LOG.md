@@ -877,6 +877,28 @@ hunt the ~4.5K runtime cuMemAllocs (device-side, per-step). Deeper rung if
 pinning alone is not enough: overlap next-step launch with the readback
 (double-buffered step).
 
+### 6.13 LOOP iteration 2: grammarless verify fast-greedy — +9%, C=16 at 0.973x
+
+The 6.12 histogram pinned the wall: 992,308 B x 2,541 DtoH = each sequence's
+[2, vocab] BF16 verify rows copied to host EVERY step for the pre-sample
+pipeline. The #237 fast-greedy arm skips exactly this — but was gated on
+`grammar_state.is_some()`, so grammar-bound sequences got the GPU-argmax
+fast path while plain chat (the bench, most enterprise greedy traffic) paid
+16 blocking ~1 MB stream-drain waits per step.
+
+Fix: the grammarless sibling of the #237 gate — same eligibility (greedy,
+not in thinking, penalties Neutral or ReduceOnly with the same per-token
+immunity proof + 2-byte probe), no bitmask to consult, GPU argmax IS the
+pick, zero D2H. Same tie-breaking trade #237 already shipped for grammar.
+Kill switch: ATLAS_NO_FAST_GREEDY_CHAT=1.
+
+decode_short C=16, canonical 4K: **164.4 / 164.2 / 164.6 (median 164.4)**,
+TPOT p50 78.8-79.2 ms, coherence smoke clean. Session arc: 0.73x -> 0.90x
+-> **0.973x** of the 168.9 bar. Remaining ~4.5 tok/s: the D2H tail
+(per-request 44.5 MB x 12 + 41.9 MB x 3 copies — ~13 GB per 16 requests,
+unidentified, likely SSM/drafter lifecycle), ~4.5K runtime cuMemAllocs,
+drafter launch chain.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
