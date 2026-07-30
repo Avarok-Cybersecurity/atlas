@@ -63,13 +63,24 @@ impl Qwen3AttentionLayer {
             && let Some(ref nvfp4_t) = self.o_nvfp4_t
         {
             ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
-            ops::cutlass_nvfp4_proj(ctx.gpu, attn_out, nvfp4_t, o_out, n, h, nq * hd, stream)?;
+            ops::cutlass_nvfp4_proj(
+                ctx.gpu,
+                ctx.derived,
+                attn_out,
+                nvfp4_t,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
         } else if ctx.dispatch.cutlass_nvfp4_attn_o
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
         {
             ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
             ops::cutlass_nvfp4_proj_from_fp8(
                 ctx.gpu,
+                ctx.derived,
                 attn_out,
                 fp8w,
                 o_out,
@@ -82,7 +93,17 @@ impl Qwen3AttentionLayer {
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
         {
             // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(ctx.gpu, attn_out, fp8w, o_out, n, h, nq * hd, stream)?;
+            ops::cublas_bf16_proj(
+                ctx.gpu,
+                ctx.derived,
+                attn_out,
+                fp8w,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
         } else if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
             && self.per_token_group_quant_fp8_k.0 != 0

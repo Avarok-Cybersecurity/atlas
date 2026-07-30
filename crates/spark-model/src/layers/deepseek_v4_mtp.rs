@@ -324,6 +324,7 @@ impl DeepseekV4MtpHead {
             gpu: ctx.gpu,
             config: ctx.config,
             dispatch: ctx.dispatch,
+            derived: ctx.derived,
             attn_metadata: Some(mtp_meta),
             profile: ctx.profile,
             // comm = None: the MTP draft runs ONLY on rank 0, so its MoE must NOT

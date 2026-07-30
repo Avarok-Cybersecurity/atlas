@@ -218,6 +218,10 @@ pub struct ForwardContext<'a> {
     /// read from a static so it cannot outlive the model whose flags it
     /// encodes — see `layers::ops::GemmDispatch`.
     pub dispatch: &'a crate::layers::ops::GemmDispatch,
+    /// Re-encoded copies of this model's weights, memoized for this model's
+    /// lifetime. Carried rather than kept in a static keyed by device pointer,
+    /// where a recycled address would HIT after a model swap.
+    pub derived: &'a crate::layers::ops::DerivedWeights,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.

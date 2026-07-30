@@ -39,6 +39,10 @@ pub struct TransformerModel {
     /// `ForwardContext` this model creates, so the choice cannot outlive the
     /// model — the property nine `OnceLock` statics could not have.
     pub(super) dispatch: crate::layers::ops::GemmDispatch,
+    /// Weight re-encodings derived on demand and memoized for this model.
+    /// Dropped with the model, so no entry can outlive the allocation it
+    /// describes.
+    pub(super) derived: crate::layers::ops::DerivedWeights,
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,

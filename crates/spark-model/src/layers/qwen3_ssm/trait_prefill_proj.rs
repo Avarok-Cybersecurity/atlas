@@ -56,6 +56,7 @@ impl Qwen3SsmLayer {
             ops::log_cutlass_nvfp4_route("ssm_qkvz_nvfp4", k, qkvz_size as u32, h as u32);
             ops::cutlass_nvfp4_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 nvfp4_t,
                 proj_dst,
@@ -70,6 +71,7 @@ impl Qwen3SsmLayer {
             ops::log_cutlass_nvfp4_route("ssm_qkvz_fp8pack", k, qkvz_size as u32, h as u32);
             ops::cutlass_nvfp4_proj_from_fp8(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 fp8w,
                 proj_dst,
@@ -83,6 +85,7 @@ impl Qwen3SsmLayer {
         {
             ops::cutlass_bf16_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 fp8w,
                 proj_dst,
@@ -96,6 +99,7 @@ impl Qwen3SsmLayer {
         {
             ops::cublas_fp8_rowwise_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 ctx.buffers.fp8_act(),
                 ctx.buffers.fp8_act_scale(),
@@ -111,6 +115,7 @@ impl Qwen3SsmLayer {
         {
             ops::cublas_bf16_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 fp8w,
                 proj_dst,

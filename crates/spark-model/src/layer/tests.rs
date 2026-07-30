@@ -50,8 +50,10 @@ fn test_forward_context_lifetime() {
     // A test can now state the dispatch it wants instead of mutating the
     // process environment — the point of carrying it rather than caching it.
     let dispatch = crate::layers::ops::GemmDispatch::defaults();
+    let derived = crate::layers::ops::DerivedWeights::new();
     let ctx = ForwardContext {
         dispatch: &dispatch,
+        derived: &derived,
         buffers: &buffers,
         gpu: &gpu,
         config: &config,

@@ -174,6 +174,7 @@ impl TransformerModel {
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
+            derived: &self.derived,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),

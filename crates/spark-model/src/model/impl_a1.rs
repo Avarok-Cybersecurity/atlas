@@ -497,6 +497,7 @@ impl TransformerModel {
         Ok(Self {
             config,
             dispatch: crate::layers::ops::GemmDispatch::from_env(),
+            derived: crate::layers::ops::DerivedWeights::new(),
             #[cfg(feature = "cuda")]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;

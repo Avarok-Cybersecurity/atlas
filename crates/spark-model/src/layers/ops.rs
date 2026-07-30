@@ -13,6 +13,8 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
+#[path = "ops/derived_weights.rs"]
+mod derived_weights;
 #[path = "ops/dispatch_config.rs"]
 mod dispatch_config;
 #[path = "ops/dispatch_helpers.rs"]
@@ -115,6 +117,7 @@ mod ssm_preproc;
 mod ssm_ssd;
 
 pub use activations::*;
+pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::GemmDispatch;
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
