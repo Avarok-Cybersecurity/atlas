@@ -84,6 +84,15 @@ pub enum PluginEvent {
 /// The plugin's view of its host.
 #[derive(Clone)]
 pub struct PluginHandle {
+    /// Distinguishes this run from every other run in the process.
+    ///
+    /// The cold-TTFT gate depends on it: two requests sharing a prefix means
+    /// the second hits the cache and the "cold" number is warm. Within one
+    /// run the benchmark's own indices make its prompts unique; ACROSS runs
+    /// nothing would, which is what this supplies — without a process-global
+    /// counter, and without two runs of the same benchmark silently warming
+    /// each other's cold leg.
+    run_id: u64,
     target: TargetEndpoint,
     artifacts: ArtifactStore,
     events: Sender<PluginEvent>,
@@ -91,13 +100,20 @@ pub struct PluginHandle {
 }
 
 impl PluginHandle {
+    /// This run's id — see the field doc for what it guarantees.
+    pub fn run_id(&self) -> u64 {
+        self.run_id
+    }
+
     pub fn new(
+        run_id: u64,
         target: TargetEndpoint,
         artifacts: ArtifactStore,
         events: Sender<PluginEvent>,
         cancel: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            run_id,
             target,
             artifacts,
             events,
@@ -198,6 +214,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let h = PluginHandle::new(
+            1,
             TargetEndpoint::local(8888, "m"),
             ArtifactStore::with_root("/tmp/atlas-test"),
             tx,

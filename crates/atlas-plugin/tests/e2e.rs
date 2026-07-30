@@ -33,6 +33,7 @@ fn handle(port: u16, store: ArtifactStore) -> (PluginHandle, Arc<AtomicBool>) {
     let cancel = Arc::new(AtomicBool::new(false));
     (
         PluginHandle::new(
+            1,
             TargetEndpoint::local(port, "mock"),
             store,
             tx,

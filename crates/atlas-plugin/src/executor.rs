@@ -88,11 +88,19 @@ impl RunHandle {
 pub struct BenchmarkExecutor {
     runtime: tokio::runtime::Handle,
     artifacts: ArtifactStore,
+    /// Run ids handed to `PluginHandle`. One executor per dashboard, so
+    /// counting here is what makes ids unique across the process without a
+    /// global — see `PluginHandle::run_id`.
+    next_run_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl BenchmarkExecutor {
     pub fn new(runtime: tokio::runtime::Handle, artifacts: ArtifactStore) -> Self {
-        Self { runtime, artifacts }
+        Self {
+            runtime,
+            artifacts,
+            next_run_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
     }
 
     pub fn artifacts(&self) -> &ArtifactStore {
@@ -113,6 +121,8 @@ impl BenchmarkExecutor {
         let cancel = Arc::new(AtomicBool::new(false));
         let finished = Arc::new(AtomicBool::new(false));
         let handle = PluginHandle::new(
+            self.next_run_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             target,
             self.artifacts.clone(),
             event_tx.clone(),

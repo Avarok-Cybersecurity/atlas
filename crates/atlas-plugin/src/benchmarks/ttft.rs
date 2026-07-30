@@ -179,7 +179,9 @@ impl TtftGate {
                 Mode::Warm => format!("warm-{tokens}"),
                 // Unique per sample: no prefix is ever shared, so every
                 // request pays a full prefill.
-                Mode::Cold => crate::benchmarks::unique_salt(&format!("cold-{tokens}-{i}")),
+                Mode::Cold => {
+                    crate::benchmarks::unique_salt(&format!("cold-{tokens}-{i}"), handle.run_id())
+                }
             };
             if self.mode == Mode::Warm {
                 // Prime, then measure. The first request populates the cache;

@@ -7,8 +7,6 @@
 //! materialization and AST scoring, provisioned into `~/.atlas/artifacts`
 //! during `load()`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 pub mod agentic;
 pub mod baseline;
 pub mod bfcl;
@@ -43,17 +41,12 @@ pub fn one_line(text: impl AsRef<str>) -> String {
 
 /// A salt no other request in this process will use.
 ///
-/// The cold-TTFT gate depends on this: two requests sharing a prefix means the
-/// second one hits the cache and the "cold" number is warm.
-pub fn unique_salt(prefix: &str) -> String {
-    // STATIC, DELIBERATELY — process lifecycle. Uniqueness must hold across
-    // EVERY request this process issues, which is the whole guarantee: two
-    // requests sharing a prefix means the second hits the cache and the
-    // "cold" number is warm. A per-run counter would let two benchmark runs
-    // in one process collide and silently warm each other's cold leg.
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{}-{n}", std::process::id())
+/// `run_id` comes from the run's [`PluginHandle`]; the caller supplies a
+/// `prefix` that is unique within the run. Together they are unique across the
+/// process without a process-global counter — which matters because the
+/// cold-TTFT gate is exactly the measurement a shared prefix would corrupt.
+pub fn unique_salt(prefix: &str, run_id: u64) -> String {
+    format!("{prefix}-{}-{run_id}", std::process::id())
 }
 
 #[cfg(test)]
@@ -70,8 +63,8 @@ mod tests {
 
     #[test]
     fn salts_never_repeat() {
-        let a = unique_salt("cold");
-        let b = unique_salt("cold");
+        let a = unique_salt("cold", 1);
+        let b = unique_salt("cold", 2);
         assert_ne!(a, b);
     }
 }

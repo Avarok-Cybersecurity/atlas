@@ -16,6 +16,7 @@ fn gate(mode: Mode, root: &str) -> TtftGate {
     let dir = std::env::temp_dir().join(format!("atlas-ttft-{root}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     g.handle = Some(PluginHandle::new(
+        1,
         TargetEndpoint::local(8888, "test-model"),
         ArtifactStore::with_root(dir),
         tx,
@@ -110,7 +111,7 @@ fn warm_reuses_one_salt_per_length_and_cold_never_repeats_one() {
     let warm_a = format!("warm-{}", 1024);
     let warm_b = format!("warm-{}", 1024);
     assert_eq!(warm_a, warm_b);
-    let cold_a = crate::benchmarks::unique_salt("cold-1024-0");
-    let cold_b = crate::benchmarks::unique_salt("cold-1024-0");
+    let cold_a = crate::benchmarks::unique_salt("cold-1024-0", 1);
+    let cold_b = crate::benchmarks::unique_salt("cold-1024-0", 2);
     assert_ne!(cold_a, cold_b);
 }
