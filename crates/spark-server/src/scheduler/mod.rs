@@ -28,6 +28,7 @@ mod logit_processors;
 mod logprobs;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
+pub mod dumps;
 pub mod levers;
 pub mod limits;
 mod mtp_gate;
@@ -523,6 +524,7 @@ pub fn run(
             let verify_ctx = crate::scheduler::logit_processors::LogitsContext {
                 watchdog: sched.watchdog,
                 scratch: &sched.scratch,
+                dumps: &sched.dumps,
                 stats: sched.stats.clone(),
                 think_end_token,
                 think_start_token,

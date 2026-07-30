@@ -35,6 +35,8 @@ pub struct DecodeScratch {
 pub struct SchedCtx {
     /// Per-token classification masks for this model's vocabulary.
     pub masks: VocabMasks,
+    /// Diagnostic file sinks this run writes to.
+    pub dumps: crate::scheduler::dumps::RunDumps,
     /// Reusable host-side decode buffers for this run.
     ///
     /// These were `thread_local!` scratch, which is a process global with a
@@ -81,6 +83,7 @@ impl SchedCtx {
     ) -> Self {
         Self {
             masks,
+            dumps: crate::scheduler::dumps::RunDumps::from_env(),
             scratch: DecodeScratch::default(),
             levers,
             limits,

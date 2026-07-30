@@ -131,6 +131,7 @@ pub fn process_decode_logits(
                 tool_call_end_token,
                 watchdog: sched.watchdog,
                 scratch: &sched.scratch,
+                dumps: &sched.dumps,
                 stats: sched.stats.clone(),
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),

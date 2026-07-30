@@ -181,8 +181,9 @@ pub fn process_seq_logits(
     // were folded in by `process_position_logits`); the bias field reports
     // `params.logit_bias` (base + A4). This only changes the env-gated dump
     // output, never the emitted token.
-    if super::logit_dump::enabled() {
+    if let Some(sink) = ctx.dumps.logits.as_ref() {
         super::logit_dump::record(
+            sink,
             a.output_tokens.len(),
             a.inside_parameter_body,
             a.param_body_chars_emitted as usize,

@@ -65,6 +65,8 @@ pub struct LogitsContext<'a> {
     /// The run's reusable host decode buffers. Borrowed rather than reached
     /// through a `thread_local!`, so a buffer cannot outlive the run.
     pub scratch: &'a crate::scheduler::sched_ctx::DecodeScratch,
+    /// This run's diagnostic file sinks.
+    pub dumps: &'a crate::scheduler::dumps::RunDumps,
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,
@@ -204,7 +206,7 @@ pub fn run_pipeline_with_path(
     // distribution, never mutates. No-op when ATLAS_ADADEC_DIAGNOSTIC is
     // unset. Called directly (not as a pipeline stage) so the caller's
     // path label is preserved byte-identically across both decode paths.
-    adadec_diag::log_step(logits, seq, path);
+    adadec_diag::log_step(ctx.dumps.adadec.as_ref(), logits, seq, path);
     None
 }
 
