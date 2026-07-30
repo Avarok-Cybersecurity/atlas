@@ -719,6 +719,10 @@ fn startup(
     // DS4F hard-limit lane (2026-07-21): the served-context ceiling the
     // scheduler enforces per decode step (§C-3), not just as a KV-allocation
     // ceiling trued-up on completion. Travels with the run's other hard stops.
+    // Per-model watchdog tunables. Built here, before the scheduler thread
+    // spawns — the installer this replaces ran from `log_behavior_audit`,
+    // which is called well after the spawn.
+    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(&ptx_set.behavior);
     let sched_limits = crate::scheduler::limits::SchedLimits {
         max_seq_len: args.max_seq_len,
         ..tokenizer_limits
@@ -755,6 +759,7 @@ fn startup(
             scheduler_spontaneous_think_budget,
             vocab_masks,
             sched_limits,
+            watchdog_params,
         );
     });
 

@@ -81,11 +81,11 @@ pub fn handle_content_token(
     // 1536 in MODEL.toml.
     if !crate::scheduler::helpers::disable_watchdogs()
         && a.grammar_state.is_some()
-        && a.content_tokens > watchdog_params().max_post_think_content_tokens
+        && a.content_tokens > sched.watchdog.max_post_think_content_tokens
     {
         tracing::warn!(
             content_tokens = a.content_tokens,
-            max = watchdog_params().max_post_think_content_tokens,
+            max = sched.watchdog.max_post_think_content_tokens,
             "post-think content cap exceeded in non-MTP decode path; ending response (tool-active request would otherwise burn to max_tokens)"
         );
         a.finished = true;
@@ -195,7 +195,7 @@ pub fn handle_content_token(
     // `tool_request` is set at prefill and survives disengage.
     if !crate::scheduler::helpers::disable_watchdogs() && !a.inside_tool_body && a.tool_request {
         a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
-        let max_prose = watchdog_params().max_inter_tool_prose;
+        let max_prose = sched.watchdog.max_inter_tool_prose;
         if a.prose_tokens_since_last_tool > max_prose {
             // Phase-C: roll back to the last boundary and
             // re-steer so the model can re-attempt the tool

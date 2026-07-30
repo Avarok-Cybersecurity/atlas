@@ -365,39 +365,51 @@ impl Default for WatchdogParams {
     }
 }
 
-static WATCHDOG_PARAMS: std::sync::OnceLock<WatchdogParams> = std::sync::OnceLock::new();
+impl WatchdogParams {
+    /// Historical fuzzy-repeat mismatch tolerance divisor, exposed so the
+    /// `repetition` tests can name it instead of restating `12`.
+    pub const DEFAULT_FUZZY_TOLERANCE_DIV: usize =
+        DEFAULT_WATCHDOG_PARAMS.fuzzy_repeat_tolerance_div;
 
-/// Set once at startup from the resolved `ModelBehavior`. Idempotent.
-pub fn set_watchdog_params(p: WatchdogParams) {
-    let _ = WATCHDOG_PARAMS.set(p);
-}
-
-/// Read the per-model watchdog tunables. Returns the historical-default
-/// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
-/// any pre-boot caller see exactly the old hardcoded constants.
-pub fn watchdog_params() -> WatchdogParams {
-    let mut p = *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS);
-    // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
-    // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on every
-    // turn, so a legitimate PLAN / analysis prose turn (`grammar_state.is_some()`
-    // ⇒ "tool turn") is subject to it and gets guillotined mid-sentence
-    // (finish=length) — the "worst run ever" 6-turn session died writing an API
-    // plan at 385 tokens. The REPEATING wander is already caught by the
-    // content-loop + SimHash watchdogs independently; this budget's residual job
-    // is only the non-repeating dormant-opener burn. Raise the effective bound
-    // to a plan-friendly value (still << max_tokens, per the ultracode do-NOT
-    // list) and expose it for tuning. Env wins over MODEL.toml.
-    if let Some(v) = *INTER_TOOL_PROSE_OVERRIDE.get_or_init(|| {
-        std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
+    /// Resolve this model's watchdog tunables from its MODEL.toml
+    /// `[behavior]` table, applying the one env override that outranks it.
+    ///
+    /// Was a `OnceLock` plus a `set_watchdog_params` installer. Two problems,
+    /// both fixed by building the value where it is known and carrying it:
+    /// the tunables are per-model, so a `OnceLock` kept the first model's
+    /// table for every model after it; and the installer ran from
+    /// `log_behavior_audit`, which serve calls *after* it spawns the
+    /// scheduler thread — the reader's `unwrap_or(&DEFAULT)` was the only
+    /// reason that ordering was survivable.
+    pub fn from_behavior(b: &atlas_kernels::ModelBehavior) -> Self {
+        let mut p = Self {
+            think_loop_min_repeats: b.think_loop_min_repeats as usize,
+            think_loop_scan_window: b.think_loop_scan_window as usize,
+            confidence_early_stop: b.confidence_early_stop,
+            confidence_run_length: b.confidence_run_length,
+            fuzzy_repeat_tolerance_div: b.fuzzy_repeat_tolerance_div as usize,
+            max_inter_tool_prose: b.max_inter_tool_prose,
+            max_post_think_content_tokens: b.max_post_think_content_tokens,
+            rollback_resteer: b.rollback_resteer,
+        };
+        // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
+        // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on
+        // every turn, so a legitimate PLAN / analysis prose turn
+        // (`grammar_state.is_some()` ⇒ "tool turn") is subject to it and gets
+        // guillotined mid-sentence (finish=length) — the "worst run ever"
+        // 6-turn session died writing an API plan at 385 tokens. The REPEATING
+        // wander is already caught by the content-loop + SimHash watchdogs
+        // independently; this budget's residual job is only the non-repeating
+        // dormant-opener burn. Env wins over MODEL.toml.
+        if let Some(v) = std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-    }) {
-        p.max_inter_tool_prose = v;
+        {
+            p.max_inter_tool_prose = v;
+        }
+        p
     }
-    p
 }
-
-static INTER_TOOL_PROSE_OVERRIDE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 // The three vocabulary masks that lived here as `OnceLock<Arc<[bool]>>` plus a
 // `set_*` each are now `scheduler::vocab_masks::VocabMasks`, returned by
@@ -445,8 +457,8 @@ pub const MAX_POST_THINK_CONTENT_TOKENS: u32 = 100_000;
 /// `Executing:` / `I need to run:`). A strict "contiguous
 /// periodic repeat" detector misses these; a substring-occurrence
 /// counter catches them.
-pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
-    detect_thinking_token_loop_with(tokens, None)
+pub fn detect_thinking_token_loop(tokens: &[u32], wp: WatchdogParams) -> bool {
+    detect_thinking_token_loop_with(tokens, None, wp)
 }
 
 /// Per-sequence override variant of [`detect_thinking_token_loop`].
@@ -454,11 +466,12 @@ pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
 /// `p.max_pattern_size`, `p.min_count` as the period and repeat
 /// thresholds — exactly mirroring vLLM's `RepetitionDetectionParams`
 /// (`sampling_params.py:111-144`). When `None`, falls back to the
-/// boot-global `watchdog_params()` constants so existing callers
-/// without per-request configuration are byte-identical to before.
+/// run's `WatchdogParams` so existing callers without per-request
+/// configuration are byte-identical to before.
 pub fn detect_thinking_token_loop_with(
     tokens: &[u32],
     override_: Option<crate::api::inference_types::RepetitionDetectionParams>,
+    wp: WatchdogParams,
 ) -> bool {
     let (period_min, period_max, min_repeats) = match override_ {
         Some(p) => (
@@ -466,18 +479,15 @@ pub fn detect_thinking_token_loop_with(
             p.max_pattern_size as usize,
             p.min_count as usize,
         ),
-        None => {
-            let wp = watchdog_params();
-            (
-                THINK_LOOP_PERIOD_MIN,
-                THINK_LOOP_PERIOD_MAX,
-                wp.think_loop_min_repeats,
-            )
-        }
+        None => (
+            THINK_LOOP_PERIOD_MIN,
+            THINK_LOOP_PERIOD_MAX,
+            wp.think_loop_min_repeats,
+        ),
     };
     let scan_window = match override_ {
         Some(_) => 0, // vLLM-anchored detector ignores scan_window
-        None => watchdog_params().think_loop_scan_window,
+        None => wp.think_loop_scan_window,
     };
     detect_token_loop(
         tokens,

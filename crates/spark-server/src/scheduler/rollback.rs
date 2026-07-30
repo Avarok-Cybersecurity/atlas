@@ -206,7 +206,7 @@ pub fn rollback_to_boundary(
     model: &dyn Model,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) -> RollbackOutcome {
-    if !watchdog_params().rollback_resteer {
+    if !sched.watchdog.rollback_resteer {
         return RollbackOutcome::Fallback(RollbackFallback::Disabled);
     }
     // Streaming requests flush every token to the client as it is

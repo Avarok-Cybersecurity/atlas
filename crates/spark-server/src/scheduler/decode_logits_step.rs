@@ -136,6 +136,7 @@ pub fn process_decode_logits(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                watchdog: sched.watchdog,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
                 sampling: sched.levers.sampling(),
@@ -317,7 +318,11 @@ pub fn process_decode_logits(
                     && !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
-                    && detect_thinking_token_loop_with(&a.output_tokens, a.repetition_detection)
+                    && detect_thinking_token_loop_with(
+                        &a.output_tokens,
+                        a.repetition_detection,
+                        sched.watchdog,
+                    )
                 {
                     a.force_end_thinking = true;
                     a.sentence_defer_count = 0;
@@ -695,7 +700,10 @@ pub fn process_decode_logits(
                 && !a.finished
                 && !a.inside_thinking
                 && !inside_tool_call
-                && let Some((pattern_len, mis_a, mis_b)) = detect_fuzzy_repetition(&a.output_tokens)
+                && let Some((pattern_len, mis_a, mis_b)) = detect_fuzzy_repetition(
+                    &a.output_tokens,
+                    sched.watchdog.fuzzy_repeat_tolerance_div,
+                )
             {
                 // Phase-C: roll back past the repeated window and
                 // re-steer. `min_keep` = pattern_len * 3 guarantees all

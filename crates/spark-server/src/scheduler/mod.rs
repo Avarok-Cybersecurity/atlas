@@ -62,11 +62,11 @@ use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+pub use helpers::WatchdogParams;
 pub use helpers::disable_watchdogs;
 pub use helpers::set_enable_loop_watchdog;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
-pub use helpers::{WatchdogParams, set_watchdog_params};
 use lifecycle::*;
 use logprobs::*;
 use mod_helpers::*;
@@ -200,6 +200,8 @@ pub fn run(
     // This model's hard stops: two tokenizer-resolved token ids and the
     // served-context ceiling. Carried for the same reason as `vocab_masks`.
     limits: crate::scheduler::limits::SchedLimits,
+    // This model's MODEL.toml `[behavior]` watchdog tunables.
+    watchdog: crate::scheduler::helpers::WatchdogParams,
 ) {
     // Everything this run needs that is derived from the model rather than the
     // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
@@ -208,6 +210,7 @@ pub fn run(
         vocab_masks,
         crate::scheduler::levers::SchedLevers::from_env(),
         limits,
+        watchdog,
     );
     model
         .bind_gpu_to_thread()
@@ -521,6 +524,7 @@ pub fn run(
             // this context the MTP/spec verify path emits unmasked
             // GPU-argmax tokens (Phase C-2 root cause, 2026-05-24).
             let verify_ctx = crate::scheduler::logit_processors::LogitsContext {
+                watchdog: sched.watchdog,
                 think_end_token,
                 think_start_token,
                 tool_call_start_token,

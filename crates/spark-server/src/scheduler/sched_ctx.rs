@@ -26,6 +26,9 @@ pub struct SchedCtx {
     pub levers: SchedLevers,
     /// Hard stops derived from this model's tokenizer and CLI.
     pub limits: SchedLimits,
+    /// Decode-time watchdog tunables from this model's MODEL.toml
+    /// `[behavior]` table.
+    pub watchdog: crate::scheduler::helpers::WatchdogParams,
     /// Speculation accept/reject telemetry for this run. Mutated through the
     /// shared reference, which is why its counters are atomics.
     pub stats: SpecStats,
@@ -43,11 +46,17 @@ pub struct SchedCtx {
 }
 
 impl SchedCtx {
-    pub fn new(masks: VocabMasks, levers: SchedLevers, limits: SchedLimits) -> Self {
+    pub fn new(
+        masks: VocabMasks,
+        levers: SchedLevers,
+        limits: SchedLimits,
+        watchdog: crate::scheduler::helpers::WatchdogParams,
+    ) -> Self {
         Self {
             masks,
             levers,
             limits,
+            watchdog,
             stats: SpecStats::new(),
             timing: std::sync::Arc::new(RunTiming::from_env()),
             rom_head: None,
@@ -61,6 +70,7 @@ impl SchedCtx {
             VocabMasks::default(),
             SchedLevers::defaults(),
             SchedLimits::NONE,
+            crate::scheduler::helpers::WatchdogParams::default(),
         )
     }
 }

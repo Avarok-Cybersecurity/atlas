@@ -83,7 +83,7 @@ pub(super) fn try_chat_fast_path(
         && a.inside_thinking
         && !a.force_end_thinking
         && a.thinking_tokens >= 400
-        && crate::scheduler::helpers::watchdog_params().confidence_early_stop;
+        && ctx.watchdog.confidence_early_stop;
     let defer_hard_override = match a.thinking_budget {
         Some(b) => a.thinking_tokens >= b.saturating_mul(THINK_DEFER_BUDGET_FACTOR),
         None => a.thinking_tokens >= THINK_DEFER_ABS_CEILING,

@@ -80,6 +80,10 @@ pub struct LogitsContext {
     /// The run's verify-timing sink. Carried like everything else here, so a
     /// timing summary covers one model's steps.
     pub timing: std::sync::Arc<crate::scheduler::mtp_timing::RunTiming>,
+    /// This model's watchdog tunables (MODEL.toml `[behavior]`). The F2
+    /// confidence stages read them, and they are per-model, so they ride the
+    /// same carrier as the token ids and masks.
+    pub watchdog: crate::scheduler::helpers::WatchdogParams,
 }
 
 /// The subset of `scheduler::levers::SchedLevers` the pre-sample pipeline
