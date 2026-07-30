@@ -1200,6 +1200,47 @@ batched verify/bootstrap path accept K=4) and is not currently justified —
 the p3_cond≈0.79 upside is capped by the ~640 ms step time anyway.
 (`conc_c8_k4.log`, `conc27_k4.log`.)
 
+### 6.22 fp8-KV decode kernel fixed (db7bacf9); fp8+hp fast but QUALITY-VARIANT — bf16 stays config of record
+
+**Kernel fix (db7bacf9):** `paged_decode_attn_fp8` was conversion-bound
+(per-element scalar cvt chain + per-element scale mul). Hoisted scales
+out of the inner loops (k_scale → score multiply, v_scale → single smem
+write; dequant is linear so exact up to reassociation) + paired fp8x2
+cvts. C=8 agentic decode median: **2.1 → 5.6 tok/s/stream (2.7×)**, above
+the bf16 record (4.4–4.8). The fix stands regardless of the config
+verdict below.
+
+**Config legs (C=8, 64K, filters off, slots 64):**
+
+| leg | pass | decode med | median s | tools/task, wall (oc webserver) |
+|---|---|---|---|---|
+| bf16 (record, 2 reps) | 8/8, 8/8 | 4.4–4.8 | 256–279 | 12 tools, 110 s |
+| fp8 new kernel | 7/8 (1 loop-kill) | 5.6 | 313 | — |
+| fp8 + hp auto rep1 | 8/8 | 5.4 | **252** | — |
+| fp8 + hp auto rep2 | **5/8** | 4.8 | 378 | 28 tools, 385 s |
+
+**Verdict: NOT promoted.** fp8+hp is ~15% faster raw decode but
+quality-variant at agentic depth: rep2 collapsed to 5/8 with a **20%
+empty-tool-call rate** (vs the ~7–10% all-config baseline; measured from
+the opencode db per leg window), and the official oc webserver task,
+while scoring 6/6, needed 2.3× the tool calls and 3.5× the wall time of
+the bf16 run — retries absorb the degraded steps and the pass/fail
+column can't see it. **Tools-per-task and empty-call rate are now
+standing quality metrics** alongside pass rate. Live-observed degeneracy
+grades on fp8+hp: empty `bash({})`/`write({"content":"","filePath":""})`
+calls, no-op fragments, a typo'd env var (`ATLAS_HARNSS_PORT`), one
+2-min wedged blocking call.
+
+**NEW OPEN (high value): the ~7–10% empty-tool-call baseline is
+config-independent** — present on bf16 filters-ON legs since at least
+yesterday. Pre-existing quality defect masked by opencode retries; the
+next real agentic-quality lever (suspects: tool-parser/grammar path,
+structured-output sampling, template).
+
+Logs: `conc_c8_fp8kv_v2.log`, `conc_c8_fp8kv_hp{,_rep2}.log`,
+`oc_webserver_fp8hp.log`, matching `conc27_*.log`, empty-call table in
+the session transcript.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
