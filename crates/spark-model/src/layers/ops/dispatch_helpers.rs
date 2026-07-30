@@ -91,6 +91,14 @@ pub fn cutlass_nvfp4_ssm_out_enabled() -> bool {
 pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
+    // Skip the dedup bookkeeping entirely unless a subscriber would
+    // actually take the debug event — this runs per routed GEMM call, and
+    // the name hash + global mutex + HashSet insert are pure waste at the
+    // production INFO level (the mutex is also cross-thread contention on
+    // the dispatch path).
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
     static SEEN: OnceLock<Mutex<HashSet<(u64, u32, u32, u32)>>> = OnceLock::new();
     let mut h: u64 = 1469598103934665603;
     for b in name.bytes() {
@@ -98,7 +106,11 @@ pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
     }
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     if seen.lock().unwrap().insert((h, m, n, k)) {
-        tracing::warn!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
+        // Routing telemetry, not a warning — one line per unique
+        // (kernel, M, N, K); at INFO-level production serving it was
+        // spamming WARN for every new prefill shape (user-flagged
+        // 2026-07-30).
+        tracing::debug!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
     }
 }
 
@@ -108,7 +120,12 @@ pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
 pub fn log_gemm_shape(name: &str, m: u32, n: u32, k: u32) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
-    if std::env::var("ATLAS_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
+    // Env gate read once per process — this runs per GEMM dispatch and
+    // std::env::var locks + allocates on every call.
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED
+        .get_or_init(|| std::env::var("ATLAS_GEMM_SHAPE_LOG").ok().as_deref() == Some("1"))
+    {
         return;
     }
     static SEEN: OnceLock<Mutex<HashSet<(u64, u32, u32, u32)>>> = OnceLock::new();
