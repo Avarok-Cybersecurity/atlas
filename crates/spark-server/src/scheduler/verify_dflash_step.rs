@@ -138,7 +138,7 @@ pub fn step_verify_dflash(
     // Unified ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1): ONE unconditional
     // commit at the K=gamma point — rows 0..=num_accepted at RoPE base
     // pre_verify_len. Structural replacement for dflash_eagle_kgamma_append.
-    if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+    if sched.levers.dflash_unified_ctx {
         if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len) {
             tracing::error!("commit_ctx (kgamma): {e:#}");
         }

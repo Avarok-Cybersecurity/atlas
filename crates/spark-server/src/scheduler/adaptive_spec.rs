@@ -119,27 +119,13 @@ pub(crate) fn is_suspended(a: &ActiveSeq) -> bool {
     enabled() && a.spec_adapt.suspended
 }
 
-/// Ctx-holes fix master switch (`ATLAS_DFLASH_SERIAL_APPEND=1`): append
-/// every serially-decoded token's captured target hidden into the DFlash
-/// ctx accumulator — think-gated stretches, adaptive-suspended stretches,
-/// and bootstrap tokens alike. Read once.
-pub(crate) fn serial_append_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SERIAL_APPEND").ok().as_deref() == Some("1"))
-}
-
-/// ATLAS_DFLASH_UNIFIED_CTX=1 → route the two commit points through the
-/// single `commit_ctx` (hole-immune by construction, DDD §4.1) instead of
-/// the ~5 fragmented appends. Default OFF = the 24.1 path, so both paths
-/// A/B on ONE binary.
-pub(crate) fn unified_ctx_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1"))
-}
-
 /// Count a serially-decoded token toward the re-probe interval.
 pub(crate) fn tick_serial(a: &mut ActiveSeq) {
     if enabled() && a.spec_adapt.suspended {
         a.spec_adapt.serial_tokens = a.spec_adapt.serial_tokens.saturating_add(1);
     }
 }
+
+// The `ATLAS_DFLASH_SERIAL_APPEND` and `ATLAS_DFLASH_UNIFIED_CTX` statics
+// that lived here are now `SchedLevers::dflash_serial_append` /
+// `::dflash_unified_ctx`, resolved once per run and read through `SchedCtx`.
