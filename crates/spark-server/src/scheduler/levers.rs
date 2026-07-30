@@ -40,6 +40,10 @@ pub struct SchedLevers {
     pub dflash_serial_append: bool,
     pub dflash_unified_ctx: bool,
     pub dflash_spec_think: bool,
+    /// Mean accepted drafts below which adaptive speculation suspends.
+    pub dflash_adaptive_min: f32,
+    /// Serially-decoded tokens between adaptive re-probes.
+    pub dflash_adaptive_reprobe: u32,
 
     // ── Watchdogs ──
     /// Disable every generation watchdog.
@@ -71,6 +75,14 @@ fn on_unless(var: &str) -> bool {
     std::env::var(var).ok().as_deref() != Some("1")
 }
 
+/// A numeric tunable: the parsed value, or `default` when unset or unparsable.
+fn num<T: std::str::FromStr>(var: &str, default: T) -> T {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 /// Presence-gated: ANY value enables, including `0`. Preserved rather than
 /// normalised — a diagnostic someone armed with `=0` must stay armed.
 fn present(var: &str) -> bool {
@@ -93,6 +105,8 @@ impl SchedLevers {
             dflash_serial_append: opt_in("ATLAS_DFLASH_SERIAL_APPEND"),
             dflash_unified_ctx: opt_in("ATLAS_DFLASH_UNIFIED_CTX"),
             dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
+            dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
+            dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
             // the rule: both accept "1" OR "true", trimmed, and re-spelling
@@ -130,6 +144,8 @@ impl SchedLevers {
             dflash_serial_append: false,
             dflash_unified_ctx: false,
             dflash_spec_think: false,
+            dflash_adaptive_min: 2.0,
+            dflash_adaptive_reprobe: 256,
             disable_watchdogs: false,
             eos_suppressed_by_thinking: false,
             forced_token_fastpath: true,

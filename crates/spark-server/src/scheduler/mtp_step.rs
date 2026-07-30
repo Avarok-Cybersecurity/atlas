@@ -56,7 +56,7 @@ pub fn step_mtp(
         // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
         if dflash_verify_raw_argmax
             && !sched.levers.dflash_seam_serial
-            && crate::scheduler::adaptive_spec::spec_allowed(a)
+            && crate::scheduler::adaptive_spec::spec_allowed(a, sched)
         {
             let eff = if a.grammar_state.is_some() {
                 1
@@ -196,7 +196,7 @@ pub fn step_mtp(
         }
         a.last_token = tok;
         // Adaptive speculation: count serial tokens toward the re-probe window.
-        crate::scheduler::adaptive_spec::tick_serial(a);
+        crate::scheduler::adaptive_spec::tick_serial(a, sched);
 
         // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
         // the serial ctx-append fires iff propose() will NOT run this
@@ -211,8 +211,8 @@ pub fn step_mtp(
         // the propose below skip its decode-append). Append it here; the
         // skip flag this sets is consumed by that propose — one append,
         // no duplicate, seam covered.
-        let was_suspended = crate::scheduler::adaptive_spec::is_suspended(a);
-        let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a);
+        let was_suspended = crate::scheduler::adaptive_spec::is_suspended(a, sched);
+        let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a, sched);
         let reprobe_resume = was_suspended && will_propose;
         if sched.levers.dflash_unified_ctx {
             // Unified ctx commit: same complement-gate as the old serial

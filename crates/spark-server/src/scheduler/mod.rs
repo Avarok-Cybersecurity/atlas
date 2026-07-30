@@ -547,10 +547,7 @@ pub fn run(
             // batch-K numerics floor can flip a low-margin token mid-think),
             // and thinking-budget forced-end is not enforced on the raw-argmax
             // verify path. Throughput mode; leave OFF for byte-proof runs.
-            static DFLASH_SPEC_THINK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let dflash_spec_think = *DFLASH_SPEC_THINK.get_or_init(|| {
-                std::env::var("ATLAS_DFLASH_SPEC_THINK").ok().as_deref() == Some("1")
-            });
+            let dflash_spec_think = sched.levers.dflash_spec_think;
             if use_ngram_speculative && active.len() == 1 && active[0].grammar_state.is_none() {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {

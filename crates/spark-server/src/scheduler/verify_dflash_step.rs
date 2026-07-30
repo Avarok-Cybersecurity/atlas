@@ -107,7 +107,7 @@ pub fn step_verify_dflash(
 
     // Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): feed the rolling
     // accept window; may suspend this seq's speculation (see adaptive_spec).
-    crate::scheduler::adaptive_spec::record_verify(a, num_accepted);
+    crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
 
     // Roll back the over-extended `seq_len` and `seq.tokens`. The verify
     // advanced both by `tokens.len() = γ+1` (all γ drafts + the prefix
@@ -222,7 +222,7 @@ pub fn step_verify_dflash(
     // this seq (no drafts → the scheduler serial-decodes it via bootstrap).
     let _mtp_grammar_mask = mtp_grammar_mask_for(a);
     let t_propose = std::time::Instant::now();
-    if crate::scheduler::adaptive_spec::spec_allowed(a) {
+    if crate::scheduler::adaptive_spec::spec_allowed(a, sched) {
         match model.run_mtp_propose_multi(
             a.last_token,
             a.seq.seq_len,
