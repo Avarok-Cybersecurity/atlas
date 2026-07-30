@@ -28,6 +28,10 @@ pub(crate) struct TokenizerRuntime {
     /// process-wide `OnceLock`s, which is the one shape in this struct that
     /// could outlive the vocabulary it was built from.
     pub(crate) vocab_masks: crate::scheduler::vocab_masks::VocabMasks,
+    /// This tokenizer's hard-stop token ids, plus the served-context
+    /// ceiling filled in by the caller (which owns the CLI). Returned like
+    /// `vocab_masks` rather than stored into scheduler-side atomics.
+    pub(crate) limits: crate::scheduler::limits::SchedLimits,
 }
 
 pub(crate) fn resolve_tokenizer_runtime(
@@ -212,7 +216,6 @@ pub(crate) fn resolve_tokenizer_runtime(
         if !eos_tokens.contains(&id) {
             eos_tokens.push(id);
         }
-        crate::scheduler::set_im_start_hard_stop(id);
         tracing::info!("ChatML role-boundary hard stop: <|im_start|> (id {id}) registered");
     }
 
@@ -222,13 +225,12 @@ pub(crate) fn resolve_tokenizer_runtime(
     // even with the kill-switch OFF (the id would be treated as a stop token on
     // the always-on EOS path); registration stays inert until the decode-time
     // gate `tool_response_stop_enabled()` (ATLAS_TOOL_RESPONSE_STOP=1, default
-    // OFF) consults `tool_response_hard_stop()`.
+    // OFF) consults `SchedLimits::tool_response_hard_stop`.
     let tool_response_id: Option<u32> = tokenizer
         .encode("<tool_response>")
         .ok()
         .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None });
     if let Some(id) = tool_response_id {
-        crate::scheduler::set_tool_response_hard_stop(id);
         tracing::info!("Tool-response hard stop: <tool_response> (id {id}) registered");
     }
 
@@ -286,6 +288,13 @@ pub(crate) fn resolve_tokenizer_runtime(
     };
 
     TokenizerRuntime {
+        // `max_seq_len` is the caller's (it owns the CLI); this phase only
+        // knows what the tokenizer resolved.
+        limits: crate::scheduler::limits::SchedLimits {
+            im_start_hard_stop: im_start_id,
+            tool_response_hard_stop: tool_response_id,
+            max_seq_len: 0,
+        },
         vocab_masks,
         reasoning_parser_box,
         think_end_token,

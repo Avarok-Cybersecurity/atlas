@@ -575,6 +575,7 @@ fn startup(
     // engine.
     let serve_phases::TokenizerRuntime {
         vocab_masks,
+        limits: tokenizer_limits,
         reasoning_parser_box,
         think_end_token,
         think_start_token,
@@ -715,11 +716,13 @@ fn startup(
     // flip this bool — this selects the verify architecture, not the pick
     // basis.
     let dflash_verify_raw_argmax = args.dflash;
-    // DS4F hard-limit lane (2026-07-21): install the served-context ceiling so
-    // the scheduler enforces `max_seq_len` per decode step (§C-3), not just as a
-    // KV-allocation ceiling trued-up on completion. Set once, before the
-    // scheduler thread spawns.
-    scheduler::set_max_seq_len(args.max_seq_len);
+    // DS4F hard-limit lane (2026-07-21): the served-context ceiling the
+    // scheduler enforces per decode step (§C-3), not just as a KV-allocation
+    // ceiling trued-up on completion. Travels with the run's other hard stops.
+    let sched_limits = crate::scheduler::limits::SchedLimits {
+        max_seq_len: args.max_seq_len,
+        ..tokenizer_limits
+    };
     // Capture the runtime handle IN async context so the scheduler OS thread
     // can detach terminal stream sends (Done/Error) as tokio tasks.
     scheduler::capture_runtime_handle();
@@ -751,6 +754,7 @@ fn startup(
             session_manager,
             scheduler_spontaneous_think_budget,
             vocab_masks,
+            sched_limits,
         );
     });
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Helpers: BF16 conversion, hard-stop registry, loop detection, sampling defaults.
+//! Helpers: BF16 conversion, loop detection, sampling defaults, and the pure
+//! decision cores behind the hard output/length limits (the limits themselves
+//! travel on `SchedCtx` — see `scheduler::limits`).
 
 /// Convert two little-endian BF16 bytes to f32.
 #[inline]
@@ -8,47 +10,12 @@ pub fn bf16_to_f32(lo: u8, hi: u8) -> f32 {
     f32::from_bits(((lo as u32) | ((hi as u32) << 8)) << 16)
 }
 
-/// Global hard-stop token for ChatML role boundaries (`<|im_start|>`).
-///
-/// Set once at startup from `main.rs::set_im_start_hard_stop` when the
-/// tokenizer exposes `<|im_start|>` as a single token id (Qwen3.5/3.6 family
-/// tokenizers: id 248045). Read from `emit_token` to bail out of the turn
-/// regardless of grammar / tool-call / min_tokens suppression — otherwise
-/// the model can sample `<|im_start|>`, have it silently swallowed as a
-/// suppressed EOS, and continue emitting the following role literal
-/// (`user` / `assistant`, plain BPE tokens) which DO stream to the client.
-///
-/// 0 = unset / no hard-stop (non-Qwen tokenizers). The value is checked
-/// with `load(Ordering::Relaxed)` on the emit path — no atomicity contract
-/// beyond "set once before the first request lands", which is guaranteed
-/// by the main.rs init ordering.
-static IM_START_HARD_STOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Install the ChatML role-boundary hard-stop. Called once from `main.rs`
-/// at startup when `<|im_start|>` resolves to a single token id. Noop when
-/// called with 0.
-pub fn set_im_start_hard_stop(id: u32) {
-    IM_START_HARD_STOP.store(id, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[inline]
-pub fn im_start_hard_stop() -> Option<u32> {
-    let id = IM_START_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
-    if id == 0 { None } else { Some(id) }
-}
-
-/// Fix B (2026-06-05): global hard-stop token for the `<tool_response>` control
-/// token. Set once at startup from `tokenizer_runtime.rs` when `<tool_response>`
-/// resolves to a single token id; mirrors the `<|im_start|>` hard-stop above.
-/// 0 = unset / no hard-stop.
-static TOOL_RESPONSE_HARD_STOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-pub fn set_tool_response_hard_stop(id: u32) {
-    TOOL_RESPONSE_HARD_STOP.store(id, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn tool_response_hard_stop() -> Option<u32> {
-    let id = TOOL_RESPONSE_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
-    if id == 0 { None } else { Some(id) }
-}
+// The `<|im_start|>` / `<tool_response>` hard-stop token ids and the
+// served-context ceiling were three atomics here, each installed by a `set_*`
+// call during serve startup. All three are per-model — two are token ids,
+// which mean nothing against another tokenizer — so they are now
+// `SchedLimits`, built where the tokenizer resolves them and carried on
+// `SchedCtx`. See `scheduler::limits`.
 
 // ── Hard output/length limits (2026-07-21, DS4F hard-limit lane) ─────────────
 // Three scheduler defects let generation run past its declared ceilings once a
@@ -61,26 +28,6 @@ pub fn tool_response_hard_stop() -> Option<u32> {
 // The pure decision cores below back the fixes in `decode_logits_step` and
 // `emit_step`. All are no-ops until a ceiling is actually reached, so the
 // 35/40 direct-mode (thinking-OFF) baseline is byte-unchanged.
-
-/// Runtime served-context ceiling (`--max-seq-len`). Set ONCE at serve startup
-/// (`serve.rs`, before the scheduler thread spawns) and read per decode step so
-/// the scheduler HARD-STOPS a sequence at the context ceiling instead of
-/// relying on the on-completion true-up (`middleware.rs`). `0` = unset /
-/// disabled → every guard below becomes a no-op (also the default any unit
-/// test / un-inited path sees). Read with `Relaxed`: the only contract is
-/// "set once before the first request lands", guaranteed by serve init order.
-static MAX_SEQ_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Install the served-context ceiling. Called once from `serve.rs`. `0`
-/// disables the per-step seq-len guard.
-pub fn set_max_seq_len(n: usize) {
-    MAX_SEQ_LEN.store(n, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[inline]
-pub fn max_seq_len_ceiling() -> usize {
-    MAX_SEQ_LEN.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 /// §C-3 pure core: would the NEXT decode step reach or exceed the served
 /// context ceiling? `position` = current sequence length (prompt + generated,

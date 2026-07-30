@@ -43,7 +43,7 @@ pub fn emit_token(
     // (`user` / `assistant` — regular tokens) would stream to the client,
     // poisoning its context and causing the observed multi-turn drift /
     // "file was corrupted" hallucinations in opencode.
-    if let Some(ims) = im_start_hard_stop()
+    if let Some(ims) = sched.limits.im_start_hard_stop
         && tok == ims
     {
         // Push the hard-stop token to output_tokens so lifecycle.rs reports
@@ -69,7 +69,7 @@ pub fn emit_token(
     // never generate this control token; if it does (post-tool-call runaway), end
     // the turn. Mirrors the <|im_start|> hard stop above.
     if tool_response_stop_enabled()
-        && let Some(trs) = tool_response_hard_stop()
+        && let Some(trs) = sched.limits.tool_response_hard_stop
         && tok == trs
     {
         a.output_tokens.push(tok);
@@ -411,7 +411,7 @@ pub fn emit_token(
     // (twin of the non-MTP guard in `decode_logits_step`), so the MTP/emit path
     // also cannot run KV past the context ceiling. No-op when `max_seq_len` is
     // unset (0) or not yet reached.
-    if a.remaining == 0 || seqlen_force_stop(a.seq.seq_len, max_seq_len_ceiling()) {
+    if a.remaining == 0 || seqlen_force_stop(a.seq.seq_len, sched.limits.max_seq_len) {
         // #144: before the hard length-stop, if a grammar is active and the
         // stop token is not legal at the current position (e.g. mid JSON
         // string), emit the shortest grammar-legal close so the truncated
@@ -421,7 +421,7 @@ pub fn emit_token(
             "emit_token: remaining={}, seq_len={}, max_seq_len={}, output_tokens={}, thinking_tokens={}",
             a.remaining,
             a.seq.seq_len,
-            max_seq_len_ceiling(),
+            sched.limits.max_seq_len,
             a.output_tokens.len(),
             a.thinking_tokens
         );

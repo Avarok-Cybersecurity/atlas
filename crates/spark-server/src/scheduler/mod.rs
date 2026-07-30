@@ -29,6 +29,7 @@ mod logprobs;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
 pub mod levers;
+pub mod limits;
 mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
@@ -63,9 +64,6 @@ use decode_step::*;
 use emit_step::*;
 pub use helpers::disable_watchdogs;
 pub use helpers::set_enable_loop_watchdog;
-pub use helpers::set_im_start_hard_stop;
-pub use helpers::set_max_seq_len;
-pub use helpers::set_tool_response_hard_stop;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
 pub use helpers::{WatchdogParams, set_watchdog_params};
@@ -199,6 +197,9 @@ pub fn run(
     // from a process-wide static: they are indexed by token id and are
     // meaningless against a different tokenizer.
     vocab_masks: crate::scheduler::vocab_masks::VocabMasks,
+    // This model's hard stops: two tokenizer-resolved token ids and the
+    // served-context ceiling. Carried for the same reason as `vocab_masks`.
+    limits: crate::scheduler::limits::SchedLimits,
 ) {
     // Everything this run needs that is derived from the model rather than the
     // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
@@ -206,6 +207,7 @@ pub fn run(
     let sched = crate::scheduler::sched_ctx::SchedCtx::new(
         vocab_masks,
         crate::scheduler::levers::SchedLevers::from_env(),
+        limits,
     );
     model
         .bind_gpu_to_thread()

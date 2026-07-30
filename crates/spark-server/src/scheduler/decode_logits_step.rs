@@ -189,7 +189,7 @@ pub fn process_decode_logits(
         // must never generate this control token; if it does (post-tool-call
         // runaway), end the turn. Uses `continue` (loop body), not `return`.
         if tool_response_stop_enabled()
-            && let Some(trs) = tool_response_hard_stop()
+            && let Some(trs) = sched.limits.tool_response_hard_stop
             && tok == trs
         {
             a.output_tokens.push(tok);
@@ -517,7 +517,7 @@ pub fn process_decode_logits(
         // generation cannot overrun. `remaining` already reflects this token's
         // decrement (thinking or content branch above); `a.seq.seq_len` is the
         // current KV position. No-op until a ceiling is actually hit.
-        let hard_ceiling = hard_ceiling_hit(a.remaining, a.seq.seq_len, max_seq_len_ceiling());
+        let hard_ceiling = hard_ceiling_hit(a.remaining, a.seq.seq_len, sched.limits.max_seq_len);
         let thinking_suppresses_eos = eos_suppressed_by_thinking(a.inside_thinking, hard_ceiling);
         // Post-thinking EOS guard. Empirically (dump fix22b 2026-04-25
         // ses_23b4781f7ffebc7UgkKWedTmjd seq=43): when the thinking-loop
@@ -650,10 +650,10 @@ pub fn process_decode_logits(
             // Finishes with no EOS pushed → lifecycle reports finish=length.
             // No-op when `max_seq_len` is unset (0) or not yet reached, so
             // direct-mode short answers are unaffected.
-            if !a.finished && seqlen_force_stop(a.seq.seq_len, max_seq_len_ceiling()) {
+            if !a.finished && seqlen_force_stop(a.seq.seq_len, sched.limits.max_seq_len) {
                 tracing::info!(
                     seq_len = a.seq.seq_len,
-                    max_seq_len = max_seq_len_ceiling(),
+                    max_seq_len = sched.limits.max_seq_len,
                     output_tokens = a.output_tokens.len(),
                     "process_decode_logits: max_seq_len ceiling reached; force-stop (finish=length)"
                 );

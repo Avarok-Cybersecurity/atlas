@@ -13,6 +13,7 @@
 //! on `ActiveSeq`, and values the loop mutates stay locals.
 
 use crate::scheduler::levers::SchedLevers;
+use crate::scheduler::limits::SchedLimits;
 use crate::scheduler::mtp_timing::RunTiming;
 use crate::scheduler::spec_stats::SpecStats;
 use crate::scheduler::vocab_masks::VocabMasks;
@@ -23,6 +24,8 @@ pub struct SchedCtx {
     pub masks: VocabMasks,
     /// Decode / verify / speculation levers for this run.
     pub levers: SchedLevers,
+    /// Hard stops derived from this model's tokenizer and CLI.
+    pub limits: SchedLimits,
     /// Speculation accept/reject telemetry for this run. Mutated through the
     /// shared reference, which is why its counters are atomics.
     pub stats: SpecStats,
@@ -40,10 +43,11 @@ pub struct SchedCtx {
 }
 
 impl SchedCtx {
-    pub fn new(masks: VocabMasks, levers: SchedLevers) -> Self {
+    pub fn new(masks: VocabMasks, levers: SchedLevers, limits: SchedLimits) -> Self {
         Self {
             masks,
             levers,
+            limits,
             stats: SpecStats::new(),
             timing: std::sync::Arc::new(RunTiming::from_env()),
             rom_head: None,
@@ -53,7 +57,11 @@ impl SchedCtx {
     /// A context with no masks and default levers — for tests, which would
     /// otherwise have to mutate the process environment to exercise a path.
     pub fn for_test() -> Self {
-        Self::new(VocabMasks::default(), SchedLevers::defaults())
+        Self::new(
+            VocabMasks::default(),
+            SchedLevers::defaults(),
+            SchedLimits::NONE,
+        )
     }
 }
 
