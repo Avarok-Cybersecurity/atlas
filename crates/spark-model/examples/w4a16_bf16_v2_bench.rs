@@ -49,12 +49,14 @@ fn time_kernel(
     // omitting a compiled param is UB (cuLaunchKernel reads past the end of
     // the param array), so the caller must match the kernel's signature.
     ldb: Option<u32>,
+    // blockDim.x: 128 for the 4-warp kernels, 256 for the 8-warp _v2 family.
+    block_x: u32,
     iters: usize,
 ) -> Result<f64> {
     let launch_once = |c: DevicePtr| -> Result<()> {
         let mut l = KernelLaunch::new(gpu, h)
             .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
-            .block([128, 1, 1])
+            .block([block_x, 1, 1])
             .arg_ptr(a)
             .arg_ptr(packed)
             .arg_ptr(scale)
@@ -168,6 +170,12 @@ fn main() -> Result<()> {
     let v1 = gpu.kernel("w4a16", "w4a16_gemm_t_m128_bf16")?;
     let v2 = gpu.kernel("w4a16", "w4a16_gemm_t_m128_bf16_v2")?;
     let fp8 = gpu.kernel("w4a16", "fp8_gemm_t_m128")?;
+    // Crush pair: production FP8-crush m128 (v1) and its 8-warp v2 shadow
+    // (module w4a16_v2; present on minimax/step3p7/qwen3.6-27b targets).
+    let crush1 = gpu.kernel("w4a16", "w4a16_gemm_t_m128")?;
+    let crush2 = gpu
+        .kernel("w4a16_v2", "w4a16_gemm_t_m128_v2")
+        .unwrap_or(KernelHandle(0));
     let fp8fp8 = gpu.kernel("w4a16", "fp8_fp8_gemm_t_m128")?;
     // K32 vs K64 lossless NVFP4->BF16, M_TILE=64 tiling (grid.y = M/64): bubble test
     let gt_k32 = gpu.kernel("w4a16", "w4a16_gemm_t_m64_bf16")?; // NEW: bit-identical M64
@@ -223,7 +231,7 @@ fn main() -> Result<()> {
         let c3 = gpu.alloc(m * n * 2)?;
 
         let t1 = time_kernel(
-            gpu, stream, v1, a_ptr, p_ptr, s_ptr, 0.5, c1, m, n, k, None, iters,
+            gpu, stream, v1, a_ptr, p_ptr, s_ptr, 0.5, c1, m, n, k, None, 128, iters,
         )?;
         let t2 = time_kernel(
             gpu,
@@ -238,9 +246,36 @@ fn main() -> Result<()> {
             n,
             k,
             Some(n as u32),
+            128,
             iters,
         )?;
         let t3 = time_kernel_fp8(gpu, stream, fp8, a_ptr, bf8_ptr, c3, m, n, k, iters)?;
+        // Crush v1 vs v2 (the production prefill arm this bench exists to move).
+        let tc1 = time_kernel(
+            gpu, stream, crush1, a_ptr, p_ptr, s_ptr, 0.5, c1, m, n, k, None, 128, iters,
+        )?;
+        let tc2 = if crush2.0 != 0 {
+            Some(time_kernel(
+                gpu, stream, crush2, a_ptr, p_ptr, s_ptr, 0.5, c2, m, n, k, None, 256, iters,
+            )?)
+        } else {
+            None
+        };
+        match tc2 {
+            Some(tc2) => println!(
+                "{label:<16} CRUSH v1 {:>7.3} ms {:>6.1} TF | v2 {:>7.3} ms {:>6.1} TF | {:>5.3}x",
+                tc1 * 1e3,
+                flops / tc1 / 1e12,
+                tc2 * 1e3,
+                flops / tc2 / 1e12,
+                tc1 / tc2,
+            ),
+            None => println!(
+                "{label:<16} CRUSH v1 {:>7.3} ms {:>6.1} TF | v2 ABSENT",
+                tc1 * 1e3,
+                flops / tc1 / 1e12,
+            ),
+        }
         // fp8_fp8: both operands FP8 -> true m16n8k32.e4m3 MMA (2x candidate)
         let a_fp8: Vec<u8> = (0..m * k).map(|_| rng.next_u64() as u8).collect();
         let af8_ptr = upload(gpu, &a_fp8)?;
