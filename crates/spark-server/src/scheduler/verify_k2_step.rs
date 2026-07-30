@@ -4,6 +4,10 @@
 
 use super::*;
 
+// The AtomicU64 counters that lived here are now `SchedCtx::stats`
+// (`scheduler::spec_stats::SpecStats`), so a run's acceptance rate describes
+// the model that produced it rather than blending two across a swap.
+
 // Periodic ACCEPT/REJECT summary counters (P4, 2026-05-24).
 // Replaces the earlier `is_multiple_of(50)` per-step gate which hid
 // accept events behind seq_len happenstance. We now log a single
@@ -11,18 +15,36 @@ use super::*;
 // Atomics are fine: scheduler runs on a single thread today, but
 // future multi-scheduler builds remain race-free.
 const K2_SUMMARY_PERIOD: u64 = 100;
-static K2_ACCEPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K2_REJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[inline]
-fn k2_record_outcome(accepted: bool, seq_len: usize) {
-    let counter = if accepted { &K2_ACCEPTS } else { &K2_REJECTS };
+fn k2_record_outcome(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    accepted: bool,
+    seq_len: usize,
+) {
+    let counter = if accepted {
+        &sched.stats.k2_accepts
+    } else {
+        &sched.stats.k2_rejects
+    };
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let total = K2_ACCEPTS.load(std::sync::atomic::Ordering::Relaxed)
-        + K2_REJECTS.load(std::sync::atomic::Ordering::Relaxed);
+    let total = sched
+        .stats
+        .k2_accepts
+        .load(std::sync::atomic::Ordering::Relaxed)
+        + sched
+            .stats
+            .k2_rejects
+            .load(std::sync::atomic::Ordering::Relaxed);
     if total >= K2_SUMMARY_PERIOD {
-        let accepts = K2_ACCEPTS.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let rejects = K2_REJECTS.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let accepts = sched
+            .stats
+            .k2_accepts
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let rejects = sched
+            .stats
+            .k2_rejects
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
         let total = (accepts + rejects).max(1);
         let pct = 100.0 * (accepts as f64) / (total as f64);
         // A6 (2026-05-26): MTP K=2 acceptance rate as a free drift
@@ -244,7 +266,7 @@ pub fn step_verify_k2(
             "K2 ACCEPT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k2_record_outcome(true, a.seq.seq_len);
+        k2_record_outcome(sched, true, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
         let t_marconi = Instant::now();
@@ -318,7 +340,7 @@ pub fn step_verify_k2(
             v0,
             new_draft,
         );
-        k2_record_outcome(false, a.seq.seq_len);
+        k2_record_outcome(sched, false, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
         let t_marconi = Instant::now();

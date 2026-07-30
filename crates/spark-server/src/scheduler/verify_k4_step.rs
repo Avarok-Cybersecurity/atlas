@@ -4,12 +4,12 @@
 
 use super::*;
 
+// The AtomicU64 counters that lived here are now `SchedCtx::stats`
+// (`scheduler::spec_stats::SpecStats`), so a run's acceptance rate describes
+// the model that produced it rather than blending two across a swap.
+
 // Periodic accept-distribution summary (P4, 2026-05-24). Mirrors K=3.
 const K4_SUMMARY_PERIOD: u64 = 100;
-static K4_ACCEPT_3: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // UNCONDITIONAL per-position draft-match counters (2026-07-21). See the
 // matching block in verify_k3_step.rs for the rationale: the accept chain
@@ -18,40 +18,80 @@ static K4_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 // earlier positions succeeded (survivorship). The verify pass computes the
 // target argmax at every position in one batch, so every position is
 // observable on every step.
-static K4_STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_D1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_D2U: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_D3U: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_D2C: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_D3C: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[inline]
-fn k4_record_positional(d1: bool, d2: bool, d3: bool, seq_len: usize) {
-    K4_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+fn k4_record_positional(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    d1: bool,
+    d2: bool,
+    d3: bool,
+    seq_len: usize,
+) {
+    sched
+        .stats
+        .k4_steps
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if d1 {
-        K4_D1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        sched
+            .stats
+            .k4_d1
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if d2 {
-            K4_D2C.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            sched
+                .stats
+                .k4_d2_cond
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if d3 {
-                K4_D3C.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                sched
+                    .stats
+                    .k4_d3_cond
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
     if d2 {
-        K4_D2U.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        sched
+            .stats
+            .k4_d2_uncond
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     if d3 {
-        K4_D3U.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        sched
+            .stats
+            .k4_d3_uncond
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    if K4_STEPS.load(std::sync::atomic::Ordering::Relaxed) >= K4_SUMMARY_PERIOD {
-        let n = K4_STEPS
+    if sched
+        .stats
+        .k4_steps
+        .load(std::sync::atomic::Ordering::Relaxed)
+        >= K4_SUMMARY_PERIOD
+    {
+        let n = sched
+            .stats
+            .k4_steps
             .swap(0, std::sync::atomic::Ordering::Relaxed)
             .max(1);
-        let d1c = K4_D1.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d2u = K4_D2U.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d3u = K4_D3U.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d2c = K4_D2C.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d3c = K4_D3C.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d1c = sched
+            .stats
+            .k4_d1
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2u = sched
+            .stats
+            .k4_d2_uncond
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d3u = sched
+            .stats
+            .k4_d3_uncond
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2c = sched
+            .stats
+            .k4_d2_cond
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d3c = sched
+            .stats
+            .k4_d3_cond
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
             "K4 positional: steps={n} p1={:.3} p2_uncond={:.3} p3_uncond={:.3} \
              p2_cond={:.3} p3_cond={:.3} (d1={d1c} d2u={d2u} d3u={d3u} d2c={d2c} d3c={d3c}) \
@@ -74,23 +114,27 @@ fn k4_record_positional(d1: bool, d2: bool, d3: bool, seq_len: usize) {
 }
 
 #[inline]
-fn k4_record_outcome(num_accepted: usize, seq_len: usize) {
+fn k4_record_outcome(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    num_accepted: usize,
+    seq_len: usize,
+) {
     let counter = match num_accepted {
-        3 => &K4_ACCEPT_3,
-        2 => &K4_ACCEPT_2,
-        1 => &K4_ACCEPT_1,
-        _ => &K4_ACCEPT_0,
+        3 => &sched.stats.k4_accept[3],
+        2 => &sched.stats.k4_accept[2],
+        1 => &sched.stats.k4_accept[1],
+        _ => &sched.stats.k4_accept[0],
     };
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let total = K4_ACCEPT_3.load(std::sync::atomic::Ordering::Relaxed)
-        + K4_ACCEPT_2.load(std::sync::atomic::Ordering::Relaxed)
-        + K4_ACCEPT_1.load(std::sync::atomic::Ordering::Relaxed)
-        + K4_ACCEPT_0.load(std::sync::atomic::Ordering::Relaxed);
+    let total = sched.stats.k4_accept[3].load(std::sync::atomic::Ordering::Relaxed)
+        + sched.stats.k4_accept[2].load(std::sync::atomic::Ordering::Relaxed)
+        + sched.stats.k4_accept[1].load(std::sync::atomic::Ordering::Relaxed)
+        + sched.stats.k4_accept[0].load(std::sync::atomic::Ordering::Relaxed);
     if total >= K4_SUMMARY_PERIOD {
-        let a3 = K4_ACCEPT_3.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a2 = K4_ACCEPT_2.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a1 = K4_ACCEPT_1.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a0 = K4_ACCEPT_0.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a3 = sched.stats.k4_accept[3].swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a2 = sched.stats.k4_accept[2].swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a1 = sched.stats.k4_accept[1].swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a0 = sched.stats.k4_accept[0].swap(0, std::sync::atomic::Ordering::Relaxed);
         let total = (a3 + a2 + a1 + a0).max(1);
         let mean = (3 * a3 + 2 * a2 + a1) as f64 / total as f64;
         tracing::info!(
@@ -230,6 +274,7 @@ pub fn step_verify_k4(
     // Unconditional per-position draft match — scored BEFORE the accept chain
     // short-circuits, so positions 2 and 3 are measured on every step.
     k4_record_positional(
+        sched,
         drafts[0] == v0,
         drafts[1] == v1,
         drafts[2] == v2,
@@ -336,7 +381,7 @@ pub fn step_verify_k4(
             "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(3, a.seq.seq_len);
+        k4_record_outcome(sched, 3, a.seq.seq_len);
     } else if num_accepted == 2 {
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
@@ -387,7 +432,7 @@ pub fn step_verify_k4(
             "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(2, a.seq.seq_len);
+        k4_record_outcome(sched, 2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -435,7 +480,7 @@ pub fn step_verify_k4(
             "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(1, a.seq.seq_len);
+        k4_record_outcome(sched, 1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 3;
         a.seq.tokens.pop();
@@ -482,6 +527,6 @@ pub fn step_verify_k4(
             "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(0, a.seq.seq_len);
+        k4_record_outcome(sched, 0, a.seq.seq_len);
     }
 }

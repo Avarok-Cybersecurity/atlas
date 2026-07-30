@@ -13,6 +13,7 @@
 //! on `ActiveSeq`, and values the loop mutates stay locals.
 
 use crate::scheduler::levers::SchedLevers;
+use crate::scheduler::spec_stats::SpecStats;
 use crate::scheduler::vocab_masks::VocabMasks;
 
 /// Model-derived state for one scheduler run.
@@ -21,11 +22,18 @@ pub struct SchedCtx {
     pub masks: VocabMasks,
     /// Decode / verify / speculation levers for this run.
     pub levers: SchedLevers,
+    /// Speculation accept/reject telemetry for this run. Mutated through the
+    /// shared reference, which is why its counters are atomics.
+    pub stats: SpecStats,
 }
 
 impl SchedCtx {
     pub fn new(masks: VocabMasks, levers: SchedLevers) -> Self {
-        Self { masks, levers }
+        Self {
+            masks,
+            levers,
+            stats: SpecStats::new(),
+        }
     }
 
     /// A context with no masks and default levers — for tests, which would

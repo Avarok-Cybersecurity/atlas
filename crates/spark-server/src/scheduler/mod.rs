@@ -43,6 +43,7 @@ mod rollback;
 mod sample_step;
 pub mod sched_ctx;
 pub mod snapshot;
+pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
 mod types;
