@@ -70,7 +70,7 @@ pub fn execute(line: &str, app: &mut App) {
                     return;
                 }
             };
-            match &app.sched_levers {
+            match app.run.as_ref().map(|r| &r.levers) {
                 Some(l) => {
                     l.set_loop_watchdog(on);
                     app.ops
@@ -96,7 +96,7 @@ pub fn execute(line: &str, app: &mut App) {
 }
 
 fn cmd_status(app: &mut App) {
-    match crate::scheduler::snapshot::read() {
+    match app.run.as_ref().and_then(|r| r.snapshot.read()) {
         Some(s) => {
             app.ops.output.push(format!(
                 "  seqs: active {} · prefilling {} · swapped {} · pending {}",

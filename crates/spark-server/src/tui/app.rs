@@ -86,7 +86,7 @@ pub struct App {
     /// The running scheduler's levers, published by `serve` once the run
     /// starts. `None` until then — the ops commands that toggle a lever say
     /// so rather than silently doing nothing.
-    pub sched_levers: Option<crate::tui::RunLevers>,
+    pub run: Option<crate::tui::RunHandles>,
     pub toasts: Vec<Toast>,
     pub help_open: bool,
     pub tick: u64,
@@ -101,7 +101,7 @@ impl App {
             section: Section::Main,
             main_sub: MainSub::Overview,
             bench_sub: BenchSub::Suite,
-            sched_levers: None,
+            run: None,
             term_sub: TermSub::Ops,
             focus: Focus::Content,
             progress: ProgressModel::default(),

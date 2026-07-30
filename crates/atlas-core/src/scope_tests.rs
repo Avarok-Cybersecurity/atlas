@@ -43,14 +43,6 @@ fn fake(
 }
 
 #[test]
-fn a_generation_is_never_reused() {
-    let a = advance();
-    let b = advance();
-    assert!(b > a, "{b:?} must follow {a:?}");
-    assert_ne!(a, Generation::NONE);
-}
-
-#[test]
 fn teardown_releases_in_reverse_construction_order() {
     let log = std::sync::Arc::new(Mutex::new(Vec::new()));
     let mut t: Teardown<Allocator> = Teardown::new();

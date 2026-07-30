@@ -108,7 +108,10 @@ fn the_watchdog_command_toggles_the_running_run_not_a_process_global() {
     let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "some/model"]));
     let levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
     let other = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
-    app.sched_levers = Some(levers.clone());
+    app.run = Some(crate::tui::RunHandles {
+        levers: levers.clone(),
+        snapshot: std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default()),
+    });
 
     crate::tui::commands::execute("/watchdog on", &mut app);
     assert!(levers.loop_watchdog(), "the attached run is armed");

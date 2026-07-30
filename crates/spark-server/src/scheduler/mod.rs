@@ -204,11 +204,14 @@ pub fn run(
     watchdog: crate::scheduler::helpers::WatchdogParams,
     // Shared with the dashboard, which toggles the loop watchdog mid-run.
     levers: std::sync::Arc<crate::scheduler::levers::SchedLevers>,
+    // Shared with the dashboard, which polls it for the queue/KV display.
+    snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
 ) {
     // Everything this run needs that is derived from the model rather than the
     // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
     // once here and read through `sched` from every step function.
-    let sched = crate::scheduler::sched_ctx::SchedCtx::new(vocab_masks, levers, limits, watchdog);
+    let sched =
+        crate::scheduler::sched_ctx::SchedCtx::new(vocab_masks, levers, snapshot, limits, watchdog);
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");
@@ -337,7 +340,7 @@ pub fn run(
                 Some(g) => g.observe(),
                 None => (snapshot::MtpModeSnap::Off, 0.0),
             };
-            snapshot::publish(snapshot::SchedulerSnapshot {
+            sched.snapshot.publish(snapshot::SchedulerSnapshot {
                 active_seqs: active.len() as u32,
                 prefilling_seqs: prefilling.len() as u32,
                 swapped_seqs: swapped.len() as u32,

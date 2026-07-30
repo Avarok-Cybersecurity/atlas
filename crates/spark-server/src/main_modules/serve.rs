@@ -71,7 +71,7 @@ fn startup(
 
     // Publishes each run's levers to the dashboard (see `tui::start`). `None`
     // in plain mode / on a worker rank, where nothing consumes them.
-    let mut tui_levers_tx: Option<std::sync::mpsc::Sender<crate::tui::RunLevers>> = None;
+    let mut tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>> = None;
 
     // Start the dashboard thread as early as possible so the operator watches
     // the load, not a blank screen. Everything it reads is process-global
@@ -80,7 +80,7 @@ fn startup(
     if let Some(progress_rx) = tui_progress
         && args.rank == 0
     {
-        tui_levers_tx = Some(crate::tui::start(args.clone(), progress_rx));
+        tui_handles_tx = Some(crate::tui::start(args.clone(), progress_rx));
     }
 
     // Reject contradictory flag combinations up front (issue #288) — before the
@@ -732,10 +732,17 @@ fn startup(
     // starting position.
     let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
     sched_levers.set_loop_watchdog(ptx_set.behavior.enable_loop_watchdog);
-    if let Some(tx) = &tui_levers_tx {
-        let _ = tx.send(sched_levers.clone());
+    // The run's snapshot cell, shared with the dashboard for the same reason
+    // and by the same route as the levers.
+    let sched_snapshot = std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default());
+    if let Some(tx) = &tui_handles_tx {
+        let _ = tx.send(crate::tui::RunHandles {
+            levers: sched_levers.clone(),
+            snapshot: sched_snapshot.clone(),
+        });
     }
     let run_levers = sched_levers.clone();
+    let run_snapshot = sched_snapshot.clone();
     let sched_limits = crate::scheduler::limits::SchedLimits {
         max_seq_len: args.max_seq_len,
         ..tokenizer_limits
@@ -774,6 +781,7 @@ fn startup(
             sched_limits,
             watchdog_params,
             run_levers,
+            run_snapshot,
         );
     });
 

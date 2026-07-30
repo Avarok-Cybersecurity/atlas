@@ -47,26 +47,30 @@ pub struct SchedulerSnapshot {
     pub published_at: Instant,
 }
 
-/// LATEST-VALUE MAILBOX, DELIBERATELY STATIC. The scheduler thread publishes
-/// here once per loop tick; `/health` and the dashboard read it from threads
-/// that cannot be handed the scheduler's context — that context is borrowed
-/// by the step they are asking about.
+/// The run's snapshot cell: the scheduler writes, the dashboard reads.
 ///
-/// It holds no accumulated state: every tick OVERWRITES the whole snapshot,
-/// so a new run's first tick replaces the previous one's values entirely,
-/// and the window in which a reader could see a dead run's counts is one
-/// tick wide. `published_at` closes even that — a snapshot older than a few
-/// seconds means no scheduler is publishing, which readers already check.
-static SNAP: Mutex<Option<SchedulerSnapshot>> = Mutex::new(None);
+/// A latest-value mailbox — every tick overwrites the whole snapshot, so
+/// nothing accumulates. It was a static, which meant the numbers survived the
+/// run that produced them: after a swap, and before the new scheduler's first
+/// tick, `/health` and the dashboard reported the dead run's queue depth and
+/// KV occupancy as if live. `published_at` bounded that window but did not
+/// close it.
+///
+/// Shared as an `Arc` from `serve` — the same route `SchedLevers` takes — so
+/// the cell dies with the run and a reader attached to no run sees `None`.
+#[derive(Default)]
+pub struct SnapshotCell(Mutex<Option<SchedulerSnapshot>>);
 
-/// Publish the latest snapshot (scheduler thread, once per loop tick).
-pub fn publish(s: SchedulerSnapshot) {
-    *SNAP.lock() = Some(s);
-}
+impl SnapshotCell {
+    /// Publish the latest snapshot (scheduler thread, once per loop tick).
+    pub fn publish(&self, s: SchedulerSnapshot) {
+        *self.0.lock() = Some(s);
+    }
 
-/// Read the latest snapshot, if the scheduler has published one yet.
-pub fn read() -> Option<SchedulerSnapshot> {
-    *SNAP.lock()
+    /// Read the latest snapshot, if the scheduler has published one yet.
+    pub fn read(&self) -> Option<SchedulerSnapshot> {
+        *self.0.lock()
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +79,7 @@ mod tests {
 
     #[test]
     fn publish_read_roundtrip() {
+        let cell = SnapshotCell::default();
         let s = SchedulerSnapshot {
             active_seqs: 3,
             prefilling_seqs: 1,
@@ -89,8 +94,8 @@ mod tests {
             steps_total: 7,
             published_at: Instant::now(),
         };
-        publish(s);
-        let r = read().expect("published");
+        cell.publish(s);
+        let r = cell.read().expect("published");
         assert_eq!(r.active_seqs, 3);
         assert_eq!(r.mtp_mode, MtpModeSnap::Mtp);
     }

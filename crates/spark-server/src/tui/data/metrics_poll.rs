@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::metrics;
-use crate::scheduler::snapshot::{self, SchedulerSnapshot};
+use crate::scheduler::snapshot::SchedulerSnapshot;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -148,7 +148,7 @@ fn hist_percentile(buckets: &TtftBuckets, p: f64) -> Option<f64> {
 
 impl StatsModel {
     /// Take one sample. Call at ~1 Hz from the TUI event loop.
-    pub fn sample(&mut self) {
+    pub fn sample(&mut self, run: Option<&crate::tui::RunHandles>) {
         let now = Instant::now();
         self.requests_total = metrics::REQUESTS_TOTAL.get();
         self.requests_active = metrics::REQUESTS_ACTIVE.get();
@@ -220,7 +220,7 @@ impl StatsModel {
         }
 
         // Scheduler snapshot.
-        self.sched = snapshot::read();
+        self.sched = run.and_then(|r| r.snapshot.read());
         if let Some(s) = self.sched {
             self.queue_history.push(s.pending_len as f64);
         }

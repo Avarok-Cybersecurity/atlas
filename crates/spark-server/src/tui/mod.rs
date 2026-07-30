@@ -54,6 +54,15 @@ use std::io::IsTerminal;
 /// global. Sent again on a hot-swap, replacing the previous run's handle.
 pub type RunLevers = std::sync::Arc<crate::scheduler::levers::SchedLevers>;
 
+/// Everything the dashboard needs a handle to in the LIVE run: the levers it
+/// can toggle and the snapshot cell it polls. Published together because
+/// they arrive together and a swap replaces both.
+#[derive(Clone)]
+pub struct RunHandles {
+    pub levers: RunLevers,
+    pub snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
+}
+
 /// Start the dashboard thread (head node, TTY mode only — the caller has
 /// already gated on `plain_mode`). Captures the tokio runtime handle for the
 /// chat client, and returns the sender the caller uses to publish each run's
@@ -62,8 +71,8 @@ pub type RunLevers = std::sync::Arc<crate::scheduler::levers::SchedLevers>;
 pub fn start(
     args: crate::cli::ServeArgs,
     progress_rx: std::sync::mpsc::Receiver<capture_layer::ProgressEvent>,
-) -> std::sync::mpsc::Sender<RunLevers> {
-    let (levers_tx, levers_rx) = std::sync::mpsc::channel::<RunLevers>();
+) -> std::sync::mpsc::Sender<RunHandles> {
+    let (levers_tx, levers_rx) = std::sync::mpsc::channel::<RunHandles>();
     let runtime = tokio::runtime::Handle::current();
     match std::thread::Builder::new()
         .name("atlas-tui".into())

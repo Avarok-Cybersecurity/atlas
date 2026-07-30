@@ -35,6 +35,8 @@ pub struct DecodeScratch {
 pub struct SchedCtx {
     /// Per-token classification masks for this model's vocabulary.
     pub masks: VocabMasks,
+    /// This run's snapshot cell, shared with the dashboard.
+    pub snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
     /// Diagnostic file sinks this run writes to.
     pub dumps: crate::scheduler::dumps::RunDumps,
     /// Reusable host-side decode buffers for this run.
@@ -78,11 +80,13 @@ impl SchedCtx {
     pub fn new(
         masks: VocabMasks,
         levers: std::sync::Arc<SchedLevers>,
+        snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
         limits: SchedLimits,
         watchdog: crate::scheduler::helpers::WatchdogParams,
     ) -> Self {
         Self {
             masks,
+            snapshot,
             dumps: crate::scheduler::dumps::RunDumps::from_env(),
             scratch: DecodeScratch::default(),
             levers,
@@ -100,6 +104,7 @@ impl SchedCtx {
         Self::new(
             VocabMasks::default(),
             std::sync::Arc::new(SchedLevers::defaults()),
+            std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default()),
             SchedLimits::NONE,
             crate::scheduler::helpers::WatchdogParams::default(),
         )

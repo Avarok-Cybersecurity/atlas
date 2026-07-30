@@ -24,7 +24,7 @@ const SAMPLE_EVERY: u32 = 10; // 1 Hz metrics sampling at the 10 Hz tick
 pub fn run(
     mut app: App,
     progress_rx: Receiver<ProgressEvent>,
-    levers_rx: Receiver<crate::tui::RunLevers>,
+    levers_rx: Receiver<crate::tui::RunHandles>,
 ) {
     super::terminal_guard::install_panic_hook();
     let guard = match TerminalGuard::enter() {
@@ -62,8 +62,8 @@ pub fn run(
         }
         // 2. Data ingress.
         // The newest published run wins — a hot-swap replaces the handle.
-        if let Some(l) = levers_rx.try_iter().last() {
-            app.sched_levers = Some(l);
+        if let Some(h) = levers_rx.try_iter().last() {
+            app.run = Some(h);
         }
         for ev in progress_rx.try_iter() {
             app.progress.apply(ev);
@@ -76,7 +76,7 @@ pub fn run(
             ticks = ticks.wrapping_add(1);
             app.on_tick();
             if ticks.is_multiple_of(SAMPLE_EVERY) {
-                app.stats.sample();
+                app.stats.sample(app.run.as_ref());
             }
             // Library scan: once, lazily, after entering the tab (fs-only).
             if !library_scanned && app.section == Section::Library {

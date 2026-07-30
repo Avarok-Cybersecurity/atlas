@@ -58,51 +58,17 @@
 //!
 //! # What this module does provide
 //!
-//! [`Generation`] identifies one loaded model, for diagnostics and for the
-//! teardown log. [`ModelResource`] and [`Teardown`] give an ordered, fallible
-//! release path, which `Drop` cannot: it is neither ordered across independent
+//! [`ModelResource`] and [`Teardown`] give an ordered, fallible release path,
+//! which `Drop` cannot: it is neither ordered across independent
 //! values nor able to report a failure, and on GB10 unified memory frees must
 //! happen at a quiescent point in a controlled order.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Identity of one loaded model, within this process.
-///
-/// Monotonic and never reused: comparing two `Generation`s answers "were these
-/// built for the same model?" and nothing else.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub struct Generation(u64);
-
-impl Generation {
-    /// The generation before any model has been loaded. Nothing derived is
-    /// ever tagged with it, so a cache initialised at this value always misses.
-    pub const NONE: Generation = Generation(0);
-
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
-/// The epoch counter. Process-global by design — it identifies *which* model is
-/// loaded and is itself derived from nothing.
-static CURRENT: AtomicU64 = AtomicU64::new(0);
-
-/// The generation currently being served.
-pub fn current() -> Generation {
-    Generation(CURRENT.load(Ordering::Acquire))
-}
-
-/// Begin a new generation. Called exactly once per model load, by the host,
-/// **after** the previous model's resources have been released.
-///
-/// Every [`Scoped`], [`ScopedFlag`] and [`ScopedMap`] in the process is
-/// invalidated by this single call — there is no registry of them to walk and
-/// therefore no list to forget an entry from.
-pub fn advance() -> Generation {
-    // `Release` so a thread that observes the new generation also observes
-    // everything the loader wrote before publishing it.
-    Generation(CURRENT.fetch_add(1, Ordering::Release) + 1)
-}
+// The `Generation` epoch counter that lived here is gone. It existed to
+// invalidate the generation-checked statics described above; with those
+// deleted its only reader was its own test, and a monotonic counter kept alive
+// for a hypothetical future user is the same process global this module argues
+// against. Teardown ordering — the real problem it was reaching for — is
+// expressed by the traits below, which need no epoch.
 
 /// State that owns device memory and must be released in a defined order.
 ///
