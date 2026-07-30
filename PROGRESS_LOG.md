@@ -55,7 +55,7 @@ docker run -d --name combo27 --gpus all --ipc=host --network host \
   -e RUST_LOG=info -e ATLAS_TARGET_HW=gb10 \
   -e ATLAS_TARGET_MODEL=qwen3.6-27b -e ATLAS_TARGET_QUANT=nvfp4 \
   -e ATLAS_KV_OVERCOMMIT=1 \
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
+  -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
   -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
   -e ATLAS_SSM_TAIL_LEASE_TTL=128 \
   atlas-gb10:gdnf32-build \
@@ -67,6 +67,15 @@ docker run -d --name combo27 --gpus all --ipc=host --network host \
     --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking \
     --tool-max-tokens 32768 --request-timeout 0
 ```
+
+**MMQ W4A4 is now ON in this config (2026-07-30):** `ATLAS_NO_FFN_NVFP4_MMQ=1`
+is REMOVED — `c9965ce9` shows it existed only to let `BF16_TC_PREFILL` engage
+(the accuracy campaign), and it outlived that reason when BF16_TC was dropped.
+The checkpoint is W4A4-native (`NVFP4-W4A4-mlpinf`). Measured: prefill_short
+C=16 63.2 -> 69.7 (best TTFT/TPOT of the probe series). Quality gate:
+oc_harness 3/3 (calc 55s, sorter 49s clean; webserver builds+serves in 71s
+but followed 3/6 directions vs the baseline rep's 6/6 — single-rep agentic
+variance per section 4; repeat before treating direction-following as clean).
 
 **Deliberate deviations from #379's own config of record** (`bench/phaseA_c_sweep.sh`):
 
