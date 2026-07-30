@@ -1269,9 +1269,31 @@ hygiene problem (the polluted WARN channel misdirected the 6.20 fp8
 diagnosis), not a perf problem; recorded honestly as such. The dedup key
 includes M, so agentic prefill (new M every request) WARNed constantly.
 
+### 6.24 Vision concurrency: FIRST COVERAGE — infra clean at C=4/C=8
+
+Record config + `--vision-max-pixels 262144` (user spec), PR #265 assets
+(8 sized fixtures + `realistic_soak.py`). Correctness probe PASSES: the
+model accurately describes a synthetic fixture (shapes/colors/layout,
+temp 0). Soak (`--vision --clients N --duration 300`, mixed
+fact/tool/vision × thinking on/off):
+
+| C | reqs | errs | vision reqs | prefix hit | agg decode | p50 / p99 |
+|---|---|---|---|---|---|---|
+| 4 | 60 | **0** | 14 | 41% | 25 tok/s | 17.3 s / 78.3 s |
+| 8 | 74 | **0** | 16 | 44% | 25 tok/s | 25.2 s / 124.5 s |
+
+Zero CUDA/ViT faults in the server log (the Holo-class misalign never
+fired). Background model-quality noise, same classes as text: 8
+content-loop watchdog fires (~6% of responses, the documented dense-27B
+prose attractor), 5 orphan tool-call leaks sanitized, 1 dropped
+tool-call parse. C=4→8 aggregate decode flatlines at 25 tok/s — the
+same long-context step-time ceiling as the agentic harness, now with
+prefix-cache-exempt vision prefills in the mix. Verdict: vision serving
+is production-viable at this concurrency; perf story is the known one.
+
 ## 7. Open
 
-- **Vision concurrency: UNTESTED (user-requested, 2026-07-30).** The centml
+- **Vision concurrency: first coverage in 6.24 (was UNTESTED (user-requested, 2026-07-30).** The centml
   checkpoint IS a VL model (vision_config + 333 `model.visual.*` tensors)
   and the target loads the ViT (`qwen35_dense.rs:989`), but there is zero
   correctness or concurrency coverage. Spec of record when testing:
