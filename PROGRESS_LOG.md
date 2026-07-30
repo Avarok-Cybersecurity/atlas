@@ -73,9 +73,15 @@ is REMOVED — `c9965ce9` shows it existed only to let `BF16_TC_PREFILL` engage
 (the accuracy campaign), and it outlived that reason when BF16_TC was dropped.
 The checkpoint is W4A4-native (`NVFP4-W4A4-mlpinf`). Measured: prefill_short
 C=16 63.2 -> 69.7 (best TTFT/TPOT of the probe series). Quality gate:
-oc_harness 3/3 (calc 55s, sorter 49s clean; webserver builds+serves in 71s
-but followed 3/6 directions vs the baseline rep's 6/6 — single-rep agentic
-variance per section 4; repeat before treating direction-following as clean).
+oc_harness 3/3 (calc 55s, sorter 49s clean; webserver builds+serves).
+**Direction-following RESOLVED (2026-07-30, verified from opencode's event
+log):** the recurring `followed=3/6, rc=1` webserver signature is NOT a
+quality effect — the agent's conversation hits a hard 400 right after
+`cargo test` ("Prompt too long: 17175 tokens exceeds max_seq_len 16384"),
+killing the session before run/curl/teardown. Reproduced with MMQ OFF
+(control: followed=2/6, same rc=1, 3/3 still passing) — W4A4 exonerated.
+Actionable: agentic serving needs --max-seq-len >= 32K for this task class
+(the 16K rep that scored 6/6 merely squeaked under the ceiling).
 
 **CANONICAL TEST CONFIG IS NOW 4K (2026-07-30, user decision):**
 `--max-seq-len 4096 --max-prefill-tokens 4096`, `ATLAS_KV_OVERCOMMIT` removed
