@@ -27,6 +27,8 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
+use std::sync::Arc;
+
 use atlas_core::registry::AtlasRegistry;
 
 // Itanium-mangled names for `tq_plus::*` device globals. The kernel TU is
@@ -47,6 +49,10 @@ const SYM_CALIBRATING: &str = "_ZN7tq_plus20d_innerq_calibratingE";
 const MAX_CHANNELS: usize = 128;
 
 pub struct InnerQDriver {
+    /// This model's kernel modules. Held rather than fetched from a global:
+    /// the device symbols below live in THESE modules, and a swapped-in model's
+    /// driver must never resolve them against the previous model's.
+    registry: Arc<AtlasRegistry>,
     pub target_tokens: i32,
     pub strength: f32,
     pub calibrating: AtomicBool,
@@ -56,7 +62,7 @@ pub struct InnerQDriver {
 impl InnerQDriver {
     /// Reads `TURBO_INNERQ` and `TURBO_INNERQ_STRENGTH` env vars. Returns
     /// `None` if `TURBO_INNERQ` is unset, unparsable, or `<= 0`.
-    pub fn from_env() -> Option<Self> {
+    pub fn from_env(registry: Arc<AtlasRegistry>) -> Option<Self> {
         let n = std::env::var("TURBO_INNERQ")
             .ok()
             .and_then(|v| v.parse::<i32>().ok())
@@ -67,6 +73,7 @@ impl InnerQDriver {
             .filter(|&s: &f32| s > 0.0 && s <= 1.0)
             .unwrap_or(0.5);
         Some(Self {
+            registry,
             target_tokens: n,
             strength,
             calibrating: AtomicBool::new(false),
@@ -77,7 +84,7 @@ impl InnerQDriver {
     /// Enter calibration phase: zero `d_innerq_sq_accum` / `d_innerq_count`
     /// / `d_innerq_active`, set `d_innerq_calibrating = 1`. Idempotent.
     pub fn start(&self) -> Result<()> {
-        let reg = AtlasRegistry::get();
+        let reg = &self.registry;
         let stream = reg.raw_stream();
 
         let zeros_f32 = [0.0f32; MAX_CHANNELS];
@@ -145,7 +152,7 @@ impl InnerQDriver {
             bail!("group_size {group_size} out of range (1..={MAX_CHANNELS})");
         }
 
-        let reg = AtlasRegistry::get();
+        let reg = &self.registry;
         let stream = reg.raw_stream();
 
         let (count_ptr, _) = reg.device_symbol(MODULE, SYM_COUNT)?;

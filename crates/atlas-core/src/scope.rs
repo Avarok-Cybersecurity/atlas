@@ -151,6 +151,21 @@ impl<T: Clone> Scoped<T> {
         self.read_at(current())
     }
 
+    /// Drop the cached value outright.
+    ///
+    /// Refusing to *serve* a stale value is enough for a derived value, which
+    /// is what this type is for. It is NOT enough when `T` owns a handle to a
+    /// model resource — an `Arc` nobody reads is still an `Arc`, and teardown
+    /// would block on it. Cells of that shape are the exception; they must be
+    /// cleared explicitly during teardown, and
+    /// `atlas_core::registry::release`'s reference-count check is what turns a
+    /// forgotten `clear` into a named error instead of a silent leak.
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.slot.write() {
+            *guard = None;
+        }
+    }
+
     fn read_at(&self, generation: Generation) -> Option<T> {
         let guard = self.slot.read().ok()?;
         match guard.as_ref() {

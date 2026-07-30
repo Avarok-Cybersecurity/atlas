@@ -54,15 +54,15 @@ pub fn validate_required_kv_kernels(
     kernel_requirements::validate_required_kernels(gpu, kv_dtype, head_dim)
 }
 
+/// Populated at serve startup when `TURBO_INNERQ=N`.
+///
+/// `Scoped`, not `OnceLock`: the driver holds this model's registry and writes
+/// this model's device symbols, so it must not survive into the next model.
+/// It holds an owning handle, so teardown must `clear()` it — see
+/// `atlas_core::scope::Scoped::clear`.
 #[cfg(feature = "cuda")]
-use std::sync::OnceLock;
-
-// Process-wide handle, populated at serve startup when `TURBO_INNERQ=N`
-// is set. `OnceLock` matches Atlas's pattern for other singletons (kernel
-// registry, EP comm). Kept here next to the driver itself so server code
-// just does `qwen3_attention::INNERQ.get()`.
-#[cfg(feature = "cuda")]
-pub static INNERQ: OnceLock<InnerQDriver> = OnceLock::new();
+pub static INNERQ: atlas_core::scope::Scoped<std::sync::Arc<InnerQDriver>> =
+    atlas_core::scope::Scoped::new();
 
 /// Configured max decode batch size, set once at model init.
 ///

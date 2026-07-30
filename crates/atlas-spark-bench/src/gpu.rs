@@ -25,15 +25,20 @@ unsafe extern "C" {
     fn cuEventDestroy_v2(event: u64) -> i32;
 }
 
-static INIT: OnceLock<()> = OnceLock::new();
+/// The bench process's registry. A benchmark run loads one model's kernels and
+/// keeps them for the process — leaking it deliberately is what buys the
+/// `&'static` the bench harnesses are written against. Production loads a
+/// registry per model and drops it; see `atlas_core::registry::release`.
+static INIT: OnceLock<&'static AtlasRegistry> = OnceLock::new();
 
-/// Ensure the AtlasRegistry is initialized (idempotent).
+/// Ensure the registry is loaded (idempotent).
 pub fn ensure_registry() -> &'static AtlasRegistry {
     INIT.get_or_init(|| {
         let ptx = atlas_kernels::ptx_modules();
-        AtlasRegistry::get_or_init(0, &ptx).expect("AtlasRegistry init failed — is GPU available?");
-    });
-    AtlasRegistry::get()
+        let registry =
+            AtlasRegistry::load(0, &ptx).expect("AtlasRegistry load failed — is GPU available?");
+        Box::leak(Box::new(registry)) as &'static AtlasRegistry
+    })
 }
 
 /// Allocate `bytes` of GPU memory, zero-initialized.

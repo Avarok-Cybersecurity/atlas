@@ -33,7 +33,7 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
-use atlas_core::registry::{AtlasRegistry, RawCudaFunc, cuda_error_text};
+use atlas_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
@@ -185,7 +185,7 @@ impl GpuBackend for AtlasCudaBackend {
             block_dim: (block[0], block[1], block[2]),
             shared_mem_bytes: shared_mem,
         };
-        let registry = AtlasRegistry::get();
+        let registry = self.registry();
         unsafe {
             registry
                 .launch_on_stream(raw_func, cfg, stream, params)
@@ -228,7 +228,7 @@ impl GpuBackend for AtlasCudaBackend {
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
-        let registry = AtlasRegistry::get();
+        let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true);

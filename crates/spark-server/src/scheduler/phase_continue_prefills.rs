@@ -42,7 +42,7 @@ use run_standard::run_standard_chunk_loop;
 /// Shared per-chunk InnerQ poll used by every prefill path (standard /
 /// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
 /// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
-/// so calling on every chunk costs one OnceLock load in the disabled case.
+/// so calling on every chunk costs one scoped-cell load in the disabled case.
 /// On non-cuda backends the driver doesn't exist (it talks to the CUDA
 /// Driver API directly via `atlas_core::registry`), so this collapses to
 /// a no-op via the `#[cfg]` gate.

@@ -21,11 +21,13 @@ use std::sync::{Arc, OnceLock};
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig};
 use cudarc::nvrtc::Ptx;
 
+pub use crate::cuda_host::{CudaHost, host, release};
 use crate::error::{AtlasError, Result};
 
 // Raw CUDA driver API
 unsafe extern "C" {
     fn cuModuleLoadData(module: *mut *mut c_void, image: *const c_void) -> i32;
+    fn cuModuleUnload(hmod: *mut c_void) -> i32;
     fn cuModuleGetFunction(hfunc: *mut *mut c_void, hmod: *mut c_void, name: *const i8) -> i32;
     fn cuLaunchKernel(
         f: *mut c_void,
@@ -97,16 +99,41 @@ pub struct RawCudaFunc(pub *mut c_void);
 unsafe impl Send for RawCudaFunc {}
 unsafe impl Sync for RawCudaFunc {}
 
-/// Global singleton registry.
-static REGISTRY: OnceLock<std::result::Result<AtlasRegistry, String>> = OnceLock::new();
-
-/// Cached CUDA modules and a persistent stream.
+/// The PTX/CUBIN modules for **one** loaded model.
+///
+/// Model-scoped: the blob set comes from `atlas_kernels::ptx_for_model`, so it
+/// changes with the checkpoint. Previously this was fused into a process
+/// `OnceLock` singleton whose `get_or_init(ordinal, kernel_blobs)` silently
+/// discarded the second caller's blobs — a swapped-in model would have run the
+/// *previous* model's kernels with no error at all.
+///
+/// Obtain one with [`AtlasRegistry::load`] and propagate it (`Arc<AtlasRegistry>`);
+/// there is deliberately no global accessor. Dropping the last handle unloads
+/// the modules.
 pub struct AtlasRegistry {
-    pub ctx: Arc<CudaContext>,
-    pub stream: Arc<CudaStream>,
+    host: Arc<CudaHost>,
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
+}
+
+impl Drop for AtlasRegistry {
+    /// Unloads this model's modules. Reached when the last `Arc` handle goes,
+    /// which — because there is no global accessor — happens exactly when the
+    /// owning run ends.
+    fn drop(&mut self) {
+        let failures = self.unload_raw();
+        if !failures.is_empty() {
+            // No `tracing` in atlas-core's dependency budget, and a `Drop` has
+            // nowhere to return an error to. `release` below is the path that
+            // reports properly; this is the backstop.
+            eprintln!(
+                "atlas: {} module(s) failed to unload: {}",
+                failures.len(),
+                failures.join("; ")
+            );
+        }
+    }
 }
 
 // SAFETY: Same rationale as `RawCudaFunc`: the `raw_modules` map holds
@@ -119,30 +146,40 @@ unsafe impl Send for AtlasRegistry {}
 unsafe impl Sync for AtlasRegistry {}
 
 impl AtlasRegistry {
-    /// Get or initialize the global registry.
+    /// Load this model's kernel modules into the process CUDA context.
     ///
-    /// First call loads all PTX modules and creates the persistent stream.
-    /// Subsequent calls return the cached registry instantly.
-    pub fn get_or_init(
+    /// Each call produces a fresh, independent module set; nothing is shared
+    /// with a previously loaded model except the context and stream.
+    pub fn load(
         ordinal: usize,
         kernel_blobs: &[(&'static str, &'static [u8])],
-    ) -> Result<&'static Self> {
-        let result = REGISTRY.get_or_init(|| match Self::init(ordinal, kernel_blobs) {
-            Ok(reg) => Ok(reg),
-            Err(e) => Err(format!("{e}")),
-        });
-        match result {
-            Ok(reg) => Ok(reg),
-            Err(msg) => Err(AtlasError::ModuleLoad(msg.clone())),
-        }
+    ) -> Result<Arc<Self>> {
+        Ok(Arc::new(Self::init(host(ordinal)?, kernel_blobs)?))
+    }
+
+    /// The process CUDA context this registry's modules live in.
+    pub fn host(&self) -> &Arc<CudaHost> {
+        &self.host
+    }
+
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.host.ctx
+    }
+
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.host.stream
+    }
+
+    /// Module names this registry loaded, for diagnostics.
+    pub fn module_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.modules.keys().copied()
     }
 
     fn init(
-        ordinal: usize,
+        host: Arc<CudaHost>,
         kernel_blobs: &[(&'static str, &'static [u8])],
     ) -> Result<AtlasRegistry> {
-        let ctx = CudaContext::new(ordinal).map_err(AtlasError::CudaDriver)?;
-        let stream = ctx.new_stream().map_err(AtlasError::CudaDriver)?;
+        let ctx = &host.ctx;
 
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
@@ -190,20 +227,10 @@ impl AtlasRegistry {
         }
 
         Ok(AtlasRegistry {
-            ctx,
-            stream,
+            host,
             modules,
             raw_modules,
         })
-    }
-
-    /// Get the cached registry (panics if not initialized).
-    pub fn get() -> &'static Self {
-        REGISTRY
-            .get()
-            .expect("AtlasRegistry not initialized — call get_or_init first")
-            .as_ref()
-            .expect("AtlasRegistry initialization failed")
     }
 
     /// Look up a cached function handle (cudarc safe API).
@@ -269,9 +296,27 @@ impl AtlasRegistry {
         Ok(raw)
     }
 
+    /// Unload every raw module. Idempotent; `Drop` calls it.
+    ///
+    /// The cudarc-owned `modules` map unloads itself when its `Arc<CudaModule>`s
+    /// drop; only the handles obtained through the raw driver API need this.
+    pub(crate) fn unload_raw(&mut self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (name, raw) in self.raw_modules.drain() {
+            // SAFETY: `raw` came from `cuModuleLoadData` in `init` on this
+            // process's context, has not been unloaded (the map is drained), and
+            // no launch can be in flight — the caller guarantees quiescence.
+            let status = unsafe { cuModuleUnload(raw) };
+            if status != 0 {
+                failures.push(format!("{name}: {}", cuda_error_text(status)));
+            }
+        }
+        failures
+    }
+
     /// Get the raw CUstream handle for Atlas's own stream.
     pub fn raw_stream(&self) -> u64 {
-        self.stream.cu_stream() as u64
+        self.host.stream.cu_stream() as u64
     }
 
     /// Resolve a `__device__` symbol in a loaded PTX module to its device

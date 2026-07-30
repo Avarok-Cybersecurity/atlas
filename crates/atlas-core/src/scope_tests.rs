@@ -155,6 +155,27 @@ fn scoped_map_misses_on_a_recycled_key_from_a_previous_generation() {
 }
 
 #[test]
+fn clearing_a_scoped_cell_drops_the_value_it_holds() {
+    let _serial = serial();
+    // The case this exists for: a cell holding an owning handle. Advancing the
+    // generation stops it being SERVED, but only `clear` stops it being HELD —
+    // and teardown blocks on the handle, not on the read.
+    let cell: Scoped<std::sync::Arc<u32>> = Scoped::new();
+    advance();
+    let held = cell.get_or_init(|| std::sync::Arc::new(1));
+    assert_eq!(std::sync::Arc::strong_count(&held), 2, "the cell holds one");
+    advance();
+    assert!(cell.get().is_none(), "not served across a generation");
+    assert_eq!(
+        std::sync::Arc::strong_count(&held),
+        2,
+        "but still HELD — refusing to serve is not releasing"
+    );
+    cell.clear();
+    assert_eq!(std::sync::Arc::strong_count(&held), 1, "now released");
+}
+
+#[test]
 fn clear_empties_the_map_within_a_generation() {
     let _serial = serial();
     let map: ScopedMap<u64, u32> = ScopedMap::new();

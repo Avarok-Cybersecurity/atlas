@@ -9,6 +9,8 @@
 use std::ffi::c_void;
 
 use anyhow::{Result, bail};
+use std::sync::Arc;
+
 use atlas_core::registry::AtlasRegistry;
 
 mod gpu_impl;
@@ -76,10 +78,15 @@ unsafe extern "C" {
 
 /// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.
 ///
-/// Initialized once via [`AtlasCudaBackend::new`], which loads all PTX
-/// modules from `atlas-kernels` into the global AtlasRegistry singleton.
+/// **Owns this model's kernel modules.** The registry used to be a process
+/// singleton reached through `AtlasRegistry::get()`; it is now loaded per model
+/// and propagated from here, so a swapped-in model cannot run the previous
+/// model's kernels. Dropping the last backend unloads them.
 pub struct AtlasCudaBackend {
-    /// Default CUDA stream handle (from AtlasRegistry).
+    /// This model's kernel modules. `Arc` because the backend is cloned into
+    /// the layers that launch kernels.
+    registry: Arc<AtlasRegistry>,
+    /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
     cuda_ctx: u64,
@@ -88,13 +95,13 @@ pub struct AtlasCudaBackend {
 impl AtlasCudaBackend {
     /// Initialize the CUDA backend on the given GPU ordinal.
     ///
-    /// Loads the provided PTX modules into AtlasRegistry.
-    /// Use `atlas_kernels::ptx_for_model()` or `ptx_modules()` to
-    /// obtain the correct module set for the target model.
-    /// Subsequent calls reuse the cached singleton.
+    /// Loads the provided PTX modules for THIS model. Use
+    /// `atlas_kernels::ptx_for_model()` or `ptx_modules()` to obtain the
+    /// correct module set. Each call produces an independent module set — the
+    /// CUDA context and stream are shared, nothing else is.
     pub fn new(ordinal: usize, ptx_modules: &[(&'static str, &'static [u8])]) -> Result<Self> {
-        let registry = AtlasRegistry::get_or_init(ordinal, ptx_modules)
-            .map_err(|e| anyhow::anyhow!("AtlasRegistry init failed: {e}"))?;
+        let registry = AtlasRegistry::load(ordinal, ptx_modules)
+            .map_err(|e| anyhow::anyhow!("AtlasRegistry load failed: {e}"))?;
         let default_stream = registry.raw_stream();
 
         // Capture current CUDA context for cross-thread binding.
@@ -110,9 +117,16 @@ impl AtlasCudaBackend {
         );
 
         Ok(Self {
+            registry,
             default_stream,
             cuda_ctx,
         })
+    }
+
+    /// This model's kernel modules, for the paths that need the registry
+    /// directly rather than through `GpuBackend`.
+    pub fn registry(&self) -> &Arc<AtlasRegistry> {
+        &self.registry
     }
 }
 
