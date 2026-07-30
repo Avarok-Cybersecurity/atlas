@@ -13,6 +13,11 @@ use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
 
+// STATIC, DELIBERATELY — process lifecycle, benchmark harness. A criterion
+// bench binary loads exactly one module set and measures one kernel for the
+// life of the process; there is no model to swap and no serve to outlive.
+// The handle is resolved once so the measured loop times the kernel rather
+// than the registry lookup in front of it.
 static SILU_MUL_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// SiLU×Mul: silu_mul_separate(gate, up, output, n)

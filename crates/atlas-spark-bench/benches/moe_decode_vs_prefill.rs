@@ -38,6 +38,11 @@ fn h2d<T: Copy>(dev: u64, host: &[T]) {
     }
 }
 
+// STATIC, DELIBERATELY — process lifecycle, benchmark harness. A criterion
+// bench binary loads exactly one module set and measures one kernel for the
+// life of the process; there is no model to swap and no serve to outlive.
+// The handle is resolved once so the measured loop times the kernel rather
+// than the registry lookup in front of it.
 static SCALAR_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 static TC_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 

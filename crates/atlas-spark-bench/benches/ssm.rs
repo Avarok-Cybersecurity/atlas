@@ -14,6 +14,11 @@ use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
 
+// STATIC, DELIBERATELY — process lifecycle, benchmark harness. A criterion
+// bench binary loads exactly one module set and measures one kernel for the
+// life of the process; there is no model to swap and no serve to outlive.
+// The handle is resolved once so the measured loop times the kernel rather
+// than the registry lookup in front of it.
 static CONV1D_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 static GDN_DECODE_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
@@ -177,6 +182,9 @@ fn bench_gdn(c: &mut Criterion) {
     group.finish();
 }
 
+// Same as the handles at the top of this file: a bench binary measures one
+// kernel for the life of the process, and the handle is resolved once so the
+// timed loop is the kernel and not the registry lookup.
 static GDN_CHUNK2_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// gated_delta_rule_chunk2 vs 2× sequential gated_delta_rule_decode.

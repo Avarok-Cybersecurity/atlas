@@ -392,6 +392,11 @@ fn kill_switch_buffers_full_args_no_fragments() {
 mod env_guard {
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
+    // STATIC, DELIBERATELY — process lifecycle, test harness. It guards the
+    // PROCESS environment, which is exactly the thing that cannot be scoped:
+    // cargo runs unit tests in parallel threads of one binary, so a test that
+    // mutates an env var must exclude every other test reading it. A
+    // per-anything lock would not serialise the threads that need serialising.
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     pub struct Guard {

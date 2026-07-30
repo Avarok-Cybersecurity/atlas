@@ -46,6 +46,11 @@ pub fn one_line(text: impl AsRef<str>) -> String {
 /// The cold-TTFT gate depends on this: two requests sharing a prefix means the
 /// second one hits the cache and the "cold" number is warm.
 pub fn unique_salt(prefix: &str) -> String {
+    // STATIC, DELIBERATELY — process lifecycle. Uniqueness must hold across
+    // EVERY request this process issues, which is the whole guarantee: two
+    // requests sharing a prefix means the second hits the cache and the
+    // "cold" number is warm. A per-run counter would let two benchmark runs
+    // in one process collide and silently warm each other's cold leg.
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{}-{n}", std::process::id())

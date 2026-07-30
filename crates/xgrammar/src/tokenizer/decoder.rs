@@ -89,6 +89,13 @@ pub fn byte_to_char_map() -> &'static [u32; 256] {
     &BYTE_TO_CHAR_MAP
 }
 
+/// GPT-2 byte-decoder inverse table.
+///
+/// STATIC, DELIBERATELY — compile-time data. A fixed table defined by the
+/// GPT-2 byte-level BPE specification, identical for every tokenizer that
+/// uses that scheme; it is not derived from any model's vocabulary and has
+/// no interior mutability. `static` rather than `const` so the lookups
+/// borrow one copy instead of inlining 324 halfwords at each call site.
 #[rustfmt::skip]
 static CHAR_TO_BYTE_MAP: [i16; 324] = [
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,

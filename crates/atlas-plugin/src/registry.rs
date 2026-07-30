@@ -6,6 +6,11 @@ use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{agentic, bfcl, concurrency, ttft};
 
 /// Every benchmark, list order. Cheapest and most-run first.
+///
+/// STATIC, DELIBERATELY — compile-time data. A table of `&'static`
+/// descriptors with no interior mutability and nothing derived from a model
+/// or a run; it needs a stable address only so `all()` can hand out slices
+/// of it. Registration is a compile-time decision, not a runtime one.
 static ALL: &[&BenchmarkDescriptor] = &[
     &concurrency::DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
