@@ -49,6 +49,7 @@
 //! roll back to any boundary exactly as before. The whole feature stays
 //! gated behind the `[behavior].rollback_resteer` MODEL.toml flag.
 
+use crate::scheduler::vocab_masks::VocabMasks;
 use spark_model::traits::Model;
 
 use super::ssm_decode_ring::SsmDecodeRing;
@@ -204,6 +205,7 @@ pub fn rollback_to_boundary(
     a: &mut ActiveSeq,
     min_keep: usize,
     model: &dyn Model,
+    masks: &VocabMasks,
 ) -> RollbackOutcome {
     if !watchdog_params().rollback_resteer {
         return RollbackOutcome::Fallback(RollbackFallback::Disabled);
@@ -217,8 +219,8 @@ pub fn rollback_to_boundary(
     if a.rollback_count >= atlas_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
     }
-    let mask = match boundary_token_mask() {
-        Some(m) => m,
+    let mask = match masks.boundary.as_ref() {
+        Some(m) => m.clone(),
         None => return RollbackOutcome::Fallback(RollbackFallback::NoBoundary),
     };
 
@@ -308,7 +310,7 @@ pub fn rollback_to_boundary(
 /// so it never points at stale GPU state — the sequence simply has one
 /// fewer eligible rollback boundary, which the correctness gate handles
 /// by declining.
-pub fn snapshot_boundary_if_ssm(a: &mut ActiveSeq, model: &dyn Model) {
+pub fn snapshot_boundary_if_ssm(a: &mut ActiveSeq, model: &dyn Model, masks: &VocabMasks) {
     if !model.has_ssm_layers() || !a.ssm_rollback_ring.is_enabled() {
         return;
     }
@@ -316,7 +318,7 @@ pub fn snapshot_boundary_if_ssm(a: &mut ActiveSeq, model: &dyn Model) {
     // rollback can target. Without the mask there is no boundary
     // information, so nothing to snapshot (fail-open: rollback would
     // also find no boundary).
-    let Some(mask) = boundary_token_mask() else {
+    let Some(mask) = masks.boundary.clone() else {
         return;
     };
     let Some(&last) = a.output_tokens.last() else {

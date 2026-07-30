@@ -107,6 +107,7 @@ fn k4_record_outcome(num_accepted: usize, seq_len: usize) {
 pub fn step_verify_k4(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
@@ -283,15 +284,15 @@ pub fn step_verify_k4(
     );
 
     if num_accepted == 3 {
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), masks);
         if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
+            emit_token(a, drafts[1], verify_lps.get(1).cloned(), masks);
         }
         if !a.finished {
-            emit_token(a, drafts[2], verify_lps.get(2).cloned());
+            emit_token(a, drafts[2], verify_lps.get(2).cloned(), masks);
         }
         if !a.finished {
-            emit_token(a, v3, verify_lps.get(3).cloned());
+            emit_token(a, v3, verify_lps.get(3).cloned(), masks);
         }
         if a.finished {
             return;
@@ -350,12 +351,12 @@ pub fn step_verify_k4(
             a.finished = true;
             return;
         }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), masks);
         if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
+            emit_token(a, drafts[1], verify_lps.get(1).cloned(), masks);
         }
         if !a.finished {
-            emit_token(a, v2, verify_lps.get(2).cloned());
+            emit_token(a, v2, verify_lps.get(2).cloned(), masks);
         }
         if a.finished {
             return;
@@ -401,9 +402,9 @@ pub fn step_verify_k4(
             a.finished = true;
             return;
         }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), masks);
         if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned());
+            emit_token(a, v1, verify_lps.get(1).cloned(), masks);
         }
         if a.finished {
             return;
@@ -451,7 +452,7 @@ pub fn step_verify_k4(
             a.finished = true;
             return;
         }
-        emit_token(a, v0, verify_lps.first().cloned());
+        emit_token(a, v0, verify_lps.first().cloned(), masks);
         if a.finished {
             return;
         }

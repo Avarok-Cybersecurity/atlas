@@ -36,6 +36,7 @@ pub(super) fn run_batched_mixed_step(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
     did_mixed_step: &mut bool,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
@@ -179,6 +180,7 @@ pub(super) fn run_batched_mixed_step(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
+            masks,
         );
     }
     *did_mixed_step = true;

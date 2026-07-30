@@ -12,7 +12,12 @@ use super::*;
 ///
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
-pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::TokenLogprobs>) {
+pub fn emit_token(
+    a: &mut ActiveSeq,
+    tok: u32,
+    logprobs: Option<crate::api::TokenLogprobs>,
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
+) {
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side loop guards (Bug-2 name-run cap, F11 within-dedup,
     // F44 perm-fail, loop-watchdog) flip this flag when they decide
@@ -265,7 +270,6 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             CONTENT_LOOP_CHECK_STRIDE, CONTENT_LOOP_MIN_TOKENS, CONTENT_LOOP_PERIOD_MAX,
             CONTENT_LOOP_PERIOD_MIN, detect_content_token_loop_normalized_with,
             detect_content_token_loop_with, disable_watchdogs, enable_loop_watchdog,
-            numeric_token_mask,
         };
         a.content_tokens = a.content_tokens.saturating_add(1);
         // F1 (2026-06-02): unconditional per-generation post-think content
@@ -292,7 +296,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
             && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
-                || numeric_token_mask().as_deref().is_some_and(|m| {
+                || masks.numeric.as_deref().is_some_and(|m| {
                     detect_content_token_loop_normalized_with(
                         &a.output_tokens,
                         m,

@@ -60,6 +60,7 @@ pub fn process_decode_logits(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
 ) {
     let n = active.len();
 
@@ -132,8 +133,8 @@ pub fn process_decode_logits(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
-                boundary_mask: crate::scheduler::helpers::boundary_token_mask(),
-                mid_word_mask: crate::scheduler::helpers::mid_word_token_mask(),
+                boundary_mask: masks.boundary.clone(),
+                mid_word_mask: masks.mid_word.clone(),
             };
             let t_sample = std::time::Instant::now();
             let sampled: Vec<(u32, Option<crate::api::TokenLogprobs>)> = active
@@ -331,7 +332,7 @@ pub fn process_decode_logits(
             // `decode_logits_content.rs` to keep this file ≤500 LoC.
             // `model` is threaded through so a watchdog rollback can
             // restore SSM recurrent state on hybrid models (Phase-C).
-            handle_content_token(a, model);
+            handle_content_token(a, model, masks);
         }
 
         // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
@@ -593,7 +594,7 @@ pub fn process_decode_logits(
             // for pure-attention models / disabled rings (see
             // `rollback::snapshot_boundary_if_ssm`).
             if !a.inside_thinking {
-                rollback::snapshot_boundary_if_ssm(a, model);
+                rollback::snapshot_boundary_if_ssm(a, model, masks);
                 // #155 iter3: block-aligned Marconi checkpoint on the
                 // non-MTP decode path (live SSM state is canonical here).
                 model.decode_marconi_checkpoint(&mut a.seq);
@@ -697,7 +698,7 @@ pub fn process_decode_logits(
                 // so generation cannot resume straight back into the
                 // loop. Falls back to the hard stop when declined.
                 let min_keep = pattern_len * 3;
-                match rollback_to_boundary(a, min_keep, model) {
+                match rollback_to_boundary(a, min_keep, model, masks) {
                     RollbackOutcome::RolledBack { dropped } => {
                         tracing::warn!(
                             pattern_len,

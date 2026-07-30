@@ -63,7 +63,11 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
 /// `model` is needed by the Phase-C boundary rollback so it can restore
 /// SSM recurrent state on hybrid models (see
 /// [`super::rollback::rollback_to_boundary`]).
-pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
+pub fn handle_content_token(
+    a: &mut ActiveSeq,
+    model: &dyn Model,
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
+) {
     a.consume_generation_budget();
     a.content_started = true;
     a.content_tokens = a.content_tokens.saturating_add(1);
@@ -126,7 +130,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
         && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
-            || numeric_token_mask().as_deref().is_some_and(|m| {
+            || masks.numeric.as_deref().is_some_and(|m| {
                 detect_content_token_loop_normalized_with(
                     &a.output_tokens,
                     m,
@@ -147,7 +151,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
         // = CONTENT_LOOP_PERIOD_MAX so the rollback always escapes
         // the detected period. Falls back to the legacy hard stop
         // when disabled / capped / no boundary found.
-        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model) {
+        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, masks) {
             RollbackOutcome::RolledBack { dropped } => {
                 tracing::warn!(
                     content_tokens = a.content_tokens,
@@ -201,7 +205,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
             // constrained tool-call decoder stays valid.
             // `min_keep` = CONTENT_LOOP_PERIOD_MAX drops a full
             // run-on sentence of stalled prose.
-            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model) {
+            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, masks) {
                 RollbackOutcome::RolledBack { dropped } => {
                     tracing::warn!(
                         max = max_prose,

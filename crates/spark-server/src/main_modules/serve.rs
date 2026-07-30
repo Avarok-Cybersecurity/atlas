@@ -574,6 +574,7 @@ fn startup(
     // im_start hard-stop, tool-call open/close tokens, and the XGrammar
     // engine.
     let serve_phases::TokenizerRuntime {
+        vocab_masks,
         reasoning_parser_box,
         think_end_token,
         think_start_token,
@@ -749,6 +750,7 @@ fn startup(
             adaptive_sampling,
             session_manager,
             scheduler_spontaneous_think_budget,
+            vocab_masks,
         );
     });
 

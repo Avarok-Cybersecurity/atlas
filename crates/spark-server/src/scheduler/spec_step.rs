@@ -14,6 +14,7 @@ use super::*;
 pub fn step_self_spec(
     model: &dyn Model,
     active: &mut [ActiveSeq],
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
@@ -72,7 +73,7 @@ pub fn step_self_spec(
 
     if draft_tokens.is_empty() {
         // No drafts: emit token_0 and continue
-        emit_token(a, token_0, None);
+        emit_token(a, token_0, None, masks);
         if !a.finished {
             a.last_token = token_0;
         }
@@ -117,20 +118,20 @@ pub fn step_self_spec(
     let n_drafts = draft_tokens.len();
     let mut num_accepted = 0;
 
-    emit_token(a, token_0, None);
+    emit_token(a, token_0, None, masks);
     if a.finished {
         return;
     }
 
     for i in 0..n_drafts {
         if draft_tokens[i] == verified[i] {
-            emit_token(a, draft_tokens[i], None);
+            emit_token(a, draft_tokens[i], None, masks);
             if a.finished {
                 return;
             }
             num_accepted += 1;
         } else {
-            emit_token(a, verified[i], None);
+            emit_token(a, verified[i], None, masks);
             if a.finished {
                 return;
             }
@@ -140,7 +141,7 @@ pub fn step_self_spec(
     }
 
     if num_accepted == n_drafts && n_drafts > 0 {
-        emit_token(a, verified[n_drafts], None);
+        emit_token(a, verified[n_drafts], None, masks);
         if !a.finished {
             a.last_token = verified[n_drafts];
         }
@@ -176,6 +177,7 @@ pub fn step_self_spec(
 pub fn step_ngram(
     model: &dyn Model,
     active: &mut [ActiveSeq],
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
     proposer: &mut NgramProposer,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
@@ -184,7 +186,7 @@ pub fn step_ngram(
     if !a.pending_drafts.is_empty() {
         // ── Phase B: Verify pending draft ──
         let drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
-        step_ngram_verify(model, a, &drafts, proposer, verify_ctx);
+        step_ngram_verify(model, a, masks, &drafts, proposer, verify_ctx);
     } else {
         // ── Phase A: Bootstrap decode + N-gram propose ──
         if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
@@ -212,7 +214,7 @@ pub fn step_ngram(
         // Observe the token for future predictions
         proposer.observe(&a.seq.tokens, tok);
 
-        emit_token(a, tok, None);
+        emit_token(a, tok, None, masks);
         if a.finished {
             return;
         }
@@ -235,6 +237,7 @@ pub fn step_ngram(
 pub fn step_ngram_verify(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    masks: &crate::scheduler::vocab_masks::VocabMasks,
     drafts: &[u32],
     proposer: &mut NgramProposer,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
@@ -306,9 +309,9 @@ pub fn step_ngram_verify(
         proposer.observe(&a.seq.tokens[..a.seq.tokens.len() - 1], drafts[0]);
         proposer.observe(&a.seq.tokens, v1);
 
-        emit_token(a, drafts[0], None);
+        emit_token(a, drafts[0], None, masks);
         if !a.finished {
-            emit_token(a, v1, None);
+            emit_token(a, v1, None, masks);
         }
         if a.finished {
             return;
@@ -347,7 +350,7 @@ pub fn step_ngram_verify(
         // Observe: context ending with last_token → v0 is the correct next token
         proposer.observe(&a.seq.tokens, v0);
 
-        emit_token(a, v0, None);
+        emit_token(a, v0, None, masks);
         if a.finished {
             return;
         }

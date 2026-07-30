@@ -23,6 +23,11 @@ pub(crate) struct TokenizerRuntime {
     pub(crate) tool_call_start_token: Option<u32>,
     pub(crate) tool_call_end_token: Option<u32>,
     pub(crate) grammar_engine: Option<crate::grammar::GrammarEngine>,
+    /// Per-token classification masks for THIS tokenizer's vocabulary. Returned
+    /// like every other value here; they used to be pushed into three
+    /// process-wide `OnceLock`s, which is the one shape in this struct that
+    /// could outlive the vocabulary it was built from.
+    pub(crate) vocab_masks: crate::scheduler::vocab_masks::VocabMasks,
 }
 
 pub(crate) fn resolve_tokenizer_runtime(
@@ -33,6 +38,8 @@ pub(crate) fn resolve_tokenizer_runtime(
     supports_thinking: bool,
 ) -> TokenizerRuntime {
     use crate::{grammar, reasoning_parser};
+
+    let mut vocab_masks = crate::scheduler::vocab_masks::VocabMasks::default();
 
     let tokenizer_vocab = tokenizer.inner().get_vocab_size(true);
     if tokenizer_vocab > 0 && tokenizer_vocab < config.vocab_size {
@@ -112,7 +119,7 @@ pub(crate) fn resolve_tokenizer_runtime(
                 }
             }
         }
-        crate::scheduler::set_numeric_token_mask(std::sync::Arc::from(mask));
+        vocab_masks.numeric = Some(std::sync::Arc::from(mask));
         tracing::info!(
             "Numeric-token mask: {numeric_count}/{vocab_size} ids classified \
              as digit-runs (digit-normalized content-loop path active)"
@@ -149,7 +156,7 @@ pub(crate) fn resolve_tokenizer_runtime(
                 boundary_count += 1;
             }
         }
-        crate::scheduler::set_boundary_token_mask(std::sync::Arc::from(mask));
+        vocab_masks.boundary = Some(std::sync::Arc::from(mask));
         tracing::info!(
             "Boundary-token mask: {boundary_count}/{vocab_size} ids end in a \
              newline / sentence boundary (Phase-C rollback-to-boundary active)"
@@ -179,7 +186,7 @@ pub(crate) fn resolve_tokenizer_runtime(
                 mid_word_count += 1;
             }
         }
-        crate::scheduler::set_mid_word_token_mask(std::sync::Arc::from(mask));
+        vocab_masks.mid_word = Some(std::sync::Arc::from(mask));
         tracing::info!(
             "Mid-word token mask: {mid_word_count}/{vocab_size} ids end in alphanumeric \
              (mid-word </think> defer active during thinking)"
@@ -279,6 +286,7 @@ pub(crate) fn resolve_tokenizer_runtime(
     };
 
     TokenizerRuntime {
+        vocab_masks,
         reasoning_parser_box,
         think_end_token,
         think_start_token,

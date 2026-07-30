@@ -452,74 +452,14 @@ pub fn watchdog_params() -> WatchdogParams {
 
 static INTER_TOOL_PROSE_OVERRIDE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
-/// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
-/// (optionally one leading space). Built once at startup from the
-/// tokenizer; drives the digit-normalized content-loop path. Fail-open:
-/// never set (or build failed) → normalized path inert, the exact
-/// detector is unaffected.
-static NUMERIC_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> = std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved tokenizer. Idempotent.
-pub fn set_numeric_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = NUMERIC_TOKEN_MASK.set(mask);
-}
-
-/// Read the numeric-token mask. `None` until `set_numeric_token_mask`
-/// runs — callers must treat `None` as "normalized path disabled".
-pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    NUMERIC_TOKEN_MASK.get().cloned()
-}
-
-/// `mask[id] == true` iff token `id` decodes to text ending in a
-/// well-formed generation boundary — a newline, or sentence-ending
-/// punctuation (`.`, `!`, `?`) optionally followed by a closing quote
-/// or whitespace. Built once at startup from the tokenizer; drives
-/// [`super::rollback::rollback_to_boundary`]'s boundary search.
-/// Fail-open: never set → rollback finds no boundary and the watchdog
-/// falls back to its hard stop.
-static BOUNDARY_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
-    std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved tokenizer. Idempotent.
-pub fn set_boundary_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = BOUNDARY_TOKEN_MASK.set(mask);
-}
-
-/// Read the boundary-token mask. `None` until `set_boundary_token_mask`
-/// runs — callers must treat `None` as "no boundary info available".
-pub fn boundary_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    BOUNDARY_TOKEN_MASK.get().cloned()
-}
-
-/// Per-token mid-word mask (2026-05-24): `mask[id]` is true iff the
-/// token decodes to text whose LAST character is alphanumeric — i.e.
-/// emitting `</think>` (or any sentence-end punctuation) right after
-/// this token would split a word.
-///
-/// Used by [`super::decode_logits_seq`] to suppress `</think>` when the
-/// previously emitted token ended mid-word. FP8 precision drift on
-/// Qwen3.6-FP8 biases the `</think>` logit upward by enough to flip
-/// against word-continuation tokens at low margin (opencode-session.md
-/// 2026-05-24: 8/8 thinking blocks ended mid-word: "creating thep",
-/// "ping/pong en", "then cr"). The fix is a soft guard rather than a
-/// rewrite of the model.
-///
-/// Fail-open: never set → suppression is skipped and the model
-/// retains full freedom to terminate thinking at any token.
-static MID_WORD_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
-    std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved tokenizer. Idempotent.
-pub fn set_mid_word_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = MID_WORD_TOKEN_MASK.set(mask);
-}
-
-/// Read the mid-word token mask. `None` until `set_mid_word_token_mask`
-/// runs — callers must treat `None` as "no mid-word info available"
-/// and skip the suppression.
-pub fn mid_word_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    MID_WORD_TOKEN_MASK.get().cloned()
-}
+// The three vocabulary masks that lived here as `OnceLock<Arc<[bool]>>` plus a
+// `set_*` each are now `scheduler::vocab_masks::VocabMasks`, returned by
+// `resolve_tokenizer_runtime` like every other tokenizer-derived value and
+// carried down through `scheduler::run`.
+//
+// They were the sharpest hazard in the tree: each is INDEXED BY TOKEN ID, so a
+// mask outliving the vocabulary that built it does not fail — it classifies the
+// wrong ids, and the logit processors suppress the wrong tokens. Silently.
 
 /// F2 (2026-04-26): cap on free-text tokens between successive
 /// `<tool_call>` opens when `tool_choice="auto"`. The grammar FSM
