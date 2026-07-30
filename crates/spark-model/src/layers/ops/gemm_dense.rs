@@ -255,16 +255,19 @@ pub fn w4a16_gemm_n128_m128_v3(
         .launch(stream)
 }
 
-/// W4A16 GEMM v2: MiniMax-only shadow of `w4a16_gemm_n128_m128`.
+/// W4A16 GEMM v2: shadow of `w4a16_gemm_n128_m128` (minimax, step3p7, and —
+/// since the 27B port — qwen3.6-27b).
 ///
 /// Same CTA tile (M=128, N=128, K_STEP=32) but:
 ///   - blockDim 256 (8 warps) instead of 128 (4 warps)
-///   - 3-stage cp.async pipeline instead of 2-stage
 ///   - Chunk 0 (rows 0-63) and chunk 1 (rows 64-127) MMAs run in parallel
 ///     across warps 0-3 and 4-7 instead of being serialized.
 ///
 /// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (256, 1, 1)
-/// SMEM: ~42.6 KB → 2 CTAs/SM (vs 3 for v1), but 2× warps/CTA.
+/// SMEM: 30,336 B/CTA (2-stage pipeline, padded B_fp8 rows) → 3 CTAs/SM, same
+/// footprint as v1 — 768 resident threads/SM vs v1's 384. (An earlier version
+/// of this doc claimed 3-stage/42.6 KB/2 CTAs — that described a prototype,
+/// not the shipped kernel.)
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_gemm_n128_m128_v2(
     gpu: &dyn GpuBackend,

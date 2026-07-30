@@ -288,7 +288,7 @@ impl DenseFfnLayer {
             w4a16_gemv_batch8: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
-            w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
+            w4a16_gemm_t_m128_v2_k: super::w4a16_v2_kernel(gpu),
             w4a16_gemm_t_m128_bf16_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128_bf16"),
             w4a16_gemm_t_m128_bf16_v2_k: super::try_kernel(
                 gpu,

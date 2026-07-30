@@ -74,6 +74,42 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 /// given feature: e.g. Qwen3-Coder-Next (GDN+attention) never calls MLA
 /// kernels, but the layer builder still probes them. Warning on expected
 /// misses drowned out genuine problems in startup logs.
+/// Resolve the `w4a16_gemm_t_m128_v2` handle honoring `ATLAS_W4A16_VARIANT`.
+///
+/// One resolver for the THREE sites that dispatch on this handle (attention
+/// projections, dense-FFN prefill, SSM batched decode), so variant policy and
+/// rollback live in exactly one place. Default (unset) resolves to a ZERO
+/// handle — v1 everywhere — because the 27B port measured SLOWER than v1
+/// (see body). `ATLAS_W4A16_VARIANT=v2` opts in on all three sites at once;
+/// requesting it on a target without the kernel is a HARD startup error
+/// (fail fast, not a silent fallback discovered in a perf regression).
+pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    let variant = std::env::var("ATLAS_W4A16_VARIANT").ok();
+    // DEFAULT OFF on the qwen3 layer stack: the 27B port of the 8-warp v2
+    // crush kernel is bit-identical to v1 (microtest 100% on 8 shapes) but
+    // MEASURED SLOWER on the 27B FFN shapes — 0.78-0.82x of v1 standalone
+    // (w4a16_bf16_v2_bench, 2026-07-30; v1 58-74 TFLOP/s). The kernel stays
+    // in the PTX set for A/B and for shape regimes where the extra warps
+    // might pay; nothing auto-activates it. `ATLAS_W4A16_VARIANT=v2` opts in
+    // (hard error if the target lacks the kernel).
+    if !matches!(variant.as_deref(), Some("v2") | Some("v3")) {
+        if variant.as_deref() == Some("v1") {
+            tracing::debug!("ATLAS_W4A16_VARIANT=v1: w4a16 m128 v2 suppressed (explicit)");
+        }
+        return KernelHandle(0);
+    }
+    let h = try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2");
+    if h.0 == 0 {
+        panic!(
+            "ATLAS_W4A16_VARIANT={} requested but w4a16_v2::w4a16_gemm_t_m128_v2 is not in this \
+             target's kernel set — refusing to start with a silently-degraded config",
+            variant.unwrap()
+        );
+    }
+    tracing::debug!(handle = h.0, "w4a16_gemm_t_m128_v2 resolution (explicit opt-in)");
+    h
+}
+
 /// Resolve the N128/M64 tile GEMM, preferring the 3-deep weight-pipeline variant.
 /// **ON by default**; `ATLAS_NO_TGEMM_PIPELINE3` (presence — `=0` is NOT "off")
 /// falls back to the 2-stage parent. Falls back automatically on any target that
