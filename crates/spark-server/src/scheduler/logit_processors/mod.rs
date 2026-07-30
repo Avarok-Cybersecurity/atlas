@@ -84,6 +84,9 @@ pub struct LogitsContext {
     /// confidence stages read them, and they are per-model, so they ride the
     /// same carrier as the token ids and masks.
     pub watchdog: crate::scheduler::helpers::WatchdogParams,
+    /// The run's speculation and drift counters. Shared, so the B1 gauge
+    /// counts one model's positions rather than the process's.
+    pub stats: std::sync::Arc<crate::scheduler::spec_stats::SpecStats>,
 }
 
 /// The subset of `scheduler::levers::SchedLevers` the pre-sample pipeline
@@ -263,7 +266,7 @@ pub fn process_position_logits(
     // 3. B1 margin observer — FINAL decode position only (risk R6). Reads
     //    the post-mask distribution; never mutates.
     if kind == PositionKind::FinalDecode {
-        b1_margin::observe(logits, seq);
+        b1_margin::observe(logits, seq, &ctx.stats);
     }
 
     // 4. Penalties + bias (incl. A4) on the now-masked logits, using the

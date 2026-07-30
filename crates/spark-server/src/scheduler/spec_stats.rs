@@ -24,7 +24,7 @@ pub const SUMMARY_PERIOD: u64 = 512;
 
 /// Counters for one chain width. `k2` uses only `accepts`/`rejects`; the wider
 /// chains also bucket by how many drafts were accepted.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SpecStats {
     // ── K=2 ──
     pub k2_accepts: AtomicU64,
@@ -45,6 +45,12 @@ pub struct SpecStats {
     pub k4_d3_uncond: AtomicU64,
     pub k4_d2_cond: AtomicU64,
     pub k4_d3_cond: AtomicU64,
+
+    /// B1 drift gauge: decode positions inside a parameter body whose
+    /// top1-top2 gap is below the low-margin threshold. A count of one
+    /// model's argmax-flip exposure — summed across a swap it describes
+    /// neither, and the periodic WARN would name a number belonging to both.
+    pub b1_low_margin: AtomicU64,
 
     // ── Decode timing (ATLAS_DECODE_TIMING) ──
     pub decode_copy_us: AtomicU64,

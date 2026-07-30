@@ -28,6 +28,12 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::sync::{Mutex, OnceLock};
 
+/// STATIC, DELIBERATELY — diagnostic file handle. `ATLAS_LOGIT_DUMP=path`
+/// opens ONE file for the process and appends every dumped position to it;
+/// the operator named that path, so a swap must keep writing to it rather
+/// than reopening or truncating. The handle is reached from the decode path
+/// with no carrier, and it holds no model-derived value — a `BufWriter` over
+/// a file the operator chose.
 static DUMP: OnceLock<Option<Mutex<BufWriter<File>>>> = OnceLock::new();
 
 fn writer() -> Option<&'static Mutex<BufWriter<File>>> {

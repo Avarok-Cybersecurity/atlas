@@ -14,6 +14,11 @@ use crate::grammar::{GrammarEngine, GrammarError};
 use xgrammar::CompiledGrammar;
 
 /// Global counter for unique tool call IDs across all requests.
+/// STATIC, DELIBERATELY — process lifecycle. It generates the `call_*` ids
+/// Atlas hands to clients, and uniqueness must hold across EVERY call the
+/// process emits: an agent holds tool-call ids across turns, and a model
+/// swap mid-session must not restart the sequence and collide with an id the
+/// client is still tracking. It is an id source, not a measurement.
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate a globally unique tool call ID.

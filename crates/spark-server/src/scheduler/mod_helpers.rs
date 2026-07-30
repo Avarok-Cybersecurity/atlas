@@ -290,6 +290,12 @@ pub(super) fn compact_survivors_into_range(model: &dyn Model, survivors: &mut [A
 /// triggers after the 1024-deep channel is ALSO full, so a consumer that hits
 /// it has been unresponsive for thousands of events.
 fn stream_send_deadline() -> std::time::Duration {
+    // STATIC, DELIBERATELY — transport configuration. This bounds how long a
+    // send to a CLIENT's stream channel may block; it is a property of the
+    // HTTP transport, not of the model behind it, and the two send helpers
+    // that read it are called from every emit site with no scheduler context
+    // in hand. Reaching one would mean threading a carrier through the whole
+    // emit path to configure a socket timeout.
     static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     std::time::Duration::from_millis(*MS.get_or_init(|| {
         std::env::var("ATLAS_STREAM_SEND_DEADLINE_MS")

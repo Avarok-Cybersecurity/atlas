@@ -36,7 +36,7 @@ pub struct SchedCtx {
     pub watchdog: crate::scheduler::helpers::WatchdogParams,
     /// Speculation accept/reject telemetry for this run. Mutated through the
     /// shared reference, which is why its counters are atomics.
-    pub stats: SpecStats,
+    pub stats: std::sync::Arc<SpecStats>,
     /// Per-phase verify timing for this run, shared with the grammar state.
     pub timing: std::sync::Arc<RunTiming>,
     /// Trained repetition-onset detection head, when `[behavior].rom_head`
@@ -62,7 +62,7 @@ impl SchedCtx {
             levers,
             limits,
             watchdog,
-            stats: SpecStats::new(),
+            stats: std::sync::Arc::new(SpecStats::new()),
             timing: std::sync::Arc::new(RunTiming::from_env()),
             rom_head: None,
         }

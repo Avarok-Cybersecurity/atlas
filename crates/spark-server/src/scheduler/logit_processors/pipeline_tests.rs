@@ -145,6 +145,7 @@ fn logits_context_field_set_is_stable() {
     // A test can now state the masks it wants instead of installing them into
     // a process-wide OnceLock that every other test then inherits.
     let ctx = LogitsContext {
+        stats: std::sync::Arc::new(crate::scheduler::spec_stats::SpecStats::new()),
         watchdog: crate::scheduler::helpers::WatchdogParams::default(),
         boundary_mask: None,
         mid_word_mask: None,
