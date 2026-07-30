@@ -844,6 +844,35 @@ RANKED CODE LEVERS (the config space is exhausted):
 
 Artifacts: verify_specon/specoff.nsys-rep + kern_*.csv in the job scratch.
 
+### 6.12 LOOP iteration 1: the C=16 decode wall is HOST-SIDE (readbacks + allocs)
+
+Lever-1 slice (drafter small-N K/V projections: per-row GEMV -> tile GEMM at
+m>=8; the old M=4 crossover was stale after a83627a2 widened n to 16):
+**NEUTRAL e2e** — 146.8/149.2/150.7 (median 149.2) vs baseline median ~151.
+Kept (kill switch ATLAS_MTP_KV_GEMV=1): launch-count reduction, no cost.
+
+Computing WHY it was invisible produced the discovery that reframes the
+whole C=16 decode program: the spec-ON burst shows only **4.3 s of GPU-busy
+across ~25 s of decode wall** — the step is ~80% host-bound. CUDA API sums
+(existing 6.11 profiles):
+
+| | spec-ON | spec-OFF |
+|---|---|---|
+| cuMemcpyDtoHAsync total | **25.6 s / 4,439 calls (~27/step, avg 5.8 ms)** | **40.1 s / 1,848 calls (avg 21.7 ms — full 7.9 MB logits/step)** |
+| cuMemAlloc AT RUNTIME | 3.5 s / 4,580 calls | 4.2 s / 4,466 calls |
+| cuStreamSynchronize | 2.0 s / 18,094 | 0.4 s / 7,604 |
+| GPU kernel busy | 4.3 s | 2.2 s |
+
+Decode in BOTH modes is serialized on blocking device-to-host readbacks
+(pageable D2H syncs the stream) and per-step allocations. Kernel-time
+levers (6.11's ranked list) cap at ~+6% e2e by Amdahl; THIS is the 12%.
+
+NEXT (loop iteration 2): inventory the ~27 readbacks/step in the verify
+path (draft ids, accept verdicts, logprobs, bootstrap argmax) and the
+per-step cuMemAlloc sites; batch them into one pinned staging readback per
+step. The 22x SSM-spill fix (#381) is the in-repo precedent for exactly
+this disease.
+
 ## 7. Open
 
 Ordered by what I would pick up first.

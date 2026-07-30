@@ -62,7 +62,19 @@ impl MtpHead {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        if n >= 4096 && (k & 7) == 0 {
+        // Small-N routing re-derived for the widened propose (2026-07-30):
+        // the "per-row GEMV wins at small N" measurement was taken at M=4
+        // (4 x 44 us ~= one 194 us under-filled tile — a tie). The propose has
+        // since widened to n=16 (a83627a2), where the loop is ~16 x 44 us
+        // ~= 700 us against the SAME ~200 us tile: the crossover flipped and
+        // the loop became the 5,200-launch `dense_gemv_bf16` line in the
+        // C=16 verify-tax profile (PROGRESS_LOG 6.11). Take the tile GEMM for
+        // small N once m >= 8; keep the GEMV loop below that (the measured
+        // small-m regime) and as the ATLAS_MTP_KV_GEMV=1 kill-switch arm.
+        let small_n_tile = m >= 8
+            && (k & 7) == 0
+            && std::env::var_os("ATLAS_MTP_KV_GEMV").is_none();
+        if (n >= 4096 || small_n_tile) && (k & 7) == 0 {
             ops::dense_gemm_bf16_pipelined(
                 gpu,
                 self.dense_gemm_pipelined_k,
