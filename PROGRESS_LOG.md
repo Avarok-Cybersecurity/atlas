@@ -938,6 +938,33 @@ with --cudabacktrace to (a) re-derive the phase-gap timeline post-6.13 and
 (b) attribute the weight-shaped 42.5 MB D2H copies (predequant-adjacent,
 ~13 GB/burst, still unexplained). Design adjusts if the gaps moved.
 
+### 6.15 LOOP: the C=16 step anatomy is now exact — one 130 ms stall left
+
+In-process phase timers (ATLAS_MTP_TIMING now wired into the batched K4
+step) + the backtraced trace agree on the per-step structure at C=16:
+
+* GPU: **idle ~140-152 ms -> dense 11.1 ms kernel span (145 kernels, 10.7
+  busy — the verify graph replays with NO internal bubbles) -> argmax**.
+* Host: launch region 0.16 ms; then **d2h_wait 126-134 ms** blocked in the
+  stream sync of a 128-320 B argmax readback; propose 6-10 ms; verdict/emit
+  ~0.3 ms; Phase-1 pipeline ~0 (the 6.13 fast-greedy holding).
+
+Buried this iteration with evidence:
+* cuMemAlloc-per-step theory: ZERO in-window allocs (all 9,160 were load).
+* Default-stream entanglement theory: switching Phase-5 to
+  `copy_d2h_on_stream(stream)` (semantically the right dependency; kill
+  switch ATLAS_VERIFY_D2H_DEFAULT_STREAM=1) reproduced the SAME 130 ms.
+* Host-bookkeeping theory: those phases total <12 ms.
+
+Remaining question, exactly one: why does a LAUNCHED verify graph not
+START for ~130 ms while the host blocks in the sync? Discriminator queued:
+cuGraphLaunch runtime timestamp vs first kernel start in a fresh
+containerized trace — (a) gap after launch = GPU-side dependency (event
+edge signaled late, capture wiring); (b) late launch = the timer story is
+incomplete somewhere upstream. Also note "Captured CUDA graph" fired 42x
+in one burst — capture CHURN (key = ssm-slot vector + ks) is a suspect:
+a capture mid-stream serializes and may leave cross-stream event edges.
+
 ## 7. Open
 
 Ordered by what I would pick up first.

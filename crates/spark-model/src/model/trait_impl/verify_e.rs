@@ -95,6 +95,7 @@ impl TransformerModel {
         seqs: &mut [&mut SequenceState],
         _stream: u64,
     ) -> Result<Vec<u32>> {
+        let t_launch = std::time::Instant::now();
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
@@ -466,8 +467,53 @@ impl TransformerModel {
         // ── Phase 5: D2H + host bookkeeping ──
         // Argmax landed at scratch row 0 (graph replay and eager both write
         // the same fixed address). Blocking D2H = the step's one host sync.
+        // ATLAS_MTP_TIMING attribution (2026-07-30): everything above this
+        // line is the LAUNCH region (host-side dispatch + graph replay,
+        // recorded as Argmax); the copy below is the wait-for-GPU + copy
+        // (recorded as D2h). Splits the ~127 ms fwd cost between "host
+        // launching work" and "host waiting on the stream".
+        let t_d2h = std::time::Instant::now();
+        let launch_us = t_d2h.duration_since(t_launch).as_micros() as u64;
         let mut buf = vec![0u8; r_total * 4];
-        self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
+        // On-stream D2H (2026-07-30): `copy_d2h` enqueues + syncs the LEGACY
+        // DEFAULT stream, which implicitly serializes with every blocking
+        // stream on the context — measured 126-134 ms of wait for a 128-320 B
+        // copy whose own stream (`stream`, where the verify graph ran) is
+        // idle ~11 ms after replay. Ordering on the verify stream itself is
+        // the correct dependency: the argmax landed on `stream`, so this
+        // waits for exactly the verify work and nothing else.
+        // Kill switch ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 restores the old arm.
+        if std::env::var("ATLAS_VERIFY_D2H_DEFAULT_STREAM").as_deref() == Ok("1") {
+            self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
+        } else {
+            self.gpu
+                .copy_d2h_on_stream(self.buffers.scratch(), &mut buf, stream)?;
+        }
+        {
+            // Local fwd-split telemetry (ATLAS_MTP_TIMING=1): launch region vs
+            // the blocking argmax D2H. Lives here because mtp_timing is a
+            // spark-server module. One INFO line per 100 batched verifies.
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static LAUNCH_US: AtomicU64 = AtomicU64::new(0);
+            static D2H_US: AtomicU64 = AtomicU64::new(0);
+            static N: AtomicU64 = AtomicU64::new(0);
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *ON.get_or_init(|| std::env::var("ATLAS_MTP_TIMING").as_deref() == Ok("1")) {
+                let d2h_us = t_d2h.elapsed().as_micros() as u64;
+                LAUNCH_US.fetch_add(launch_us, Ordering::Relaxed);
+                D2H_US.fetch_add(d2h_us, Ordering::Relaxed);
+                let n_done = N.fetch_add(1, Ordering::Relaxed) + 1;
+                if n_done.is_multiple_of(100) {
+                    let l = LAUNCH_US.swap(0, Ordering::Relaxed);
+                    let d = D2H_US.swap(0, Ordering::Relaxed);
+                    tracing::info!(
+                        "batched-verify fwd split [100 calls]: launch={:.2}ms d2h_wait={:.2}ms",
+                        l as f64 / 100_000.0,
+                        d as f64 / 100_000.0,
+                    );
+                }
+            }
+        }
 
         let mut out = Vec::with_capacity(r_total);
         for r in 0..r_total {

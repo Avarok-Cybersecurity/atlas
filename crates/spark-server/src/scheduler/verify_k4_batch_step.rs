@@ -105,6 +105,7 @@ pub(super) fn step_verify_k4_batched(
     // Contract (`decode_verify_batched`): on Ok every seq has tokens+=rows
     // and seq_len+=rows (verdict rewind below is caller arithmetic, same as
     // the per-seq path); on Err NO host seq state advanced.
+    let t_step = Instant::now();
     let t_verify = Instant::now();
     let results: Vec<u32> = {
         let mut seq_refs: Vec<&mut SequenceState> = batch.iter_mut().map(|a| &mut a.seq).collect();
@@ -120,6 +121,8 @@ pub(super) fn step_verify_k4_batched(
         }
     };
     let verify_us = t_verify.elapsed().as_micros();
+    crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::VerifyForward, t_verify);
+    let t_phase1 = Instant::now();
 
     // ── Phase 1: consume every sequence's logits rows BEFORE any propose ──
     // Rows for seq i live at row_base = i*rows in the shared logits buffer.
@@ -168,6 +171,8 @@ pub(super) fn step_verify_k4_batched(
         verdicts.push((v, num_accepted, verify_lps));
     }
 
+    crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::PipelineProc, t_phase1);
+    let t_stash = Instant::now();
     // ── Phase 2: stash the accepted-position hiddens before any propose ──
     // Absolute forward row i*rows + num_accepted_i → stash slot i; the
     // verdict proposes below overwrite the live rows, so
@@ -183,6 +188,8 @@ pub(super) fn step_verify_k4_batched(
         tracing::error!("stash_verify_hidden_rows: {e:#}");
     }
 
+    crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::SaveHidden, t_stash);
+    let t_verdict = Instant::now();
     // ── Phase 3: per-seq verdict via the EXISTING single-seq machinery ──
     // (greedy accept + rewind arithmetic + emit + trim; propose is DEFERRED
     // so Phase 4 can batch it across sequences — the per-seq drafter forward
@@ -213,11 +220,13 @@ pub(super) fn step_verify_k4_batched(
     // each re-reading the whole BF16 drafter. Singles and unsupported groups
     // fall back per-seq (re-saving the stash slot into the single-slot MTP
     // input buffer immediately before each propose).
+    crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::Commit, t_verdict);
     let t_propose = Instant::now();
     let pending: Vec<usize> = (0..n)
         .filter(|&i| !batch[i].finished && batch[i].pending_drafts.is_empty())
         .collect();
     if pending.is_empty() {
+        crate::scheduler::mtp_timing::step_done(t_step, batch.first().map_or(0, |a| a.seq.seq_len));
         return;
     }
     let mut need_fallback: Vec<usize> = Vec::new();
@@ -312,6 +321,8 @@ pub(super) fn step_verify_k4_batched(
         need_fallback.len(),
         t_propose.elapsed().as_micros()
     );
+    crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
+    crate::scheduler::mtp_timing::step_done(t_step, batch.first().map_or(0, |a| a.seq.seq_len));
 }
 
 /// Kill switch `ATLAS_NO_MTP_BATCH_PROPOSE` — PRESENCE check (`=0` is NOT
