@@ -411,7 +411,11 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static TWIN_LOG: std::sync::Once = std::sync::Once::new();
             TWIN_LOG.call_once(|| {
                 eprintln!(
@@ -494,7 +498,11 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static FP4_TWIN_LOG: std::sync::Once = std::sync::Once::new();
             FP4_TWIN_LOG.call_once(|| {
                 eprintln!(
@@ -833,6 +841,11 @@ impl DenseFfnLayer {
             let wt_alive =
                 |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
             if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
+                // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+                // value — the message is rebuilt from the arguments every call — so a
+                // stale entry cannot produce a wrong answer, only a suppressed duplicate
+                // line after a model swap. Scoping it would thread a logging concern
+                // through the call path to prevent one repeated INFO line.
                 static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
                 LOGGED.get_or_init(|| {
                     tracing::info!(
@@ -885,6 +898,11 @@ impl DenseFfnLayer {
                 )?;
                 return Ok(output);
             }
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
             WARNED.get_or_init(|| {
                 tracing::warn!(
@@ -1454,7 +1472,11 @@ impl DenseFfnLayer {
         let int8_prefill =
             self.int8_faith2_k.0 != 0 && std::env::var_os("ATLAS_INT8_PREFILL").is_some();
         if int8_prefill {
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static INT8_LOG: std::sync::Once = std::sync::Once::new();
             INT8_LOG.call_once(|| {
                 eprintln!(
@@ -1473,7 +1495,11 @@ impl DenseFfnLayer {
             && matches!(self.activation, FfnActivation::SiLU)
             && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
         if fp4mmq_prefill {
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static FP4MMQ_LOG: std::sync::Once = std::sync::Once::new();
             FP4MMQ_LOG.call_once(|| {
                 eprintln!(
@@ -1523,7 +1549,11 @@ impl DenseFfnLayer {
             && self.quantize_nvfp4_k.0 != 0
             && std::env::var_os("ATLAS_FP4_PREFILL").is_some();
         if fp4_prefill {
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static FP4_LOG: std::sync::Once = std::sync::Once::new();
             FP4_LOG.call_once(|| {
                 eprintln!(
@@ -1548,7 +1578,11 @@ impl DenseFfnLayer {
             && !fp4mmq_prefill
             && std::env::var_os("ATLAS_FFN_MMQ").is_some();
         if q4k_prefill {
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static Q4K_LOG: std::sync::Once = std::sync::Once::new();
             Q4K_LOG.call_once(|| {
                 eprintln!(

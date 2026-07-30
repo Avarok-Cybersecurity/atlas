@@ -188,7 +188,11 @@ impl Qwen3SsmLayer {
         {
             // One-time positive signal that the FLA path is live (vs silently
             // falling through to wy4 on a guard miss) — greppable in the server log.
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static FLA_LOG: std::sync::Once = std::sync::Once::new();
             FLA_LOG.call_once(|| {
                 tracing::info!(
@@ -251,7 +255,11 @@ impl Qwen3SsmLayer {
             // in isolation.
             //
             // DEFAULT-ON since 2026-07-25 — see `gdn_regresident_enabled`.
-            // Log-once latch — see `atlas_core::scope` for why this category stays static.
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static RR_LOG: std::sync::Once = std::sync::Once::new();
             RR_LOG.call_once(|| {
                 tracing::info!(

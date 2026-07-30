@@ -143,7 +143,11 @@ pub(super) fn try_chat_fast_path(
     }
     ctx.timing.record(Phase::FastGreedy, t_fast);
     if all_clear {
-        // Log-once latch — see `atlas_core::scope` for why this category stays static.
+        // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+        // value — the message is rebuilt from the arguments every call — so a
+        // stale entry cannot produce a wrong answer, only a suppressed duplicate
+        // line after a model swap. Scoping it would thread a logging concern
+        // through the call path to prevent one repeated INFO line.
         static LOGGED: std::sync::Once = std::sync::Once::new();
         LOGGED.call_once(|| {
             tracing::info!(

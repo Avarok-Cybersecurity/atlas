@@ -96,7 +96,11 @@ impl MtpHead {
                 (fc, k, v)
             }
             _ => {
-                // Log-once latch — see `atlas_core::scope` for why this category stays static.
+                // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+                // value — the message is rebuilt from the arguments every call — so a
+                // stale entry cannot produce a wrong answer, only a suppressed duplicate
+                // line after a model swap. Scoping it would thread a logging concern
+                // through the call path to prevent one repeated INFO line.
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     tracing::warn!(

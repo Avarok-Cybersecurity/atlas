@@ -50,6 +50,11 @@ pub fn log_gemm_shape(name: &str, m: u32, n: u32, k: u32) {
     if std::env::var("ATLAS_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
         return;
     }
+    // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+    // value — the message is rebuilt from the arguments every call — so a
+    // stale entry cannot produce a wrong answer, only a suppressed duplicate
+    // line after a model swap. Scoping it would thread a logging concern
+    // through the call path to prevent one repeated INFO line.
     static SEEN: OnceLock<Mutex<HashSet<(u64, u32, u32, u32)>>> = OnceLock::new();
     let mut h: u64 = 1469598103934665603;
     for b in name.bytes() {

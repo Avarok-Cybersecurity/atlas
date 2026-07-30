@@ -195,6 +195,11 @@ impl FilesystemBackend {
             return;
         };
         if let Err(std::sync::mpsc::TrySendError::Full(op)) = tx.try_send(op) {
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
