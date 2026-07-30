@@ -135,6 +135,7 @@ pub fn process_decode_logits(
                 tool_call_end_token,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
+                sampling: sched.levers.sampling(),
             };
             let t_sample = std::time::Instant::now();
             let sampled: Vec<(u32, Option<crate::api::TokenLogprobs>)> = active

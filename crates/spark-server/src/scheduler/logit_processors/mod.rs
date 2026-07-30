@@ -38,7 +38,6 @@
 //! also downstream.
 
 use crate::scheduler::ActiveSeq;
-use crate::scheduler::decode_logits_seq::force_temp_zero_enabled;
 use crate::scheduler::sample_step::PositionKind;
 use spark_runtime::sampler::{SamplingParams, apply_penalties_and_bias};
 
@@ -75,6 +74,25 @@ pub struct LogitsContext {
     pub boundary_mask: Option<std::sync::Arc<[bool]>>,
     /// `mask[id]` iff token `id` ends mid-word. Same indexing, same hazard.
     pub mid_word_mask: Option<std::sync::Arc<[bool]>>,
+    /// Sampling levers for this run, carried beside the tokenizer-derived
+    /// values they act on. Built once per decode step from `SchedLevers`.
+    pub sampling: SamplingLevers,
+}
+
+/// The subset of `scheduler::levers::SchedLevers` the pre-sample pipeline
+/// reads.
+///
+/// `LogitsContext` is the carrier that pipeline already receives, so the levers
+/// ride along with it instead of being reached through process globals. `Copy`
+/// keeps building the context per decode step free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SamplingLevers {
+    /// Pure argmax on raw logits — no pipeline, no penalties, no bias.
+    pub force_temp_zero: bool,
+    /// Fast greedy path when a grammar is active.
+    pub fast_greedy_grammar: bool,
+    /// Run the full sample pipeline during MTP verify.
+    pub mtp_verify_sample: bool,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.
@@ -202,7 +220,7 @@ pub fn process_position_logits(
     // 1. ATLAS_FORCE_TEMP_ZERO: pure argmax on raw logits — no pipeline, no
     //    penalties, no bias. Eligible on both kinds (the diagnostic's point
     //    is an identical bypass everywhere).
-    if force_temp_zero_enabled() {
+    if ctx.sampling.force_temp_zero {
         let mut best_idx: u32 = 0;
         let mut best_val: f32 = f32::NEG_INFINITY;
         for (j, &v) in logits.iter().enumerate() {

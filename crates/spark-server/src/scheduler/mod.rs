@@ -524,6 +524,7 @@ pub fn run(
                 tool_call_end_token,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
+                sampling: sched.levers.sampling(),
             };
             // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
             // keep the first N post-`</think>` tokens on plain serial decode.

@@ -147,6 +147,7 @@ fn logits_context_field_set_is_stable() {
     let ctx = LogitsContext {
         boundary_mask: None,
         mid_word_mask: None,
+        sampling: SamplingLevers::default(),
         think_end_token: Some(1),
         think_start_token: Some(2),
         tool_call_start_token: Some(3),
@@ -292,7 +293,10 @@ fn unified_fn_includes_a4_and_b1_stages() {
         "process_position_logits must call B1 observe gated on FinalDecode"
     );
     assert!(
-        MOD_SRC.contains("force_temp_zero_enabled") && MOD_SRC.contains("apply_penalties_and_bias"),
+        // The bypass is now gated on the CARRIED lever rather than a
+        // process-global accessor; the invariant is unchanged.
+        MOD_SRC.contains("ctx.sampling.force_temp_zero")
+            && MOD_SRC.contains("apply_penalties_and_bias"),
         "process_position_logits must own the force-temp-zero bypass and penalties+bias"
     );
 

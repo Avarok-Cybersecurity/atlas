@@ -132,6 +132,15 @@ impl SchedLevers {
         self.loop_watchdog.load(Ordering::Relaxed)
     }
 
+    /// The subset the pre-sample pipeline reads, for `LogitsContext`.
+    pub fn sampling(&self) -> crate::scheduler::logit_processors::SamplingLevers {
+        crate::scheduler::logit_processors::SamplingLevers {
+            force_temp_zero: self.force_temp_zero,
+            fast_greedy_grammar: self.fast_greedy_grammar,
+            mtp_verify_sample: self.mtp_verify_sample,
+        }
+    }
+
     /// Arm or disarm the loop watchdog. Called by the TUI ops REPL mid-run.
     pub fn set_loop_watchdog(&self, on: bool) {
         self.loop_watchdog.store(on, Ordering::Relaxed);
