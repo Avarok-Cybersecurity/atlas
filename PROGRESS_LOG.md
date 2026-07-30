@@ -764,6 +764,35 @@ Actionable follow-ups extracted:
   pipeline playbook exists for other targets), int8 W4A8 middle ground.
   Report: /home/ms/.claude/jobs/c91b191d/tmp/prefill_1k.nsys-rep.
 
+### 6.10 Canonical-4K baseline of record + the decode-rollback ring reclaim
+
+Full stack (0e8f15b7: MMQ on, KV family, drafter pool, aliasing, picks),
+canonical 4K config, honest bench, single reps unless noted:
+
+| regime | C=8 | C=16 | vs vLLM bar |
+|---|---|---|---|
+| decode_short   |  99.6 | 150.8-161.6 (3 reps, median ~151) | C=8 **1.01x**; C=16 **0.90-0.96x** |
+| balanced_short | 101.8 | 133.3 | |
+| balanced_long  | 104.9 | 140.2 | |
+| prefill_short  |  56.4 |  66.9 | compute-walled (6.8) |
+
+Zero KV-exhaustion errors. TPOT p50 82-84 ms at C=16 (was 91-95 on the 16K
+config). Session start was 0.73x at C=16; the remaining gap is ~4-10%
+depending on rep. NOTE the decode_short C=16 single-rep spread is ~7% —
+quote the median, use >=3 reps for any future claim.
+
+**Decode-rollback ring: ~20.3 GB reclaimed (user-directed).** The ring's
+only writer/reader live on the PLAIN decode path (spec does rejection
+rollback via the verify snapshot), and the reader additionally needs
+watchdogs enabled — under the production spec-ON config the ring was
+structurally unreachable yet allocated 8 slots x 16 seqs x the 27B's
+158.9 MB blob up front. impl_a1 now skips it when `use_speculative` or
+watchdogs are disabled (`ATLAS_SSM_DECODE_RING=1/0` force-overrides;
+skip logs the GB saved; rollback fail-opens to decline as documented).
+Verified live: startup logs "SKIPPED ... Saves 20.3 GB"; KV pool grew
+15,203 -> 17,355 blocks. Perf-neutral on decode (TPOT unchanged-to-better
+across 3 cells).
+
 ## 7. Open
 
 Ordered by what I would pick up first.

@@ -215,10 +215,57 @@ impl TransformerModel {
         // boundaries that a clean PRE-loop one survives — `CAP+1=3` was too
         // small and forced NoSsmSnapshot declines). Sized for every
         // active-sequence pool slot (`max_batch_size`).
-        let decode_ring_slots = if ssm_pool.num_ssm_layers > 0 {
-            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
-        } else {
+        // The ring's ONLY writer (scheduler snapshot_boundary_if_ssm) and
+        // reader (content-loop rollback_to_boundary) live on the PLAIN decode
+        // path — the speculative path does its rejection rollback through the
+        // verify snapshot, never this ring. Under `--speculative` the ring is
+        // therefore unreachable, and on this model it is NOT cheap: 8 slots x
+        // max_batch x the full SSM blob (27B: 158.9 MB) = ~19.9 GB at batch 16,
+        // allocated up front. Skip it when speculative decode is on.
+        // `ATLAS_SSM_DECODE_RING=1` force-allocates anyway (e.g. a mixed
+        // workload whose grammar-bound sequences fall to plain decode and
+        // should keep loop re-steer instead of the fail-open hard-stop);
+        // `=0` force-disables even without spec. The scheduler keys off
+        // `decode_rollback_ring_slots()`, so a 0 here disables save AND
+        // rollback coherently (rollback declines, the documented fail-open).
+        let decode_ring_slots = if ssm_pool.num_ssm_layers == 0 {
             0
+        } else {
+            // Mirrors spark-server's parse_disable_watchdogs semantics
+            // ("1"/"true", trimmed): when all auto-watchdogs are off, the
+            // ring's only reader can never fire even on plain decode.
+            let watchdogs_disabled = std::env::var("ATLAS_DISABLE_WATCHDOGS")
+                .map(|v| {
+                    let v = v.trim().to_ascii_lowercase();
+                    v == "1" || v == "true"
+                })
+                .unwrap_or(false);
+            match std::env::var("ATLAS_SSM_DECODE_RING").ok().as_deref() {
+                Some("1") => atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+                Some("0") => 0,
+                _ if use_speculative || watchdogs_disabled => {
+                    let per_seq = (ssm_pool.h_bytes + ssm_pool.conv_bytes)
+                        * ssm_pool.num_ssm_layers
+                        * atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+                    tracing::info!(
+                        "SSM decode-rollback ring: SKIPPED ({}) — the ring's save/rollback \
+                         path only runs on plain decode with watchdogs enabled. Saves {:.1} GB \
+                         ({} seqs x {} slots x full SSM blob). If plain-decode loop re-steer is \
+                         ever reached it fail-opens to decline; ATLAS_SSM_DECODE_RING=1 \
+                         force-restores the ring.",
+                        if use_speculative {
+                            "speculative decode active"
+                        } else {
+                            "watchdogs disabled"
+                        },
+                        (per_seq * max_batch_size) as f64 / 1e9,
+                        max_batch_size,
+                        atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+                    );
+                    0
+                }
+                _ => atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+            }
         };
         let ssm_snapshots = SsmSnapshotPool::new(
             ssm_cache_slots,
