@@ -47,6 +47,10 @@ mod gemm_dense;
 mod gemm_dense_int8;
 #[path = "ops/gemm_fp4.rs"]
 mod gemm_fp4;
+#[path = "ops/model_stats.rs"]
+pub mod model_stats;
+pub use model_stats::ModelStats;
+
 #[path = "ops/gemm_fp8_prefill.rs"]
 mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]

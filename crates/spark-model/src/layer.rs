@@ -226,6 +226,11 @@ pub struct ForwardContext<'a> {
     /// MoE quantization, LoRA mode, diagnostics. The non-GEMM half of the
     /// lever set; `dispatch` is the GEMM half.
     pub levers: &'a crate::layers::ops::ModelLevers,
+    /// This model's diagnostic counters and one-shot dump latches. Carried
+    /// for the same reason as `levers`: a counter that spans a model swap
+    /// averages two models and describes neither, and a one-shot latch that
+    /// already fired swallows the next model's dump.
+    pub stats: &'a crate::layers::ops::ModelStats,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.

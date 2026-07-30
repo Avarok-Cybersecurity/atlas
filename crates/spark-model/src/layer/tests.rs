@@ -52,10 +52,12 @@ fn test_forward_context_lifetime() {
     let dispatch = crate::layers::ops::GemmDispatch::defaults();
     let derived = crate::layers::ops::DerivedWeights::new();
     let levers = crate::layers::ops::ModelLevers::defaults();
+    let stats = crate::layers::ops::ModelStats::new();
     let ctx = ForwardContext {
         dispatch: &dispatch,
         derived: &derived,
         levers: &levers,
+        stats: &stats,
         buffers: &buffers,
         gpu: &gpu,
         config: &config,

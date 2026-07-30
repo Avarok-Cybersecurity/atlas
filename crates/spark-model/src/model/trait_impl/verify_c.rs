@@ -176,6 +176,7 @@ impl TransformerModel {
             dispatch: &self.dispatch,
             derived: &self.derived,
             levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),

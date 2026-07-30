@@ -45,6 +45,9 @@ pub struct TransformerModel {
     pub(super) derived: crate::layers::ops::DerivedWeights,
     /// Non-GEMM kernel-path levers, resolved at model construction.
     pub(super) levers: crate::layers::ops::ModelLevers,
+    /// Diagnostic counters and one-shot dump latches for this model. Sibling
+    /// to `levers`: what the kernels did, rather than what they do.
+    pub(super) stats: crate::layers::ops::ModelStats,
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,

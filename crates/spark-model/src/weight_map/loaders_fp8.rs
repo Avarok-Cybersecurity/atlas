@@ -179,7 +179,16 @@ pub(crate) fn quantize_to_nvfp4(
         1.0
     };
 
-    // Diagnostic: log absmax result for first few quantizations
+    // Diagnostic: log absmax result for first few quantizations.
+    //
+    // STATIC, DELIBERATELY — log-once latch. This runs during weight load,
+    // before any model object exists to own it, and `quantize_to_nvfp4` is
+    // called from 66 sites; threading a counter through all of them to bound a
+    // log line would cost far more than it buys. The only consequence of the
+    // process scope is that a SECOND model loaded into the same process gets
+    // no absmax lines, and that diagnostic is trivially recovered by starting
+    // the process on the model in question. It holds no model-derived value:
+    // a stale count cannot produce a wrong answer, only a missing INFO line.
     {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static QUANT_DIAG: AtomicUsize = AtomicUsize::new(0);

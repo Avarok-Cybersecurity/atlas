@@ -203,6 +203,7 @@ impl TransformerModel {
                 dispatch: &self.dispatch,
                 derived: &self.derived,
                 levers: &self.levers,
+                stats: &self.stats,
                 attn_metadata: None,
                 profile: false,
                 // MTP runs on rank 0 only — no EP all_reduce (BUG #26).
