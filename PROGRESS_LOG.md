@@ -867,11 +867,15 @@ Decode in BOTH modes is serialized on blocking device-to-host readbacks
 (pageable D2H syncs the stream) and per-step allocations. Kernel-time
 levers (6.11's ranked list) cap at ~+6% e2e by Amdahl; THIS is the 12%.
 
-NEXT (loop iteration 2): inventory the ~27 readbacks/step in the verify
-path (draft ids, accept verdicts, logprobs, bootstrap argmax) and the
-per-step cuMemAlloc sites; batch them into one pinned staging readback per
-step. The 22x SSM-spill fix (#381) is the in-repo precedent for exactly
-this disease.
+NEXT (loop iteration 2): convert the per-step readbacks to a reusable
+PINNED staging pool (#381's proven pattern). Site inventory (initial):
+verify_e.rs:470 Phase-5 argmax readback — fresh pageable `vec!` per step,
+self-described "the step's one host sync"; decode_a2.rs:130 per-seq logits
+pulls (n>1 eager loop) + :359 per-row 16-B probes after a full sync;
+drafter forward_batch LP/argmax scratch reads; ~27 D2H/step total. Also
+hunt the ~4.5K runtime cuMemAllocs (device-side, per-step). Deeper rung if
+pinning alone is not enough: overlap next-step launch with the readback
+(double-buffered step).
 
 ## 7. Open
 
