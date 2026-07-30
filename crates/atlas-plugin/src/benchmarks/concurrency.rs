@@ -355,14 +355,28 @@ impl Benchmark for ConcurrencySweep {
                     "{errors} request(s) failed — affected rows are not comparable"
                 ))
             };
-            return Ok(BenchmarkResult {
+            let mut frame = BenchmarkResult {
                 status: RunStatus::Completed,
                 ..BenchmarkResult::running("done", self.elapsed())
             }
             .with_progress(self.cells.len() as u64, self.cells.len() as u64)
             .with_summary(self.summary())
             .with_table(self.table())
-            .with_verdict(verdict));
+            .with_verdict(verdict);
+            // A "—" in the TPOT column is a measurement limit, not a broken
+            // number, and it is worth saying which: the endpoint delivered the
+            // whole reply in ONE SSE delta, so there is no inter-token interval
+            // to time. Atlas batches short replies that way, so this is common
+            // at small output budgets and reads like a bug if left unexplained.
+            let unmeasured = self.rows.iter().filter(|r| r.tpot.p50.is_none()).count();
+            if unmeasured > 0 {
+                frame = frame.log_line(LogLine::warn(format!(
+                    "TPOT unmeasured in {unmeasured} cell(s): the endpoint sent the whole reply \
+                     in one SSE delta, so there is no inter-token interval to time. Raise the \
+                     output-token budget to measure decode."
+                )));
+            }
+            return Ok(frame);
         }
 
         let (isl, conc) = self.cells[self.cursor];
