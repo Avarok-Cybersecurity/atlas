@@ -66,7 +66,7 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
 pub fn handle_content_token(
     a: &mut ActiveSeq,
     model: &dyn Model,
-    masks: &crate::scheduler::vocab_masks::VocabMasks,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
     a.consume_generation_budget();
     a.content_started = true;
@@ -130,7 +130,7 @@ pub fn handle_content_token(
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
         && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
-            || masks.numeric.as_deref().is_some_and(|m| {
+            || sched.masks.numeric.as_deref().is_some_and(|m| {
                 detect_content_token_loop_normalized_with(
                     &a.output_tokens,
                     m,
@@ -151,7 +151,7 @@ pub fn handle_content_token(
         // = CONTENT_LOOP_PERIOD_MAX so the rollback always escapes
         // the detected period. Falls back to the legacy hard stop
         // when disabled / capped / no boundary found.
-        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, masks) {
+        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, sched) {
             RollbackOutcome::RolledBack { dropped } => {
                 tracing::warn!(
                     content_tokens = a.content_tokens,
@@ -205,7 +205,7 @@ pub fn handle_content_token(
             // constrained tool-call decoder stays valid.
             // `min_keep` = CONTENT_LOOP_PERIOD_MAX drops a full
             // run-on sentence of stalled prose.
-            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, masks) {
+            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, sched) {
                 RollbackOutcome::RolledBack { dropped } => {
                     tracing::warn!(
                         max = max_prose,

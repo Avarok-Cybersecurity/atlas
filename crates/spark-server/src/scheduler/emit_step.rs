@@ -16,7 +16,7 @@ pub fn emit_token(
     a: &mut ActiveSeq,
     tok: u32,
     logprobs: Option<crate::api::TokenLogprobs>,
-    masks: &crate::scheduler::vocab_masks::VocabMasks,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side loop guards (Bug-2 name-run cap, F11 within-dedup,
@@ -296,7 +296,7 @@ pub fn emit_token(
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
             && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
-                || masks.numeric.as_deref().is_some_and(|m| {
+                || sched.masks.numeric.as_deref().is_some_and(|m| {
                     detect_content_token_loop_normalized_with(
                         &a.output_tokens,
                         m,

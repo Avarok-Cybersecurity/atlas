@@ -152,7 +152,7 @@ fn logits_context_field_set_is_stable() {
         tool_call_start_token: Some(3),
         tool_call_end_token: Some(4),
     };
-    // Clone semantics — the context now carries the vocab-indexed masks, which
+    // Clone semantics — the context now carries the vocab-indexed sched, which
     // are `Arc`s, so it is Clone rather than Copy. Pipeline stages still take
     // `&LogitsContext`; only the (once-per-decode-step) construction clones.
     let ctx2 = ctx.clone();

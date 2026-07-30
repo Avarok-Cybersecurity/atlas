@@ -28,6 +28,7 @@ mod logit_processors;
 mod logprobs;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
+pub mod levers;
 mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
@@ -40,6 +41,7 @@ mod prefill_b_step;
 mod repetition;
 mod rollback;
 mod sample_step;
+pub mod sched_ctx;
 pub mod snapshot;
 mod spec_step;
 mod ssm_decode_ring;
@@ -197,6 +199,13 @@ pub fn run(
     // meaningless against a different tokenizer.
     vocab_masks: crate::scheduler::vocab_masks::VocabMasks,
 ) {
+    // Everything this run needs that is derived from the model rather than the
+    // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
+    // once here and read through `sched` from every step function.
+    let sched = crate::scheduler::sched_ctx::SchedCtx::new(
+        vocab_masks,
+        crate::scheduler::levers::SchedLevers::from_env(),
+    );
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");
@@ -485,7 +494,7 @@ pub fn run(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
-            &vocab_masks,
+            &sched,
         );
 
         if active.is_empty() {
@@ -513,8 +522,8 @@ pub fn run(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
-                boundary_mask: vocab_masks.boundary.clone(),
-                mid_word_mask: vocab_masks.mid_word.clone(),
+                boundary_mask: sched.masks.boundary.clone(),
+                mid_word_mask: sched.masks.mid_word.clone(),
             };
             // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
             // keep the first N post-`</think>` tokens on plain serial decode.
@@ -543,12 +552,12 @@ pub fn run(
             if use_ngram_speculative && active.len() == 1 && active[0].grammar_state.is_none() {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {
-                    step_ngram(&*model, &mut active, &vocab_masks, proposer, &verify_ctx);
+                    step_ngram(&*model, &mut active, &sched, proposer, &verify_ctx);
                 }
             } else if use_self_speculative && active.len() == 1 && active[0].grammar_state.is_none()
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
-                step_self_spec(&*model, &mut active, &vocab_masks, num_drafts, &verify_ctx);
+                step_self_spec(&*model, &mut active, &sched, num_drafts, &verify_ctx);
             } else if use_mtp
                 && active.len() == 1
                 && (
@@ -590,7 +599,7 @@ pub fn run(
                                 tool_call_start_token,
                                 tool_call_end_token,
                                 adaptive_sampling,
-                                &vocab_masks,
+                                &sched,
                             );
                             gate.record_decode(t0.elapsed());
                             // ATLAS_MTP_CATCHUP: ring the serially decoded
@@ -633,7 +642,7 @@ pub fn run(
                             step_mtp(
                                 &*model,
                                 &mut active,
-                                &vocab_masks,
+                                &sched,
                                 num_drafts,
                                 &verify_ctx,
                                 dflash_verify_raw_argmax,
@@ -660,7 +669,7 @@ pub fn run(
                     step_mtp(
                         &*model,
                         &mut active,
-                        &vocab_masks,
+                        &sched,
                         num_drafts,
                         &verify_ctx,
                         dflash_verify_raw_argmax,
@@ -689,7 +698,7 @@ pub fn run(
                     tool_call_start_token,
                     tool_call_end_token,
                     adaptive_sampling,
-                    &vocab_masks,
+                    &sched,
                 );
             }
         }

@@ -29,7 +29,7 @@ use super::*;
 pub fn step_verify_dflash(
     model: &dyn Model,
     a: &mut ActiveSeq,
-    masks: &crate::scheduler::vocab_masks::VocabMasks,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
@@ -154,7 +154,7 @@ pub fn step_verify_dflash(
 
     // Emit accepted drafts.
     for i in 0..num_accepted {
-        emit_token(a, drafts[i], None, masks);
+        emit_token(a, drafts[i], None, sched);
         if a.finished {
             return;
         }
@@ -165,7 +165,7 @@ pub fn step_verify_dflash(
     let bonus_idx = num_accepted;
     if bonus_idx < verified.len() {
         let bonus = verified[bonus_idx];
-        emit_token(a, bonus, None, masks);
+        emit_token(a, bonus, None, sched);
         if a.finished {
             return;
         }

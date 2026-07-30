@@ -14,7 +14,7 @@ pub fn step_decode_only(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
-    masks: &crate::scheduler::vocab_masks::VocabMasks,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
     let t0 = std::time::Instant::now();
     let n = active.len();
@@ -115,6 +115,6 @@ pub fn step_decode_only(
         tool_call_start_token,
         tool_call_end_token,
         adaptive_sampling,
-        masks,
+        sched,
     );
 }

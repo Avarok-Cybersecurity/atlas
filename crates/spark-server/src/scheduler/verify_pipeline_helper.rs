@@ -212,7 +212,7 @@ pub fn verify_pick_with_pipeline(
 
     // 4a. P1-3 (2026-07-09): when the request asked for temperature > 0,
     //     SAMPLE from the processed logits instead of taking the argmax.
-    //     The processors (grammar bitmask, think/tool masks, penalties+bias)
+    //     The processors (grammar bitmask, think/tool sched, penalties+bias)
     //     already ran in place above, so masked tokens sit at -inf and the
     //     sampler's candidate filter excludes them — the sampled pick is
     //     grammar-mask-allowed by construction. This mirrors the non-MTP

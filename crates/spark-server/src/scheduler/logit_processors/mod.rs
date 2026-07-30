@@ -19,7 +19,7 @@
 //!    the previous token decoded to mid-word text.
 //! 3. [`post_close::PostCloseThinkMask`] — after `</think>` fires,
 //!    masks `</think>` + `<think>` so the model can't re-enter.
-//! 4. [`tool_during_think::ToolCallDuringThinkingMask`] — masks
+//! 4. [`tool_during_think::ToolCallDuringThinkingMask`] — sched
 //!    `<tool_call>` during thinking; biases it down on tool-loop.
 //! 5. [`forced_think_end::ForcedThinkEndInjector`] — when budget
 //!    + sentence-boundary policy says inject, blanket-mask to `</think>`.

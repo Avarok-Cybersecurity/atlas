@@ -70,7 +70,7 @@ pub(super) fn continue_in_progress_prefills(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
-    masks: &crate::scheduler::vocab_masks::VocabMasks,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) -> bool {
     let mut did_mixed_step = false;
 
@@ -236,7 +236,7 @@ pub(super) fn continue_in_progress_prefills(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
-            masks,
+            sched,
             &mut did_mixed_step,
         );
         promote_completed_prefills(
@@ -343,7 +343,7 @@ pub(super) fn continue_in_progress_prefills(
                 tool_call_start_token,
                 tool_call_end_token,
                 adaptive_sampling,
-                masks,
+                sched,
                 &mut completed_indices,
                 &mut did_mixed_step,
             );

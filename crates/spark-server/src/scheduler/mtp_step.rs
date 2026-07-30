@@ -16,7 +16,7 @@ use super::*;
 pub fn step_mtp(
     model: &dyn Model,
     active: &mut [ActiveSeq],
-    masks: &crate::scheduler::vocab_masks::VocabMasks,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
@@ -77,7 +77,7 @@ pub fn step_mtp(
                         step_verify_k4(
                             model,
                             a,
-                            masks,
+                            sched,
                             &init,
                             num_drafts,
                             verify_ctx,
@@ -87,7 +87,7 @@ pub fn step_mtp(
                         step_verify_k3(
                             model,
                             a,
-                            masks,
+                            sched,
                             &init,
                             num_drafts,
                             verify_ctx,
@@ -97,7 +97,7 @@ pub fn step_mtp(
                         step_verify_k2(
                             model,
                             a,
-                            masks,
+                            sched,
                             &init,
                             num_drafts,
                             verify_ctx,
@@ -190,7 +190,7 @@ pub fn step_mtp(
             None
         };
 
-        emit_token(a, tok, lp, masks);
+        emit_token(a, tok, lp, sched);
         if a.finished {
             continue;
         }
@@ -313,7 +313,7 @@ pub fn step_mtp(
             step_verify_dflash(
                 model,
                 a,
-                masks,
+                sched,
                 &drafts,
                 num_drafts,
                 verify_ctx,
@@ -323,7 +323,7 @@ pub fn step_mtp(
             step_verify_k4(
                 model,
                 a,
-                masks,
+                sched,
                 &drafts,
                 num_drafts,
                 verify_ctx,
@@ -333,7 +333,7 @@ pub fn step_mtp(
             step_verify_k3(
                 model,
                 a,
-                masks,
+                sched,
                 &drafts,
                 num_drafts,
                 verify_ctx,
@@ -343,7 +343,7 @@ pub fn step_mtp(
             step_verify_k2(
                 model,
                 a,
-                masks,
+                sched,
                 &drafts,
                 num_drafts,
                 verify_ctx,
