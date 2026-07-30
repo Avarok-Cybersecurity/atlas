@@ -47,6 +47,16 @@ pub struct SchedulerSnapshot {
     pub published_at: Instant,
 }
 
+/// LATEST-VALUE MAILBOX, DELIBERATELY STATIC. The scheduler thread publishes
+/// here once per loop tick; `/health` and the dashboard read it from threads
+/// that cannot be handed the scheduler's context — that context is borrowed
+/// by the step they are asking about.
+///
+/// It holds no accumulated state: every tick OVERWRITES the whole snapshot,
+/// so a new run's first tick replaces the previous one's values entirely,
+/// and the window in which a reader could see a dead run's counts is one
+/// tick wide. `published_at` closes even that — a snapshot older than a few
+/// seconds means no scheduler is publishing, which readers already check.
 static SNAP: Mutex<Option<SchedulerSnapshot>> = Mutex::new(None);
 
 /// Publish the latest snapshot (scheduler thread, once per loop tick).

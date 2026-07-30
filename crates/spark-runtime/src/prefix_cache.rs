@@ -12,8 +12,18 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// ── Global prefix cache counters (one RadixTree per server) ──
-
+/// RUN MAILBOX, DELIBERATELY STATIC. These back `/metrics` and the dashboard,
+/// which read from an HTTP handler thread and the TUI thread — neither of which
+/// is handed a scheduler or model carrier, and neither of which can be, since
+/// they must answer while the scheduler is mid-step. A process-global address
+/// is what an observability surface is *for*.
+///
+/// The scoping problem a static would otherwise have is solved by clearing
+/// them at run start rather than by plumbing a handle: see
+/// [`crate::run_metrics::reset_for_new_run`], called when a backend is built.
+/// After a swap the counters describe the model now running, which is what a
+/// reader asking "what is the hit rate" means. Prometheus reads the reset as a
+/// counter restart, which it already handles.
 static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static CACHE_HIT_TOKENS: AtomicU64 = AtomicU64::new(0);
@@ -35,6 +45,13 @@ pub fn cache_miss_count() -> u64 {
 }
 pub fn cache_hit_tokens_total() -> u64 {
     CACHE_HIT_TOKENS.load(Ordering::Relaxed)
+}
+
+/// Clear the counters for a new run. See [`crate::run_metrics`].
+pub(crate) fn reset() {
+    CACHE_HITS.store(0, Ordering::Relaxed);
+    CACHE_MISSES.store(0, Ordering::Relaxed);
+    CACHE_HIT_TOKENS.store(0, Ordering::Relaxed);
 }
 
 /// Result of evicting LRU cached blocks (Phase 6.1.e).

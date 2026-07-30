@@ -106,6 +106,10 @@ impl AtlasCudaBackend {
     /// correct module set. Each call produces an independent module set — the
     /// CUDA context and stream are shared, nothing else is.
     pub fn new(ordinal: usize, ptx_modules: &[(&'static str, &'static [u8])]) -> Result<Self> {
+        // A new model's GPU state begins here, so the run mailboxes start
+        // clean — upstream of the first kernel lookup, so the kernel audit
+        // records only this model's modules. See `crate::run_metrics`.
+        crate::run_metrics::reset_for_new_run();
         let registry = AtlasRegistry::load(ordinal, ptx_modules)
             .map_err(|e| anyhow::anyhow!("AtlasRegistry load failed: {e}"))?;
         let default_stream = registry.raw_stream();

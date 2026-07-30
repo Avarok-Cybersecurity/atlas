@@ -10,10 +10,20 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::gpu::{DevicePtr, GpuBackend};
 use anyhow::Result;
 
-// ── Global entropy tracking ──
-// Stores the latest per-token entropy and counts of low-entropy streaks.
-// AtomicU32 stores f32 bits for lock-free reads.
-
+// RUN MAILBOX, DELIBERATELY STATIC. These back `/metrics` and the dashboard,
+// which read from an HTTP handler thread and the TUI thread — neither of which
+// is handed a scheduler or model carrier, and neither of which can be, since
+// they must answer while the scheduler is mid-step. A process-global address
+// is what an observability surface is *for*.
+//
+// The scoping problem a static would otherwise have is solved by clearing
+// them at run start rather than by plumbing a handle: see
+// [`crate::run_metrics::reset_for_new_run`], called when a backend is built.
+// After a swap the counters describe the model now running, which is what a
+// reader asking "what is the hit rate" means. Prometheus reads the reset as a
+// counter restart, which it already handles.
+// The latest per-token entropy plus low-entropy streak counts. `AtomicU32`
+// stores f32 bits for lock-free reads.
 static LAST_ENTROPY: AtomicU32 = AtomicU32::new(0);
 static LOW_ENTROPY_TOKENS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_SAMPLED_TOKENS: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +41,13 @@ pub fn low_entropy_token_count() -> u64 {
 /// Total tokens sampled (for computing low-entropy ratio).
 pub fn total_sampled_token_count() -> u64 {
     TOTAL_SAMPLED_TOKENS.load(Ordering::Relaxed)
+}
+
+/// Clear the gauges for a new run. See [`crate::run_metrics`].
+pub(crate) fn reset_entropy() {
+    LAST_ENTROPY.store(0, Ordering::Relaxed);
+    LOW_ENTROPY_TOKENS.store(0, Ordering::Relaxed);
+    TOTAL_SAMPLED_TOKENS.store(0, Ordering::Relaxed);
 }
 
 pub(super) fn record_entropy(entropy: f32) {
