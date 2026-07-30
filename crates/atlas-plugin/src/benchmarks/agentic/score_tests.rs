@@ -95,12 +95,16 @@ fn the_walk_skips_target_so_build_output_is_not_evidence() {
 }
 
 #[test]
-fn free_ports_are_distinct_and_bindable() {
-    let a = free_port().unwrap();
-    let b = free_port().unwrap();
-    assert!(a > 1024 && b > 1024);
-    // Both must be bindable now that the probe listeners are dropped.
-    std::net::TcpListener::bind(("127.0.0.1", a)).unwrap();
+fn free_port_returns_a_usable_ephemeral_port() {
+    // What `free_port` actually promises: a port the OS handed out as free at
+    // the moment of the call. It does NOT promise the port is still free
+    // afterwards — nothing can, since any process may take it — so this asserts
+    // the range and does not re-bind. An earlier version of this test did
+    // re-bind and flaked under a parallel `cargo test`.
+    for _ in 0..4 {
+        let p = free_port().unwrap();
+        assert!(p > 1024, "expected an ephemeral port, got {p}");
+    }
 }
 
 #[tokio::test]

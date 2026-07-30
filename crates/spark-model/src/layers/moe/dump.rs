@@ -154,6 +154,7 @@ pub fn dump_expert_load(
     if !enabled() {
         return;
     }
+    // Log-once latch — see `atlas_core::scope` for why this category stays static.
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         if gpu.synchronize(stream).is_err() {

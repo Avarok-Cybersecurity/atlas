@@ -21,10 +21,40 @@
 //! handles. Where no carrier exists, the answer is to add one, not to reach for
 //! a guarded global.
 //!
-//! What legitimately remains a static is state derived from the *process* or
-//! the *device* rather than the checkpoint — the CUDA context in
-//! [`crate::cuda_host`] is the clear case. Every such site must carry a comment
-//! arguing why it must be one.
+//! # The statics that legitimately remain
+//!
+//! What stays is state derived from the *process* or the *device* rather than
+//! from the checkpoint. Every such site carries a comment arguing its case;
+//! these are the categories, so a reader can tell at a glance whether a static
+//! they have found is accounted for or is a straggler.
+//!
+//! 1. **The CUDA host** ([`crate::cuda_host`]). One primary context per device
+//!    per process, enforced by the driver; outliving every model is the entire
+//!    point, since not recreating it is what in-process swapping buys. The full
+//!    argument is on the declaration.
+//!
+//! 2. **Log-once latches** (`std::sync::Once`, `*_LOGGED`, `*_WARNED`). These
+//!    hold no value — a `Once` is a latch, not data — so they cannot produce a
+//!    wrong answer. Their only cross-model effect is suppressing a duplicate
+//!    log line for a route the previous model also took. Threading a logging
+//!    concern through every kernel-dispatch signature to restore one INFO line
+//!    is not a trade worth making.
+//!
+//! 3. **One-shot diagnostic latches** (`*_DUMP_DONE`, `*_DIAG_DONE`). Same
+//!    shape, and live only when an `ATLAS_DUMP_*` variable is set: they gate a
+//!    debug capture whose intent is "one sample per process", not "one per
+//!    model". A stale latch suppresses a duplicate dump; it cannot corrupt one.
+//!
+//! 4. **Compile-time tables and descriptors.** Immutable data with no runtime
+//!    state — lookup tables are `const` where the language allows it, and the
+//!    plugin/benchmark descriptors are `static` only because they are reached
+//!    as `&'static` and need a stable address.
+//!
+//! 5. **Process lifecycle** (the TUI's terminal guard, shutdown flags, log
+//!    ring). These describe the *process's* relationship to its terminal and
+//!    its exit, which no model has any bearing on.
+//!
+//! Anything not in one of those five is a straggler and should be scoped.
 //!
 //! # What this module does provide
 //!

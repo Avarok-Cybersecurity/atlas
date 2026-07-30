@@ -411,6 +411,7 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
+            // Log-once latch — see `atlas_core::scope` for why this category stays static.
             static TWIN_LOG: std::sync::Once = std::sync::Once::new();
             TWIN_LOG.call_once(|| {
                 eprintln!(
@@ -493,6 +494,7 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
+            // Log-once latch — see `atlas_core::scope` for why this category stays static.
             static FP4_TWIN_LOG: std::sync::Once = std::sync::Once::new();
             FP4_TWIN_LOG.call_once(|| {
                 eprintln!(
@@ -1452,6 +1454,7 @@ impl DenseFfnLayer {
         let int8_prefill =
             self.int8_faith2_k.0 != 0 && std::env::var_os("ATLAS_INT8_PREFILL").is_some();
         if int8_prefill {
+            // Log-once latch — see `atlas_core::scope` for why this category stays static.
             static INT8_LOG: std::sync::Once = std::sync::Once::new();
             INT8_LOG.call_once(|| {
                 eprintln!(
@@ -1470,6 +1473,7 @@ impl DenseFfnLayer {
             && matches!(self.activation, FfnActivation::SiLU)
             && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
         if fp4mmq_prefill {
+            // Log-once latch — see `atlas_core::scope` for why this category stays static.
             static FP4MMQ_LOG: std::sync::Once = std::sync::Once::new();
             FP4MMQ_LOG.call_once(|| {
                 eprintln!(
@@ -1519,6 +1523,7 @@ impl DenseFfnLayer {
             && self.quantize_nvfp4_k.0 != 0
             && std::env::var_os("ATLAS_FP4_PREFILL").is_some();
         if fp4_prefill {
+            // Log-once latch — see `atlas_core::scope` for why this category stays static.
             static FP4_LOG: std::sync::Once = std::sync::Once::new();
             FP4_LOG.call_once(|| {
                 eprintln!(
@@ -1543,6 +1548,7 @@ impl DenseFfnLayer {
             && !fp4mmq_prefill
             && std::env::var_os("ATLAS_FFN_MMQ").is_some();
         if q4k_prefill {
+            // Log-once latch — see `atlas_core::scope` for why this category stays static.
             static Q4K_LOG: std::sync::Once = std::sync::Once::new();
             Q4K_LOG.call_once(|| {
                 eprintln!(

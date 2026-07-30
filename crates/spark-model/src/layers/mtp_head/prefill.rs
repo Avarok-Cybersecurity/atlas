@@ -96,6 +96,7 @@ impl MtpHead {
                 (fc, k, v)
             }
             _ => {
+                // Log-once latch — see `atlas_core::scope` for why this category stays static.
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     tracing::warn!(

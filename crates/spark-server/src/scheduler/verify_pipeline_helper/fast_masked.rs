@@ -150,6 +150,7 @@ pub(super) fn try_chat_fast_path(
     }
     mtp_timing::record(Phase::FastGreedy, t_fast);
     if all_clear {
+        // Log-once latch — see `atlas_core::scope` for why this category stays static.
         static LOGGED: std::sync::Once = std::sync::Once::new();
         LOGGED.call_once(|| {
             tracing::info!(
