@@ -485,6 +485,16 @@ is the bottleneck. Waiting on prefill_short/balanced_long halves before
 concluding; the emerging picture is regime-dependent scheduling, not a
 global fifo win.
 
+### 6.4b Scheduler A/B FINAL: slai wins all four regimes
+
+fifo/4K completed: prefill_short C=16 50.8 (vs slai 63.8), balanced_long
+C=16 78.6 (vs 93.1-93.9 on the KV-fixed binary). Even the prefill-heavy
+regimes — the ones the phaseA "slai starves prefill admission" note said
+fifo should win — prefer slai on this branch. **Keep slai.** (Confound
+disclosure: the fifo arm also carried 4K max-seq-len; given fifo lost by
+20-45% everywhere, the ordering is safe even if the split between the two
+variables is not measured.)
+
 ### 6.5 PR-survey verdict (what else is worth bringing in)
 
 Checked content-level (not merge-base) against this branch:
@@ -502,6 +512,52 @@ Checked content-level (not merge-base) against this branch:
   d27ec6fd + full #373 + full #375 (above).
 * **Still open elsewhere:** #372 (fp8-KV calibration; only matters for fp8
   KV configs — this config runs bf16 KV).
+
+### 6.6 Speculative on/off at C=16 (full-KV binary, slai/16K) — SPEC WINS
+
+Single-variable A/B, only the `--speculative --num-drafts 3
+--mtp-quantization bf16` flags dropped:
+
+| C=16 regime | spec ON | spec OFF | spec delta |
+|---|---|---|---|
+| decode_short   | **125.2** (repeat 123.8) | 96.7 | +29% |
+| balanced_short | **122.0** | 93.6 | +30% |
+| prefill_short  |  **63.4** | 57.4 | +10% |
+| balanced_long  |   93.1 | 93.1 | tie |
+
+The "verify is 1.77x a plain step so spec might lose at C=16" hypothesis is
+**REFUTED** — #379's batched verify + K-ladder keep MTP a large net win at
+C=16. Do NOT wire a C-dependent auto-disable.
+
+Two side findings:
+* **All KV-exhaustion pressure is MTP's.** Spec-OFF ran with ZERO
+  `KV cache exhausted` errors; spec-ON logs ~1.1K (down from 10.6K
+  pre-#373). The draft/bootstrap KV appetite is the exhaustion driver —
+  worth a targeted look at what run_mtp_propose_batched allocates per step.
+* **The KV-family stack costs ~9% on decode_short C=16**: pre-KV binary
+  138.0 (1 rep) vs full-KV 125.2/123.8 (2 reps), same config. block_trace
+  is ATLAS_KV_TRACE-gated so it is not that. Needs a bisect inside the 12
+  KV commits (suspects: keep-evicting retry loop under MTP pressure,
+  InsertAcquired per-insert allocs, node-ref changes) — or a pre-KV rebuild
+  rep to rule 138.0 an outlier. The trade today is unambiguous (balanced_long
+  went from BROKEN to 93 tok/s) but the 9% should not be silently accepted.
+
+### 6.7 Where C=16 parity stands after today
+
+Best honest config (slai/16K, spec ON, full-KV binary), vs the published
+vLLM bars (treated as fixed; NOT re-measured):
+
+| | C=8 | C=16 |
+|---|---|---|
+| Atlas decode_short | 108.5 | 124-138 |
+| vLLM bar | 98.8 | 168.9 |
+| ratio | **1.10x — parity MET honestly** | **0.73-0.82x** |
+
+The C=16 gap decomposes as: verify-step cost + accept rate (the #379 "Still
+open" arithmetic: verify needs <=1.34x a plain step, measured ~1.77x; p1
+accept ~0.72 vs 0.90 demonstrated on strix via refeed) for the
+decode-heavy regimes, plus prefill admission (TTFT p50=p99=18.8 s walls in
+prefill_short) for the prefill-heavy ones.
 
 ## 7. Open
 
