@@ -497,13 +497,13 @@ impl BlockDiffusionDraftHead {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         let block_dump_armed = {
-            static PER_LAYER_DUMP_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
             let want = std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
                 && position >= block_dump_arm_pos;
-            // swap only consumed when `want` (short-circuit) → env-off never burns
-            // the once-flag; first qualifying propose returns false→armed, locks.
-            want && !PER_LAYER_DUMP_DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+            // The latch is consumed only when `want` (short-circuit) → env-off
+            // never burns the shot; the first qualifying propose takes it.
+            // Keyed on the model's `ModelStats`, not a static: an operator who
+            // sets the flag and swaps models must still get their dump.
+            want && ctx.stats.dumped.keyed("dflash_per_layer")
         };
         let make_paged_args =
             |layer_idx: usize| -> Option<super::forward_block_layer_paged::PagedLayerArgs> {
@@ -641,8 +641,6 @@ impl BlockDiffusionDraftHead {
             //   /tmp/atlas_block_logits.bin   BF16 [γ, vocab]  (pre-argmax)
             //   /tmp/atlas_block_drafts.json  {drafts:[..], meta..}
             {
-                static BLOCK_DUMP_DONE: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
                 // ATLAS_DFLASH_BLOCK_DUMP_AT_POS=N defers the one-shot dump
                 // until position >= N, so the dump fires DEEP in the sequence
                 // where absolute decode positions have diverged from ctx slot
@@ -655,7 +653,11 @@ impl BlockDiffusionDraftHead {
                     .unwrap_or(0);
                 if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
                     && position >= block_dump_min_pos
-                    && !BLOCK_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                    // Per-model latch (see `ModelStats::dumped`) rather than a
+                    // static, so a swap re-arms the dump the operator asked for.
+                    // Consumed at the check: if the dump errors partway the shot
+                    // is spent rather than retried every propose.
+                    && ctx.stats.dumped.keyed("dflash_block_logits")
                 {
                     gpu.synchronize(stream)?;
                     // Full γ × vocab logits (BF16).
@@ -702,7 +704,6 @@ impl BlockDiffusionDraftHead {
                             position,
                         );
                     }
-                    BLOCK_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
 
@@ -721,15 +722,13 @@ impl BlockDiffusionDraftHead {
             // wrong (position grid / mask embed / fc). Gated ATLAS_DFLASH_BLOCK_DUMP=1
             // (same one-shot gate as the logits dump above, fires same call).
             {
-                static BLOCK_INPUT_DONE: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
                 let block_dump_min_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
                 if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
                     && position >= block_dump_min_pos
-                    && !BLOCK_INPUT_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                    && ctx.stats.dumped.keyed("dflash_block_inputs")
                 {
                     gpu.synchronize(stream)?;
                     // Noise/mask embedding rows: on the Option-B path eff_ctx=0 so the
@@ -777,7 +776,6 @@ impl BlockDiffusionDraftHead {
                         kv_len_dump,
                         position,
                     );
-                    BLOCK_INPUT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             Ok(())

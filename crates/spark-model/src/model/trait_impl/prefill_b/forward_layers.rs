@@ -203,12 +203,13 @@ impl TransformerModel {
                 self.gpu.synchronize(stream)?;
                 layer_times.push(lt0.elapsed().as_micros());
             }
-            // MLA diagnostic: per-layer hidden norm for Mistral (once per session)
-            static CHUNK_DIAG_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
+            // MLA diagnostic: per-layer hidden norm for Mistral (once per model).
+            // Per-model latch (see `ModelStats::dumped`) rather than a static: an
+            // operator who sets the flag and then swaps models must still get the
+            // dump, instead of it being swallowed by the previous model's shot.
             if profile_now
                 && self.config.model_type == "mistral"
-                && !CHUNK_DIAG_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                && self.stats.dumped.keyed("mla_chunk_norms")
             {
                 self.gpu.synchronize(stream)?;
                 let last_offset = (proc_count - 1) * self.config.hidden_size * 4;
@@ -227,9 +228,7 @@ impl TransformerModel {
                         "LAYER_NORM L{i}/{}: hidden_norm={norm:.4}",
                         self.layers.len()
                     );
-                    if i == self.layers.len() - 1 {
-                        CHUNK_DIAG_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    if i == self.layers.len() - 1 {}
                 }
             }
             // Diagnostic: dump hidden state norm after first 4 and last 4 layers

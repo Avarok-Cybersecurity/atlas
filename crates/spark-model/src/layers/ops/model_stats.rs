@@ -41,8 +41,15 @@ pub struct MoeUnionStats {
 }
 
 /// One-shot diagnostic latches for one model.
+///
+/// The named fields are the latches with a caller that already holds the
+/// struct; [`keyed`](DumpLatches::keyed) covers the long tail of
+/// `ATLAS_*_DUMP` gates, which are numerous, scattered, and identical in
+/// shape — a field each would be noise, and a static each is the bug.
 #[derive(Debug, Default)]
 pub struct DumpLatches {
+    /// Ad-hoc latches, keyed by a `&'static str` naming the dump.
+    fired: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
     /// Token-id dump (`impl_b3`) — fires on the first forward only.
     pub tokens: AtomicBool,
     /// FP8 weight-quantization diagnostic (`weight_map::loaders_fp8`) — a
@@ -61,6 +68,18 @@ impl DumpLatches {
     pub fn take(flag: &AtomicBool) -> bool {
         !flag.swap(true, Ordering::Relaxed)
     }
+
+    /// `true` exactly once per model for `key`. Use for the `ATLAS_*_DUMP`
+    /// gates that would otherwise each grow a `static AtomicBool`.
+    ///
+    /// Call it only when the dump is actually wanted — it consumes the shot,
+    /// so gating on the env var FIRST keeps a disabled dump from burning it.
+    pub fn keyed(&self, key: &'static str) -> bool {
+        self.fired
+            .lock()
+            .expect("dump latches poisoned")
+            .insert(key)
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +91,18 @@ mod tests {
         let a = ModelStats::new();
         assert!(DumpLatches::take(&a.dumped.tokens), "first forward dumps");
         assert!(!DumpLatches::take(&a.dumped.tokens), "and only the first");
+    }
+
+    #[test]
+    fn a_keyed_latch_fires_once_per_key_per_model() {
+        let a = ModelStats::new();
+        assert!(a.dumped.keyed("dflash_block"));
+        assert!(!a.dumped.keyed("dflash_block"), "and only once");
+        assert!(a.dumped.keyed("dflash_ctx"), "a different dump is separate");
+        assert!(
+            ModelStats::new().dumped.keyed("dflash_block"),
+            "and a new model re-arms every key"
+        );
     }
 
     #[test]

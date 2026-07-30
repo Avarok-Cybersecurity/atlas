@@ -436,12 +436,13 @@ impl TransformerModel {
                 stream,
             )?;
 
-            // MLA diagnostic: dump per-layer hidden state norm (once per session)
-            static DIAG_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
+            // MLA diagnostic: dump per-layer hidden state norm (once per model).
+            // Per-model latch (see `ModelStats::dumped`) rather than a static: an
+            // operator who sets the flag and then swaps models must still get the
+            // dump, instead of it being swallowed by the previous model's shot.
             if self.profile
                 && self.config.model_type == "mistral"
-                && !DIAG_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                && self.stats.dumped.keyed("mla_prefill_norms")
             {
                 self.gpu.synchronize(stream)?;
                 // Read last token's hidden state (what goes to LM head)
@@ -458,9 +459,7 @@ impl TransformerModel {
                         .collect();
                     let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
                     tracing::info!("LAYER_NORM L{i}: hidden_norm={norm:.4}");
-                    if i == self.layers.len() - 1 {
-                        DIAG_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    if i == self.layers.len() - 1 {}
                 }
             }
 
