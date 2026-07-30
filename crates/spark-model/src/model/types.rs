@@ -150,6 +150,11 @@ pub struct TransformerModel {
     pub(super) argmax_logits_kernel: KernelHandle, // FP32 argmax for logits
     pub(super) batched_embed_kernel: KernelHandle,
     pub(super) fill_slots_kernel: KernelHandle,
+    /// One-launch SSM state copy across all SSM layers, replacing the
+    /// per-layer `copy_d2d_async` loops in `async_chkpt.rs`. Resolved with
+    /// `try_kernel`: handle 0 on kernel sets that predate the .cu, in which
+    /// case every call site falls back to the loop.
+    pub(super) ssm_bulk_copy_kernel: KernelHandle,
     /// Cached CUDA graph for single-sequence decode (layer loop + norm + LM head).
     /// CUDA graph cache for n=1 decode, keyed by `seq.slot_idx`. The captured
     /// graph has SSM h_state/conv_state pointers baked in as kernel arguments,

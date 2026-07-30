@@ -145,6 +145,10 @@ impl TransformerModel {
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
         let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
+        // try_kernel keeps the handle 0 on older kernel sets so async_chkpt
+        // falls back to the per-layer copy_d2d_async loop.
+        let ssm_bulk_copy_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "ssm_state_bulk_copy", "ssm_state_bulk_copy");
         let profile = config.profile;
         let profile_first = std::env::var("ATLAS_PROFILE_FIRST").is_ok();
 
@@ -712,6 +716,7 @@ impl TransformerModel {
             argmax_logits_kernel,
             batched_embed_kernel,
             fill_slots_kernel,
+            ssm_bulk_copy_kernel,
             decode_graph: Mutex::new(std::collections::HashMap::new()),
             batch_decode_graphs: Mutex::new((HashMap::new(), 0)),
             // Suppress graphs during FP8 calibration only. MLA used to be

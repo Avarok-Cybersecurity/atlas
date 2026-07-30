@@ -41,6 +41,19 @@ pub(crate) struct SsmStatePool {
     /// Per-slot SSM state checkpoint pools (only allocated when has_mtp).
     pub(super) h_checkpoint_pools: Vec<DevicePtr>,
     pub(super) conv_checkpoint_pools: Vec<DevicePtr>,
+    /// Device-resident copies of the six per-layer base-pointer arrays above,
+    /// uploaded ONCE here at construction. They let `ssm_state_bulk_copy`
+    /// cover every SSM layer in a single launch instead of one
+    /// `cuMemcpyDtoDAsync` per layer per copy family (see the kernel header
+    /// for the measured per-step call counts). `DevicePtr(0)` when the
+    /// corresponding host pool is empty (non-MTP build) — callers treat that
+    /// as "bulk path unavailable" and run the per-layer loop.
+    pub(super) h_state_bases_dev: DevicePtr,
+    pub(super) conv_state_bases_dev: DevicePtr,
+    pub(super) h_checkpoint_bases_dev: DevicePtr,
+    pub(super) conv_checkpoint_bases_dev: DevicePtr,
+    pub(super) h_intermediate_bases_dev: DevicePtr,
+    pub(super) conv_intermediate_bases_dev: DevicePtr,
     pub(super) h_bytes: usize,
     pub(super) conv_bytes: usize,
     /// Number of CLAIMABLE slots (excludes the reserved dummy slot at
@@ -61,6 +74,23 @@ pub(crate) struct SsmStatePool {
     pub(super) has_mtp: bool,
     pub(super) num_intermediates: usize,
     pub(super) free_slots: Mutex<Vec<usize>>,
+}
+
+/// Upload a per-layer base-pointer array to device memory for
+/// `ssm_state_bulk_copy`. Returns `DevicePtr(0)` for an empty family so the
+/// caller can treat it as "bulk path unavailable".
+fn upload_bases(gpu: &dyn GpuBackend, pools: &[DevicePtr]) -> Result<DevicePtr> {
+    if pools.is_empty() {
+        return Ok(DevicePtr(0));
+    }
+    let vals: Vec<u64> = pools.iter().map(|p| p.0).collect();
+    // SAFETY: reinterpreting a `Vec<u64>` as bytes for H2D upload. `u64` is
+    // POD with no padding, the length is exact, and `vals` outlives the
+    // synchronous copy.
+    let bytes = unsafe { std::slice::from_raw_parts(vals.as_ptr() as *const u8, vals.len() * 8) };
+    let dev = gpu.alloc(vals.len() * 8)?;
+    gpu.copy_h2d(bytes, dev)?;
+    Ok(dev)
 }
 
 impl SsmStatePool {
@@ -165,6 +195,16 @@ impl SsmStatePool {
             "SSM state pool: {max_slots} slots × {num_ssm_layers} layers = {total_mb} MB",
         );
 
+        // Device-side base-pointer arrays for `ssm_state_bulk_copy`. Uploaded
+        // once; the pools are allocated for the model's lifetime so these
+        // never need refreshing. Empty families upload as DevicePtr(0).
+        let h_state_bases_dev = upload_bases(gpu, &h_state_pools)?;
+        let conv_state_bases_dev = upload_bases(gpu, &conv_state_pools)?;
+        let h_checkpoint_bases_dev = upload_bases(gpu, &h_checkpoint_pools)?;
+        let conv_checkpoint_bases_dev = upload_bases(gpu, &conv_checkpoint_pools)?;
+        let h_intermediate_bases_dev = upload_bases(gpu, &h_intermediate_pools)?;
+        let conv_intermediate_bases_dev = upload_bases(gpu, &conv_intermediate_pools)?;
+
         Ok(Self {
             h_state_pools,
             conv_state_pools,
@@ -172,6 +212,12 @@ impl SsmStatePool {
             conv_intermediate_pools,
             h_checkpoint_pools,
             conv_checkpoint_pools,
+            h_state_bases_dev,
+            conv_state_bases_dev,
+            h_checkpoint_bases_dev,
+            conv_checkpoint_bases_dev,
+            h_intermediate_bases_dev,
+            conv_intermediate_bases_dev,
             h_bytes,
             conv_bytes,
             max_slots,
