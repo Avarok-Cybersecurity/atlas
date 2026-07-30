@@ -26,22 +26,21 @@ static CALLS: AtomicU64 = AtomicU64::new(0);
 static SAMPLES: AtomicU64 = AtomicU64::new(0);
 static UNIQUE_SUM: AtomicU64 = AtomicU64::new(0);
 static SLOTS_SUM: AtomicU64 = AtomicU64::new(0);
-
-fn enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_MOE_UNION_STATS").ok().as_deref() == Some("1"))
-}
+// The `OnceLock<bool>` static that gated this is now
+// `layers::ops::ModelLevers::moe_union_stats`, passed in by the caller.
 
 /// Sample the expert-index union for one MoE layer's verify batch.
 /// `indices_dev` = `[m * top_k]` u32 expert ids, already written on `stream`.
 pub(super) fn maybe_sample_expert_union(
     gpu: &dyn GpuBackend,
+    // Carried, not read from a static: this is a per-model diagnostic lever.
+    enabled: bool,
     indices_dev: DevicePtr,
     m: usize,
     top_k: usize,
     stream: u64,
 ) {
-    if !enabled() {
+    if !enabled {
         return;
     }
     // NEVER sync/copy inside a CUDA-graph capture — it invalidates the

@@ -903,26 +903,20 @@ enum HoloFastMoeMode {
 /// grouped gate_up prefill path. OnceLock-cached, default OFF => the existing
 /// FP8 fused gate_up kernel runs unchanged (bit-identical).
 fn holo_moe_gateup_fp4() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("ATLAS_HOLO_MOE_GATEUP_FP4")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    // Load-time: the weight loader runs before any `TransformerModel` exists to
+    // carry the levers, so this resolves at the point of use rather than in a
+    // static. The interpretation stays SSOT in `ModelLevers`.
+    crate::layers::ops::ModelLevers::from_env().holo_moe_gateup_fp4
 }
 
 /// `ATLAS_HOLO_MOE_DOWN_FP4=1` opts in to the FP4 (NVFP4 block-scaled) down
 /// prefill path. OnceLock-cached, default OFF => the existing FP8/w4a16 down
 /// path runs unchanged (bit-identical). Independent of the gate_up flag.
 fn holo_moe_down_fp4() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("ATLAS_HOLO_MOE_DOWN_FP4")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    // Load-time: the weight loader runs before any `TransformerModel` exists to
+    // carry the levers, so this resolves at the point of use rather than in a
+    // static. The interpretation stays SSOT in `ModelLevers`.
+    crate::layers::ops::ModelLevers::from_env().holo_moe_down_fp4
 }
 
 fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {

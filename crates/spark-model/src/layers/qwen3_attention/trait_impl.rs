@@ -75,17 +75,9 @@ pub fn diag_norm_f32(
     );
 }
 
-/// Gemma-4 diagnostic gate. Set ATLAS_DIAG_GEMMA4=1 to enable per-layer
-/// hidden-state norm dumps in the decode path. Heavy (one d2h copy per
-pub(super) fn gemma4_diag_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        matches!(
-            std::env::var("ATLAS_DIAG_GEMMA4").ok().as_deref(),
-            Some("1") | Some("true")
-        )
-    })
-}
+// The `OnceLock<bool>` static that lived here is now
+// `layers::ops::ModelLevers::gemma4_diag`, resolved when the model is built
+// and carried on `ForwardContext`.
 
 impl TransformerLayer for Qwen3AttentionLayer {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

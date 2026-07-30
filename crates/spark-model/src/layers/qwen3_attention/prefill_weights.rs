@@ -45,8 +45,10 @@ impl Qwen3AttentionLayer {
         // instead of the default t_m128 which crushes activations to FP8 E4M3.
         // Gated by ATLAS_BF16_TC_PROJ (default off → unchanged). Removes the
         // FP8 prefill perturbation on the attention projections.
-        static BF16_PROJ: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let bf16_proj = *BF16_PROJ.get_or_init(|| std::env::var_os("ATLAS_BF16_TC_PROJ").is_some());
+        // Load-time weight prep runs before any `TransformerModel` exists to
+        // carry the levers, so this resolves at the point of use. The
+        // interpretation stays SSOT in `ModelLevers`.
+        let bf16_proj = crate::layers::ops::ModelLevers::from_env().bf16_tc_proj;
         if bf16_proj && self.w4a16_gemm_t_m128_bf16_k.0 != 0 {
             return crate::layers::ops::w4a16_gemm_n128_m128_bf16(
                 gpu,

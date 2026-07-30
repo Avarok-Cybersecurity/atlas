@@ -68,6 +68,15 @@ pub struct ModelLevers {
     // ── Diagnostics ──
     /// K=4 chain-widening diagnostics.
     pub k4_diag: bool,
+    /// Per-layer hidden-state norm dumps on the Gemma-4 decode path. Heavy —
+    /// one device-to-host copy per layer.
+    pub gemma4_diag: bool,
+
+    // ── Attention (cont.) ──
+    /// BF16 tensor-core attention projections: dequant FP4 to BF16 and use a
+    /// BF16 MMA instead of the default path, which crushes activations to FP8
+    /// E4M3. Removes the FP8 prefill perturbation on those projections.
+    pub bf16_tc_proj: bool,
 }
 
 /// Opt-IN: off unless the variable is exactly `1`.
@@ -98,13 +107,18 @@ impl ModelLevers {
             gdn_wyn: opt_out("ATLAS_GDN_WYN"),
             ffn_small_m: opt_out("ATLAS_FFN_SMALLM"),
             decode_ffn_via_gemm: opt_in("ATLAS_DECODE_FFN_VIA_GEMM"),
-            holo_moe_down_fp4: opt_in("ATLAS_HOLO_MOE_DOWN_FP4"),
-            holo_moe_gateup_fp4: opt_in("ATLAS_HOLO_MOE_GATEUP_FP4"),
+            // These two accept `true` as well as `1`.
+            holo_moe_down_fp4: opt_in_truthy("ATLAS_HOLO_MOE_DOWN_FP4"),
+            holo_moe_gateup_fp4: opt_in_truthy("ATLAS_HOLO_MOE_GATEUP_FP4"),
             moe_union_stats: opt_in("ATLAS_MOE_UNION_STATS"),
             dflash_contig_attn: opt_in("ATLAS_DFLASH_CONTIG_ATTN"),
             lora_eager: opt_in_truthy("ATLAS_LORA_EAGER"),
             lora_rotate: opt_in_truthy("ATLAS_LORA_ROTATE"),
             k4_diag: opt_in("ATLAS_K4_DIAG"),
+            // Accepts `true` as well as `1`.
+            gemma4_diag: opt_in_truthy("ATLAS_DIAG_GEMMA4"),
+            // Presence-gated, not value-gated: any value enables it.
+            bf16_tc_proj: std::env::var_os("ATLAS_BF16_TC_PROJ").is_some(),
         }
     }
 
