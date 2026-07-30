@@ -1241,7 +1241,44 @@ Logs: `conc_c8_fp8kv_v2.log`, `conc_c8_fp8kv_hp{,_rep2}.log`,
 `oc_webserver_fp8hp.log`, matching `conc27_*.log`, empty-call table in
 the session transcript.
 
+### 6.23 Temperature 2×2 (user-requested) + route-log hygiene A/B
+
+**Temp 0.6 via generation_config overlay** (`/tank/hf/overlays/qwen27b-temp06`,
+symlink farm + edited generation_config; server log confirms
+`temperature=0.6, top_k=20, top_p=0.95`). C=8 agentic + oc webserver:
+
+| leg | pass | empty-call rate | decode med | median s | oc webserver |
+|---|---|---|---|---|---|
+| bf16 t1.0 (record) | 8/8, 8/8 | 0%, 9.7% | 4.4–4.8 | 256–279 | 12 tools / 110 s |
+| bf16 t0.6 | 7/8 | 3.4% | 3.9 | 311 | 14 tools / 231 s |
+| fp8+hp t1.0 | 8/8 → 5/8 | 0%, **20%** | 5.4 | 252–378 | 28 tools / 385 s |
+| **fp8+hp t0.6** | 7/8 | **0.0%** | **5.4** | **243.1** | (cell skipped, user) |
+
+Verdict: on bf16, t0.6 is a mild net negative (slower, no quality win —
+keep t1.0). On fp8+hp, t0.6 is the interesting cell: **zero empty calls,
+session-best median, full fp8 decode speed** — supports the hypothesis
+that fp8's quality variance is TEMPERATURE-COUPLED (E4M3 logit noise ×
+t1.0 tail mass = degenerate tool-call paths; t0.6 suppresses them). One
+rep; needs 2–3 more before fp8+hp+t0.6 can challenge the record.
+
+**Route-log hygiene (24e8bf7c):** CUTLASS_NVFP4_ROUTE warn→debug +
+per-call bookkeeping gated on `tracing::enabled!(DEBUG)` +
+log_gemm_shape env gate cached. A/B (prefill_short C=8/16 + decode_short
+C=16, same config): **impact ≤0.4% TTFT — below noise**. It was a log-
+hygiene problem (the polluted WARN channel misdirected the 6.20 fp8
+diagnosis), not a perf problem; recorded honestly as such. The dedup key
+includes M, so agentic prefill (new M every request) WARNed constantly.
+
 ## 7. Open
+
+- **Vision concurrency: UNTESTED (user-requested, 2026-07-30).** The centml
+  checkpoint IS a VL model (vision_config + 333 `model.visual.*` tensors)
+  and the target loads the ViT (`qwen35_dense.rs:989`), but there is zero
+  correctness or concurrency coverage. Spec of record when testing:
+  `--vision-max-pixels 262144` (256K, per user). Watch: vision chunks get
+  NO prefix-cache reuse by design (save_checkpoint.rs skips radix inserts),
+  ViT-vs-text prefill contention in mixed steps, and whether this target
+  has the Holo-class GEMM ViT attention path or the slow pre-fix one.
 
 Ordered by what I would pick up first.
 
