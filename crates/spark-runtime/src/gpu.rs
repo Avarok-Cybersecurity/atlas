@@ -186,6 +186,13 @@ pub trait GpuBackend: Send + Sync {
     /// Look up a kernel function by module and function name.
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
 
+    /// This backend's memoized kernel handles and scratch allocations.
+    ///
+    /// Required rather than defaulted: an op that memoizes a `KernelHandle`
+    /// or a `DevicePtr` anywhere else is caching something that belongs to
+    /// this backend's model, and a default would let a new backend forget.
+    fn op_cache(&self) -> &crate::op_cache::OpCache;
+
     /// Synchronise the stream after every kernel launch, so an asynchronous
     /// illegal-address fault is reported at the kernel that caused it rather
     /// than at a later sync. Resolved once when the backend is built; read on

@@ -224,6 +224,10 @@ impl GpuBackend for AtlasCudaBackend {
         self.default_stream
     }
 
+    fn op_cache(&self) -> &crate::op_cache::OpCache {
+        &self.op_cache
+    }
+
     fn debug_sync_kernels(&self) -> bool {
         AtlasCudaBackend::debug_sync_kernels(self)
     }

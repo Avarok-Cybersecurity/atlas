@@ -89,6 +89,9 @@ pub struct AtlasCudaBackend {
     /// `ATLAS_DEBUG_SYNC_KERNELS=1` — sync after every launch. Read once here
     /// rather than per launch, and carried rather than cached in a static.
     debug_sync_kernels: bool,
+    /// This model's kernel handles and op scratch. Dropped with the backend,
+    /// so neither can outlive the registry or context it came from.
+    op_cache: crate::op_cache::OpCache,
     /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
@@ -122,6 +125,7 @@ impl AtlasCudaBackend {
         Ok(Self {
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
+            op_cache: crate::op_cache::OpCache::new(),
             default_stream,
             cuda_ctx,
         })
