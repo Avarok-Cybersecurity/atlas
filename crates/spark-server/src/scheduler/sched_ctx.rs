@@ -25,6 +25,15 @@ pub struct SchedCtx {
     /// Speculation accept/reject telemetry for this run. Mutated through the
     /// shared reference, which is why its counters are atomics.
     pub stats: SpecStats,
+    /// Trained repetition-onset detection head, when `[behavior].rom_head`
+    /// names a loadable artifact. `None` means the F2 heuristic is the
+    /// fallback — callers MUST treat it that way.
+    ///
+    /// Scaffolding until the artifact loader lands. It lives here rather than
+    /// in a static because a trained head belongs to the model it was trained
+    /// with; putting the seam in the right place now is cheaper than moving it
+    /// once something depends on it.
+    pub rom_head: Option<std::sync::Arc<dyn crate::scheduler::rollback::RomHead>>,
 }
 
 impl SchedCtx {
@@ -33,6 +42,7 @@ impl SchedCtx {
             masks,
             levers,
             stats: SpecStats::new(),
+            rom_head: None,
         }
     }
 

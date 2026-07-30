@@ -445,25 +445,9 @@ pub trait RomHead: Send + Sync {
     fn repetition_onset_score(&self, recent_tokens: &[u32]) -> f32;
 }
 
-static ROM_HEAD: std::sync::OnceLock<std::sync::Arc<dyn RomHead>> = std::sync::OnceLock::new();
-
-/// Install a trained ROM detection head. Idempotent. Called at startup
-/// only when `[behavior].rom_head` names a loadable artifact. When never
-/// called, [`rom_head`] returns `None` and F2 remains the fallback.
-/// Intentionally unused until the artifact loader lands (see the
-/// ROM-scaffold comment block above).
-#[allow(dead_code)]
-pub fn set_rom_head(head: std::sync::Arc<dyn RomHead>) {
-    let _ = ROM_HEAD.set(head);
-}
-
-/// Read the installed ROM head, if any. `None` until [`set_rom_head`]
-/// runs — callers MUST treat `None` as "use the F2 fallback".
-/// Intentionally unused until the artifact loader lands.
-#[allow(dead_code)]
-pub fn rom_head() -> Option<std::sync::Arc<dyn RomHead>> {
-    ROM_HEAD.get().cloned()
-}
+// A trained ROM head belongs to the MODEL that was trained with it, so the
+// seam is `SchedCtx::rom_head` rather than a process global — correct by
+// construction before the artifact loader lands, rather than after.
 
 #[cfg(test)]
 #[path = "rollback_tests.rs"]
