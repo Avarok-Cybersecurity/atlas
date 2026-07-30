@@ -82,6 +82,14 @@ killing the session before run/curl/teardown. Reproduced with MMQ OFF
 (control: followed=2/6, same rc=1, 3/3 still passing) — W4A4 exonerated.
 Actionable: agentic serving needs --max-seq-len >= 32K for this task class
 (the 16K rep that scored 6/6 merely squeaked under the ceiling).
+**CLOSED (2026-07-30): the agentic config of record is now 64K**
+(`combo_conc_mmq64k.sh`: --max-seq-len 65536, KV_OVERCOMMIT=1, MMQ on,
+funded by the 20.3 GB decode-ring reclaim — the ring skip + 64K coexist:
+startup shows both). Verified: webserver task followed **6/6, rc=0**, 12
+tools, 110 s — the complete write/test/run/curl/teardown sequence. Known
+caveat at long contexts: past ~7.2K tokens batched MTP propose falls back
+per-seq (the still-open 5.2 propose_meta sizing item) — functional, noisy,
+and the next code item if 64K becomes the daily driver.
 
 **CANONICAL TEST CONFIG IS NOW 4K (2026-07-30, user decision):**
 `--max-seq-len 4096 --max-prefill-tokens 4096`, `ATLAS_KV_OVERCOMMIT` removed
