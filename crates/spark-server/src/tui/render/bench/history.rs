@@ -79,7 +79,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     theme::text2()
                 },
             ),
-            Span::styled(entry.label.clone(), theme::dim()),
+            Span::styled(entry.age_text(), theme::dim()),
         ]);
         if selected {
             line = line.style(Style::default().bg(theme::BG_SELECTION.color()));
@@ -111,7 +111,12 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
                 theme::text().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("· {} · {:.0}s", frame.phase, frame.elapsed.as_secs_f64()),
+                format!(
+                    "· {} · {:.0}s · {}",
+                    frame.phase,
+                    frame.elapsed.as_secs_f64(),
+                    entry.age_text()
+                ),
                 theme::text2(),
             ),
         ])),

@@ -31,8 +31,26 @@ pub enum View {
 /// A finished run, as read back from disk.
 pub struct HistoryEntry {
     pub benchmark_id: String,
-    pub label: String,
+    /// When it finished, as unix seconds, taken from the filename.
+    pub recorded_at: u64,
     pub frame: BenchmarkResult,
+}
+
+impl HistoryEntry {
+    /// Human age. A run list is read to answer "which of these is recent?",
+    /// and a raw epoch answers that for nobody.
+    pub fn age_text(&self) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match now.saturating_sub(self.recorded_at) {
+            0..=90 => "just now".into(),
+            s @ 91..=5400 => format!("{} min ago", s / 60),
+            s @ 5401..=172_800 => format!("{} h ago", s / 3600),
+            s => format!("{} d ago", s / 86_400),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -352,15 +370,14 @@ impl BenchState {
                 let Ok(frame) = serde_json::from_str::<BenchmarkResult>(&text) else {
                     continue;
                 };
-                let label = path
+                let recorded_at = path
                     .file_stem()
                     .and_then(|s| s.to_str())
-                    .unwrap_or("run")
-                    .trim_start_matches("run-")
-                    .to_string();
+                    .and_then(|s| s.trim_start_matches("run-").parse().ok())
+                    .unwrap_or(0);
                 self.history.push(HistoryEntry {
                     benchmark_id: descriptor.id.to_string(),
-                    label,
+                    recorded_at,
                     frame,
                 });
             }

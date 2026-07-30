@@ -237,7 +237,13 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {
         }
     }
     f.render_widget(Paragraph::new(lines), area);
-    // 1-col rule on the right edge.
+    // 1-col rule on the right edge. `Layout` hands back a zero-width rect when
+    // the terminal is narrower than the constraints ask for, and `area.width - 1`
+    // then underflows and panics — taking the dashboard, and with it the
+    // server's foreground, down on a resize nobody expected to matter.
+    if area.width == 0 {
+        return;
+    }
     for y in area.y..area.y + area.height {
         f.render_widget(
             Paragraph::new(Span::styled("│", theme::dim())),
@@ -402,3 +408,7 @@ pub(super) fn gradient_bar(frac: f64, width: u16) -> Line<'static> {
     }
     Line::from(spans)
 }
+
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod tests;

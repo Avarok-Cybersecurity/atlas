@@ -90,13 +90,10 @@ impl BenchState {
         }
         self.confirm_open = false;
         match self.start() {
-            Ok(()) => Outcome::Toast {
-                text: format!(
-                    "started {}",
-                    self.descriptor().map(|d| d.name).unwrap_or("benchmark")
-                ),
-                error: false,
-            },
+            // No toast on success: starting switches to the Run view, which
+            // already names the benchmark and its phase. A toast here was both
+            // redundant and drawn on top of the progress bar it was announcing.
+            Ok(()) => Outcome::None,
             Err(e) => Outcome::Toast {
                 text: e,
                 error: true,
