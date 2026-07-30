@@ -622,6 +622,31 @@ is unsound by construction; `ATLAS_MARCONI_EXACT=1` re-enables), `b37669b5`
 (insert-contract tests). Ports kept this branch's newer tail-only session
 gate + `marconi_min_tokens` threshold with the picked semantics layered in.
 
+### 6.6d The MTP drafter KV pool was sized for ONE sequence — fixed, +10-33% at C=16
+
+Root cause of every `KV cache exhausted` ERROR left after #373/#375: the
+drafter's own 1-layer paged pool (`mtp_head/new.rs`) was
+`max_seq_len/block_size + 1` blocks — 1,025 on the 16K config, sized before
+MTP propose went batched. 16 drafting seqs x ~2K tokens needs ~2x that,
+while the 15K-block MAIN pool never fills on a 1K workload. Every hit
+degraded batched propose to the per-step fallback. Fix (`bf2fec8a`): scale
+by `mtp_max_seqs`, capped at the main pool's block count (drafter can never
+need more live tokens than main KV holds). 0.9 GB at this config.
+
+Validation (C=16, slai/16K, spec ON, single reps):
+
+| regime | before | after | delta |
+|---|---|---|---|
+| decode_short | 131.3 | **144.3** | +10% |
+| balanced_long | 93.5 | **123.9** | **+33%** (TPOT p50 148.1 -> 98.9 ms) |
+| exhaustion ERRORs | ~1,100 | **0** | |
+
+This was the largest single C=16 lever found today. Honest decode_short
+now 144.3 vs the 168.9 bar = 0.85x (was 0.73-0.78 at session start).
+Note TTFT drifted up in both cells (5.5->6.8 s, 18.8->21.1 s) — plausibly
+the drafter now prefilling contexts it previously failed to admit; watch
+in the next full sweep rather than assuming noise.
+
 ### 6.7 Where C=16 parity stands after today
 
 Best honest config (slai/16K, spec ON, full-KV binary), vs the published
