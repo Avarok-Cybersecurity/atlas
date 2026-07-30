@@ -294,18 +294,24 @@ impl<K: Eq + Hash, V: Clone> ScopedMap<K, V> {
 /// State that owns device memory and must be released in a defined order.
 ///
 /// `Drop` is the wrong contract for this and the reason is specific: on GB10
-/// unified memory a device free posts in-band TLB invalidations, so frees must
-/// happen at a quiescent point in a controlled order — and `Drop` is neither
-/// ordered across independent values nor able to report a failure. Implementors
-/// keep a `Drop` that is a last-resort backstop; [`release`](Self::release) is
-/// the path the host actually takes.
-pub trait ModelResource: Send + Sync {
-    /// Human name, for the teardown log and for attributing a failure.
+/// unified memory a device free posts in-band TLB invalidations that corrupt
+/// *neighbouring* allocations when interleaved with other allocation traffic.
+/// That constrains **when** frees happen, not whether — teardown, where nothing
+/// else is allocating and the streams are synchronised, is the safe case, and
+/// the loader's scratch-buffer workaround exists precisely because loading is
+/// not. `Drop` can express neither that ordering nor a failure.
+///
+/// `Cx` is whatever releasing needs — for GPU state that is the allocator.
+/// Making it a type parameter keeps `atlas-core` free of a dependency on the
+/// backend crate while still letting a resource be handed the thing that owns
+/// its memory, rather than making every resource carry its own handle.
+pub trait ModelResource<Cx: ?Sized>: Send + Sync {
+    /// Human name, for the teardown report and for attributing a failure.
     fn label(&self) -> &'static str;
 
     /// Release everything this owns. Must be idempotent: the host calls it,
     /// and a `Drop` backstop may call it again.
-    fn release(&mut self) -> anyhow::Result<()>;
+    fn release(&mut self, cx: &Cx) -> anyhow::Result<()>;
 }
 
 /// Releases a set of resources in reverse registration order — the inverse of
@@ -315,18 +321,25 @@ pub trait ModelResource: Send + Sync {
 /// One failure does not abandon the rest: every resource is released, and the
 /// first error is returned afterwards. A half-torn-down GPU is worse than a
 /// reported error.
-#[derive(Default)]
-pub struct Teardown {
-    resources: Vec<Box<dyn ModelResource>>,
+pub struct Teardown<Cx: ?Sized> {
+    resources: Vec<Box<dyn ModelResource<Cx>>>,
 }
 
-impl Teardown {
+impl<Cx: ?Sized> Default for Teardown<Cx> {
+    fn default() -> Self {
+        Self {
+            resources: Vec::new(),
+        }
+    }
+}
+
+impl<Cx: ?Sized> Teardown<Cx> {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Register a resource. Registration order is construction order.
-    pub fn push(&mut self, resource: Box<dyn ModelResource>) {
+    pub fn push(&mut self, resource: Box<dyn ModelResource<Cx>>) {
         self.resources.push(resource);
     }
 
@@ -340,10 +353,10 @@ impl Teardown {
 
     /// Release everything, newest first. Returns the first failure, after
     /// having attempted them all.
-    pub fn release_all(&mut self) -> anyhow::Result<()> {
+    pub fn release_all(&mut self, cx: &Cx) -> anyhow::Result<()> {
         let mut failures = Vec::new();
         while let Some(mut resource) = self.resources.pop() {
-            if let Err(e) = resource.release() {
+            if let Err(e) = resource.release(cx) {
                 // Every failure is reported, not just the first: after a
                 // partial teardown the operator needs the whole picture to
                 // decide whether the GPU is still usable.

@@ -199,11 +199,14 @@ struct Fake {
     released: usize,
 }
 
-impl ModelResource for Fake {
+/// Stands in for the allocator a real resource frees through.
+struct Allocator;
+
+impl ModelResource<Allocator> for Fake {
     fn label(&self) -> &'static str {
         self.label
     }
-    fn release(&mut self) -> anyhow::Result<()> {
+    fn release(&mut self, _cx: &Allocator) -> anyhow::Result<()> {
         self.released += 1;
         self.log.lock().unwrap().push(self.label);
         if self.fail {
@@ -217,7 +220,7 @@ fn fake(
     label: &'static str,
     log: &std::sync::Arc<Mutex<Vec<&'static str>>>,
     fail: bool,
-) -> Box<dyn ModelResource> {
+) -> Box<dyn ModelResource<Allocator>> {
     Box::new(Fake {
         label,
         log: log.clone(),
@@ -230,12 +233,12 @@ fn fake(
 fn teardown_releases_in_reverse_construction_order() {
     let _serial = serial();
     let log = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let mut t = Teardown::new();
+    let mut t: Teardown<Allocator> = Teardown::new();
     t.push(fake("weights", &log, false));
     t.push(fake("kv-pool", &log, false));
     t.push(fake("modules", &log, false));
     assert_eq!(t.len(), 3);
-    t.release_all().unwrap();
+    t.release_all(&Allocator).unwrap();
     assert_eq!(
         *log.lock().unwrap(),
         vec!["modules", "kv-pool", "weights"],
@@ -248,11 +251,11 @@ fn teardown_releases_in_reverse_construction_order() {
 fn one_failure_does_not_abandon_the_rest() {
     let _serial = serial();
     let log = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let mut t = Teardown::new();
+    let mut t: Teardown<Allocator> = Teardown::new();
     t.push(fake("weights", &log, false));
     t.push(fake("kv-pool", &log, true));
     t.push(fake("modules", &log, false));
-    let err = t.release_all().unwrap_err();
+    let err = t.release_all(&Allocator).unwrap_err();
     assert_eq!(
         *log.lock().unwrap(),
         vec!["modules", "kv-pool", "weights"],
