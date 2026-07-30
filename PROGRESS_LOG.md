@@ -1153,6 +1153,21 @@ vs 37s (default); temperature-0 probe SHA identical (bit-equivalent).
 Kill switch ATLAS_HOST_TRANSPOSE=1; silent host fallback for targets
 without the kernel; arity pinned.
 
+### 6.21 K=4 ladder rung at C=8 — DEAD as a flag
+
+`--num-drafts 4` + `ATLAS_MTP_K_LADDER=4:3,8:4,16:1` on the config of
+record, C=8 agentic: agg **16.3** (vs 25.7–26.3), decode median **2.4**
+(vs 4.4–4.8), median task 465 s, 7/8 (one timeout). Telemetry says the
+fourth draft never actually paid: the K4 accept histogram still tops out
+at accept-3 with mean accepted DOWN (1.58–1.93 vs ~1.95), and only 6
+K4-summary windows fired vs 53 in the baseline run — steps became
+drastically slower/rarer, consistent with num_drafts=4 knocking the
+scheduler off its fast path rather than a fair K=4 test. Conclusion:
+**8:3,16:1 stays**; a real K=4 experiment requires code work (make the
+batched verify/bootstrap path accept K=4) and is not currently justified —
+the p3_cond≈0.79 upside is capped by the ~640 ms step time anyway.
+(`conc_c8_k4.log`, `conc27_k4.log`.)
+
 ## 7. Open
 
 Ordered by what I would pick up first.
