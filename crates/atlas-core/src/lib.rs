@@ -8,6 +8,7 @@ pub mod compute;
 pub mod config;
 pub mod dtype;
 pub mod error;
+pub mod scope;
 pub mod target;
 pub mod tensor;
 
