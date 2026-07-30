@@ -1018,6 +1018,26 @@ verify-path plumbing landed this session (mapped argmax, pinned staging,
 on-stream copy, spin probe, telemetry) is all default-safe and becomes
 free upside the day the platform stall is fixed.
 
+### 6.17 Agentic concurrency (conc_harness) — 27B vs the fleet
+
+64K config, full stack, single rep (levels 1/4/8; pass-rate caveat per s4):
+
+| model | agg tok/s C=1/4/8 | pass | makespan C=8 |
+|---|---|---|---|
+| qwen3.6-27B (this branch) | 17.0 / 24.4 / 25.1 | **1/1, 4/4, 8/8** | 346.6 s |
+| Holo 35B-A3B (2026-07-27) | 42.8 / 53.2 / 53.5 | 0/1, 3/4, 4/8 | 194 s |
+| Laguna-XS (2026-07-27) | 21.1 / 45.4 / 59.3 | 1/1, 4/4, 8/8 | 133 s |
+| Laguna-S (2026-07-27) | 11.0 / 25.1 / 46.0 | 1/1, 3/4, 8/8 | 210 s |
+
+13/13 tasks passed; KV ledger CLEAN over the whole run (0 exhaustions,
+0 decref, 0 unowned-evicts, 0 preempts — the day's KV/drafter work visible
+end-to-end). One repeat-loop cut at C=8 (task still passed). Speed is
+Laguna-S-class — expected dense-27B physics vs A3B actives — but the
+C=4->C=8 aggregate FLATLINE (+2.9%) contrasts with the synthetic bench's
+healthy scaling to C=16: agentic contexts run 10-20K tokens, past the
+~7.2K batched-propose fallback (5.2). **The 5.2 propose_meta sizing fix is
+now the top agentic-performance lever**, ahead of everything else in 7.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
