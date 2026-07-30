@@ -17,7 +17,7 @@
 //! `ForwardContext` hands out. The change from the statics they replace is
 //! where they live, not how they are written.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 /// Per-model diagnostic state.
 #[derive(Debug, Default)]
@@ -50,11 +50,6 @@ pub struct MoeUnionStats {
 pub struct DumpLatches {
     /// Ad-hoc latches, keyed by a `&'static str` naming the dump.
     fired: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
-    /// Token-id dump (`impl_b3`) — fires on the first forward only.
-    pub tokens: AtomicBool,
-    /// FP8 weight-quantization diagnostic (`weight_map::loaders_fp8`) — a
-    /// count, not a bool: it reports the first few tensors and then goes quiet.
-    pub quant_diag: AtomicU64,
 }
 
 impl ModelStats {
@@ -79,11 +74,6 @@ impl ModelStats {
 }
 
 impl DumpLatches {
-    /// `true` exactly once per model for a given latch.
-    pub fn take(flag: &AtomicBool) -> bool {
-        !flag.swap(true, Ordering::Relaxed)
-    }
-
     /// `true` exactly once per model for `key`. Use for the `ATLAS_*_DUMP`
     /// gates that would otherwise each grow a `static AtomicBool`.
     ///
@@ -100,13 +90,7 @@ impl DumpLatches {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_one_shot_latch_fires_once_per_model() {
-        let a = ModelStats::new();
-        assert!(DumpLatches::take(&a.dumped.tokens), "first forward dumps");
-        assert!(!DumpLatches::take(&a.dumped.tokens), "and only the first");
-    }
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn a_keyed_latch_fires_once_per_key_per_model() {
@@ -118,18 +102,6 @@ mod tests {
             ModelStats::new().dumped.keyed("dflash_block"),
             "and a new model re-arms every key"
         );
-    }
-
-    #[test]
-    fn a_second_model_re_arms_the_latch() {
-        // The property a `static AtomicBool` could not have: after a swap, the
-        // flag the operator set is still honoured. Held process-wide, the dump
-        // they asked for is silently swallowed because the previous model
-        // already consumed the single shot.
-        let a = ModelStats::new();
-        let b = ModelStats::new();
-        assert!(DumpLatches::take(&a.dumped.tokens));
-        assert!(DumpLatches::take(&b.dumped.tokens), "a new model dumps too");
     }
 
     #[test]

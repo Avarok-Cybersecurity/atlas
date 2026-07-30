@@ -43,18 +43,13 @@ impl TransformerModel {
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: emit the full token sequence
         // ONCE so a Python reference can run the SAME tokens through HF
         // transformers and dump matching hidden-state captures.
-        // The latch is this model's (`ModelStats::dumped`), not the process's:
-        // held in a static, a swap would swallow the dump the operator asked
-        // for because the previous model already consumed the single shot.
-        if !self
-            .stats
-            .dumped
-            .tokens
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
+        // Per-model latch: a static would let the previous model swallow this
+        // one's dump. Env first, so a disabled dump never burns the shot.
+        if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
+            .ok()
+            .as_deref()
+            == Some("1")
+            && self.stats.dumped.keyed("dump:dflash_tokens")
         {
             let tokens_json = serde_json::json!({
                 "prompt_len": position - seq.tokens.len() + seq.tokens.len(),
@@ -76,10 +71,6 @@ impl TransformerModel {
                     seq.prompt_len,
                 );
             }
-            self.stats
-                .dumped
-                .tokens
-                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let stream = self.gpu.default_stream();
         let draft_embed_target = None;

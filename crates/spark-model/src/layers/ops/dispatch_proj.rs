@@ -307,8 +307,10 @@ fn cutlass_nvfp4_weight_transposed_cached(
 
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_nvfp4_proj(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    derived: &super::DerivedWeights,
+    // The backend and this model's derived-weight cache travel together
+    // everywhere they are used; taking the context instead of the pair keeps
+    // the call sites one line each.
+    ctx: &crate::layer::ForwardContext<'_>,
     act: spark_runtime::gpu::DevicePtr,
     weight_t: &crate::weight_map::QuantizedWeight,
     out: spark_runtime::gpu::DevicePtr,
@@ -317,6 +319,7 @@ pub fn cutlass_nvfp4_proj(
     k: u32,
     stream: u64,
 ) -> anyhow::Result<()> {
+    let (gpu, derived) = (ctx.gpu, ctx.derived);
     let packed = cutlass_nvfp4_weight_transposed_cached(gpu, derived, weight_t, n, k, stream)?;
     spark_runtime::cutlass::nvfp4_gemm_bf16_act_weight_t(
         act.0,
@@ -365,8 +368,10 @@ fn cutlass_nvfp4_weight_from_fp8_cached(
 /// Atlas-transposed NVFP4 data/scales and reused for future calls.
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_nvfp4_proj_from_fp8(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    derived: &super::DerivedWeights,
+    // The backend and this model's derived-weight cache travel together
+    // everywhere they are used; taking the context instead of the pair keeps
+    // the call sites one line each.
+    ctx: &crate::layer::ForwardContext<'_>,
     act: spark_runtime::gpu::DevicePtr,
     fp8w: &crate::weight_map::Fp8Weight,
     out: spark_runtime::gpu::DevicePtr,
@@ -375,6 +380,7 @@ pub fn cutlass_nvfp4_proj_from_fp8(
     k: u32,
     stream: u64,
 ) -> anyhow::Result<()> {
+    let (gpu, derived) = (ctx.gpu, ctx.derived);
     let (packed_t, scale_t) = cutlass_nvfp4_weight_from_fp8_cached(gpu, derived, fp8w, stream)?;
     spark_runtime::cutlass::nvfp4_gemm_bf16_act_weight_t(
         act.0, packed_t, scale_t, 1.0, out.0, m, n, k, stream,

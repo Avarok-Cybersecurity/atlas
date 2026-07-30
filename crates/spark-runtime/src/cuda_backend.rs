@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use atlas_core::registry::AtlasRegistry;
 
+mod gpu_copy;
 mod gpu_impl;
 
 // ── Raw CUDA driver API for memory operations ──

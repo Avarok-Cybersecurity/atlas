@@ -40,9 +40,8 @@ use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
     cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
     cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
-    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
-    cuStreamWaitEvent,
+    cuMemcpyDtoDAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
+    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -89,85 +88,19 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(
-                dst.0,
-                src.as_ptr() as *const c_void,
-                src.len(),
-                self.default_stream,
-            )
-        };
-        if status != 0 {
-            bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
-        }
-        // Synchronize to ensure the copy completes before host buffer is freed.
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after H2D failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_h2d_impl(self, src, dst)
     }
 
     fn copy_d2h(&self, src: DevicePtr, dst: &mut [u8]) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(
-                dst.as_mut_ptr() as *mut c_void,
-                src.0,
-                dst.len(),
-                self.default_stream,
-            )
-        };
-        if status != 0 {
-            bail!("cuMemcpyDtoHAsync_v2 failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2H failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2h_impl(self, src, dst)
     }
 
     fn copy_d2h_on_stream(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
-        // Enqueue the copy on the caller's stream so CUDA orders it after
-        // any prior kernel launches on the same stream. Without this, the
-        // copy may run on the default stream concurrently with kernels on
-        // `stream` and read torn bytes (HSS Turbo8 race, 2026-04-28).
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
-        };
-        if status != 0 {
-            bail!("cuMemcpyDtoHAsync_v2 (on_stream) failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2H on_stream failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
     }
 
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
-        let status = unsafe { cuMemcpyDtoDAsync_v2(dst.0, src.0, bytes, self.default_stream) };
-        if status != 0 {
-            bail!("cuMemcpyDtoDAsync_v2 failed: status {status}");
-        }
-        // Synchronize to ensure copy completes before kernels on other streams read it.
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2D failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
 
     fn launch(

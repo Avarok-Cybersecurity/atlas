@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn the_loop_watchdog_is_togglable_at_runtime() {
+    fn the_loop_watchdog_is_toggleable_at_runtime() {
         // The one lever with real runtime mutation: the TUI ops REPL flips it
         // mid-run. Modelled as an atomic INSIDE the carried struct rather than
         // as a process global with a setter.

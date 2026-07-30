@@ -53,11 +53,11 @@ fn a_non_200_status_is_an_error_not_an_empty_stream() {
 fn content_deltas_accumulate_text_and_token_count() {
     let mut out = ChatOutcome::default();
     assert!(apply_chunk(
-        &sse(r#"{"choices":[{"delta":{"content":"Hel"}}]}"#),
+        &sse(r#"{"choices":[{"delta":{"content":"He"}}]}"#),
         &mut out
     ));
     assert!(apply_chunk(
-        &sse(r#"{"choices":[{"delta":{"content":"lo"}}]}"#),
+        &sse(r#"{"choices":[{"delta":{"content":"llo"}}]}"#),
         &mut out
     ));
     // A role-only chunk carries no token and must not inflate the count.

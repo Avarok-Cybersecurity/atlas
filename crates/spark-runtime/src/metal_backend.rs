@@ -166,6 +166,7 @@ impl MetalGpuBackend {
         );
 
         Ok(Self {
+            op_cache: crate::op_cache::OpCache::new(),
             device,
             allocations: Arc::new(Mutex::new(BTreeMap::new())),
             streams: Arc::new(Mutex::new(streams)),
