@@ -40,6 +40,17 @@ mod verify_d;
 mod verify_fused;
 
 impl Model for TransformerModel {
+    /// Poll this model's own InnerQ driver. A miss is logged, never fatal — it
+    /// is a diagnostic lever, not part of serving.
+    #[cfg(feature = "cuda")]
+    fn poll_innerq(&self) {
+        if let Some(driver) = self.innerq.as_ref()
+            && let Err(e) = driver.maybe_finalize(128)
+        {
+            tracing::warn!("InnerQ maybe_finalize failed: {e:#}");
+        }
+    }
+
     fn prepare_vision_embed(&self, images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
         self.prepare_vision_embed_dispatch(images)
     }

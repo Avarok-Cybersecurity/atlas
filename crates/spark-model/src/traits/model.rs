@@ -83,6 +83,12 @@ pub fn padded_batch_n(n: usize) -> usize {
 }
 
 pub trait Model: Send + Sync {
+    /// Poll TQ+ InnerQ calibration for this model. Called once per prefill
+    /// chunk. Default: a no-op, which is every model without a driver — the
+    /// scheduler used to reach a process-wide `OnceLock` for this, which meant
+    /// the driver could outlive the model whose device symbols it writes.
+    fn poll_innerq(&self) {}
+
     /// True when this model implements run-to-completion beam search
     /// ([`Self::generate_beam_batch`]). Default `false` — only encoder-decoder
     /// translation models (NLLB) override it.

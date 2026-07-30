@@ -212,14 +212,6 @@ pub(crate) fn init_gpu_backend(
         spark_runtime::cuda_backend::AtlasCudaBackend::new(args.gpu_ordinal, &ptx_set.modules)
             .context("Failed to initialize CUDA backend")?;
 
-    // TQ+ InnerQ: opt-in via `TURBO_INNERQ=N` (N = calibration token count).
-    // Set up HERE, beside the modules it reads: the driver writes `__device__`
-    // globals that live in THIS model's PTX, so it takes an owning handle to
-    // this model's registry rather than reaching for a process singleton.
-    // Previously this ran after model build, where the backend had already been
-    // moved and only a global was reachable.
-    init_innerq(&backend);
-
     let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(backend);
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
@@ -234,23 +226,6 @@ pub(crate) fn init_gpu_backend(
         free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
     );
     Ok((gpu, free_mem))
-}
-
-/// Start InnerQ calibration if `TURBO_INNERQ` is set. A no-op otherwise, and a
-/// warning (never a failure) if the device symbols cannot be reached — it is a
-/// diagnostic lever, not part of serving.
-#[cfg(feature = "cuda")]
-fn init_innerq(backend: &spark_runtime::cuda_backend::AtlasCudaBackend) {
-    use spark_model::layers::qwen3_attention::{INNERQ, InnerQDriver};
-    let Some(driver) = InnerQDriver::from_env(backend.registry().clone()) else {
-        return;
-    };
-    match driver.start() {
-        Ok(()) => {
-            INNERQ.get_or_init(|| std::sync::Arc::new(driver));
-        }
-        Err(e) => tracing::warn!("InnerQ calibration disabled: start() failed: {e:#}"),
-    }
 }
 
 #[cfg(all(feature = "metal", not(feature = "cuda")))]

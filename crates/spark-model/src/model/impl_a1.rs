@@ -497,6 +497,17 @@ impl TransformerModel {
         Ok(Self {
             config,
             dispatch: crate::layers::ops::GemmDispatch::from_env(),
+            #[cfg(feature = "cuda")]
+            innerq: gpu.kernel_registry().and_then(|reg| {
+                let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;
+                match driver.start() {
+                    Ok(()) => Some(driver),
+                    Err(e) => {
+                        tracing::warn!("InnerQ calibration disabled: start() failed: {e:#}");
+                        None
+                    }
+                }
+            }),
             embed_tokens,
             final_norm,
             lm_head_weight,

@@ -224,6 +224,10 @@ impl GpuBackend for AtlasCudaBackend {
         self.default_stream
     }
 
+    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+        Some(self.registry().clone())
+    }
+
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.

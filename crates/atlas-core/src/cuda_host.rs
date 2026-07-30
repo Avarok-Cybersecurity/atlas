@@ -39,7 +39,31 @@ impl CudaHost {
 unsafe impl Send for CudaHost {}
 unsafe impl Sync for CudaHost {}
 
-/// The process's CUDA host. Initialised once and never torn down.
+/// The process's CUDA host.
+///
+/// **STATIC, AND THIS IS THE CASE WHERE IT MUST BE.** The argument, in full,
+/// because the standing rule is that every surviving static earns one:
+///
+/// 1. **It is derived from the process and the device, not from any model.** A
+///    CUDA context belongs to a (process, GPU) pair. Nothing about a checkpoint
+///    reaches it, so it cannot go stale when the model changes — the property
+///    that makes every other static here a hazard simply does not apply.
+/// 2. **The driver enforces the singleton anyway.** There is one primary
+///    context per device per process. Holding two handles would not give two
+///    contexts; it would give two names for the same one, with the ownership
+///    question moved from the type system to a convention.
+/// 3. **Its whole purpose is to outlive every model.** Not destroying and
+///    recreating the context across a swap IS the feature — that operation is
+///    slow, invalidates every handle in the process, and has the worst failure
+///    modes on GB10 UVM. A context propagated per-model would have to be
+///    recreated per-model, which is precisely what is being avoided.
+/// 4. **Propagating it changes nothing it does not already guarantee.** Every
+///    consumer reaches it through the `AtlasRegistry` it already holds
+///    (`registry.host()`), so the *usage* is propagated. This static is only
+///    the place the one context is created and found.
+///
+/// Rebinding to a different ordinal is an error rather than a silent no-op —
+/// that was the bug in the previous `get_or_init(ordinal, kernel_blobs)`.
 static HOST: OnceLock<std::result::Result<Arc<CudaHost>, String>> = OnceLock::new();
 
 /// Get (or create) the process CUDA host on `ordinal`.

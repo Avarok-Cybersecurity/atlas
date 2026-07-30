@@ -186,6 +186,15 @@ pub trait GpuBackend: Send + Sync {
     /// Look up a kernel function by module and function name.
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
 
+    /// This backend's model-scoped kernel modules, for the few callers that
+    /// need the registry itself rather than a kernel handle — resolving a
+    /// `__device__` symbol, for instance. `None` on backends that have no such
+    /// concept, which is why it is an accessor rather than a downcast.
+    #[cfg(feature = "cuda")]
+    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+        None
+    }
+
     /// Async host-to-device copy (no stream synchronization).
     ///
     /// **Lifetime requirement**: the source buffer must remain valid until the

@@ -46,17 +46,9 @@ use run_standard::run_standard_chunk_loop;
 /// On non-cuda backends the driver doesn't exist (it talks to the CUDA
 /// Driver API directly via `atlas_core::registry`), so this collapses to
 /// a no-op via the `#[cfg]` gate.
-#[cfg(feature = "cuda")]
-pub(super) fn poll_innerq() {
-    if let Some(driver) = spark_model::layers::qwen3_attention::INNERQ.get()
-        && let Err(e) = driver.maybe_finalize(128)
-    {
-        tracing::warn!("InnerQ maybe_finalize failed: {e:#}");
-    }
+pub(super) fn poll_innerq(model: &dyn Model) {
+    model.poll_innerq();
 }
-
-#[cfg(not(feature = "cuda"))]
-pub(super) fn poll_innerq() {}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(

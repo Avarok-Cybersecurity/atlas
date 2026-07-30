@@ -39,7 +39,7 @@ pub(super) fn run_batched_mixed_step(
     did_mixed_step: &mut bool,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
-    super::poll_innerq();
+    super::poll_innerq(model);
     let n_prefill = prefilling.len();
     let n_decode = active.len();
 

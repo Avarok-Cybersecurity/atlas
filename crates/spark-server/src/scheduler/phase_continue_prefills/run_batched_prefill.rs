@@ -26,7 +26,7 @@ pub(super) fn run_batched_prefill_step(
     prefill_event: u64,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
-    super::poll_innerq();
+    super::poll_innerq(model);
     // Build per-stream chunk_len (capped at max_prefill_tokens) and
     // is_last_chunk flag, then construct PrefillSlice borrowing each
     // stream's prompt_tokens and seq.

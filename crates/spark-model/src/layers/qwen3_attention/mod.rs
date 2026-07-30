@@ -54,15 +54,9 @@ pub fn validate_required_kv_kernels(
     kernel_requirements::validate_required_kernels(gpu, kv_dtype, head_dim)
 }
 
-/// Populated at serve startup when `TURBO_INNERQ=N`.
-///
-/// `Scoped`, not `OnceLock`: the driver holds this model's registry and writes
-/// this model's device symbols, so it must not survive into the next model.
-/// It holds an owning handle, so teardown must `clear()` it — see
-/// `atlas_core::scope::Scoped::clear`.
-#[cfg(feature = "cuda")]
-pub static INNERQ: atlas_core::scope::Scoped<std::sync::Arc<InnerQDriver>> =
-    atlas_core::scope::Scoped::new();
+// The InnerQ driver is owned by `TransformerModel` and reached through
+// `Model::poll_innerq`. It used to live in a process-wide static here, which
+// let it outlive the model whose `__device__` globals it writes.
 
 /// Configured max decode batch size, set once at model init.
 ///

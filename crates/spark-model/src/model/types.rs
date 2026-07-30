@@ -64,6 +64,12 @@ pub struct TransformerModel {
     pub(super) lora_rotatable: bool,
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
+    /// TQ+ InnerQ calibration driver, when `TURBO_INNERQ` is set. Owned here
+    /// rather than parked in a static: it writes `__device__` globals in THIS
+    /// model's modules, so it must not outlive the model. Reached from the
+    /// scheduler through `Model::poll_innerq`.
+    #[cfg(feature = "cuda")]
+    pub(super) innerq: Option<crate::layers::qwen3_attention::InnerQDriver>,
     pub(super) rms_norm_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
     /// FP32-output variant of dense_gemv_bf16. Used by the LM head when

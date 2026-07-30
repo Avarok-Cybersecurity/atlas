@@ -1,57 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Model-scoped state — the abstraction that makes in-process model swapping
-//! safe.
+//! Model teardown — ordered, fallible release of state that owns device memory.
 //!
-//! # The problem
+//! # Why there are no caches here
 //!
-//! Atlas caches a great deal of derived state in process-global statics: env
-//! toggles, kernel handles, tokenizer-derived token masks, workspaces, and
-//! caches keyed by device pointer. Every one of those is derived from the
-//! *loaded model*. Serving one model per process makes that correct by
-//! construction. Swapping models in-process makes every one of them a way to
-//! serve model A's answer to model B's question — **silently**, because a
-//! stale `OnceLock` returns a plausible value rather than an error.
+//! An earlier version of this module offered generation-checked statics
+//! (`Scoped`, `ScopedFlag`, `ScopedMap`) as a safe home for state derived from
+//! the loaded model. They are gone, and the reasoning is worth keeping:
 //!
-//! # The shape of the fix
+//! **A checked static is still a static.** It is a dependency the signature
+//! does not declare, it cannot be varied in a test without mutating the
+//! process, and a site that forgets it fails at *runtime* — if it is ever read
+//! at all. Propagating the value instead makes the same question a
+//! *compile-time* one: add a field, and every construction site that forgot it
+//! stops building.
 //!
-//! State splits into two populations, and they want different treatment:
+//! In practice a carrier almost always already exists and the static was
+//! bypassing it — `ForwardContext` reaches every dispatch site in the model,
+//! `&dyn Model` reaches the scheduler, and a backend owns its own device
+//! handles. Where no carrier exists, the answer is to add one, not to reach for
+//! a guarded global.
 //!
-//! * **Owned state** — the module set, the weights, the KV/SSM pools, the
-//!   tokenizer. These are large, they own device memory, and their teardown
-//!   must be *ordered*. They are held in an owning context and **propagated**
-//!   (`&T`, `Arc<T>`, `Arc<RwLock<T>>`), never reached through a static. Their
-//!   teardown contract is [`ModelResource`], not `Drop`, because `Drop` can be
-//!   neither ordered nor fallible.
+//! What legitimately remains a static is state derived from the *process* or
+//! the *device* rather than the checkpoint — the CUDA context in
+//! [`crate::cuda_host`] is the clear case. Every such site must carry a comment
+//! arguing why it must be one.
 //!
-//! * **Derived leaf state** — a kernel handle looked up once, a mask built from
-//!   the vocabulary. Where a carrier already reaches the site — and one usually
-//!   does, `ForwardContext` in the model and `&dyn Model` in the scheduler —
-//!   these are **plain fields on the carrier**, not statics. That is strictly
-//!   better than any epoch scheme: a missed site fails to compile instead of
-//!   failing a runtime check. [`Scoped`] and [`ScopedMap`] exist only for the
-//!   residue where no carrier can reach, and every such use must carry a
-//!   comment arguing why.
+//! # What this module does provide
 //!
-//! The [`Generation`] counter is the single authority both populations answer
-//! to. It is process-global on purpose: it is an epoch, not model state. It
-//! never goes backwards and a value is never reused.
-//!
-//! # Why this is safe where a hand-audited epoch scheme is not
-//!
-//! The danger in epoch-guarding by hand is *forgetting a site*, and a forgotten
-//! site is silent wrong output. Here the guard is inside the type: a
-//! `Scoped<T>` cannot serve a stale value, because every read compares
-//! generations before returning.
-//!
-//! But a generation-checked static is still a static, and a static is still a
-//! hidden dependency the compiler cannot check. **Prefer propagation.** These
-//! types are the fallback for state with no carrier — not the default.
+//! [`Generation`] identifies one loaded model, for diagnostics and for the
+//! teardown log. [`ModelResource`] and [`Teardown`] give an ordered, fallible
+//! release path, which `Drop` cannot: it is neither ordered across independent
+//! values nor able to report a failure, and on GB10 unified memory frees must
+//! happen at a quiescent point in a controlled order.
 
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock};
 
 /// Identity of one loaded model, within this process.
 ///
@@ -89,173 +72,6 @@ pub fn advance() -> Generation {
     // `Release` so a thread that observes the new generation also observes
     // everything the loader wrote before publishing it.
     Generation(CURRENT.fetch_add(1, Ordering::Release) + 1)
-}
-
-/// A lazily-derived value that is rebuilt when the model changes.
-///
-/// Drop-in replacement for `static X: OnceLock<T>` in any position where the
-/// value is derived from the loaded model. The API is deliberately close to
-/// `OnceLock`'s so the conversion is mechanical.
-///
-/// ```ignore
-/// -static MASK: OnceLock<Arc<[bool]>> = OnceLock::new();
-/// +static MASK: Scoped<Arc<[bool]>> = Scoped::new();
-///  // ...
-/// -MASK.get_or_init(|| build_mask(tok)).clone()
-/// +MASK.get_or_init(|| build_mask(tok))
-/// ```
-pub struct Scoped<T> {
-    slot: RwLock<Option<(Generation, T)>>,
-}
-
-impl<T: Clone> Default for Scoped<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Clone> Scoped<T> {
-    pub const fn new() -> Self {
-        Self {
-            slot: RwLock::new(None),
-        }
-    }
-
-    /// The value for the current generation, building it if this is the first
-    /// read since the model changed.
-    ///
-    /// `init` may run more than once under contention — like `OnceLock`, this
-    /// is a cache, not a mutual-exclusion primitive. It must be side-effect
-    /// free, which every derivation this replaces already is.
-    pub fn get_or_init(&self, init: impl FnOnce() -> T) -> T {
-        let generation = current();
-        if let Some(value) = self.read_at(generation) {
-            return value;
-        }
-        let built = init();
-        self.store(generation, built.clone());
-        built
-    }
-
-    /// Fallible derivation. A failed build is not cached — the next reader
-    /// retries, which is what a transient CUDA failure needs.
-    pub fn get_or_try_init<E>(&self, init: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
-        let generation = current();
-        if let Some(value) = self.read_at(generation) {
-            return Ok(value);
-        }
-        let built = init()?;
-        self.store(generation, built.clone());
-        Ok(built)
-    }
-
-    /// The cached value, if one was built for the current generation.
-    pub fn get(&self) -> Option<T> {
-        self.read_at(current())
-    }
-
-    /// Drop the cached value outright.
-    ///
-    /// Refusing to *serve* a stale value is enough for a derived value, which
-    /// is what this type is for. It is NOT enough when `T` owns a handle to a
-    /// model resource — an `Arc` nobody reads is still an `Arc`, and teardown
-    /// would block on it. Cells of that shape are the exception; they must be
-    /// cleared explicitly during teardown, and
-    /// `atlas_core::registry::release`'s reference-count check is what turns a
-    /// forgotten `clear` into a named error instead of a silent leak.
-    pub fn clear(&self) {
-        if let Ok(mut guard) = self.slot.write() {
-            *guard = None;
-        }
-    }
-
-    fn read_at(&self, generation: Generation) -> Option<T> {
-        let guard = self.slot.read().ok()?;
-        match guard.as_ref() {
-            Some((stored, value)) if *stored == generation => Some(value.clone()),
-            _ => None,
-        }
-    }
-
-    fn store(&self, generation: Generation, value: T) {
-        if let Ok(mut guard) = self.slot.write() {
-            *guard = Some((generation, value));
-        }
-    }
-}
-
-/// A keyed cache that is emptied when the model changes.
-///
-/// Distinct from [`Scoped`] because of one specific hazard: several caches in
-/// the tree are **keyed by raw device pointer**. After a model is released and
-/// the next one allocates, the allocator can hand back the same addresses — so
-/// a stale entry would be a *hit*, with a value describing different memory.
-/// Comparing generations on read is not enough; the map is cleared outright.
-pub struct ScopedMap<K, V> {
-    /// `None` until first use: `HashMap::new` is not `const`, and this type
-    /// has to be constructible in a `static`.
-    inner: Mutex<Option<(Generation, HashMap<K, V>)>>,
-}
-
-impl<K: Eq + Hash, V: Clone> Default for ScopedMap<K, V> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<K: Eq + Hash, V: Clone> ScopedMap<K, V> {
-    pub const fn new() -> Self {
-        Self {
-            inner: Mutex::new(None),
-        }
-    }
-
-    /// Look up `key`, inserting `init()`'s value on a miss. Entries from a
-    /// previous generation are dropped before the lookup.
-    pub fn get_or_insert_with(&self, key: K, init: impl FnOnce() -> V) -> V {
-        let generation = current();
-        let Ok(mut guard) = self.inner.lock() else {
-            // A poisoned cache must not serve entries whose provenance is
-            // unknown; rebuilding is always correct, just slower.
-            return init();
-        };
-        let entry = guard.get_or_insert_with(|| (generation, HashMap::new()));
-        if entry.0 != generation {
-            entry.1.clear();
-            entry.0 = generation;
-        }
-        entry.1.entry(key).or_insert_with(init).clone()
-    }
-
-    /// Drop every entry. Call before releasing the device memory the keys
-    /// point into, so no entry can outlive its allocation.
-    pub fn clear(&self) {
-        if let Ok(mut guard) = self.inner.lock()
-            && let Some(entry) = guard.as_mut()
-        {
-            entry.1.clear();
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|g| {
-                g.as_ref().map(|(built_for, map)| {
-                    if *built_for == current() {
-                        map.len()
-                    } else {
-                        0
-                    }
-                })
-            })
-            .unwrap_or(0)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// State that owns device memory and must be released in a defined order.
