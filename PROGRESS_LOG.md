@@ -1077,6 +1077,51 @@ follow-up). decode_short C=16 sanity on the same server: **166.3** agg
 Full logs: `conc27_stride_ab.log`, `conc_c8_rep2.log`,
 `c16_sanity_stride.log` in the job tmp dir.
 
+### 6.19 Agentic C=8 lever session: chunk-2048 DEAD; sampling filters off = 8/8; slots-64 kills anchor eviction
+
+Three single-variable legs on the 64K config, C=8, full logs in job tmp
+(`conc_c8_{chunk2048,nosampfilt,slots64}.log` + matching `conc27_*.log`):
+
+| leg | pass | loop-kills | median s | makespan | agg | decode med |
+|---|---|---|---|---|---|---|
+| baseline (§6.18, 2 reps) | 6/8, 6/8 | 2+2 (rc=125) | 282–284 | 453–459 | 24.9/28.0 | 4.8–4.9 |
+| `--max-prefill-tokens 2048` | 7/8 | 0 | 402.8 | 480.2 | **18.4** | 3.9 |
+| `--default-min-p 0 --default-top-n-sigma 0` | **8/8** | **0** | **255.9** | **321.2** | 26.3 | 4.4 |
+| filters off + `--ssm-cache-slots 64` | **8/8** | 0 fatal | 279.1 | 379.9 | 25.7 | 3.5 |
+
+**Chunk 2048 is DEAD** (−27–34% agg): checkpoint density did rise (75 saves,
+no pool exhaustion) but micro-chunked prefill swamps the replay savings —
+consistent with §5.2's chunk-4096 row. 8192 stays the config of record. The
+replay lever, if pursued, is interval-as-generator (split only the chunk
+crossing an interval boundary — `save_checkpoint.rs` note) — NOT smaller
+global chunks.
+
+**Sampling filters CAUSE the repeat-loop failures.** min_p=0.08 +
+top_n_sigma=1.0 (CLI defaults, active because this model's
+generation_config lacks both keys): 12/16 tasks with 2 fatal loop-kills
+per rep. Filters off: **16/16 across two legs, zero fatal loops**, best
+median (255.9 s) and makespan (321.2 s). Directly contradicts the
+serve_args doc claim that sigma=1.0 helps agent workloads — flag for a
+doc correction + agentic recipes should set both to 0. Trade: decode
+median −8% (lower spec acceptance against an untruncated tail) — dwarfed
+at task level.
+
+**Marconi anchor eviction (user-caught in live logs): root-caused + mitigated.**
+Event: `Prefix cache hit: 14368 tokens but no SSM snapshot — recomputing
+all KV`. Life cycle from `conc27_nosampfilt.log`: anchor saved at 8192
+(snapshot 16, 14:13:11) → 6 sequences anchor on it → silently freed →
+14:14:21 same match finds nothing → full 14K recompute → re-saved as
+snapshot 1. No `pool exhausted`/reclaim lines — 32 slots ≈ 8 sessions ×
+(interval+tail+leaf) sit exactly at capacity and churn. `--ssm-cache-slots
+64` (+4.8 GB, funded by the §6.10 ring reclaim): expensive no-snapshot
+events 1 → 0, anchored hits 24 → 28. Small-match misses (544–633 tok) are
+the intentional `marconi_min_tokens` floor — leave them. Open code lever:
+name the free site (instrument `ssm_snapshots.free` callers) — it freed an
+anchor whose radix path was hit 70 s before and after.
+
+**New 64K agentic config of record:** §6.10 config + `--default-min-p 0
+--default-top-n-sigma 0 --ssm-cache-slots 64` (`combo_conc_slots64.sh`).
+
 ## 7. Open
 
 Ordered by what I would pick up first.
