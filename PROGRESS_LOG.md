@@ -740,6 +740,19 @@ Actionable follow-ups extracted:
 * codispatch window default 10 ms -> 100 ms (DONE this session — a burst
   spreads over tens of ms; 10 ms co-admitted only the first arrivals);
 * decide the MMQ-on question with a quality gate;
+* m128 kernel program (ultracode, 2026-07-30): 11-agent workflow designed
+  the port; executed same session. OUTCOME — **honestly-buried lever**: the
+  proven minimax/step3p7 8-warp m128_v2 ports cleanly (bit-identity 100% on
+  8 shapes) but measures **0.78-0.82x of v1** on the 27B FFN shapes — the
+  judges' realism critique ("the v2 file ships zero measured numbers")
+  called it. Shipped as opt-in only (`ATLAS_W4A16_VARIANT=v2`), commits
+  74eca5a0 + 195a69c6, WITH two durable wins regardless: the PTX arity CI
+  test (pins launcher-vs-kernel param counts for the whole w4a16 family —
+  the 5.1 bug class is now a CPU test failure) and the single-resolver
+  kill-switch. Remaining prefill-GEMM levers: widen W4A4 MMQ past
+  gate/up/down (qkvz/o still on the slow arm), or NEW kernel engineering
+  (not a port) — the existing v2/v3 schedules do not transfer to these
+  shapes.
 * nsys the 1K cold prefill to size the SSM-vs-FFN-vs-attn split.
   **DONE (2026-07-30): the split OVERTURNS the SSM hypothesis.** Cold
   717-token prefill, GPU busy 1084/1270 ms wall: w4a16 tile GEMMs 60.9%
