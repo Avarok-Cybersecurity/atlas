@@ -793,6 +793,57 @@ Verified live: startup logs "SKIPPED ... Saves 20.3 GB"; KV pool grew
 15,203 -> 17,355 blocks. Perf-neutral on decode (TPOT unchanged-to-better
 across 3 cells).
 
+### 6.11 Verify-step cost research (user-directed): decomposition + every config lever measured
+
+Method: two nsys profiles, identical 16-way 300-token decode burst, spec-ON
+vs spec-OFF, same binary/config (canonical 4K). The kernel-sum diff IS the
+verify tax: **+2,078 ms GPU (4,288 vs 2,210) for the same tokens.**
+
+| component | dt ms | share | note |
+|---|---|---|---|
+| dense_gemm_bf16_pipelined (960 x ~1.03 ms) | 991 | 48% | the DRAFTER forward (--mtp-quantization bf16) |
+| w4a16_gemv_batch16 (159 x 4.25 ms) | 676 | 33% | verify lm_head; streams 636 MB at ~150 GB/s vs 230 roofline |
+| drafter per-seq launch chain (~16K launches: 5,200 gemv + 2,555 attn + 6,146 norms) | ~350 | 17% | per-seq loops; the propose GEMMs are batched, the rest is not |
+
+Config levers — ALL measured, ALL settled (decode_short C=16, 2-3 reps,
+baseline median ~151 / TPOT 82 ms / p1 0.867):
+
+* `16:2` ladder rung: **BURIED** — 103-108 (-29%). Depth WORKS (mean
+  accepted 1.43-1.53 = the p1*p2 projection) but the 32-row verify forward
+  is row-linear: +31% tokens at ~+75% step cost. Depth at n=16 is now
+  exhaustively dead: 16:1 (151) > 16:3 (120.8, #379) > 16:2 (107).
+* `--mtp-quantization fp8`: **BURIED** — 123.8/125.7, TPOT 98-99 ms.
+  Acceptance only dipped 0.867->0.827; the fp8 drafter path simply runs
+  slower kernels than the pipelined BF16 GEMM. #379's bf16 pick was for
+  SPEED, not caution.
+* `--lm-head-dtype fp8`: **NEUTRAL** — 149.6/151.1, acceptance 0.866. The
+  batched verify head already runs #378's FP8-ACTIVATION path; this flag
+  rewires a path verify does not use.
+* `ATLAS_MTP_REFEED_ACCEPTED` (mined from #378 — the p1 0.72->0.90 strix
+  lever, implemented and never set in any config): **STRUCTURAL NO-OP at
+  C=16** — refeed rebuilds drafts 2..K only; at the 16:1 rung draft 1
+  already consumes the target's verified hidden. Applies to the C<=8 deep
+  rungs; worth an A/B there, not here.
+* Acceptance itself is NOT the problem (user hypothesis checked): p1 at
+  C=16 is 0.867 vs 0.82 at C=1 on the same workload — the C=1 advantage is
+  purely depth (~2.7 tokens/forward at K=3 vs 1.87 at K=1).
+
+#378 mining (user-directed): drafter-context blindness fix and the batched
+bootstrap/argmax are content-present in our base; the accept telemetry
+(`ATLAS_MTP_ACCEPT_DEBUG`) is available; **"graphing the Phase-A bootstrap"
+was declared WIP in #378's body and never landed anywhere** — it is a real
+open lever.
+
+RANKED CODE LEVERS (the config space is exhausted):
+1. Drafter forward (48% of tax): graph-capture the batched propose and
+   batch its per-seq attention chain (the ~16K-launch disease the main
+   model's decode already had cured by #379).
+2. Verify lm_head (33%): M=32-tuned head kernel — the batch16 GEMV runs at
+   ~65% of the memory roofline at this row count; ~1.5x headroom.
+3. Phase-A bootstrap graphing (#378's unlanded WIP).
+
+Artifacts: verify_specon/specoff.nsys-rep + kern_*.csv in the job scratch.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
