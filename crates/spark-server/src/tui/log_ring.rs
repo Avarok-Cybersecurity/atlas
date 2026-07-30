@@ -34,9 +34,17 @@ pub struct LogLine {
     pub message: String,
 }
 
+// STATIC, DELIBERATELY — process lifecycle. This ring backs a `tracing`
+// subscriber Layer, and a subscriber is installed once per process, before
+// any model exists and after every model is gone. Events arrive from every
+// thread in the program (weight load, scheduler, HTTP, the panic hook), and
+// the panic hook in particular must be able to dump it with no `self` in
+// hand. Scoping it to a run would mean losing exactly the lines that explain
+// a failure to start or a failure to stop.
 static RING: Mutex<VecDeque<LogLine>> = Mutex::new(VecDeque::new());
 /// Monotone counter of lines ever pushed — lets the pane detect "n new lines
-/// while scrolled up" without diffing contents.
+/// while scrolled up" without diffing contents. Static for the same reason
+/// as [`RING`], whose pushes it counts; a reset would read as "no new lines".
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn push(line: LogLine) {

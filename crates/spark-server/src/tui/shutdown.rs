@@ -22,9 +22,18 @@ use std::time::Duration;
 
 use tokio::sync::{Notify, oneshot};
 
+// STATIC, DELIBERATELY — process lifecycle. A shutdown request is a property
+// of the PROCESS, and the things that raise one (a signal handler, the panic
+// hook, a key event in the TUI thread, `/quit`) run in contexts that cannot
+// be handed a carrier. A signal handler in particular may only touch
+// process-global state.
+
+/// Set once a shutdown has been requested, from any of those triggers.
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn notify() -> &'static Notify {
+    // The wakeup for whoever is awaiting shutdown. Same scope as `REQUESTED`,
+    // which it exists to announce.
     static N: OnceLock<Notify> = OnceLock::new();
     N.get_or_init(Notify::new)
 }

@@ -38,9 +38,17 @@ use super::log_ring::LogRingLayer;
 /// this; the event loop flips it on attach/detach.
 pub static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+// STATIC, DELIBERATELY — process lifecycle. The tee is a FILE HANDLE the
+// tracing writer holds for the life of the process: it is opened before the
+// subscriber is installed and must outlive every model so the log covers
+// startup, swaps and shutdown as one file. The path is kept beside it
+// because the panic hook prints it with no `self` in hand.
 static TEE: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
+/// Path of the file [`TEE`] writes, kept beside it for the panic hook.
 static TEE_PATH: OnceLock<String> = OnceLock::new();
 /// Raw fd of the tee file, for the guard's stderr redirection (-1 = none).
+/// A process-wide fd, read by the terminal guard during panic and exit —
+/// both paths that run when nothing else is still alive to hold it.
 static TEE_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 /// The tee file's raw fd, if one is open.

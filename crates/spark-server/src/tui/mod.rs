@@ -98,6 +98,11 @@ pub fn start(
 }
 
 /// The dashboard thread's handle, for the exit-path join.
+///
+/// STATIC, DELIBERATELY — process lifecycle. There is exactly one dashboard
+/// thread per process, and `stop_and_join` runs on the way out, from a path
+/// that has no server state left to reach through. It holds a join handle,
+/// not a value: nothing model-derived can go stale in it.
 static THREAD: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>> =
     parking_lot::Mutex::new(None);
 

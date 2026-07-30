@@ -397,6 +397,10 @@ impl BenchState {
 }
 
 /// Shown only before `attach` has selected anything.
+///
+/// STATIC, DELIBERATELY — compile-time data. A `const`-constructed literal
+/// with no interior mutability and nothing derived from a model; it is a
+/// string table that happens to need a stable address to be borrowed from.
 static FALLBACK_METADATA: atlas_plugin::PluginMetadata =
     atlas_plugin::PluginMetadata::atlas("no benchmark selected");
 

@@ -26,6 +26,12 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
+// STATIC, DELIBERATELY — process lifecycle. Everything in this module
+// describes THE TERMINAL, which is a property of the process, not of a model
+// or a request. `restore()` is called from the panic hook, from a signal
+// handler and from the normal exit path, none of which can be handed a
+// context; and getting it wrong wrecks the user's shell.
+
 /// True while raw mode + alt screen are active. `restore()` flips it false.
 static TERMINAL_TAKEN: AtomicBool = AtomicBool::new(false);
 /// Saved dup of the original stderr fd while it is redirected (-1 = not).
