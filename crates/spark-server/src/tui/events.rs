@@ -16,7 +16,7 @@ use super::app::{App, Section};
 use super::capture_layer::ProgressEvent;
 use super::init::TUI_ACTIVE;
 use super::terminal_guard::TerminalGuard;
-use super::{log_ring, render, shutdown};
+use super::{render, shutdown};
 
 const TICK: Duration = Duration::from_millis(100);
 const SAMPLE_EVERY: u32 = 10; // 1 Hz metrics sampling at the 10 Hz tick
@@ -26,7 +26,7 @@ pub fn run(
     progress_rx: Receiver<ProgressEvent>,
     levers_rx: Receiver<crate::tui::RunLevers>,
 ) {
-    super::terminal_guard::install_panic_hook(log_ring::dump_to);
+    super::terminal_guard::install_panic_hook();
     let guard = match TerminalGuard::enter() {
         Ok(g) => g,
         Err(e) => {

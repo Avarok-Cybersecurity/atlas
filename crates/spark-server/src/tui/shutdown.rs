@@ -46,15 +46,31 @@ static PHASE: Phase = Phase {
     in_startup: AtomicBool::new(true),
 };
 
-fn notify() -> &'static Notify {
-    // The wakeup for whoever is awaiting shutdown. Same scope as `REQUESTED`,
-    // which it exists to announce.
-    static N: OnceLock<Notify> = OnceLock::new();
-    N.get_or_init(Notify::new)
+/// The two channels a shutdown travels over: the wakeup for whoever is
+/// awaiting it, and the startup escape hatch. One object because they are the
+/// same decision seen from two phases — `Phase::in_startup` picks which one a
+/// request takes.
+#[derive(Default)]
+struct Channels {
+    notify: Notify,
+    escape: std::sync::Mutex<Option<oneshot::Sender<&'static str>>>,
 }
 
-/// Startup escape hatch: the sending half of `main`'s one-shot, held so that
-/// whichever trigger fires FIRST takes it and the rest are no-ops.
+// Lazily built, unlike `PHASE`: `Notify` has no const constructor. Nothing in
+// a signal handler touches this — the handler sets `PHASE.requested` and the
+// async side does the waking.
+static CHANNELS: OnceLock<Channels> = OnceLock::new();
+
+fn channels() -> &'static Channels {
+    CHANNELS.get_or_init(Channels::default)
+}
+
+fn notify() -> &'static Notify {
+    &channels().notify
+}
+
+/// The startup escape hatch: the sending half of `main`'s one-shot, held so
+/// that whichever trigger fires FIRST takes it and the rest are no-ops.
 ///
 /// `serve()` is `async` but never awaits between the banner and the accept loop
 /// — startup is one blocking sequence (weight load, KV alloc, kernel audit). So
@@ -66,11 +82,8 @@ fn notify() -> &'static Notify {
 /// It is DISARMED by [`disarm_startup_escape`] the moment the accept loop takes
 /// over. After that a shutdown must go through the graceful path below, or a
 /// Ctrl+C on a live server would exit while requests were still in flight.
-static STARTUP_ESCAPE: OnceLock<std::sync::Mutex<Option<oneshot::Sender<&'static str>>>> =
-    OnceLock::new();
-
 fn escape() -> &'static std::sync::Mutex<Option<oneshot::Sender<&'static str>>> {
-    STARTUP_ESCAPE.get_or_init(|| std::sync::Mutex::new(None))
+    &channels().escape
 }
 
 /// Arm the startup escape with `main`'s sender. Called once, before `serve()`.

@@ -18,7 +18,6 @@
 //! SIGKILL cannot be caught; `reset`/`stty sane` is the documented recovery.
 
 use std::io::Write;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -91,10 +90,10 @@ fn unredirect_stderr() {
     }
 }
 
-/// Snapshot fn the panic hook uses to dump recent log lines. Set by
-/// `install_panic_hook`; kept as a plain fn pointer so this module does not
-/// depend on the ring's type.
-static RING_DUMP: OnceLock<fn(&mut dyn Write, usize)> = OnceLock::new();
+// The panic hook's log-dump fn was held in a `OnceLock<fn(..)>` so this module
+// "would not depend on the ring's type" — but the signature names no ring
+// type, so the indirection bought nothing and cost a global plus an
+// installed-once flag. The hook calls `super::log_ring::dump_to` directly.
 // The tee path was duplicated here, copied in by `install_panic_hook` from the
 // module that actually opens the file. One value, two owners: `super::init`
 // keeps it now and the hook reads it through `tee_file_path()`.
@@ -136,16 +135,13 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Install the chained panic hook. `ring_dump(w, n)` writes the newest `n`
-/// captured log lines to `w`. The always-on log file's path is read from
-/// `super::init`, which owns it.
+/// Install the chained panic hook: it restores the terminal, prints the last
+/// captured log lines and the always-on log file's path, then chains to the
+/// previous hook for the message and backtrace.
 ///
 /// Must be called BEFORE `TerminalGuard::enter` so a panic during entry is
 /// covered too. Installing more than once is a no-op.
-pub fn install_panic_hook(ring_dump: fn(&mut dyn Write, usize)) {
-    if RING_DUMP.set(ring_dump).is_err() {
-        return; // already installed
-    }
+pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // 1. Sane screen first, so everything below is actually visible.
@@ -153,9 +149,7 @@ pub fn install_panic_hook(ring_dump: fn(&mut dyn Write, usize)) {
         // 2. Recent context: the last lines the operator saw in the TUI.
         let mut err = std::io::stderr();
         let _ = writeln!(err, "\n── atlas-tui: panic — last log lines ──");
-        if let Some(dump) = RING_DUMP.get() {
-            dump(&mut err, 50);
-        }
+        super::log_ring::dump_to(&mut err, 50);
         if let Some(p) = super::init::tee_file_path() {
             let _ = writeln!(err, "── full log: {p} ──");
         }
