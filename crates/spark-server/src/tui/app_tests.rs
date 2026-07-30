@@ -24,9 +24,44 @@ fn nav_rows_include_subsections_in_sidebar_order() {
             "Stats",
             "Network",
             "Library",
+            "Benchmarks/Suite",
+            "Benchmarks/History",
             "Terminal/Ops",
             "Terminal/Chat",
         ]
+    );
+}
+
+/// The digit keys and `Section::ALL` must stay in step. Benchmarks was inserted
+/// BEFORE Terminal, which moved Terminal from `5` to `6` — a mismatch here is
+/// invisible until someone presses a number and lands in the wrong place.
+#[test]
+fn digit_keys_match_the_sidebar_order() {
+    use clap::Parser;
+    use crossterm::event::{KeyCode, KeyEvent};
+    let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "some/model"]));
+    for (i, section) in Section::ALL.iter().enumerate() {
+        let digit = char::from_digit(i as u32 + 1, 10).expect("<=9 sections");
+        app.on_key(KeyEvent::from(KeyCode::Char(digit)));
+        assert_eq!(
+            app.section,
+            *section,
+            "key {digit} must select {}",
+            section.label()
+        );
+    }
+}
+
+/// Every section the sidebar draws must have a content renderer; the match in
+/// `render::draw` is exhaustive, so this is really a guard on `subs()` staying
+/// consistent with what the Benchmarks section actually implements.
+#[test]
+fn benchmarks_declares_both_of_its_subsections() {
+    assert_eq!(Section::Benchmarks.subs(), &["Suite", "History"]);
+    assert_eq!(
+        Section::Benchmarks.icon().chars().count(),
+        1,
+        "sidebar is 1 cell wide"
     );
 }
 

@@ -3,6 +3,7 @@
 //! Frame layout: sticky header (logo + status), sidebar, per-section content,
 //! sticky footer, toasts, help overlay. Pure `App` → `Frame`.
 
+mod bench;
 mod library_tab;
 mod main_tab;
 mod network_tab;
@@ -13,7 +14,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use super::app::{App, Focus, MainSub, Section};
 use super::{logo, theme};
@@ -44,22 +45,58 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(rows[1]);
     draw_sidebar(f, app, cols[0], sidebar_w >= 18);
 
+    // The content area always wears a 1-cell ring so nothing shifts when a
+    // benchmark starts; the ring is dim while idle and pulses brand cyan while
+    // a benchmark is running. It lives here rather than in the Benchmarks tab
+    // so the signal follows you to Stats or Terminal mid-run.
+    let content = draw_glow_ring(f, app, cols[1]);
+
     match app.section {
         Section::Main => match app.main_sub {
-            MainSub::Overview => main_tab::draw(f, app, cols[1]),
-            MainSub::Kernels => main_tab::draw_kernels(f, app, cols[1]),
+            MainSub::Overview => main_tab::draw(f, app, content),
+            MainSub::Kernels => main_tab::draw_kernels(f, app, content),
         },
-        Section::Stats => stats_tab::draw(f, app, cols[1]),
-        Section::Network => network_tab::draw(f, app, cols[1]),
-        Section::Library => library_tab::draw(f, app, cols[1]),
-        Section::Terminal => terminal_tab::draw(f, app, cols[1]),
+        Section::Stats => stats_tab::draw(f, app, content),
+        Section::Network => network_tab::draw(f, app, content),
+        Section::Library => library_tab::draw(f, app, content),
+        Section::Benchmarks => bench::draw(f, app, content),
+        Section::Terminal => terminal_tab::draw(f, app, content),
     }
 
     draw_footer(f, app, rows[2]);
-    draw_toasts(f, app, cols[1]);
+    draw_toasts(f, app, content);
     if app.help_open {
         draw_help(f, area);
     }
+}
+
+/// Paint the content ring and return the area inside it.
+fn draw_glow_ring(f: &mut Frame, app: &App, area: Rect) -> Rect {
+    let style = if app.bench.glow {
+        Style::default().fg(theme::glow(app.tick))
+    } else {
+        theme::border(false)
+    };
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(style);
+    if app.bench.glow {
+        block = block.title(Span::styled(
+            format!(
+                "─ ⏱ {} ─",
+                app.bench
+                    .descriptor()
+                    .map(|d| d.name)
+                    .unwrap_or("benchmark")
+            ),
+            Style::default()
+                .fg(theme::glow(app.tick))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    inner
 }
 
 fn status_pill(app: &App) -> Span<'static> {
@@ -223,10 +260,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (" NORMAL ", theme::BORDER_DIM)
     };
     let hints = match app.section {
-        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-5 jump · ? help · q quit",
-        Section::Stats => "⇥ cycle · 1-5 jump · ? help · q quit",
-        Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-5 jump · ? help",
-        Section::Library => "j/k move · / search · ⇥ cycle · 1-5 jump · ? help",
+        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-6 jump · ? help · q quit",
+        Section::Stats => "⇥ cycle · 1-6 jump · ? help · q quit",
+        Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-6 jump · ? help",
+        Section::Library => "j/k move · / search · ⇥ cycle · 1-6 jump · ? help",
+        Section::Benchmarks => bench_hints(app),
         Section::Terminal => "⏎ input · Esc back · ↑/↓ scroll · End follow · ⇥ Ops↔Chat · ? help",
     };
     let line = Line::from(vec![
@@ -242,6 +280,23 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(line).style(Style::default().bg(theme::BG_PANEL.color())),
         area,
     );
+}
+
+/// The Benchmarks footer changes with the step you are on — the form and the
+/// live run answer to different keys, and a single generic hint would be wrong
+/// in both.
+fn bench_hints(app: &App) -> &'static str {
+    use crate::tui::app::BenchSub;
+    use crate::tui::bench_state::View;
+    if app.bench_sub == BenchSub::History {
+        return "j/k run · ⇥ Suite↔History · 1-6 jump · ? help";
+    }
+    match (app.bench.view, app.bench.editing) {
+        (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-6 jump · ? help",
+        (View::Params, true) => "⏎ commit · Esc cancel",
+        (View::Params, false) => "j/k move · ⏎ edit · d defaults · s START · Esc back",
+        (View::Run, _) => "c cancel · j/k scroll · Esc back to suite",
+    }
 }
 
 fn draw_toasts(f: &mut Frame, app: &App, content: Rect) {
@@ -281,7 +336,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
     };
     f.render_widget(Clear, modal);
     let keys = [
-        ("1-5", "jump to section (repeat cycles its subsections)"),
+        ("1-6", "jump to section (repeat cycles its subsections)"),
         (
             "Tab / Shift+Tab",
             "walk every sidebar row, subsections included",
@@ -291,7 +346,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("f", "log filter (Main)"),
         ("/", "search (Library)"),
         ("←/→ + Enter", "select node / detail (Network)"),
-        ("Enter", "focus input (Terminal)"),
+        ("Enter", "focus input (Terminal) / edit field (Benchmarks)"),
+        ("s", "start the configured benchmark"),
+        ("c", "cancel the running benchmark"),
         ("Ctrl+Enter", "send chat message"),
         ("Esc", "back / cancel"),
         ("Ctrl+C", "clean shutdown (drain + exit)"),

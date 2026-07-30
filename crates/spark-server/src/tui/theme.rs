@@ -144,5 +144,45 @@ pub fn pressure_color(frac: f64) -> Option<Color> {
     }
 }
 
+/// The benchmark run-glow: brand cyan pulsing between dim and full over ~1.6 s
+/// at the 10 Hz tick.
+///
+/// Motion is the signal that work is in flight, so it is restrained the same
+/// way the loading chevron wave is — one slow sine, no hue shift. In
+/// 256-color mode there is no room to interpolate, so it alternates between the
+/// cyan index and the dim border index at the same cadence.
+pub fn glow(tick: u64) -> Color {
+    let phase = (tick % 16) as f64 / 16.0;
+    // 0 -> 1 -> 0 over the period, never fully dark: the ring stays legible.
+    let t = 0.35 + 0.65 * (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0;
+    if !truecolor() {
+        return if t > 0.6 {
+            Color::Indexed(CYAN.3)
+        } else {
+            Color::Indexed(BORDER_DIM.3)
+        };
+    }
+    let mix = |lit: u8, dark: u8| (dark as f64 + (lit as f64 - dark as f64) * t).round() as u8;
+    Color::Rgb(
+        mix(CYAN.0, BORDER_DIM.0),
+        mix(CYAN.1, BORDER_DIM.1),
+        mix(CYAN.2, BORDER_DIM.2),
+    )
+}
+
+/// Map a benchmark's semantic cell style onto the palette. The single place
+/// where `atlas-plugin`'s style-free results acquire color.
+pub fn cell_style(style: atlas_plugin::CellStyle) -> Style {
+    use atlas_plugin::CellStyle as S;
+    match style {
+        S::Neutral => text(),
+        S::Dim => dim(),
+        S::Accent => brand_cyan(),
+        S::Good => brand_green(),
+        S::Warn => warn(),
+        S::Bad => error(),
+    }
+}
+
 /// Braille spinner frames (1 rev/s at the 10 Hz tick).
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

@@ -16,7 +16,10 @@
 //!   capture_layer   typed startup-progress event decoding
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
+//!   section         Section — the sidebar/nav SSOT
 //!   app             App state + reducer (section, focus, per-tab state)
+//!   bench_state     Benchmarks section state + the executor's channels
+//!   bench_keys      Benchmarks key handling (list / params / run / history)
 //!   theme           palette + shared styles (brand chevron colors)
 //!   logo            header art + CLI flag badge derivation
 //!   commands        Terminal tab slash-command parser/dispatch
@@ -31,10 +34,13 @@ pub mod shutdown;
 pub mod terminal_guard;
 
 pub mod app;
+pub mod bench_keys;
+pub mod bench_state;
 pub mod commands;
 pub mod events;
 pub mod logo;
 pub mod progress;
+pub mod section;
 pub mod theme;
 
 pub mod chat;
@@ -54,8 +60,25 @@ pub fn start(
     match std::thread::Builder::new()
         .name("atlas-tui".into())
         .spawn(move || {
+            let port = args.port;
+            let model = args
+                .model_name
+                .clone()
+                .or_else(|| args.model.clone())
+                .unwrap_or_default();
             let mut app = app::App::new(args);
-            app.chat.set_runtime(runtime);
+            app.chat.set_runtime(runtime.clone());
+            // Benchmarks default to the server they are attached to. A store
+            // that cannot be created (no HOME, read-only) is not fatal: the
+            // section reports it when a run is started, rather than taking the
+            // whole dashboard down at boot.
+            match atlas_plugin::ArtifactStore::discover() {
+                Ok(store) => app.bench.attach(
+                    atlas_plugin::BenchmarkExecutor::new(runtime, store),
+                    atlas_plugin::TargetEndpoint::local(port, model),
+                ),
+                Err(e) => tracing::warn!("benchmarks unavailable: {e:#}"),
+            }
             events::run(app, progress_rx);
         }) {
         Ok(handle) => {

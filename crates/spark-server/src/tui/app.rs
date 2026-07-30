@@ -7,64 +7,25 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub use super::section::Section;
+
+use super::bench_state::BenchState;
 use super::chat::ChatState;
 use super::data::kernels::KernelTableModel;
 use super::data::library::LibraryEntry;
 use super::data::metrics_poll::StatsModel;
 use super::progress::ProgressModel;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Section {
-    Main,
-    Stats,
-    Network,
-    Library,
-    Terminal,
-}
-
-impl Section {
-    pub const ALL: [Section; 5] = [
-        Section::Main,
-        Section::Stats,
-        Section::Network,
-        Section::Library,
-        Section::Terminal,
-    ];
-    pub fn label(self) -> &'static str {
-        match self {
-            Section::Main => "Main",
-            Section::Stats => "Stats",
-            Section::Network => "Network",
-            Section::Library => "Library",
-            Section::Terminal => "Terminal",
-        }
-    }
-    pub fn icon(self) -> &'static str {
-        match self {
-            Section::Main => "◆",
-            Section::Stats => "∿",
-            Section::Network => "⬡",
-            Section::Library => "▤",
-            Section::Terminal => "❯",
-        }
-    }
-    /// Subsection labels, in sidebar order. SSOT for three things that must agree:
-    /// what the sidebar draws, what a repeat section-key press cycles, and what
-    /// `⇥` stops on. They were three separate hardcoded lists, so `⇥` skipped
-    /// straight past the subsection rows the sidebar was drawing.
-    pub fn subs(self) -> &'static [&'static str] {
-        match self {
-            Section::Main => &["Overview", "Kernels"],
-            Section::Terminal => &["Ops", "Chat"],
-            Section::Stats | Section::Network | Section::Library => &[],
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq)]
 pub enum MainSub {
     Overview,
     Kernels,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum BenchSub {
+    Suite,
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -100,6 +61,7 @@ pub struct App {
     pub args: crate::cli::ServeArgs,
     pub section: Section,
     pub main_sub: MainSub,
+    pub bench_sub: BenchSub,
     pub term_sub: TermSub,
     pub focus: Focus,
     pub progress: ProgressModel,
@@ -120,6 +82,7 @@ pub struct App {
     pub network_detail: bool,
     pub ops: OpsState,
     pub chat: ChatState,
+    pub bench: BenchState,
     pub toasts: Vec<Toast>,
     pub help_open: bool,
     pub tick: u64,
@@ -133,6 +96,7 @@ impl App {
             args,
             section: Section::Main,
             main_sub: MainSub::Overview,
+            bench_sub: BenchSub::Suite,
             term_sub: TermSub::Ops,
             focus: Focus::Content,
             progress: ProgressModel::default(),
@@ -152,6 +116,7 @@ impl App {
             network_detail: false,
             ops: OpsState::default(),
             chat: ChatState::default(),
+            bench: BenchState::default(),
             toasts: Vec::new(),
             help_open: false,
             tick: 0,
@@ -195,6 +160,7 @@ impl App {
     fn in_input(&self) -> bool {
         self.log_filter_editing
             || self.lib_filter_editing
+            || (self.section == Section::Benchmarks && self.bench.is_editing())
             || (self.section == Section::Terminal && self.focus == Focus::Input)
     }
 
@@ -220,7 +186,8 @@ impl App {
             KeyCode::Char('2') => self.jump(Section::Stats),
             KeyCode::Char('3') => self.jump(Section::Network),
             KeyCode::Char('4') => self.jump(Section::Library),
-            KeyCode::Char('5') => self.jump(Section::Terminal),
+            KeyCode::Char('5') => self.jump(Section::Benchmarks),
+            KeyCode::Char('6') => self.jump(Section::Terminal),
             KeyCode::Tab => self.cycle_section(1),
             KeyCode::BackTab => self.cycle_section(-1),
             KeyCode::Char('f') if self.section == Section::Main => {
@@ -234,6 +201,10 @@ impl App {
             {
                 self.focus = Focus::Input;
             }
+            // Benchmarks owns everything the global bindings above did not
+            // claim — Esc included, since there it means "back one step" and
+            // not "drop focus".
+            _ if self.section == Section::Benchmarks => self.on_section_key(key),
             KeyCode::Esc => {
                 self.focus = Focus::Content;
                 self.log_scroll = None;
@@ -246,6 +217,7 @@ impl App {
     pub fn sub_index(&self, s: Section) -> usize {
         match s {
             Section::Main => (self.main_sub == MainSub::Kernels) as usize,
+            Section::Benchmarks => (self.bench_sub == BenchSub::History) as usize,
             Section::Terminal => (self.term_sub == TermSub::Chat) as usize,
             _ => 0,
         }
@@ -258,6 +230,13 @@ impl App {
                     MainSub::Overview
                 } else {
                     MainSub::Kernels
+                }
+            }
+            Section::Benchmarks => {
+                self.bench_sub = if i == 0 {
+                    BenchSub::Suite
+                } else {
+                    BenchSub::History
                 }
             }
             Section::Terminal => self.term_sub = if i == 0 { TermSub::Ops } else { TermSub::Chat },
@@ -360,7 +339,17 @@ impl App {
                     self.chat.follow();
                 }
             }
+            Section::Benchmarks => self.on_bench_key(key),
             Section::Terminal | Section::Stats => {}
+        }
+    }
+
+    /// Route into the Benchmarks reducer and surface whatever it wants said.
+    fn on_bench_key(&mut self, key: KeyEvent) {
+        if let super::bench_keys::Outcome::Toast { text, error } =
+            self.bench.on_key(key, self.bench_sub)
+        {
+            self.toast(text, error);
         }
     }
 
@@ -373,6 +362,10 @@ impl App {
         if self.lib_filter_editing {
             edit_line(&mut self.lib_filter, key, &mut self.lib_filter_editing);
             self.lib_selected = 0;
+            return;
+        }
+        if self.section == Section::Benchmarks {
+            self.on_bench_key(key);
             return;
         }
         // Terminal input.

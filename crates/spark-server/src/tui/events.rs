@@ -64,6 +64,7 @@ pub fn run(mut app: App, progress_rx: Receiver<ProgressEvent>) {
             app.progress.apply(ev);
         }
         app.chat.pump();
+        app.bench.pump();
         // 3. Tick.
         if last_tick.elapsed() >= TICK {
             last_tick = Instant::now();
@@ -76,6 +77,11 @@ pub fn run(mut app: App, progress_rx: Receiver<ProgressEvent>) {
             if !library_scanned && app.section == Section::Library {
                 library_scanned = true;
                 app.library = super::data::library::scan(app.args.cache_dir.as_deref());
+            }
+            // Run history: lazily too, and re-read after a run persists a frame
+            // (`load_history` is a no-op until something invalidates it).
+            if app.section == Section::Benchmarks {
+                app.bench.load_history();
             }
         }
         // 4. Render.
@@ -118,10 +124,10 @@ fn on_mouse(app: &mut App, m: crossterm::event::MouseEvent, size: Option<ratatui
                     .iter()
                     .position(|s| *s == app.section)
                     .unwrap_or(0);
-                let subs = match app.section {
-                    Section::Main | Section::Terminal => 2,
-                    _ => 0,
-                };
+                // `Section::subs` is the SSOT for what the sidebar draws and
+                // what ⇥ stops on; deriving the mouse offset from anything else
+                // is how a sixth section silently breaks clicking.
+                let subs = app.section.subs().len();
                 if visual > active_idx + subs {
                     visual -= subs;
                 }

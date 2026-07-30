@@ -152,6 +152,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "atlas-quant"
 version = "0.1.0"
 dependencies = [
@@ -2365,6 +2378,7 @@ dependencies = [
  "anyhow",
  "atlas-core",
  "atlas-kernels",
+ "atlas-plugin",
  "axum",
  "clap",
  "crossterm",

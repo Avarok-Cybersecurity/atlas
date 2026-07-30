@@ -58,6 +58,9 @@ hyper-util = { version = "0.1", features = ["server-auto", "client-legacy", "htt
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
 # ── Atlas TUI (crates/spark-server/src/tui/) ──
+# The benchmark suite the Benchmarks section drives. GPU-free and
+# server-independent by design, so it stays unit-testable on any box.
+atlas-plugin = { path = "../atlas-plugin" }
 # ratatui pins its own crossterm; the version here MUST match ratatui 0.29's
 # (crossterm 0.28) or two raw-mode stacks fight over the terminal.
 ratatui = "0.29"
