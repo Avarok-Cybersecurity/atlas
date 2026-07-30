@@ -260,7 +260,7 @@ pub fn step_verify_k4(
 
     // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
-    if spark_model::speculative::shadow_topk() > 0 {
+    if sched.levers.shadow_topk > 0 {
         tracing::info!(
             "SHADOW_TGT base={shadow_base} v=[{v0},{v1},{v2},{v3}] drafts=[{},{},{}]",
             drafts[0],

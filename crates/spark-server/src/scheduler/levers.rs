@@ -47,6 +47,9 @@ pub struct SchedLevers {
     /// `ATLAS_DFLASH_RESUME_GUARD=N` (default 0 = off): keep the first N
     /// post-`</think>` tokens on plain serial decode.
     pub dflash_resume_guard: u32,
+    /// `ATLAS_MTP_SHADOW_TOPK` — the verify side of the drafter top-k probe.
+    /// Parsed by `spark_model::speculative::shadow_topk`, the SSOT.
+    pub shadow_topk: usize,
 
     // ── Watchdogs ──
     /// Disable every generation watchdog.
@@ -111,6 +114,7 @@ impl SchedLevers {
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
             dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
             dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
+            shadow_topk: spark_model::speculative::shadow_topk(),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
             // the rule: both accept "1" OR "true", trimmed, and re-spelling
@@ -151,6 +155,7 @@ impl SchedLevers {
             dflash_adaptive_min: 2.0,
             dflash_adaptive_reprobe: 256,
             dflash_resume_guard: 0,
+            shadow_topk: 0,
             disable_watchdogs: false,
             eos_suppressed_by_thinking: false,
             forced_token_fastpath: true,

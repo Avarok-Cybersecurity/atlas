@@ -87,6 +87,14 @@ pub struct ModelLevers {
     /// `OnceLock` it was also idempotent, so a second model with a different
     /// max batch would silently keep the first model's split count.
     pub max_decode_seqs: u32,
+    /// `ATLAS_MTP_SHADOW_TOPK=k` (0 = off, clamped to 8): the drafter D2Hs
+    /// its logits and logs the top-k candidates. Observational only.
+    pub shadow_topk: usize,
+    /// `ATLAS_KV_POISON=1` — fill a fresh KV block with NaN instead of zero,
+    /// the discriminator for the "unwritten fresh tail block read"
+    /// hypothesis. A diagnostic that changes what the kernels READ, so it
+    /// must not leak across a swap.
+    pub kv_poison: bool,
     /// MTP drafter context policy (`ATLAS_NO_DRAFTER_CONTEXT` /
     /// `ATLAS_DRAFTER_PREFILL_ONLY`), resolved and logged once per model.
     /// The two halves are coupled — prefill without carry is a measured
@@ -114,6 +122,8 @@ impl ModelLevers {
     pub fn from_env() -> Self {
         Self {
             max_decode_seqs: 1,
+            shadow_topk: crate::speculative::shadow_topk(),
+            kv_poison: std::env::var("ATLAS_KV_POISON").as_deref() == Ok("1"),
             drafter: crate::model::drafter_context::resolve_from_env(),
             // `ATLAS_NO_GDN_REGRESIDENT` is a kill switch, so the variable is
             // negative and the field is positive: `!= "1"` means on.
@@ -145,6 +155,8 @@ impl ModelLevers {
     pub fn defaults() -> Self {
         Self {
             max_decode_seqs: 1,
+            shadow_topk: 0,
+            kv_poison: false,
             drafter: crate::model::drafter_context::DrafterContext::BOTH,
             gdn_regresident: true,
             gdn_wy17: true,

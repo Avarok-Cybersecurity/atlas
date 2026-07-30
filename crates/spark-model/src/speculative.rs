@@ -53,21 +53,16 @@ pub fn draft_conf_tau() -> f32 {
 /// the two offline yields the per-depth conditional top-k coverage that
 /// gates the tree-speculation build (Phase 0 of the tree-spec plan).
 /// Value-parsed, not presence-checked (`=0` really is off).
+///
+/// The SSOT parse. Both `ModelLevers::shadow_topk` (spark-model) and
+/// `SchedLevers::shadow_topk` (spark-server) resolve through it once per run
+/// rather than caching the answer in a `OnceLock` that a swap would pin.
 pub fn shadow_topk() -> usize {
-    // STATIC, DELIBERATELY — log/diagnostic gate. Observational only: it
-    // decides whether the drafter D2Hs its logits to log top-k candidates,
-    // and never touches token selection. Read on the propose path from both
-    // `spark-model` and the scheduler's verify steps, which have no shared
-    // carrier; the value comes from the process environment, so the only
-    // thing a second model could disagree about is whether to log.
-    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_MTP_SHADOW_TOPK")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0)
-            .min(8)
-    })
+    std::env::var("ATLAS_MTP_SHADOW_TOPK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(8)
 }
 
 /// Drafter catch-up feed on serial->speculative transitions

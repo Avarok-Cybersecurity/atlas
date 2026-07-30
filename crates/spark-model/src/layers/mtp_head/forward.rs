@@ -530,7 +530,7 @@ impl MtpHead {
         // Logs this position's top-k candidate ids + softmax probs so an
         // offline join against the verify steps' SHADOW_TGT lines yields
         // per-depth conditional top-k coverage (tree-spec Phase 0 gate).
-        let shadow_k = crate::speculative::shadow_topk();
+        let shadow_k = ctx.levers.shadow_topk;
         if shadow_k > 0 {
             let vocab = v as usize;
             let mut bf16_buf = vec![0u8; vocab * 2];

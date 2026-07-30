@@ -127,6 +127,7 @@ impl TransformerModel {
             self.prefix_cache.as_ref(),
             self.gpu.as_ref(),
             stream,
+            self.levers.kv_poison,
         )?;
 
         // ── Marconi: try to restore SSM state and skip cached prefix ──

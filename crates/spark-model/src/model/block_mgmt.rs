@@ -23,12 +23,6 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-/// DIAGNOSTIC (ATLAS_KV_POISON=1): fill freshly-allocated KV blocks with a NaN
-/// bit-pattern instead of zero. Validated discriminator for the "unwritten
-/// fresh tail block read" hypothesis — see `PagedKvCache::poison_block`.
-static KV_POISON: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("ATLAS_KV_POISON").as_deref() == Ok("1"));
-
 /// Fill a freshly-allocated block: NaN-poison under the diagnostic flag,
 /// otherwise the production zero-fill (stale-KV leak guard).
 #[inline]
@@ -37,8 +31,12 @@ fn fill_fresh_block(
     blk: u32,
     gpu: &dyn GpuBackend,
     stream: u64,
+    // `ModelLevers::kv_poison`. Carried, not read from a static: it changes
+    // what the attention kernels READ, and a diagnostic that leaks across a
+    // model swap turns the next model's output into noise.
+    poison: bool,
 ) -> Result<()> {
-    if *KV_POISON {
+    if poison {
         kv_cache.poison_block(blk, gpu, stream)
     } else {
         kv_cache.zero_block(blk, gpu, stream)
@@ -200,6 +198,8 @@ pub(crate) fn ensure_blocks_through_decode(
     prefix_cache: &dyn spark_runtime::prefix_cache::PrefixCache,
     gpu: &dyn GpuBackend,
     stream: u64,
+    // `ModelLevers::kv_poison` — see `fill_fresh_block`.
+    kv_poison: bool,
 ) -> Result<()> {
     let cap = kv_cache.config().cache_blocks_per_seq.map(|c| c as usize);
     // Loop invariant: each iter either slides (frees a block) or grows
@@ -288,7 +288,7 @@ pub(crate) fn ensure_blocks_through_decode(
                 })?
             }
         };
-        fill_fresh_block(kv_cache, blk, gpu, stream)?;
+        fill_fresh_block(kv_cache, blk, gpu, stream, kv_poison)?;
         seq.block_table.push(blk);
         alloc_count += 1;
         if cap.is_some() {
@@ -341,6 +341,8 @@ pub(crate) fn ensure_blocks_through_prefill(
     prefix_cache: &dyn spark_runtime::prefix_cache::PrefixCache,
     gpu: &dyn GpuBackend,
     stream: u64,
+    // `ModelLevers::kv_poison` — see `fill_fresh_block`.
+    kv_poison: bool,
 ) -> Result<()> {
     let cap = kv_cache.config().cache_blocks_per_seq.map(|c| c as usize);
     loop {
@@ -368,7 +370,7 @@ pub(crate) fn ensure_blocks_through_prefill(
                 kv_cache.alloc_block()?
             }
         };
-        fill_fresh_block(kv_cache, blk, gpu, stream)?;
+        fill_fresh_block(kv_cache, blk, gpu, stream, kv_poison)?;
         seq.block_table.push(blk);
         if cap.is_some() {
             let id = spark_storage::with_local(|hss| {

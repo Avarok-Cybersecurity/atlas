@@ -187,6 +187,7 @@ impl TransformerModel {
                 self.prefix_cache.as_ref(),
                 self.gpu.as_ref(),
                 stream,
+                self.levers.kv_poison,
             )?;
 
             // Effective processing range. DEFECT 1 fix: pass this stream's

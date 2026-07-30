@@ -242,6 +242,7 @@ impl TransformerModel {
             self.prefix_cache.as_ref(),
             self.gpu.as_ref(),
             stream,
+            self.levers.kv_poison,
         )?;
 
         // Determine effective processing range (skip Marconi-cached tokens).
