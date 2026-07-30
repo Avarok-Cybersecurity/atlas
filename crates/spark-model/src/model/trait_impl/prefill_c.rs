@@ -426,6 +426,7 @@ impl TransformerModel {
             config: &self.config,
             dispatch: &self.dispatch,
             derived: &self.derived,
+            levers: &self.levers,
             attn_metadata: Some(attn_metadata),
             profile: self.profile,
             comm: self.comm_ref(),

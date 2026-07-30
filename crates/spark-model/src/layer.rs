@@ -222,6 +222,10 @@ pub struct ForwardContext<'a> {
     /// lifetime. Carried rather than kept in a static keyed by device pointer,
     /// where a recycled address would HIT after a model swap.
     pub derived: &'a crate::layers::ops::DerivedWeights,
+    /// Kernel-path levers for this model — the SSM/GDN variant, FFN routing,
+    /// MoE quantization, LoRA mode, diagnostics. The non-GEMM half of the
+    /// lever set; `dispatch` is the GEMM half.
+    pub levers: &'a crate::layers::ops::ModelLevers,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.

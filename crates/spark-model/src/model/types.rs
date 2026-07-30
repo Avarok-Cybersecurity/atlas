@@ -43,6 +43,8 @@ pub struct TransformerModel {
     /// Dropped with the model, so no entry can outlive the allocation it
     /// describes.
     pub(super) derived: crate::layers::ops::DerivedWeights,
+    /// Non-GEMM kernel-path levers, resolved at model construction.
+    pub(super) levers: crate::layers::ops::ModelLevers,
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,

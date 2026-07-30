@@ -204,7 +204,7 @@ impl TransformerModel {
         // Default (unset) keeps graphs ON — the LoRA delta launches are
         // capture-safe (pool weights / arena scratch / f32 scale are all
         // load-time-fixed). Folded in as one more suppressor.
-        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
             && !self.profile
             && !self
@@ -220,6 +220,7 @@ impl TransformerModel {
             config: &self.config,
             dispatch: &self.dispatch,
             derived: &self.derived,
+            levers: &self.levers,
             attn_metadata: Some(attn_metadata),
             profile: self.profile,
             comm: self.comm_ref(),

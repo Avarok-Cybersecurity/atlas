@@ -61,6 +61,8 @@ mod kv_cache_fp8k;
 mod kv_cache_turbok;
 #[path = "ops/lora_delta.rs"]
 pub mod lora_delta;
+#[path = "ops/model_levers.rs"]
+mod model_levers;
 #[path = "ops/moe_atomic_c4.rs"]
 mod moe_atomic_c4;
 #[path = "ops/moe_expert.rs"]
@@ -135,6 +137,7 @@ pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
+pub use model_levers::ModelLevers;
 pub use moe_atomic_c4::*;
 pub use moe_expert::*;
 pub use moe_expert_more::*;

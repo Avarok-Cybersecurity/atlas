@@ -482,11 +482,11 @@ impl Qwen3AttentionLayer {
             // tile is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K
             // shapes. Mirrors dense_ffn::w4a16_prefill_gemm; same
             // ATLAS_FFN_SMALLM=0 kill-switch.
-            fn small_m_enabled() -> bool {
-                static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
-            }
-            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
+            // The `OnceLock<bool>` static that lived here is now a field on
+            // `layers::ops::ModelLevers` — resolved when the model is built and carried
+            // on `ForwardContext`, because a static outlives the model whose flags it
+            // encodes.
+            if m <= 64 && k.is_multiple_of(32) && c.fwd.levers.ffn_small_m {
                 if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
                     return ops::w4a16_gemm_n128(
                         gpu,

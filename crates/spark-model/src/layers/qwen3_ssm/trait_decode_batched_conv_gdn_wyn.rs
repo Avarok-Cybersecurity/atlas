@@ -15,23 +15,18 @@ use super::{Qwen3SsmLayer, SsmLayerState};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
-/// Diagnostic kill-switch for the chain-verify K∈{5..8} WY arm:
-/// `ATLAS_GDN_WYN=0` forces those widths back onto the sequential per-token
-/// fallback (FP32 conv + gdn_decode — the numerics closest to single-token
-/// decode). MUCH slower; for greedy-losslessness bisection only. Mirrors
-/// `ATLAS_GDN_WY17` for the K=17 arm.
-fn wyn_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GDN_WYN").ok().as_deref() != Some("0"))
-}
+// The `OnceLock<bool>` static that lived here is now a field on
+// `layers::ops::ModelLevers` — resolved when the model is built and carried
+// on `ForwardContext`, because a static outlives the model whose flags it
+// encodes.
 
 impl Qwen3SsmLayer {
     /// The wyN kernel for chain-verify `num_tokens` ∈ {5..8}, or `None`
     /// when out of range, the module is absent (non-gb10 target), or the
     /// `ATLAS_GDN_WYN=0` kill-switch is set — all of which keep the caller
     /// on the sequential per-token fallback.
-    pub(super) fn wyn_kernel(&self, num_tokens: usize) -> Option<KernelHandle> {
-        if !(5..=8).contains(&num_tokens) || !wyn_enabled() {
+    pub(super) fn wyn_kernel(&self, num_tokens: usize, wyn_enabled: bool) -> Option<KernelHandle> {
+        if !(5..=8).contains(&num_tokens) || !wyn_enabled {
             return None;
         }
         let k = self.gdn_wyn_k[num_tokens - 5];

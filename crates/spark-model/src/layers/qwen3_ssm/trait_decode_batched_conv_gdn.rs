@@ -13,14 +13,10 @@
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
-/// Diagnostic kill-switch: `ATLAS_GDN_WY17=0` forces the K=17 verify off the
-/// fused wy17 arm (BF16 conv + WY-chunkwise GDN) onto the sequential
-/// per-token fallback (FP32 conv + gdn_decode — the numerics closest to
-/// single-token decode). MUCH slower; for greedy-losslessness bisection only.
-fn wy17_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GDN_WY17").ok().as_deref() != Some("0"))
-}
+// The `OnceLock<bool>` static that lived here is now a field on
+// `layers::ops::ModelLevers` — resolved when the model is built and carried
+// on `ForwardContext`, because a static outlives the model whose flags it
+// encodes.
 
 use super::{Qwen3SsmLayer, SsmLayerState};
 use crate::layer::ForwardContext;
@@ -337,7 +333,7 @@ impl Qwen3SsmLayer {
                 (nv * 2) as u32, // gb_stride
                 stream,
             )?;
-        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && wy17_enabled() {
+        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && ctx.levers.gdn_wy17 {
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
             //
             // Shared pool-layout arm (fused conv_kn epilogue + one wy17
@@ -345,7 +341,7 @@ impl Qwen3SsmLayer {
             // dispatched identically for the chain-verify K∈{5..8} widths
             // below.
             self.decode_batched_conv_gdn_wyn(ssm_state, ctx, args, self.gdn_wy17_k)?;
-        } else if let Some(wyn_k) = self.wyn_kernel(num_tokens).filter(|_| {
+        } else if let Some(wyn_k) = self.wyn_kernel(num_tokens, ctx.levers.gdn_wyn).filter(|_| {
             // The wyN launch writes Hi_t at h_state_intermediates[0] +
             // t*h_bytes — require the pool-contiguous layout it assumes
             // (always true for ssm_pool slots); fail safe to the sequential

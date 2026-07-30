@@ -217,7 +217,7 @@ impl TransformerModel {
         let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
-        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = !ms_profile
             && !lora_eager
             && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
@@ -231,6 +231,7 @@ impl TransformerModel {
             config: &self.config,
             dispatch: &self.dispatch,
             derived: &self.derived,
+            levers: &self.levers,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),

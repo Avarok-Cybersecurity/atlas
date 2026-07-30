@@ -156,7 +156,7 @@ impl TransformerModel {
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
-        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         // ATLAS_K4_DIAG=1: run the K=4 verify EAGERLY (no CUDA graph) with a
         // stream-synchronize checkpoint after every layer, so an illegal
         // access is attributed to the exact layer instead of surfacing as an
@@ -172,6 +172,7 @@ impl TransformerModel {
             config: &self.config,
             dispatch: &self.dispatch,
             derived: &self.derived,
+            levers: &self.levers,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),

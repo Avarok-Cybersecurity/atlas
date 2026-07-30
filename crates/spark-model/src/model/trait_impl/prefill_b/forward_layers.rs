@@ -107,6 +107,7 @@ impl TransformerModel {
             config: &self.config,
             dispatch: &self.dispatch,
             derived: &self.derived,
+            levers: &self.levers,
             attn_metadata: Some(attn_metadata),
             profile: profile_now,
             comm: self.comm_ref(),

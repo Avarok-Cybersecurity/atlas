@@ -820,13 +820,14 @@ impl DenseFfnLayer {
         // clamp), so with this arm the whole FFN block is kernel-identical to
         // a verify row. Requires the *_proj_t transposed copies (the NVFP4-MMQ
         // prefill arm FREES them — disable it if the warn below fires).
-        fn decode_ffn_via_gemm() -> bool {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_DECODE_FFN_VIA_GEMM").ok().as_deref() == Some("1")
-            })
-        }
-        if decode_ffn_via_gemm() && self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 {
+        // The `OnceLock<bool>` static that lived here is now a field on
+        // `layers::ops::ModelLevers` — resolved when the model is built and carried
+        // on `ForwardContext`, because a static outlives the model whose flags it
+        // encodes.
+        if ctx.levers.decode_ffn_via_gemm
+            && self.activation == FfnActivation::SiLU
+            && self.act_mul.0 != 0
+        {
             let wt_alive =
                 |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
             if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
@@ -1222,12 +1223,12 @@ impl DenseFfnLayer {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        fn small_m_enabled() -> bool {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
-        }
+        // The `OnceLock<bool>` static that lived here is now a field on
+        // `layers::ops::ModelLevers` — resolved when the model is built and carried
+        // on `ForwardContext`, because a static outlives the model whose flags it
+        // encodes.
         if let Some(wt) = wt {
-            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
+            if m <= 64 && k.is_multiple_of(32) && ctx.levers.ffn_small_m {
                 if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
                     return ops::w4a16_gemm_n128(
                         ctx.gpu,
