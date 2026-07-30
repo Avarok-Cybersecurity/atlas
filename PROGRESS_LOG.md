@@ -77,6 +77,16 @@ oc_harness 3/3 (calc 55s, sorter 49s clean; webserver builds+serves in 71s
 but followed 3/6 directions vs the baseline rep's 6/6 — single-rep agentic
 variance per section 4; repeat before treating direction-following as clean).
 
+**CANONICAL TEST CONFIG IS NOW 4K (2026-07-30, user decision):**
+`--max-seq-len 4096 --max-prefill-tokens 4096`, `ATLAS_KV_OVERCOMMIT` removed
+(it existed only because 16 x 16K exceeded strict reservation; 16 x 4K = 64K
+tokens fits the ~243K-token pool with room). Matches the #379 config-of-record
+context, keeps the MTP drafter pool small (~4.1K blocks), and avoids paging
+pressure from max_seq_len-scaled buffers during <=2K-token benches.
+COMPARABILITY: every number in sections 6.2-6.8 was measured on the 16K
+config — expect small deltas on the first 4K sweep; re-baseline before
+attributing them to code. Scratch script: combo_conc_canonical4k.sh.
+
 **Deliberate deviations from #379's own config of record** (`bench/phaseA_c_sweep.sh`):
 
 | | #379 config of record | here | why |
