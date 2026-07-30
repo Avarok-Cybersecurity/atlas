@@ -93,6 +93,11 @@ pub struct SamplingLevers {
     pub fast_greedy_grammar: bool,
     /// Run the full sample pipeline during MTP verify.
     pub mtp_verify_sample: bool,
+    /// Fast masked-sampling chat path.
+    pub fast_masked: bool,
+    /// Adaptive-decode diagnostic recording. Suppresses the fast path so the
+    /// full pipeline is observable.
+    pub adadec_diagnostic: bool,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.

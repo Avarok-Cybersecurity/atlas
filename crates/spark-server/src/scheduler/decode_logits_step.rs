@@ -20,22 +20,25 @@ thread_local! {
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
 /// 248k: BF16→FP32 expand + penalties + masks + argmax). Emits a 100-token
 /// running summary. Zero-cost when the env var is unset (OnceLock-gated).
-fn decode_timing_record(copy_us: u64, sample_us: u64) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ENABLED.get_or_init(|| std::env::var("ATLAS_DECODE_TIMING").is_ok()) {
+fn decode_timing_record(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    copy_us: u64,
+    sample_us: u64,
+) {
+    use std::sync::atomic::Ordering;
+    if !sched.levers.decode_timing {
         return;
     }
-    static COPY: AtomicU64 = AtomicU64::new(0);
-    static SAMPLE: AtomicU64 = AtomicU64::new(0);
-    static CNT: AtomicU64 = AtomicU64::new(0);
-    COPY.fetch_add(copy_us, Ordering::Relaxed);
-    SAMPLE.fetch_add(sample_us, Ordering::Relaxed);
-    let n = CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let stats = &sched.stats;
+    stats.decode_copy_us.fetch_add(copy_us, Ordering::Relaxed);
+    stats
+        .decode_sample_us
+        .fetch_add(sample_us, Ordering::Relaxed);
+    let n = stats.decode_count.fetch_add(1, Ordering::Relaxed) + 1;
     if n.is_multiple_of(100) {
-        let c = COPY.swap(0, Ordering::Relaxed);
-        let s = SAMPLE.swap(0, Ordering::Relaxed);
-        CNT.store(0, Ordering::Relaxed);
+        let c = stats.decode_copy_us.swap(0, Ordering::Relaxed);
+        let s = stats.decode_sample_us.swap(0, Ordering::Relaxed);
+        stats.decode_count.store(0, Ordering::Relaxed);
         tracing::info!(
             "DECODE_TIMING (last 100 host-path tokens): copy+fwd-wait={:.2}ms/tok sample(248k host)={:.2}ms/tok",
             c as f64 / 100_000.0,
@@ -155,7 +158,7 @@ pub fn process_decode_logits(
                     )
                 })
                 .collect();
-            decode_timing_record(copy_us, t_sample.elapsed().as_micros() as u64);
+            decode_timing_record(sched, copy_us, t_sample.elapsed().as_micros() as u64);
             // Return the staging buffer for reuse next token (its capacity is
             // preserved). The error path above intentionally drops it — that is
             // rare and only forfeits the cached capacity.

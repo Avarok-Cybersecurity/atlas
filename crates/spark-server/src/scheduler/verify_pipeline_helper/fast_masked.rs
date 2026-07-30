@@ -69,15 +69,8 @@ pub(super) fn try_chat_fast_path(
     if !super::dflash_masked_verify_enabled() {
         return None;
     }
-    let fast_masked_enabled = {
-        static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *CACHED
-            .get_or_init(|| std::env::var("ATLAS_DISABLE_FAST_MASKED").ok().as_deref() != Some("1"))
-    };
-    let adadec_recording = {
-        static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *CACHED.get_or_init(|| std::env::var("ATLAS_ADADEC_DIAGNOSTIC").is_ok())
-    };
+    let fast_masked_enabled = ctx.sampling.fast_masked;
+    let adadec_recording = ctx.sampling.adadec_diagnostic;
     if !fast_masked_enabled || a.grammar_state.is_some() || adadec_recording {
         return None;
     }

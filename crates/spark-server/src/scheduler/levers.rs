@@ -71,6 +71,12 @@ fn on_unless(var: &str) -> bool {
     std::env::var(var).ok().as_deref() != Some("1")
 }
 
+/// Presence-gated: ANY value enables, including `0`. Preserved rather than
+/// normalised — a diagnostic someone armed with `=0` must stay armed.
+fn present(var: &str) -> bool {
+    std::env::var(var).is_ok()
+}
+
 impl SchedLevers {
     /// Resolve from the environment. Called once, when the run starts.
     pub fn from_env() -> Self {
@@ -92,10 +98,11 @@ impl SchedLevers {
             eos_suppressed_by_thinking: opt_in("ATLAS_EOS_SUPPRESS_THINKING"),
             forced_token_fastpath: on_unless("ATLAS_DISABLE_FORCED_TOKEN"),
 
-            decode_timing: opt_in("ATLAS_DECODE_TIMING"),
+            // Presence-gated, not value-gated.
+            decode_timing: present("ATLAS_DECODE_TIMING"),
             mtp_timing: opt_in("ATLAS_MTP_TIMING"),
             mtp_gate_force: opt_in("ATLAS_MTP_GATE_FORCE"),
-            adadec_diagnostic: opt_in("ATLAS_ADADEC_DIAGNOSTIC"),
+            adadec_diagnostic: present("ATLAS_ADADEC_DIAGNOSTIC"),
 
             loop_watchdog: AtomicBool::new(false),
         }
@@ -138,6 +145,8 @@ impl SchedLevers {
             force_temp_zero: self.force_temp_zero,
             fast_greedy_grammar: self.fast_greedy_grammar,
             mtp_verify_sample: self.mtp_verify_sample,
+            fast_masked: self.fast_masked,
+            adadec_diagnostic: self.adadec_diagnostic,
         }
     }
 

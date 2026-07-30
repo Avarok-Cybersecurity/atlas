@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Speculation accept/reject telemetry, per run.
+//! Run telemetry — speculation acceptance and decode timing.
 //!
 //! Nineteen `AtomicU64` statics across `verify_k2_step`, `verify_k3_step` and
 //! `verify_k4_step` counted draft acceptance and per-position draft matches,
@@ -45,6 +45,11 @@ pub struct SpecStats {
     pub k4_d3_uncond: AtomicU64,
     pub k4_d2_cond: AtomicU64,
     pub k4_d3_cond: AtomicU64,
+
+    // ── Decode timing (ATLAS_DECODE_TIMING) ──
+    pub decode_copy_us: AtomicU64,
+    pub decode_sample_us: AtomicU64,
+    pub decode_count: AtomicU64,
 }
 
 /// Bump a counter. Free-standing so call sites read as
