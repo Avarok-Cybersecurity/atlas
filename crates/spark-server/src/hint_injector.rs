@@ -306,12 +306,6 @@ pub fn looks_like_error(text: &str) -> bool {
 // made many tool calls with NO productive file output yet, redirecting it to
 // write + verify. Env-gated (PCND): ATLAS_BASH_WANDER_WATCHDOG=1.
 
-/// One-time read of the watchdog flag.
-fn bash_wander_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("ATLAS_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"))
-}
-
 /// Classify a tool call as PRODUCTIVE (produces/verifies a deliverable) vs
 /// exploratory. `write`/`edit`/`create` tools are productive; a `bash` call is
 /// productive only when its command writes a file or builds/runs
@@ -357,8 +351,16 @@ pub fn tool_call_is_productive(name: &str, args: &serde_json::Value) -> bool {
 /// response when the agent appears to be wandering: ≥ `MIN_CALLS` tool calls
 /// with zero productive (file-writing/building) calls so far. Escalates with
 /// call count. `None` when disabled, below threshold, or progress was made.
-pub fn bash_wander_hint(total_tool_calls: usize, productive_calls: usize) -> Option<String> {
-    if !bash_wander_enabled() {
+///
+/// `enabled` is `ChatLevers::bash_wander`, passed in rather than read from a
+/// `OnceLock` here: the watchdog is a property of the deployment being
+/// steered, and the caller already holds the server's levers.
+pub fn bash_wander_hint(
+    total_tool_calls: usize,
+    productive_calls: usize,
+    enabled: bool,
+) -> Option<String> {
+    if !enabled {
         return None;
     }
     bash_wander_hint_inner(total_tool_calls, productive_calls)

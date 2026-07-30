@@ -186,6 +186,14 @@ pub trait GpuBackend: Send + Sync {
     /// Look up a kernel function by module and function name.
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
 
+    /// Synchronise the stream after every kernel launch, so an asynchronous
+    /// illegal-address fault is reported at the kernel that caused it rather
+    /// than at a later sync. Resolved once when the backend is built; read on
+    /// the launch path, which is why it is not a per-launch `getenv`.
+    fn debug_sync_kernels(&self) -> bool {
+        false
+    }
+
     /// This backend's model-scoped kernel modules, for the few callers that
     /// need the registry itself rather than a kernel handle — resolving a
     /// `__device__` symbol, for instance. `None` on backends that have no such

@@ -73,6 +73,9 @@ pub struct AppState {
     /// be cloned into per-request `GrammarSpec::ToolCall { parser, … }`
     /// for symmetric grammar dispatch via the trait.
     pub tool_call_parser: Option<std::sync::Arc<dyn tool_parser::ToolCallParser>>,
+    /// Chat-path levers for this server: prompt rendering (from MODEL.toml
+    /// `[behavior]`) plus the two default-off request diagnostics.
+    pub chat: crate::api::chat::levers::ChatLevers,
     /// Reasoning parser for thinking block detection. None = no thinking support.
     pub reasoning_parser: Option<Box<dyn reasoning_parser::ReasoningParser>>,
     /// Token ID for end-of-thinking — used to split thinking from content in blocking path.

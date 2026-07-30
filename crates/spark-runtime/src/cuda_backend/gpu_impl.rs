@@ -224,6 +224,10 @@ impl GpuBackend for AtlasCudaBackend {
         self.default_stream
     }
 
+    fn debug_sync_kernels(&self) -> bool {
+        AtlasCudaBackend::debug_sync_kernels(self)
+    }
+
     fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
         Some(self.registry().clone())
     }

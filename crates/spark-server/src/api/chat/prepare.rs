@@ -15,21 +15,20 @@ use crate::ir::ChatRequest;
 
 use super::{msg_entry, template, thinking};
 
-/// Opt-in per-request phase timing for the chat request path
-/// (`ATLAS_CHAT_PHASE_TIMING=1`, strict `== "1"`).
-///
-/// Exists to localize a measured ~205 ms that `/v1/chat/completions` costs over
-/// `/v1/completions` for identical content on a SHORT, TOOL-LESS prompt. It is
-/// per-request CPU rather than prefill (it survives at p50 across warm reps),
-/// and it is not template compilation (the minijinja env is precompiled) nor the
-/// auto-compact double render (disabled by default). At ~350-450 ms/turn in the
-/// harness's shape that is ~9-12% of the wall, so it is worth an instrument.
-///
-/// Read once. Off by default, so the production path is unchanged.
-pub(super) fn phase_timing_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_CHAT_PHASE_TIMING").as_deref() == Ok("1"))
-}
+// Opt-in per-request phase timing for the chat request path
+// (`ATLAS_CHAT_PHASE_TIMING=1`, strict `== "1"`).
+//
+// Exists to localize a measured ~205 ms that `/v1/chat/completions` costs over
+// `/v1/completions` for identical content on a SHORT, TOOL-LESS prompt. It is
+// per-request CPU rather than prefill (it survives at p50 across warm reps),
+// and it is not template compilation (the minijinja env is precompiled) nor the
+// auto-compact double render (disabled by default). At ~350-450 ms/turn in the
+// harness's shape that is ~9-12% of the wall, so it is worth an instrument.
+//
+// Off by default, so the production path is unchanged. The flag itself is
+// `ChatLevers::phase_timing`, resolved when `AppState` is built — a
+// `OnceLock` here would have made the instrument un-toggleable for the life
+// of the process, including across a model swap.
 
 /// Outputs of [`prepare_chat_prompt`].
 pub(crate) struct PreparedChat {
@@ -64,7 +63,7 @@ pub(crate) fn prepare_chat_prompt(
     if tools_active && let Some(ref parser) = state.tool_call_parser {
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt = parser.system_prompt(&req.tools, tool_choice);
+        let tool_prompt = parser.system_prompt(&req.tools, tool_choice, &state.chat.prompt);
         if let Some(first) = req
             .messages
             .first_mut()
@@ -104,6 +103,7 @@ pub(crate) fn prepare_chat_prompt(
         state.vision_max_pixels,
         &req.messages,
         tools_active,
+        &state.chat,
     )?;
     let us_msg_entry = _t_phase.elapsed().as_micros();
 
@@ -138,7 +138,7 @@ pub(crate) fn prepare_chat_prompt(
         thinking_budget,
         tools_active,
     )?;
-    if phase_timing_enabled() {
+    if state.chat.phase_timing {
         let us_template = _t_phase.elapsed().as_micros() - us_msg_entry - us_thinking;
         tracing::info!(
             "CHAT_PHASE prepare: msg_entry={us_msg_entry}us thinking={us_thinking}us \

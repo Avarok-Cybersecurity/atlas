@@ -246,12 +246,23 @@ impl LeakMarkers {
     };
 }
 
+pub use prompt_levers::PromptLevers;
+
 pub trait ToolCallParser: Send + Sync {
     /// Parser name for logging (e.g. "hermes", "qwen3_coder").
     fn name(&self) -> &str;
 
     /// Generate the system prompt that teaches the model how to make tool calls.
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String;
+    ///
+    /// `levers` carries the model's `[behavior]` prompt-rendering decisions
+    /// (currently TSCG). Passed in rather than read from a global so a
+    /// parser renders under the levers of the model it was loaded for.
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &PromptLevers,
+    ) -> String;
 
     /// Format assistant tool_calls as text for multi-turn chat template injection.
     fn format_tool_calls(&self, calls: &[IncomingToolCall]) -> String;
@@ -441,6 +452,7 @@ mod parse_single_b;
 mod parse_tools_tag;
 mod pipeline;
 mod pipeline_helpers;
+mod prompt_levers;
 mod qwen3_coder;
 mod qwen3_xml;
 mod streaming;

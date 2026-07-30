@@ -907,6 +907,7 @@ fn startup(
         } else {
             Some(rotation_tx)
         },
+        chat: crate::api::chat::levers::ChatLevers::resolve(ptx_set.behavior.tscg),
         vision_config: config.vision.clone(),
         vision_max_pixels,
         default_temperature,

@@ -87,7 +87,6 @@ pub(super) fn strip_in_tool_opener_bias(
 /// sites that previously passed hardcoded `0.0` literals — bypassing the
 /// exact FP8/NVFP4 argmax-flip safety net the floor exists for. Default ON
 /// (SSOT wiring fix); set `ATLAS_NO_MTP_MINP=1` to restore the 0.0 literals.
-/// One-time read, mirroring `hint_injector::bash_wander_enabled`.
 pub(super) fn mtp_minp_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_MINP").ok().as_deref() != Some("1"))

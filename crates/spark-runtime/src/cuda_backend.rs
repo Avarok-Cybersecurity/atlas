@@ -86,6 +86,9 @@ pub struct AtlasCudaBackend {
     /// This model's kernel modules. `Arc` because the backend is cloned into
     /// the layers that launch kernels.
     registry: Arc<AtlasRegistry>,
+    /// `ATLAS_DEBUG_SYNC_KERNELS=1` — sync after every launch. Read once here
+    /// rather than per launch, and carried rather than cached in a static.
+    debug_sync_kernels: bool,
     /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
@@ -118,6 +121,7 @@ impl AtlasCudaBackend {
 
         Ok(Self {
             registry,
+            debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             default_stream,
             cuda_ctx,
         })
@@ -127,6 +131,10 @@ impl AtlasCudaBackend {
     /// directly rather than through `GpuBackend`.
     pub fn registry(&self) -> &Arc<AtlasRegistry> {
         &self.registry
+    }
+
+    pub(crate) fn debug_sync_kernels(&self) -> bool {
+        self.debug_sync_kernels
     }
 }
 

@@ -224,7 +224,8 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
         );
     }
     // Phase-B: TSCG tool-schema compilation (MODEL.toml [behavior].tscg).
-    crate::tscg::set_tscg_enabled(b.tscg);
+    // The value itself reaches the renderers via `AppState::prompt_levers`;
+    // this phase only audits it.
     if b.tscg {
         tracing::info!("Model behavior: TSCG tool-schema compilation ENABLED (compact signatures)");
     }

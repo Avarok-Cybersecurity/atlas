@@ -237,7 +237,11 @@ fn qwen3_coder_prompt_has_antinarration_hardening() {
     // learning — negative examples imitation-trap pattern
     // models).
     let parser = Qwen3CoderParser;
-    let prompt = parser.system_prompt(&[], &ToolChoice::Mode("auto".into()));
+    let prompt = parser.system_prompt(
+        &[],
+        &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
+    );
     // <IMMEDIATE_TOOL_USE> block is still present.
     assert!(
         prompt.contains("<IMMEDIATE_TOOL_USE>"),
@@ -285,6 +289,7 @@ fn qwen3_coder_f33_bash_description_has_retry_rule() {
     let prompt = parser.system_prompt(
         std::slice::from_ref(&bash_tool),
         &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
     );
     assert!(
         prompt.contains("[atlas-f33]"),
@@ -306,6 +311,7 @@ fn qwen3_coder_f33_bash_description_has_retry_rule() {
     let prompt_write_only = parser.system_prompt(
         std::slice::from_ref(&write_tool),
         &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
     );
     assert!(
         !prompt_write_only.contains("[atlas-f33]"),

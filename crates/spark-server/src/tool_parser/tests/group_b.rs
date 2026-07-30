@@ -190,9 +190,42 @@ fn hermes_parser_system_prompt_contains_json() {
             parameters: None,
         },
     }];
-    let prompt = parser.system_prompt(&tools, &ToolChoice::Mode("auto".into()));
+    let prompt = parser.system_prompt(
+        &tools,
+        &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
+    );
     assert!(prompt.contains("\"name\":\"test\""));
     assert!(prompt.contains("<tools>"));
+}
+
+#[test]
+fn tscg_is_decided_per_model_not_per_process() {
+    // The regression the `OnceLock<bool>` allowed: the first model to load
+    // fixed TSCG for every later one, so a hot-swap rendered the new model's
+    // schemas under the old model's setting. Levers travel with the call, so
+    // both answers are reachable in one process.
+    let parser = HermesParser;
+    let tools = vec![ToolDefinition {
+        tool_type: "function".into(),
+        function: FunctionDefinition {
+            name: "test".into(),
+            description: Some("A test function".into()),
+            parameters: None,
+        },
+    }];
+    let tc = ToolChoice::Mode("auto".into());
+    let off = parser.system_prompt(&tools, &tc, &crate::tool_parser::PromptLevers::OFF);
+    let on = parser.system_prompt(&tools, &tc, &crate::tool_parser::PromptLevers::new(true));
+    assert!(
+        off.contains("\"name\":\"test\""),
+        "TSCG off keeps the JSON body"
+    );
+    assert!(
+        !on.contains("\"name\":\"test\""),
+        "TSCG on replaces it with signatures"
+    );
+    assert!(on.contains("test"), "the tool is still described");
 }
 
 #[test]
@@ -206,7 +239,11 @@ fn qwen3_coder_parser_system_prompt_contains_xml() {
             parameters: None,
         },
     }];
-    let prompt = parser.system_prompt(&tools, &ToolChoice::Mode("auto".into()));
+    let prompt = parser.system_prompt(
+        &tools,
+        &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
+    );
     assert!(prompt.contains("\"name\":\"test\""));
     assert!(prompt.contains("A test function"));
     assert!(prompt.contains("<function=example_function_name>"));
