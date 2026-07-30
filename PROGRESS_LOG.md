@@ -1153,6 +1153,38 @@ vs 37s (default); temperature-0 probe SHA identical (bit-equivalent).
 Kill switch ATLAS_HOST_TRANSPOSE=1; silent host fallback for targets
 without the kernel; arity pinned.
 
+### 6.20b CORRECTION to 6.20's fp8-KV diagnosis (research agent, deep-dive)
+
+The 6.20 root cause ("no calibrated k_scale/v_scale → E4M3 clipping") is
+**WRONG on both counts**:
+
+- The centml checkpoint SHIPS modelopt k/v scales for all 16 full-attn
+  layers and Atlas loads + uses them (`weight_map/model_a.rs:57`,
+  `qwen35_dense.rs:319/:398`, `qwen3_attention/decode.rs:23-29`). The
+  startup warning fires unconditionally when `--fp8-kv-calibration-tokens`
+  is 0 (`serve_phases/kv_cache.rs:210-228`) without checking the
+  checkpoint — false alarm; it misdirected the investigation twice. Open
+  fix: make the warning check loaded scales. Clipping was impossible
+  (|K|max ≈ 12–27 vs ±448).
+- The decode halving is the KERNEL, not gating or scales:
+  `paged_decode_attn_fp8` engaged (run log kernel table: used) but
+  dequants K/V per element in registers and never got the cp.async
+  2-stage pipeline the fp8 PREFILL twin got on 2026-07-19 (see the
+  MODEL.toml `default_kv_dtype` note: sync dequant was "10.2% SLOWER than
+  BF16 KV" even at prefill). The 6/8 quality regression occurred WITH
+  correct scales — genuine E4M3 noise; the untried lever is
+  `--kv-high-precision-layers auto` (first/last N attn layers BF16).
+
+Standing conclusions: bf16 KV remains correct as config of record
+(capacity isn't needed: bf16 ≈ 159K KV tokens vs 80–160K observed; only
+16/64 layers carry KV). fp8-KV is now BLOCKED-ON, not dead: (1) port the
+cp.async pipeline into `kernels/gb10/common/paged_decode_attn_fp8.cu` +
+split-K twin, then (2) A/B `fp8 + --kv-high-precision-layers auto`. NEVER
+`--fp8-kv-calibration-tokens` on this branch: it overrides the good
+modelopt scales and this branch lacks the ea73fbb9 freeze-on-first-observe
+fix (would reintroduce the Laguna warmup→freeze corruption); cherry-pick
+that first if online calibration is ever wanted here.
+
 ### 6.21 K=4 ladder rung at C=8 — DEAD as a flag
 
 `--num-drafts 4` + `ATLAS_MTP_K_LADDER=4:3,8:4,16:1` on the config of
