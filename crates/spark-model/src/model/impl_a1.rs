@@ -110,7 +110,8 @@ impl TransformerModel {
         // a sequence's attention reduction is invariant to how many other
         // sequences are co-batched (concurrent-decode determinism — see
         // tasks/determinism_investigation.md).
-        crate::layers::qwen3_attention::set_max_decode_seqs(max_batch_size as u32);
+        let mut levers = ops::ModelLevers::from_env();
+        levers.max_decode_seqs = (max_batch_size as u32).max(1);
 
         tracing::info!(
             "TransformerModel: {} layers, vocab={}, hidden={}{}{}",
@@ -498,7 +499,7 @@ impl TransformerModel {
             config,
             dispatch: crate::layers::ops::GemmDispatch::from_env(),
             derived: crate::layers::ops::DerivedWeights::new(),
-            levers: crate::layers::ops::ModelLevers::from_env(),
+            levers,
             #[cfg(feature = "cuda")]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;

@@ -178,6 +178,7 @@ impl Qwen3AttentionLayer {
             inv_sqrt_d,
             nq * hd,
             fwd.buffers.splitk_workspace(),
+            fwd.levers.max_decode_seqs,
             stream,
         )?;
         if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {

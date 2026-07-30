@@ -77,6 +77,16 @@ pub struct ModelLevers {
     /// BF16 MMA instead of the default path, which crushes activations to FP8
     /// E4M3. Removes the FP8 prefill perturbation on those projections.
     pub bf16_tc_proj: bool,
+    /// Configured max decode batch (`--max-batch-size`), the reference count
+    /// the split-K attention split count is pinned to. Not from the
+    /// environment: `TransformerModel::new` writes it from the serve arg.
+    ///
+    /// It pins DETERMINISM — the online-softmax split-merge is
+    /// non-associative, so a sequence decoded alone must see the same
+    /// reduction tree as one co-batched with fifteen others. Held in a
+    /// `OnceLock` it was also idempotent, so a second model with a different
+    /// max batch would silently keep the first model's split count.
+    pub max_decode_seqs: u32,
 }
 
 /// Opt-IN: off unless the variable is exactly `1`.
@@ -98,6 +108,7 @@ impl ModelLevers {
     /// Resolve from the environment. Called once, when the model is built.
     pub fn from_env() -> Self {
         Self {
+            max_decode_seqs: 1,
             // `ATLAS_NO_GDN_REGRESIDENT` is a kill switch, so the variable is
             // negative and the field is positive: `!= "1"` means on.
             gdn_regresident: std::env::var("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Ok("1"),
@@ -127,6 +138,7 @@ impl ModelLevers {
     /// mutating the process environment.
     pub fn defaults() -> Self {
         Self {
+            max_decode_seqs: 1,
             gdn_regresident: true,
             gdn_wy17: true,
             gdn_wyn: true,
