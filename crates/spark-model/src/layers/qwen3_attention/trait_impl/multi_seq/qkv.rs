@@ -10,6 +10,7 @@
 //! token but supports every weight encoding.
 
 use anyhow::Result;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::ctx::MultiSeqCtx;
 use crate::layers::ops;
@@ -28,6 +29,65 @@ pub(super) fn bf16_batchm_enabled() -> bool {
 fn fused_qkv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("ATLAS_NO_FUSED_QKV").ok().as_deref() != Some("1"))
+}
+
+/// Scatter contiguous Q/K/V scratch into the per-seq interleaved `qkv_buf`.
+///
+/// The three batch paths below all did this as `3 * rows` separate
+/// `copy_d2d_async` calls. Each family is a contiguous source and a
+/// fixed-stride destination, i.e. exactly a pitched copy, so the whole
+/// per-family loop collapses into ONE `cudaMemcpy2DAsync`
+/// (`cuda_backend/gpu_impl.rs:254` — a real 2D copy, not a per-row wrapper).
+///
+/// `3 * rows` driver calls become 3. Measured on nsys-moe-cap4-0931, the
+/// small-copy D2D traffic on the default stream is 297 calls/step costing
+/// 2.14 ms of driver time against only 0.309 ms of GPU time, the largest
+/// host-side term in the step.
+///
+/// Bit-identical to the loop: same bytes, same source and destination
+/// addresses, same stream, same order of families.
+fn scatter_qkv(
+    gpu: &dyn GpuBackend,
+    q_scratch: DevicePtr,
+    k_scratch: DevicePtr,
+    v_scratch: DevicePtr,
+    qkv_buf: DevicePtr,
+    q_proj_bytes: usize,
+    kv_bytes: usize,
+    per_seq_qkv: usize,
+    rows: usize,
+    stream: u64,
+) -> Result<()> {
+    if rows == 0 {
+        return Ok(());
+    }
+    gpu.copy_d2d_2d_async(
+        q_scratch,
+        q_proj_bytes,
+        qkv_buf,
+        per_seq_qkv,
+        q_proj_bytes,
+        rows,
+        stream,
+    )?;
+    gpu.copy_d2d_2d_async(
+        k_scratch,
+        kv_bytes,
+        qkv_buf.offset(q_proj_bytes),
+        per_seq_qkv,
+        kv_bytes,
+        rows,
+        stream,
+    )?;
+    gpu.copy_d2d_2d_async(
+        v_scratch,
+        kv_bytes,
+        qkv_buf.offset(q_proj_bytes + kv_bytes),
+        per_seq_qkv,
+        kv_bytes,
+        rows,
+        stream,
+    )
 }
 
 impl Qwen3AttentionLayer {
@@ -464,21 +524,18 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
-        for i in 0..3usize {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            let k_out_i = q_out_i.offset(q_proj_bytes);
-            let v_out_i = k_out_i.offset(kv_bytes);
-            fwd.gpu.copy_d2d_async(
-                q_scratch.offset(i * q_proj_bytes),
-                q_out_i,
-                q_proj_bytes,
-                stream,
-            )?;
-            fwd.gpu
-                .copy_d2d_async(k_scratch.offset(i * kv_bytes), k_out_i, kv_bytes, stream)?;
-            fwd.gpu
-                .copy_d2d_async(v_scratch.offset(i * kv_bytes), v_out_i, kv_bytes, stream)?;
-        }
+        scatter_qkv(
+            fwd.gpu,
+            q_scratch,
+            k_scratch,
+            v_scratch,
+            qkv_buf,
+            q_proj_bytes,
+            kv_bytes,
+            per_seq_qkv,
+            3,
+            stream,
+        )?;
 
         // q/k RMS norms deferred to `ms_qkv_norms` (after the pre-norm LoRA
         // delta in `ms_phase_qkv`).
@@ -554,21 +611,18 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
-        for i in 0..2usize {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            let k_out_i = q_out_i.offset(q_proj_bytes);
-            let v_out_i = k_out_i.offset(kv_bytes);
-            fwd.gpu.copy_d2d_async(
-                q_scratch.offset(i * q_proj_bytes),
-                q_out_i,
-                q_proj_bytes,
-                stream,
-            )?;
-            fwd.gpu
-                .copy_d2d_async(k_scratch.offset(i * kv_bytes), k_out_i, kv_bytes, stream)?;
-            fwd.gpu
-                .copy_d2d_async(v_scratch.offset(i * kv_bytes), v_out_i, kv_bytes, stream)?;
-        }
+        scatter_qkv(
+            fwd.gpu,
+            q_scratch,
+            k_scratch,
+            v_scratch,
+            qkv_buf,
+            q_proj_bytes,
+            kv_bytes,
+            per_seq_qkv,
+            2,
+            stream,
+        )?;
 
         // q/k RMS norms deferred to `ms_qkv_norms` (after the pre-norm LoRA
         // delta in `ms_phase_qkv`).
@@ -851,20 +905,19 @@ impl Qwen3AttentionLayer {
 
         // Scatter contiguous Q/K/V into the per-seq interleaved qkv_buf.
         // Not needed when fused: the GEMM already wrote that exact layout.
-        for i in (0..n).take_while(|_| !use_fused) {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            let k_out_i = q_out_i.offset(q_proj_bytes);
-            let v_out_i = k_out_i.offset(kv_bytes);
-            fwd.gpu.copy_d2d_async(
-                q_scratch.offset(i * q_proj_bytes),
-                q_out_i,
+        if !use_fused {
+            scatter_qkv(
+                fwd.gpu,
+                q_scratch,
+                k_scratch,
+                v_scratch,
+                qkv_buf,
                 q_proj_bytes,
+                kv_bytes,
+                per_seq_qkv,
+                n,
                 stream,
             )?;
-            fwd.gpu
-                .copy_d2d_async(k_scratch.offset(i * kv_bytes), k_out_i, kv_bytes, stream)?;
-            fwd.gpu
-                .copy_d2d_async(v_scratch.offset(i * kv_bytes), v_out_i, kv_bytes, stream)?;
         }
 
         // q/k RMS norms deferred to `ms_qkv_norms` (after the pre-norm LoRA
