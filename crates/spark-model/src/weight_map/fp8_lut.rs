@@ -195,7 +195,7 @@ pub(super) fn fp8_e4m3_to_f32(bits: u8) -> f32 {
 ///
 /// E8M0 format: unsigned 8-bit exponent, 0 mantissa, bias=127.
 /// Value = 2^(exp - 127). exp=0 → 0, exp=255 → NaN (stored as 0.0).
-static FP8_E8M0_LUT: [f32; 256] = {
+const FP8_E8M0_LUT: [f32; 256] = {
     let mut table = [0.0f32; 256];
     let mut i: u32 = 0;
     while i < 256 {

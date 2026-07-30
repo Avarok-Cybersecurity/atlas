@@ -43,7 +43,7 @@ pub struct Fp8Format {
 /// Special values: 0x7F / 0xFF = NaN (mapped to 0.0 for safety).
 /// Max finite: +/-448.0 (exp=15, mant=6).
 #[allow(clippy::if_same_then_else)]
-static FP8_E4M3_LUT: [f32; 256] = {
+const FP8_E4M3_LUT: [f32; 256] = {
     let mut table = [0.0f32; 256];
     let mut i: u32 = 0;
     while i < 256 {

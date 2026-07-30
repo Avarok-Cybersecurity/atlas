@@ -112,7 +112,7 @@ static CHAR_TO_BYTE_MAP: [i16; 324] = [
 /// Forward map derived once from `CHAR_TO_BYTE_MAP` (SSOT: the inverse
 /// table is authoritative; this is `byte -> codepoint` such that
 /// `CHAR_TO_BYTE_MAP[byte_to_char(byte)] == byte`).
-static BYTE_TO_CHAR_MAP: [u32; 256] = build_byte_to_char_map();
+const BYTE_TO_CHAR_MAP: [u32; 256] = build_byte_to_char_map();
 
 const fn build_byte_to_char_map() -> [u32; 256] {
     let mut out = [0u32; 256];
