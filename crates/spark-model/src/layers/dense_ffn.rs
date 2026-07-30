@@ -416,17 +416,15 @@ impl DenseFfnLayer {
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
-            // STATIC, DELIBERATELY — log-once latch on a LOAD-TIME path. This
-            // runs inside `finalize_q4k_load`, before any model object exists to
-            // own the latch, and the line it gates reports a one-off allocation
-            // decision rather than a per-model route. Its sibling route lines on
-            // the forward path are `ModelStats::once`, which has a carrier.
-            static TWIN_LOG: std::sync::Once = std::sync::Once::new();
-            TWIN_LOG.call_once(|| {
+            // Latched on the BACKEND (`OpCache::once`), which exists by load
+            // time: `finalize_q4k_load` takes the `gpu` it is loading onto. A
+            // static meant only the first model in the process reported the
+            // decision.
+            if gpu.op_cache().once("log:ffn_mmq_freed_twins") {
                 eprintln!(
                     "[atlas] ATLAS_FFN_MMQ: freed transposed FFN `_t` copies (dead under Q4_K prefill) — Q4_K weights net to ~0 vs NVFP4 baseline"
                 );
-            });
+            }
         }
         Ok(())
     }
@@ -508,17 +506,15 @@ impl DenseFfnLayer {
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
-            // STATIC, DELIBERATELY — log-once latch on a LOAD-TIME path. This
-            // runs inside `finalize_q4k_load`, before any model object exists to
-            // own the latch, and the line it gates reports a one-off allocation
-            // decision rather than a per-model route. Its sibling route lines on
-            // the forward path are `ModelStats::once`, which has a carrier.
-            static FP4_TWIN_LOG: std::sync::Once = std::sync::Once::new();
-            FP4_TWIN_LOG.call_once(|| {
+            // Latched on the BACKEND (`OpCache::once`), which exists by load
+            // time: `finalize_q4k_load` takes the `gpu` it is loading onto. A
+            // static meant only the first model in the process reported the
+            // decision.
+            if gpu.op_cache().once("log:ffn_fp4mmq_freed_twins") {
                 eprintln!(
                     "[atlas] ATLAS_FFN_NVFP4_MMQ: freed gate/up `_t` copies (dead under FP4-MMQ prefill) — block_nvfp4 copies net to ~0 vs NVFP4 baseline"
                 );
-            });
+            }
         }
         Ok(())
     }

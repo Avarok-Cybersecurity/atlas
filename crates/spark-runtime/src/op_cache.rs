@@ -37,12 +37,16 @@ pub struct OpCache {
     kernels: RwLock<HashMap<(&'static str, &'static str), KernelHandle>>,
     /// Purpose tag → `(pointer, bytes)`. Grow-only within a model's life.
     scratch: Mutex<HashMap<&'static str, (DevicePtr, usize)>>,
+    /// Device allocation has failed on this backend at least once.
+    alloc_fell_back: std::sync::atomic::AtomicBool,
     /// `(name-hash, M, N, K)` combinations whose route line has been logged.
     /// Backend-scoped like everything else here: the shapes a model dispatches
     /// are its own, and a set shared across a swap suppresses the FIRST route
     /// line for every shape the previous model happened to use — the lines
     /// that say which kernel a model actually took.
     logged_shapes: Mutex<std::collections::HashSet<(u64, u32, u32, u32)>>,
+    /// Per-key call counts for the report-the-first-few diagnostics.
+    counters: Mutex<HashMap<&'static str, u32>>,
 }
 
 impl OpCache {
@@ -96,6 +100,36 @@ impl OpCache {
                 Ok(p)
             }
         }
+    }
+
+    /// Has device allocation already failed on this backend?
+    ///
+    /// Retrying a failing `cuMemAlloc` per tensor wastes minutes of load time
+    /// and fragments what is left, so the first failure latches the loader
+    /// onto managed memory. Per BACKEND rather than per process: after a
+    /// model is unloaded the pressure is gone, and the next model's load
+    /// should try device memory again instead of inheriting a UVM sentence
+    /// from a model that is no longer resident.
+    pub fn alloc_fell_back(&self) -> bool {
+        self.alloc_fell_back
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Latch the managed-memory fallback for the rest of this model's load.
+    pub fn note_alloc_fallback(&self) {
+        self.alloc_fell_back
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `true` for the first `n` times this backend reaches `key`.
+    ///
+    /// For the diagnostics that report the first few of something and then
+    /// go quiet. Counted per backend, so a second model reports its own.
+    pub fn first_n(&self, key: &'static str, n: u32) -> bool {
+        let mut g = self.counters.lock().expect("op cache counters poisoned");
+        let c = g.entry(key).or_insert(0);
+        *c += 1;
+        *c <= n
     }
 
     /// `true` the first time this backend reaches `key`, `false` after.

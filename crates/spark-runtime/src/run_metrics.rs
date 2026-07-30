@@ -21,7 +21,7 @@
 //! begins. That is deliberately upstream of the first kernel lookup, so the
 //! kernel audit records only this model's modules.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 /// The process's single run mailbox.
@@ -44,6 +44,11 @@ pub struct RunMetrics {
     pub low_entropy_tokens: AtomicU64,
     pub total_sampled_tokens: AtomicU64,
 
+    /// Free device memory at GPU-context init, before this run allocated
+    /// anything. Lets KV sizing measure this process's own footprint as
+    /// `baseline - free_now`, excluding co-tenants automatically. `0` =
+    /// unset (the mock backend in tests) and callers fall back.
+    pub baseline_free_bytes: AtomicUsize,
     /// `(module, func, loaded)` for every kernel lookup this run made.
     pub kernel_audit: Mutex<Vec<(String, String, bool)>>,
 }
@@ -68,6 +73,7 @@ pub fn reset_for_new_run() {
     ] {
         c.store(0, Ordering::Relaxed);
     }
+    m.baseline_free_bytes.store(0, Ordering::Relaxed);
     m.last_entropy.store(0, Ordering::Relaxed);
     if let Ok(mut v) = m.kernel_audit.lock() {
         v.clear();
