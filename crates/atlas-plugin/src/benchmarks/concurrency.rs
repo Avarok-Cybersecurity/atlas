@@ -76,7 +76,7 @@ impl ConcurrencySweep {
 
     /// One request. Returns `Err` only for transport failures — a completed
     /// request with zero tokens is a data point, not an error.
-    async fn one(&self, isl: usize, salt: String) -> Result<http::ChatOutcome> {
+    async fn one(&self, isl: usize, prefix_tag: String) -> Result<http::ChatOutcome> {
         let handle = self.handle()?;
         let target = handle.target();
         let body = json!({
@@ -84,7 +84,7 @@ impl ConcurrencySweep {
             "stream": true,
             "max_tokens": self.osl,
             "temperature": 0.0,
-            "messages": [{"role": "user", "content": stats::make_prompt(isl, self.mode, &salt)}],
+            "messages": [{"role": "user", "content": stats::make_prompt(isl, self.mode, &prefix_tag)}],
         });
         http::chat_stream(target, &body, self.timeout).await
     }

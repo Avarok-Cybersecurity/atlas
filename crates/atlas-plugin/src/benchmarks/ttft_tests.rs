@@ -106,12 +106,12 @@ fn a_baseline_from_another_target_reports_instead_of_gating() {
 }
 
 #[test]
-fn warm_reuses_one_salt_per_length_and_cold_never_repeats_one() {
-    // The whole cold/warm distinction is the salt, so pin it directly.
+fn warm_reuses_one_tag_per_length_and_cold_never_repeats_one() {
+    // The whole cold/warm distinction is the prefix_tag, so pin it directly.
     let warm_a = format!("warm-{}", 1024);
     let warm_b = format!("warm-{}", 1024);
     assert_eq!(warm_a, warm_b);
-    let cold_a = crate::benchmarks::unique_salt("cold-1024-0", 1);
-    let cold_b = crate::benchmarks::unique_salt("cold-1024-0", 2);
+    let cold_a = crate::benchmarks::unique_prefix_tag("cold-1024-0", 1);
+    let cold_b = crate::benchmarks::unique_prefix_tag("cold-1024-0", 2);
     assert_ne!(cold_a, cold_b);
 }

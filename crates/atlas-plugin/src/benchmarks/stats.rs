@@ -47,16 +47,16 @@ impl PromptMode {
 
 /// Build a prompt of roughly `isl_tokens` tokens.
 ///
-/// `salt` is prefixed so callers can force a prefix-cache MISS (cold TTFT) or,
-/// with a constant salt, guarantee a bit-identical prompt across runs so the
+/// `prefix_tag` is prefixed so callers can force a prefix-cache MISS (cold TTFT) or,
+/// with a constant prefix_tag, guarantee a bit-identical prompt across runs so the
 /// cache HITS (warm TTFT). It is the whole cold/warm mechanism.
-pub fn make_prompt(isl_tokens: usize, mode: PromptMode, salt: &str) -> String {
+pub fn make_prompt(isl_tokens: usize, mode: PromptMode, prefix_tag: &str) -> String {
     // The chat template contributes ~12 tokens of its own.
     let needed = isl_tokens.saturating_sub(12).max(1);
     let words: Vec<&str> = FILLER.split_whitespace().collect();
-    let mut out = String::with_capacity(needed * 6 + salt.len() + 80);
-    if !salt.is_empty() {
-        let _ = write!(out, "[{salt}] ");
+    let mut out = String::with_capacity(needed * 6 + prefix_tag.len() + 80);
+    if !prefix_tag.is_empty() {
+        let _ = write!(out, "[{prefix_tag}] ");
     }
     for i in 0..needed {
         if i > 0 {
@@ -145,17 +145,17 @@ mod tests {
     }
 
     #[test]
-    fn prompt_length_tracks_the_request_and_salt_changes_the_text() {
+    fn prompt_length_tracks_the_request_and_the_tag_changes_the_text() {
         let a = make_prompt(256, PromptMode::Natural, "");
         let b = make_prompt(1024, PromptMode::Natural, "");
         assert!(b.len() > a.len());
         assert_eq!(a.split_whitespace().count(), 256 - 12);
-        // Same salt -> identical prompt (warm/prefix-cache hit).
+        // Same prefix_tag -> identical prompt (warm/prefix-cache hit).
         assert_eq!(
             make_prompt(256, PromptMode::Natural, "s1"),
             make_prompt(256, PromptMode::Natural, "s1")
         );
-        // Different salt -> different prompt (cold/prefix-cache miss).
+        // Different prefix_tag -> different prompt (cold/prefix-cache miss).
         assert_ne!(
             make_prompt(256, PromptMode::Natural, "s1"),
             make_prompt(256, PromptMode::Natural, "s2")

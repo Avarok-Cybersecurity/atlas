@@ -8,7 +8,7 @@
 //! * **Warm** — every sample at a given prompt length uses a bit-identical
 //!   prompt, and each measured request is preceded by a priming request. The
 //!   measurement is the cached-prefix path.
-//! * **Cold** — every sample gets a unique salt, so no two requests share a
+//! * **Cold** — every sample gets a unique prefix_tag, so no two requests share a
 //!   prefix and every prefill is done from scratch.
 //!
 //! Both gate the way `benchmark-pr` Gate C does — median ≤3 %, p90 ≤5 % against
@@ -56,7 +56,7 @@ pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     name: "Cold TTFT Regression Gate",
     summary: COLD_SUMMARY,
     detail: "Measures time-to-first-token with the prefix cache guaranteed to MISS: every sample \
-             carries a unique salt, so each request pays a full prefill. This is the prefill path \
+             carries a unique prefix_tag, so each request pays a full prefill. This is the prefill path \
              on its own, with the cache's contribution removed — the warm gate cannot see a \
              prefill regression that caching is hiding.",
     duration_hint: "~3–6 min",
@@ -143,7 +143,7 @@ impl TtftGate {
         self.rows.iter().flat_map(|r| r.samples.clone()).collect()
     }
 
-    async fn measure(&self, tokens: usize, salt: &str) -> Result<http::ChatOutcome> {
+    async fn measure(&self, tokens: usize, prefix_tag: &str) -> Result<http::ChatOutcome> {
         let handle = self.handle()?;
         let target = handle.target();
         let body = json!({
@@ -155,7 +155,7 @@ impl TtftGate {
             "temperature": 0.0,
             "messages": [{
                 "role": "user",
-                "content": stats::make_prompt(tokens, PromptMode::Natural, salt),
+                "content": stats::make_prompt(tokens, PromptMode::Natural, prefix_tag),
             }],
         });
         http::chat_stream(target, &body, self.timeout).await
@@ -173,23 +173,24 @@ impl TtftGate {
                 i + 1,
                 self.repeats
             ));
-            let salt = match self.mode {
+            let prefix_tag = match self.mode {
                 // Constant per length: identical prompt every time, so the
                 // prefix cache can hit.
                 Mode::Warm => format!("warm-{tokens}"),
                 // Unique per sample: no prefix is ever shared, so every
                 // request pays a full prefill.
-                Mode::Cold => {
-                    crate::benchmarks::unique_salt(&format!("cold-{tokens}-{i}"), handle.run_id())
-                }
+                Mode::Cold => crate::benchmarks::unique_prefix_tag(
+                    &format!("cold-{tokens}-{i}"),
+                    handle.run_id(),
+                ),
             };
             if self.mode == Mode::Warm {
                 // Prime, then measure. The first request populates the cache;
                 // only the second is a warm-path measurement.
-                let _ = self.measure(tokens, &salt).await;
+                let _ = self.measure(tokens, &prefix_tag).await;
                 handle.check_cancelled()?;
             }
-            let outcome = self.measure(tokens, &salt).await?;
+            let outcome = self.measure(tokens, &prefix_tag).await?;
             cached_tokens = cached_tokens.max(outcome.cached_prompt_tokens);
             match outcome.ttft_ms {
                 Some(ms) => samples.push(ms),

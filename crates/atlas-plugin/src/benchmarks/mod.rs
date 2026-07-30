@@ -39,13 +39,13 @@ pub fn one_line(text: impl AsRef<str>) -> String {
     s
 }
 
-/// A salt no other request in this process will use.
+/// A prompt prefix no other request in this process will use.
 ///
 /// `run_id` comes from the run's [`crate::PluginHandle`]; the caller supplies a
 /// `prefix` that is unique within the run. Together they are unique across the
 /// process without a process-global counter — which matters because the
 /// cold-TTFT gate is exactly the measurement a shared prefix would corrupt.
-pub fn unique_salt(prefix: &str, run_id: u64) -> String {
+pub fn unique_prefix_tag(prefix: &str, run_id: u64) -> String {
     format!("{prefix}-{}-{run_id}", std::process::id())
 }
 
@@ -62,9 +62,9 @@ mod tests {
     }
 
     #[test]
-    fn salts_never_repeat() {
-        let a = unique_salt("cold", 1);
-        let b = unique_salt("cold", 2);
+    fn prefix_tags_never_repeat() {
+        let a = unique_prefix_tag("cold", 1);
+        let b = unique_prefix_tag("cold", 2);
         assert_ne!(a, b);
     }
 }
