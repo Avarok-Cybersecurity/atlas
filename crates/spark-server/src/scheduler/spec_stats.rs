@@ -26,6 +26,8 @@ pub const SUMMARY_PERIOD: u64 = 512;
 /// chains also bucket by how many drafts were accepted.
 #[derive(Debug, Default)]
 pub struct SpecStats {
+    /// One-shot log latches for this run, keyed by a `&'static str`.
+    fired: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
     // ── K=2 ──
     pub k2_accepts: AtomicU64,
     pub k2_rejects: AtomicU64,
@@ -78,6 +80,15 @@ pub fn reset(counter: &AtomicU64) {
 impl SpecStats {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `true` the first time THIS run reaches `key`, `false` after.
+    ///
+    /// The scheduler's counterpart to `ModelStats::once`. The lines it gates
+    /// say which decode path a run engaged; a `static Once` meant the second
+    /// model in a process ran with no record of its own.
+    pub fn once(&self, key: &'static str) -> bool {
+        self.fired.lock().expect("run latches poisoned").insert(key)
     }
 }
 

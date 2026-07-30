@@ -62,7 +62,7 @@ impl Qwen3AttentionLayer {
         } else if ctx.dispatch.cutlass_nvfp4_attn_o
             && let Some(ref nvfp4_t) = self.o_nvfp4_t
         {
-            ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "attn_o", n, h, nq * hd);
             ops::cutlass_nvfp4_proj(
                 ctx.gpu,
                 ctx.derived,
@@ -77,7 +77,7 @@ impl Qwen3AttentionLayer {
         } else if ctx.dispatch.cutlass_nvfp4_attn_o
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
         {
-            ops::log_cutlass_nvfp4_route("attn_o", n, h, nq * hd);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "attn_o", n, h, nq * hd);
             ops::cutlass_nvfp4_proj_from_fp8(
                 ctx.gpu,
                 ctx.derived,

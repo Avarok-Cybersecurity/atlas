@@ -16,27 +16,14 @@ use super::*;
 // dependency: a function reading the environment through a static takes no
 // argument that says so and gives the compiler nothing to check.
 
-pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    // STATIC, DELIBERATELY. This is log de-duplication and nothing else: it
-    // records which (projection, shape) combinations have already been printed
-    // so the route line appears once instead of once per token. It holds no
-    // model-derived value — the tuple is a name hash and three dimensions, all
-    // of which are re-derived from the arguments on every call — so a stale
-    // entry cannot produce a wrong answer, only a suppressed duplicate log
-    // line. Carrying it on ForwardContext would thread a logging concern
-    // through every dispatch signature to prevent a repeated INFO line after a
-    // model swap. The one real cost is that the first route line for a shape
-    // the previous model also used is suppressed; `advance()`-scoping it would
-    // be more code than the problem is worth.
-    static SEEN: OnceLock<Mutex<HashSet<(u64, u32, u32, u32)>>> = OnceLock::new();
-    let mut h: u64 = 1469598103934665603;
-    for b in name.bytes() {
-        h = (h ^ b as u64).wrapping_mul(1099511628211);
-    }
-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    if seen.lock().unwrap().insert((h, m, n, k)) {
+use spark_runtime::gpu::GpuBackend;
+
+pub fn log_cutlass_nvfp4_route(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) {
+    // De-duplicated on the BACKEND (`OpCache::first_shape`), not in a static:
+    // the shapes a model dispatches are its own, and a process-wide set
+    // suppresses the first route line for every shape a previous model
+    // happened to use — the lines that say which kernel this model took.
+    if gpu.op_cache().first_shape(name, m, n, k) {
         tracing::warn!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
     }
 }
@@ -44,25 +31,11 @@ pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
 /// Roofline instrumentation: log each unique (kernel, M, N, K) GEMM shape once,
 /// gated by `ATLAS_GEMM_SHAPE_LOG=1`. Used to cross-reference nsys per-call
 /// durations → achieved TFLOPS/bandwidth vs GB10 peak.
-pub fn log_gemm_shape(name: &str, m: u32, n: u32, k: u32) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
+pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) {
     if std::env::var("ATLAS_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
         return;
     }
-    // Log-once latch (see `atlas_core::scope`). It holds no model-derived
-    // value — the message is rebuilt from the arguments every call — so a
-    // stale entry cannot produce a wrong answer, only a suppressed duplicate
-    // line after a model swap. Scoping it would thread a logging concern
-    // through the call path to prevent one repeated INFO line.
-    static SEEN: OnceLock<Mutex<HashSet<(u64, u32, u32, u32)>>> = OnceLock::new();
-    let mut h: u64 = 1469598103934665603;
-    for b in name.bytes() {
-        h = (h ^ b as u64).wrapping_mul(1099511628211);
-    }
-    let key = (h, m, n, k);
-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    if seen.lock().unwrap().insert(key) {
+    if gpu.op_cache().first_shape(name, m, n, k) {
         let flop = 2.0 * m as f64 * n as f64 * k as f64;
         tracing::warn!("GEMM_SHAPE {name} M={m} N={n} K={k} FLOP={flop:.3e}");
     }

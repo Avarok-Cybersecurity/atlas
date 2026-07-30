@@ -37,6 +37,12 @@ pub struct OpCache {
     kernels: RwLock<HashMap<(&'static str, &'static str), KernelHandle>>,
     /// Purpose tag → `(pointer, bytes)`. Grow-only within a model's life.
     scratch: Mutex<HashMap<&'static str, (DevicePtr, usize)>>,
+    /// `(name-hash, M, N, K)` combinations whose route line has been logged.
+    /// Backend-scoped like everything else here: the shapes a model dispatches
+    /// are its own, and a set shared across a swap suppresses the FIRST route
+    /// line for every shape the previous model happened to use — the lines
+    /// that say which kernel a model actually took.
+    logged_shapes: Mutex<std::collections::HashSet<(u64, u32, u32, u32)>>,
 }
 
 impl OpCache {
@@ -90,6 +96,19 @@ impl OpCache {
                 Ok(p)
             }
         }
+    }
+
+    /// `true` the first time this backend dispatches `(name, m, n, k)`.
+    /// Diagnostic de-duplication for the GEMM route/shape log lines.
+    pub fn first_shape(&self, name: &str, m: u32, n: u32, k: u32) -> bool {
+        let mut h: u64 = 1469598103934665603;
+        for b in name.bytes() {
+            h = (h ^ b as u64).wrapping_mul(1099511628211);
+        }
+        self.logged_shapes
+            .lock()
+            .expect("op cache shapes poisoned")
+            .insert((h, m, n, k))
     }
 }
 

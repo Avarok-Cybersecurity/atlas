@@ -61,7 +61,7 @@ impl Qwen3SsmLayer {
         if ctx.dispatch.cutlass_nvfp4_ssm_out
             && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
         {
-            ops::log_cutlass_nvfp4_route("ssm_out_nvfp4", k, h as u32, value_dim as u32);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "ssm_out_nvfp4", k, h as u32, value_dim as u32);
             ops::cutlass_nvfp4_proj(
                 ctx.gpu,
                 ctx.derived,
@@ -76,7 +76,7 @@ impl Qwen3SsmLayer {
         } else if ctx.dispatch.cutlass_nvfp4_ssm_out
             && let Some(ref fp8w) = self.out_proj_fp8w
         {
-            ops::log_cutlass_nvfp4_route("ssm_out_fp8pack", k, h as u32, value_dim as u32);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "ssm_out_fp8pack", k, h as u32, value_dim as u32);
             ops::cutlass_nvfp4_proj_from_fp8(
                 ctx.gpu,
                 ctx.derived,

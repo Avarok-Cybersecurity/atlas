@@ -189,10 +189,8 @@ impl BlockDiffusionDraftHead {
             // input and compare predicted draft tokens vs Atlas drafts.
             // Also dumps last_token + drafter outputs separately for the
             // bisect script. ONE-SHOT: writes only the first propose() call.
-            static FULL_DUMP_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
             if eff_ctx > 0
-                && !FULL_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                && ctx.stats.dumped.keyed("dflash_target_hidden")
                 && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
                     .ok()
                     .as_deref()
@@ -218,7 +216,6 @@ impl BlockDiffusionDraftHead {
                         eff_ctx,
                     );
                 }
-                FULL_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
 
                 // Write companion meta JSON for the pyref diff harness.
                 // Shapes/strides Atlas knows but the Python side can't
@@ -974,9 +971,7 @@ impl BlockDiffusionDraftHead {
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.
-        static DRAFTS_DUMP_DONE: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !DRAFTS_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed)
+        if ctx.stats.dumped.keyed("dflash_drafts")
             && (std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
                 .ok()
                 .as_deref()
@@ -991,7 +986,6 @@ impl BlockDiffusionDraftHead {
                 eff_ctx,
                 drafts,
             );
-            DRAFTS_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let _ = g; // suppress unused
         Ok(drafts)

@@ -53,7 +53,7 @@ impl Qwen3SsmLayer {
         if ctx.dispatch.cutlass_nvfp4_qkvz
             && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
         {
-            ops::log_cutlass_nvfp4_route("ssm_qkvz_nvfp4", k, qkvz_size as u32, h as u32);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "ssm_qkvz_nvfp4", k, qkvz_size as u32, h as u32);
             ops::cutlass_nvfp4_proj(
                 ctx.gpu,
                 ctx.derived,
@@ -68,7 +68,13 @@ impl Qwen3SsmLayer {
         } else if ctx.dispatch.cutlass_nvfp4_qkvz
             && let Some(ref fp8w) = self.qkvz_fp8w
         {
-            ops::log_cutlass_nvfp4_route("ssm_qkvz_fp8pack", k, qkvz_size as u32, h as u32);
+            ops::log_cutlass_nvfp4_route(
+                ctx.gpu,
+                "ssm_qkvz_fp8pack",
+                k,
+                qkvz_size as u32,
+                h as u32,
+            );
             ops::cutlass_nvfp4_proj_from_fp8(
                 ctx.gpu,
                 ctx.derived,
