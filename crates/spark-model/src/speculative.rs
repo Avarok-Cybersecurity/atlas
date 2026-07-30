@@ -54,6 +54,12 @@ pub fn draft_conf_tau() -> f32 {
 /// gates the tree-speculation build (Phase 0 of the tree-spec plan).
 /// Value-parsed, not presence-checked (`=0` really is off).
 pub fn shadow_topk() -> usize {
+    // STATIC, DELIBERATELY — log/diagnostic gate. Observational only: it
+    // decides whether the drafter D2Hs its logits to log top-k candidates,
+    // and never touches token selection. Read on the propose path from both
+    // `spark-model` and the scheduler's verify steps, which have no shared
+    // carrier; the value comes from the process environment, so the only
+    // thing a second model could disagree about is whether to log.
     static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("ATLAS_MTP_SHADOW_TOPK")

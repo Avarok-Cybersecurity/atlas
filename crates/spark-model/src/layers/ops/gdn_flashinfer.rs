@@ -49,6 +49,13 @@ struct Lib {
 unsafe impl Send for Lib {}
 unsafe impl Sync for Lib {}
 
+/// STATIC, DELIBERATELY — process lifecycle. This is a `dlopen` handle and
+/// the fn pointers resolved from it. The dynamic loader keys on the SONAME,
+/// so a second `dlopen` of the same library returns the same handle and the
+/// same code: caching it per model would add bookkeeping without changing
+/// what is mapped. Nothing here is model-derived — the pointers are into a
+/// shared object, not into a registry that a swap unloads — and the `None`
+/// case (library absent) is a property of the machine, not of the model.
 static LIB: OnceLock<Option<Lib>> = OnceLock::new();
 
 fn lib() -> Option<&'static Lib> {

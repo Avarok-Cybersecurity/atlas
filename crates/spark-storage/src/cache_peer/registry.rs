@@ -82,6 +82,12 @@ struct PagingRegistry {
     legacy_cleaned: bool,
 }
 
+/// STATIC, DELIBERATELY — process lifecycle. It arbitrates ONE disk budget
+/// (`swap_cap_bytes`) across every paging arena in the process, which is the
+/// whole point: the arenas are created independently and must not each claim
+/// the full cap. The resource it tracks — free space on the swap volume — is
+/// a property of the machine, so a per-model registry would let two models'
+/// arenas overcommit the same disk.
 static SHARED_PAGING: std::sync::LazyLock<std::sync::Mutex<PagingRegistry>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(PagingRegistry::default()));
 

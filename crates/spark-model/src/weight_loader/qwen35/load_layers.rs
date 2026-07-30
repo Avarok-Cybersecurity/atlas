@@ -865,10 +865,12 @@ pub(super) fn load_layers(
 /// list of singletons and inclusive ranges, e.g. `"31-39"` or `"31,35,39"`.
 /// Unset → every layer selected (legacy all-layers behaviour). Parsed once.
 fn layer_dequant_selected(layer: usize) -> bool {
-    use std::sync::OnceLock;
-    // None  = env unset → all layers; Some(ranges) = explicit selection.
-    static SPEC: OnceLock<Option<Vec<(usize, usize)>>> = OnceLock::new();
-    let spec = SPEC.get_or_init(|| {
+    // Parsed per call rather than memoized in a `OnceLock`. This runs a few
+    // dozen times during a weight load that takes minutes, so the cache bought
+    // nothing measurable and cost the ability to load a second model under a
+    // different selection.
+    // None = env unset → all layers; Some(ranges) = explicit selection.
+    let spec: Option<Vec<(usize, usize)>> = (|| -> Option<Vec<(usize, usize)>> {
         let s = std::env::var("ATLAS_FP8_DEQUANT_LAYERS").ok()?;
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         for part in s.split(',') {
@@ -885,7 +887,7 @@ fn layer_dequant_selected(layer: usize) -> bool {
             }
         }
         Some(ranges)
-    });
+    })();
     match spec {
         None => true,
         Some(ranges) => ranges.iter().any(|&(a, b)| layer >= a && layer <= b),
@@ -920,9 +922,10 @@ fn holo_moe_down_fp4() -> bool {
 }
 
 fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
-    use std::sync::OnceLock;
-    static MODE: OnceLock<Option<HoloFastMoeMode>> = OnceLock::new();
-    *MODE.get_or_init(|| {
+    // Resolved per call, for the same reason as `layer_dequant_selected`:
+    // load-time work, and a memoized answer pins the first model's MoE mode
+    // onto every model loaded after it.
+    (|| -> Option<HoloFastMoeMode> {
         let Ok(mode) = std::env::var("ATLAS_HOLO_FAST_MOE_MODE") else {
             return None;
         };
@@ -949,18 +952,17 @@ fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
                 None
             }
         }
-    })
+    })()
 }
 
 fn holo_fast_moe_layer_selected(layer: usize) -> bool {
-    use std::sync::OnceLock;
-    static SPEC: OnceLock<Vec<(usize, usize)>> = OnceLock::new();
-    let ranges = SPEC.get_or_init(|| {
+    // Per call — see `layer_dequant_selected`.
+    let ranges = {
         let Ok(spec) = std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS") else {
-            return Vec::new();
+            return false;
         };
         parse_layer_ranges(&spec)
-    });
+    };
     ranges.iter().any(|&(a, b)| layer >= a && layer <= b)
 }
 
