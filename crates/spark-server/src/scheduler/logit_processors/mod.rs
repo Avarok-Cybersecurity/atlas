@@ -59,12 +59,22 @@ mod pipeline_tests;
 /// Per-step environment passed to every processor. Holds tokenizer-
 /// special tokens the pipeline cares about. `Copy` so it threads
 /// through cheaply.
-#[derive(Debug, Clone, Copy)]
+// No longer `Copy`: the masks are `Arc`s. Cloning one is two refcount
+// bumps, and it is built once per decode step, not per token.
+#[derive(Debug, Clone)]
 pub struct LogitsContext {
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_end_token: Option<u32>,
+    /// `mask[id]` iff token `id` decodes to text ending in a generation
+    /// boundary. Vocab-sized and INDEXED BY TOKEN ID, so it is meaningless
+    /// against a different tokenizer — carried beside the token ids it belongs
+    /// with rather than read from a process-wide static, which could outlive
+    /// the vocabulary that produced it and silently suppress the wrong tokens.
+    pub boundary_mask: Option<std::sync::Arc<[bool]>>,
+    /// `mask[id]` iff token `id` ends mid-word. Same indexing, same hazard.
+    pub mid_word_mask: Option<std::sync::Arc<[bool]>>,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.

@@ -510,6 +510,8 @@ pub fn run(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                boundary_mask: crate::scheduler::helpers::boundary_token_mask(),
+                mid_word_mask: crate::scheduler::helpers::mid_word_token_mask(),
             };
             // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
             // keep the first N post-`</think>` tokens on plain serial decode.

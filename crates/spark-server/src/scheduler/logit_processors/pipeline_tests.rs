@@ -142,20 +142,25 @@ fn defer_override_math_constants() {
 /// rename surfaces here loudly.
 #[test]
 fn logits_context_field_set_is_stable() {
+    // A test can now state the masks it wants instead of installing them into
+    // a process-wide OnceLock that every other test then inherits.
     let ctx = LogitsContext {
+        boundary_mask: None,
+        mid_word_mask: None,
         think_end_token: Some(1),
         think_start_token: Some(2),
         tool_call_start_token: Some(3),
         tool_call_end_token: Some(4),
     };
-    // Copy semantics — pipeline stages take `&LogitsContext`; a Copy
-    // bound keeps the threading cheap (no Arc, no clone-on-call).
-    let ctx2: LogitsContext = ctx;
+    // Clone semantics — the context now carries the vocab-indexed masks, which
+    // are `Arc`s, so it is Clone rather than Copy. Pipeline stages still take
+    // `&LogitsContext`; only the (once-per-decode-step) construction clones.
+    let ctx2 = ctx.clone();
     assert_eq!(ctx2.think_end_token, Some(1));
     assert_eq!(ctx2.think_start_token, Some(2));
     assert_eq!(ctx2.tool_call_start_token, Some(3));
     assert_eq!(ctx2.tool_call_end_token, Some(4));
-    // Original still usable (Copy, not Move).
+    // Original still usable.
     assert_eq!(ctx.tool_call_end_token, Some(4));
 }
 
