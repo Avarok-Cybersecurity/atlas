@@ -19,6 +19,7 @@ impl Qwen3AttentionLayer {
     pub(crate) fn w4a16_gemm_m128_dispatch(
         &self,
         gpu: &dyn GpuBackend,
+        dispatch: &crate::layers::ops::GemmDispatch,
         input: DevicePtr,
         weight: &crate::weight_map::QuantizedWeight,
         output: DevicePtr,
@@ -27,19 +28,11 @@ impl Qwen3AttentionLayer {
         k: u32,
         stream: u64,
     ) -> anyhow::Result<()> {
-        // ATLAS_W4A16_VARIANT env: "v1", "v2", "v3" — overrides auto.
-        // Default: v2 (3 CTAs/SM, 8 warps). v3 (K_STEP=64, 1 CTA/SM) is
-        // slower in practice; keep it available for A/B but don't default.
-        static VARIANT: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-        let v =
-            *VARIANT.get_or_init(
-                || match std::env::var("ATLAS_W4A16_VARIANT").ok().as_deref() {
-                    Some("v1") => 1,
-                    Some("v2") => 2,
-                    Some("v3") => 3,
-                    _ => 0, // auto (prefer v2)
-                },
-            );
+        // ATLAS_W4A16_VARIANT: "v1"/"v2"/"v3" pin a kernel; 0 = auto (v2 — 3
+        // CTAs/SM, 8 warps; v3 with K_STEP=64 is slower in practice, kept for
+        // A/B). Resolved once per model into `GemmDispatch`, which the forward
+        // pass already carries.
+        let v = dispatch.w4a16_variant;
         // LOSSLESS opt-in: route QKV/o projection prefill through the BF16-TC
         // kernel (FP4→BF16 dequant + BF16 MMA, bit-identical to base w4a16_gemm)
         // instead of the default t_m128 which crushes activations to FP8 E4M3.

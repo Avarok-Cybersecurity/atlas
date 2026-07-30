@@ -225,6 +225,7 @@ impl Qwen3AttentionLayer {
             if n > 128 {
                 self.w4a16_gemm_m128_dispatch(
                     ctx.gpu,
+                    ctx.dispatch,
                     attn_out,
                     nvfp4_t,
                     o_out,

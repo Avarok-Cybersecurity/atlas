@@ -98,6 +98,14 @@ impl OpCache {
         }
     }
 
+    /// `true` the first time this backend reaches `key`, `false` after.
+    ///
+    /// For the log/dump gates whose call site holds a `GpuBackend` and
+    /// nothing else. Backend-scoped, so a second model re-arms them.
+    pub fn once(&self, key: &'static str) -> bool {
+        self.first_shape(key, 0, 0, 0)
+    }
+
     /// `true` the first time this backend dispatches `(name, m, n, k)`.
     /// Diagnostic de-duplication for the GEMM route/shape log lines.
     pub fn first_shape(&self, name: &str, m: u32, n: u32, k: u32) -> bool {

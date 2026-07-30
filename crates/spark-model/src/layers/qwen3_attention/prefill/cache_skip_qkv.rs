@@ -325,7 +325,15 @@ impl Qwen3AttentionLayer {
         } else if let Some(nvfp4_t) = nvfp4_t {
             if n > 128 {
                 self.w4a16_gemm_m128_dispatch(
-                    ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream,
+                    ctx.gpu,
+                    ctx.dispatch,
+                    normed,
+                    nvfp4_t,
+                    out,
+                    n,
+                    out_dim,
+                    h,
+                    stream,
                 )?;
             } else {
                 ops::w4a16_gemm_n128(

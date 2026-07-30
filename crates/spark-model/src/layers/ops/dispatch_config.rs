@@ -50,6 +50,11 @@ pub struct GemmDispatch {
     pub cutlass_nvfp4_attn_kv: bool,
     pub cutlass_nvfp4_attn_o: bool,
     pub cutlass_nvfp4_ssm_out: bool,
+    /// `ATLAS_W4A16_VARIANT` — 1/2/3 pin a kernel variant, 0 = auto (v2).
+    /// A dispatch decision like every other field here, so it belongs on the
+    /// struct the forward pass already carries rather than in a `OnceLock`
+    /// that would pin the first model's choice.
+    pub w4a16_variant: u8,
 }
 
 fn on(var: &str) -> bool {
@@ -63,6 +68,12 @@ impl GemmDispatch {
         // `cutlass_nvfp4_gemm_enabled() || …` chains did.
         let all_nvfp4 = on("ATLAS_CUTLASS_NVFP4_GEMM");
         Self {
+            w4a16_variant: match std::env::var("ATLAS_W4A16_VARIANT").ok().as_deref() {
+                Some("v1") => 1,
+                Some("v2") => 2,
+                Some("v3") => 3,
+                _ => 0,
+            },
             // Note the inverted sense: this one is on unless opted out.
             fp8_blockscaled_prefill: !on("ATLAS_FP8_SINGLE_SCALE"),
             cublas_gemm: on("ATLAS_CUBLAS_GEMM"),
@@ -84,6 +95,7 @@ impl GemmDispatch {
     /// with this instead of mutating the process environment.
     pub fn defaults() -> Self {
         Self {
+            w4a16_variant: 0,
             fp8_blockscaled_prefill: true,
             cublas_gemm: false,
             cublas_fp8: false,
