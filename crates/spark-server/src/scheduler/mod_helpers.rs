@@ -61,7 +61,13 @@ pub(super) fn install_high_speed_swap(
 }
 
 /// Co-dispatch admission window: `Some(duration)` when `ATLAS_PREFILL_CODISPATCH=1`,
-/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` (default 5).
+/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS`
+/// (default 100). A burst of concurrent requests arrives over tens of ms
+/// (HTTP accept + tokenize spread); the old 10 ms default admitted only the
+/// first 1-2 arrivals, so the "co"-dispatch cohort was mostly singletons and
+/// the batched path never saw the burst it exists for. 100 ms is one decode
+/// step's worth of TTFT — negligible against the multi-second serialized
+/// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
     let on = std::env::var("ATLAS_PREFILL_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -72,7 +78,7 @@ fn codispatch_window() -> Option<std::time::Duration> {
     let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(10);
+        .unwrap_or(100);
     Some(std::time::Duration::from_millis(ms))
 }
 

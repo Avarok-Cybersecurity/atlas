@@ -664,6 +664,65 @@ accept ~0.72 vs 0.90 demonstrated on strix via refeed) for the
 decode-heavy regimes, plus prefill admission (TTFT p50=p99=18.8 s walls in
 prefill_short) for the prefill-heavy ones.
 
+### 6.8 The prefill wall: full gate-chain autopsy + the real bottleneck
+
+prefill_short C=16 sat at ~63-65 tok/s (TTFT p50=p99 ~17-19 s) through every
+config change. Root-caused in layers, each verified by a serve+bench probe
+(all single-cell C=16, prefill_short, unique prompts):
+
+1. **1K prompts are single-chunk** → chunk-0 runs as a monolithic inline
+   prefill in `phase_start_prefills`, one per tick. 16 concurrent cold
+   prefills SERIALIZE. Q12 batched dispatch: provably never invoked
+   (validated debug filter: scheduler DEBUG lines present, zero q12 events).
+2. `ATLAS_PREFILL_CODISPATCH=1` defers chunk-0 into a cohort → cohort
+   ENTERS dispatch (2 entries/run) but falls to per-stream: 65.1 (flat).
+   Gate chain peeled from the bail logs:
+   a. arena cap: 16x950=15,200 stacked tokens vs arena 4,112 (=
+      max-prefill-tokens) → raise to 16,384 for the probe;
+   b. first-chunk gate: satisfied by CODISPATCH (either-flag helper);
+   c. **prefix-cache blanket gate** (fix #4 in eligible.rs): kernel-batched
+      co-dispatch is disabled OUTRIGHT whenever the radix cache is active —
+      rationale "with caching on most requests hit", which is the CACHED
+      bench worldview; honest/enterprise traffic is all-cold. Probed with
+      caching off →
+   d. **admit/execute gate MISMATCH** (same species as §5.1): eligibility
+      admits chunk-0 on `CODISPATCH || FIRST_CHUNK` but
+      `prefill_inner` only honors the explicit `ATLAS_Q12_BATCHED_FIRST_CHUNK`
+      → cohort admitted, bails at layer 0 ("requires seq_len_start > 0"),
+      62.2 (flat). With the explicit flag →
+3. **kernel-batched SUCCEEDED end-to-end — and throughput did not move**
+   (63.2). One batched forward over 15,200 tokens costs the same ~18 s as 16
+   serial 950-token prefills. Scheduling was NEVER the wall.
+4. **The wall is the 27B's cold-prefill compute rate: ~800-900 tok/s flat**
+   (even C=1: 1.3 s TTFT for 1K tokens). A 27B dense-ish hybrid needs
+   ~54 GFLOP/token, so ~800 tok/s ≈ ~43 effective TFLOPS — the BF16-class
+   arms are near their practical roofline on GB10. Arm A/Bs at C=16:
+   * default (int8/FP8 arms, MMQ off): 63.2
+   * + `ATLAS_BF16_TC_PREFILL=1` (v2, fixed this morning; 0 launch errors
+     under load): **53.4 — SLOWER.** The flag buys losslessness, not speed;
+     `c9965ce9` shows `NO_FFN_NVFP4_MMQ=1` was added to the golden set
+     PURELY to let BF16_TC engage — when BF16_TC was dropped (crash), the
+     MMQ disable stayed behind with its reason gone.
+   * MMQ re-enabled (drop `ATLAS_NO_FFN_NVFP4_MMQ=1`): **69.7**, best TTFT
+     (16.9 s) and TPOT (92.1 ms). +10%, W4A4 is LOSSY — needs the
+     oc_harness quality gate before adoption.
+   The remaining ~16 s is the non-FFN prefill cost — on this SSM-hybrid the
+   prime suspect is the SSM-layer prefill scan (cf. the Holo measurement:
+   Atlas chunk_delta_h 11-13x slower than FlashInfer GDN at matched shape).
+   Needs an nsys decomposition to confirm; the structural fix is the
+   FI-GDN-class kernel program, not a scheduler or config change.
+
+Actionable follow-ups extracted:
+* fix the admit/execute first-chunk gate mismatch (align both on
+  `first_chunk_batched_enabled()`);
+* replace the prefix-cache blanket gate with all-cold cohort admission
+  (read-only `peek_matched_tokens` across the cohort — same probe the
+  ported KV pre-flight already uses);
+* codispatch window default 10 ms -> 100 ms (DONE this session — a burst
+  spreads over tens of ms; 10 ms co-admitted only the first arrivals);
+* decide the MMQ-on question with a quality gate;
+* nsys the 1K cold prefill to size the SSM-vs-FFN-vs-attn split.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
