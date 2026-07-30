@@ -29,6 +29,8 @@ const PINS: &[(&str, &str, usize)] = &[
     ("w4a16", "w4a16_gemm_t_m128_bf16_v2", 9), // the ldb kernel — the shipped-bug case
     ("w4a16_v2", "w4a16_gemm_t_m128_v2", 8),
     ("w4a16_v3", "w4a16_gemm_t_m128_v3", 8),
+    // Load-time transpose (quantized.rs GPU path) — 4-arg launch.
+    ("transpose_u8", "transpose_u8", 4),
 ];
 
 /// Targets whose copy of a kernel legitimately differs in arity from the
