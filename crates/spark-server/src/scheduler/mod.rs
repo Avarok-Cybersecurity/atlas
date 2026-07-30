@@ -458,6 +458,7 @@ pub fn run(
         // ── Start new requests ──
         start_new_requests(
             &*model,
+            &sched,
             new_reqs,
             chunked,
             always_mixed,
@@ -536,13 +537,7 @@ pub fn run(
             // concentrate in the answer's opening tokens; serial-decoding that
             // window sidesteps them while leaving the high-accept answer body
             // speculated. N=0 preserves exact prior behavior.
-            static DFLASH_RESUME_GUARD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-            let dflash_resume_guard = *DFLASH_RESUME_GUARD.get_or_init(|| {
-                std::env::var("ATLAS_DFLASH_RESUME_GUARD")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0)
-            });
+            let dflash_resume_guard = sched.levers.dflash_resume_guard;
             // ATLAS_DFLASH_SPEC_THINK=1: speculate INSIDE think blocks (vLLM
             // semantics — reference measures 45% draft acceptance on thinking,
             // 2026-07-07 calibration). Bypasses the think-gate AND the resume

@@ -150,6 +150,7 @@ pub(super) fn run_batched_mixed_step(
             p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            &sched.levers.sampling(),
         ) {
             Ok(first) => {
                 tracing::info!(

@@ -200,6 +200,7 @@ pub(super) fn continue_in_progress_prefills(
     if can_batch_prefill_only {
         run_batched_prefill_step(
             model,
+            sched,
             prefilling,
             &mut completed_indices,
             max_prefill_tokens,
@@ -305,6 +306,7 @@ pub(super) fn continue_in_progress_prefills(
                         p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        &sched.levers.sampling(),
                     ) {
                         Ok(first) => {
                             tracing::info!("Two-phase prefill first token: {first}");

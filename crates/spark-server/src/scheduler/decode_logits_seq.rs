@@ -20,21 +20,11 @@ thread_local! {
 // `process_position_logits` fn owns it. It is gated to the FINAL decode
 // position there.
 
+// `ATLAS_FORCE_TEMP_ZERO` is now `SchedLevers::force_temp_zero`, carried on
+// `LogitsContext::sampling`.
+
 /// Process logits for a single active sequence: dequant, adjust, sample, return token + optional logprobs.
 #[allow(clippy::too_many_arguments)]
-/// ATLAS_FORCE_TEMP_ZERO=1 — diagnostic mode that bypasses all drift
-/// mitigation (AM1/A4/B1/C4) and just returns argmax of raw
-/// logits. Used together with VLLM_FORCE_TEMP_ZERO on vLLM for
-/// apples-to-apples layer-cosine comparison.
-pub(crate) fn force_temp_zero_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_FORCE_TEMP_ZERO")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
-
 pub fn process_seq_logits(
     _model: &dyn Model,
     a: &mut ActiveSeq,

@@ -112,6 +112,9 @@ pub struct SamplingLevers {
     pub disable_watchdogs: bool,
     /// Grammar forced-token (Coalescence) fast path. Default-on.
     pub forced_token_fastpath: bool,
+    /// Thread the sequence's resolved `min_p` into the MTP sample sites
+    /// instead of the historical `0.0` literals. Default-on.
+    pub mtp_minp: bool,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.

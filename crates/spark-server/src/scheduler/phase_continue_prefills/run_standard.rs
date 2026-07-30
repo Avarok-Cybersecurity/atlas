@@ -182,6 +182,7 @@ pub(super) fn run_standard_chunk_loop(
                         p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        &sched.levers.sampling(),
                     ) {
                         Ok(first) => {
                             tracing::info!("Mixed prefill first token: {first}");
@@ -272,6 +273,7 @@ pub(super) fn run_standard_chunk_loop(
                     p.min_p,
                     &p.eos_tokens,
                     p.grammar_state.as_mut(),
+                    &sched.levers.sampling(),
                 ) {
                     Ok(first) => {
                         tracing::info!("Prefill first token: {first}");

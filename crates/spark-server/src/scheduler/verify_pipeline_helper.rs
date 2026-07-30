@@ -59,13 +59,8 @@ use crate::scheduler::helpers::bf16_to_f32;
 use crate::scheduler::logit_processors::LogitsContext;
 use spark_model::traits::Model;
 
-/// Kill-switch for the on-GPU greedy-under-grammar verify fast path (#3).
-/// Default ON; set `ATLAS_DISABLE_FAST_GREEDY=1` to force the full host
-/// pipeline on every verify position (the pre-2026-06-02 behaviour).
-pub(crate) fn fast_greedy_grammar_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DISABLE_FAST_GREEDY").ok().as_deref() != Some("1"))
-}
+// `ATLAS_DISABLE_FAST_GREEDY` is now `SchedLevers::fast_greedy_grammar`,
+// read off `LogitsContext::sampling` at the one site that gated on it.
 
 // The DFlash verify statics are now `SchedLevers::dflash_*`.
 // The `ATLAS_NO_MTP_VERIFY_SAMPLE` kill switch is now
@@ -196,7 +191,7 @@ pub fn verify_pick_with_pipeline(
             top_k: a.top_k,
             top_p: a.top_p,
             top_n_sigma: a.top_n_sigma,
-            min_p: crate::scheduler::sample_step::effective_min_p(a.min_p),
+            min_p: crate::scheduler::sample_step::effective_min_p(a.min_p, &ctx.sampling),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             repetition_penalty_window: 0,

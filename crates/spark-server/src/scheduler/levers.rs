@@ -44,6 +44,9 @@ pub struct SchedLevers {
     pub dflash_adaptive_min: f32,
     /// Serially-decoded tokens between adaptive re-probes.
     pub dflash_adaptive_reprobe: u32,
+    /// `ATLAS_DFLASH_RESUME_GUARD=N` (default 0 = off): keep the first N
+    /// post-`</think>` tokens on plain serial decode.
+    pub dflash_resume_guard: u32,
 
     // ── Watchdogs ──
     /// Disable every generation watchdog.
@@ -107,6 +110,7 @@ impl SchedLevers {
             dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
             dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
+            dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
             // the rule: both accept "1" OR "true", trimmed, and re-spelling
@@ -146,6 +150,7 @@ impl SchedLevers {
             dflash_spec_think: false,
             dflash_adaptive_min: 2.0,
             dflash_adaptive_reprobe: 256,
+            dflash_resume_guard: 0,
             disable_watchdogs: false,
             eos_suppressed_by_thinking: false,
             forced_token_fastpath: true,
@@ -173,6 +178,7 @@ impl SchedLevers {
             dflash_masked_verify: self.dflash_masked_verify,
             disable_watchdogs: self.disable_watchdogs,
             forced_token_fastpath: self.forced_token_fastpath,
+            mtp_minp: self.mtp_minp,
         }
     }
 

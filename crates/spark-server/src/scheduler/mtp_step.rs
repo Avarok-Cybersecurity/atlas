@@ -174,6 +174,7 @@ pub fn step_mtp(
             a.grammar_state.as_mut(),
             &penalties,
             &history,
+            &sched.levers.sampling(),
         ) {
             Ok(t) => t,
             Err(e) => {

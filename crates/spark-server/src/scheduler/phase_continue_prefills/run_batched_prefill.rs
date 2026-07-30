@@ -19,6 +19,7 @@ use super::super::types::PrefillInProgress;
 
 pub(super) fn run_batched_prefill_step(
     model: &dyn Model,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     prefilling: &mut [PrefillInProgress],
     completed_indices: &mut Vec<(usize, Option<u32>)>,
     max_prefill_tokens: usize,
@@ -156,6 +157,7 @@ pub(super) fn run_batched_prefill_step(
             p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            &sched.levers.sampling(),
         ) {
             Ok(first) => {
                 tracing::info!(

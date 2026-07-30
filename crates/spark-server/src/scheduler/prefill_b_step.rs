@@ -7,6 +7,7 @@ use super::*;
 /// Prefill a new request and return an ActiveSeq ready for batched decode.
 /// Returns None if the sequence completed during prefill (EOS on first token).
 pub fn prefill_request(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
@@ -274,6 +275,7 @@ pub fn prefill_request(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            &sched.levers.sampling(),
         )
     })();
 
