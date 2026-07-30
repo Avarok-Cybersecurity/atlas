@@ -899,6 +899,29 @@ TPOT p50 78.8-79.2 ms, coherence smoke clean. Session arc: 0.73x -> 0.90x
 unidentified, likely SSM/drafter lifecycle), ~4.5K runtime cuMemAllocs,
 drafter launch chain.
 
+### 6.14 NEXT LEVER DESIGN (loop iteration 3): verify-step pipelining
+
+Observation driving the design: removing ~90 ms/step of D2H wait (6.13)
+moved TPOT only 82 -> 79 ms — the waits were OVERLAPPED with other host
+serialization. The step wall (~148 ms at 1.87 tok/forward) is a serial
+chain: verify forward (GPU) -> Phase-1 host verdict loop -> stash ->
+per-seq verdict/propose -> re-propose, GPU idle through every host phase.
+
+Design — overlap verify N+1 with verdict N:
+* Double-buffer the logits/verify arena using the row_base machinery the
+  aliasing fix introduced (alternate two row windows per step).
+* Launch step N+1's verify forward as soon as step N's GPU argmax lands;
+  the drafts for N+1 depend only on N's accepted tokens (already on GPU),
+  not on the host verdict/emit bookkeeping.
+* Serial fallback + kill switch; grammar/logprobs/temp>0 stay serial.
+* Hazards: the documented shared-buffer clobber set (mtp_multi.rs:165) —
+  the double buffer exists to break exactly those.
+
+Prerequisite measurement (queued): fresh profile of the CURRENT binary
+with --cudabacktrace to (a) re-derive the phase-gap timeline post-6.13 and
+(b) attribute the weight-shaped 42.5 MB D2H copies (predequant-adjacent,
+~13 GB/burst, still unexplained). Design adjusts if the gaps moved.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
