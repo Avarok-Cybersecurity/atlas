@@ -245,7 +245,7 @@ pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 /// are NOT touched — those are not watchdogs.
 static DISABLE_WATCHDOGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-fn parse_disable_watchdogs(env: Option<&str>) -> bool {
+pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
     match env {
         Some(v) => {
             let v = v.trim();
@@ -306,7 +306,7 @@ static FORCED_TOKEN_FASTPATH: std::sync::OnceLock<bool> = std::sync::OnceLock::n
 /// `None` (env unset) → enabled. A truthy value (`"1"` / `"true"`,
 /// case-insensitive, surrounding whitespace ignored) → disabled.
 /// Everything else (empty, `"0"`, `"false"`, junk) → enabled.
-fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
+pub(crate) fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
     match env {
         Some(v) => {
             let v = v.trim();

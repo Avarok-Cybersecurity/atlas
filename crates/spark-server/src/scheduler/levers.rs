@@ -94,9 +94,16 @@ impl SchedLevers {
             dflash_unified_ctx: opt_in("ATLAS_DFLASH_UNIFIED_CTX"),
             dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
 
-            disable_watchdogs: opt_in("ATLAS_DISABLE_WATCHDOGS"),
+            // Reuses the tested parsers in `helpers` rather than re-deriving
+            // the rule: both accept "1" OR "true", trimmed, and re-spelling
+            // that here as `== "1"` would silently ignore `=true`.
+            disable_watchdogs: crate::scheduler::helpers::parse_disable_watchdogs(
+                std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref(),
+            ),
             eos_suppressed_by_thinking: opt_in("ATLAS_EOS_SUPPRESS_THINKING"),
-            forced_token_fastpath: on_unless("ATLAS_DISABLE_FORCED_TOKEN"),
+            forced_token_fastpath: crate::scheduler::helpers::parse_forced_token_fastpath(
+                std::env::var("ATLAS_DISABLE_FORCED_TOKEN").ok().as_deref(),
+            ),
 
             // Presence-gated, not value-gated.
             decode_timing: present("ATLAS_DECODE_TIMING"),
