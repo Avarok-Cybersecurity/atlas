@@ -23,7 +23,12 @@ pub struct SchedCtx {
     /// Per-token classification masks for this model's vocabulary.
     pub masks: VocabMasks,
     /// Decode / verify / speculation levers for this run.
-    pub levers: SchedLevers,
+    ///
+    /// `Arc` because one of them — the loop watchdog — is toggled from the
+    /// dashboard thread while the scheduler reads it. That is the whole
+    /// reason a process global existed here: two threads needed the same
+    /// bool. Sharing the run's levers gives them one that belongs to the run.
+    pub levers: std::sync::Arc<SchedLevers>,
     /// Hard stops derived from this model's tokenizer and CLI.
     pub limits: SchedLimits,
     /// Decode-time watchdog tunables from this model's MODEL.toml
@@ -48,7 +53,7 @@ pub struct SchedCtx {
 impl SchedCtx {
     pub fn new(
         masks: VocabMasks,
-        levers: SchedLevers,
+        levers: std::sync::Arc<SchedLevers>,
         limits: SchedLimits,
         watchdog: crate::scheduler::helpers::WatchdogParams,
     ) -> Self {
@@ -68,7 +73,7 @@ impl SchedCtx {
     pub fn for_test() -> Self {
         Self::new(
             VocabMasks::default(),
-            SchedLevers::defaults(),
+            std::sync::Arc::new(SchedLevers::defaults()),
             SchedLimits::NONE,
             crate::scheduler::helpers::WatchdogParams::default(),
         )

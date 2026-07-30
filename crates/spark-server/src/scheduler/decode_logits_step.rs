@@ -696,7 +696,7 @@ pub fn process_decode_logits(
                 (Some(_), None) => true,
                 _ => false,
             };
-            if enable_loop_watchdog()
+            if sched.levers.loop_watchdog()
                 && !a.finished
                 && !a.inside_thinking
                 && !inside_tool_call

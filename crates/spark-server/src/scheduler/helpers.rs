@@ -203,21 +203,12 @@ pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
         None => false,
     }
 }
-
-static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved `ModelBehavior.enable_loop_watchdog`.
-/// Idempotent: subsequent calls within the same process are ignored.
-pub fn set_enable_loop_watchdog(enabled: bool) {
-    let _ = ENABLE_LOOP_WATCHDOG.set(enabled);
-}
-
-/// Read the per-model loop-watchdog flag set at boot. Defaults to
-/// `false` until `set_enable_loop_watchdog` runs (boot order: weights →
-/// behavior plumbing → scheduler start).
-pub fn enable_loop_watchdog() -> bool {
-    *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
-}
+// The loop watchdog was a `OnceLock<bool>` with a `set_` installer called
+// from both serve startup (MODEL.toml `[behavior].enable_loop_watchdog`) and
+// the dashboard's `/watchdog` command — a process global precisely because
+// two threads needed to share one bool. It is now `SchedLevers::loop_watchdog`,
+// an atomic inside the run's levers, which serve hands to the scheduler and
+// the dashboard as an `Arc`.
 
 // ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
 

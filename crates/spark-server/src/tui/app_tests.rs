@@ -96,3 +96,39 @@ fn chat_scroll_returns_to_follow_at_the_bottom() {
     c.follow();
     assert_eq!(c.scroll, None);
 }
+
+#[test]
+fn the_watchdog_command_toggles_the_running_run_not_a_process_global() {
+    // `/watchdog on|off` used to store into a `OnceLock<bool>` shared by every
+    // run in the process — and, being a `OnceLock`, the boot value could not be
+    // changed at all once set. It now reaches the run's own levers through the
+    // handle `serve` publishes, so the toggle is observable on exactly the
+    // `Arc` the scheduler is reading.
+    use clap::Parser as _;
+    let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "some/model"]));
+    let levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
+    let other = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
+    app.sched_levers = Some(levers.clone());
+
+    crate::tui::commands::execute("/watchdog on", &mut app);
+    assert!(levers.loop_watchdog(), "the attached run is armed");
+    assert!(!other.loop_watchdog(), "another run is untouched");
+
+    crate::tui::commands::execute("/watchdog off", &mut app);
+    assert!(!levers.loop_watchdog());
+}
+
+#[test]
+fn the_watchdog_command_says_so_when_no_run_is_attached() {
+    // Before the scheduler starts there is nothing to toggle. Saying so beats
+    // the old behaviour, where the store succeeded against a global the run
+    // had not read yet.
+    use clap::Parser as _;
+    let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "some/model"]));
+    crate::tui::commands::execute("/watchdog on", &mut app);
+    assert!(
+        app.ops.output.iter().any(|l| l.contains("no run yet")),
+        "got {:?}",
+        app.ops.output
+    );
+}

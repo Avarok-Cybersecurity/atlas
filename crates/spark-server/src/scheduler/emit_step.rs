@@ -269,7 +269,7 @@ pub fn emit_token(
         use crate::scheduler::helpers::{
             CONTENT_LOOP_CHECK_STRIDE, CONTENT_LOOP_MIN_TOKENS, CONTENT_LOOP_PERIOD_MAX,
             CONTENT_LOOP_PERIOD_MIN, detect_content_token_loop_normalized_with,
-            detect_content_token_loop_with, enable_loop_watchdog,
+            detect_content_token_loop_with,
         };
         a.content_tokens = a.content_tokens.saturating_add(1);
         // F1 (2026-06-02): unconditional per-generation post-think content
@@ -291,7 +291,7 @@ pub fn emit_token(
             a.finished = true;
         }
         if !sched.levers.disable_watchdogs
-            && enable_loop_watchdog()
+            && sched.levers.loop_watchdog()
             && !a.inside_tool_body
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)

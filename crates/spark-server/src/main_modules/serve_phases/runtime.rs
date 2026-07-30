@@ -164,7 +164,8 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
         },
         ptx_set.behavior.thinking_default,
     );
-    crate::scheduler::set_enable_loop_watchdog(ptx_set.behavior.enable_loop_watchdog);
+    // The value reaches the scheduler as `SchedLevers::loop_watchdog`, armed in
+    // `serve`; this phase only audits it.
     if ptx_set.behavior.enable_loop_watchdog {
         tracing::info!(
             "Model behavior: content-loop watchdog ENABLED (period-{}…{} repetition detector)",

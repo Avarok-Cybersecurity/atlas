@@ -64,7 +64,6 @@ use decode_step::*;
 use emit_step::*;
 pub use helpers::WatchdogParams;
 pub(crate) use helpers::parse_disable_watchdogs;
-pub use helpers::set_enable_loop_watchdog;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
 use lifecycle::*;
@@ -202,16 +201,13 @@ pub fn run(
     limits: crate::scheduler::limits::SchedLimits,
     // This model's MODEL.toml `[behavior]` watchdog tunables.
     watchdog: crate::scheduler::helpers::WatchdogParams,
+    // Shared with the dashboard, which toggles the loop watchdog mid-run.
+    levers: std::sync::Arc<crate::scheduler::levers::SchedLevers>,
 ) {
     // Everything this run needs that is derived from the model rather than the
     // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
     // once here and read through `sched` from every step function.
-    let sched = crate::scheduler::sched_ctx::SchedCtx::new(
-        vocab_masks,
-        crate::scheduler::levers::SchedLevers::from_env(),
-        limits,
-        watchdog,
-    );
+    let sched = crate::scheduler::sched_ctx::SchedCtx::new(vocab_masks, levers, limits, watchdog);
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");

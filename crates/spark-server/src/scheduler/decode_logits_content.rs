@@ -125,7 +125,7 @@ pub fn handle_content_token(
     // the tool body: its emission outside the body forms a tight
     // period-N tail that the outside-body watchdog will detect.
     if !sched.levers.disable_watchdogs
-        && enable_loop_watchdog()
+        && sched.levers.loop_watchdog()
         && !a.inside_tool_body
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)

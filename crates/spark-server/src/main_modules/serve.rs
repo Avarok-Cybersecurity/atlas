@@ -69,6 +69,10 @@ fn startup(
     // as a key event (raw mode) and calls the same request().
     crate::tui::shutdown::install_signal_listeners();
 
+    // Publishes each run's levers to the dashboard (see `tui::start`). `None`
+    // in plain mode / on a worker rank, where nothing consumes them.
+    let mut tui_levers_tx: Option<std::sync::mpsc::Sender<crate::tui::RunLevers>> = None;
+
     // Start the dashboard thread as early as possible so the operator watches
     // the load, not a blank screen. Everything it reads is process-global
     // (log ring, progress channel, metrics, scheduler snapshot) plus this
@@ -76,7 +80,7 @@ fn startup(
     if let Some(progress_rx) = tui_progress
         && args.rank == 0
     {
-        crate::tui::start(args.clone(), progress_rx);
+        tui_levers_tx = Some(crate::tui::start(args.clone(), progress_rx));
     }
 
     // Reject contradictory flag combinations up front (issue #288) — before the
@@ -723,6 +727,15 @@ fn startup(
     // spawns — the installer this replaces ran from `log_behavior_audit`,
     // which is called well after the spawn.
     let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(&ptx_set.behavior);
+    // The run's levers. Shared with the dashboard so `/watchdog on|off`
+    // toggles this run's flag; the MODEL.toml `[behavior]` value is its
+    // starting position.
+    let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
+    sched_levers.set_loop_watchdog(ptx_set.behavior.enable_loop_watchdog);
+    if let Some(tx) = &tui_levers_tx {
+        let _ = tx.send(sched_levers.clone());
+    }
+    let run_levers = sched_levers.clone();
     let sched_limits = crate::scheduler::limits::SchedLimits {
         max_seq_len: args.max_seq_len,
         ..tokenizer_limits
@@ -760,6 +773,7 @@ fn startup(
             vocab_masks,
             sched_limits,
             watchdog_params,
+            run_levers,
         );
     });
 

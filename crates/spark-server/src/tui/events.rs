@@ -21,7 +21,11 @@ use super::{log_ring, render, shutdown};
 const TICK: Duration = Duration::from_millis(100);
 const SAMPLE_EVERY: u32 = 10; // 1 Hz metrics sampling at the 10 Hz tick
 
-pub fn run(mut app: App, progress_rx: Receiver<ProgressEvent>) {
+pub fn run(
+    mut app: App,
+    progress_rx: Receiver<ProgressEvent>,
+    levers_rx: Receiver<crate::tui::RunLevers>,
+) {
     super::terminal_guard::install_panic_hook(
         log_ring::dump_to,
         super::init::tee_file_path().unwrap_or("(no tee file)"),
@@ -60,6 +64,10 @@ pub fn run(mut app: App, progress_rx: Receiver<ProgressEvent>) {
             }
         }
         // 2. Data ingress.
+        // The newest published run wins — a hot-swap replaces the handle.
+        if let Some(l) = levers_rx.try_iter().last() {
+            app.sched_levers = Some(l);
+        }
         for ev in progress_rx.try_iter() {
             app.progress.apply(ev);
         }

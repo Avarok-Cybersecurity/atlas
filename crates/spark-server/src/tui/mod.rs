@@ -49,13 +49,21 @@ pub mod render;
 
 use std::io::IsTerminal;
 
+/// A live run's levers, published to the dashboard when the scheduler starts
+/// so `/watchdog on|off` toggles the run's own flag instead of a process
+/// global. Sent again on a hot-swap, replacing the previous run's handle.
+pub type RunLevers = std::sync::Arc<crate::scheduler::levers::SchedLevers>;
+
 /// Start the dashboard thread (head node, TTY mode only — the caller has
 /// already gated on `plain_mode`). Captures the tokio runtime handle for the
-/// chat client; everything else the TUI reads is process-global.
+/// chat client, and returns the sender the caller uses to publish each run's
+/// levers. A failed spawn still returns a usable sender whose receiver is
+/// gone: publishing becomes a no-op rather than a caller-side special case.
 pub fn start(
     args: crate::cli::ServeArgs,
     progress_rx: std::sync::mpsc::Receiver<capture_layer::ProgressEvent>,
-) {
+) -> std::sync::mpsc::Sender<RunLevers> {
+    let (levers_tx, levers_rx) = std::sync::mpsc::channel::<RunLevers>();
     let runtime = tokio::runtime::Handle::current();
     match std::thread::Builder::new()
         .name("atlas-tui".into())
@@ -79,13 +87,14 @@ pub fn start(
                 ),
                 Err(e) => tracing::warn!("benchmarks unavailable: {e:#}"),
             }
-            events::run(app, progress_rx);
+            events::run(app, progress_rx, levers_rx);
         }) {
         Ok(handle) => {
             *THREAD.lock() = Some(handle);
         }
         Err(e) => tracing::warn!("TUI thread failed to start: {e}"),
     }
+    levers_tx
 }
 
 /// The dashboard thread's handle, for the exit-path join.

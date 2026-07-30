@@ -61,17 +61,28 @@ pub fn execute(line: &str, app: &mut App) {
         "/kernels" => cmd_kernels(app, arg),
         "/gpu" => cmd_gpu(app),
         "/cache" => cmd_cache(app),
-        "/watchdog" => match arg {
-            "on" => {
-                crate::scheduler::set_enable_loop_watchdog(true);
-                app.ops.output.push("loop watchdog: ON".into());
+        "/watchdog" => {
+            let on = match arg {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    app.ops.output.push("usage: /watchdog on|off".into());
+                    return;
+                }
+            };
+            match &app.sched_levers {
+                Some(l) => {
+                    l.set_loop_watchdog(on);
+                    app.ops
+                        .output
+                        .push(format!("loop watchdog: {}", if on { "ON" } else { "OFF" }));
+                }
+                None => app
+                    .ops
+                    .output
+                    .push("loop watchdog: no run yet — the scheduler has not started".into()),
             }
-            "off" => {
-                crate::scheduler::set_enable_loop_watchdog(false);
-                app.ops.output.push("loop watchdog: OFF".into());
-            }
-            _ => app.ops.output.push("usage: /watchdog on|off".into()),
-        },
+        }
         "/detach" => app.detach = true,
         "/quit" => {
             super::shutdown::request("/quit");
