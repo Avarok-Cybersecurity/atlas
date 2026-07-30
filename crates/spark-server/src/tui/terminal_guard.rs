@@ -83,9 +83,9 @@ fn unredirect_stderr() {
 /// `install_panic_hook`; kept as a plain fn pointer so this module does not
 /// depend on the ring's type.
 static RING_DUMP: OnceLock<fn(&mut dyn Write, usize)> = OnceLock::new();
-/// Tee-file path, printed by the panic hook so operators know where the full
-/// log went while the alt screen was eating stdout.
-static TEE_PATH: OnceLock<String> = OnceLock::new();
+// The tee path was duplicated here, copied in by `install_panic_hook` from the
+// module that actually opens the file. One value, two owners: `super::init`
+// keeps it now and the hook reads it through `tee_file_path()`.
 
 /// Idempotently undo raw mode, mouse capture, and the alternate screen.
 ///
@@ -125,15 +125,15 @@ impl Drop for TerminalGuard {
 }
 
 /// Install the chained panic hook. `ring_dump(w, n)` writes the newest `n`
-/// captured log lines to `w`; `tee_path` is the always-on log file.
+/// captured log lines to `w`. The always-on log file's path is read from
+/// `super::init`, which owns it.
 ///
 /// Must be called BEFORE `TerminalGuard::enter` so a panic during entry is
 /// covered too. Installing more than once is a no-op.
-pub fn install_panic_hook(ring_dump: fn(&mut dyn Write, usize), tee_path: &str) {
+pub fn install_panic_hook(ring_dump: fn(&mut dyn Write, usize)) {
     if RING_DUMP.set(ring_dump).is_err() {
         return; // already installed
     }
-    let _ = TEE_PATH.set(tee_path.to_string());
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // 1. Sane screen first, so everything below is actually visible.
@@ -144,7 +144,7 @@ pub fn install_panic_hook(ring_dump: fn(&mut dyn Write, usize), tee_path: &str) 
         if let Some(dump) = RING_DUMP.get() {
             dump(&mut err, 50);
         }
-        if let Some(p) = TEE_PATH.get() {
+        if let Some(p) = super::init::tee_file_path() {
             let _ = writeln!(err, "── full log: {p} ──");
         }
         // 3. The original hook prints the panic message + backtrace.

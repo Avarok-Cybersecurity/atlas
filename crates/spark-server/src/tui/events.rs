@@ -26,10 +26,7 @@ pub fn run(
     progress_rx: Receiver<ProgressEvent>,
     levers_rx: Receiver<crate::tui::RunLevers>,
 ) {
-    super::terminal_guard::install_panic_hook(
-        log_ring::dump_to,
-        super::init::tee_file_path().unwrap_or("(no tee file)"),
-    );
+    super::terminal_guard::install_panic_hook(log_ring::dump_to);
     let guard = match TerminalGuard::enter() {
         Ok(g) => g,
         Err(e) => {

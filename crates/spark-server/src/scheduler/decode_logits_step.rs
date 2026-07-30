@@ -4,16 +4,9 @@
 
 use super::*;
 
-thread_local! {
-    /// Reusable host staging buffer for the D2H logits copy on the sampling
-    /// path. Hoisted out of the per-token `vec![0u8; n*vocab*elem]` to avoid an
-    /// mmap/munmap + page-fault cycle every decoded token (the buffer is
-    /// ~0.5-1 MB at a 250k vocab). Fully overwritten by `copy_logits_to_host`,
-    /// so residual contents are irrelevant. Per-thread: the scheduler drives
-    /// decode on one thread.
-    static DECODE_LOGITS_HOST_SCRATCH: std::cell::RefCell<Vec<u8>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
+// The reusable host staging buffer for the D2H logits copy is now
+// `SchedCtx::scratch.host_bytes` — same zero-contention single-thread
+// access, with a lifetime that ends when the run does.
 
 /// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
@@ -115,7 +108,7 @@ pub fn process_decode_logits(
             // Reuse the per-thread staging buffer (restored at the end of this
             // block). `resize` only grows it; `copy_logits_to_host` overwrites
             // every byte so the residual/zero-fill is irrelevant.
-            let mut buf = DECODE_LOGITS_HOST_SCRATCH.with_borrow_mut(std::mem::take);
+            let mut buf = sched.scratch.host_bytes.borrow_mut().split_off(0);
             buf.resize(n * vocab_size * elem_bytes, 0);
             if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
                 tracing::error!("copy_logits_to_host error: {e:#}");
@@ -137,6 +130,7 @@ pub fn process_decode_logits(
                 tool_call_start_token,
                 tool_call_end_token,
                 watchdog: sched.watchdog,
+                scratch: &sched.scratch,
                 stats: sched.stats.clone(),
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
@@ -165,7 +159,7 @@ pub fn process_decode_logits(
             // Return the staging buffer for reuse next token (its capacity is
             // preserved). The error path above intentionally drops it — that is
             // rare and only forfeits the cached capacity.
-            DECODE_LOGITS_HOST_SCRATCH.with_borrow_mut(|slot| *slot = buf);
+            *sched.scratch.host_bytes.borrow_mut() = buf;
             sampled
         };
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;

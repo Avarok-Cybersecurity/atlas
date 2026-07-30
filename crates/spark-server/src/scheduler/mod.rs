@@ -522,6 +522,7 @@ pub fn run(
             // GPU-argmax tokens (Phase C-2 root cause, 2026-05-24).
             let verify_ctx = crate::scheduler::logit_processors::LogitsContext {
                 watchdog: sched.watchdog,
+                scratch: &sched.scratch,
                 stats: sched.stats.clone(),
                 think_end_token,
                 think_start_token,

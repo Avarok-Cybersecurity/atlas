@@ -18,10 +18,32 @@ use crate::scheduler::mtp_timing::RunTiming;
 use crate::scheduler::spec_stats::SpecStats;
 use crate::scheduler::vocab_masks::VocabMasks;
 
+/// Reusable host buffers for the decode path, sized once and refilled.
+///
+/// Taking and returning the `Vec` (rather than borrowing across the body)
+/// keeps the borrow scoped to the swap, so the decode path can hold the
+/// buffer while calling back into the context.
+#[derive(Debug, Default)]
+pub struct DecodeScratch {
+    /// Dequantized FP32 logits for one sequence (~1 MB at a 250k vocab).
+    pub seq_f32: std::cell::RefCell<Vec<f32>>,
+    /// Raw device-side logits copied to the host, one decode step.
+    pub host_bytes: std::cell::RefCell<Vec<u8>>,
+}
+
 /// Model-derived state for one scheduler run.
 pub struct SchedCtx {
     /// Per-token classification masks for this model's vocabulary.
     pub masks: VocabMasks,
+    /// Reusable host-side decode buffers for this run.
+    ///
+    /// These were `thread_local!` scratch, which is a process global with a
+    /// narrower key: it kept the last model's allocation alive on the
+    /// scheduler thread, and a test that ran two runs on one thread shared a
+    /// buffer between them. The scheduler drives decode on ONE thread, so a
+    /// `RefCell` on the run's own context is the same zero-contention access
+    /// with a lifetime that ends when the run does.
+    pub scratch: DecodeScratch,
     /// Decode / verify / speculation levers for this run.
     ///
     /// `Arc` because one of them — the loop watchdog — is toggled from the
@@ -59,6 +81,7 @@ impl SchedCtx {
     ) -> Self {
         Self {
             masks,
+            scratch: DecodeScratch::default(),
             levers,
             limits,
             watchdog,

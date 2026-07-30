@@ -61,7 +61,10 @@ mod pipeline_tests;
 // No longer `Copy`: the masks are `Arc`s. Cloning one is two refcount
 // bumps, and it is built once per decode step, not per token.
 #[derive(Debug, Clone)]
-pub struct LogitsContext {
+pub struct LogitsContext<'a> {
+    /// The run's reusable host decode buffers. Borrowed rather than reached
+    /// through a `thread_local!`, so a buffer cannot outlive the run.
+    pub scratch: &'a crate::scheduler::sched_ctx::DecodeScratch,
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,

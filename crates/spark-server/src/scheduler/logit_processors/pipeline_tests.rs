@@ -144,7 +144,9 @@ fn defer_override_math_constants() {
 fn logits_context_field_set_is_stable() {
     // A test can now state the masks it wants instead of installing them into
     // a process-wide OnceLock that every other test then inherits.
+    let scratch = crate::scheduler::sched_ctx::DecodeScratch::default();
     let ctx = LogitsContext {
+        scratch: &scratch,
         stats: std::sync::Arc::new(crate::scheduler::spec_stats::SpecStats::new()),
         watchdog: crate::scheduler::helpers::WatchdogParams::default(),
         boundary_mask: None,

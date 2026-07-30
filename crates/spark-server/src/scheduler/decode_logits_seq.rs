@@ -4,16 +4,7 @@
 
 use super::*;
 
-thread_local! {
-    /// Reusable per-sequence dequantised-logits buffer. Hoisted out of the
-    /// per-call `(0..vocab).map(..).collect()` to avoid a ~1 MB (250k vocab)
-    /// heap alloc/free every sequence every decoded token on the host sampling
-    /// path. Always refilled to exactly `vocab_size` elements before use, so
-    /// the `from_raw_parts(.., vocab_size*4)` view stays valid. Restored before
-    /// each return so the next call reuses the capacity.
-    static SEQ_F32_SCRATCH: std::cell::RefCell<Vec<f32>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
+// The reusable FP32 dequant buffer is now `SchedCtx::scratch.seq_f32`.
 
 // B1 (2026-05-26) margin-ratio drift detector moved to
 // `logit_processors::b1_margin` (STEP 5) so the single unified
@@ -43,7 +34,7 @@ pub fn process_seq_logits(
     // Reuse the per-thread scratch (restored before every return below).
     // `clear` + `extend` of exactly `vocab_size` items rebuilds it in place,
     // preserving capacity and keeping `len() == vocab_size`.
-    let mut f32_logits = SEQ_F32_SCRATCH.with_borrow_mut(std::mem::take);
+    let mut f32_logits = ctx.scratch.seq_f32.borrow_mut().split_off(0);
     f32_logits.clear();
     if logits_fp32 {
         // Direct FP32: 4 bytes/element little-endian.
@@ -137,7 +128,7 @@ pub fn process_seq_logits(
         let logprobs = a
             .top_logprobs
             .map(|k| extract_logprobs_from_f32(&f32_logits, tok, k as usize));
-        SEQ_F32_SCRATCH.with_borrow_mut(|slot| *slot = std::mem::take(&mut f32_logits));
+        *ctx.scratch.seq_f32.borrow_mut() = std::mem::take(&mut f32_logits);
         return (tok, logprobs);
     }
 
@@ -205,6 +196,6 @@ pub fn process_seq_logits(
     let logprobs = a
         .top_logprobs
         .map(|k| extract_logprobs_from_f32(&f32_logits, sampled, k as usize));
-    SEQ_F32_SCRATCH.with_borrow_mut(|slot| *slot = std::mem::take(&mut f32_logits));
+    *ctx.scratch.seq_f32.borrow_mut() = std::mem::take(&mut f32_logits);
     (sampled, logprobs)
 }
