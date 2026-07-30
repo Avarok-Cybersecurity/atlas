@@ -1122,6 +1122,37 @@ anchor whose radix path was hit 70 s before and after.
 **New 64K agentic config of record:** §6.10 config + `--default-min-p 0
 --default-top-n-sigma 0 --ssm-cache-slots 64` (`combo_conc_slots64.sh`).
 
+### 6.20 fp8-KV buried; acceptance exonerated; cold-load host-bounce fixed (−44%)
+
+**fp8 KV on 27B = NET LOSS, buried.** `--kv-cache-dtype fp8` on the config
+of record: per-stream decode median 4.4–4.8 → **2.1** (opposite of the
+intended bandwidth win — no fast fp8-KV decode path engaged for this
+target), and the fatal wrong-answer loop-kills returned (6/8) with filters
+off. Explained by the server's own startup warning: this checkpoint has no
+calibrated k_scale/v_scale, so BF16 KV values silently clip to E4M3.
+Holo's "fp8 KV is free" does NOT transfer. bf16 stays. Possible future
+leg: `--fp8-kv-calibration-tokens 256` + `--kv-high-precision-layers`,
+only worth it after a fast fp8 decode path exists here.
+(`conc_c8_fp8kv.log`, `conc27_fp8kv.log`.)
+
+**Spec acceptance at agentic depth is HEALTHY — the decode bottleneck is
+step time.** Mined from the §6.19 logs: p1 ≈ 0.92, mean accepted ≈ 1.95
+(K=3) at 10–16K context, IDENTICAL filters on vs off — the filters-off
+config costs nothing on the drafter, and acceptance is better than the
+0.867 short-ctx C=16 figure. ~2.95 tok/step at ~4.6 tok/s/stream ⇒
+~640 ms/step at C=8: attention over 8×10–20K KV histories + the §6.16
+platform stall. Follow-up candidate: C=8 ladder rung K=3 → K=4
+(p3_cond ≈ 0.79).
+
+**Cold load 66s → 37s (−44%): the transpose host-bounce is fixed
+(6c5e8c3e).** `transpose_for_gemm_gs` + `transpose_impl` bounced ~13.6 GB
+through host (D2H → O(N*K) byte loop → H2D). Now on-device via the
+existing `transpose_u8` kernel + one pitched `cudaMemcpy2DAsync` per
+concat part. Same-binary A/B, warm JIT: 66s (ATLAS_HOST_TRANSPOSE=1)
+vs 37s (default); temperature-0 probe SHA identical (bit-equivalent).
+Kill switch ATLAS_HOST_TRANSPOSE=1; silent host fallback for targets
+without the kernel; arity pinned.
+
 ## 7. Open
 
 Ordered by what I would pick up first.
