@@ -11,7 +11,7 @@
 //! (no per-token spam), then the accumulators reset.
 //!
 //! Purely diagnostic: zero behavioral effect, and near-zero cost when the env
-//! is unset (`enabled()` is a cached bool; `record` returns immediately).
+//! is unset (`RunTiming::armed` is a plain bool; `record` returns immediately).
 //!
 //! `ATLAS_MTP_GATE_FORCE=1` (diagnostic companion, wired in `scheduler::mod`)
 //! disarms the throughput gate so verify steps keep flowing even in a regime
@@ -71,45 +71,89 @@ const NAMES: [&str; NUM_PHASES] = [
     "TOTAL",
 ];
 
-static SUM_US: [AtomicU64; NUM_PHASES] = [const { AtomicU64::new(0) }; NUM_PHASES];
-static COUNT: [AtomicU64; NUM_PHASES] = [const { AtomicU64::new(0) }; NUM_PHASES];
-static STEPS: AtomicU64 = AtomicU64::new(0);
+/// Per-phase microsecond accumulators for ONE run.
+///
+/// These were three statics plus an `enabled` `OnceLock`. A timing histogram
+/// that spans a model swap averages two models together and describes neither,
+/// so the sink belongs to the run — reached as `SchedCtx::timing`, and cloned
+/// into `GrammarState` (which records two phases from a subsystem that has no
+/// scheduler context and should not grow one).
+#[derive(Debug)]
+pub struct RunTiming {
+    /// Armed by `ATLAS_MTP_TIMING=1`. When false every `record` is a
+    /// predictable branch and nothing else.
+    pub armed: bool,
+    sum_us: [AtomicU64; NUM_PHASES],
+    count: [AtomicU64; NUM_PHASES],
+    steps: AtomicU64,
+}
 
-/// Whether `ATLAS_MTP_TIMING=1` armed the accumulators (cached once).
-pub(crate) fn enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_MTP_TIMING").ok().as_deref() == Some("1"))
+impl RunTiming {
+    pub fn from_env() -> Self {
+        Self::new(std::env::var("ATLAS_MTP_TIMING").ok().as_deref() == Some("1"))
+    }
+
+    pub fn new(armed: bool) -> Self {
+        Self {
+            armed,
+            sum_us: [const { AtomicU64::new(0) }; NUM_PHASES],
+            count: [const { AtomicU64::new(0) }; NUM_PHASES],
+            steps: AtomicU64::new(0),
+        }
+    }
+
+    /// Record the elapsed time since `since` under `phase`. No-op when disarmed.
+    pub(crate) fn record(&self, phase: Phase, since: Instant) {
+        if !self.armed {
+            return;
+        }
+        let us = u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.sum_us[phase as usize].fetch_add(us, Ordering::Relaxed);
+        self.count[phase as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn sum_us(&self, phase: Phase) -> u64 {
+        self.sum_us[phase as usize].load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn count(&self, phase: Phase) -> u64 {
+        self.count[phase as usize].load(Ordering::Relaxed)
+    }
+
+    pub fn bump_steps(&self) -> u64 {
+        self.steps.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn steps(&self) -> u64 {
+        self.steps.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for RunTiming {
+    fn default() -> Self {
+        Self::new(false)
+    }
 }
 
 // `ATLAS_MTP_GATE_FORCE` is now `SchedLevers::mtp_gate_force`, read from
 // `SchedCtx` where the gate is armed.
 
-/// Record the elapsed time since `since` under `phase`. No-op when disarmed.
-pub(crate) fn record(phase: Phase, since: Instant) {
-    if !enabled() {
-        return;
-    }
-    let us = u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX);
-    SUM_US[phase as usize].fetch_add(us, Ordering::Relaxed);
-    COUNT[phase as usize].fetch_add(1, Ordering::Relaxed);
-}
-
 /// Mark one verify step complete (records `StepTotal` from `step_start`) and
 /// emit the periodic summary. Call once per `step_verify_k2` invocation.
-pub(crate) fn step_done(step_start: Instant, seq_len: usize) {
-    if !enabled() {
+pub(crate) fn step_done(timing: &RunTiming, step_start: Instant, seq_len: usize) {
+    if !timing.armed {
         return;
     }
-    record(Phase::StepTotal, step_start);
-    let steps = STEPS.fetch_add(1, Ordering::Relaxed) + 1;
+    timing.record(Phase::StepTotal, step_start);
+    let steps = timing.bump_steps();
     if !steps.is_multiple_of(SUMMARY_PERIOD) {
         return;
     }
     use std::fmt::Write as _;
     let mut line = String::with_capacity(NUM_PHASES * 32);
     for i in 0..NUM_PHASES {
-        let sum = SUM_US[i].swap(0, Ordering::Relaxed);
-        let cnt = COUNT[i].swap(0, Ordering::Relaxed);
+        let sum = timing.sum_us[i].swap(0, Ordering::Relaxed);
+        let cnt = timing.count[i].swap(0, Ordering::Relaxed);
         if cnt == 0 {
             continue;
         }
@@ -139,23 +183,27 @@ pub(crate) fn step_done(step_start: Instant, seq_len: usize) {
 /// unusually low `total` beside a high step count implies they fired.
 ///
 /// Costs one `Instant::now()` when `ATLAS_MTP_TIMING` is unset, since
-/// `step_done` returns immediately if not [`enabled`].
-pub(crate) struct StepTimer {
+/// `step_done` returns immediately when the sink is disarmed.
+pub(crate) struct StepTimer<'a> {
     start: Instant,
     seq_len: usize,
+    /// The run's sink. Borrowed rather than reached globally, so the summary
+    /// covers one model's steps.
+    timing: &'a RunTiming,
 }
 
-impl StepTimer {
-    pub(crate) fn new(seq_len: usize) -> Self {
+impl<'a> StepTimer<'a> {
+    pub(crate) fn new(timing: &'a RunTiming, seq_len: usize) -> Self {
         Self {
             start: Instant::now(),
             seq_len,
+            timing,
         }
     }
 }
 
-impl Drop for StepTimer {
+impl Drop for StepTimer<'_> {
     fn drop(&mut self) {
-        step_done(self.start, self.seq_len);
+        step_done(self.timing, self.start, self.seq_len);
     }
 }

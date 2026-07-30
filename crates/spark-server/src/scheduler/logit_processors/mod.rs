@@ -77,6 +77,9 @@ pub struct LogitsContext {
     /// Sampling levers for this run, carried beside the tokenizer-derived
     /// values they act on. Built once per decode step from `SchedLevers`.
     pub sampling: SamplingLevers,
+    /// The run's verify-timing sink. Carried like everything else here, so a
+    /// timing summary covers one model's steps.
+    pub timing: std::sync::Arc<crate::scheduler::mtp_timing::RunTiming>,
 }
 
 /// The subset of `scheduler::levers::SchedLevers` the pre-sample pipeline
@@ -267,7 +270,8 @@ pub fn process_position_logits(
         ),
     );
     if kind == PositionKind::Verify {
-        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);
+        ctx.timing
+            .record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);
     }
 
     None

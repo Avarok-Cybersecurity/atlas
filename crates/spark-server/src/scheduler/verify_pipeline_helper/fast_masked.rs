@@ -46,7 +46,7 @@
 
 use crate::scheduler::ActiveSeq;
 use crate::scheduler::logit_processors::LogitsContext;
-use crate::scheduler::mtp_timing::{self, Phase};
+use crate::scheduler::mtp_timing::Phase;
 use spark_model::traits::Model;
 
 /// Returns `Some(picks)` when the fast path proves masked-greedy ==
@@ -141,7 +141,7 @@ pub(super) fn try_chat_fast_path(
             break;
         }
     }
-    mtp_timing::record(Phase::FastGreedy, t_fast);
+    ctx.timing.record(Phase::FastGreedy, t_fast);
     if all_clear {
         // Log-once latch — see `atlas_core::scope` for why this category stays static.
         static LOGGED: std::sync::Once = std::sync::Once::new();

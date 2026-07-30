@@ -526,6 +526,7 @@ pub fn run(
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
                 sampling: sched.levers.sampling(),
+                timing: sched.timing.clone(),
             };
             // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
             // keep the first N post-`</think>` tokens on plain serial decode.

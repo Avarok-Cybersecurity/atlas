@@ -97,7 +97,7 @@ pub fn verify_pick_with_pipeline(
     ctx: &LogitsContext,
     verify_pos: usize,
 ) -> u32 {
-    use crate::scheduler::mtp_timing::{self, Phase};
+    use crate::scheduler::mtp_timing::Phase;
     // 1. Dequant per the same scheme as `process_seq_logits`, into a REUSED
     //    thread-local buffer rather than a fresh ~1 MB `Vec<f32>` per K position
     //    — see `scratch.rs`. Semantically inert: every `vocab_size` entry is
@@ -123,7 +123,7 @@ pub fn verify_pick_with_pipeline(
             bf16_to_f32(lo, hi)
         }));
     }
-    mtp_timing::record(Phase::Dequant, t_dequant);
+    ctx.timing.record(Phase::Dequant, t_dequant);
     // Hand the allocation back on EVERY exit below (forced-token short circuit,
     // temp>0 sample, argmax), or the next call allocates from scratch again and
     // the reuse is silently lost.
@@ -163,10 +163,10 @@ pub fn verify_pick_with_pipeline(
         &penalties,
         crate::scheduler::sample_step::PositionKind::Verify,
     ) {
-        mtp_timing::record(Phase::PipelineProc, t_proc);
+        ctx.timing.record(Phase::PipelineProc, t_proc);
         return tok;
     }
-    mtp_timing::record(Phase::PipelineProc, t_proc);
+    ctx.timing.record(Phase::PipelineProc, t_proc);
 
     // 4a. P1-3 (2026-07-09): when the request asked for temperature > 0,
     //     SAMPLE from the processed logits instead of taking the argmax.
@@ -220,7 +220,7 @@ pub fn verify_pick_with_pipeline(
             spark_runtime::sampler::sample_with_params_history(f32_bytes, &sampler_shape, &[]);
         // Recorded under the Argmax phase: it replaces the argmax pick and
         // keeps the mtp_timing phase set unchanged.
-        mtp_timing::record(Phase::Argmax, t_sample);
+        ctx.timing.record(Phase::Argmax, t_sample);
         return sampled;
     }
 
@@ -228,7 +228,7 @@ pub fn verify_pick_with_pipeline(
     //    sampler's argmax branch behaviour.
     let t_argmax = std::time::Instant::now();
     let best_id = argmax::argmax_first_wins(&f32_logits);
-    mtp_timing::record(Phase::Argmax, t_argmax);
+    ctx.timing.record(Phase::Argmax, t_argmax);
     best_id
 }
 
@@ -247,7 +247,7 @@ pub fn verify_pick_all_with_pipeline(
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
 ) -> Vec<u32> {
-    use crate::scheduler::mtp_timing::{self, Phase};
+    use crate::scheduler::mtp_timing::Phase;
     let k = argmax_ids.len();
     if k == 0 {
         return Vec::new();
@@ -390,7 +390,7 @@ pub fn verify_pick_all_with_pipeline(
                 gs.rollback(adv);
             }
         }
-        mtp_timing::record(Phase::FastGreedy, t_fast);
+        ctx.timing.record(Phase::FastGreedy, t_fast);
         if all_allowed && fast.len() == k {
             return fast; // no D2H, no CPU pipeline — all positions GPU-greedy + grammar-legal
         }
@@ -411,7 +411,7 @@ pub fn verify_pick_all_with_pipeline(
     {
         return argmax_ids.to_vec();
     }
-    mtp_timing::record(Phase::D2h, t_d2h);
+    ctx.timing.record(Phase::D2h, t_d2h);
 
     let mut picks: Vec<u32> = Vec::with_capacity(k);
     // Snapshot the matcher's history depth BEFORE speculative advances so we

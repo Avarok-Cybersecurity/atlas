@@ -169,7 +169,7 @@ pub fn step_verify_k4(
     // A Drop guard rather than hand-placed calls: this function has four accept
     // branches and several early error returns, so an explicit call per tail
     // would be one refactor away from silently drifting out of date again.
-    let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(a.seq.seq_len);
+    let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, a.seq.seq_len);
 
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");

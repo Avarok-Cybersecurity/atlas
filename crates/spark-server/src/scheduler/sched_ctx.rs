@@ -13,6 +13,7 @@
 //! on `ActiveSeq`, and values the loop mutates stay locals.
 
 use crate::scheduler::levers::SchedLevers;
+use crate::scheduler::mtp_timing::RunTiming;
 use crate::scheduler::spec_stats::SpecStats;
 use crate::scheduler::vocab_masks::VocabMasks;
 
@@ -25,6 +26,8 @@ pub struct SchedCtx {
     /// Speculation accept/reject telemetry for this run. Mutated through the
     /// shared reference, which is why its counters are atomics.
     pub stats: SpecStats,
+    /// Per-phase verify timing for this run, shared with the grammar state.
+    pub timing: std::sync::Arc<RunTiming>,
     /// Trained repetition-onset detection head, when `[behavior].rom_head`
     /// names a loadable artifact. `None` means the F2 heuristic is the
     /// fallback — callers MUST treat it that way.
@@ -42,6 +45,7 @@ impl SchedCtx {
             masks,
             levers,
             stats: SpecStats::new(),
+            timing: std::sync::Arc::new(RunTiming::from_env()),
             rom_head: None,
         }
     }

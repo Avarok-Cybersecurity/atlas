@@ -148,6 +148,7 @@ fn logits_context_field_set_is_stable() {
         boundary_mask: None,
         mid_word_mask: None,
         sampling: SamplingLevers::default(),
+        timing: std::sync::Arc::default(),
         think_end_token: Some(1),
         think_start_token: Some(2),
         tool_call_start_token: Some(3),
