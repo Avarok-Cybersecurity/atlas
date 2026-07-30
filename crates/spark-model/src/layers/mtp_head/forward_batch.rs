@@ -40,7 +40,7 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
-use super::batch_caps::PROPOSE_META_STRIDE;
+use super::batch_caps::PROPOSE_META_HEADER;
 
 /// Byte offset inside the shared scratch arena where the batched propose
 /// stages the per-row top-1 log-probabilities (FP32). The n argmax ids live at
@@ -309,12 +309,21 @@ impl MtpHead {
                 state.block_table.push(kv_cache.alloc_block()?);
             }
             let bt_len = state.block_table.len() * 4;
+            // Hard guard against overrunning the per-sequence meta slab. The
+            // stride is sized at construction for max_seq_len (floor 2048 =
+            // 448 entries = 7,168 tokens, the 4K-era layout that made 10-20K
+            // agentic contexts fall back permanently — PROGRESS_LOG 5.2/6.17),
+            // so this only fires when ATLAS_PROPOSE_META_STRIDE shrank it or
+            // a sequence outgrew max_seq_len. The scheduler demotes exactly
+            // this message to debug — keep the "exceeds meta stride" text in
+            // sync with mtp_bootstrap_step.rs / verify_k4_batch_step.rs.
             ensure!(
-                256 + bt_len <= PROPOSE_META_STRIDE,
-                "propose_batch: drafter block table {} exceeds meta stride",
-                bt_len
+                PROPOSE_META_HEADER + bt_len <= self.propose_meta_stride,
+                "propose_batch: drafter block table {} exceeds meta stride {}",
+                bt_len,
+                self.propose_meta_stride
             );
-            let meta_base = self.propose_meta.offset(i * PROPOSE_META_STRIDE);
+            let meta_base = self.propose_meta.offset(i * self.propose_meta_stride);
             let block_idx = state.block_table[state.seq_len / bs];
             let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
             let mut meta_buf = vec![0u8; 256 + bt_len];
