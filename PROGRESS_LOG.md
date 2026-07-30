@@ -722,6 +722,15 @@ Actionable follow-ups extracted:
   spreads over tens of ms; 10 ms co-admitted only the first arrivals);
 * decide the MMQ-on question with a quality gate;
 * nsys the 1K cold prefill to size the SSM-vs-FFN-vs-attn split.
+  **DONE (2026-07-30): the split OVERTURNS the SSM hypothesis.** Cold
+  717-token prefill, GPU busy 1084/1270 ms wall: w4a16 tile GEMMs 60.9%
+  (w4a16_gemm_t_m128 ALONE 52.1%, ~1.86 ms/launch ~= ~90 effective TFLOPS
+  at the FFN shape), GDN/SSM 15.6%, dense BF16 8.3%, FP8 6.1%, attention
+  0.6%. The prefill wall is the W4A16 GEMM family. Levers: widen W4A4 MMQ
+  coverage past gate/up/down (the measured +10% left qkvz/o and residual
+  m128 on the slow arm; needs quality gate), m128 kernel efficiency (v2/v3
+  pipeline playbook exists for other targets), int8 W4A8 middle ground.
+  Report: /home/ms/.claude/jobs/c91b191d/tmp/prefill_1k.nsys-rep.
 
 ## 7. Open
 
