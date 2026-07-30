@@ -156,15 +156,10 @@ impl BenchState {
 
     fn run_key(&mut self, key: KeyEvent) -> Outcome {
         match key.code {
-            KeyCode::Char('c') => {
-                if self.is_running() {
-                    self.cancel();
-                    return Outcome::Toast {
-                        text: "cancelling — the server keeps serving".into(),
-                        error: false,
-                    };
-                }
-            }
+            // No toast: `cancel` sets the pane's own status line, and a toast
+            // drawn at the top of the content area lands on the progress bar.
+            // Toasts here are reserved for what the pane cannot already say.
+            KeyCode::Char('c') => self.cancel(),
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => self.view = View::List,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.table_scroll = self.table_scroll.saturating_add(1);

@@ -140,8 +140,10 @@ fn draw_confirm(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(modal);
     f.render_widget(block, modal);
     let mut lines = vec![Line::from(Span::styled(
+        // Short enough to fit the modal's inner width at every terminal size
+        // this renders at — a clipped warning reads as a rendering bug.
         format!(
-            " {} runs shell commands written by the model.",
+            " {} runs model-written shell.",
             app.bench
                 .descriptor()
                 .map(|d| d.name)

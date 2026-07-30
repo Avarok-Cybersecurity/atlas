@@ -255,7 +255,7 @@ impl BenchState {
     pub fn cancel(&mut self) {
         if let Some(run) = &self.run {
             run.cancel();
-            self.status = "cancelling…".into();
+            self.status = "cancelling — the server keeps serving".into();
         }
     }
 
