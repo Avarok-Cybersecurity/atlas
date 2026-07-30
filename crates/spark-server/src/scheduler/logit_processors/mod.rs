@@ -107,6 +107,11 @@ pub struct SamplingLevers {
     pub adadec_diagnostic: bool,
     /// DFlash masked verify.
     pub dflash_masked_verify: bool,
+    /// `ATLAS_DISABLE_WATCHDOGS` — every auto-watchdog off. Read by the F2
+    /// and mid-word stages.
+    pub disable_watchdogs: bool,
+    /// Grammar forced-token (Coalescence) fast path. Default-on.
+    pub forced_token_fastpath: bool,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.

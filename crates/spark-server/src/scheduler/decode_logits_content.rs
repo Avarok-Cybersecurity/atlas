@@ -79,7 +79,7 @@ pub fn handle_content_token(
     // ever capped (plain chat attaches no grammar). Default 100_000
     // (`MAX_POST_THINK_CONTENT_TOKENS`) = no-op; Qwen3.6-35B-A3B-FP8 sets
     // 1536 in MODEL.toml.
-    if !crate::scheduler::helpers::disable_watchdogs()
+    if !sched.levers.disable_watchdogs
         && a.grammar_state.is_some()
         && a.content_tokens > sched.watchdog.max_post_think_content_tokens
     {
@@ -124,7 +124,7 @@ pub fn handle_content_token(
     // real-loop case is still caught one tick AFTER the model exits
     // the tool body: its emission outside the body forms a tight
     // period-N tail that the outside-body watchdog will detect.
-    if !crate::scheduler::helpers::disable_watchdogs()
+    if !sched.levers.disable_watchdogs
         && enable_loop_watchdog()
         && !a.inside_tool_body
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
@@ -193,7 +193,7 @@ pub fn handle_content_token(
     // the prior gate then went inert and the prose budget never fired,
     // letting a disengaged tool turn wander to `max_tokens`.
     // `tool_request` is set at prefill and survives disengage.
-    if !crate::scheduler::helpers::disable_watchdogs() && !a.inside_tool_body && a.tool_request {
+    if !sched.levers.disable_watchdogs && !a.inside_tool_body && a.tool_request {
         a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
         let max_prose = sched.watchdog.max_inter_tool_prose;
         if a.prose_tokens_since_last_tool > max_prose {

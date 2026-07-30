@@ -29,7 +29,7 @@ impl LogitsProcessor for F2ConfidenceEarlyStop {
         a: &mut ActiveSeq,
         ctx: &LogitsContext,
     ) -> ProcessorOutcome {
-        if !crate::scheduler::helpers::disable_watchdogs()
+        if !ctx.sampling.disable_watchdogs
             && a.inside_thinking
             && !a.force_end_thinking
             && a.thinking_tokens >= 400

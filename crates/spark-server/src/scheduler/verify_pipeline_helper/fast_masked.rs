@@ -79,7 +79,7 @@ pub(super) fn try_chat_fast_path(
     };
     // (b) forced/stateful stage preconditions — mirrored exactly from
     // f2_confidence.rs / forced_think_end.rs / pin_tool_call.rs.
-    let f2_active = !crate::scheduler::helpers::disable_watchdogs()
+    let f2_active = !ctx.sampling.disable_watchdogs
         && a.inside_thinking
         && !a.force_end_thinking
         && a.thinking_tokens >= 400

@@ -314,7 +314,7 @@ pub fn process_decode_logits(
                 // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
                 // cycling) within ~24-60 tokens of the loop starting,
                 // instead of waiting for the 256-token thinking budget.
-                if !crate::scheduler::helpers::disable_watchdogs()
+                if !sched.levers.disable_watchdogs
                     && !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)

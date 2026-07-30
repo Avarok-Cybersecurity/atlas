@@ -171,6 +171,8 @@ impl SchedLevers {
             fast_masked: self.fast_masked,
             adadec_diagnostic: self.adadec_diagnostic,
             dflash_masked_verify: self.dflash_masked_verify,
+            disable_watchdogs: self.disable_watchdogs,
+            forced_token_fastpath: self.forced_token_fastpath,
         }
     }
 

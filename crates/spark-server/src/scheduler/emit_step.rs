@@ -269,7 +269,7 @@ pub fn emit_token(
         use crate::scheduler::helpers::{
             CONTENT_LOOP_CHECK_STRIDE, CONTENT_LOOP_MIN_TOKENS, CONTENT_LOOP_PERIOD_MAX,
             CONTENT_LOOP_PERIOD_MIN, detect_content_token_loop_normalized_with,
-            detect_content_token_loop_with, disable_watchdogs, enable_loop_watchdog,
+            detect_content_token_loop_with, enable_loop_watchdog,
         };
         a.content_tokens = a.content_tokens.saturating_add(1);
         // F1 (2026-06-02): unconditional per-generation post-think content
@@ -279,7 +279,7 @@ pub fn emit_token(
         // requests are ever capped (plain chat attaches no grammar and is
         // never truncated). Default 100_000 (`MAX_POST_THINK_CONTENT_TOKENS`)
         // = no-op; Qwen3.6-35B-A3B-FP8 sets 1536 in MODEL.toml.
-        if !disable_watchdogs()
+        if !sched.levers.disable_watchdogs
             && a.grammar_state.is_some()
             && a.content_tokens > sched.watchdog.max_post_think_content_tokens
         {
@@ -290,7 +290,7 @@ pub fn emit_token(
             );
             a.finished = true;
         }
-        if !disable_watchdogs()
+        if !sched.levers.disable_watchdogs
             && enable_loop_watchdog()
             && !a.inside_tool_body
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
@@ -335,7 +335,7 @@ pub fn emit_token(
         // prefill, survives a graceful grammar disengage) instead of
         // `grammar_state.is_some()` — otherwise a disengaged tool turn on
         // the MTP path wanders to `max_tokens` with the budget inert.
-        if !disable_watchdogs() && !a.inside_tool_body && a.tool_request {
+        if !sched.levers.disable_watchdogs && !a.inside_tool_body && a.tool_request {
             a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
             let max_prose = sched.watchdog.max_inter_tool_prose;
             if a.prose_tokens_since_last_tool > max_prose {

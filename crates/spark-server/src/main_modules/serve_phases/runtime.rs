@@ -176,7 +176,9 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     // auto-watchdogs (content-loop, inter-tool prose, F2 confidence,
     // mid-word </think>, thinking-loop). Empirical test toggle —
     // surface its state prominently at boot.
-    if crate::scheduler::disable_watchdogs() {
+    if crate::scheduler::parse_disable_watchdogs(
+        std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref(),
+    ) {
         tracing::warn!(
             "Model behavior: ALL auto-watchdogs DISABLED via ATLAS_DISABLE_WATCHDOGS=1 \
              (content-loop, inter-tool prose, F2 confidence early-stop, mid-word </think> \

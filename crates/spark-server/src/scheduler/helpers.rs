@@ -176,6 +176,10 @@ pub const CONTENT_LOOP_NORM_MIN_REPEATS: usize = 4;
 /// "structural", never a false numeric — safe either way.
 pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 
+// `ATLAS_DISABLE_WATCHDOGS` is resolved once into `SchedLevers::disable_watchdogs`
+// and read through `SchedCtx` / `LogitsContext`. `parse_disable_watchdogs` below
+// stays as the SSOT parse — the boot audit calls it directly, having no carrier.
+
 /// Resolved kill-switch for ALL auto-watchdogs (content-loop, inter-tool
 /// prose budget, F2 confidence early-stop, mid-word `</think>` defer,
 /// thinking-loop). Cached once on first read from `ATLAS_DISABLE_WATCHDOGS`.
@@ -190,8 +194,6 @@ pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 /// auto-watchdogs short-circuit. The user-set `max_thinking_budget` and
 /// safety masks (post-`</think>` re-entry, tool-call-during-thinking)
 /// are NOT touched — those are not watchdogs.
-static DISABLE_WATCHDOGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
 pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
     match env {
         Some(v) => {
@@ -200,14 +202,6 @@ pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
         }
         None => false,
     }
-}
-
-/// Whether all auto-watchdogs are disabled at runtime. `false` by
-/// default; flipped only when `ATLAS_DISABLE_WATCHDOGS=1`/`true`.
-pub fn disable_watchdogs() -> bool {
-    *DISABLE_WATCHDOGS.get_or_init(|| {
-        parse_disable_watchdogs(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref())
-    })
 }
 
 static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -227,6 +221,10 @@ pub fn enable_loop_watchdog() -> bool {
 
 // ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
 
+// Resolved once into `SchedLevers::forced_token_fastpath` and read off
+// `LogitsContext::sampling` by the one stage that needs it.
+// `parse_forced_token_fastpath` below stays as the SSOT parse.
+
 /// Resolved kill-switch for the grammar forced-token (Coalescence)
 /// fast-path. Computed once on first read from the environment.
 ///
@@ -243,8 +241,6 @@ pub fn enable_loop_watchdog() -> bool {
 /// `mod_helpers.rs`; a MODEL.toml `[behavior]` flag was not used because
 /// the `ModelBehavior` struct lives in the `atlas-kernels` crate, which
 /// this change deliberately does not touch.
-static FORCED_TOKEN_FASTPATH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
 /// Pure parse of the `ATLAS_DISABLE_FORCED_TOKEN` env value into the
 /// resolved "fast-path enabled" boolean. Split out of
 /// [`forced_token_fastpath_enabled`] so the parsing rule is unit-testable
@@ -295,14 +291,6 @@ pub fn grammar_budget_close_enabled() -> bool {
 /// same reason as Fix A. Kill-switch: `ATLAS_TOOL_RESPONSE_STOP=0`/`false`.
 pub fn tool_response_stop_enabled() -> bool {
     env_flag_default_on("ATLAS_TOOL_RESPONSE_STOP")
-}
-
-/// Whether the grammar forced-token fast-path is enabled (default
-/// `true`; disabled by `ATLAS_DISABLE_FORCED_TOKEN=1`/`true`).
-pub fn forced_token_fastpath_enabled() -> bool {
-    *FORCED_TOKEN_FASTPATH.get_or_init(|| {
-        parse_forced_token_fastpath(std::env::var("ATLAS_DISABLE_FORCED_TOKEN").ok().as_deref())
-    })
 }
 
 /// Per-model tunables for the always-on decode-time watchdogs. Sourced

@@ -15,7 +15,6 @@
 
 use super::{LogitsContext, LogitsProcessor, ProcessorOutcome};
 use crate::scheduler::ActiveSeq;
-use crate::scheduler::helpers::disable_watchdogs;
 
 pub struct MidWordThinkEndMask;
 
@@ -26,7 +25,7 @@ impl LogitsProcessor for MidWordThinkEndMask {
         a: &mut ActiveSeq,
         ctx: &LogitsContext,
     ) -> ProcessorOutcome {
-        if !disable_watchdogs()
+        if !ctx.sampling.disable_watchdogs
             && a.inside_thinking
             && let Some(end_tok) = ctx.think_end_token
             && let Some(prev_tok) = a.output_tokens.last().copied()

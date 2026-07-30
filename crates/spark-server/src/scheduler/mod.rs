@@ -63,7 +63,7 @@ use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
 pub use helpers::WatchdogParams;
-pub use helpers::disable_watchdogs;
+pub(crate) use helpers::parse_disable_watchdogs;
 pub use helpers::set_enable_loop_watchdog;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
