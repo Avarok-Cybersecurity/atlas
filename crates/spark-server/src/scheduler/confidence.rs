@@ -86,7 +86,7 @@ pub const MAX_SENTENCE_DEFER_TOKENS: u32 = 64;
 ///    code is finite, brake fires after the closing ```.
 /// 2. **Sentence-boundary defer** (2026-05-23): outside a fence, wait
 ///    until the previously-emitted token is a sentence boundary
-///    (`.`/`!`/`?`/`\n`, per [`crate::scheduler::helpers::boundary_token_mask`]).
+///    (`.`/`!`/`?`/`\n`, per `VocabMasks::boundary`).
 /// 3. **`hard_override`** caller-computed escape hatch: when thinking
 ///    overran the budget by [`THINK_DEFER_BUDGET_FACTOR`]× / hit
 ///    [`THINK_DEFER_ABS_CEILING`] / has been deferring for

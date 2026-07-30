@@ -124,8 +124,8 @@ pub const THINK_LOOP_SCAN_WINDOW: usize = 160;
 /// **Gating**: this watchdog is OFF by default. Models with a known
 /// prose-attractor failure mode (Qwen3.5-35B-A3B + Claude-Code agentic
 /// sessions) opt in via MODEL.toml `[behavior].enable_loop_watchdog =
-/// true`. The flag is read at boot and stored in
-/// [`set_enable_loop_watchdog`] / [`enable_loop_watchdog`].
+/// true`. The flag is read at boot into `SchedLevers::loop_watchdog`, which
+/// the dashboard's `/watchdog` command can also toggle mid-run.
 // 2026-05-23 numerical-drift sweep lowered MIN_TOKENS 96→48 and
 // MIN_REPEATS 3→2: opencode session ses_1a97c9241ffecMUu29IF8304TS
 // showed the model entering a sentence-repeat attractor at late
@@ -233,9 +233,9 @@ pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
 /// the `ModelBehavior` struct lives in the `atlas-kernels` crate, which
 /// this change deliberately does not touch.
 /// Pure parse of the `ATLAS_DISABLE_FORCED_TOKEN` env value into the
-/// resolved "fast-path enabled" boolean. Split out of
-/// [`forced_token_fastpath_enabled`] so the parsing rule is unit-testable
-/// without touching the process-wide `OnceLock`.
+/// resolved "fast-path enabled" boolean. Kept separate from
+/// `SchedLevers::forced_token_fastpath`, which calls it, so the parsing rule
+/// is unit-testable without building a whole lever set.
 ///
 /// `None` (env unset) → enabled. A truthy value (`"1"` / `"true"`,
 /// case-insensitive, surrounding whitespace ignored) → disabled.

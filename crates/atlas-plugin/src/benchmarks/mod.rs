@@ -41,7 +41,7 @@ pub fn one_line(text: impl AsRef<str>) -> String {
 
 /// A salt no other request in this process will use.
 ///
-/// `run_id` comes from the run's [`PluginHandle`]; the caller supplies a
+/// `run_id` comes from the run's [`crate::PluginHandle`]; the caller supplies a
 /// `prefix` that is unique within the run. Together they are unique across the
 /// process without a process-global counter — which matters because the
 /// cold-TTFT gate is exactly the measurement a shared prefix would corrupt.
