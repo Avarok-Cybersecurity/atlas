@@ -298,6 +298,9 @@ fn bench_hints(app: &App) -> &'static str {
         return "j/k run · ⇥ Suite↔History · 1-6 jump · ? help";
     }
     match (app.bench.view, app.bench.editing) {
+        (View::List, _) if app.bench.frame.is_some() => {
+            "j/k select · ⏎ configure · v last run · ⇥ Suite↔History · ? help"
+        }
         (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-6 jump · ? help",
         (View::Params, true) => "⏎ commit · Esc cancel",
         (View::Params, false) => "j/k move · ⏎ edit · d defaults · s START · Esc back",

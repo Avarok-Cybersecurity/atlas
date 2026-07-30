@@ -42,13 +42,19 @@ impl BenchState {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.select(self.selected.saturating_sub(1));
             }
+            // Enter on the benchmark that is CURRENTLY RUNNING goes to its
+            // run, not to a form it cannot start from. Anything else opens the
+            // form.
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                self.view = View::Params;
+                self.view =
+                    if self.is_running() && self.running_id == self.descriptor().map(|d| d.id) {
+                        View::Run
+                    } else {
+                        View::Params
+                    };
             }
-            // A run stays reachable after you navigate away from it.
-            KeyCode::Char('v') if self.frame.is_some() || self.is_running() => {
-                self.view = View::Run;
-            }
+            // A finished run stays reachable after you navigate away from it.
+            KeyCode::Char('v') if self.frame.is_some() => self.view = View::Run,
             _ => {}
         }
         Outcome::None
