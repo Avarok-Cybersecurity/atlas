@@ -899,6 +899,22 @@ TPOT p50 78.8-79.2 ms, coherence smoke clean. Session arc: 0.73x -> 0.90x
 unidentified, likely SSM/drafter lifecycle), ~4.5K runtime cuMemAllocs,
 drafter launch chain.
 
+### 6.13b Full C-ladder on the current stack (single reps, user-requested)
+
+decode_short, canonical 4K, binary at 8075c2c6:
+
+| C | Atlas | vLLM bar | ratio | #379 published |
+|---|---|---|---|---|
+| 1 | 30.2 | 14.2 | **2.13x** | 25.6 |
+| 2 | 44.0 | 27.8 | **1.58x** | 35.2 |
+| 4 | 72.9 | 53.3 | **1.37x** | ~57.0 |
+| 8 | 117.8 | 98.8 | **1.19x** | 88.9 |
+| 16 | 163.9 (median-of-4 family: 164.2) | 168.9 | 0.97x | 131.9 |
+
+Every level gained 18-33% over #379's published numbers from today's stack
+(KV family, drafter pool, prefill trio, MMQ, fast-greedy-chat). FOUR OF
+FIVE levels now beat vLLM outright; C=16 is the last, ~5 tok/s short.
+
 ### 6.14 NEXT LEVER DESIGN (loop iteration 3): verify-step pipelining
 
 Observation driving the design: removing ~90 ms/step of D2H wait (6.13)
