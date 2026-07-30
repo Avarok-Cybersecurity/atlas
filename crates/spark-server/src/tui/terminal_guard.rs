@@ -26,16 +26,28 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
-// STATIC, DELIBERATELY — process lifecycle. Everything in this module
-// describes THE TERMINAL, which is a property of the process, not of a model
-// or a request. `restore()` is called from the panic hook, from a signal
-// handler and from the normal exit path, none of which can be handed a
-// context; and getting it wrong wrecks the user's shell.
+/// What this process has done to the terminal.
+///
+/// One object rather than loose flags, because the two are a single
+/// invariant: fd 2 is redirected exactly while raw mode is held, and
+/// `restore()` must undo both or neither. Plain atomics, no lock — the panic
+/// hook and the signal path read them, and neither may block.
+struct Terminal {
+    /// True while raw mode + alt screen are active. `restore()` flips it false.
+    taken: AtomicBool,
+    /// Saved dup of the original stderr fd while it is redirected (-1 = not).
+    orig_stderr: std::sync::atomic::AtomicI32,
+}
 
-/// True while raw mode + alt screen are active. `restore()` flips it false.
-static TERMINAL_TAKEN: AtomicBool = AtomicBool::new(false);
-/// Saved dup of the original stderr fd while it is redirected (-1 = not).
-static ORIG_STDERR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+// STATIC, DELIBERATELY — process lifecycle. This describes THE TERMINAL, which
+// is a property of the process, not of a model or a request. `restore()` is
+// called from the panic hook, from a signal handler and from the normal exit
+// path, none of which can be handed a context; and getting it wrong wrecks the
+// user's shell.
+static TERM: Terminal = Terminal {
+    taken: AtomicBool::new(false),
+    orig_stderr: std::sync::atomic::AtomicI32::new(-1),
+};
 
 /// Redirect fd 2 into the tee file while the TUI owns the screen. Ten-plus
 /// `eprintln!` sites exist in spark-model/spark-runtime (plus anything a C
@@ -59,7 +71,7 @@ fn redirect_stderr_to_tee() {
         unsafe {
             let orig = libc::dup(2);
             if orig >= 0 && libc::dup2(tee_fd, 2) >= 0 {
-                ORIG_STDERR.store(orig, Ordering::SeqCst);
+                TERM.orig_stderr.store(orig, Ordering::SeqCst);
             } else if orig >= 0 {
                 libc::close(orig);
             }
@@ -69,7 +81,7 @@ fn redirect_stderr_to_tee() {
 
 #[cfg(unix)]
 fn unredirect_stderr() {
-    let orig = ORIG_STDERR.swap(-1, Ordering::SeqCst);
+    let orig = TERM.orig_stderr.swap(-1, Ordering::SeqCst);
     if orig >= 0 {
         // SAFETY: restoring the fd we saved above.
         unsafe {
@@ -93,7 +105,7 @@ static RING_DUMP: OnceLock<fn(&mut dyn Write, usize)> = OnceLock::new();
 /// panic hook. Errors are deliberately ignored — there is no better recovery
 /// than trying the next teardown step.
 pub fn restore() {
-    if !TERMINAL_TAKEN.swap(false, Ordering::SeqCst) {
+    if !TERM.taken.swap(false, Ordering::SeqCst) {
         return;
     }
     unredirect_stderr();
@@ -112,7 +124,7 @@ impl TerminalGuard {
     pub fn enter() -> std::io::Result<Self> {
         enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        TERMINAL_TAKEN.store(true, Ordering::SeqCst);
+        TERM.taken.store(true, Ordering::SeqCst);
         redirect_stderr_to_tee();
         Ok(Self)
     }
@@ -159,9 +171,9 @@ mod tests {
     #[test]
     fn restore_is_idempotent_when_never_taken() {
         // Never entered: restore must be a no-op that doesn't touch the tty.
-        assert!(!TERMINAL_TAKEN.load(Ordering::SeqCst));
+        assert!(!TERM.taken.load(Ordering::SeqCst));
         restore();
         restore();
-        assert!(!TERMINAL_TAKEN.load(Ordering::SeqCst));
+        assert!(!TERM.taken.load(Ordering::SeqCst));
     }
 }

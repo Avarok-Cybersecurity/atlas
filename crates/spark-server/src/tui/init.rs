@@ -38,24 +38,31 @@ use super::log_ring::LogRingLayer;
 /// this; the event loop flips it on attach/detach.
 pub static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// The always-on log file: its writer, its path, and its raw fd.
+///
+/// One object rather than three loose globals. They are installed together in
+/// one place and are meaningless apart — the path names the file the writer
+/// holds, and the fd is that same file, handed to the terminal guard for the
+/// stderr redirect.
+struct Tee {
+    writer: Mutex<BufWriter<File>>,
+    path: String,
+    /// Raw fd, for the guard's stderr redirection.
+    fd: i32,
+}
+
 // STATIC, DELIBERATELY — process lifecycle. The tee is a FILE HANDLE the
 // tracing writer holds for the life of the process: it is opened before the
 // subscriber is installed and must outlive every model so the log covers
-// startup, swaps and shutdown as one file. The path is kept beside it
-// because the panic hook prints it with no `self` in hand.
-static TEE: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
-/// Path of the file [`TEE`] writes, kept beside it for the panic hook.
-static TEE_PATH: OnceLock<String> = OnceLock::new();
-/// Raw fd of the tee file, for the guard's stderr redirection (-1 = none).
-/// A process-wide fd, read by the terminal guard during panic and exit —
-/// both paths that run when nothing else is still alive to hold it.
-static TEE_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+// startup, swaps and shutdown as one file. The panic hook and the terminal
+// guard both read it during paths that run when nothing else is still alive.
+static TEE: OnceLock<Tee> = OnceLock::new();
 
 /// The tee file's raw fd, if one is open.
 pub fn tee_raw_fd() -> Option<i32> {
-    match TEE_FD.load(Ordering::Relaxed) {
-        -1 => None,
-        fd => Some(fd),
+    match TEE.get().map(|t| t.fd) {
+        None | Some(-1) => None,
+        Some(fd) => Some(fd),
     }
 }
 
@@ -77,12 +84,12 @@ fn tee_path() -> PathBuf {
 
 /// The tee file's path, once installed (for the panic hook + header display).
 pub fn tee_file_path() -> Option<&'static str> {
-    TEE_PATH.get().map(String::as_str)
+    TEE.get().map(|t| t.path.as_str())
 }
 
 /// Flush the tee file (shutdown path).
 pub fn flush_tee() {
-    if let Some(t) = TEE.get() {
+    if let Some(t) = TEE.get().map(|t| &t.writer) {
         let _ = t.lock().flush();
     }
 }
@@ -96,7 +103,7 @@ pub struct SwitchableIo;
 
 impl Write for SwitchableIo {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if let Some(t) = TEE.get() {
+        if let Some(t) = TEE.get().map(|t| &t.writer) {
             let _ = t.lock().write_all(buf);
         }
         if !TUI_ACTIVE.load(Ordering::Relaxed) {
@@ -136,12 +143,17 @@ pub fn install_tty_subscriber(progress_tx: Sender<ProgressEvent>) {
         // tracing stream, only the stderr redirection in `terminal_guard` is
         // unavailable (see `tee_raw_fd`).
         #[cfg(unix)]
-        {
+        let fd = {
             use std::os::fd::AsRawFd;
-            TEE_FD.store(f.as_raw_fd(), Ordering::Relaxed);
-        }
-        let _ = TEE.set(Mutex::new(BufWriter::new(f)));
-        let _ = TEE_PATH.set(path.display().to_string());
+            f.as_raw_fd()
+        };
+        #[cfg(not(unix))]
+        let fd = -1;
+        let _ = TEE.set(Tee {
+            writer: Mutex::new(BufWriter::new(f)),
+            path: path.display().to_string(),
+            fd,
+        });
     }
     // Filters: one instance per layer, same spec — EnvFilter is not Clone.
     let fmt_layer = tracing_subscriber::fmt::layer()
