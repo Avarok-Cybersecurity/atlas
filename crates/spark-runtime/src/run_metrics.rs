@@ -21,11 +21,57 @@
 //! begins. That is deliberately upstream of the first kernel lookup, so the
 //! kernel audit records only this model's modules.
 
-/// Clear every run mailbox. Call once, when a new model's backend is built.
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+
+/// The process's single run mailbox.
+///
+/// Seven separate statics across three modules became one, because they were
+/// always one thing: the numbers a reader gets when it asks what the running
+/// model is doing. Splitting them meant `reset_for_new_run` had to reach into
+/// three modules and could silently miss one — the failure being a counter
+/// that keeps a dead model's value while its neighbours restart.
+#[derive(Debug, Default)]
+pub struct RunMetrics {
+    // ── Prefix cache (one RadixTree per server) ──
+    pub cache_hits: AtomicU64,
+    pub cache_misses: AtomicU64,
+    pub cache_hit_tokens: AtomicU64,
+
+    // ── Sampler entropy ──
+    /// Most recent per-token entropy, f32 bits for a lock-free read.
+    pub last_entropy: AtomicU32,
+    pub low_entropy_tokens: AtomicU64,
+    pub total_sampled_tokens: AtomicU64,
+
+    /// `(module, func, loaded)` for every kernel lookup this run made.
+    pub kernel_audit: Mutex<Vec<(String, String, bool)>>,
+}
+
+/// The mailbox. See the module doc for why this one is static.
+static METRICS: LazyLock<RunMetrics> = LazyLock::new(RunMetrics::default);
+
+/// Read the mailbox.
+pub fn metrics() -> &'static RunMetrics {
+    &METRICS
+}
+
+/// Clear the run mailbox. Call once, when a new model's backend is built.
 pub fn reset_for_new_run() {
-    crate::prefix_cache::reset();
-    crate::sampler::reset_entropy();
-    crate::kernel_audit::reset();
+    let m = metrics();
+    for c in [
+        &m.cache_hits,
+        &m.cache_misses,
+        &m.cache_hit_tokens,
+        &m.low_entropy_tokens,
+        &m.total_sampled_tokens,
+    ] {
+        c.store(0, Ordering::Relaxed);
+    }
+    m.last_entropy.store(0, Ordering::Relaxed);
+    if let Ok(mut v) = m.kernel_audit.lock() {
+        v.clear();
+    }
 }
 
 #[cfg(test)]
@@ -34,11 +80,11 @@ mod tests {
 
     /// Written as a threshold rather than an equality on purpose.
     ///
-    /// These counters are process-global, and cargo runs this binary's tests
-    /// in parallel threads — the `radix_tree` and `sampler` cases record into
-    /// the same counters while this one runs. An `assert_eq!(.., 0)` after the
-    /// reset is therefore flaky by construction, which is a fair demonstration
-    /// of what a process-global counter costs even when it is the right shape.
+    /// The mailbox is process-global, and cargo runs this binary's tests in
+    /// parallel threads — the `radix_tree` and `sampler` cases record into it
+    /// while this one runs. An `assert_eq!(.., 0)` after the reset is
+    /// therefore flaky by construction, which is a fair demonstration of what
+    /// a process-global counter costs even when a global is the right shape.
     /// A run's worth of hits is orders of magnitude above the handful a
     /// concurrent test contributes, so the drop is unambiguous.
     #[test]

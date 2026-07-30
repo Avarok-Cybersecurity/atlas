@@ -16,38 +16,16 @@
 //!     slower `w8a16_gemm`).
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 
-/// (module, func, loaded). Appended on every `kernel()` lookup.
-/// RUN MAILBOX, DELIBERATELY STATIC. These back `/metrics` and the dashboard,
-/// which read from an HTTP handler thread and the TUI thread — neither of which
-/// is handed a scheduler or model carrier, and neither of which can be, since
-/// they must answer while the scheduler is mid-step. A process-global address
-/// is what an observability surface is *for*.
-///
-/// The scoping problem a static would otherwise have is solved by clearing
-/// them at run start rather than by plumbing a handle: see
-/// [`crate::run_metrics::reset_for_new_run`], called when a backend is built.
-/// After a swap the counters describe the model now running, which is what a
-/// reader asking "what is the hit rate" means. Prometheus reads the reset as a
-/// counter restart, which it already handles.
-///
-/// The audit is per-model in the sharpest way — it lists which of THIS
-/// model's registry modules resolved — so without the reset a swap would
-/// leave the dashboard's kernel table showing both models' modules with no
-/// way to tell them apart.
-static AUDIT: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
-
-/// Clear the audit for a new run. See [`crate::run_metrics`].
-pub(crate) fn reset() {
-    if let Ok(mut v) = AUDIT.lock() {
-        v.clear();
-    }
-}
+// The audit vector is a field of the single run mailbox,
+// `crate::run_metrics::RunMetrics`. It is per-model in the sharpest way —
+// it lists which of THIS model's registry modules resolved — so without
+// the run-start clear a swap would leave the dashboard's kernel table
+// showing both models' modules with no way to tell them apart.
 
 /// Record one kernel lookup. Cheap; called from `GpuBackend::kernel`.
 pub fn record(module: &str, func: &str, loaded: bool) {
-    if let Ok(mut v) = AUDIT.lock() {
+    if let Ok(mut v) = crate::run_metrics::metrics().kernel_audit.lock() {
         v.push((module.to_string(), func.to_string(), loaded));
     }
 }
@@ -67,7 +45,7 @@ fn ptx_hash(bytes: &[u8]) -> String {
 /// of that (module, func) resolved.
 pub fn audit_rows() -> Vec<(String, String, bool)> {
     let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
-    if let Ok(v) = AUDIT.lock() {
+    if let Ok(v) = crate::run_metrics::metrics().kernel_audit.lock() {
         for (m, f, ok) in v.iter() {
             let e = resolved.entry((m.clone(), f.clone())).or_insert(false);
             *e = *e || *ok;
@@ -85,7 +63,7 @@ pub fn audit_rows() -> Vec<(String, String, bool)> {
 pub fn render_kernel_table(embedded: &[(&str, &[u8])], set_hash: &str) -> String {
     // Dedup resolution audit: (module, func) → loaded (true if ever true).
     let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
-    if let Ok(v) = AUDIT.lock() {
+    if let Ok(v) = crate::run_metrics::metrics().kernel_audit.lock() {
         for (m, f, ok) in v.iter() {
             let e = resolved.entry((m.clone(), f.clone())).or_insert(false);
             *e = *e || *ok;

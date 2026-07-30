@@ -5,56 +5,44 @@
 //! Phase 1: Greedy argmax (CPU-side D2H + argmax).
 //! Future: temperature, top-k, top-p, min-p, repetition penalty.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::gpu::{DevicePtr, GpuBackend};
 use anyhow::Result;
 
-// RUN MAILBOX, DELIBERATELY STATIC. These back `/metrics` and the dashboard,
-// which read from an HTTP handler thread and the TUI thread — neither of which
-// is handed a scheduler or model carrier, and neither of which can be, since
-// they must answer while the scheduler is mid-step. A process-global address
-// is what an observability surface is *for*.
-//
-// The scoping problem a static would otherwise have is solved by clearing
-// them at run start rather than by plumbing a handle: see
-// [`crate::run_metrics::reset_for_new_run`], called when a backend is built.
-// After a swap the counters describe the model now running, which is what a
-// reader asking "what is the hit rate" means. Prometheus reads the reset as a
-// counter restart, which it already handles.
-// The latest per-token entropy plus low-entropy streak counts. `AtomicU32`
-// stores f32 bits for lock-free reads.
-static LAST_ENTROPY: AtomicU32 = AtomicU32::new(0);
-static LOW_ENTROPY_TOKENS: AtomicU64 = AtomicU64::new(0);
-static TOTAL_SAMPLED_TOKENS: AtomicU64 = AtomicU64::new(0);
+// The entropy gauges are fields of the single run mailbox,
+// `crate::run_metrics::RunMetrics` — see that module for why one static and
+// not none, and why it is cleared at run start.
 
 /// Read the most recent per-token entropy (nats).
 pub fn last_entropy() -> f32 {
-    f32::from_bits(LAST_ENTROPY.load(Ordering::Relaxed))
+    f32::from_bits(
+        crate::run_metrics::metrics()
+            .last_entropy
+            .load(Ordering::Relaxed),
+    )
 }
 
 /// Total tokens with entropy < 0.3 (potential degeneration).
 pub fn low_entropy_token_count() -> u64 {
-    LOW_ENTROPY_TOKENS.load(Ordering::Relaxed)
+    crate::run_metrics::metrics()
+        .low_entropy_tokens
+        .load(Ordering::Relaxed)
 }
 
 /// Total tokens sampled (for computing low-entropy ratio).
 pub fn total_sampled_token_count() -> u64 {
-    TOTAL_SAMPLED_TOKENS.load(Ordering::Relaxed)
-}
-
-/// Clear the gauges for a new run. See [`crate::run_metrics`].
-pub(crate) fn reset_entropy() {
-    LAST_ENTROPY.store(0, Ordering::Relaxed);
-    LOW_ENTROPY_TOKENS.store(0, Ordering::Relaxed);
-    TOTAL_SAMPLED_TOKENS.store(0, Ordering::Relaxed);
+    crate::run_metrics::metrics()
+        .total_sampled_tokens
+        .load(Ordering::Relaxed)
 }
 
 pub(super) fn record_entropy(entropy: f32) {
-    LAST_ENTROPY.store(entropy.to_bits(), Ordering::Relaxed);
-    TOTAL_SAMPLED_TOKENS.fetch_add(1, Ordering::Relaxed);
+    let m = crate::run_metrics::metrics();
+    m.last_entropy.store(entropy.to_bits(), Ordering::Relaxed);
+    m.total_sampled_tokens.fetch_add(1, Ordering::Relaxed);
     if entropy < 0.3 {
-        LOW_ENTROPY_TOKENS.fetch_add(1, Ordering::Relaxed);
+        m.low_entropy_tokens.fetch_add(1, Ordering::Relaxed);
     }
 }
 
