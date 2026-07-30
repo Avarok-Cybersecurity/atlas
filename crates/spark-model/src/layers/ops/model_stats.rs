@@ -61,6 +61,21 @@ impl ModelStats {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// `true` the first time THIS model reaches `key`, `false` after.
+    ///
+    /// The general per-model latch. Log-dedup gates used a `static Once` each,
+    /// which is correct for "print this line once" and wrong for "print this
+    /// line once per model": after a swap the new model's kernel-route and
+    /// fallback lines — the ones that say which path a model actually took —
+    /// were suppressed by the previous model's shot, and those lines exist to
+    /// be read when a model behaves unexpectedly.
+    ///
+    /// Namespace keys by purpose (`"log:..."`, `"dump:..."`) so two unrelated
+    /// sites cannot collide.
+    pub fn once(&self, key: &'static str) -> bool {
+        self.dumped.keyed(key)
+    }
 }
 
 impl DumpLatches {

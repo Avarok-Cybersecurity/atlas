@@ -193,12 +193,11 @@ impl Qwen3SsmLayer {
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
-            static FLA_LOG: std::sync::Once = std::sync::Once::new();
-            FLA_LOG.call_once(|| {
+            if ctx.stats.once("log:gdn_fla_chunked") {
                 tracing::info!(
                     "GDN prefill: FLA chunked path ACTIVE (baked default: recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)"
                 );
-            });
+            }
             let num_chunks = k.div_ceil(64);
             let nt = num_chunks as usize;
             let w_out = fla_scratch;
@@ -260,12 +259,11 @@ impl Qwen3SsmLayer {
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
-            static RR_LOG: std::sync::Once = std::sync::Once::new();
-            RR_LOG.call_once(|| {
+            if ctx.stats.once("log:gdn_regresident") {
                 tracing::info!(
                     "GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)"
                 );
-            });
+            }
             ops::gdn_prefill_regresident(
                 ctx.gpu,
                 self.gdn_prefill_regresident_k,

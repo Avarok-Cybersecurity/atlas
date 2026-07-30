@@ -101,14 +101,13 @@ impl MtpHead {
                 // stale entry cannot produce a wrong answer, only a suppressed duplicate
                 // line after a model swap. Scoping it would thread a logging concern
                 // through the call path to prevent one repeated INFO line.
-                static WARNED: std::sync::Once = std::sync::Once::new();
-                WARNED.call_once(|| {
+                if ctx.stats.once("log:mtp_prefill_unsupported") {
                     tracing::warn!(
                         "MTP drafter context: the batched drafter prefill supports \
                          the BF16 MTP head (--mtp-quantization bf16) with BF16 KV \
                          only; continuing WITHOUT drafter context prefill."
                     );
-                });
+                }
                 return Ok(0);
             }
         };
