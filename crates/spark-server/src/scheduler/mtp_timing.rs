@@ -81,12 +81,8 @@ pub(crate) fn enabled() -> bool {
     *CACHED.get_or_init(|| std::env::var("ATLAS_MTP_TIMING").ok().as_deref() == Some("1"))
 }
 
-/// Diagnostic: `ATLAS_MTP_GATE_FORCE=1` keeps MTP verify running regardless
-/// of the throughput gate (measurement companion; see module docs).
-pub(crate) fn gate_forced() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_MTP_GATE_FORCE").ok().as_deref() == Some("1"))
-}
+// `ATLAS_MTP_GATE_FORCE` is now `SchedLevers::mtp_gate_force`, read from
+// `SchedCtx` where the gate is armed.
 
 /// Record the elapsed time since `since` under `phase`. No-op when disarmed.
 pub(crate) fn record(phase: Phase, since: Instant) {

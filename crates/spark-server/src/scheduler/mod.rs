@@ -221,10 +221,10 @@ pub fn run(
     // session and auto-disable MTP if it is provably net-negative. Only armed
     // for the pure-MTP path (not ngram/self/dflash, which have their own
     // economics and proposers).
-    let mut mtp_gate = if use_mtp && !mtp_timing::gate_forced() {
+    let mut mtp_gate = if use_mtp && !sched.levers.mtp_gate_force {
         Some(mtp_gate::MtpGate::new(num_drafts))
     } else {
-        if use_mtp && mtp_timing::gate_forced() {
+        if use_mtp && sched.levers.mtp_gate_force {
             tracing::warn!(
                 "ATLAS_MTP_GATE_FORCE=1: MTP throughput gate DISARMED (diagnostic; \
                  verify runs even where the gate would measure it net-negative)"
