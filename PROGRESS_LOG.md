@@ -542,6 +542,45 @@ Two side findings:
   rep to rule 138.0 an outlier. The trade today is unambiguous (balanced_long
   went from BROKEN to 93 tok/s) but the 9% should not be silently accepted.
 
+### 6.6b Second wave of picks (2026-07-30, late session)
+
+Prompted by a survey of `wip-laguna-lora` / `port/lora-moe-avarok` for
+transferable work (user-directed):
+
+* `a1d889f2` (= 4046dcad, LoRA-branch peel-off): **rayon host sampling**
+  (ATLAS_PARALLEL_SAMPLE, default ON, n>1 only) + token-major/exact-N MoE
+  decode. The sampling half is the 27B-relevant piece: this branch sampled
+  16 sequences SERIALLY over the ~250K vocab per decode step at C=16. The
+  MoE half only touches the qwen3 MoE family (35B) — the 27B is dense-FFN.
+  One both-sides-add conflict union-resolved next to the think-ended
+  GPU-argmax helper; the par_iter body composes behind the GPU-argmax fast
+  path (greedy rows go to GPU first, the host remainder now fans out).
+* `7c6f3845` (= b3e6b4fe): charge the Q12 batched arena by STAGED tokens,
+  not raw chunk len — admits more streams per batched-prefill cohort when
+  prefix hits shrink the real work.
+* `7bead3d6` (= 02c6ea37): reject zero-token streams from the Q12 cohort.
+* `c08b3d1b` (= d13538cf, ported): **cohort KV pre-flight** — compute
+  the whole batch's block need (via read-only `peek_matched_tokens`),
+  evict-loop to cover it, and DECLINE the batched path pre-mutation when it
+  cannot, so one stream's exhaustion no longer fails all N cohort-mates.
+  Port note: this branch lacks laguna's `KernelBatchResult::NotAdmitted` and
+  up-front radix reservation — decline is a pre-mutation `bail!` that
+  batch.rs already routes to the per-stream fallback, where #375's
+  preempt-and-retry lives. The reservation half was deliberately NOT ported.
+
+A/B in flight at write time: all four regimes C=16 rayon-ON, then
+`ATLAS_PARALLEL_SAMPLE=0` control on decode_short. Baselines to beat:
+decode_short 123.8-125.2, prefill_short 63.4, balanced_long 93.1.
+
+Surveyed and NOT picked (with reasons): laguna's `dd370b5e`/`cf5c4765`/
+`66a309b2` are earlier versions of the #373 content already here (the tests
+commit `66a309b2` is cheap insurance worth adding later);
+`a21d1dd4`/`a0092429`/`ec1a74f8` (prefix-cache soundness / cold-warm
+numerics) are correctness picks for a quality pass, not throughput;
+`990c1537`/`8aa4f401`/`9e66c6b9` (tool-call parsing) help agentic
+scorecards; `3cf579a6` (gated_rms_norm atomicAdd determinism) touches
+Nemotron kernel dirs only.
+
 ### 6.7 Where C=16 parity stands after today
 
 Best honest config (slai/16K, spec ON, full-KV binary), vs the published
