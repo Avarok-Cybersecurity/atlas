@@ -33,6 +33,12 @@ unsafe extern "C" {
     ) -> i32;
     pub(super) fn cuMemcpyDtoDAsync_v2(dst: u64, src: u64, bytes: usize, stream: u64) -> i32;
     pub(super) fn cuStreamSynchronize(stream: u64) -> i32;
+    pub(super) fn cuStreamQuery(stream: u64) -> i32;
+    pub(super) fn cuMemHostGetDevicePointer_v2(
+        dptr: *mut u64,
+        host: *mut std::ffi::c_void,
+        flags: u32,
+    ) -> i32;
     pub(super) fn cuMemGetInfo_v2(free: *mut usize, total: *mut usize) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
     // CUDA graph capture/replay

@@ -965,6 +965,45 @@ incomplete somewhere upstream. Also note "Captured CUDA graph" fired 42x
 in one burst — capture CHURN (key = ssm-slot vector + ks) is a suspect:
 a capture mid-stream serializes and may leave cross-stream event edges.
 
+### 6.16 LOOP CONCLUSION: the last 130 ms/step is a PLATFORM stall — code levers measured-dead against it
+
+The burial ledger for the ~130 ms/step verify stall (each theory killed by a
+direct experiment, all kill-switched arms retained in-tree):
+
+| # | hypothesis | experiment | result |
+|---|---|---|---|
+| 1 | pageable D2H staging | pinned staging buffer | 130 ms unchanged |
+| 2 | default-stream entanglement | copy_d2h_on_stream(verify stream) | unchanged |
+| 3 | submission-ring flush | cuStreamQuery spin instead of blocking sync | unchanged |
+| 4 | CUDA-graph replay quirk | ATLAS_NO_MTP_VERIFY_GRAPHS (eager) | 119-121 ms (worse agg) |
+| 5 | GPU power-gating | external 3 ms keep-awake kernel pinger | WORSE (142 ms) |
+| 6 | copy-engine pickup of tail D2H | MAPPED-ARGMAX (kernel writes host-mapped pinned; no copy op at all) | unchanged |
+| 7 | per-step device allocs | trace: zero in-window cuMemAllocs | n/a |
+| 8 | dashboard as second CUDA client | nvidia-smi: /spark is the ONLY compute app | n/a |
+| 9 | MPS de-quantization | user-scope MPS daemon | WORSE (3.8 ms avg) |
+
+**Platform characterization (the decisive artifact):** a 10-line nop-kernel
+launch+sync client (`katimed.cu`, job scratch) on an OTHERWISE IDLE GB10:
+avg 1.07 ms, worst 208 ms per cycle (healthy platforms: ~5 us). During
+decode: 4.6 ms avg, worst 438 ms. Driver 580.173.02 open kernel module,
+aarch64. The serve's per-step ~130 ms is this platform behavior expressed
+at step cadence; the trace shows queued work (kernels AND copies) sitting
+~130 ms on an idle device before pickup, then executing in a dense burst.
+
+**Standing:** C=16 decode_short median ~164 (0.973x of the 168.9 bar; four
+of five ladder levels beat vLLM outright). The remaining ~4.5 tok/s is
+inside the platform stall — with a healthy launch/sync path the measured
+step would be ~25 ms and C=16 would clear the bar several times over,
+which also implies vLLM's own 168.9 on this box ate the same stall.
+
+**Recommended next actions (not code):** escalate to the driver/platform
+channel with katimed.cu as the repro (assert: idle-box launch+sync avg
+1 ms / worst 200 ms on 580.173.02); retest on newer driver drops; compare
+against the cuda-compat-13-2 stack the FI-GDN work already uses. The
+verify-path plumbing landed this session (mapped argmax, pinned staging,
+on-stream copy, spin probe, telemetry) is all default-safe and becomes
+free upside the day the platform stall is fixed.
+
 ## 7. Open
 
 Ordered by what I would pick up first.

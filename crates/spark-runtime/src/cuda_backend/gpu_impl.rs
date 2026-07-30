@@ -38,7 +38,8 @@ use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamQuery,
+    cuStreamSynchronize,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -140,7 +141,28 @@ impl GpuBackend for AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemcpyDtoHAsync_v2 (on_stream) failed: status {status}");
         }
-        let sync = unsafe { cuStreamSynchronize(stream) };
+        // ATLAS_D2H_SPIN_SYNC=1: poll cuStreamQuery instead of parking in the
+        // blocking sync. Diagnostic for the 130 ms verify stall (PROGRESS_LOG
+        // 6.15/6.16): a blocked thread appears to leave the submission ring
+        // unflushed until a ~130 ms driver housekeeping tick doorbells the
+        // GPU; each query forces a flush, so if the theory holds the wait
+        // collapses to the real GPU time.
+        let spin = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_D2H_SPIN_SYNC").as_deref() == Ok("1"))
+        };
+        let sync = if spin {
+            const CUDA_ERROR_NOT_READY: i32 = 600;
+            loop {
+                let q = unsafe { cuStreamQuery(stream) };
+                if q != CUDA_ERROR_NOT_READY {
+                    break q;
+                }
+                std::hint::spin_loop();
+            }
+        } else {
+            unsafe { cuStreamSynchronize(stream) }
+        };
         if sync != 0 {
             bail!(
                 "cuStreamSynchronize after D2H on_stream failed: {}",
@@ -368,6 +390,17 @@ impl GpuBackend for AtlasCudaBackend {
     fn destroy_event(&self, event: u64) -> Result<()> {
         self.destroy_event_cu(event)
     }
+    fn host_ptr_to_device(&self, host: *mut u8) -> Result<DevicePtr> {
+        let mut dptr: u64 = 0;
+        let status = unsafe {
+            super::cuMemHostGetDevicePointer_v2(&mut dptr, host as *mut c_void, 0)
+        };
+        if status != 0 {
+            bail!("cuMemHostGetDevicePointer_v2 failed: status {status}");
+        }
+        Ok(DevicePtr(dptr))
+    }
+
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
         self.alloc_host_pinned_cu(bytes)
     }

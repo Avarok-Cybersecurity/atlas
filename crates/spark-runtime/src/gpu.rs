@@ -342,6 +342,15 @@ pub trait GpuBackend: Send + Sync {
     ///
     /// Returns a raw pointer to `bytes` of page-locked host memory.
     /// Caller must call `free_host_pinned` to release.
+    /// Device-side alias of a page-locked host pointer from
+    /// [`Self::alloc_host_pinned`] (cuMemHostGetDevicePointer). On UMA parts
+    /// (GB10) this lets a KERNEL write results directly into host-visible
+    /// memory, eliminating the copy-engine op for tiny readbacks entirely.
+    /// Default: unsupported.
+    fn host_ptr_to_device(&self, _host: *mut u8) -> Result<DevicePtr> {
+        anyhow::bail!("host_ptr_to_device: not supported by this backend")
+    }
+
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
         // Default: regular heap allocation (mock backend, no pinning)
         let layout = std::alloc::Layout::from_size_align(bytes, 64)

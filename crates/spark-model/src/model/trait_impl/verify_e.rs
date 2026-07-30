@@ -96,6 +96,7 @@ impl TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         let t_launch = std::time::Instant::now();
+        let mapped_argmax = mapped_argmax_host_dev(self.gpu.as_ref());
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
@@ -402,7 +403,21 @@ impl TransformerModel {
             }
 
             let vocab = self.config.vocab_size;
-            let argmax_out = self.buffers.scratch();
+            // MAPPED-ARGMAX (2026-07-30, the 130 ms stall fix that finally
+            // held): the argmax kernel writes its 4 B/row results DIRECTLY to
+            // page-locked host-mapped memory (UMA device alias), so the step
+            // ends with a kernel, not a copy-engine op. Traced root cause
+            // (PROGRESS_LOG 6.16): a 128-320 B tail-of-queue DtoH sat ~137 ms
+            // on a FREE copy engine before being picked up (1.8 us to execute
+            // once it ran) — invariant to pageable/pinned/stream/spin/graph/
+            // keep-awake arms, all buried by experiment. No copy op, no
+            // pickup. Kill switch ATLAS_NO_MAPPED_ARGMAX=1 restores scratch +
+            // on-stream copy. The mapped blob is allocated once (before the
+            // first graph capture, so replays bake the same fixed address).
+            let argmax_out = match mapped_argmax {
+                Some((_, dev)) => dev,
+                None => self.buffers.scratch(),
+            };
             // ONE launch, one block per row (single-row argmax is a one-CTA
             // scan; R serial calls = R single-SM scans, ~100 us each at this
             // vocab). Byte-identical per-row body; loop fallback when the
@@ -475,19 +490,60 @@ impl TransformerModel {
         let t_d2h = std::time::Instant::now();
         let launch_us = t_d2h.duration_since(t_launch).as_micros() as u64;
         let mut buf = vec![0u8; r_total * 4];
-        // On-stream D2H (2026-07-30): `copy_d2h` enqueues + syncs the LEGACY
-        // DEFAULT stream, which implicitly serializes with every blocking
-        // stream on the context — measured 126-134 ms of wait for a 128-320 B
-        // copy whose own stream (`stream`, where the verify graph ran) is
-        // idle ~11 ms after replay. Ordering on the verify stream itself is
-        // the correct dependency: the argmax landed on `stream`, so this
-        // waits for exactly the verify work and nothing else.
-        // Kill switch ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 restores the old arm.
-        if std::env::var("ATLAS_VERIFY_D2H_DEFAULT_STREAM").as_deref() == Ok("1") {
+        let mut filled = false;
+        if let Some((host, _)) = mapped_argmax {
+            // Kernel-written host-mapped results: one stream sync (kernels
+            // only — no copy op in the queue), then read host memory.
+            self.gpu.synchronize(stream)?;
+            // SAFETY: host points at the live pinned blob (>= 64 KB);
+            // r_total <= 32 so r_total*4 <= 128 B; the argmax kernel wrote
+            // these bytes and the sync ordered them.
+            let src = unsafe { std::slice::from_raw_parts(host, r_total * 4) };
+            buf.copy_from_slice(src);
+            filled = true;
+        }
+        // PINNED on-stream D2H (2026-07-30, the 130 ms stall fix). Traced
+        // (PROGRESS_LOG 6.15/6.16): with a PAGEABLE destination the
+        // cuMemcpyDtoHAsync call itself blocked ~137 ms and the ALREADY
+        // LAUNCHED verify graph did not begin executing until the call
+        // returned — GPU frozen for the duration, then graph + queued D2Ds
+        // ripped through in one dense burst. A page-locked destination takes
+        // the true async path: enqueue returns immediately, the stream runs
+        // the ~11 ms graph, and the sync waits only for that. The buffer is
+        // a lazily-allocated 64 KB pinned blob (r_total <= 32 rows x 4 B
+        // needs 128 B; headroom for future wider verifies), reused for the
+        // process lifetime — the scheduler thread is the only caller.
+        // Kill switches: ATLAS_NO_PINNED_VERIFY_D2H=1 -> pageable on-stream;
+        // ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
+        if filled {
+            // mapped path already read the results — no copy arm runs.
+        } else if std::env::var("ATLAS_VERIFY_D2H_DEFAULT_STREAM").as_deref() == Ok("1") {
             self.gpu.copy_d2h(self.buffers.scratch(), &mut buf)?;
-        } else {
+        } else if std::env::var("ATLAS_NO_PINNED_VERIFY_D2H").as_deref() == Ok("1") {
             self.gpu
                 .copy_d2h_on_stream(self.buffers.scratch(), &mut buf, stream)?;
+        } else {
+            use std::sync::atomic::{AtomicPtr, Ordering};
+            const PINNED_CAP: usize = 65_536;
+            static PINNED: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+            let mut p = PINNED.load(Ordering::Acquire);
+            if p.is_null() {
+                p = self.gpu.alloc_host_pinned(PINNED_CAP)?;
+                // Single-threaded caller (scheduler); store unconditionally.
+                PINNED.store(p, Ordering::Release);
+            }
+            if buf.len() <= PINNED_CAP {
+                // SAFETY: PINNED points at a live cuMemAllocHost blob of
+                // PINNED_CAP bytes; the scheduler thread is the sole user, and
+                // the slice does not outlive this block.
+                let dst = unsafe { std::slice::from_raw_parts_mut(p, buf.len()) };
+                self.gpu
+                    .copy_d2h_on_stream(self.buffers.scratch(), dst, stream)?;
+                buf.copy_from_slice(dst);
+            } else {
+                self.gpu
+                    .copy_d2h_on_stream(self.buffers.scratch(), &mut buf, stream)?;
+            }
         }
         {
             // Local fwd-split telemetry (ATLAS_MTP_TIMING=1): launch region vs
@@ -535,4 +591,38 @@ impl TransformerModel {
 
         Ok(out)
     }
+}
+
+
+/// Page-locked host blob + its UMA device alias for the mapped-argmax path.
+/// Allocated once per process (before the first verify graph capture, so
+/// captured replays bake the same fixed device address). Returns `None` when
+/// the backend cannot map (non-UMA / stub backends) or the kill switch
+/// `ATLAS_NO_MAPPED_ARGMAX=1` is set — callers then use the scratch + copy
+/// path unchanged.
+fn mapped_argmax_host_dev(
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+) -> Option<(*mut u8, spark_runtime::gpu::DevicePtr)> {
+    use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+    static HOST: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+    static DEV: AtomicU64 = AtomicU64::new(0);
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("ATLAS_NO_MAPPED_ARGMAX").as_deref() == Ok("1")) {
+        return None;
+    }
+    let mut h = HOST.load(Ordering::Acquire);
+    if h.is_null() {
+        // Single-threaded caller (the scheduler); failures latch OFF via the
+        // null host + 0 dev pair staying unset each call (cheap re-probe is
+        // fine — alloc failures here are permanent config facts, not races).
+        h = gpu.alloc_host_pinned(65_536).ok()?;
+        let d = gpu.host_ptr_to_device(h).ok()?;
+        DEV.store(d.0, Ordering::Release);
+        HOST.store(h, Ordering::Release);
+    }
+    let d = DEV.load(Ordering::Acquire);
+    if d == 0 {
+        return None;
+    }
+    Some((h, spark_runtime::gpu::DevicePtr(d)))
 }
