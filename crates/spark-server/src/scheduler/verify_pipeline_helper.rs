@@ -67,32 +67,7 @@ pub(crate) fn fast_greedy_grammar_enabled() -> bool {
     *CACHED.get_or_init(|| std::env::var("ATLAS_DISABLE_FAST_GREEDY").ok().as_deref() != Some("1"))
 }
 
-/// ATLAS_DFLASH_MASKED_VERIFY=1: route DFlash verify PICKS through the
-/// pre-sample pipeline so structural specials (`</think>`, `<think>`,
-/// `<tool_call>`) can never leak unmasked into the output — the T=0
-/// spec-entry derails, root cause 2026-07-08.
-///
-/// ⚠️ PICK-BASIS ONLY. This must never gate `dflash_verify_raw_argmax`
-/// itself: that bool selects the verify architecture at the step level,
-/// this env only chooses the pick basis at the pick sites. Masking picks
-/// is cheap (the chat fast path in this file makes it ≈ free).
-pub(crate) fn dflash_masked_verify_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_MASKED_VERIFY").ok().as_deref() == Some("1"))
-}
-
-/// ATLAS_DFLASH_SEAM_SERIAL=1: take spec ENTRY (bootstrap, no pending
-/// drafts) through the standalone M=1 decode + propose instead of the
-/// fused single-sweep bootstrap. Evidence 2026-07-08: temp-0 derails
-/// concentrate on the serial-to-spec seam; the fused bootstrap chain
-/// diverges on its first step after serial decode, while routing that one
-/// step through plain decode makes the seam numerics identical to
-/// no-spec by construction. Costs one serial step per spec entry.
-pub(crate) fn dflash_seam_serial_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SEAM_SERIAL").ok().as_deref() == Some("1"))
-}
-
+// The DFlash verify statics are now `SchedLevers::dflash_*`.
 // The `ATLAS_NO_MTP_VERIFY_SAMPLE` kill switch is now
 // `SchedLevers::mtp_verify_sample`, carried on `LogitsContext`.
 

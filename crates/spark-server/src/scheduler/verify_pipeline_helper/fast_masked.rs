@@ -66,7 +66,7 @@ pub(super) fn try_chat_fast_path(
     // vs an unpatched binary (think block identical, answer flips at
     // low-margin tokens). MTP keeps the slow path unconditionally so
     // its behavior is byte-invariant by construction.
-    if !super::dflash_masked_verify_enabled() {
+    if !ctx.sampling.dflash_masked_verify {
         return None;
     }
     let fast_masked_enabled = ctx.sampling.fast_masked;

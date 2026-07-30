@@ -147,6 +147,7 @@ impl SchedLevers {
             mtp_verify_sample: self.mtp_verify_sample,
             fast_masked: self.fast_masked,
             adadec_diagnostic: self.adadec_diagnostic,
+            dflash_masked_verify: self.dflash_masked_verify,
         }
     }
 

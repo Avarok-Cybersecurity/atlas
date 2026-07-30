@@ -55,7 +55,7 @@ pub fn step_mtp(
         // the next step. This replaces the two-sweep sequence (M=1 decode here
         // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
         if dflash_verify_raw_argmax
-            && !crate::scheduler::verify_pipeline_helper::dflash_seam_serial_enabled()
+            && !sched.levers.dflash_seam_serial
             && crate::scheduler::adaptive_spec::spec_allowed(a)
         {
             let eff = if a.grammar_state.is_some() {

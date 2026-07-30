@@ -72,9 +72,7 @@ pub fn step_verify_dflash(
     // drafter judge on the SAME (GOLD) basis. For non-DFlash callers (unreachable
     // today since step_verify_dflash is only dispatched at drafts.len()>=4 which
     // only DFlash produces), apply the full pre-sample pipeline as in K=2/3/4.
-    let verified = if dflash_verify_raw_argmax
-        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
-    {
+    let verified = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
         verified_argmax
     } else {
         crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(

@@ -148,9 +148,7 @@ pub fn step_verify_k2(
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax) = (result_vec[0], result_vec[1]);
 
-    let (v0, v1) = if dflash_verify_raw_argmax
-        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
-    {
+    let (v0, v1) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
         // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD) basis.
         (v0_argmax, v1_argmax)
     } else {

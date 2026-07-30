@@ -98,6 +98,8 @@ pub struct SamplingLevers {
     /// Adaptive-decode diagnostic recording. Suppresses the fast path so the
     /// full pipeline is observable.
     pub adadec_diagnostic: bool,
+    /// DFlash masked verify.
+    pub dflash_masked_verify: bool,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.
