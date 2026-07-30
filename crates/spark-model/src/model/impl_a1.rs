@@ -496,6 +496,7 @@ impl TransformerModel {
             && kv_cache.dtype() == spark_runtime::kv_cache::KvCacheDtype::Fp8;
         Ok(Self {
             config,
+            dispatch: crate::layers::ops::GemmDispatch::from_env(),
             embed_tokens,
             final_norm,
             lm_head_weight,

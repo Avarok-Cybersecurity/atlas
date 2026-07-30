@@ -198,16 +198,16 @@ impl Qwen3AttentionLayer {
             );
         }
 
-        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
+        let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
         // W8A8 + FP32 epilogue: requires NON-transposed FP8 weights with
         // block scales (matches the kernel signature). The attn layer stores
         // those via set_fp8_weights — accessible via weight_opt.as_fp8().
-        if ops::cutlass_nvfp4_attn_qkv_enabled(label)
+        if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(nvfp4_t) = nvfp4_t
         {
             ops::log_cutlass_nvfp4_route(label, n, out_dim, h);
             ops::cutlass_nvfp4_proj(ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream)?;
-        } else if ops::cutlass_nvfp4_attn_qkv_enabled(label)
+        } else if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
         {
             ops::log_cutlass_nvfp4_route(label, n, out_dim, h);

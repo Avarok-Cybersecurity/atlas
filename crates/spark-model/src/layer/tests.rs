@@ -47,7 +47,11 @@ fn test_forward_context_lifetime() {
     let gpu = MockGpuBackend::new();
     let buffers = BufferArena::new(&config, 1, 4096, 16, &gpu).unwrap();
 
+    // A test can now state the dispatch it wants instead of mutating the
+    // process environment — the point of carrying it rather than caching it.
+    let dispatch = crate::layers::ops::GemmDispatch::defaults();
     let ctx = ForwardContext {
+        dispatch: &dispatch,
         buffers: &buffers,
         gpu: &gpu,
         config: &config,

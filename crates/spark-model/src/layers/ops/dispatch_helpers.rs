@@ -8,89 +8,28 @@
 
 use super::*;
 
-/// Whether block-scaled FP8 prefill (per-128-block weight scales + per-token
-/// activation scales via `fp8_gemm_t_blockscaled` / `moe_w8a8_grouped_gemm`)
-/// is enabled. This is the DEFAULT for block-scaled FP8 checkpoints as of
-/// 2026-06-17: it matches vLLM's per-block precision and avoids the
-/// single-scale `fp8_gemm_n128` path, whose collapse of per-block dynamic
-/// range pushed long-context tool-arg decode into the FP8 argmax-flip regime
-/// (B1 drift gauge ~1400 → ~100 once block-scaled prefill is on).
-///
-/// Opt out with `ATLAS_FP8_SINGLE_SCALE=1` to restore the old single-scale
-/// prefill (diagnostic / fallback only). Call sites still guard on the
-/// presence of block-scaled weights + kernel handles, so builds/models
-/// without those fall back automatically regardless of this flag.
-pub fn fp8_blockscaled_prefill_enabled() -> bool {
-    !matches!(
-        std::env::var("ATLAS_FP8_SINGLE_SCALE").ok().as_deref(),
-        Some("1")
-    )
-}
-
-/// cuBLASLt GEMM path enabled? (`ATLAS_CUBLAS_GEMM=1`), cached. The hand-written
-/// mma.sync projection GEMMs hit only ~30% of the cuBLAS bf16 ceiling on GB10.
-pub fn cublas_gemm_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| std::env::var("ATLAS_CUBLAS_GEMM").ok().as_deref() == Some("1"))
-}
-
-/// Native-FP8 cuBLASLt GEMM path enabled? (`ATLAS_CUBLAS_FP8=1`), cached.
-pub fn cublas_fp8_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| std::env::var("ATLAS_CUBLAS_FP8").ok().as_deref() == Some("1"))
-}
-
-/// CUTLASS GEMM path enabled? (`ATLAS_CUTLASS_GEMM=1`), cached. M0 is scoped to
-/// dense BF16 projections using the same FP8→BF16 cached dequant as cuBLASLt.
-pub fn cutlass_gemm_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| std::env::var("ATLAS_CUTLASS_GEMM").ok().as_deref() == Some("1"))
-}
-
-/// Native CUTLASS NVFP4 GEMM path enabled? (`ATLAS_CUTLASS_NVFP4_GEMM=1`).
-/// This path quantizes activations to CUTLASS NVFP4 and consumes transposed
-/// Atlas NVFP4 weights after repacking scales into CUTLASS SM120 layout.
-pub fn cutlass_nvfp4_gemm_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| std::env::var("ATLAS_CUTLASS_NVFP4_GEMM").ok().as_deref() == Some("1"))
-}
-
-fn cutlass_nvfp4_flag_enabled(name: &str) -> bool {
-    std::env::var(name).ok().as_deref() == Some("1")
-}
-
-/// Native CUTLASS NVFP4 SSM QKVZ path enabled.
-pub fn cutlass_nvfp4_qkvz_enabled() -> bool {
-    cutlass_nvfp4_gemm_enabled() || cutlass_nvfp4_flag_enabled("ATLAS_CUTLASS_NVFP4_QKVZ")
-}
-
-/// Native CUTLASS NVFP4 attention Q/K/V path enabled for the named projection.
-pub fn cutlass_nvfp4_attn_qkv_enabled(label: &str) -> bool {
-    cutlass_nvfp4_gemm_enabled()
-        || match label {
-            "q_proj" => cutlass_nvfp4_flag_enabled("ATLAS_CUTLASS_NVFP4_ATTN_Q"),
-            "k_proj" | "v_proj" => cutlass_nvfp4_flag_enabled("ATLAS_CUTLASS_NVFP4_ATTN_KV"),
-            _ => false,
-        }
-}
-
-/// Native CUTLASS NVFP4 attention O path enabled.
-pub fn cutlass_nvfp4_attn_o_enabled() -> bool {
-    cutlass_nvfp4_gemm_enabled() || cutlass_nvfp4_flag_enabled("ATLAS_CUTLASS_NVFP4_ATTN_O")
-}
-
-/// Native CUTLASS NVFP4 SSM out-projection path enabled.
-pub fn cutlass_nvfp4_ssm_out_enabled() -> bool {
-    cutlass_nvfp4_flag_enabled("ATLAS_CUTLASS_NVFP4_SSM_OUT")
-}
+// The nine GEMM-path flags that lived here as `OnceLock<bool>` statics are now
+// `layers::ops::GemmDispatch`, resolved once when the model is built and
+// carried on `ForwardContext`. A static outlived the model whose flags it
+// encoded — swap to a model with different levers and the process kept serving
+// the previous model's dispatch decisions, silently. It also hid the
+// dependency: a function reading the environment through a static takes no
+// argument that says so and gives the compiler nothing to check.
 
 pub fn log_cutlass_nvfp4_route(name: &str, m: u32, n: u32, k: u32) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
+    // STATIC, DELIBERATELY. This is log de-duplication and nothing else: it
+    // records which (projection, shape) combinations have already been printed
+    // so the route line appears once instead of once per token. It holds no
+    // model-derived value — the tuple is a name hash and three dimensions, all
+    // of which are re-derived from the arguments on every call — so a stale
+    // entry cannot produce a wrong answer, only a suppressed duplicate log
+    // line. Carrying it on ForwardContext would thread a logging concern
+    // through every dispatch signature to prevent a repeated INFO line after a
+    // model swap. The one real cost is that the first route line for a shape
+    // the previous model also used is suppressed; `advance()`-scoping it would
+    // be more code than the problem is worth.
     static SEEN: OnceLock<Mutex<HashSet<(u64, u32, u32, u32)>>> = OnceLock::new();
     let mut h: u64 = 1469598103934665603;
     for b in name.bytes() {

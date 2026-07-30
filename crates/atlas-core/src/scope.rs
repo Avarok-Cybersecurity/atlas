@@ -24,13 +24,14 @@
 //!   teardown contract is [`ModelResource`], not `Drop`, because `Drop` can be
 //!   neither ordered nor fallible.
 //!
-//! * **Derived leaf state** — an env flag read once, a kernel handle looked up
-//!   once, a mask built from the vocabulary. These are small, cheap to rebuild,
-//!   and read from deep inside kernel-launch paths that cannot practically take
-//!   another parameter. Threading a context through all of them would be a
-//!   thousand-line change with no correctness gain over the alternative: keep
-//!   the static, but make it **impossible for it to return a value built for a
-//!   different model**. That is [`Scoped`], [`ScopedFlag`] and [`ScopedMap`].
+//! * **Derived leaf state** — a kernel handle looked up once, a mask built from
+//!   the vocabulary. Where a carrier already reaches the site — and one usually
+//!   does, `ForwardContext` in the model and `&dyn Model` in the scheduler —
+//!   these are **plain fields on the carrier**, not statics. That is strictly
+//!   better than any epoch scheme: a missed site fails to compile instead of
+//!   failing a runtime check. [`Scoped`] and [`ScopedMap`] exist only for the
+//!   residue where no carrier can reach, and every such use must carry a
+//!   comment arguing why.
 //!
 //! The [`Generation`] counter is the single authority both populations answer
 //! to. It is process-global on purpose: it is an epoch, not model state. It
@@ -38,12 +39,14 @@
 //!
 //! # Why this is safe where a hand-audited epoch scheme is not
 //!
-//! The danger in epoch-guarding by hand is *forgetting a site* — and a
-//! forgotten site is silent wrong output. Here the guard is inside the type:
-//! a `Scoped<T>` cannot serve a stale value, because every read compares
-//! generations before returning. Converting `static X: OnceLock<T>` to
-//! `static X: Scoped<T>` is mechanical and greppable, and anything left as a
-//! bare `OnceLock` is visible to a search rather than hidden in a closure.
+//! The danger in epoch-guarding by hand is *forgetting a site*, and a forgotten
+//! site is silent wrong output. Here the guard is inside the type: a
+//! `Scoped<T>` cannot serve a stale value, because every read compares
+//! generations before returning.
+//!
+//! But a generation-checked static is still a static, and a static is still a
+//! hidden dependency the compiler cannot check. **Prefer propagation.** These
+//! types are the fallback for state with no carrier — not the default.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -178,42 +181,6 @@ impl<T: Clone> Scoped<T> {
         if let Ok(mut guard) = self.slot.write() {
             *guard = Some((generation, value));
         }
-    }
-}
-
-/// An environment toggle, re-read when the model changes.
-///
-/// The 42 `static X: OnceLock<bool>` env caches in the tree all have the same
-/// shape and the same swap hazard: a model loaded with different `ATLAS_*`
-/// flags inherits the previous model's decisions. The default is required at
-/// the declaration rather than buried in a `get_or_init` closure, so the
-/// behaviour when the variable is unset is visible where the flag is declared.
-pub struct ScopedFlag {
-    var: &'static str,
-    /// What the flag means with the variable unset.
-    default_on: bool,
-    cell: Scoped<bool>,
-}
-
-impl ScopedFlag {
-    /// `ATLAS_FOO=1` turns it on, `=0` off, unset falls back to `default_on`.
-    pub const fn new(var: &'static str, default_on: bool) -> Self {
-        Self {
-            var,
-            default_on,
-            cell: Scoped::new(),
-        }
-    }
-
-    pub fn get(&self) -> bool {
-        self.cell.get_or_init(|| match std::env::var(self.var) {
-            Ok(v) => matches!(v.trim(), "1" | "true" | "yes" | "on"),
-            Err(_) => self.default_on,
-        })
-    }
-
-    pub fn var(&self) -> &'static str {
-        self.var
     }
 }
 

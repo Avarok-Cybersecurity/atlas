@@ -175,7 +175,11 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> anyhow::Result<()> {
-        if crate::layers::ops::cutlass_nvfp4_gemm_enabled() {
+        // Load-time decision, taken in the weight loader before any
+        // `TransformerModel` exists to carry the config. Resolved at the point
+        // of use rather than cached in a static: the resolution logic stays
+        // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
+        if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
             tracing::info!(
                 "Skipping attention FP8 prefill transposes because ATLAS_CUTLASS_NVFP4_GEMM=1"
             );
@@ -219,7 +223,11 @@ impl Qwen3AttentionLayer {
         // them (decode attention uses its own weights), so they'd be allocated
         // at load and never used. Skip them — saves ~260MB and a wasted per-
         // prefill BF16->FP8 activation conversion. Mirrors transpose_fp8_for_prefill.
-        if crate::layers::ops::cutlass_nvfp4_gemm_enabled() {
+        // Load-time decision, taken in the weight loader before any
+        // `TransformerModel` exists to carry the config. Resolved at the point
+        // of use rather than cached in a static: the resolution logic stays
+        // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
+        if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
             tracing::info!(
                 "Skipping attention FP8 prefill predequant because ATLAS_CUTLASS_NVFP4_GEMM=1"
             );

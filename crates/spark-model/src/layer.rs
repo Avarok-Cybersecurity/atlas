@@ -214,6 +214,10 @@ pub struct ForwardContext<'a> {
     pub gpu: &'a dyn GpuBackend,
     /// Model configuration (dimensions, hyperparameters).
     pub config: &'a ModelConfig,
+    /// Which GEMM implementation each projection takes. Carried rather than
+    /// read from a static so it cannot outlive the model whose flags it
+    /// encodes — see `layers::ops::GemmDispatch`.
+    pub dispatch: &'a crate::layers::ops::GemmDispatch,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.

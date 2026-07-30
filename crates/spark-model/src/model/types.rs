@@ -34,6 +34,11 @@ pub(super) const MTP_CATCHUP_RING_ROWS: usize = 512;
 
 pub struct TransformerModel {
     pub(super) config: ModelConfig,
+    /// Which GEMM implementation each projection takes, resolved from the
+    /// environment when this model was built. Owned here and borrowed by every
+    /// `ForwardContext` this model creates, so the choice cannot outlive the
+    /// model — the property nine `OnceLock` statics could not have.
+    pub(super) dispatch: crate::layers::ops::GemmDispatch,
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,

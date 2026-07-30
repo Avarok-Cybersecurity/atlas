@@ -86,47 +86,6 @@ fn a_failed_derivation_is_not_cached() {
 }
 
 #[test]
-fn scoped_flag_reads_the_env_and_honours_its_declared_default() {
-    let _serial = serial();
-    // SAFETY: single-threaded test process section; no other thread reads the
-    // environment while these run.
-    unsafe { std::env::remove_var("ATLAS_SCOPE_TEST_FLAG") };
-    let on_by_default = ScopedFlag::new("ATLAS_SCOPE_TEST_FLAG", true);
-    let off_by_default = ScopedFlag::new("ATLAS_SCOPE_TEST_FLAG", false);
-    advance();
-    assert!(on_by_default.get(), "unset means the declared default");
-    assert!(!off_by_default.get());
-
-    unsafe { std::env::set_var("ATLAS_SCOPE_TEST_FLAG", "1") };
-    advance();
-    assert!(on_by_default.get());
-    assert!(off_by_default.get(), "an explicit 1 overrides the default");
-
-    unsafe { std::env::set_var("ATLAS_SCOPE_TEST_FLAG", "0") };
-    advance();
-    assert!(!on_by_default.get(), "an explicit 0 overrides the default");
-    unsafe { std::env::remove_var("ATLAS_SCOPE_TEST_FLAG") };
-}
-
-#[test]
-fn a_flag_set_between_models_is_picked_up_on_the_next_generation() {
-    let _serial = serial();
-    unsafe { std::env::remove_var("ATLAS_SCOPE_TEST_SWAP") };
-    let flag = ScopedFlag::new("ATLAS_SCOPE_TEST_SWAP", false);
-    advance();
-    assert!(!flag.get());
-    // A swap to a model whose recipe turns the lever on.
-    unsafe { std::env::set_var("ATLAS_SCOPE_TEST_SWAP", "1") };
-    assert!(
-        !flag.get(),
-        "still the old model — the flag must not change mid-run"
-    );
-    advance();
-    assert!(flag.get(), "the new model sees its own flags");
-    unsafe { std::env::remove_var("ATLAS_SCOPE_TEST_SWAP") };
-}
-
-#[test]
 fn scoped_map_misses_on_a_recycled_key_from_a_previous_generation() {
     let _serial = serial();
     // The hazard this type exists for: the key is a device pointer, the model

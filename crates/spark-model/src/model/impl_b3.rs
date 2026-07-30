@@ -82,6 +82,7 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
             attn_metadata: None,
             profile: false,
             comm: None,
