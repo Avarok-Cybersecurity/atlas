@@ -21,6 +21,7 @@ impl MtpHead {
         quant: MtpQuantization,
         mtp_vocab_size: u32,
         max_seq_len: usize,
+        main_kv_blocks: usize,
     ) -> Result<Self> {
         let stream = gpu.default_stream();
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
@@ -225,7 +226,21 @@ impl MtpHead {
             layer_dims: vec![],
             cache_blocks_per_seq: None,
         };
-        let mtp_num_blocks = max_seq_len / kv_config.block_size + 1;
+        // The drafter's KV pool must admit EVERY concurrently-drafting
+        // sequence, not one: `max_seq_len/bs + 1` was sized before MTP propose
+        // went batched, and at C=16 x ~2K-token contexts it is ~2x short — the
+        // "KV cache exhausted" ERROR spam from run_mtp_propose_batched is this
+        // pool (the 15K-block MAIN pool never fills on that workload), and each
+        // hit degrades the batched propose to the per-step fallback. Scale by
+        // the MTP concurrency cap, bounded by the main pool's block count: the
+        // drafter cannot need more live tokens than the main KV can hold, so
+        // the cap keeps a 128K `--max-seq-len` config from blindly allocating
+        // seqs x 8K blocks. Cost at the 16K/16-seq bench config: 15,203 blocks
+        // x 64 KB = ~0.97 GB, well inside the serve reserve.
+        let per_seq_blocks = max_seq_len / kv_config.block_size + 1;
+        let mtp_num_blocks = per_seq_blocks
+            .saturating_mul(crate::speculative::mtp_max_seqs())
+            .min(main_kv_blocks.max(per_seq_blocks));
         let kv_cache = PagedKvCache::new(kv_config, mtp_num_blocks, gpu)?;
 
         // Extra kernel handles for BF16/FP8 paths

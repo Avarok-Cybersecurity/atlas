@@ -581,6 +581,47 @@ numerics) are correctness picks for a quality pass, not throughput;
 scorecards; `3cf579a6` (gated_rms_norm atomicAdd determinism) touches
 Nemotron kernel dirs only.
 
+### 6.6c A/B results for the second wave + the K4 ladder analysis
+
+C=16, slai/16K, spec ON, one binary (all second-wave picks), single reps:
+
+| C=16 regime | pre-wave | rayon ON | serial control | read |
+|---|---|---|---|---|
+| decode_short | 123.8-125.2 | 131.3 | 129.4 | **trio +~5%; rayon ~neutral** |
+| balanced_short | 122.0 | 121.4 | — | unchanged |
+| prefill_short | 63.4 | 63.3 | — | unchanged |
+| balanced_long | 93.1 | 93.5 | — | unchanged |
+
+**Why rayon is neutral here (structural, not a bad port):** with spec-decode
+ON, C=16 decode flows through `verify_k4_step`, not `decode_logits_step`
+where ATLAS_PARALLEL_SAMPLE lives. The rayon win applies to the NON-spec
+path (and to the 35B MoE it was measured on). Keep it: it costs nothing
+here and protects the spec-off path (96.7 in 6.6 would presumably improve).
+The decode_short recovery 124→~130 attributes to the prefill trio
+(cohort pre-flight + arena-by-staged-tokens), clawing back roughly half of
+6.6's ~9% KV-stack cost. Exhaustion ERRORs unchanged (~1.1K, MTP-driven).
+
+**K4 acceptance at C=16 — "only good at first token" is BY DESIGN** (user
+observation, confirmed): the default K-ladder is `8:3, 16:1`, so at n<=16
+every sequence gets ONE draft — `0 accept-2 / 0 accept-3` is structural.
+Observed p1 at C=16: 0.74-0.90 per 100-step window (better than the 0.72
+#379 quotes). The ladder's own doc records why depth is dead at n=16:
+16:1 = 152.01 vs 131.40 MTP-off (+15.7%) while 16:3 = 120.76 (WORSE than
+MTP-off), because the 32-row verify budget is exactly consumed by 16 x 2
+mandatory D-Cut rows. The two real levers, in order:
+1. **Raise p1** (expected tokens/step at K=1 is `1 + p1`; refeed reached
+   0.90 on strix — worth porting/attempting here).
+2. **Grow the verify row budget past 32** so `16:2` becomes physically
+   testable (same `min(m,32)` logits-arena rows the aliasing fix
+   bounds-checks) — a memory/latency trade needing its own ladder matrix.
+
+Also picked this wave (user-directed, correctness for the quality pass):
+`9498edd7` (bypass decided before the SSM restore), `68c02fc0` (cold-vs-warm
+prefill numerics), `cd163142` (exact-full-prompt shortcut default-OFF — it
+is unsound by construction; `ATLAS_MARCONI_EXACT=1` re-enables), `b37669b5`
+(insert-contract tests). Ports kept this branch's newer tail-only session
+gate + `marconi_min_tokens` threshold with the picked semantics layered in.
+
 ### 6.7 Where C=16 parity stands after today
 
 Best honest config (slai/16K, spec ON, full-KV binary), vs the published

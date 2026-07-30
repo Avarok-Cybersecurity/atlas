@@ -87,6 +87,7 @@ pub(super) fn build_mtp_proposer(
     mtp_quant: crate::layers::MtpQuantization,
     mtp_vocab_size: u32,
     max_seq_len: usize,
+    main_kv_blocks: usize,
 ) -> Option<Arc<dyn DraftProposer>> {
     if !use_speculative {
         if !mtp_weights.is_empty() {
@@ -119,6 +120,7 @@ pub(super) fn build_mtp_proposer(
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            main_kv_blocks,
         )
     };
     if mtp_weights.len() == 1 {

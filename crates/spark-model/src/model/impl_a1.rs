@@ -273,6 +273,7 @@ impl TransformerModel {
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            kv_cache.num_blocks(),
         );
 
         if self_speculative {
