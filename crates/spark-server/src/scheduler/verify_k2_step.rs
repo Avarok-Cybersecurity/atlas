@@ -195,6 +195,33 @@ pub fn step_verify_k2(
         }
         mtp_timing::record(Phase::Commit, t_commit);
 
+        // V4 MTP's previous proposal appended the pair for `last_token`.
+        // A full K2 accept commits two target rows, so append the otherwise
+        // missing row-0 pair before proposing from row 1. The one-row MTP
+        // forward only overwrites row 0 of the shared work buffers; target
+        // verify row 1 remains available for the normal save below.
+        if std::env::var("ATLAS_V4_MTP_K1_STATE").ok().as_deref() == Some("1") {
+            let t_advance = Instant::now();
+            if let Err(e) = model.save_hidden_for_mtp(0, 0) {
+                tracing::error!("save_hidden_for_mtp(0, V4 state advance): {e:#}");
+                a.finished = true;
+                return;
+            }
+            if let Err(e) = model.run_mtp_propose_multi(
+                drafts[0],
+                a.seq.seq_len.saturating_sub(1),
+                1,
+                &mut a.seq,
+                0,
+                None,
+            ) {
+                tracing::error!("V4 MTP accepted-row state advance: {e:#}");
+                a.finished = true;
+                return;
+            }
+            mtp_timing::record(Phase::Propose, t_advance);
+        }
+
         // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
         // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
         // (the hidden that generated bonus). This also sets the proposer's

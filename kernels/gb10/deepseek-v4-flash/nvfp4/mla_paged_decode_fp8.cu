@@ -84,7 +84,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
 
     // Load Q (BF16, flattened [nq * q_dim])
     // Each thread loads 16 elements (512 / 32 = 16)
-    const unsigned int* q32 = (const unsigned int*)(Q + (unsigned long long)q_head * q_head_dim + vec_offset_bf16);
+    const unsigned int* q32 = (const unsigned int*)(Q + ((unsigned long long)seq_idx * num_q_heads + q_head) * q_head_dim + vec_offset_bf16);
     float q_reg[VEC_BF16];
     #pragma unroll
     for (int i = 0; i < VEC_U32; i++) {
@@ -396,7 +396,7 @@ extern "C" __global__ void mla_paged_decode_fp8(
             final_l += __expf(sinks[q_head] - smem_m[0]);
         }
         float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
-        unsigned int* o32 = (unsigned int*)(O + (unsigned long long)q_head * q_head_dim + vec_offset_bf16);
+        unsigned int* o32 = (unsigned int*)(O + ((unsigned long long)seq_idx * num_q_heads + q_head) * q_head_dim + vec_offset_bf16);
         #pragma unroll
         for (int i = 0; i < VEC_U32; i++) {
             float v0 = smem_o[0][lane_id * VEC_BF16 + 2*i]     * inv_l;

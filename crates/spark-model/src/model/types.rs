@@ -61,6 +61,9 @@ pub struct TransformerModel {
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
+    /// BF16 dual-row GEMV. Used by K=2 verification to read a shared weight
+    /// once while preserving each row's M=1 accumulation and rounding order.
+    pub(super) dense_gemv_batch2_kernel: KernelHandle,
     /// FP32-output variant of dense_gemv_bf16. Used by the LM head when
     /// `use_fp32_logits` is true, so the FP32 accumulator is preserved across
     /// the BF16-storage rounding boundary that flips greedy argmax tiebreaks
@@ -140,6 +143,9 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// Multi-stream residual after last main block [hc_mult, H] F32 for V4 MTP.
+    /// Null when hc_mult==0.
+    pub(super) mtp_streams_save: DevicePtr,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the

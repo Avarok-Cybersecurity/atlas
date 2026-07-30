@@ -74,6 +74,10 @@ pub fn w8a16_gemv_batch4(
 
 /// Block-scaled FP8 dual-GEMV (batch=2). `input` is `[2, K]` BF16, `output` is
 /// `[2, N]` BF16; `weight`/`block_scale` are the raw `w8a16_gemv` pointers.
+///
+/// Implemented via `w8a16_gemv_batch4` (runtime M<=4) with M=2 — there is no
+/// dedicated `w8a16_gemv_batch2` symbol in the GB10 fatbin. ABI matches batch4:
+/// (A, B, scale, C, M, N, K).
 /// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
 pub fn w8a16_gemv_batch2(
@@ -94,6 +98,7 @@ pub fn w8a16_gemv_batch2(
         .arg_ptr(weight)
         .arg_ptr(block_scale)
         .arg_ptr(output)
+        .arg_u32(2) // M=2
         .arg_u32(n)
         .arg_u32(k)
         .launch(stream)

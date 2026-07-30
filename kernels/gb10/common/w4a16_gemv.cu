@@ -453,6 +453,96 @@ extern "C" __global__ void w4a16_gemv_batch2(
 }
 
 // ============================================================
+// W4A16 double-GEMV single-warp-per-output (M=2, 8 outs/block)
+// ============================================================
+// Bit-identical to w4a16_gemv_batch2: each of 8 warps owns one output n and
+// dual-accumulates the two original 64-thread lanes (start_chunk = lane and
+// lane+32 over K8 with stride 64). No smem barrier between warps.
+// Grid: (ceil(N/8), 1, 1)  Block: (256, 1, 1)
+__device__ __forceinline__ void w4a16_gemv_batch2_partial(
+    const __nv_bfloat16* __restrict__ A,
+    const __nv_bfloat16* __restrict__ A1,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    unsigned int n, unsigned int half_K, unsigned int num_groups,
+    unsigned int K8, unsigned int start_chunk,
+    float &acc0, float &acc1)
+{
+    for (unsigned int k8 = start_chunk; k8 < K8; k8 += 64u) {
+        const unsigned int base_k = k8 * 8;
+        uint4 a0_data = ((const uint4*)A)[k8];
+        uint4 a1_data = ((const uint4*)A1)[k8];
+        const unsigned int a0_raw[4] = {a0_data.x, a0_data.y, a0_data.z, a0_data.w};
+        const unsigned int a1_raw[4] = {a1_data.x, a1_data.y, a1_data.z, a1_data.w};
+        unsigned int packed4 = *(const unsigned int*)(B_packed + (unsigned long long)n * half_K + k8 * 4);
+        unsigned int scale_group = base_k / GROUP_SIZE;
+        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
+        __nv_fp8_e4m3 fp8;
+        *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+        float scale = scl_fp8(scale_byte) * scale2;
+#else
+        float scale = (float)fp8 * scale2;
+#endif
+        #pragma unroll
+        for (int b = 0; b < 4; b++) {
+            unsigned char byte_val = (packed4 >> (b * 8)) & 0xFF;
+            float w_lo = E2M1_LUT[byte_val & 0xF] * scale;
+            float w_hi = E2M1_LUT[byte_val >> 4] * scale;
+            __nv_bfloat16 a0_lo, a0_hi, a1_lo, a1_hi;
+            *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
+            *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
+            *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
+            *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
+            acc0 += __bfloat162float(a0_lo) * w_lo;
+            acc0 += __bfloat162float(a0_hi) * w_hi;
+            acc1 += __bfloat162float(a1_lo) * w_lo;
+            acc1 += __bfloat162float(a1_hi) * w_hi;
+        }
+    }
+}
+
+extern "C" __global__ void w4a16_gemv_batch2_sw(
+    const __nv_bfloat16* __restrict__ A,        // [2, K]
+    const unsigned char* __restrict__ B_packed,  // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,   // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,               // [2, N]
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int local_out = threadIdx.x / WARP_SIZE;  // 0..7
+    const unsigned int lane = threadIdx.x % WARP_SIZE;       // 0..31
+    const unsigned int n = blockIdx.x * N_PER_BLOCK_SW + local_out;
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K8 = K / 8;
+    const __nv_bfloat16* __restrict__ A1 = A + K;
+    __nv_bfloat16* __restrict__ C1 = C + N;
+
+    // acc*_a reproduces orig lane `lane`; acc*_b reproduces lane `lane+32`.
+    float acc0_a = 0.0f, acc1_a = 0.0f;
+    float acc0_b = 0.0f, acc1_b = 0.0f;
+    w4a16_gemv_batch2_partial(A, A1, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane, acc0_a, acc1_a);
+    w4a16_gemv_batch2_partial(A, A1, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane + 32u, acc0_b, acc1_b);
+
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc0_a += __shfl_down_sync(0xFFFFFFFF, acc0_a, offset);
+        acc1_a += __shfl_down_sync(0xFFFFFFFF, acc1_a, offset);
+        acc0_b += __shfl_down_sync(0xFFFFFFFF, acc0_b, offset);
+        acc1_b += __shfl_down_sync(0xFFFFFFFF, acc1_b, offset);
+    }
+    if (lane == 0) {
+        C[n]  = __float2bfloat16(acc0_a + acc0_b);
+        C1[n] = __float2bfloat16(acc1_a + acc1_b);
+    }
+}
+
+// ============================================================
 // W4A16 batched GEMV (M<=MAX_M) — the NVFP4 sibling of w8a16_gemv_batch4/16.
 // ============================================================
 // At M-token batched decode the SSM QKVZ / out_proj projections share the same

@@ -71,21 +71,43 @@ impl MoeLayer {
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(num_tokens * top_k as usize * 4);
+        // Match forward_batched routing: hash layers stay on proven path.
+        if self.tid2eid_dev.is_some() {
+            return self.forward_batched(input, num_tokens, ctx, stream);
+        }
         if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
-                ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
-                gate_logits,
-                bias,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                n,
-                stream,
-            )?;
+            if ctx.config.scoring_func == "sqrtsoftplus" {
+                for t in 0..num_tokens {
+                    ops::moe_topk_sqrtsoftplus(
+                        ctx.gpu,
+                        self.moe_topk_sqrtsoftplus_k,
+                        gate_logits.offset(t * num_experts as usize * 2),
+                        bias,
+                        indices_dev.offset(t * top_k as usize * 4),
+                        weights_dev.offset(t * top_k as usize * 4),
+                        num_experts,
+                        top_k,
+                        ctx.config.norm_topk_prob,
+                        ctx.config.routed_scaling_factor as f32,
+                        stream,
+                    )?;
+                }
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    n,
+                    stream,
+                )?;
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,

@@ -19,7 +19,10 @@ use crate::nccl::{self, NcclDataType, NcclRedOp};
 
 impl CommBackend for NcclBackend {
     fn all_reduce(&self, ptr: u64, bytes: usize) -> Result<()> {
-        if self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
+        // ATLAS_NCCL_ALLREDUCE=1: force native ncclAllReduce even on 2 ranks
+        // (A/B vs send/recv+local-add path for EP decode throughput).
+        let force_ar = std::env::var("ATLAS_NCCL_ALLREDUCE").ok().as_deref() == Some("1");
+        if !force_ar && self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
             return self.all_reduce_2rank(ptr, bytes, self.legacy_stream);
         }
         // Fallback: ncclAllReduce reduces IN-PLACE on `ptr` and never touches
@@ -43,7 +46,8 @@ impl CommBackend for NcclBackend {
     }
 
     fn all_reduce_async(&self, ptr: u64, bytes: usize, compute_stream: u64) -> Result<()> {
-        if self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
+        let force_ar = std::env::var("ATLAS_NCCL_ALLREDUCE").ok().as_deref() == Some("1");
+        if !force_ar && self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
             // Use event-based async with 2-rank send/recv path.
             nccl::record_event(self.compute_done_event, compute_stream)?;
             nccl::stream_wait_event(self.comm_stream, self.compute_done_event)?;

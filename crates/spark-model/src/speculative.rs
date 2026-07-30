@@ -371,6 +371,26 @@ pub trait DraftProposer: Send + Sync {
         Ok(0)
     }
 
+    /// Append model-native V4 MTP rows from the target's live pre-hc_head
+    /// highway. `next_tokens[r]` is paired with target stream row `r`, whose
+    /// absolute target position is `first_position + r`.
+    ///
+    /// The target highway is only live until the next prefill chunk reuses the
+    /// arena, so V4 consumes it directly here instead of storing a full-prompt
+    /// FP32 copy. Other proposer architectures do not use this hook.
+    #[allow(clippy::too_many_arguments)]
+    fn prefill_v4_stream_rows(
+        &self,
+        _next_tokens: &[u32],
+        _target_streams: DevicePtr,
+        _first_position: usize,
+        _state: &mut dyn ProposerState,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Read the draft token ID stored on GPU by the last `propose()` call
     /// that used `draft_embed_target = Some(...)`. Returns 0 if not supported.
     fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {

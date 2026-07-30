@@ -36,7 +36,7 @@ impl Qwen3AttentionLayer {
         fp8_k_scale: f32,
         stream: u64,
     ) -> Result<()> {
-        let v_block_stride = kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+        let v_block_stride = kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
         match self.kv_dtype {
             KvCacheDtype::Fp8KTurbo3V => {
                 if self.prefill_attn_paged_fp8k_turbo3v_64_k.0 == 0 {
@@ -49,8 +49,8 @@ impl Qwen3AttentionLayer {
                     ctx.gpu,
                     self.prefill_attn_paged_fp8k_turbo3v_64_k,
                     q_contiguous,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     attn_out,
                     block_table,
                     n,
@@ -79,8 +79,8 @@ impl Qwen3AttentionLayer {
                     ctx.gpu,
                     self.prefill_attn_paged_fp8k_turbo4v_64_k,
                     q_contiguous,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     attn_out,
                     block_table,
                     n,
@@ -109,8 +109,8 @@ impl Qwen3AttentionLayer {
                     ctx.gpu,
                     self.prefill_attn_paged_fp8k_turbo2v_64_k,
                     q_contiguous,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     attn_out,
                     block_table,
                     n,

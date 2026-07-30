@@ -431,3 +431,41 @@ impl Fp8Weight {
         })
     }
 }
+
+/// Column-parallel TP view of an FP8 weight (N-axis). Does not allocate;
+/// returns a pointer-offset view. Block-scale BS=128.
+pub fn fp8_tp_slice_n(w: &Fp8Weight, tp_rank: usize, tp_size: usize) -> anyhow::Result<Fp8Weight> {
+    if tp_size <= 1 {
+        return Ok(*w);
+    }
+    anyhow::ensure!(tp_rank < tp_size, "tp_rank out of range");
+    let n = w.n as usize;
+    let k = w.k as usize;
+    anyhow::ensure!(
+        n.is_multiple_of(tp_size),
+        "Fp8Weight n={n} not divisible by tp={tp_size}"
+    );
+    let n_local = n / tp_size;
+    let bs = 128usize;
+    anyhow::ensure!(
+        n_local.is_multiple_of(bs),
+        "n_local={n_local} not multiple of {bs}"
+    );
+    let weight = w.weight.offset(tp_rank * n_local * k);
+    let row_scale = if w.row_scale.0 != 0 {
+        let nblocks_local = n_local / bs;
+        let kblocks = (k / bs).max(1);
+        // Block scales stored as BF16 (2B) for Fp8BlockScaled
+        let elem = 2usize;
+        w.row_scale.offset(tp_rank * nblocks_local * kblocks * elem)
+    } else {
+        w.row_scale
+    };
+    Ok(Fp8Weight {
+        weight,
+        row_scale,
+        n: n_local as u32,
+        k: w.k,
+        scale_format: w.scale_format,
+    })
+}

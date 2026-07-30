@@ -46,7 +46,22 @@ impl Qwen3AttentionLayer {
         // attention path (issue #84) gets correct, isolated FFN output
         // without depending on the buggy batched-MoE kernels. Fixing the
         // batched-MoE kernel is tracked separately (out of #84 scope).
-        let force_seq_ffn = self.mla.is_some();
+        // Mistral-Small-4 historically crashed on fused K=2 MoE kernels.
+        // DeepSeek-V4 (MLA + mHC) needs batched MoE for EP verify throughput;
+        // default-allow fused K=2/K=3 for deepseek_v4, keep Mistral sequential.
+        // ATLAS_V4_SEQ_FFN=1 forces sequential for all MLA; ATLAS_MLA_BATCHED_MOE=1
+        // forces fused for all MLA (including Mistral, for A/B).
+        let force_seq_ffn = if std::env::var("ATLAS_MLA_BATCHED_MOE").ok().as_deref() == Some("1") {
+            false
+        } else if std::env::var("ATLAS_V4_SEQ_FFN").ok().as_deref() == Some("1") {
+            self.mla.is_some()
+        } else if self.mla.is_some() {
+            // deepseek_v4 uses the HC multi_seq path (patched above); other MLA
+            // (Mistral) stays sequential unless ATLAS_MLA_BATCHED_MOE=1.
+            fwd.config.model_type != "deepseek_v4"
+        } else {
+            false
+        };
         if n == 3 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(

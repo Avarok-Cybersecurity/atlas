@@ -54,9 +54,12 @@ impl Qwen3AttentionLayer {
         let o_lora = mla.o_lora_rank as u32;
         let nkv = ctx.config.num_key_value_heads as u32;
         let profile = ctx.profile;
+        // DIAG dumps do sync+D2H — MUST be opt-in. Ungated L0 dumps were
+        // burning large fractions of each decode step (~10 tok/s ceiling).
+        let diag_enabled = std::env::var("ATLAS_DIAG_V4").is_ok_and(|v| v == "1" || v == "true");
         let diag_all =
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
-        let diag_this = self.attn_layer_idx == 0 || diag_all;
+        let diag_this = diag_enabled && (self.attn_layer_idx == 0 || diag_all);
         macro_rules! prof {
             ($label:expr, $body:expr) => {{
                 if profile {

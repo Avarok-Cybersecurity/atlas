@@ -164,7 +164,14 @@ impl TransformerModel {
         // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
         // byte-for-byte unchanged when the env is unset.
         let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager && !k4_diag;
+        let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        let use_graphs =
+            (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager && !k4_diag;
+
+        // DeepSeek-V4 hash-MoE: upload verify token ids (mirror K=2 verify_b).
+        let tid_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        self.gpu
+            .copy_h2d_async(&tid_bytes, self.buffers.token_ids(), stream)?;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -175,7 +182,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
-            token_ids: None,
+            token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
         };

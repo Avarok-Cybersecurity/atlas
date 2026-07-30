@@ -100,6 +100,7 @@ impl Qwen3AttentionLayer {
             post_attn_norm,
             ffn,
             attn_layer_idx,
+            kv_layer_idx: attn_layer_idx,
             lora: None,
             gated,
             mrope_interleaved,
@@ -141,6 +142,12 @@ impl Qwen3AttentionLayer {
             // still start cleanly.
             hc: None,
             hc_pre_k: super::super::try_kernel(gpu, "hyper_connection", "hc_pre"),
+            hc_pre_mix_parallel_k: super::super::try_kernel(
+                gpu,
+                "hyper_connection",
+                "hc_pre_mix_parallel",
+            ),
+            hc_pre_finalize_k: super::super::try_kernel(gpu, "hyper_connection", "hc_pre_finalize"),
             hc_post_k: super::super::try_kernel(gpu, "hyper_connection", "hc_post"),
             hc_expand_k: super::super::try_kernel(gpu, "hyper_connection", "hc_expand"),
             hc_head_k: super::super::try_kernel(gpu, "hyper_connection", "hc_head"),
@@ -182,8 +189,21 @@ impl Qwen3AttentionLayer {
             norm_vanilla: crate::ships_vanilla_norm_weights(config),
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
-            w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_k: {
+                // Prefer single-warp-per-output (8 outs/block, no smem barrier) —
+                // bit-identical to 64-thread path (w4a16_gemv.cu). Pair with
+                // ops::w4a16_gemv grid ceil(N/8) (default; ATLAS_GEMV_N4=1 for 4).
+                match crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw") {
+                    h if h.0 != 0 => h,
+                    _ => gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+                }
+            },
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            w8a16_gemv_batch4_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4",
+            ),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,
@@ -405,7 +425,12 @@ impl Qwen3AttentionLayer {
             ),
             w4a16_gemv_qg_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch2")?,
             w4a16_gemv_dual_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch2")?,
-            w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
+            w4a16_gemv_batch2_k: {
+                match crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch2_sw") {
+                    h if h.0 != 0 => h,
+                    _ => gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
+                }
+            },
             w4a16_gemv_qg_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch3")?,
             w4a16_gemv_dual_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,

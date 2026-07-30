@@ -27,6 +27,20 @@ impl MoeLayer {
         // BF16 batched path (SSOT: reuses the decode BF16 kernels via
         // forward_batched), which produces the same moe_output()[2,H].
         let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
+        // DeepSeek-V4 K=2 expert path:
+        //   default: token-major prefill kernels (3 launches for both tokens)
+        //   ATLAS_V4_K2_BATCHED=1: per-token forward_batched (stable baseline)
+        //   ATLAS_V4_K2_BATCH2=1: NVFP4 batch2 fused kernels (CUDA-700 history)
+        if ctx.config.model_type == "deepseek_v4" {
+            // Default: NVFP4 batch2 (null shared-gate blend fixed 2026-07-24).
+            // Opt-out: ATLAS_V4_K2_BATCHED=1 (per-token). Token-major: ATLAS_V4_K2_TOKEN_MAJOR=1.
+            if std::env::var("ATLAS_V4_K2_BATCHED").ok().as_deref() == Some("1") {
+                return self.forward_batched(input, 2, ctx, stream);
+            } else if std::env::var("ATLAS_V4_K2_TOKEN_MAJOR").ok().as_deref() == Some("1") {
+                return self.forward_token_major_decode(input, 2, ctx, stream);
+            }
+            // else fall through to NVFP4 batch2
+        }
         let use_bf16_batch2 = self.bf16_gate_weight_ptrs.is_some()
             && self.moe_expert_gate_up_shared_bf16_batch2_k.0 != 0
             && self.moe_expert_silu_down_shared_bf16_batch2_k.0 != 0
@@ -62,103 +76,30 @@ impl MoeLayer {
                 .synchronize(stream)
                 .context("K2 ENTRY: attention+norm BEFORE forward_k2")?;
         }
-
-        // Gemma-4 router pre-norm (no-op for other models).
-        let router_in = self.router_input(input, 2, h, ctx, stream)?;
-        // 1. Gate GEMV batch2: reads gate weight once for 2 tokens
-        let gate_logits = ctx.buffers.gate_logits(); // [2, 512] BF16
-        if let Some(ref nvfp4) = self.gate_nvfp4 {
-            ops::w4a16_gemv_batch2(
-                ctx.gpu,
-                self.w4a16_gemv_batch2,
-                router_in,
-                nvfp4,
-                gate_logits,
-                num_experts,
-                h,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm,
-                router_in,
-                &self.weights.gate,
-                gate_logits,
-                2,
-                num_experts,
-                h,
-                stream,
-            )?;
+        let substage_profile =
+            std::env::var("ATLAS_PROFILE").is_ok_and(|v| v == "1" || v == "true");
+        let mut substage_started = None;
+        if substage_profile {
+            ctx.gpu.synchronize(stream)?;
+            substage_started = Some(std::time::Instant::now());
         }
-
-        // 2. Batched topK for 2 tokens: [2, 512] → [2*top_k] indices + [2*top_k] weights.
-        //    Sigmoid+bias for MiniMax/DeepSeek-V3, softmax otherwise.
-        let scratch = ctx.buffers.scratch();
-        let indices_dev = scratch; // [2*top_k] u32
-        let weights_dev = scratch.offset(2 * top_k as usize * 4); // [2*top_k] f32
-        if let Some(bias) = self.correction_bias_dev {
-            // DeepSeek-V4 scores experts with sqrt(softplus(.)); sigmoid otherwise
-            // (MiniMax/DeepSeek-V3). Must match the prefill/single-token paths or
-            // decode routing diverges from prefill.
-            if ctx.config.scoring_func == "sqrtsoftplus" {
-                // Use the PROVEN non-batched sqrtsoftplus kernel per token (the
-                // _batched variant is unexercised — the K2 verify is the only
-                // user and it never ran for V4 before). gate_logits is BF16
-                // [2, num_experts] (2-byte stride); indices/weights are
-                // [2, top_k] (u32 / f32, 4-byte stride).
-                for t in 0..2usize {
-                    ops::moe_topk_sqrtsoftplus(
-                        ctx.gpu,
-                        self.moe_topk_sqrtsoftplus_k,
-                        gate_logits.offset(t * num_experts as usize * 2),
-                        bias,
-                        indices_dev.offset(t * top_k as usize * 4),
-                        weights_dev.offset(t * top_k as usize * 4),
-                        num_experts,
-                        top_k,
-                        ctx.config.norm_topk_prob,
-                        ctx.config.routed_scaling_factor as f32,
-                        stream,
-                    )?;
+        macro_rules! moe_stage {
+            ($label:expr) => {
+                if let Some(started) = substage_started.as_mut() {
+                    ctx.gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "K2_MOE_STAGE {} {:.3}ms",
+                        $label,
+                        started.elapsed().as_secs_f64() * 1000.0
+                    );
+                    *started = std::time::Instant::now();
                 }
-            } else {
-                ops::moe_topk_sigmoid_batched(
-                    ctx.gpu,
-                    self.moe_topk_sigmoid_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    2,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::moe_topk_softmax_batched(
-                ctx.gpu,
-                self.moe_topk_batched,
-                gate_logits,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                2,
-                stream,
-            )?;
+            };
         }
-        super::union_stats::maybe_sample_expert_union(
-            ctx.gpu,
-            indices_dev,
-            2,
-            top_k as usize,
-            stream,
-        );
+
+        let (indices_dev, weights_dev) =
+            self.route_k2(input, ctx, stream, h, num_experts, top_k)?;
+        moe_stage!("gate_topk");
 
         if k2_diag {
             ctx.gpu
@@ -365,12 +306,10 @@ impl MoeLayer {
                 stream,
             )?;
         } else {
-            // NVFP4 batch2 path
-            let batch2_block = if ctx.config.hidden_size >= 3072 {
-                256u32
-            } else {
-                128u32
-            };
+            // NVFP4 batch2 path — kernel hardcodes BLOCK_SIZE=128 / N_PER_BLOCK=4
+            // (threads_per_out=32, 8 outs/block). Launching 256 threads races
+            // adjacent blocks and was a latent OOB/quality footgun.
+            let batch2_block = 128u32;
             ops::moe_expert_gate_up_shared_batch2(
                 ctx.gpu,
                 self.moe_expert_gate_up_shared_batch2,
@@ -394,26 +333,76 @@ impl MoeLayer {
                 batch2_block,
                 stream,
             )?;
-            ops::moe_expert_silu_down_shared_batch2(
-                ctx.gpu,
-                self.moe_expert_silu_down_shared_batch2,
-                expert_gate_out,
-                expert_up_out,
-                self.down_ptrs.packed_ptrs,
-                self.down_ptrs.scale_ptrs,
-                self.down_ptrs.scale2_vals,
-                expert_down_out,
-                indices_dev,
-                shared_gate_scratch,
-                shared_up_scratch,
-                &self.weights.shared_expert.down_proj,
-                shared_down_out,
-                h,
-                inter,
-                top_k,
-                batch2_block,
-                stream,
-            )?;
+            if k2_diag {
+                ctx.gpu
+                    .synchronize(stream)
+                    .context("K2: after gate_up_shared_batch2")?;
+            }
+            if std::env::var("ATLAS_V4_MOE_PRECOMPUTE_ACT").ok().as_deref() == Some("1") {
+                // The fused down kernel recomputes SwiGLU once per output tile.
+                // Materialize it once per route instead, matching V4's clamp.
+                ops::moe_silu_mul(
+                    ctx.gpu,
+                    self.moe_silu_mul,
+                    expert_gate_out,
+                    expert_up_out,
+                    expert_gate_out,
+                    2 * top_k * inter,
+                    stream,
+                )?;
+                ops::moe_silu_mul(
+                    ctx.gpu,
+                    self.moe_silu_mul,
+                    shared_gate_scratch,
+                    shared_up_scratch,
+                    shared_gate_scratch,
+                    2 * inter,
+                    stream,
+                )?;
+                ops::moe_expert_down_shared_batch2_precomputed(
+                    ctx.gpu,
+                    self.moe_expert_down_shared_batch2_precomputed,
+                    expert_gate_out,
+                    self.down_ptrs.packed_ptrs,
+                    self.down_ptrs.scale_ptrs,
+                    self.down_ptrs.scale2_vals,
+                    expert_down_out,
+                    indices_dev,
+                    shared_gate_scratch,
+                    &self.weights.shared_expert.down_proj,
+                    shared_down_out,
+                    h,
+                    inter,
+                    top_k,
+                    stream,
+                )?;
+            } else {
+                ops::moe_expert_silu_down_shared_batch2(
+                    ctx.gpu,
+                    self.moe_expert_silu_down_shared_batch2,
+                    expert_gate_out,
+                    expert_up_out,
+                    self.down_ptrs.packed_ptrs,
+                    self.down_ptrs.scale_ptrs,
+                    self.down_ptrs.scale2_vals,
+                    expert_down_out,
+                    indices_dev,
+                    shared_gate_scratch,
+                    shared_up_scratch,
+                    &self.weights.shared_expert.down_proj,
+                    shared_down_out,
+                    h,
+                    inter,
+                    top_k,
+                    batch2_block,
+                    stream,
+                )?;
+            }
+            if k2_diag {
+                ctx.gpu
+                    .synchronize(stream)
+                    .context("K2: after silu_down_shared_batch2")?;
+            }
             // EP fix: after silu_down, expert_gate_out is free — use as zero buffer
             let shared_for_blend = if is_ep && !shared_down_out.is_null() {
                 ctx.gpu
@@ -443,6 +432,7 @@ impl MoeLayer {
                 .synchronize(stream)
                 .context("K2: expert dispatch (gate_up/silu_down/blend)")?;
         }
+        moe_stage!("expert_dispatch");
 
         // EP all-reduce: sum partial outputs for 2 tokens
         if let Some(comm) = ctx.comm
@@ -479,6 +469,7 @@ impl MoeLayer {
                 }
             }
         }
+        moe_stage!("ep_ar_shared");
 
         Ok(())
     }

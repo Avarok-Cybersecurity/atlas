@@ -20,6 +20,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) post_attn_norm: DenseWeight,
     pub(super) ffn: FfnComponent,
     pub(super) attn_layer_idx: usize,
+    /// KV cache pool index. Usually == attn_layer_idx; the V4 MTP body
+    /// remaps this to 0 so its private single-layer cache is addressable
+    /// while compress/hash/mHC is_first/is_last still use attn_layer_idx.
+    pub(super) kv_layer_idx: usize,
     /// Startup-static LoRA adapter overlay for the K/V/O projections (v0;
     /// q_proj excluded — gated Q+gate interleave). Installed
     /// post-construction via `set_lora_weights`; `None` = base-only.
@@ -93,6 +97,9 @@ pub struct Qwen3AttentionLayer {
     pub(crate) hc: Option<HcWeights>,
     /// HC `hc_pre` kernel handle (NULL when HC disabled).
     pub(super) hc_pre_k: KernelHandle,
+    /// Decode-specialized parallel HC projection/finalize kernels.
+    pub(super) hc_pre_mix_parallel_k: KernelHandle,
+    pub(super) hc_pre_finalize_k: KernelHandle,
     /// HC `hc_post` kernel handle (NULL when HC disabled).
     pub(super) hc_post_k: KernelHandle,
     /// HC `hc_expand` kernel handle (NULL when HC disabled).
@@ -135,6 +142,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemv_k: KernelHandle,
     pub(super) w4a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
+    /// Optional M<=4 batched FP8 GEMV (kernel w8a16_gemv_batch4). Handle 0 if missing.
+    pub(super) w8a16_gemv_batch4_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,

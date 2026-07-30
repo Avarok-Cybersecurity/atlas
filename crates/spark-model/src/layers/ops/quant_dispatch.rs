@@ -101,8 +101,15 @@ pub fn w4a16_gemv(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // w4a16_gemv_sw: 8 outs/block; classic: 4. Default 8 for sw kernel.
+    // ATLAS_GEMV_N4=1 forces classic 4-out grid.
+    let n_per = if std::env::var("ATLAS_GEMV_N4").ok().as_deref() == Some("1") {
+        4u32
+    } else {
+        8u32
+    };
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 4), 1, 1])
+        .grid([div_ceil(n, n_per), 1, 1])
         .block([256, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight.weight)
@@ -131,8 +138,14 @@ pub fn w4a16_gemv_batch2(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // batch2_sw: 8 outs/block; classic batch2: 4. ATLAS_GEMV_N4=1 forces 4.
+    let n_per = if std::env::var("ATLAS_GEMV_N4").ok().as_deref() == Some("1") {
+        4u32
+    } else {
+        8u32
+    };
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 4), 1, 1])
+        .grid([div_ceil(n, n_per), 1, 1])
         .block([256, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight.weight)

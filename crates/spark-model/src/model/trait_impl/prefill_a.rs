@@ -484,6 +484,11 @@ impl TransformerModel {
         // hiddens for the whole-prompt drafter prefill. No-op when disabled.
         self.try_mtp_prefill_capture(seq_len_start, proc_count, stream)?;
 
+        // V4 consumes the live pre-hc_head highway now, before the shared
+        // arena is reused. The helper restores the final target hidden row so
+        // the target final norm and LM head below remain authoritative.
+        self.try_v4_mtp_prompt_prefill(tokens, seq, seq_len_start, proc_count, true, stream)?;
+
         // ── 5. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);
         let normed = self.buffers.norm_output();
