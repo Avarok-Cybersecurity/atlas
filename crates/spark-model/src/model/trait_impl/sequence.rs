@@ -260,7 +260,7 @@ impl TransformerModel {
         // empties the proposer state, so the `free_state` below then releases
         // nothing — the blocks are owned by the carry slot XOR by a live
         // sequence, never both.
-        if crate::model::mtp_carry::mtp_carry_drafter_enabled()
+        if crate::model::mtp_carry::mtp_carry_drafter_enabled(&self.levers)
             && let Some(ref proposer) = self.proposer
             && let Some(ref mut pstate) = seq.proposer_state
             && let Some((blocks, rows, last_pair_key)) = proposer.take_drafter_kv(pstate.as_mut())

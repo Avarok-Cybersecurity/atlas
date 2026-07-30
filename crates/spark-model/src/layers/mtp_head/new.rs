@@ -21,6 +21,9 @@ impl MtpHead {
         quant: MtpQuantization,
         mtp_vocab_size: u32,
         max_seq_len: usize,
+        // This model's levers — the drafter-prefill policy decides whether the
+        // dedicated prefill scratch is allocated at all.
+        levers: &crate::layers::ops::ModelLevers,
     ) -> Result<Self> {
         let stream = gpu.default_stream();
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
@@ -292,26 +295,27 @@ impl MtpHead {
         // when a consumer exists.
         // The catch-up feed (ATLAS_MTP_CATCHUP) runs through the same batched
         // row writer as the drafter prefill and needs the same scratch.
-        let prefill_scratch =
-            if super::mtp_drafter_prefill_enabled() || crate::speculative::mtp_catchup_enabled() {
-                let c = super::prefill::PREFILL_CHUNK;
-                let bf16 = 2usize;
-                Some(super::MtpPrefillScratch {
-                    embed: gpu.alloc(c * h * bf16)?,
-                    normed_embed: gpu.alloc(c * h * bf16)?,
-                    normed_hidden: gpu.alloc(c * h * bf16)?,
-                    concat: gpu.alloc(c * 2 * h * bf16)?,
-                    fc_out: gpu.alloc(c * h * bf16)?,
-                    normed2: gpu.alloc(c * h * bf16)?,
-                    k_out: gpu.alloc(c * nkv * hd * bf16)?,
-                    v_out: gpu.alloc(c * nkv * hd * bf16)?,
-                    q_scratch: gpu.alloc(c * nq * hd * bf16)?,
-                    pos_dev: gpu.alloc(c * 4)?,
-                    slot_dev: gpu.alloc(c * 8)?,
-                })
-            } else {
-                None
-            };
+        let prefill_scratch = if super::mtp_drafter_prefill_enabled(levers)
+            || crate::speculative::mtp_catchup_enabled()
+        {
+            let c = super::prefill::PREFILL_CHUNK;
+            let bf16 = 2usize;
+            Some(super::MtpPrefillScratch {
+                embed: gpu.alloc(c * h * bf16)?,
+                normed_embed: gpu.alloc(c * h * bf16)?,
+                normed_hidden: gpu.alloc(c * h * bf16)?,
+                concat: gpu.alloc(c * 2 * h * bf16)?,
+                fc_out: gpu.alloc(c * h * bf16)?,
+                normed2: gpu.alloc(c * h * bf16)?,
+                k_out: gpu.alloc(c * nkv * hd * bf16)?,
+                v_out: gpu.alloc(c * nkv * hd * bf16)?,
+                q_scratch: gpu.alloc(c * nq * hd * bf16)?,
+                pos_dev: gpu.alloc(c * 4)?,
+                slot_dev: gpu.alloc(c * 8)?,
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,

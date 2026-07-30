@@ -59,8 +59,8 @@ use spark_runtime::gpu::DevicePtr;
 /// so carry alone is inert, and prefill without carry is a measured −927
 /// ms/turn loss. [`crate::model::drafter_context`] resolves both together and
 /// is the single source of truth for the policy and its kill switch.
-pub fn mtp_carry_drafter_enabled() -> bool {
-    crate::model::drafter_context::config().carry
+pub fn mtp_carry_drafter_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+    levers.drafter.carry
 }
 
 /// `ATLAS_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no

@@ -87,6 +87,11 @@ pub struct ModelLevers {
     /// `OnceLock` it was also idempotent, so a second model with a different
     /// max batch would silently keep the first model's split count.
     pub max_decode_seqs: u32,
+    /// MTP drafter context policy (`ATLAS_NO_DRAFTER_CONTEXT` /
+    /// `ATLAS_DRAFTER_PREFILL_ONLY`), resolved and logged once per model.
+    /// The two halves are coupled — prefill without carry is a measured
+    /// −927 ms/turn loss — so they travel as one value.
+    pub drafter: crate::model::drafter_context::DrafterContext,
 }
 
 /// Opt-IN: off unless the variable is exactly `1`.
@@ -109,6 +114,7 @@ impl ModelLevers {
     pub fn from_env() -> Self {
         Self {
             max_decode_seqs: 1,
+            drafter: crate::model::drafter_context::resolve_from_env(),
             // `ATLAS_NO_GDN_REGRESIDENT` is a kill switch, so the variable is
             // negative and the field is positive: `!= "1"` means on.
             gdn_regresident: std::env::var("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Ok("1"),
@@ -139,6 +145,7 @@ impl ModelLevers {
     pub fn defaults() -> Self {
         Self {
             max_decode_seqs: 1,
+            drafter: crate::model::drafter_context::DrafterContext::BOTH,
             gdn_regresident: true,
             gdn_wy17: true,
             gdn_wyn: true,

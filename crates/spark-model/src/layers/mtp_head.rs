@@ -37,8 +37,8 @@ use crate::weight_map::{
 /// Policy, including the kill switch and the coupling to the cross-turn carry
 /// (which this half is useless without), lives in
 /// `crate::model::drafter_context` — the single source of truth.
-pub fn mtp_drafter_prefill_enabled() -> bool {
-    crate::model::drafter_context::config().prefill
+pub fn mtp_drafter_prefill_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+    levers.drafter.prefill
 }
 
 /// Dedicated scratch for the batched drafter prefill (allocated in

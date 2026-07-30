@@ -128,7 +128,7 @@ impl TransformerModel {
         // write regardless of where the chunk starts — the rows are still
         // `hidden_i` at absolute row `i`. Note the SOURCE is the head of the
         // hidden buffer (this chunk's rows), only the DESTINATION is absolute.
-        let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
+        let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled(&self.levers);
         if contiguous_from_zero.is_none() && !carry_on {
             return Ok(());
         }
@@ -192,7 +192,7 @@ impl TransformerModel {
                 .mtp_prefill_capture_len
                 .load(std::sync::atomic::Ordering::Relaxed);
             let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p;
-            let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled();
+            let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled(&self.levers);
             // Both branches below are FIRST-PROPOSE only: `prefill_drafter`
             // enforces that itself (`mtp_state.seq_len != row_base` fast-return),
             // and the carry must not re-run once the drafter owns rows.

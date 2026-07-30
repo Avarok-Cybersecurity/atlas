@@ -235,6 +235,7 @@ impl TransformerModel {
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            &levers,
         );
 
         if self_speculative {
@@ -269,7 +270,7 @@ impl TransformerModel {
         // never write it.
         let mtp_prefill_hidden = if has_mtp
             && mtp_quant.supports_drafter_prefill()
-            && crate::layers::mtp_drafter_prefill_enabled()
+            && crate::layers::mtp_drafter_prefill_enabled(&levers)
         {
             let bytes = max_seq_len * config.hidden_size * 2;
             tracing::info!(
@@ -283,7 +284,7 @@ impl TransformerModel {
         } else {
             if has_mtp
                 && !mtp_quant.supports_drafter_prefill()
-                && crate::layers::mtp_drafter_prefill_enabled()
+                && crate::layers::mtp_drafter_prefill_enabled(&levers)
             {
                 tracing::info!(
                     "MTP drafter context: INACTIVE — the batched drafter prefill \
