@@ -7,19 +7,10 @@
 //! num_q_heads=16, num_kv_heads=2 (GQA 8:1).
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-// STATIC, DELIBERATELY — process lifecycle, benchmark harness. A criterion
-// bench binary loads exactly one module set and measures one kernel for the
-// life of the process; there is no model to swap and no serve to outlive.
-// The handle is resolved once so the measured loop times the kernel rather
-// than the registry lookup in front of it.
-static ROPE_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// rope_forward(Q, K, positions, seq_len, num_q_heads, num_kv_heads, head_dim, rotary_dim, theta)
 /// Grid: (num_q_heads + num_kv_heads, ceil(seq_len / (128 / (rotary_dim / 2))), 1)
@@ -28,7 +19,7 @@ static ROPE_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 fn bench_rope(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &ROPE_FN, "rope", "rope_forward");
+    let kernel = gpu::get_kernel(reg, "rope", "rope_forward");
 
     let num_q_heads: u32 = 16;
     let num_kv_heads: u32 = 2;

@@ -22,7 +22,7 @@ struct Fake {
 // and `PluginMetadata` are borrowed as `&'static` by the traits under test,
 // so a test double has to have static storage to be passed at all. Both are
 // const-constructed literals with no interior mutability.
-static FAKE_DESC: BenchmarkDescriptor = BenchmarkDescriptor {
+const FAKE_DESC: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "fake",
     name: "Fake",
     summary: "test double",
@@ -45,7 +45,7 @@ impl Fake {
 
 // Same category as `FAKE_DESC`: compile-time test data that the trait
 // borrows as `&'static`.
-static FAKE_META: PluginMetadata = PluginMetadata::atlas("test double");
+const FAKE_META: PluginMetadata = PluginMetadata::atlas("test double");
 
 impl Plugin for Fake {
     fn metadata(&self) -> &'static PluginMetadata {

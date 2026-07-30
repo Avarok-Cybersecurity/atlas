@@ -97,7 +97,7 @@ pub fn byte_to_char_map() -> &'static [u32; 256] {
 /// no interior mutability. `static` rather than `const` so the lookups
 /// borrow one copy instead of inlining 324 halfwords at each call site.
 #[rustfmt::skip]
-static CHAR_TO_BYTE_MAP: [i16; 324] = [
+const CHAR_TO_BYTE_MAP: [i16; 324] = [
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
     46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68,

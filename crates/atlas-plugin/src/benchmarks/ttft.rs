@@ -35,10 +35,10 @@ use crate::result::{
 
 const WARM_SUMMARY: &str = "Cached-prefix TTFT vs the stored same-box baseline";
 const COLD_SUMMARY: &str = "Uncached prefill TTFT vs the stored same-box baseline";
-pub static WARM_METADATA: PluginMetadata = PluginMetadata::atlas(WARM_SUMMARY);
-pub static COLD_METADATA: PluginMetadata = PluginMetadata::atlas(COLD_SUMMARY);
+pub const WARM_METADATA: PluginMetadata = PluginMetadata::atlas(WARM_SUMMARY);
+pub const COLD_METADATA: PluginMetadata = PluginMetadata::atlas(COLD_SUMMARY);
 
-pub static WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "ttft-warm-gate",
     name: "Warm TTFT Regression Gate",
     summary: WARM_SUMMARY,
@@ -51,7 +51,7 @@ pub static WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     ctor: || Box::new(TtftGate::new(Mode::Warm)),
 };
 
-pub static COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "ttft-cold-gate",
     name: "Cold TTFT Regression Gate",
     summary: COLD_SUMMARY,

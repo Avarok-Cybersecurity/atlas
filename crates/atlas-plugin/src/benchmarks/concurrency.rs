@@ -25,9 +25,9 @@ use crate::result::{
 };
 
 const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 16";
-pub static METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
+pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
 
-pub static DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "concurrency-sweep",
     name: "Concurrency Sweep",
     summary: SUMMARY,

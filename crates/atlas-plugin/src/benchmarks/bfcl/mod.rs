@@ -44,10 +44,10 @@ pub use report::{MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL};
 
 const SUBSET_SUMMARY: &str = "The golden n=995 MLPerf-edge draw, AST-scored";
 const FULL_SUMMARY: &str = "Every single-turn sample in the three scored categories";
-pub static SUBSET_METADATA: PluginMetadata = PluginMetadata::atlas(SUBSET_SUMMARY);
-pub static FULL_METADATA: PluginMetadata = PluginMetadata::atlas(FULL_SUMMARY);
+pub const SUBSET_METADATA: PluginMetadata = PluginMetadata::atlas(SUBSET_SUMMARY);
+pub const FULL_METADATA: PluginMetadata = PluginMetadata::atlas(FULL_SUMMARY);
 
-pub static SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "bfcl-subset",
     name: "BFCL (subset)",
     summary: SUBSET_SUMMARY,
@@ -61,7 +61,7 @@ pub static SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
-pub static FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "bfcl-full",
     name: "BFCL (full)",
     summary: FULL_SUMMARY,

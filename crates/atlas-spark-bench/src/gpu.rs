@@ -71,15 +71,17 @@ pub fn gpu_sync(stream: u64) -> Result<()> {
     Ok(())
 }
 
-/// Look up a kernel function handle with caching.
-pub fn get_kernel(
-    registry: &'static AtlasRegistry,
-    cache: &OnceLock<RawCudaFunc>,
-    module: &str,
-    func: &str,
-) -> RawCudaFunc {
+/// Resolve `module::func` for a bench.
+///
+/// Each bench function calls this ONCE, before its timed group — so the
+/// `OnceLock` the benches used to declare at file scope memoized a lookup that
+/// already happened exactly once. It is a local here, which keeps
+/// `raw_function_cached`'s signature satisfied without a process global per
+/// kernel per bench binary.
+pub fn get_kernel(registry: &'static AtlasRegistry, module: &str, func: &str) -> RawCudaFunc {
+    let cache = OnceLock::new();
     registry
-        .raw_function_cached(cache, module, func)
+        .raw_function_cached(&cache, module, func)
         .unwrap_or_else(|e| panic!("Kernel {module}::{func} not found: {e}"))
 }
 

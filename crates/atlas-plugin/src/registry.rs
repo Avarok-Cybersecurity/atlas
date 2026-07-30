@@ -11,7 +11,7 @@ use crate::benchmarks::{agentic, bfcl, concurrency, ttft};
 /// descriptors with no interior mutability and nothing derived from a model
 /// or a run; it needs a stable address only so `all()` can hand out slices
 /// of it. Registration is a compile-time decision, not a runtime one.
-static ALL: &[&BenchmarkDescriptor] = &[
+const ALL: &[&BenchmarkDescriptor] = &[
     &concurrency::DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,

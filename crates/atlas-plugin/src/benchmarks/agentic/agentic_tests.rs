@@ -13,7 +13,7 @@ fn the_prompt_is_the_harness_prompt() {
 
 #[test]
 fn it_requires_confirmation_because_it_runs_shell() {
-    assert!(DESCRIPTOR.needs_confirmation);
+    const { assert!(DESCRIPTOR.needs_confirmation) };
 }
 
 #[test]

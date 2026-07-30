@@ -51,9 +51,9 @@ name, always wrapped in a short timeout so it can never stall your shell, for ex
 fuser -k ${ATLAS_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`.";
 
 const SUMMARY: &str = "N agentic runs: build a working Axum server, then verify it";
-pub static METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
+pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
 
-pub static DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "agentic-webserver",
     name: "Agentic Webserver Test",
     summary: SUMMARY,
