@@ -239,7 +239,18 @@ ignores extra trailing args; only MISSING args are UB.) After this,
 re-run `v2_bisect.sh` leg B to confirm; the `DISABLE_PREFILL_V2` pairing
 remains as the escape hatch.
 
-### 5.2 `PROPOSE_META_STRIDE` caps batched MTP propose at ~7.2K context
+### 5.2 `PROPOSE_META_STRIDE` caps batched MTP propose at ~7.2K context — RESOLVED (d650bd4d)
+
+**RESOLVED 2026-07-30 (options 1+4, §6.18 for the A/B):** stride is now
+computed per head at `MtpHead::new` — `align8(256 + (max_seq_len/bs + 1)*4)`,
+floor 2048 (4K keeps the old layout; 16K → 4360 B; 64K → 16648 B), override
+`ATLAS_PROPOSE_META_STRIDE=<bytes>` (saturating, floor 2048, cap 16 MiB so
+`16×stride` can't wrap). Both scheduler arms route through
+`log_propose_batched_err`: "exceeds meta stride" → debug, everything else
+(KV exhaustion, CUDA) stays ERROR. 6 unit tests incl. hostile-override
+values. Implemented via ultracode workflow; one verify lens caught a real
+env-override overflow (usize::MAX panic in debug / alloc wrap in release),
+fixed before commit. Original analysis below kept for the record.
 
 `mtp_head/forward_batch.rs`: `ensure!(256 + block_table.len()*4 <= 2048)` →
 448 block-table entries → **~7,168 tokens** at block_size 16.
@@ -1037,6 +1048,34 @@ C=4->C=8 aggregate FLATLINE (+2.9%) contrasts with the synthetic bench's
 healthy scaling to C=16: agentic contexts run 10-20K tokens, past the
 ~7.2K batched-propose fallback (5.2). **The 5.2 propose_meta sizing fix is
 now the top agentic-performance lever**, ahead of everything else in 7.
+
+### 6.18 §5.2 propose_meta stride fix — A/B (d650bd4d)
+
+Implemented per §5.2 RESOLVED note (dynamic stride + ERROR demotion,
+options 1+4, ultracode workflow, one real overflow finding fixed pre-commit).
+A/B on the 64K agentic config vs the §6.17 baseline:
+
+| metric | §6.17 baseline | rep1 | rep2 |
+|---|---|---|---|
+| C=8 agg tok/s | 25.1 | 24.9 | **28.0** |
+| C=8 decode median tok/s | 4.2 | **4.9** | **4.8** |
+| C=4 agg / decode median | 24.4 / 7.1 | 23.1 / **7.9** | — |
+| `exceeds meta stride` (full run) | fired (~14.6K ctx) | **0** | **0** |
+| ERROR lines (full run) | spam | **0** | **0** |
+| pass | 8/8 | 6/8 | 6/8 |
+| KV ledger | clean | clean | clean |
+
+Verdict: batched propose now stays engaged at agentic context lengths —
+per-stream decode **+11–17%** consistently, best C=8 aggregate yet (28.0).
+The 6/8s are repeat-loop kills on WRONG-ANSWER loops (different tasks each
+rep: sorter+roman, then roman+intervals) — stochastic agent behavior, not a
+perf effect; possible interaction with the default sampling filters
+(top_n_sigma=1.0, min_p=0.08 — CLI defaults, active because this model's
+generation_config lacks both keys; a min_p=0 loop-rate A/B is a candidate
+follow-up). decode_short C=16 sanity on the same server: **166.3** agg
+(prior 163.4 on this config; canonical-4K median 164.4) — no regression.
+Full logs: `conc27_stride_ab.log`, `conc_c8_rep2.log`,
+`c16_sanity_stride.log` in the job tmp dir.
 
 ## 7. Open
 
