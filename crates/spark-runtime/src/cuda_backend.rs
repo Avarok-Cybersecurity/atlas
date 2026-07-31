@@ -248,12 +248,28 @@ fn system_available_memory_bytes() -> Option<usize> {
 /// If free memory drops below `threshold_mb` MB, the process exits immediately.
 ///
 /// Returns a `tokio::task::JoinHandle` — drop it to stop the watchdog (on shutdown).
+/// Whether the watchdog is already running.
+///
+/// STATIC, DELIBERATELY — process lifecycle. The watchdog polls DEVICE free
+/// memory, which is a property of the process and its GPU, not of any model:
+/// one is correct for the whole process no matter how many models come and go.
+/// It is nonetheless spawned from inside the model-dependent startup range
+/// (after GPU init, which it needs for a context), so a second load would
+/// otherwise start a second watchdog polling the same number and logging the
+/// same warning twice. Guarding at the source rather than at the call site
+/// means a future swap path cannot get this wrong by forgetting.
+static WATCHDOG_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the OOM watchdog, or return `None` if one is already running.
 pub fn spawn_oom_watchdog(
     threshold_mb: usize,
     interval: std::time::Duration,
-) -> tokio::task::JoinHandle<()> {
+) -> Option<tokio::task::JoinHandle<()>> {
+    if WATCHDOG_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
     let threshold_bytes = threshold_mb * 1024 * 1024;
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
         // Track consecutive low-memory readings to avoid false positives
         // during transient allocation spikes.
@@ -283,7 +299,7 @@ pub fn spawn_oom_watchdog(
                 }
             }
         }
-    })
+    }))
 }
 
 #[cfg(test)]

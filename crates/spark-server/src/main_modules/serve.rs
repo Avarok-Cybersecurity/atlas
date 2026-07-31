@@ -372,12 +372,12 @@ fn startup(
         max_batch_tokens,
         config.hidden_size,
     )?;
-    if args.profile {
-        // SAFETY: called before any threads are spawned.
-        unsafe {
-            std::env::set_var("ATLAS_PROFILE", "1");
-        }
-    }
+    // Carried on the config rather than written into the environment: the old
+    // `unsafe set_var` claimed "called before any threads are spawned", which
+    // was false by this point (tokio pool, this blocking thread, the signal
+    // listener, the TUI thread, the OOM watchdog), and a concurrent getenv
+    // during setenv is UB.
+    config.profile = args.profile;
     serve_phases::cap_vocab_size_to_tokenizer(&model_dir, &mut config);
     let serve_phases::KvCacheConfig {
         effective_kv_dtype_str: _,

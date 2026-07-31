@@ -112,6 +112,23 @@ impl Default for ProgressModel {
 }
 
 impl ProgressModel {
+    /// Start over for a new model load.
+    ///
+    /// **Deliberately `Self::default()`, not a field-by-field clear.** A load
+    /// leaves state in every field — `ready`, the per-phase `Done` marks, the
+    /// frozen `load_secs` window, `started_at` — and a hand-written reset that
+    /// misses one renders the *second* load as already finished. Reassigning
+    /// the whole struct cannot miss a field, and a field added later is reset
+    /// for free.
+    ///
+    /// Without this, `enter_phase` only advances `Pending → Running`, so a
+    /// phase re-entered after the first load never leaves `Done`; `ready` is
+    /// never cleared; and `freeze_load_window` keeps the FIRST close, so the
+    /// second load's GB/s is never measured.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     pub fn apply(&mut self, ev: ProgressEvent) {
         match ev {
             ProgressEvent::Phase { phase, .. } => self.enter_phase(phase as usize),
@@ -277,6 +294,67 @@ impl ProgressModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A second load must render as a LOAD, not as one that already finished.
+    ///
+    /// This is the defect `reset` exists for: without it `enter_phase` only
+    /// advances `Pending → Running`, so every phase stays `Done` from the first
+    /// load and the checklist shows a completed run while the model is still
+    /// loading.
+    #[test]
+    fn a_second_load_starts_from_a_clean_checklist() {
+        let mut m = ProgressModel::default();
+        m.apply(ProgressEvent::Phase {
+            phase: 0,
+            name: "banner".into(),
+        });
+        m.apply(ProgressEvent::Ready { port: 8888 });
+        assert!(m.ready);
+        assert_eq!(m.phases[0].state, PhaseState::Done);
+
+        m.reset();
+
+        assert!(!m.ready, "a new load has not finished");
+        assert_eq!(m.port, 0, "and has not bound yet");
+        assert!(
+            m.phases.iter().all(|p| p.state == PhaseState::Pending),
+            "every phase is pending again"
+        );
+
+        // And a re-entered phase now actually enters, rather than staying Done.
+        m.apply(ProgressEvent::Phase {
+            phase: 0,
+            name: "banner".into(),
+        });
+        assert_eq!(m.phases[0].state, PhaseState::Running);
+    }
+
+    /// The load-rate window must reopen, or the second load's GB/s is the
+    /// first load's number.
+    #[test]
+    fn reset_reopens_the_frozen_load_window() {
+        let mut m = ProgressModel::default();
+        // The window opens on the FIRST shard, not at process start, so a load
+        // has to actually begin before there is anything to freeze.
+        m.apply(ProgressEvent::ShardStart {
+            shard: 1,
+            total: 2,
+            name: "shard-1".into(),
+        });
+        m.apply(ProgressEvent::Ready { port: 8888 });
+        assert!(
+            m.load_secs.is_some(),
+            "the window should be frozen after a load completes"
+        );
+
+        m.reset();
+        assert!(
+            m.load_secs.is_none(),
+            "the frozen window survived a reset: the second load would report \
+             the first load's rate, since freeze_load_window keeps the FIRST close"
+        );
+        assert!(m.load_started.is_none(), "and the window is not yet open");
+    }
 
     #[test]
     fn phase_entry_closes_earlier_phases() {
