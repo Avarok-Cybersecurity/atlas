@@ -73,6 +73,8 @@ pub struct BenchState {
     history_loaded: bool,
     /// Set once a terminal frame has been persisted, so it is written once.
     persisted: bool,
+    /// The endpoint check between pressing START and the run beginning.
+    pub preflight: Option<crate::tui::bench_preflight::Preflight>,
 }
 
 impl BenchState {
@@ -203,6 +205,58 @@ impl BenchState {
             _ => "__model",
         };
         self.errors.get(key).map(String::as_str)
+    }
+
+    /// Check the endpoint, then start. Refuses up front for the same reasons
+    /// `start` does, so a doomed run never reaches the check.
+    ///
+    /// With the probe switched off this is `start` — asking nothing is the
+    /// point of that setting.
+    pub fn begin_start(&mut self) -> Result<(), String> {
+        if self.is_running() {
+            return Err("a benchmark is already running".into());
+        }
+        if !self.errors.is_empty() {
+            return Err(format!("{} field(s) need fixing", self.errors.len()));
+        }
+        if self.coherence == atlas_plugin::CoherencePolicy::Skip {
+            return self.start();
+        }
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or("the benchmark executor is unavailable")?;
+        self.preflight = Some(crate::tui::bench_preflight::Preflight::begin(
+            executor.runtime(),
+            self.target.clone(),
+            std::time::Duration::from_secs(30),
+        ));
+        Ok(())
+    }
+
+    /// Drain the pre-flight. Called once per tick; starts the run itself when
+    /// the endpoint checks out, so a clean check is invisible beyond a flicker.
+    pub fn poll_preflight(&mut self) {
+        let Some(pre) = self.preflight.as_mut() else {
+            return;
+        };
+        // Some(true) starts now; a concern keeps the modal up for the user to
+        // decide, and None means the check is still in flight.
+        if pre.poll(&self.target) == Some(true) {
+            self.preflight = None;
+            let _ = self.start();
+        }
+    }
+
+    /// Proceed past a reported concern.
+    pub fn accept_preflight(&mut self) -> Result<(), String> {
+        self.preflight = None;
+        self.start()
+    }
+
+    /// Abandon the run and go back to the form.
+    pub fn cancel_preflight(&mut self) {
+        self.preflight = None;
     }
 
     /// Start the selected benchmark. Refuses while a run is in flight and while

@@ -126,24 +126,39 @@ fn draw_log(f: &mut Frame, app: &App, area: Rect) {
     let block = panel(format!("LOG ─ {} lines ─", app.bench.log.len()), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    // Wrap, do not truncate. A warning that explains WHY a run is suspect is
+    // exactly the kind of line that is long, and clipping it at the panel edge
+    // hides the half that matters. Continuations are indented so a wrapped
+    // entry still reads as one entry.
     let visible = inner.height as usize;
-    let lines: Vec<Line> = app
-        .bench
-        .log
-        .iter()
-        .rev()
-        .take(visible)
-        .rev()
-        .map(|line| {
-            use atlas_plugin::LogLevel as L;
-            let style = match line.level {
-                L::Error => theme::error(),
-                L::Warn => theme::warn(),
-                L::Info => theme::text2(),
-                L::Debug => theme::dim(),
-            };
-            Line::from(Span::styled(format!(" {}", line.text), style))
-        })
-        .collect();
+    let width = inner.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for entry in app.bench.log.iter().rev() {
+        use atlas_plugin::LogLevel as L;
+        let style = match entry.level {
+            L::Error => theme::error(),
+            L::Warn => theme::warn(),
+            L::Info => theme::text2(),
+            L::Debug => theme::dim(),
+        };
+        let mut wrapped = super::super::wrap(&entry.text, width.saturating_sub(1), style);
+        // Indent every line: the first by one column, the rest by three, so a
+        // continuation is never mistaken for a new entry.
+        for (i, line) in wrapped.iter_mut().enumerate() {
+            let pad = if i == 0 { " " } else { "   " };
+            line.spans.insert(0, Span::styled(pad, style));
+        }
+        // Building newest-first, so each entry goes in front of what we have.
+        wrapped.extend(std::mem::take(&mut lines));
+        lines = wrapped;
+        if lines.len() >= visible {
+            break;
+        }
+    }
+    // Keep the newest end when the tail overflows the pane.
+    if lines.len() > visible {
+        lines.drain(..lines.len() - visible);
+    }
     f.render_widget(Paragraph::new(lines), inner);
 }

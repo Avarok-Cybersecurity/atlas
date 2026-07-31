@@ -105,6 +105,10 @@ pub fn run(
             if app.section == Section::Benchmarks {
                 app.bench.load_history();
             }
+            // Unconditional: a pre-flight started in Benchmarks must still
+            // resolve if the user navigates away, or the run is stranded on a
+            // check nobody is draining.
+            app.bench.poll_preflight();
         }
         // 4. Render.
         if let Err(e) = terminal.draw(|f| render::draw(f, &app)) {

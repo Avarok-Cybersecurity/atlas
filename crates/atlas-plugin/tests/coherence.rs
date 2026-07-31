@@ -21,20 +21,19 @@ fn target(port: u16) -> TargetEndpoint {
 }
 
 #[tokio::test]
-async fn an_endpoint_answering_correctly_passes() {
+async fn an_endpoint_answering_correctly_is_clean() {
     // One reply satisfies both checks, so a single canned string is enough.
     let mock =
         mock_endpoint::start_saying(Some("4 Paris".into()), 1, Duration::ZERO, Duration::ZERO)
             .await;
-    let answers = coherence::verify(&target(mock.port), Duration::from_secs(5))
-        .await
-        .expect("probe passes");
-    assert_eq!(answers.len(), 2);
-    assert!(answers.iter().all(|a| a.passed));
+    let report = coherence::probe(&target(mock.port), Duration::from_secs(5)).await;
+    assert_eq!(report.answers.len(), 2);
+    assert!(report.is_clean());
+    assert!(report.concern(&target(mock.port)).is_none());
 }
 
 #[tokio::test]
-async fn an_endpoint_answering_nonsense_fails_and_says_what_it_said() {
+async fn an_endpoint_answering_nonsense_warns_and_says_what_it_said() {
     let mock = mock_endpoint::start_saying(
         Some("I am a teapot".into()),
         1,
@@ -42,37 +41,35 @@ async fn an_endpoint_answering_nonsense_fails_and_says_what_it_said() {
         Duration::ZERO,
     )
     .await;
-    let err = coherence::verify(&target(mock.port), Duration::from_secs(5))
-        .await
-        .expect_err("probe fails");
-    let text = format!("{err:#}");
-    // The message must quote the answer back — "coherence probe failed" alone
-    // sends the reader to the server logs for something the client already saw.
+    let report = coherence::probe(&target(mock.port), Duration::from_secs(5)).await;
+    assert!(!report.is_clean());
+    let text = report.concern(&target(mock.port)).expect("a concern");
+    // Quote the answer back: "the probe failed" alone sends the reader to the
+    // server logs for something the client already had in hand.
     assert!(text.contains("teapot"), "{text}");
     assert!(
         text.contains("arithmetic"),
         "names the failing check: {text}"
     );
-    // And it must name the escape hatch, or the only way out is reading source.
-    assert!(text.contains("--skip-coherence-probe"), "{text}");
+    // And it must NOT read as a refusal — the run is still allowed.
+    assert!(text.contains("still valid"), "{text}");
 }
 
 #[tokio::test]
 async fn an_unreachable_endpoint_is_a_transport_error_not_a_wrong_answer() {
     // A closed port and a confused model are different diagnoses; conflating
     // them sends the reader looking at the wrong thing.
-    let err = coherence::verify(&target(1), Duration::from_secs(2))
-        .await
-        .expect_err("probe fails");
-    let text = format!("{err:#}");
+    let report = coherence::probe(&target(1), Duration::from_secs(2)).await;
+    assert!(report.transport_error.is_some());
+    let text = report.concern(&target(1)).expect("a concern");
     assert!(
-        !text.contains("coherence probe"),
+        !text.contains("different model"),
         "should not blame the model: {text}"
     );
 }
 
 #[tokio::test]
-async fn the_probe_runs_before_a_benchmark_does_any_work() {
+async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
     use atlas_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
     use atlas_plugin::{ArtifactStore, BenchmarkExecutor, ParamValues, registry};
 
@@ -103,7 +100,7 @@ async fn the_probe_runs_before_a_benchmark_does_any_work() {
             save: false,
             source: atlas_plugin::RunSource::Cli,
             atlas_version: "test".into(),
-            coherence: CoherencePolicy::Require,
+            coherence: CoherencePolicy::Probe,
         },
     };
 
@@ -114,13 +111,13 @@ async fn the_probe_runs_before_a_benchmark_does_any_work() {
     .expect("join")
     .expect("drives");
 
-    assert_ne!(outcome.exit_code(), 0, "a failed probe must fail the run");
-    // The defaults are 5 concurrencies x 4 input lengths with warm-ups — many
-    // hundreds of requests. Only the two probe questions may have been asked.
-    assert_eq!(
-        requests.load(std::sync::atomic::Ordering::Relaxed),
-        2,
-        "the sweep must not have started"
+    // The whole point of the change: an endpoint that answers oddly is a
+    // WARNING, so the sweep still runs. Two probe questions plus the sweep's
+    // own requests — far more than 2.
+    assert!(
+        requests.load(std::sync::atomic::Ordering::Relaxed) > 2,
+        "the benchmark must not have been blocked by the probe"
     );
+    assert_eq!(outcome.exit_code(), 0, "a warning is not a failure");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -104,6 +104,13 @@ impl BenchmarkExecutor {
         }
     }
 
+    /// The runtime this executor drives work on, so a caller can run a short
+    /// async check (an endpoint pre-flight) on the same one rather than
+    /// building a second.
+    pub fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
+    }
+
     pub fn artifacts(&self) -> &ArtifactStore {
         &self.artifacts
     }
@@ -167,19 +174,27 @@ struct RunTask {
 
 impl RunTask {
     /// Ask the endpoint two known-answer questions before committing to a run.
-    async fn probe_coherence(&self) -> anyhow::Result<()> {
+    ///
+    /// **Advisory only.** A model that answers oddly is worth saying out loud,
+    /// but it is not grounds to refuse: a latency sweep against a base
+    /// checkpoint is a real thing to measure, and so is a benchmark aimed at a
+    /// model it was not written for. The warning goes in the run log, where it
+    /// stays attached to the numbers it qualifies.
+    async fn probe_coherence(&self) {
         if self.coherence == CoherencePolicy::Skip {
-            self.handle
-                .info("coherence probe skipped — answers are not being checked");
-            return Ok(());
+            return;
         }
-        self.handle.status("coherence probe".to_string());
-        let answers = crate::coherence::verify(self.handle.target(), COHERENCE_TIMEOUT).await?;
-        for a in &answers {
-            self.handle
-                .info(format!("coherence {}: {:?}", a.label, a.answer.trim()));
+        self.handle.status("checking the endpoint".to_string());
+        let report = crate::coherence::probe(self.handle.target(), COHERENCE_TIMEOUT).await;
+        match report.concern(self.handle.target()) {
+            Some(concern) => self.handle.warn(concern),
+            None => {
+                for a in &report.answers {
+                    self.handle
+                        .info(format!("endpoint check {}: {:?}", a.label, a.answer.trim()));
+                }
+            }
         }
-        Ok(())
     }
 
     async fn execute(self) {
@@ -196,8 +211,8 @@ impl RunTask {
         // endpoint, so a wrong --model used to cost minutes of setup and then
         // hours of uniformly-failing samples. Two short completions up front
         // turn that into a two-second error.
+        self.probe_coherence().await;
         let setup = async {
-            self.probe_coherence().await?;
             bench.load(self.handle.clone()).await?;
             bench.configure(&self.values)
         }

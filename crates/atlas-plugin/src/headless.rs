@@ -46,7 +46,7 @@ impl HeadlessOptions {
             save: true,
             source: RunSource::Cli,
             atlas_version: atlas_version.into(),
-            coherence: CoherencePolicy::Require,
+            coherence: CoherencePolicy::Probe,
         }
     }
 }

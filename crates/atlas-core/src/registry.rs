@@ -87,6 +87,24 @@ pub fn cuda_error_text(status: i32) -> String {
     format!("{name} ({status}): {msg}")
 }
 
+/// `CUDA_ERROR_DEINITIALIZED`. The driver tears the primary context down in its
+/// own `atexit` handler, which can run before our `Drop` impls do. Every
+/// module unload and every host free then reports this code.
+///
+/// It is **not a failure**: a module cannot leak out of a context that no
+/// longer exists, and the memory it occupied went with it. Reporting 158 of
+/// them at exit is pure noise that buries anything real.
+pub const CUDA_ERROR_DEINITIALIZED: i32 = 4;
+
+/// Whether a CUresult means "the context is already gone, nothing to do".
+///
+/// Also covers `CUDA_ERROR_INVALID_CONTEXT` (201) and
+/// `CUDA_ERROR_CONTEXT_IS_DESTROYED` (709), which arrive by the same route
+/// depending on how far the driver got before we ran.
+pub fn is_teardown_noop(status: i32) -> bool {
+    matches!(status, CUDA_ERROR_DEINITIALIZED | 201 | 709)
+}
+
 /// Wrapper for raw CUfunction handle (Send+Sync safe — handles are context-wide).
 #[derive(Clone, Copy)]
 pub struct RawCudaFunc(pub *mut c_void);
@@ -307,7 +325,8 @@ impl AtlasRegistry {
             // process's context, has not been unloaded (the map is drained), and
             // no launch can be in flight — the caller guarantees quiescence.
             let status = unsafe { cuModuleUnload(raw) };
-            if status != 0 {
+            // A context that is already gone took its modules with it.
+            if status != 0 && !is_teardown_noop(status) {
                 failures.push(format!("{name}: {}", cuda_error_text(status)));
             }
         }

@@ -292,3 +292,68 @@ fn the_library_leaves_nothing_behind_when_it_fills_in() {
     );
     assert!(out.contains("MODELS ─ 1"), "the new title is drawn:\n{out}");
 }
+
+/// The pre-flight modal and the run log, which are what the user actually
+/// reads when a benchmark is about to go wrong.
+mod preflight {
+    use super::*;
+    use crate::tui::bench_preflight::Preflight;
+
+    fn on_params() -> App {
+        let mut app = app();
+        app.section = Section::Benchmarks;
+        app.bench_sub = BenchSub::Suite;
+        app.bench.view = View::Params;
+        app
+    }
+
+    #[test]
+    fn the_checking_modal_shows_a_spinner_and_the_target() {
+        let mut app = on_params();
+        app.bench.preflight = Some(Preflight::pending());
+        let out = render(&app, 200, 50);
+        assert!(out.contains("CHECKING THE ENDPOINT"), "{out}");
+        assert!(out.contains("known-answer"), "says what it is doing: {out}");
+    }
+
+    /// The reason must be READABLE — the whole bug was a concern clipped at the
+    /// panel edge, so the half that mattered never reached the screen.
+    #[test]
+    fn a_concern_is_wrapped_not_truncated() {
+        let mut app = on_params();
+        let long = "http://127.0.0.1:8888 is serving \"nvidia/Qwen3.6-27B-NVFP4\", which did not \
+                    answer as expected (recall answered nothing). This benchmark may be aimed at \
+                    a different model, or the checkpoint may be a base (non-instruct) one — the \
+                    run is still valid, but read the numbers with that in mind.";
+        app.bench.preflight = Some(Preflight::with_concern(long.to_string()));
+        let out = render(&app, 200, 50);
+        assert!(out.contains("BEFORE YOU START"), "{out}");
+        assert!(out.contains("run it anyway"), "offers to proceed: {out}");
+        assert!(out.contains("back to the form"), "offers to go back: {out}");
+        // The tail of the message must survive the wrap.
+        assert!(
+            out.contains("with that in mind"),
+            "the end of the reason was lost:\n{out}"
+        );
+    }
+
+    /// A long log line must wrap inside its panel rather than being cut.
+    #[test]
+    fn run_log_lines_wrap_inside_the_panel() {
+        let mut app = on_params();
+        app.bench.view = View::Run;
+        let tail = "and this tail must still be on screen";
+        app.bench.log.push_back(atlas_plugin::LogLine {
+            level: atlas_plugin::LogLevel::Warn,
+            text: format!(
+                "http://127.0.0.1:8888 is serving a model that did not answer as expected, \
+                 which usually means the benchmark is aimed somewhere else — {tail}"
+            ),
+        });
+        let out = render(&app, 120, 40);
+        assert!(
+            out.contains(tail),
+            "the line was truncated, not wrapped:\n{out}"
+        );
+    }
+}

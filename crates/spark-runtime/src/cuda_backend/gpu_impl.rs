@@ -431,8 +431,15 @@ impl GpuBackend for AtlasCudaBackend {
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
         if !ptr.is_null() {
             let status = unsafe { cuMemFreeHost(ptr as *mut c_void) };
-            if status != 0 {
-                bail!("cuMemFreeHost failed: status {status}");
+            // The driver tears the primary context down in its own atexit
+            // handler, which can run before ours. Pinned host memory allocated
+            // against a context that no longer exists was already reclaimed
+            // with it — reporting that as a failure is noise at every exit.
+            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+                bail!(
+                    "cuMemFreeHost failed: {}",
+                    atlas_core::registry::cuda_error_text(status)
+                );
             }
         }
         Ok(())

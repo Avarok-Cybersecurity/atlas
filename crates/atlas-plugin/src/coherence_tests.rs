@@ -68,10 +68,81 @@ fn every_accept_pattern_is_lower_case() {
 }
 
 #[test]
-fn requiring_the_probe_is_the_default() {
-    // A probe you have to remember to switch on does not prevent the 12-hour
-    // failure it exists to prevent.
-    assert_eq!(CoherencePolicy::default(), CoherencePolicy::Require);
+fn probing_is_the_default_but_it_only_ever_warns() {
+    // On by default so a wrong --model is noticed; advisory so a benchmark
+    // aimed at a different model is still allowed to run.
+    assert_eq!(CoherencePolicy::default(), CoherencePolicy::Probe);
+}
+
+#[test]
+fn an_empty_answer_reads_as_answered_nothing() {
+    // A model that returns no text at all produced the useless message
+    // `recall answered ""`. Say what actually happened.
+    let report = Report {
+        answers: vec![Answer {
+            label: "recall",
+            answer: String::new(),
+            passed: false,
+        }],
+        transport_error: None,
+    };
+    let target = TargetEndpoint::local(8888, "m");
+    let concern = report.concern(&target).expect("a concern");
+    assert!(concern.contains("answered nothing"), "{concern}");
+    assert!(!concern.contains("\"\""), "no empty quotes: {concern}");
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn the_concern_describes_rather_than_forbids() {
+    let report = Report {
+        answers: vec![Answer {
+            label: "recall",
+            answer: "London".into(),
+            passed: false,
+        }],
+        transport_error: None,
+    };
+    let concern = report
+        .concern(&TargetEndpoint::local(8888, "m"))
+        .expect("a concern");
+    // The old wording called it a failure and told the user to pass a flag.
+    assert!(!concern.contains("failed"), "not a verdict: {concern}");
+    assert!(
+        concern.contains("still valid"),
+        "says the run may proceed: {concern}"
+    );
+    assert!(concern.contains("different model"), "{concern}");
+}
+
+#[test]
+fn a_transport_error_is_worded_as_one() {
+    let report = Report {
+        answers: Vec::new(),
+        transport_error: Some("connection refused".into()),
+    };
+    let concern = report
+        .concern(&TargetEndpoint::local(8888, "m"))
+        .expect("a concern");
+    assert!(concern.contains("did not answer"), "{concern}");
+    assert!(
+        !concern.contains("different model"),
+        "a closed port is not a model problem: {concern}"
+    );
+}
+
+#[test]
+fn a_clean_report_has_nothing_to_say() {
+    let report = Report {
+        answers: vec![Answer {
+            label: "recall",
+            answer: "Paris".into(),
+            passed: true,
+        }],
+        transport_error: None,
+    };
+    assert!(report.is_clean());
+    assert!(report.concern(&TargetEndpoint::local(8888, "m")).is_none());
 }
 
 #[test]

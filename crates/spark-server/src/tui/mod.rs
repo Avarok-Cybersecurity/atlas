@@ -35,6 +35,7 @@ pub mod terminal_guard;
 
 pub mod app;
 pub mod bench_keys;
+pub mod bench_preflight;
 pub mod bench_state;
 pub mod commands;
 pub mod events;

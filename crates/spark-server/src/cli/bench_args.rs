@@ -67,12 +67,10 @@ pub struct RunArgs {
     /// Exit 0 even when the gate verdict is FAIL.
     #[arg(long)]
     pub no_fail_on_verdict: bool,
-    /// Do not check that the endpoint can answer before measuring it.
+    /// Do not ask the endpoint two known-answer questions before measuring.
     ///
-    /// The probe asks two known-answer questions and refuses to start if the
-    /// model gets them wrong, which catches a wrong `--model` in seconds
-    /// instead of after a full run. Skip it for a base (non-instruct)
-    /// checkpoint, where latency is still meaningful but the answers are not.
+    /// The probe only WARNS — it never refuses to start — so this is for
+    /// skipping the two extra completions, not for silencing a veto.
     #[arg(long)]
     pub skip_coherence_probe: bool,
 }

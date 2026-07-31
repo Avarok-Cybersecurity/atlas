@@ -101,7 +101,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             coherence: if args.skip_coherence_probe {
                 atlas_plugin::CoherencePolicy::Skip
             } else {
-                atlas_plugin::CoherencePolicy::Require
+                atlas_plugin::CoherencePolicy::Probe
             },
         },
     };

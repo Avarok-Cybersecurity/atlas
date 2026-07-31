@@ -23,6 +23,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     if app.bench.confirm_open {
         draw_confirm(f, app, area);
     }
+    // Drawn last so it sits above the consent gate: by the time the endpoint
+    // is being checked, consent has already been given.
+    if app.bench.preflight.is_some() {
+        draw_preflight(f, app, area);
+    }
 }
 
 fn draw_form(f: &mut Frame, app: &App, area: Rect) {
@@ -95,12 +100,12 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
     // The probe is a run option rather than a form field, so it gets a status
     // line instead of a row — but it must be visible, or `p` is a secret.
     let (probe_text, probe_style) = match app.bench.coherence {
-        atlas_plugin::CoherencePolicy::Require => (
-            " coherence probe  on — the endpoint must answer before measuring",
+        atlas_plugin::CoherencePolicy::Probe => (
+            " endpoint check  on — warns if the model answers unexpectedly",
             theme::dim(),
         ),
         atlas_plugin::CoherencePolicy::Skip => (
-            " coherence probe  OFF — answers will not be checked",
+            " endpoint check  OFF — the model will not be asked anything",
             theme::warn(),
         ),
     };
@@ -136,6 +141,80 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             " a benchmark is already running — cancel it first",
             theme::warn(),
         )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The endpoint check, and the decision when it has something to report.
+///
+/// Two states in one modal because they are one moment for the user: the
+/// spinner is indeterminate on purpose — the check is two completions against
+/// a server whose speed is the thing being measured, so any percentage would
+/// be invented.
+fn draw_preflight(f: &mut Frame, app: &App, area: Rect) {
+    use crate::tui::bench_preflight::Phase;
+    let Some(pre) = &app.bench.preflight else {
+        return;
+    };
+    let checking = pre.is_checking();
+    let w = 72.min(area.width.saturating_sub(4));
+    let h = if checking { 7 } else { 14 }.min(area.height.saturating_sub(2));
+    let modal = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, modal);
+    let block = panel(
+        if checking {
+            "CHECKING THE ENDPOINT ─".into()
+        } else {
+            "BEFORE YOU START ─".to_string()
+        },
+        true,
+    );
+    let inner = block.inner(modal);
+    f.render_widget(block, modal);
+    let width = inner.width.saturating_sub(2) as usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+    match &pre.phase {
+        Phase::Checking => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(
+                        " {} ",
+                        theme::SPINNER[(app.tick as usize / 2) % theme::SPINNER.len()]
+                    ),
+                    theme::brand_cyan(),
+                ),
+                Span::styled("asking the model two known-answer questions", theme::text()),
+            ]));
+            lines.push(Line::default());
+            lines.extend(wrap(
+                &format!("{} · {}", app.bench.target.base_url, app.bench.target.model),
+                width,
+                theme::dim(),
+            ));
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(" Esc  cancel", theme::dim())));
+        }
+        Phase::Concern(text) => {
+            lines.push(Line::from(Span::styled(
+                " ⚠  this may not be the server you meant",
+                theme::warn().add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::default());
+            lines.extend(wrap(text, width, theme::text2()));
+            lines.push(Line::default());
+            lines.push(Line::from(vec![
+                Span::styled(" p ", theme::brand_green().add_modifier(Modifier::REVERSED)),
+                Span::styled(" run it anyway   ", theme::text()),
+                Span::styled(" Esc ", theme::dim().add_modifier(Modifier::REVERSED)),
+                Span::styled(" back to the form", theme::text2()),
+            ]));
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
 }

@@ -20,23 +20,23 @@
 //! It is deliberately **not** a quality measurement. Passing means "the
 //! endpoint is wired up and generating sense", nothing more.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::json;
 use std::time::Duration;
 
 use crate::http;
 use crate::plugin::TargetEndpoint;
 
-/// Whether a run insists on a coherent endpoint before it starts.
+/// Whether a run probes the endpoint before it starts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CoherencePolicy {
-    /// Probe, and refuse to start if it fails. The default: every benchmark in
-    /// the suite targets an instruct model, and none produce a meaningful
-    /// number against an endpoint that cannot answer.
+    /// Probe and report. A failed probe is a **warning, never a veto**:
+    /// benchmarking a base checkpoint, or a model that phrases answers
+    /// unusually, are legitimate things to do on purpose, and a check that
+    /// cannot be overruled turns a useful signal into an obstacle.
     #[default]
-    Require,
-    /// Skip the probe. For a base (non-instruct) checkpoint, where a pure
-    /// latency measurement is still valid but the answers would be nonsense.
+    Probe,
+    /// Do not probe at all — not even the two short completions.
     Skip,
 }
 
@@ -77,32 +77,80 @@ pub struct Answer {
     pub passed: bool,
 }
 
-/// Ask every [`CHECKS`] question and require all of them.
-///
-/// Returns the answers on success so the caller can log what it saw — a probe
-/// that passes silently teaches nobody what "passing" looked like.
-pub async fn verify(target: &TargetEndpoint, timeout: Duration) -> Result<Vec<Answer>> {
-    let mut answers = Vec::with_capacity(CHECKS.len());
-    for check in CHECKS {
-        answers.push(ask(target, check, timeout).await?);
+/// The outcome of a probe: what was asked, what came back, and whether it fit.
+#[derive(Clone, Debug, Default)]
+pub struct Report {
+    pub answers: Vec<Answer>,
+    /// Set when the endpoint could not be reached or refused the request. This
+    /// is a different diagnosis from a wrong answer and is worded differently.
+    pub transport_error: Option<String>,
+}
+
+impl Report {
+    /// Did every check pass and nothing go wrong on the wire?
+    pub fn is_clean(&self) -> bool {
+        self.transport_error.is_none() && self.answers.iter().all(|a| a.passed)
     }
-    let failed: Vec<&Answer> = answers.iter().filter(|a| !a.passed).collect();
-    if !failed.is_empty() {
+
+    /// One line naming what is wrong, or `None` when nothing is.
+    ///
+    /// Deliberately describes rather than forbids: a benchmark aimed at a
+    /// different model is a legitimate thing to run on purpose, and a probe
+    /// that cannot be overruled would block it.
+    pub fn concern(&self, target: &TargetEndpoint) -> Option<String> {
+        if let Some(e) = &self.transport_error {
+            return Some(format!(
+                "{} did not answer a test request: {e}",
+                target.base_url
+            ));
+        }
+        let failed: Vec<&Answer> = self.answers.iter().filter(|a| !a.passed).collect();
+        if failed.is_empty() {
+            return None;
+        }
         let detail = failed
             .iter()
-            .map(|a| format!("{} answered {:?}", a.label, truncate(&a.answer, 80)))
+            .map(|a| match a.answer.trim() {
+                "" => format!("{} answered nothing", a.label),
+                text => format!("{} answered {:?}", a.label, truncate(text, 60)),
+            })
             .collect::<Vec<_>>()
             .join("; ");
-        bail!(
-            "{} is serving {:?}, but it failed the coherence probe: {detail}. \
-             The endpoint is reachable, so this is the model — a wrong --model, \
-             a broken quantization, or a base (non-instruct) checkpoint. \
-             Pass --skip-coherence-probe to measure it anyway.",
-            target.base_url,
-            target.model
-        );
+        Some(format!(
+            "{} is serving {:?}, which did not answer as expected ({detail}). \
+             This benchmark may be aimed at a different model, or the checkpoint \
+             may be a base (non-instruct) one — the run is still valid, but read \
+             the numbers with that in mind.",
+            target.base_url, target.model
+        ))
     }
-    Ok(answers)
+}
+
+/// Ask every [`CHECKS`] question and report what came back.
+///
+/// **Never fails the run.** A wrong answer is information, not a veto: pointing
+/// a latency sweep at a base checkpoint, or a tool-calling benchmark at a model
+/// that phrases things unusually, are both things people do on purpose. A
+/// transport error is captured the same way rather than propagated, so the
+/// caller has one thing to inspect.
+pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Report {
+    let mut report = Report::default();
+    for check in CHECKS {
+        match ask(target, check, timeout).await {
+            Ok(answer) => report.answers.push(answer),
+            Err(e) => {
+                report.transport_error = Some(one_line(&format!("{e:#}")));
+                break;
+            }
+        }
+    }
+    report
+}
+
+/// Collapse an error chain to something a single line can hold.
+fn one_line(s: &str) -> String {
+    let flat = s.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+    truncate(&flat, 140)
 }
 
 /// One question. A transport or HTTP error propagates rather than counting as a

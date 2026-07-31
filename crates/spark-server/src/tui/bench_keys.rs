@@ -61,6 +61,12 @@ impl BenchState {
     }
 
     fn params_key(&mut self, key: KeyEvent) -> Outcome {
+        // The pre-flight owns the keyboard while it is up: it is a decision,
+        // and letting the form underneath react would edit a field the user
+        // cannot currently see.
+        if self.preflight.is_some() {
+            return self.preflight_key(key);
+        }
         if self.confirm_open {
             return self.confirm_key(key);
         }
@@ -85,8 +91,8 @@ impl BenchState {
             // latency target.
             KeyCode::Char('p') => {
                 self.coherence = match self.coherence {
-                    atlas_plugin::CoherencePolicy::Require => atlas_plugin::CoherencePolicy::Skip,
-                    atlas_plugin::CoherencePolicy::Skip => atlas_plugin::CoherencePolicy::Require,
+                    atlas_plugin::CoherencePolicy::Probe => atlas_plugin::CoherencePolicy::Skip,
+                    atlas_plugin::CoherencePolicy::Skip => atlas_plugin::CoherencePolicy::Probe,
                 };
             }
             KeyCode::Char('s') => return self.request_start(),
@@ -104,7 +110,7 @@ impl BenchState {
             return Outcome::None;
         }
         self.confirm_open = false;
-        match self.start() {
+        match self.begin_start() {
             // No toast on success: starting switches to the Run view, which
             // already names the benchmark and its phase. A toast here was both
             // redundant and drawn on top of the progress bar it was announcing.
@@ -113,6 +119,36 @@ impl BenchState {
                 text: e,
                 error: true,
             },
+        }
+    }
+
+    /// While checking, only Esc does anything — there is nothing to decide yet.
+    /// Once there is a concern, `p` proceeds and anything else goes back.
+    fn preflight_key(&mut self, key: KeyEvent) -> Outcome {
+        let checking = self
+            .preflight
+            .as_ref()
+            .is_some_and(crate::tui::bench_preflight::Preflight::is_checking);
+        if checking {
+            if key.code == KeyCode::Esc {
+                self.cancel_preflight();
+            }
+            return Outcome::None;
+        }
+        match key.code {
+            KeyCode::Char('p') | KeyCode::Char('P') | KeyCode::Enter => {
+                match self.accept_preflight() {
+                    Ok(()) => Outcome::None,
+                    Err(e) => Outcome::Toast {
+                        text: e,
+                        error: true,
+                    },
+                }
+            }
+            _ => {
+                self.cancel_preflight();
+                Outcome::None
+            }
         }
     }
 
