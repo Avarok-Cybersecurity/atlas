@@ -69,6 +69,10 @@ pub(crate) async fn serve(
             let host = Arc::new(crate::main_modules::model_host::ModelHost::with_model(
                 prepared.state,
             ));
+            // The first load's scheduler belongs to the host too, or the first
+            // swap would have nothing to join and would tear down a model with
+            // a live scheduler still holding its weights.
+            host.set_scheduler(prepared.scheduler);
             crate::main_modules::serve_router::build_and_serve(
                 host,
                 prepared.model_ready,

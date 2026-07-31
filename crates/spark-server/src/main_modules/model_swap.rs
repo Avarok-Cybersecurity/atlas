@@ -41,8 +41,6 @@ use crate::cli;
 pub(crate) struct SwapOutcome {
     /// The argv of the model that was replaced, for a restore offer.
     pub previous: Option<cli::ServeArgs>,
-    /// The new scheduler thread, to be retained for the next swap.
-    pub scheduler: std::thread::JoinHandle<()>,
 }
 
 /// Replace the running model with the one `next` describes.
@@ -52,7 +50,6 @@ pub(crate) fn swap(
     host: &Arc<ModelHost>,
     next: cli::ServeArgs,
     previous_args: Option<cli::ServeArgs>,
-    outgoing_scheduler: Option<std::thread::JoinHandle<()>>,
     tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>,
 ) -> Result<SwapOutcome> {
     // Refuse before anything is torn down. A bad flag combination, a missing
@@ -86,7 +83,7 @@ pub(crate) fn swap(
     };
 
     // 3. Wait for the scheduler to finish draining.
-    if let Some(handle) = outgoing_scheduler {
+    if let Some(handle) = host.take_scheduler() {
         handle
             .join()
             .map_err(|_| anyhow::anyhow!("the scheduler thread panicked while draining"))?;
@@ -99,10 +96,10 @@ pub(crate) fn swap(
         .context("hot-swap reached an EP-worker path on rank 0, which cannot happen")?;
 
     // 6.
+    host.set_scheduler(prepared.scheduler);
     host.publish(prepared.state);
     Ok(SwapOutcome {
         previous: previous_args,
-        scheduler: prepared.scheduler,
     })
 }
 

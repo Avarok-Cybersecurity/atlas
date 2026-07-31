@@ -26,6 +26,13 @@ use super::app_state::AppState;
 
 pub struct ModelHost {
     current: parking_lot::RwLock<Option<Arc<AppState>>>,
+    /// The scheduler thread of the model currently loaded.
+    ///
+    /// Lives here rather than in `Prepared` because a swap CONSUMES it: the
+    /// join is what proves the old model is drained and safe to tear down, so
+    /// whoever performs the swap must be able to take it, and that is not the
+    /// one call site that first built the server.
+    scheduler: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl ModelHost {
@@ -33,6 +40,7 @@ impl ModelHost {
     pub fn with_model(state: Arc<AppState>) -> Self {
         Self {
             current: parking_lot::RwLock::new(Some(state)),
+            scheduler: parking_lot::Mutex::new(None),
         }
     }
 
@@ -41,6 +49,7 @@ impl ModelHost {
     pub fn empty() -> Self {
         Self {
             current: parking_lot::RwLock::new(None),
+            scheduler: parking_lot::Mutex::new(None),
         }
     }
 
@@ -62,6 +71,16 @@ impl ModelHost {
     /// Drop the current model, so requests are refused while a swap runs.
     pub fn clear(&self) {
         *self.current.write() = None;
+    }
+
+    /// Hand over the scheduler of the model just loaded.
+    pub fn set_scheduler(&self, handle: std::thread::JoinHandle<()>) {
+        *self.scheduler.lock() = Some(handle);
+    }
+
+    /// Take the current scheduler, for a swap to join.
+    pub fn take_scheduler(&self) -> Option<std::thread::JoinHandle<()>> {
+        self.scheduler.lock().take()
     }
 
     pub fn is_loaded(&self) -> bool {
