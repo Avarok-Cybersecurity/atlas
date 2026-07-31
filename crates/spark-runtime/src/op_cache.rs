@@ -23,7 +23,9 @@
 //! the scratch goes with the context that allocated it.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, RwLock};
+// parking_lot: no poisoning, so a panic in one op cannot turn every later
+// lookup — or teardown — into an error path that has to be handled.
+use parking_lot::{Mutex, RwLock};
 
 use crate::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use anyhow::Result;
@@ -62,19 +64,11 @@ impl OpCache {
         module: &'static str,
         func: &'static str,
     ) -> Result<KernelHandle> {
-        if let Some(k) = self
-            .kernels
-            .read()
-            .expect("op cache kernels poisoned")
-            .get(&(module, func))
-        {
+        if let Some(k) = self.kernels.read().get(&(module, func)) {
             return Ok(*k);
         }
         let handle = gpu.kernel(module, func)?;
-        self.kernels
-            .write()
-            .expect("op cache kernels poisoned")
-            .insert((module, func), handle);
+        self.kernels.write().insert((module, func), handle);
         Ok(handle)
     }
 
@@ -91,7 +85,7 @@ impl OpCache {
         tag: &'static str,
         bytes: usize,
     ) -> Result<DevicePtr> {
-        let mut g = self.scratch.lock().expect("op cache scratch poisoned");
+        let mut g = self.scratch.lock();
         match g.get(tag) {
             Some(&(p, sz)) if sz >= bytes => Ok(p),
             _ => {
@@ -126,7 +120,7 @@ impl OpCache {
     /// For the diagnostics that report the first few of something and then
     /// go quiet. Counted per backend, so a second model reports its own.
     pub fn first_n(&self, key: &'static str, n: u32) -> bool {
-        let mut g = self.counters.lock().expect("op cache counters poisoned");
+        let mut g = self.counters.lock();
         let c = g.entry(key).or_insert(0);
         *c += 1;
         *c <= n
@@ -147,21 +141,52 @@ impl OpCache {
         for b in name.bytes() {
             h = (h ^ b as u64).wrapping_mul(1099511628211);
         }
-        self.logged_shapes
-            .lock()
-            .expect("op cache shapes poisoned")
-            .insert((h, m, n, k))
+        self.logged_shapes.lock().insert((h, m, n, k))
     }
 }
 
 impl std::fmt::Debug for OpCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kernels = self.kernels.read().map(|k| k.len()).unwrap_or(0);
-        let scratch = self.scratch.lock().map(|s| s.len()).unwrap_or(0);
+        let kernels = self.kernels.read().len();
+        let scratch = self.scratch.lock().len();
         f.debug_struct("OpCache")
             .field("kernels", &kernels)
             .field("scratch", &scratch)
             .finish()
+    }
+}
+
+/// Release the scratch allocations.
+///
+/// The kernel handles are not freed here: they are module-scoped and die with
+/// the `AtlasRegistry` the backend holds, which `cuda_host::release` unloads
+/// once every handle to it is gone. Freeing them here would be a double-unload.
+impl atlas_core::scope::ModelResource<dyn crate::gpu::GpuBackend> for OpCache {
+    fn label(&self) -> &'static str {
+        "op scratch"
+    }
+
+    fn release(&mut self, gpu: &dyn crate::gpu::GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        // `drain` makes this idempotent and stops a later launch from finding a
+        // pointer into freed memory.
+        let taken: Vec<(DevicePtr, usize)> = self
+            .scratch
+            .lock()
+            .drain()
+            .map(|(_, entry)| entry)
+            .collect();
+        for (ptr, _) in taken {
+            if let Err(e) = gpu.free(ptr)
+                && first_error.is_none()
+            {
+                first_error = Some(e);
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 

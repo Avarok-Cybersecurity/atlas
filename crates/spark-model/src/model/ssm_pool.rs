@@ -466,6 +466,40 @@ impl Drop for SlotGuard {
     }
 }
 
+/// Release every per-layer state pool.
+///
+/// The intermediate and checkpoint pools are only allocated when MTP is on, so
+/// the vectors are empty otherwise — draining handles both without a branch.
+impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
+    fn label(&self) -> &'static str {
+        "ssm state pool"
+    }
+
+    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        for pool in [
+            &mut self.h_state_pools,
+            &mut self.conv_state_pools,
+            &mut self.h_intermediate_pools,
+            &mut self.conv_intermediate_pools,
+            &mut self.h_checkpoint_pools,
+            &mut self.conv_checkpoint_pools,
+        ] {
+            for ptr in pool.drain(..) {
+                if let Err(e) = gpu.free(ptr)
+                    && first_error.is_none()
+                {
+                    first_error = Some(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod slot_guard_tests {
     use super::*;

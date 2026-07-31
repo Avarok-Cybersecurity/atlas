@@ -21,7 +21,9 @@
 //! outlive the allocation it describes, and no key can be recycled into it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+// parking_lot: no poisoning, so teardown cannot be blocked by a panic that
+// happened somewhere else entirely.
+use parking_lot::Mutex;
 
 /// Per-model memo of derived weight encodings.
 ///
@@ -64,7 +66,7 @@ impl DerivedWeights {
             Derivation::CutlassNvfp4Transposed => &self.cutlass_nvfp4_t,
             _ => return None,
         };
-        map.lock().ok()?.get(&key).copied()
+        map.lock().get(&key).copied()
     }
 
     pub fn insert_ptr(&self, kind: Derivation, key: u64, value: u64) {
@@ -73,9 +75,7 @@ impl DerivedWeights {
             Derivation::CutlassNvfp4Transposed => &self.cutlass_nvfp4_t,
             _ => return,
         };
-        if let Ok(mut m) = map.lock() {
-            m.entry(key).or_insert(value);
-        }
+        map.lock().entry(key).or_insert(value);
     }
 
     pub fn get_pair(&self, kind: Derivation, key: u64) -> Option<(u64, u64)> {
@@ -84,7 +84,7 @@ impl DerivedWeights {
             Derivation::CutlassNvfp4FromFp8 => &self.cutlass_nvfp4_from_fp8,
             _ => return None,
         };
-        map.lock().ok()?.get(&key).copied()
+        map.lock().get(&key).copied()
     }
 
     pub fn insert_pair(&self, kind: Derivation, key: u64, value: (u64, u64)) {
@@ -93,9 +93,7 @@ impl DerivedWeights {
             Derivation::CutlassNvfp4FromFp8 => &self.cutlass_nvfp4_from_fp8,
             _ => return,
         };
-        if let Ok(mut m) = map.lock() {
-            m.entry(key).or_insert(value);
-        }
+        map.lock().entry(key).or_insert(value);
     }
 
     /// Look up a single-pointer derivation, computing it on a miss.
@@ -116,11 +114,11 @@ impl DerivedWeights {
             Derivation::CutlassNvfp4Transposed => &self.cutlass_nvfp4_t,
             _ => unreachable!("pair-valued derivation routed to get_or_build_ptr"),
         };
-        if let Some(&hit) = map.lock().unwrap().get(&key) {
+        if let Some(&hit) = map.lock().get(&key) {
             return Ok(hit);
         }
         let built = build()?;
-        Ok(*map.lock().unwrap().entry(key).or_insert(built))
+        Ok(*map.lock().entry(key).or_insert(built))
     }
 
     /// Look up a pair-valued derivation, computing it on a miss.
@@ -135,24 +133,20 @@ impl DerivedWeights {
             Derivation::CutlassNvfp4FromFp8 => &self.cutlass_nvfp4_from_fp8,
             _ => unreachable!("single-valued derivation routed to get_or_build_pair"),
         };
-        if let Some(&hit) = map.lock().unwrap().get(&key) {
+        if let Some(&hit) = map.lock().get(&key) {
             return Ok(hit);
         }
         let built = build()?;
-        Ok(*map.lock().unwrap().entry(key).or_insert(built))
+        Ok(*map.lock().entry(key).or_insert(built))
     }
 
     /// Total memoized entries, for diagnostics and for asserting in tests that
     /// a fresh model starts empty.
     pub fn len(&self) -> usize {
-        self.rowwise_fp8.lock().map(|m| m.len()).unwrap_or(0)
-            + self.bf16.lock().map(|m| m.len()).unwrap_or(0)
-            + self.cutlass_nvfp4_t.lock().map(|m| m.len()).unwrap_or(0)
-            + self
-                .cutlass_nvfp4_from_fp8
-                .lock()
-                .map(|m| m.len())
-                .unwrap_or(0)
+        self.rowwise_fp8.lock().len()
+            + self.bf16.lock().len()
+            + self.cutlass_nvfp4_t.lock().len()
+            + self.cutlass_nvfp4_from_fp8.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -165,6 +159,45 @@ impl std::fmt::Debug for DerivedWeights {
         f.debug_struct("DerivedWeights")
             .field("entries", &self.len())
             .finish()
+    }
+}
+
+/// Release every derived allocation.
+///
+/// The KEYS are the original weight pointers — owned by the `WeightStore` and
+/// freed by it. Only the VALUES are derivations this cache allocated, so only
+/// those are freed here. Freeing a key would be a double-free of a weight.
+impl atlas_core::scope::ModelResource<dyn spark_runtime::gpu::GpuBackend> for DerivedWeights {
+    fn label(&self) -> &'static str {
+        "derived weights"
+    }
+
+    fn release(&mut self, gpu: &dyn spark_runtime::gpu::GpuBackend) -> anyhow::Result<()> {
+        let mut owned: Vec<u64> = Vec::new();
+        // Drain so a later lookup cannot hit a pointer into freed memory —
+        // the exact failure this cache was restructured to make impossible.
+        for (_, (a, b)) in self.rowwise_fp8.lock().drain() {
+            owned.push(a);
+            owned.push(b);
+        }
+        owned.extend(self.bf16.lock().drain().map(|(_, v)| v));
+        owned.extend(self.cutlass_nvfp4_t.lock().drain().map(|(_, v)| v));
+        for (_, (a, b)) in self.cutlass_nvfp4_from_fp8.lock().drain() {
+            owned.push(a);
+            owned.push(b);
+        }
+        let mut first_error = None;
+        for raw in owned {
+            if let Err(e) = gpu.free(spark_runtime::gpu::DevicePtr(raw))
+                && first_error.is_none()
+            {
+                first_error = Some(e);
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
