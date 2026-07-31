@@ -110,19 +110,54 @@ fn a_vllm_recipe_is_listed_but_not_runnable() {
 }
 
 #[test]
-fn several_recipes_for_one_model_stay_separate_rows() {
-    // They differ in quantization and context — that IS the choice on offer,
-    // so collapsing them would hide it.
+fn several_recipes_for_one_model_become_one_row() {
+    // The reasoning here is INVERTED from what it was. The recipes do differ in
+    // quantization and context, and that choice does matter — but a list that
+    // repeats the model id three times with only a trailing stem to tell them
+    // apart presents the choice in the wrong place and hides the reason for it.
+    // One row; the cards behind it carry the choice, with room for the why.
     let rows = join(
         &[
-            recipe("q/fp8", "org/m", "atlas"),
             recipe("q/nvfp4", "org/m", "atlas"),
+            recipe("q/fp8", "org/m", "atlas"),
         ],
         &[local("org/m", true, true)],
     );
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].recipe.as_ref().unwrap().id, "q/fp8");
-    assert_eq!(rows[1].recipe.as_ref().unwrap().id, "q/nvfp4");
+    assert_eq!(rows.len(), 1, "one model, one row");
+    assert_eq!(rows[0].recipes.len(), 2, "both recipes are still reachable");
+    // Sorted by id regardless of the order the fetch returned them in, so the
+    // cards do not reshuffle between refreshes.
+    assert_eq!(rows[0].recipes[0].id, "q/fp8");
+    assert_eq!(rows[0].recipes[1].id, "q/nvfp4");
+}
+
+#[test]
+fn the_primary_recipe_prefers_one_that_can_actually_run() {
+    // The row is described by a recipe; a vLLM one cannot be launched here, so
+    // an Atlas sibling describes the row instead.
+    let rows = join(
+        &[
+            recipe("a/vllm", "org/m", "vllm"),
+            recipe("b/atlas", "org/m", "atlas"),
+        ],
+        &[local("org/m", true, true)],
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].primary().expect("a primary").id, "b/atlas");
+    assert!(
+        rows[0].runnable_now(),
+        "the atlas sibling makes it runnable"
+    );
+}
+
+#[test]
+fn a_model_whose_only_recipe_is_vllm_is_described_by_it_but_not_runnable() {
+    let rows = join(
+        &[recipe("a/vllm", "org/m", "vllm")],
+        &[local("org/m", true, true)],
+    );
+    assert_eq!(rows[0].primary().expect("a primary").id, "a/vllm");
+    assert!(!rows[0].runnable_now());
 }
 
 #[test]
@@ -147,7 +182,10 @@ fn the_filter_matches_id_recipe_and_architecture() {
         row.matches("qwen3.6-27b"),
         "the model id, case-insensitively"
     );
-    assert!(row.matches("flagship"), "the recipe id");
+    assert!(
+        row.matches("flagship"),
+        "a recipe id the row now hides must still be findable"
+    );
     assert!(row.matches("qwen3_5"), "the architecture");
     assert!(!row.matches("llama"));
 }

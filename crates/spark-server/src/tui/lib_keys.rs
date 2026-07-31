@@ -32,6 +32,7 @@ impl LibState {
         }
         match self.view {
             View::List => self.list_key(key),
+            View::Cards => self.cards_key(key),
             View::Config => self.config_key(key),
         }
     }
@@ -81,6 +82,28 @@ impl LibState {
                 };
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Err(e) = self.open_cards() {
+                    return Outcome::Toast {
+                        text: e,
+                        error: true,
+                    };
+                }
+            }
+            _ => {}
+        }
+        Outcome::None
+    }
+
+    /// The recipe cards for one model. Same contract as the list: j/k moves,
+    /// Enter descends, Esc goes back one level.
+    fn cards_key(&mut self, key: KeyEvent) -> Outcome {
+        let n = self.cards().len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') if n > 0 => {
+                self.card = (self.card + 1).min(n - 1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.card = self.card.saturating_sub(1),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if let Err(e) = self.open_config() {
                     return Outcome::Toast {
                         text: e,
@@ -88,6 +111,7 @@ impl LibState {
                     };
                 }
             }
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => self.view = View::List,
             _ => {}
         }
         Outcome::None
@@ -119,7 +143,7 @@ impl LibState {
                 };
             }
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                self.view = View::List;
+                self.view = View::Cards;
                 self.error = None;
             }
             _ => {}

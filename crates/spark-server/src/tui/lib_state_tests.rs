@@ -52,12 +52,12 @@ fn the_list_populates_from_cache_without_a_network() {
 }
 
 #[test]
-fn opening_the_config_needs_an_atlas_recipe() {
-    // A local-only row has nothing to edit; opening a blank form would imply
-    // otherwise.
+fn a_model_with_no_recipe_never_reaches_the_cards() {
+    // Unchanged behaviour, asked for explicitly: a local-only checkpoint is
+    // listed and serveable by hand, but there is nothing to show a card for.
     let mut s = LibState::default();
     s.rebuild(&[local_of("org/orphan")]);
-    let err = s.open_config().expect_err("refused");
+    let err = s.open_cards().expect_err("refused");
     assert!(err.contains("no recipe"), "{err}");
     assert_eq!(s.view, View::List, "and it stays on the list");
 }
@@ -65,7 +65,8 @@ fn opening_the_config_needs_an_atlas_recipe() {
 #[test]
 fn the_form_shows_every_recipe_key_with_its_value() {
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     let rows = s.config_rows();
     let recipe = s.config_recipe().expect("recipe");
     assert_eq!(rows.len(), recipe.defaults.len());
@@ -81,7 +82,8 @@ fn the_form_shows_every_recipe_key_with_its_value() {
 #[test]
 fn a_valid_edit_is_kept_and_marked() {
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     let rows = s.config_rows();
     s.row = rows
         .iter()
@@ -109,7 +111,8 @@ fn a_valid_edit_is_kept_and_marked() {
 fn an_invalid_edit_is_rejected_and_not_kept() {
     // A rejected value left in the form reads as accepted.
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     let rows = s.config_rows();
     s.row = rows
         .iter()
@@ -140,7 +143,8 @@ fn an_invalid_edit_is_rejected_and_not_kept() {
 #[test]
 fn an_empty_edit_is_refused_rather_than_silently_clearing_a_flag() {
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     s.editing = true;
     s.edit_buffer = "   ".into();
     s.commit_edit();
@@ -157,7 +161,8 @@ fn the_whole_config_is_validated_not_just_the_field() {
     // Flags interact, so a per-field check would accept combinations that
     // cannot serve. `--ep-size` past the world size is the cheapest proof.
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     let rows = s.config_rows();
     if let Some(i) = rows
         .iter()
@@ -175,7 +180,8 @@ fn the_whole_config_is_validated_not_just_the_field() {
 #[test]
 fn resetting_returns_to_the_recipes_own_values() {
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     s.row = s
         .config_rows()
         .iter()
@@ -200,7 +206,8 @@ fn resetting_returns_to_the_recipes_own_values() {
 #[test]
 fn the_preview_argv_reflects_the_edits() {
     let mut s = state_with_recipe();
-    s.open_config().expect("opens");
+    s.open_cards().expect("opens the cards");
+    s.open_config().expect("opens the form");
     s.row = s
         .config_rows()
         .iter()

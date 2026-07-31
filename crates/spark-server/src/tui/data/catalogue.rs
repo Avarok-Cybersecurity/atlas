@@ -12,22 +12,41 @@
 //!
 //! Sorted in exactly that order, so "what can I run right now" is the top of
 //! the list rather than something to scroll for.
+//!
+//! **One row per MODEL, not per recipe.** Several recipes for one checkpoint
+//! differ in quantization, context and speculation — a real choice, but not one
+//! that belongs in a list where the model id then repeats three times with only
+//! a trailing stem to tell them apart. The choice moves to a card view behind
+//! the row, which has room to show each recipe's measured rationale.
 
 use crate::recipe::Recipe;
 use crate::tui::data::library::{LibraryEntry, human_size};
 
-/// One row: a recipe, a local checkpoint, or both.
+/// One row: every recipe for a model, its local checkpoint, or both.
 #[derive(Clone, Debug)]
 pub struct Entry {
     /// The HuggingFace id — the join key, and what `spark serve` is given.
     pub model: String,
-    pub recipe: Option<Recipe>,
+    /// Every recipe naming this model, in id order. Empty for a local-only row.
+    pub recipes: Vec<Recipe>,
     pub local: Option<LibraryEntry>,
 }
 
 impl Entry {
     pub fn has_recipe(&self) -> bool {
-        self.recipe.is_some()
+        !self.recipes.is_empty()
+    }
+
+    /// The recipe to describe the row by, when only one can be shown.
+    ///
+    /// The first Atlas recipe, falling back to the first of any kind: a vLLM
+    /// recipe still carries the description and params worth rendering, it just
+    /// cannot be launched from here.
+    pub fn primary(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|r| r.is_atlas())
+            .or_else(|| self.recipes.first())
     }
 
     pub fn has_weights(&self) -> bool {
@@ -46,7 +65,7 @@ impl Entry {
 
     /// Ready to serve with a validated config and no download.
     pub fn runnable_now(&self) -> bool {
-        self.has_weights() && self.recipe.as_ref().is_some_and(Recipe::is_atlas)
+        self.has_weights() && self.recipes.iter().any(Recipe::is_atlas)
     }
 
     /// Sort key: runnable, then recipe-without-weights, then local-only.
@@ -70,7 +89,7 @@ impl Entry {
     /// The one-line subtitle under the model id.
     pub fn subtitle(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
-        if let Some(r) = &self.recipe {
+        if let Some(r) = self.primary() {
             if !r.model_params.is_empty() {
                 parts.push(r.model_params.clone());
             }
@@ -102,10 +121,13 @@ impl Entry {
         let needle = needle.to_lowercase();
         let hay = [
             self.model.to_lowercase(),
-            self.recipe
-                .as_ref()
+            // Every recipe id, so a search for a specific stem still finds the
+            // model row that now hides it.
+            self.recipes
+                .iter()
                 .map(|r| r.id.to_lowercase())
-                .unwrap_or_default(),
+                .collect::<Vec<_>>()
+                .join(" "),
             self.local
                 .as_ref()
                 .map(|l| l.model_type.to_lowercase())
@@ -115,20 +137,32 @@ impl Entry {
     }
 }
 
-/// Join recipes and local checkpoints into one sorted list.
+/// Join recipes and local checkpoints into one sorted list, **one row per
+/// model**.
 ///
-/// A model with several recipes yields several rows — the recipes differ in
-/// quantization and context, which is exactly the choice being offered, so
-/// collapsing them would hide it.
+/// A model with several recipes yields ONE row carrying all of them. The
+/// recipes differ in quantization, context and speculation — a real choice, and
+/// one the card view behind the row presents properly. Repeating the model id
+/// once per recipe put that choice in the wrong place.
 pub fn join(recipes: &[Recipe], local: &[LibraryEntry]) -> Vec<Entry> {
     let mut rows: Vec<Entry> = Vec::new();
 
+    // BTreeMap so the grouped recipes land in a stable id order regardless of
+    // the order the fetch returned them in.
+    let mut by_model: std::collections::BTreeMap<&str, Vec<Recipe>> =
+        std::collections::BTreeMap::new();
     for recipe in recipes {
-        let matched = local.iter().find(|l| l.id == recipe.model).cloned();
+        by_model
+            .entry(recipe.model.as_str())
+            .or_default()
+            .push(recipe.clone());
+    }
+    for (model, mut group) in by_model {
+        group.sort_by(|a, b| a.id.cmp(&b.id));
         rows.push(Entry {
-            model: recipe.model.clone(),
-            recipe: Some(recipe.clone()),
-            local: matched,
+            model: model.to_string(),
+            recipes: group,
+            local: local.iter().find(|l| l.id == model).cloned(),
         });
     }
     // Local checkpoints no recipe covers still belong in the list: they are
@@ -140,21 +174,12 @@ pub fn join(recipes: &[Recipe], local: &[LibraryEntry]) -> Vec<Entry> {
         }
         rows.push(Entry {
             model: entry.id.clone(),
-            recipe: None,
+            recipes: Vec::new(),
             local: Some(entry.clone()),
         });
     }
 
-    rows.sort_by(|a, b| {
-        a.rank()
-            .cmp(&b.rank())
-            .then_with(|| a.model.cmp(&b.model))
-            .then_with(|| {
-                let ar = a.recipe.as_ref().map(|r| r.id.as_str()).unwrap_or("");
-                let br = b.recipe.as_ref().map(|r| r.id.as_str()).unwrap_or("");
-                ar.cmp(br)
-            })
-    });
+    rows.sort_by(|a, b| a.rank().cmp(&b.rank()).then_with(|| a.model.cmp(&b.model)));
     rows
 }
 

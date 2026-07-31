@@ -224,11 +224,40 @@ mod library {
     #[test]
     fn the_config_pane_renders_and_shows_the_command() {
         let mut app = with_rows();
+        app.lib.open_cards().expect("opens");
         app.lib.open_config().expect("opens");
         assert_eq!(app.lib.view, LibView::Config);
         let out = render(&app, 200, 50);
         assert!(out.contains("SETTINGS"), "{out}");
         assert!(out.contains("spark serve"), "the command preview: {out}");
+    }
+
+    /// The cards pane: the choice between sibling recipes, with the room the
+    /// list row never had.
+    #[test]
+    fn the_cards_pane_shows_the_recipe_and_its_rationale() {
+        let mut app = with_rows();
+        app.lib.open_cards().expect("opens");
+        assert_eq!(app.lib.view, LibView::Cards);
+        let out = render(&app, 200, 50);
+        assert!(out.contains("recipe"), "the header counts them: {out}");
+        // The description is the measured rationale — the reason this pane
+        // exists rather than a one-line row.
+        assert!(out.contains("FLAGSHIP"), "the recipe's own text: {out}");
+        assert!(out.contains("configure and start"), "{out}");
+    }
+
+    /// A one-recipe model still gets a card, by explicit request.
+    #[test]
+    fn one_recipe_still_renders_a_card() {
+        let mut app = with_rows();
+        assert_eq!(app.lib.cards().len(), 1, "the fixture has one");
+        app.lib.open_cards().expect("opens");
+        let out = render(&app, 200, 50);
+        assert!(
+            out.contains("1 recipe"),
+            "singular, not \"1 recipes\": {out}"
+        );
     }
 
     /// Narrow and short terminals are where layout maths underflows.
@@ -238,7 +267,13 @@ mod library {
         for (w, h) in [(40, 12), (60, 20), (80, 24), (120, 30), (240, 80)] {
             let _ = render(&app, w, h);
         }
+        let mut cards = with_rows();
+        cards.lib.open_cards().expect("opens");
+        for (w, h) in [(40, 12), (60, 20), (80, 24), (240, 80)] {
+            let _ = render(&cards, w, h);
+        }
         let mut config = with_rows();
+        config.lib.open_cards().expect("opens");
         config.lib.open_config().expect("opens");
         for (w, h) in [(40, 12), (60, 20), (80, 24), (240, 80)] {
             let _ = render(&config, w, h);

@@ -41,6 +41,19 @@ fn local(id: &str) -> LibraryEntry {
     }
 }
 
+/// Walk `List → Cards → Config` on the selected row.
+///
+/// The flow gained a middle step: a model row now opens its recipe CARDS, and
+/// the config form is one level further in. Tests that want the form say so by
+/// calling this rather than pressing Enter twice and leaving the reader to work
+/// out why.
+fn open_config(s: &mut LibState) {
+    s.on_key(key(KeyCode::Enter));
+    assert_eq!(s.view, View::Cards, "a model row opens its recipes");
+    s.on_key(key(KeyCode::Enter));
+    assert_eq!(s.view, View::Config, "and a card opens its settings");
+}
+
 fn state() -> LibState {
     let r = recipe();
     let weights = vec![local(&r.model), local("org/orphan")];
@@ -68,12 +81,43 @@ fn j_and_k_move_within_bounds() {
 }
 
 #[test]
-fn enter_opens_the_config_for_a_recipe_row() {
+fn enter_opens_the_recipe_cards_for_a_model_row() {
     let mut s = state();
     assert_eq!(s.view, View::List);
     let outcome = s.on_key(key(KeyCode::Enter));
     assert_eq!(outcome, Outcome::None);
-    assert_eq!(s.view, View::Config);
+    assert_eq!(s.view, View::Cards);
+    assert_eq!(s.cards().len(), 1, "this fixture model has one recipe");
+}
+
+#[test]
+fn a_model_with_one_recipe_still_shows_a_card() {
+    // Asked for explicitly: the card is where the recipe's measured rationale
+    // is readable, and a list row has no room for it. Skipping straight to the
+    // form for a single recipe would hide exactly that.
+    let mut s = state();
+    s.on_key(key(KeyCode::Enter));
+    assert_eq!(s.view, View::Cards);
+    assert_eq!(s.selected_card().expect("a card").model, recipe().model);
+}
+
+#[test]
+fn j_and_k_move_between_cards() {
+    let mut s = state();
+    s.on_key(key(KeyCode::Enter));
+    assert_eq!(s.card, 0);
+    s.on_key(key(KeyCode::Char('k')));
+    assert_eq!(s.card, 0, "clamped at the first card");
+    s.on_key(key(KeyCode::Char('j')));
+    assert_eq!(s.card, s.cards().len() - 1, "and at the last");
+}
+
+#[test]
+fn esc_from_the_cards_returns_to_the_model_list() {
+    let mut s = state();
+    s.on_key(key(KeyCode::Enter));
+    s.on_key(key(KeyCode::Esc));
+    assert_eq!(s.view, View::List);
 }
 
 #[test]
@@ -94,9 +138,11 @@ fn enter_on_a_row_without_a_recipe_explains_rather_than_opening_a_blank_form() {
 
 #[test]
 fn esc_steps_back_one_level_rather_than_dropping_focus() {
+    // One level at a time, all the way out: Config → Cards → List.
     let mut s = state();
-    s.on_key(key(KeyCode::Enter));
-    assert_eq!(s.view, View::Config);
+    open_config(&mut s);
+    s.on_key(key(KeyCode::Esc));
+    assert_eq!(s.view, View::Cards, "not straight to the list");
     s.on_key(key(KeyCode::Esc));
     assert_eq!(s.view, View::List);
 }
@@ -131,7 +177,7 @@ fn a_digit_typed_into_the_search_does_not_jump_sections() {
 fn editing_seeds_the_buffer_with_the_current_value() {
     // Adjusting a setting is the common case; retyping it from scratch is not.
     let mut s = state();
-    s.on_key(key(KeyCode::Enter));
+    open_config(&mut s);
     let (key_name, value, _) = s.config_rows().into_iter().next().expect("a row");
     s.on_key(key(KeyCode::Enter));
     assert!(s.editing);
@@ -141,7 +187,7 @@ fn editing_seeds_the_buffer_with_the_current_value() {
 #[test]
 fn a_committed_edit_shows_in_the_form_and_the_command() {
     let mut s = state();
-    s.on_key(key(KeyCode::Enter));
+    open_config(&mut s);
     s.row = s
         .config_rows()
         .iter()
@@ -164,7 +210,7 @@ fn a_committed_edit_shows_in_the_form_and_the_command() {
 #[test]
 fn cancelling_an_edit_keeps_the_committed_value() {
     let mut s = state();
-    s.on_key(key(KeyCode::Enter));
+    open_config(&mut s);
     s.on_key(key(KeyCode::Enter));
     typed(&mut s, "garbage");
     s.on_key(key(KeyCode::Esc));
@@ -175,7 +221,7 @@ fn cancelling_an_edit_keeps_the_committed_value() {
 #[test]
 fn d_restores_the_recipes_own_values() {
     let mut s = state();
-    s.on_key(key(KeyCode::Enter));
+    open_config(&mut s);
     s.row = s
         .config_rows()
         .iter()
@@ -214,7 +260,7 @@ fn r_says_so_when_there_is_no_store_rather_than_faking_a_fetch() {
 #[test]
 fn j_in_the_config_moves_rows_not_the_model_list() {
     let mut s = state();
-    s.on_key(key(KeyCode::Enter));
+    open_config(&mut s);
     let before = s.selected;
     s.on_key(key(KeyCode::Char('j')));
     assert_eq!(s.row, 1);

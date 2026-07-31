@@ -14,11 +14,18 @@ use crate::tui::data::catalogue::{self, Entry};
 use crate::tui::data::library::LibraryEntry;
 
 /// Which pane of the Library is showing.
+///
+/// `List → Cards → Config` — the model, then which recipe for it, then that
+/// recipe's settings. A model with ONE recipe still passes through Cards: the
+/// card is where the recipe's measured rationale is readable, and the list row
+/// has no room for it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
-    /// The joined list.
+    /// The joined list, one row per model.
     #[default]
     List,
+    /// The selected model's recipes, as cards.
+    Cards,
     /// One recipe's settings, editable before launch.
     Config,
 }
@@ -31,6 +38,8 @@ pub struct LibState {
     pub selected: usize,
     pub filter: String,
     pub filter_editing: bool,
+    /// Which recipe card is selected, within the current model's row.
+    pub card: usize,
     /// Set while a fetch is in flight, for the title spinner.
     pub fetching: bool,
     pending: Option<Receiver<Index>>,
@@ -128,19 +137,43 @@ impl LibState {
         self.selected = next.clamp(0, n as isize - 1) as usize;
     }
 
-    /// Open the config form for the selected row.
+    /// Open the card view for the selected model.
     ///
-    /// Refuses rather than opening an empty form: a row with no Atlas recipe
-    /// has no settings to edit, and showing a blank pane would imply otherwise.
-    pub fn open_config(&mut self) -> Result<(), String> {
+    /// Refuses rather than opening an empty pane: a row with no recipe has no
+    /// cards to show, and a blank pane would imply otherwise. That is the
+    /// unchanged behaviour for local-only checkpoints.
+    pub fn open_cards(&mut self) -> Result<(), String> {
         let Some(entry) = self.current() else {
             return Err("nothing selected".into());
         };
-        let Some(recipe) = &entry.recipe else {
+        if !entry.has_recipe() {
             return Err(format!(
                 "{} has no recipe — serve it with explicit flags instead",
                 entry.model
             ));
+        }
+        self.card = 0;
+        self.view = View::Cards;
+        Ok(())
+    }
+
+    /// The recipes of the selected model, in id order.
+    pub fn cards(&self) -> &[crate::recipe::Recipe] {
+        match self.current() {
+            Some(entry) => &entry.recipes,
+            None => &[],
+        }
+    }
+
+    /// The card the cursor is on.
+    pub fn selected_card(&self) -> Option<&crate::recipe::Recipe> {
+        self.cards().get(self.card)
+    }
+
+    /// Open the config form for the selected card.
+    pub fn open_config(&mut self) -> Result<(), String> {
+        let Some(recipe) = self.selected_card() else {
+            return Err("nothing selected".into());
         };
         if !recipe.is_atlas() {
             return Err(format!(
@@ -159,7 +192,7 @@ impl LibState {
 
     /// The recipe backing the config form, if it is open on one.
     pub fn config_recipe(&self) -> Option<&crate::recipe::Recipe> {
-        self.current().and_then(|e| e.recipe.as_ref())
+        self.selected_card()
     }
 
     /// The form's rows: every recipe key, in recipe order, with the effective

@@ -424,8 +424,9 @@ fn library_hints(app: &App) -> &'static str {
         return "type to search · ⏎ keep · Esc clear";
     }
     match (app.lib.view, app.lib.editing) {
+        (View::Cards, _) => "j/k move · ⏎ configure · Esc back to models",
         (View::Config, true) => "⏎ commit · Esc cancel",
-        (View::Config, false) => "j/k move · ⏎ edit · d recipe defaults · Esc back",
+        (View::Config, false) => "j/k move · ⏎ edit · d recipe defaults · Esc back to recipes",
         (View::List, _) => "j/k move · ⏎ configure · / search · r refresh · 1-6 jump · ? help",
     }
 }

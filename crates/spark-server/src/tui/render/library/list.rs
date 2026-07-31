@@ -26,7 +26,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 /// compiled kernel target still serves, on generic kernels.
 fn badges(entry: &Entry) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    if let Some(r) = &entry.recipe {
+    if let Some(r) = entry.primary() {
         let (label, style) = if r.is_atlas() {
             (" recipe ", theme::brand_purple())
         } else {
@@ -144,9 +144,12 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             Span::raw("   "),
             Span::styled(entry.size_text(), theme::text2()),
             Span::styled(
-                match &entry.recipe {
-                    Some(r) => format!("  ·  {}", r.id),
-                    None => "  ·  no recipe".into(),
+                match entry.recipes.len() {
+                    0 => "  ·  no recipe".to_string(),
+                    // One recipe still names itself; several become a count,
+                    // because listing three stems is what the card view is for.
+                    1 => format!("  ·  {}", entry.recipes[0].id),
+                    n => format!("  ·  {n} recipes"),
                 },
                 theme::dim(),
             ),
@@ -167,7 +170,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     let width = inner.width.saturating_sub(2) as usize;
 
     let mut lines: Vec<Line> = Vec::new();
-    match &entry.recipe {
+    match entry.primary() {
         Some(recipe) => {
             lines.extend(wrap(&recipe.description, width, theme::text2()));
             lines.push(Line::from(""));
@@ -193,7 +196,10 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                format!(" SETTINGS  {} editable", recipe.defaults.len()),
+                match entry.recipes.len() {
+                    1 => format!(" SETTINGS  {} editable", recipe.defaults.len()),
+                    n => format!(" {n} RECIPES  ⏎ to choose"),
+                },
                 theme::dim(),
             )));
             // A preview, not the form: enough to judge the recipe without
@@ -245,8 +251,8 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         match (entry.runnable_now(), entry.has_recipe()) {
-            (true, _) => " ⏎ configure this recipe",
-            (_, true) => " ⏎ configure  ·  weights must be downloaded first",
+            (true, _) => " ⏎ choose a recipe",
+            (_, true) => " ⏎ choose a recipe  ·  weights must be downloaded first",
             _ => " no recipe to configure",
         },
         theme::brand_cyan(),

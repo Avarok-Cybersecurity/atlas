@@ -3,6 +3,7 @@
 //! The Library section: browse recipes joined with local weights, then
 //! configure one.
 
+pub mod cards;
 pub mod config;
 pub mod list;
 
@@ -15,6 +16,7 @@ use crate::tui::lib_state::View;
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     match app.lib.view {
         View::List => list::draw(f, app, area),
+        View::Cards => cards::draw(f, app, area),
         View::Config => config::draw(f, app, area),
     }
 }
