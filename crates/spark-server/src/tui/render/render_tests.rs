@@ -245,3 +245,50 @@ mod library {
         }
     }
 }
+
+/// Frames are drawn into a LIVE terminal, one after another, not into a fresh
+/// buffer each time. The Library's first frame has no rows (the local scan and
+/// the recipe cache both land a tick later), so the empty state is genuinely
+/// shown and then replaced — and a stale title left behind by that transition
+/// is exactly what a single-frame test cannot see.
+#[test]
+fn the_library_leaves_nothing_behind_when_it_fills_in() {
+    let mut terminal = Terminal::new(TestBackend::new(200, 50)).expect("backend");
+
+    // Frame 1: empty, as on first entry.
+    let mut app = app();
+    app.section = Section::Library;
+    terminal.draw(|f| draw(f, &app)).expect("draw");
+
+    // Frame 2: populated, as one tick later.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/recipes/qwen3.6/qwen3.6-35b-a3b-fp8-mtp.yaml");
+    let recipe = crate::recipe::Recipe::parse(
+        "qwen3.6/flagship",
+        &std::fs::read_to_string(path).expect("fixture"),
+    )
+    .expect("parses");
+    app.lib.index = crate::recipe::fetch::Index {
+        recipes: vec![recipe],
+        ..Default::default()
+    };
+    app.lib.rebuild(&[]);
+    terminal.draw(|f| draw(f, &app)).expect("draw");
+
+    let out: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        !out.contains("no models or recipes yet"),
+        "the empty hint survived into the populated frame:\n{out}"
+    );
+    assert!(
+        !out.contains("MODELS ─ 0"),
+        "the empty title survived into the populated frame:\n{out}"
+    );
+    assert!(out.contains("MODELS ─ 1"), "the new title is drawn:\n{out}");
+}
