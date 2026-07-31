@@ -18,6 +18,17 @@ pub struct ServeArgs {
     #[arg(value_name = "MODEL")]
     pub model: Option<String>,
 
+    /// Load a different model when a request names one, ollama-style.
+    ///
+    /// OFF by default, and the default is the point: even narrowed to models
+    /// with a known recipe, one stray request becomes a multi-minute outage for
+    /// every other client on the box, and a benchmark sweep naming a sibling
+    /// checkpoint would swap mid-run. Only a request whose `model` resolves to
+    /// a DIFFERENT known recipe acts — absent, unknown, or already-live names
+    /// are served by the current model exactly as they are today.
+    #[arg(long)]
+    pub auto_swap: bool,
+
     /// Load model directly from this filesystem path (skips HF cache resolution).
     #[arg(long, value_name = "PATH")]
     pub model_from_path: Option<PathBuf>,
