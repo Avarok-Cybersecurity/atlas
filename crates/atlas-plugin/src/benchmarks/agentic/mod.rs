@@ -64,6 +64,15 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              wall time. RUNS MODEL-AUTHORED SHELL inside the sandbox directory.",
     duration_hint: "~5 min per iteration",
     needs_confirmation: true,
+    // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1300 s) were
+    // measured on the 35B MoE flagship and mean nothing against another
+    // checkpoint. FP8 and NVFP4 are both the same family and both valid.
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.6-35b-a3b"],
+        note: "Gate A is defined on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or NVFP4). \
+               The dense 27B is a different gate (C2/D) with different thresholds, so a \
+               run here would produce numbers that compare to nothing.",
+    }),
     ctor: || Box::new(AgenticWebserver::default()),
 };
 

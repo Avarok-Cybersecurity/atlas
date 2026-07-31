@@ -43,12 +43,13 @@ impl Preflight {
     pub fn begin(
         runtime: &tokio::runtime::Handle,
         target: atlas_plugin::TargetEndpoint,
+        expectation: Option<atlas_plugin::benchmark::ModelExpectation>,
         timeout: std::time::Duration,
     ) -> Self {
         let (tx, rx) = channel();
         runtime.spawn(async move {
             // A disconnected receiver means the user moved on; not an error.
-            let _ = tx.send(coherence::probe(&target, timeout).await);
+            let _ = tx.send(coherence::probe_for(&target, expectation, timeout).await);
         });
         Self {
             phase: Phase::Checking,

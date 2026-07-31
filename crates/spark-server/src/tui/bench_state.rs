@@ -226,9 +226,11 @@ impl BenchState {
             .executor
             .as_ref()
             .ok_or("the benchmark executor is unavailable")?;
+        let expectation = self.descriptor().and_then(|d| d.intended_for);
         self.preflight = Some(crate::tui::bench_preflight::Preflight::begin(
             executor.runtime(),
             self.target.clone(),
+            expectation,
             std::time::Duration::from_secs(30),
         ));
         Ok(())

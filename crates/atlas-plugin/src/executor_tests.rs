@@ -29,6 +29,7 @@ const FAKE_DESC: BenchmarkDescriptor = BenchmarkDescriptor {
     detail: "test double",
     duration_hint: "instant",
     needs_confirmation: false,
+    intended_for: None,
     ctor: || Box::new(Fake::new(1, None, Arc::new(AtomicUsize::new(0)))),
 };
 

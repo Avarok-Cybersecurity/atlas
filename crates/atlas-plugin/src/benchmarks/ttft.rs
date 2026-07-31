@@ -48,6 +48,10 @@ pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              to a slow path while the correctness gates stay green.",
     duration_hint: "~3–6 min",
     needs_confirmation: false,
+    // A TTFT gate compares against a baseline recorded on the SAME box and
+    // model, which it stores itself — so it is meaningful for any checkpoint
+    // and constrains none.
+    intended_for: None,
     ctor: || Box::new(TtftGate::new(Mode::Warm)),
 };
 
@@ -61,6 +65,10 @@ pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              prefill regression that caching is hiding.",
     duration_hint: "~3–6 min",
     needs_confirmation: false,
+    // A TTFT gate compares against a baseline recorded on the SAME box and
+    // model, which it stores itself — so it is meaningful for any checkpoint
+    // and constrains none.
+    intended_for: None,
     ctor: || Box::new(TtftGate::new(Mode::Cold)),
 };
 

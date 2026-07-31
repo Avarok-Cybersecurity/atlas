@@ -185,7 +185,12 @@ impl RunTask {
             return;
         }
         self.handle.status("checking the endpoint".to_string());
-        let report = crate::coherence::probe(self.handle.target(), COHERENCE_TIMEOUT).await;
+        let report = crate::coherence::probe_for(
+            self.handle.target(),
+            self.descriptor.intended_for,
+            COHERENCE_TIMEOUT,
+        )
+        .await;
         match report.concern(self.handle.target()) {
             Some(concern) => self.handle.warn(concern),
             None => {

@@ -58,6 +58,15 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
     duration_hint: "~3.5 h",
     needs_confirmation: false,
+    // Gates B and D. B runs on whichever model the PR targets, D on the dense
+    // 27B MLPerf checkpoint — so both families are legitimate here, and only a
+    // third one is worth mentioning.
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.6-27b", "qwen3.6-35b-a3b"],
+        note: "The BFCL gates are defined on Qwen3.6-27B (dense, gate D — the MLPerf-edge \
+               floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
+               checkpoint have no recorded baseline to beat.",
+    }),
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
@@ -71,6 +80,15 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              time.",
     duration_hint: "~12 h",
     needs_confirmation: false,
+    // Gates B and D. B runs on whichever model the PR targets, D on the dense
+    // 27B MLPerf checkpoint — so both families are legitimate here, and only a
+    // third one is worth mentioning.
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.6-27b", "qwen3.6-35b-a3b"],
+        note: "The BFCL gates are defined on Qwen3.6-27B (dense, gate D — the MLPerf-edge \
+               floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
+               checkpoint have no recorded baseline to beat.",
+    }),
     ctor: || Box::new(Bfcl::new(Variant::Full)),
 };
 

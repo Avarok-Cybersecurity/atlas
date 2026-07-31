@@ -84,6 +84,10 @@ pub struct Report {
     /// Set when the endpoint could not be reached or refused the request. This
     /// is a different diagnosis from a wrong answer and is worded differently.
     pub transport_error: Option<String>,
+    /// Set when the served model is not one the benchmark is DEFINED on.
+    /// Distinct from `served_instead`: the name may be exactly what was asked
+    /// for and still be the wrong model for this particular gate.
+    pub wrong_family: Option<String>,
     /// What `/v1/models` says it is serving, when the requested model is not
     /// among them. **This is the check that catches a wrong `--model`:** Atlas
     /// answers a completion whatever name you send, so the questions below
@@ -95,6 +99,7 @@ impl Report {
     /// Did every check pass and nothing go wrong on the wire?
     pub fn is_clean(&self) -> bool {
         self.transport_error.is_none()
+            && self.wrong_family.is_none()
             && self.served_instead.is_none()
             && self.answers.iter().all(|a| a.passed)
     }
@@ -110,6 +115,12 @@ impl Report {
                 "{} did not answer a test request: {e}",
                 target.base_url
             ));
+        }
+        // A model the gate is not defined on outranks an odd answer for the
+        // same reason a wrong name does: it explains the numbers before they
+        // are measured.
+        if let Some(note) = &self.wrong_family {
+            return Some(note.clone());
         }
         // Reported before the answers: a wrong model name explains everything
         // downstream of it, and leading with "recall answered oddly" would bury
@@ -157,6 +168,21 @@ impl Report {
 /// transport error is captured the same way rather than propagated, so the
 /// caller has one thing to inspect.
 pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Report {
+    probe_for(target, None, timeout).await
+}
+
+/// As [`probe`], and additionally check the served model against what
+/// `expectation` says this benchmark is defined on.
+///
+/// The two questions catch a broken endpoint; the model list catches a wrong
+/// name; only this catches the case where the name is exactly what was asked
+/// for and is still the wrong model for the gate being run — Gate A pointed at
+/// the dense 27B, say, whose thresholds were measured on the 35B MoE.
+pub async fn probe_for(
+    target: &TargetEndpoint,
+    expectation: Option<crate::benchmark::ModelExpectation>,
+    timeout: Duration,
+) -> Report {
     let mut report = Report::default();
 
     // The model list first. It is one cheap request and it is the only thing
@@ -169,6 +195,23 @@ pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Report {
         // Unreadable list: not fatal, and not worth a warning of its own — the
         // questions below will fail too if the endpoint is genuinely broken.
         Err(e) => tracing::debug!("could not read the model list: {e:#}"),
+    }
+
+    // Check the family against what the server actually serves where possible,
+    // falling back to the requested name: the served id is the truth, but an
+    // unreadable list must not disable the check.
+    if let Some(expect) = expectation {
+        let actual = report
+            .served_instead
+            .as_ref()
+            .and_then(|s| s.first().cloned())
+            .unwrap_or_else(|| target.model.clone());
+        if !expect.accepts(&actual) {
+            report.wrong_family = Some(format!(
+                "{} is serving {actual}, which this benchmark is not defined on. {}",
+                target.base_url, expect.note
+            ));
+        }
     }
 
     for check in CHECKS {

@@ -27,6 +27,7 @@ pub fn print_suite(format: OutputFormat) -> Result<()> {
                     "id": d.id, "name": d.name, "summary": d.summary,
                     "duration_hint": d.duration_hint,
                     "needs_confirmation": d.needs_confirmation,
+                    "intended_for": d.intended_for.map(|e| e.families),
                 })
             })
             .collect();
@@ -70,6 +71,12 @@ pub fn print_schema(id: &str, format: OutputFormat) -> Result<()> {
     }
     println!("{}  —  {}", descriptor.id, descriptor.name);
     println!("{}\n", descriptor.detail);
+    // Which checkpoint the numbers mean something for. Printed before the
+    // parameters because it decides whether the run is worth configuring.
+    if let Some(expect) = descriptor.intended_for {
+        println!("  defined on   {}", expect.families.join(" | "));
+        println!("  {}\n", expect.note);
+    }
     print_specs(&specs);
     Ok(())
 }

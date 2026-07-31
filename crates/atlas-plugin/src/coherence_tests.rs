@@ -86,6 +86,7 @@ fn an_empty_answer_reads_as_answered_nothing() {
         }],
         transport_error: None,
         served_instead: None,
+        wrong_family: None,
     };
     let target = TargetEndpoint::local(8888, "m");
     let concern = report.concern(&target).expect("a concern");
@@ -104,6 +105,7 @@ fn the_concern_describes_rather_than_forbids() {
         }],
         transport_error: None,
         served_instead: None,
+        wrong_family: None,
     };
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
@@ -123,6 +125,7 @@ fn a_transport_error_is_worded_as_one() {
         answers: Vec::new(),
         transport_error: Some("connection refused".into()),
         served_instead: None,
+        wrong_family: None,
     };
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
@@ -144,6 +147,7 @@ fn a_clean_report_has_nothing_to_say() {
         }],
         transport_error: None,
         served_instead: None,
+        wrong_family: None,
     };
     assert!(report.is_clean());
     assert!(report.concern(&TargetEndpoint::local(8888, "m")).is_none());
@@ -181,6 +185,7 @@ fn a_wrong_model_name_is_reported_ahead_of_the_answers() {
         }],
         transport_error: None,
         served_instead: Some(vec!["nvidia/Qwen3.6-27B-NVFP4".into()]),
+        wrong_family: None,
     };
     let target = TargetEndpoint::local(8888, "does/not-exist");
     let concern = report.concern(&target).expect("a concern");
@@ -209,6 +214,85 @@ fn a_server_serving_the_requested_model_is_clean() {
         }],
         transport_error: None,
         served_instead: None,
+        wrong_family: None,
     };
     assert!(report.is_clean());
+}
+
+/// Gate A's thresholds were measured on the 35B MoE. Pointing it at the dense
+/// 27B — a perfectly healthy server, serving exactly the model that was
+/// requested — must still say something, because the numbers would compare to
+/// nothing.
+#[test]
+fn a_gate_run_against_the_wrong_model_family_is_reported() {
+    use crate::registry;
+    let agentic = registry::find("agentic-webserver").expect("registered");
+    let expect = agentic.intended_for.expect("gate A names its model");
+
+    assert!(
+        expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"),
+        "the FP8 flagship"
+    );
+    assert!(
+        expect.accepts("nvidia/Qwen3.6-35B-A3B-NVFP4"),
+        "and the NVFP4 variant of the same family"
+    );
+    assert!(
+        !expect.accepts("unsloth/Qwen3.6-27B-NVFP4"),
+        "the dense 27B is a DIFFERENT gate"
+    );
+}
+
+#[test]
+fn the_bfcl_gates_accept_both_of_their_models() {
+    use crate::registry;
+    let expect = registry::find("bfcl-subset")
+        .expect("registered")
+        .intended_for
+        .expect("names its models");
+    // Gate D is the dense 27B, gate B the 35B MoE — both are legitimate.
+    assert!(expect.accepts("unsloth/Qwen3.6-27B-NVFP4"));
+    assert!(expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"));
+    assert!(!expect.accepts("meta-llama/Llama-3.1-8B"));
+}
+
+#[test]
+fn a_latency_sweep_constrains_nothing() {
+    use crate::registry;
+    // These measure whatever they are pointed at; a constraint here would be
+    // an invention, not a fact about the benchmark.
+    for id in ["concurrency-sweep", "ttft-warm-gate", "ttft-cold-gate"] {
+        assert!(
+            registry::find(id)
+                .expect("registered")
+                .intended_for
+                .is_none(),
+            "{id} must not claim a model it has no threshold for"
+        );
+    }
+}
+
+#[test]
+fn the_wrong_family_note_outranks_an_odd_answer() {
+    // A gate run on the wrong model explains the numbers before they are
+    // measured, so it must lead.
+    let report = Report {
+        answers: vec![Answer {
+            label: "recall",
+            answer: String::new(),
+            passed: false,
+        }],
+        transport_error: None,
+        served_instead: None,
+        wrong_family: Some("Gate A is defined on the 35B MoE flagship".into()),
+    };
+    let concern = report
+        .concern(&TargetEndpoint::local(8888, "m"))
+        .expect("a concern");
+    assert!(concern.contains("35B MoE"), "{concern}");
+    assert!(
+        !concern.contains("answered nothing"),
+        "the cause leads: {concern}"
+    );
+    assert!(!report.is_clean());
 }

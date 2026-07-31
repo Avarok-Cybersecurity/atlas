@@ -37,6 +37,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              measured on — C=1 is where Atlas leads, C=16 is the bar.",
     duration_hint: "~10–30 min",
     needs_confirmation: false,
+    // A latency/throughput curve is meaningful for any served model; there is
+    // no threshold here tied to a checkpoint.
+    intended_for: None,
     ctor: || Box::new(ConcurrencySweep::default()),
 };
 

@@ -29,6 +29,7 @@ fn a_clean_check_starts_the_run_without_asking() {
         }],
         transport_error: None,
         served_instead: None,
+        wrong_family: None,
     });
     assert_eq!(pre.poll(&target()), Some(true));
 }
@@ -43,6 +44,7 @@ fn a_concern_stops_to_ask_and_keeps_the_reason() {
         }],
         transport_error: None,
         served_instead: None,
+        wrong_family: None,
     });
     assert_eq!(pre.poll(&target()), Some(false));
     match &pre.phase {
