@@ -65,31 +65,6 @@ pub(super) fn metadata_lines(meta: &atlas_plugin::PluginMetadata) -> Vec<Line<'s
     lines
 }
 
-/// Wrap `text` to `width` columns as owned lines.
-pub(super) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Vec<Line<'static>> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        if !current.is_empty() && current.len() + 1 + word.len() > width {
-            lines.push(Line::from(Span::styled(
-                std::mem::take(&mut current),
-                style,
-            )));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-    if !current.is_empty() {
-        lines.push(Line::from(Span::styled(current, style)));
-    }
-    lines
-}
-
 /// The verdict banner. `Info` is deliberately not green: a benchmark that
 /// measured without gating has not passed anything.
 pub(super) fn verdict_line(verdict: &atlas_plugin::Verdict) -> Line<'static> {

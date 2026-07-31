@@ -75,9 +75,8 @@ pub struct App {
     pub kernel_scroll: usize,
     pub kernel_filter: String,
     pub library: Vec<LibraryEntry>,
-    pub lib_selected: usize,
-    pub lib_filter: String,
-    pub lib_filter_editing: bool,
+    /// The Library section: joined recipes + local weights, and the edit form.
+    pub lib: crate::tui::lib_state::LibState,
     pub network_selected: usize,
     pub network_detail: bool,
     pub ops: OpsState,
@@ -114,9 +113,7 @@ impl App {
             kernel_scroll: 0,
             kernel_filter: String::new(),
             library: Vec::new(),
-            lib_selected: 0,
-            lib_filter: String::new(),
-            lib_filter_editing: false,
+            lib: Default::default(),
             network_selected: 0,
             network_detail: false,
             ops: OpsState::default(),
@@ -164,7 +161,7 @@ impl App {
     /// True when a text input owns the keyboard.
     fn in_input(&self) -> bool {
         self.log_filter_editing
-            || self.lib_filter_editing
+            || (self.section == Section::Library && self.lib.is_editing())
             || (self.section == Section::Benchmarks && self.bench.is_editing())
             || (self.section == Section::Terminal && self.focus == Focus::Input)
     }
@@ -198,18 +195,16 @@ impl App {
             KeyCode::Char('f') if self.section == Section::Main => {
                 self.log_filter_editing = true;
             }
-            KeyCode::Char('/') if self.section == Section::Library => {
-                self.lib_filter_editing = true;
-            }
             KeyCode::Char('i') | KeyCode::Enter
                 if self.section == Section::Terminal && self.focus != Focus::Input =>
             {
                 self.focus = Focus::Input;
             }
-            // Benchmarks owns everything the global bindings above did not
-            // claim — Esc included, since there it means "back one step" and
-            // not "drop focus".
+            // Benchmarks and Library own everything the global bindings above
+            // did not claim — Esc included, since there it means "back one
+            // step" and not "drop focus".
             _ if self.section == Section::Benchmarks => self.on_section_key(key),
+            _ if self.section == Section::Library => self.on_library_key(key),
             KeyCode::Esc => {
                 self.focus = Focus::Content;
                 self.log_scroll = None;
@@ -313,14 +308,9 @@ impl App {
                     }
                 }
             },
-            Section::Library => {
-                let len = self.filtered_library().len();
-                if down && len > 0 {
-                    self.lib_selected = (self.lib_selected + 1).min(len - 1);
-                } else if up {
-                    self.lib_selected = self.lib_selected.saturating_sub(1);
-                }
-            }
+            // The Library owns its own navigation in `lib_keys`; routing it
+            // here too would give it two reducers disagreeing about selection.
+            Section::Library => {}
             Section::Network => {
                 let n = self.args.world_size.max(1);
                 if matches!(key.code, KeyCode::Right | KeyCode::Char('l')) && n > 1 {
@@ -349,6 +339,13 @@ impl App {
         }
     }
 
+    /// Route into the Library reducer and surface whatever it wants said.
+    fn on_library_key(&mut self, key: KeyEvent) {
+        if let super::lib_keys::Outcome::Toast { text, error } = self.lib.on_key(key) {
+            self.toast(text, error);
+        }
+    }
+
     /// Route into the Benchmarks reducer and surface whatever it wants said.
     fn on_bench_key(&mut self, key: KeyEvent) {
         if let super::bench_keys::Outcome::Toast { text, error } =
@@ -364,9 +361,8 @@ impl App {
             edit_line(&mut self.log_filter, key, &mut self.log_filter_editing);
             return;
         }
-        if self.lib_filter_editing {
-            edit_line(&mut self.lib_filter, key, &mut self.lib_filter_editing);
-            self.lib_selected = 0;
+        if self.section == Section::Library {
+            self.on_library_key(key);
             return;
         }
         if self.section == Section::Benchmarks {
@@ -432,14 +428,6 @@ impl App {
                 _ => {}
             },
         }
-    }
-
-    pub fn filtered_library(&self) -> Vec<&LibraryEntry> {
-        let f = self.lib_filter.to_lowercase();
-        self.library
-            .iter()
-            .filter(|e| f.is_empty() || e.id.to_lowercase().contains(&f))
-            .collect()
     }
 
     pub fn sidebar_click(&mut self, row_in_sidebar: usize) {

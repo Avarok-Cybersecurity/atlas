@@ -9,8 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
-use super::super::panel;
-use super::wrap;
+use super::super::{panel, wrap};
 use crate::tui::app::App;
 use crate::tui::theme;
 

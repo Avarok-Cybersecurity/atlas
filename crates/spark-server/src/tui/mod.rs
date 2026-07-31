@@ -38,6 +38,7 @@ pub mod bench_keys;
 pub mod bench_state;
 pub mod commands;
 pub mod events;
+pub mod lib_keys;
 pub mod lib_state;
 pub mod logo;
 pub mod progress;

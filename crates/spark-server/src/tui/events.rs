@@ -78,10 +78,27 @@ pub fn run(
             if ticks.is_multiple_of(SAMPLE_EVERY) {
                 app.stats.sample(app.run.as_ref());
             }
-            // Library scan: once, lazily, after entering the tab (fs-only).
+            // Library: scan the local cache once, lazily, on first entry
+            // (fs-only), attach the recipe cache, and kick one background
+            // fetch. The fetch runs on its own std::thread; `poll` below only
+            // ever does a try_recv, so a slow network cannot cost a frame.
             if !library_scanned && app.section == Section::Library {
                 library_scanned = true;
                 app.library = super::data::library::scan(app.args.cache_dir.as_deref());
+                match atlas_plugin::ArtifactStore::discover() {
+                    Ok(store) => {
+                        app.lib.attach(store.root().to_path_buf(), &app.library);
+                        app.lib.refresh();
+                    }
+                    // No HOME, or a read-only one: the local scan still renders.
+                    Err(e) => {
+                        tracing::warn!("recipes unavailable: {e:#}");
+                        app.lib.rebuild(&app.library);
+                    }
+                }
+            }
+            if app.section == Section::Library {
+                app.lib.poll(&app.library);
             }
             // Run history: lazily too, and re-read after a run persists a frame
             // (`load_history` is a no-op until something invalidates it).

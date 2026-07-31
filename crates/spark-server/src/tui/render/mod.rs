@@ -4,7 +4,7 @@
 //! sticky footer, toasts, help overlay. Pure `App` → `Frame`.
 
 mod bench;
-mod library_tab;
+mod library;
 mod main_tab;
 mod network_tab;
 mod stats_tab;
@@ -58,7 +58,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         },
         Section::Stats => stats_tab::draw(f, app, content),
         Section::Network => network_tab::draw(f, app, content),
-        Section::Library => library_tab::draw(f, app, content),
+        Section::Library => library::draw(f, app, content),
         Section::Benchmarks => bench::draw(f, app, content),
         Section::Terminal => terminal_tab::draw(f, app, content),
     }
@@ -260,7 +260,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let mode = if app.help_open {
         (" HELP ", theme::TEXT_2)
-    } else if app.focus == Focus::Input || app.log_filter_editing || app.lib_filter_editing {
+    } else if app.focus == Focus::Input || app.log_filter_editing || app.lib.is_editing() {
         (" INPUT ", theme::CYAN)
     } else {
         (" NORMAL ", theme::BORDER_DIM)
@@ -269,7 +269,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-6 jump · ? help · q quit",
         Section::Stats => "⇥ cycle · 1-6 jump · ? help · q quit",
         Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-6 jump · ? help",
-        Section::Library => "j/k move · / search · ⇥ cycle · 1-6 jump · ? help",
+        Section::Library => library_hints(app),
         Section::Benchmarks => bench_hints(app),
         Section::Terminal => "⏎ input · Esc back · ↑/↓ scroll · End follow · ⇥ Ops↔Chat · ? help",
     };
@@ -415,3 +415,41 @@ pub(super) fn gradient_bar(frac: f64, width: u16) -> Line<'static> {
 #[cfg(test)]
 #[path = "render_tests.rs"]
 mod tests;
+
+/// Wrap `text` to `width` columns as owned lines.
+/// The Library's footer, which depends on which pane and mode it is in.
+fn library_hints(app: &App) -> &'static str {
+    use crate::tui::lib_state::View;
+    if app.lib.filter_editing {
+        return "type to search · ⏎ keep · Esc clear";
+    }
+    match (app.lib.view, app.lib.editing) {
+        (View::Config, true) => "⏎ commit · Esc cancel",
+        (View::Config, false) => "j/k move · ⏎ edit · d recipe defaults · Esc back",
+        (View::List, _) => "j/k move · ⏎ configure · / search · r refresh · 1-6 jump · ? help",
+    }
+}
+
+pub(crate) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + 1 + word.len() > width {
+            lines.push(Line::from(Span::styled(
+                std::mem::take(&mut current),
+                style,
+            )));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(Line::from(Span::styled(current, style)));
+    }
+    lines
+}

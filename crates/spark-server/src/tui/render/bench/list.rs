@@ -9,7 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::super::panel;
-use super::{metadata_lines, wrap};
+use super::super::wrap;
+use super::metadata_lines;
 use crate::tui::app::App;
 use crate::tui::theme;
 
