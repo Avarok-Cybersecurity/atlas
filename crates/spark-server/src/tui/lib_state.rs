@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Library state: the joined catalogue, the recipe fetch, and the edit form.
+//!
+//! Nothing here blocks. The fetch runs on its own `std::thread` and is polled
+//! with `try_recv` on the normal tick, so a 20-second GitHub round trip never
+//! costs a frame — see `recipe::fetch` for the threading contract.
+
+use std::collections::BTreeMap;
+use std::sync::mpsc::Receiver;
+
+use crate::recipe::fetch::{self, Index};
+use crate::tui::data::catalogue::{self, Entry};
+use crate::tui::data::library::LibraryEntry;
+
+/// Which pane of the Library is showing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    /// The joined list.
+    #[default]
+    List,
+    /// One recipe's settings, editable before launch.
+    Config,
+}
+
+#[derive(Default)]
+pub struct LibState {
+    pub view: View,
+    pub index: Index,
+    pub rows: Vec<Entry>,
+    pub selected: usize,
+    pub filter: String,
+    pub filter_editing: bool,
+    /// Set while a fetch is in flight, for the title spinner.
+    pub fetching: bool,
+    pending: Option<Receiver<Index>>,
+    /// The store root, so a refresh knows where the cache lives.
+    root: Option<std::path::PathBuf>,
+
+    // --- config form ---
+    /// Edited values, keyed as the recipe keys them. Only touched keys appear,
+    /// so an untouched setting always follows the recipe rather than a stale copy.
+    pub overrides: BTreeMap<String, String>,
+    pub row: usize,
+    pub editing: bool,
+    pub edit_buffer: String,
+    /// Why the current form will not launch, if it will not.
+    pub error: Option<String>,
+}
+
+impl LibState {
+    /// Point the Library at a store and show whatever is already cached.
+    ///
+    /// The cache read is synchronous and local, so the list is populated on the
+    /// first frame; the network only ever improves it.
+    pub fn attach(&mut self, root: std::path::PathBuf, local: &[LibraryEntry]) {
+        self.index = fetch::cached(&root);
+        self.root = Some(root);
+        self.rebuild(local);
+    }
+
+    /// Start a background refresh. Cheap and idempotent: a second call while
+    /// one is in flight is ignored rather than queued.
+    pub fn refresh(&mut self) {
+        if self.fetching {
+            return;
+        }
+        let Some(root) = &self.root else {
+            return;
+        };
+        self.pending = Some(fetch::refresh_in_background(root));
+        self.fetching = true;
+    }
+
+    /// Poll the fetch. Called once per tick; returns true if the list changed.
+    pub fn poll(&mut self, local: &[LibraryEntry]) -> bool {
+        let Some(rx) = &self.pending else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(index) => {
+                self.index = index;
+                self.pending = None;
+                self.fetching = false;
+                self.rebuild(local);
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            // The fetcher thread died without sending. Stop showing a spinner
+            // forever; the cache is still on screen.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                self.fetching = false;
+                false
+            }
+        }
+    }
+
+    /// Re-join and clamp the selection.
+    pub fn rebuild(&mut self, local: &[LibraryEntry]) {
+        self.rows = catalogue::join(&self.index.recipes, local);
+        self.clamp();
+    }
+
+    fn clamp(&mut self) {
+        let n = self.visible().len();
+        self.selected = self.selected.min(n.saturating_sub(1));
+    }
+
+    /// Rows passing the filter.
+    pub fn visible(&self) -> Vec<&Entry> {
+        self.rows
+            .iter()
+            .filter(|r| r.matches(&self.filter))
+            .collect()
+    }
+
+    pub fn current(&self) -> Option<&Entry> {
+        self.visible().get(self.selected).copied()
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let n = self.visible().len();
+        if n == 0 {
+            return;
+        }
+        let next = self.selected as isize + delta;
+        self.selected = next.clamp(0, n as isize - 1) as usize;
+    }
+
+    /// Open the config form for the selected row.
+    ///
+    /// Refuses rather than opening an empty form: a row with no Atlas recipe
+    /// has no settings to edit, and showing a blank pane would imply otherwise.
+    pub fn open_config(&mut self) -> Result<(), String> {
+        let Some(entry) = self.current() else {
+            return Err("nothing selected".into());
+        };
+        let Some(recipe) = &entry.recipe else {
+            return Err(format!(
+                "{} has no recipe — serve it with explicit flags instead",
+                entry.model
+            ));
+        };
+        if !recipe.is_atlas() {
+            return Err(format!(
+                "{} is a {} recipe and cannot be configured here",
+                recipe.id,
+                recipe.runtime.as_deref().unwrap_or("non-atlas")
+            ));
+        }
+        self.overrides.clear();
+        self.error = None;
+        self.row = 0;
+        self.editing = false;
+        self.view = View::Config;
+        Ok(())
+    }
+
+    /// The recipe backing the config form, if it is open on one.
+    pub fn config_recipe(&self) -> Option<&crate::recipe::Recipe> {
+        self.current().and_then(|e| e.recipe.as_ref())
+    }
+
+    /// The form's rows: every recipe key, in recipe order, with the effective
+    /// value (override if edited, recipe value otherwise).
+    pub fn config_rows(&self) -> Vec<(String, String, bool)> {
+        let Some(recipe) = self.config_recipe() else {
+            return Vec::new();
+        };
+        recipe
+            .defaults
+            .iter()
+            .map(|(key, value)| {
+                let edited = self.overrides.get(key);
+                (
+                    key.clone(),
+                    edited.unwrap_or(value).clone(),
+                    edited.is_some(),
+                )
+            })
+            .collect()
+    }
+
+    /// Commit the edit buffer into the overrides, validating the whole recipe.
+    ///
+    /// Validation is of the WHOLE config, not the one field: flags interact
+    /// (`--ep-size` against `--world-size`, KV dtype against high-precision
+    /// layers), so a per-field check would accept combinations that cannot serve.
+    pub fn commit_edit(&mut self) {
+        let rows = self.config_rows();
+        let Some((key, _, _)) = rows.get(self.row) else {
+            return;
+        };
+        let key = key.clone();
+        let raw = self.edit_buffer.trim().to_string();
+        self.editing = false;
+        if raw.is_empty() {
+            self.error = Some(format!("{key} must not be empty"));
+            return;
+        }
+        let Some(recipe) = self.config_recipe().cloned() else {
+            return;
+        };
+        let mut candidate = self.overrides.clone();
+        candidate.insert(key.clone(), raw);
+        match recipe.serve_args(&candidate) {
+            Ok(_) => {
+                self.overrides = candidate;
+                self.error = None;
+            }
+            // Keep the rejected value out of the form: an invalid override that
+            // stays visible reads as accepted.
+            Err(e) => self.error = Some(problem_line(&format!("{e:#}"))),
+        }
+    }
+
+    /// Drop every edit and return to the recipe's own values.
+    pub fn reset_overrides(&mut self) {
+        self.overrides.clear();
+        self.error = None;
+    }
+
+    /// The argv this form would launch, for the confirm line.
+    pub fn preview_argv(&self) -> Option<Vec<String>> {
+        self.config_recipe()?.argv(&self.overrides).ok()
+    }
+}
+
+/// Reduce a validation report to the one line a form field can show.
+///
+/// The validator's report is a header, then `  [1] <what>` / `why:` / `fix:`.
+/// Taking the FIRST line yields only "Atlas CLI: 1 invalid flag combination",
+/// which tells the reader nothing they did not already know — the actionable
+/// part is `what`, and `fix` when it fits. clap's own errors have no `[1]`
+/// block, so those fall back to their first `error:` line.
+fn problem_line(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().map(str::trim).collect();
+    let what = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("[").and_then(|r| r.split_once("] ")))
+        .map(|(_, what)| what);
+    let fix = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("fix: "))
+        .filter(|f| !f.is_empty());
+    match (what, fix) {
+        (Some(what), Some(fix)) => format!("{what} — {fix}"),
+        (Some(what), None) => what.to_string(),
+        (None, _) => lines
+            .iter()
+            .find(|l| !l.is_empty() && !l.starts_with("Atlas CLI:"))
+            .unwrap_or(&"invalid")
+            .to_string(),
+    }
+}
+
+#[cfg(test)]
+#[path = "lib_state_tests.rs"]
+mod tests;
