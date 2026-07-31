@@ -61,16 +61,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     // every row, not a property of any one of them.
     let status = if app.lib.fetching {
         format!(
-            " {} fetching",
+            " {} fetching ─",
             theme::SPINNER[(app.tick as usize / 2) % theme::SPINNER.len()]
         )
     } else {
-        format!(" {}", app.lib.index.status_text())
+        format!(" recipes {} ─", app.lib.index.status_text())
     };
-    let block = panel(
-        format!("MODELS ─ {} ─{search} ─{status} ─", rows.len()),
-        true,
-    );
+    // Kept short: a long title is the first thing to overflow on a narrow
+    // terminal, and the separators are decoration, not information.
+    let block = panel(format!("MODELS ─ {} ─{search}{status} ─", rows.len()), true);
     let inner = block.inner(area);
     f.render_widget(block, area);
 

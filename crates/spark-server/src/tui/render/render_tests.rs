@@ -156,3 +156,92 @@ fn a_terminal_one_cell_wide_does_not_panic() {
         let _ = render(&a, w, h);
     }
 }
+
+/// The Library panes must render at realistic and hostile sizes.
+mod library {
+    use super::*;
+    use crate::tui::lib_state::View as LibView;
+
+    fn with_rows() -> App {
+        let mut app = app();
+        app.section = Section::Library;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/recipes/qwen3.6/qwen3.6-35b-a3b-fp8-mtp.yaml");
+        let recipe = crate::recipe::Recipe::parse(
+            "qwen3.6/flagship",
+            &std::fs::read_to_string(path).expect("fixture"),
+        )
+        .expect("parses");
+        app.library = vec![crate::tui::data::library::LibraryEntry {
+            id: recipe.model.clone(),
+            snapshot_dir: Default::default(),
+            size_bytes: 34_900_000_000,
+            has_weights: true,
+            model_type: "qwen3_6_moe".into(),
+            quant: "fp8".into(),
+            layers: 40,
+            hidden: 4096,
+            heads: 32,
+            experts: 128,
+            context: 65536,
+            optimized: true,
+        }];
+        app.lib.index = crate::recipe::fetch::Index {
+            recipes: vec![recipe],
+            ..Default::default()
+        };
+        app.lib.rebuild(&app.library);
+        app
+    }
+
+    /// The defect this test exists for: the panel title reported a row count
+    /// that disagreed with the rows drawn beneath it, because the count and the
+    /// list were read from different places.
+    #[test]
+    fn the_title_agrees_with_the_rows_it_draws() {
+        let app = with_rows();
+        let out = render(&app, 200, 50);
+        assert!(out.contains("MODELS"), "the panel is drawn");
+        assert!(
+            !out.contains("MODELS ─ 0"),
+            "a populated list must not claim 0 rows:\n{out}"
+        );
+        assert!(
+            !out.contains("no models or recipes yet"),
+            "the empty hint must not appear beside real rows:\n{out}"
+        );
+        assert!(out.contains("Qwen3.6-35B-A3B-FP8"), "the row is drawn");
+    }
+
+    #[test]
+    fn the_empty_state_says_what_to_do() {
+        let mut app = app();
+        app.section = Section::Library;
+        let out = render(&app, 200, 50);
+        assert!(out.contains("press r to fetch recipes"), "{out}");
+    }
+
+    #[test]
+    fn the_config_pane_renders_and_shows_the_command() {
+        let mut app = with_rows();
+        app.lib.open_config().expect("opens");
+        assert_eq!(app.lib.view, LibView::Config);
+        let out = render(&app, 200, 50);
+        assert!(out.contains("SETTINGS"), "{out}");
+        assert!(out.contains("spark serve"), "the command preview: {out}");
+    }
+
+    /// Narrow and short terminals are where layout maths underflows.
+    #[test]
+    fn the_library_survives_hostile_sizes() {
+        let app = with_rows();
+        for (w, h) in [(40, 12), (60, 20), (80, 24), (120, 30), (240, 80)] {
+            let _ = render(&app, w, h);
+        }
+        let mut config = with_rows();
+        config.lib.open_config().expect("opens");
+        for (w, h) in [(40, 12), (60, 20), (80, 24), (240, 80)] {
+            let _ = render(&config, w, h);
+        }
+    }
+}
