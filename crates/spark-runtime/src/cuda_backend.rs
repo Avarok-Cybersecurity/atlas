@@ -93,6 +93,25 @@ pub struct AtlasCudaBackend {
     /// This model's kernel handles and op scratch. Dropped with the backend,
     /// so neither can outlive the registry or context it came from.
     op_cache: crate::op_cache::OpCache,
+    /// Every device allocation this backend made and has not freed.
+    ///
+    /// The backend is created per model (`preflight.rs`) and moved into it, so
+    /// this ledger is exactly model-scoped: what is still outstanding when the
+    /// model is torn down is what that model leaked.
+    ///
+    /// This exists because enumerating owners does not scale. The loaders
+    /// FUSE weights — `qwen35_dense.rs:98` allocates a new buffer and copies
+    /// two source tensors into it — and hand the result to a layer struct. The
+    /// sources live in `WeightStore` and are released with it; the fused copy
+    /// is owned by a `Box<dyn TransformerLayer>` and was released by nothing.
+    /// Measured on a 27B: 15.3 GB leaked per load/teardown cycle, linear
+    /// across six cycles with no plateau.
+    ///
+    /// Process-lifetime workspaces are NOT in here and must not be: CUTLASS
+    /// (`cutlass.rs:246`) and FlashInfer (`flashinfer.rs:145`) call
+    /// `cuMemAlloc_v2` directly rather than through this allocator, so freeing
+    /// the ledger cannot invalidate a static that outlives the model.
+    live_allocs: parking_lot::Mutex<std::collections::HashSet<u64>>,
     /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
@@ -128,6 +147,7 @@ impl AtlasCudaBackend {
         );
 
         Ok(Self {
+            live_allocs: parking_lot::Mutex::new(std::collections::HashSet::new()),
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
@@ -138,6 +158,40 @@ impl AtlasCudaBackend {
 
     /// This model's kernel modules, for the paths that need the registry
     /// directly rather than through `GpuBackend`.
+    pub(crate) fn record_alloc(&self, ptr: crate::gpu::DevicePtr) {
+        self.live_allocs.lock().insert(ptr.0);
+    }
+
+    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
+        self.live_allocs.lock().remove(&ptr.0);
+    }
+
+    /// Free every allocation this backend made and nobody released.
+    ///
+    /// The backstop for allocations no `ModelResource` covers — chiefly the
+    /// loaders' fused weights, which are owned by layer structs rather than by
+    /// any pool. Returns how many were reclaimed and their total bytes is not
+    /// tracked (the driver does not report per-pointer size), so the count is
+    /// the diagnostic: a non-zero count after a clean teardown names how many
+    /// allocations have no owner.
+    ///
+    /// Runs LAST in teardown, after every `ModelResource::release`, so it only
+    /// ever sees what those missed — and each `free` here has already been
+    /// removed from the ledger by `forget_alloc`, so it cannot double-free.
+    pub fn sweep_unreleased(&self) -> usize {
+        let outstanding: Vec<u64> = self.live_allocs.lock().drain().collect();
+        let count = outstanding.len();
+        for raw in outstanding {
+            // Bypass `free`: the ledger is already drained, and a failure here
+            // must not abort the rest of the sweep.
+            let status = unsafe { cuMemFree_v2(raw) };
+            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+                tracing::warn!("sweep: cuMemFree failed for {raw:#x}: status {status}");
+            }
+        }
+        count
+    }
+
     pub fn registry(&self) -> &Arc<AtlasRegistry> {
         &self.registry
     }

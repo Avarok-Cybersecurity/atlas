@@ -94,6 +94,21 @@ pub trait GpuBackend: Send + Sync {
     /// Free device memory.
     fn free(&self, ptr: DevicePtr) -> Result<()>;
 
+    /// Free every allocation this backend made that nobody released, and
+    /// report how many there were.
+    ///
+    /// The teardown backstop. Enumerating owners does not scale: the loaders
+    /// fuse weights into fresh allocations owned by layer structs, which no
+    /// pool releases — measured at 15.3 GB per cycle on a 27B, linear over six
+    /// cycles. A backend is created per model, so its outstanding set IS that
+    /// model's leak.
+    ///
+    /// Default `0`: a backend that does not track allocations has nothing to
+    /// sweep, which is honest for the mock and for Metal.
+    fn sweep_unreleased(&self) -> usize {
+        0
+    }
+
     /// Copy from host to device.
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()>;
 

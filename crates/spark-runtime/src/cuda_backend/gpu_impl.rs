@@ -60,6 +60,7 @@ impl GpuBackend for AtlasCudaBackend {
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
         }
+        self.record_alloc(DevicePtr(dptr));
         Ok(DevicePtr(dptr))
     }
 
@@ -73,6 +74,7 @@ impl GpuBackend for AtlasCudaBackend {
                  Check system swap space: swapon --show"
             );
         }
+        self.record_alloc(DevicePtr(dptr));
         Ok(DevicePtr(dptr))
     }
 
@@ -80,11 +82,18 @@ impl GpuBackend for AtlasCudaBackend {
         if ptr.is_null() {
             return Ok(());
         }
+        // Off the ledger BEFORE the free: an entry that survives a successful
+        // free would be double-freed at teardown.
+        self.forget_alloc(ptr);
         let status = unsafe { cuMemFree_v2(ptr.0) };
         if status != 0 {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
+    }
+
+    fn sweep_unreleased(&self) -> usize {
+        AtlasCudaBackend::sweep_unreleased(self)
     }
 
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {

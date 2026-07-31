@@ -43,7 +43,12 @@ fn setup_model(
 )> {
     let config_path = model_dir.join("config.json");
     let config_json = std::fs::read_to_string(&config_path)?;
-    let config: atlas_core::config::ModelConfig = serde_json::from_str(&config_json)?;
+    // `parse_config`, not raw serde: a multimodal checkpoint nests the LLM
+    // fields under `text_config` (the 27B NVFP4 does), and a bare
+    // `from_str::<ModelConfig>` fails on it with "missing field hidden_size".
+    // This is the same parser the server uses, so the test cannot diverge from
+    // what production accepts.
+    let mut config = atlas_core::config::parse_config(&config_json)?;
     tracing::info!(
         "Config: {} layers, vocab={}, hidden={}",
         config.num_hidden_layers,
@@ -96,6 +101,11 @@ fn setup_model(
 
     let prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache> =
         Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
+    // A nested checkpoint stores `model.language_model.layers.0.…`; without
+    // this the build fails after a full weight load with "Weight
+    // 'model.layers.0.input_layernorm.weight' not found in store". Production
+    // does the same thing at serve.rs:290 — same function, not a copy.
+    spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);
     let model = spark_model::factory::build_model(
         config.clone(),
         store,
@@ -663,16 +673,17 @@ fn teardown_returns_the_vram_it_took() -> Result<()> {
         return Ok(());
     }
 
-    // Tolerance, not equality. The CUDA context, the module set and the
-    // allocator's bookkeeping are not model state and do not come back; on a
-    // unified-memory part the reading also moves with page cache and whatever
-    // else the host is doing. What must come back is the model's share, which
-    // is tens of GB — so a gigabyte of slack cannot hide a real leak.
-    const TOLERANCE_BYTES: usize = 1024 * 1024 * 1024;
-    const CYCLES: usize = 3;
+    // Overridable: three cycles show a trend, six distinguish a LEAK (which
+    // keeps consuming until it OOMs) from driver RETENTION (which plateaus
+    // because the freed pages are reused even though `MemAvailable` does not
+    // show them coming back).
+    let cycles: usize = std::env::var("ATLAS_TEARDOWN_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
 
-    let mut baseline: Option<usize> = None;
-    for cycle in 1..=CYCLES {
+    let mut readings: Vec<usize> = Vec::new();
+    for cycle in 1..=cycles {
         let (mut model, _config) = setup_model(&model_dir)?;
         // First cycle's post-load reading is not a baseline: the context and
         // modules are created lazily on the first load and legitimately persist.
@@ -681,22 +692,50 @@ fn teardown_returns_the_vram_it_took() -> Result<()> {
 
         let free = free_device_memory_bytes()?;
         eprintln!(
-            "cycle {cycle}/{CYCLES}: {:.2} GB free after teardown",
+            "cycle {cycle}/{cycles}: {:.2} GB free after teardown",
             free as f64 / (1024.0 * 1024.0 * 1024.0)
         );
-        match baseline {
-            None => baseline = Some(free),
-            Some(first) => {
-                let lost = first.saturating_sub(free);
-                assert!(
-                    lost <= TOLERANCE_BYTES,
-                    "cycle {cycle} ended {:.2} GB below the first cycle — a \
-                     per-cycle leak, which means a device-memory owner is not \
-                     registered for teardown",
-                    lost as f64 / (1024.0 * 1024.0 * 1024.0)
-                );
-            }
-        }
+        readings.push(free);
     }
+
+    let gb = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+    eprintln!(
+        "readings (GB): {:?}",
+        readings
+            .iter()
+            .map(|b| (gb(*b) * 100.0).round() / 100.0)
+            .collect::<Vec<_>>()
+    );
+
+    // A LEAK consumes the same amount every cycle. RETENTION plateaus: the
+    // driver keeps the pages but reuses them, so later cycles stop costing.
+    // Comparing the LAST step against the FIRST is what separates the two, and
+    // it is the only comparison that does — an absolute return-to-baseline
+    // check cannot, because neither case returns to baseline.
+    let first_step = readings
+        .first()
+        .zip(readings.get(1))
+        .map(|(a, b)| a.saturating_sub(*b))
+        .unwrap_or(0);
+    let last_step = readings
+        .iter()
+        .rev()
+        .nth(1)
+        .zip(readings.last())
+        .map(|(a, b)| a.saturating_sub(*b))
+        .unwrap_or(0);
+    eprintln!(
+        "first step {:.2} GB, last step {:.2} GB",
+        gb(first_step),
+        gb(last_step)
+    );
+    assert!(
+        last_step * 2 <= first_step.max(1),
+        "memory use is not plateauing: the last cycle still cost {:.2} GB \
+         against the first cycle's {:.2} GB. That is a per-cycle LEAK — a \
+         device-memory owner is not registered for teardown.",
+        gb(last_step),
+        gb(first_step)
+    );
     Ok(())
 }

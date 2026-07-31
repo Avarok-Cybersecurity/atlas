@@ -287,7 +287,7 @@ fn startup(
     )?;
 
     // 3b. Auto-detect weight key prefix for nested models.
-    serve_phases::auto_detect_weight_prefix(&store, &mut config);
+    spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);
 
     // Pre-flight weight-store / config consistency check. Runs before
     // NCCL init so a mis-matched checkpoint (wrong expert count, MiniMax
