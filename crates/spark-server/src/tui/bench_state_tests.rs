@@ -210,3 +210,90 @@ fn the_glow_is_off_until_a_run_turns_it_on() {
     assert!(!s.glow);
     assert!(!s.is_running());
 }
+
+/// The dashboard writes through the same store the CLI reads.
+///
+/// This is the cross-path guarantee in one assertion: a run started here is
+/// found by `history::load_all` — the function `spark benchmark history` calls
+/// — carrying its parameters, its target and `source: Tui`. The old
+/// frame-only write carried none of that.
+#[test]
+fn a_run_persisted_by_the_dashboard_is_readable_by_the_cli() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let store = atlas_plugin::ArtifactStore::with_root(dir.path());
+    let executor = atlas_plugin::BenchmarkExecutor::new(runtime.handle().clone(), store.clone());
+
+    let mut s = state();
+    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    s.select(0);
+    s.attach(executor, TargetEndpoint::local(9001, "cross-path-model"));
+    s.running_descriptor = Some(descriptor);
+    s.values = ParamValues::defaults(&descriptor.build().parameters());
+
+    let frame = BenchmarkResult {
+        status: RunStatus::Completed,
+        phase: "done".into(),
+        progress: None,
+        summary: Vec::new(),
+        table: None,
+        verdict: Some(atlas_plugin::Verdict::pass("fine")),
+        log: Vec::new(),
+        elapsed: std::time::Duration::from_secs(3),
+    };
+    s.persist(&frame);
+
+    // Read back through the CLI's reader, not the in-memory value.
+    let found = atlas_plugin::history::load_all(&store);
+    assert_eq!(found.len(), 1, "the dashboard's run is in the store");
+    let r = &found[0];
+    assert_eq!(r.benchmark_id, "concurrency-sweep");
+    assert_eq!(
+        r.source,
+        atlas_plugin::RunSource::Tui,
+        "tagged as the TUI's"
+    );
+    assert_eq!(r.atlas_version, crate::cli::ATLAS_VERSION);
+    assert_eq!(r.target(), TargetEndpoint::local(9001, "cross-path-model"));
+    assert!(!r.is_legacy(), "written in the current schema");
+    // Every parameter, not just the ones a user touched.
+    assert_eq!(
+        r.params.len(),
+        descriptor.build().parameters().len(),
+        "params are complete: {:?}",
+        r.params
+    );
+    // And they rehydrate against the live schema.
+    let values = r
+        .values(&descriptor.build().parameters())
+        .expect("round-trips");
+    assert_eq!(values, s.values);
+}
+
+/// A second terminal frame must not add a second row.
+#[test]
+fn a_run_is_recorded_once_even_if_the_terminal_frame_repeats() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let store = atlas_plugin::ArtifactStore::with_root(dir.path());
+    let executor = atlas_plugin::BenchmarkExecutor::new(runtime.handle().clone(), store.clone());
+
+    let mut s = state();
+    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    s.attach(executor, TargetEndpoint::local(9001, "m"));
+    s.running_descriptor = Some(descriptor);
+
+    let frame = BenchmarkResult {
+        status: RunStatus::Completed,
+        phase: "done".into(),
+        progress: None,
+        summary: Vec::new(),
+        table: None,
+        verdict: None,
+        log: Vec::new(),
+        elapsed: std::time::Duration::from_secs(1),
+    };
+    s.persist(&frame);
+    s.persist(&frame);
+    assert_eq!(atlas_plugin::history::load_all(&store).len(), 1);
+}
