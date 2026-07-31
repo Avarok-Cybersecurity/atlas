@@ -1,0 +1,38 @@
+recipe_version: "2"
+model: nvidia/Gemma-4-31B-IT-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Gemma-4-31B (dense) — Google Gemma-4 with sliding + full attention
+    and GeGLU. Atlas's `scripts/sweep_all_models.sh` runs this with
+    `--kv-cache-dtype fp8 --max-batch-size 2`; ~9 tok/s decode per the
+    Atlas performance table.
+
+    Production notes from the Atlas Gemma-4 fix campaign (2026-04-08
+    kernel dispatch + 2026-05-01 v_norm/lm_head/o_proj fixes):
+    long-context up to 16K passes cleanly, factual + simple-code +
+    word-math prompts are coherent at greedy. Greedy creative
+    generation (haiku, free-form) can drift into low-entropy repetition
+    after 3–5 lines — clients are encouraged to send `min_p: 0.05` and
+    `repetition_penalty: 1.1` for creative workloads. The native
+    Gemma-4 tool-call format (`<|tool_call>call:fn{...}<tool_call|>`)
+    is parsed when `tool_call_parser: gemma4` is set.
+  maintainer: avarok
+  category: agent
+  model_params: 31B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 8192
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  max_batch_size: 2
+  tool_call_parser: gemma4

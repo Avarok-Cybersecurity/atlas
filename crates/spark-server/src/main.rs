@@ -47,6 +47,7 @@ mod ngram;
 mod openai;
 mod rate_limiter;
 pub mod reasoning_parser;
+pub mod recipe;
 mod refusal;
 mod request_dumper;
 mod response_store;

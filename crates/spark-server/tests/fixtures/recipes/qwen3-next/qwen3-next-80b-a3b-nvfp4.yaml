@@ -1,0 +1,28 @@
+recipe_version: "2"
+model: nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3-Next-80B (A3B MoE, hybrid SSM+Attention+MoE) NVFP4 + MTP —
+    largest single-node MoE model with MTP per the Atlas catalogue
+    (~104 tok/s decode at concurrency=1, ISL=128, OSL=128).
+  maintainer: avarok
+  category: agent
+  model_params: 80B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 8192
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  speculative: true
+  mtp_quantization: bf16
+  enable_prefix_caching: true

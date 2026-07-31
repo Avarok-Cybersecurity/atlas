@@ -1,0 +1,27 @@
+recipe_version: "2"
+model: ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3-VL-30B-A3B vision-language model — pure attention (48 layers,
+    NO SSM, head_dim=128, ungated Q), MoE without shared experts.
+    Accepts images in OpenAI content-parts format (`{"type":
+    "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}`).
+    ~97 tok/s decode per the Atlas performance table (FP8 KV).
+  maintainer: avarok
+  category: vision
+  model_params: 30B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 32768
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
