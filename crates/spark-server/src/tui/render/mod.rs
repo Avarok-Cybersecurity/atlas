@@ -303,7 +303,7 @@ fn bench_hints(app: &App) -> &'static str {
         }
         (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-6 jump · ? help",
         (View::Params, true) => "⏎ commit · Esc cancel",
-        (View::Params, false) => "j/k move · ⏎ edit · d defaults · s START · Esc back",
+        (View::Params, false) => "j/k move · ⏎ edit · d defaults · p probe · s START · Esc back",
         (View::Run, _) => "c cancel · j/k scroll · Esc back to suite",
     }
 }

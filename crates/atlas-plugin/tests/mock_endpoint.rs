@@ -23,6 +23,19 @@ pub struct MockEndpoint {
 /// Start the mock on an ephemeral port. Each reply streams `tokens` content
 /// deltas, `ttft_ms` after the request, then `[DONE]`.
 pub async fn start(tokens: usize, ttft: Duration, gap: Duration) -> MockEndpoint {
+    start_saying(None, tokens, ttft, gap).await
+}
+
+/// As [`start`], but every completion answers with `reply` instead of filler.
+///
+/// One implementation, so the chunk-splitting the decoder is tested against is
+/// identical in both cases.
+pub async fn start_saying(
+    reply: Option<String>,
+    tokens: usize,
+    ttft: Duration,
+    gap: Duration,
+) -> MockEndpoint {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let requests = Arc::new(AtomicUsize::new(0));
@@ -33,6 +46,7 @@ pub async fn start(tokens: usize, ttft: Duration, gap: Duration) -> MockEndpoint
                 return;
             };
             let counter = counter.clone();
+            let reply = reply.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 64 * 1024];
                 let mut request = Vec::new();
@@ -74,9 +88,16 @@ pub async fn start(tokens: usize, ttft: Duration, gap: Duration) -> MockEndpoint
                     )
                     .await;
                 tokio::time::sleep(ttft).await;
-                for i in 0..tokens {
+                // A canned reply is one delta; filler is `tokens` of them.
+                let deltas: Vec<String> = match &reply {
+                    Some(text) => vec![text.clone()],
+                    None => (0..tokens).map(|i| format!("t{i} ")).collect(),
+                };
+                let tokens = deltas.len();
+                for (i, delta) in deltas.iter().enumerate() {
+                    let escaped = delta.replace('\\', "\\\\").replace('"', "\\\"");
                     let payload = format!(
-                        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"t{i} \"}}}}]}}\n"
+                        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{escaped}\"}}}}]}}\n"
                     );
                     if i == 0 {
                         // Split the FIRST event across two chunks, mid-line.

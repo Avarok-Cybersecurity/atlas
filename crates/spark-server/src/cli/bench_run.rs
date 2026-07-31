@@ -98,6 +98,11 @@ async fn run(args: RunArgs) -> Result<i32> {
             save: !args.no_save,
             source: atlas_plugin::RunSource::Cli,
             atlas_version: super::ATLAS_VERSION.to_string(),
+            coherence: if args.skip_coherence_probe {
+                atlas_plugin::CoherencePolicy::Skip
+            } else {
+                atlas_plugin::CoherencePolicy::Require
+            },
         },
     };
 

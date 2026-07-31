@@ -19,6 +19,7 @@ use futures::{Stream, StreamExt};
 
 use crate::artifacts::ArtifactStore;
 use crate::benchmark::BenchmarkDescriptor;
+use crate::coherence::CoherencePolicy;
 use crate::dynamic::DynBenchmark;
 use crate::params::ParamValues;
 use crate::plugin::{PluginEvent, PluginHandle, TargetEndpoint};
@@ -115,6 +116,7 @@ impl BenchmarkExecutor {
         descriptor: &'static BenchmarkDescriptor,
         values: ParamValues,
         target: TargetEndpoint,
+        coherence: CoherencePolicy,
     ) -> RunHandle {
         let (event_tx, event_rx) = channel();
         let (frame_tx, frame_rx) = channel();
@@ -131,6 +133,7 @@ impl BenchmarkExecutor {
         let task = RunTask {
             descriptor,
             values,
+            coherence,
             handle,
             events: event_tx,
             frames: frame_tx,
@@ -147,6 +150,10 @@ impl BenchmarkExecutor {
     }
 }
 
+/// The probe asks for at most 32 tokens. A model that cannot answer "2+2" in
+/// 30 s is not going to complete a sweep either.
+const COHERENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 struct RunTask {
     descriptor: &'static BenchmarkDescriptor,
     values: ParamValues,
@@ -155,17 +162,42 @@ struct RunTask {
     frames: Sender<BenchmarkResult>,
     cancel: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
+    coherence: CoherencePolicy,
 }
 
 impl RunTask {
+    /// Ask the endpoint two known-answer questions before committing to a run.
+    async fn probe_coherence(&self) -> anyhow::Result<()> {
+        if self.coherence == CoherencePolicy::Skip {
+            self.handle
+                .info("coherence probe skipped — answers are not being checked");
+            return Ok(());
+        }
+        self.handle.status("coherence probe".to_string());
+        let answers = crate::coherence::verify(self.handle.target(), COHERENCE_TIMEOUT).await?;
+        for a in &answers {
+            self.handle
+                .info(format!("coherence {}: {:?}", a.label, a.answer.trim()));
+        }
+        Ok(())
+    }
+
     async fn execute(self) {
         let started = Instant::now();
         self.handle.set_glow(true);
         let mut bench = self.descriptor.build();
 
-        // Phase 0 — load, then configure. Both are pre-run steps, so a failure
-        // is reported as a terminal frame rather than a silent dead pane.
+        // Phase 0 — probe, then load, then configure. All pre-run steps, so a
+        // failure is reported as a terminal frame rather than a silent dead pane.
+        //
+        // The coherence probe runs FIRST, before `load()`. That ordering is the
+        // whole point: BFCL's load builds a venv, pip-installs a pinned
+        // bfcl-eval and materializes a dataset before it ever contacts the
+        // endpoint, so a wrong --model used to cost minutes of setup and then
+        // hours of uniformly-failing samples. Two short completions up front
+        // turn that into a two-second error.
         let setup = async {
+            self.probe_coherence().await?;
             bench.load(self.handle.clone()).await?;
             bench.configure(&self.values)
         }

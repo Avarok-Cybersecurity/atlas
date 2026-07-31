@@ -92,6 +92,22 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+
+    // The probe is a run option rather than a form field, so it gets a status
+    // line instead of a row — but it must be visible, or `p` is a secret.
+    let (probe_text, probe_style) = match app.bench.coherence {
+        atlas_plugin::CoherencePolicy::Require => (
+            " coherence probe  on — the endpoint must answer before measuring",
+            theme::dim(),
+        ),
+        atlas_plugin::CoherencePolicy::Skip => (
+            " coherence probe  OFF — answers will not be checked",
+            theme::warn(),
+        ),
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(probe_text, probe_style)));
+
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -102,7 +118,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let keys = if app.bench.editing {
         "⏎ commit · Esc cancel"
     } else {
-        "j/k move · ⏎ edit · d defaults · s START · Esc back"
+        "j/k move · ⏎ edit · d defaults · p probe · s START · Esc back"
     };
     let mut lines = vec![Line::from(Span::styled(
         format!(" {keys}"),

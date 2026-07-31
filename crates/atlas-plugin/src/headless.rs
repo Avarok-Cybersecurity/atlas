@@ -17,6 +17,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::benchmark::BenchmarkDescriptor;
+use crate::coherence::CoherencePolicy;
 use crate::executor::{BenchmarkExecutor, ExecutorMessage};
 use crate::history::{self, RunRecord, RunSource};
 use crate::params::ParamValues;
@@ -34,6 +35,8 @@ pub struct HeadlessOptions {
     pub source: RunSource,
     /// Recorded on the run so a result can be traced to the build.
     pub atlas_version: String,
+    /// Whether to require a coherent endpoint before measuring.
+    pub coherence: CoherencePolicy,
 }
 
 impl HeadlessOptions {
@@ -43,6 +46,7 @@ impl HeadlessOptions {
             save: true,
             source: RunSource::Cli,
             atlas_version: atlas_version.into(),
+            coherence: CoherencePolicy::Require,
         }
     }
 }
@@ -120,6 +124,7 @@ pub fn run_blocking(
         request.descriptor,
         request.values.clone(),
         request.target.clone(),
+        request.options.coherence,
     );
 
     let mut terminal: Option<BenchmarkResult> = None;

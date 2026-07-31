@@ -228,7 +228,16 @@ async fn cancellation_stops_a_run_between_steps() {
 async fn a_headless_run_persists_a_record_the_history_pane_can_read() {
     // The cross-path guarantee: a run driven with no terminal writes the same
     // record, in the same store, that the dashboard's History pane reads.
-    let mock = mock_endpoint::start(8, Duration::from_millis(20), Duration::from_millis(2)).await;
+    // This is the only test that drives through the EXECUTOR, so it is the only
+    // one that meets the coherence probe. It answers coherently rather than
+    // switching the probe off, so the default path is what gets exercised.
+    let mock = mock_endpoint::start_saying(
+        Some("4 Paris".into()),
+        8,
+        Duration::from_millis(20),
+        Duration::from_millis(2),
+    )
+    .await;
     let store = temp_store("headless");
     let executor =
         atlas_plugin::BenchmarkExecutor::new(tokio::runtime::Handle::current(), store.clone());
@@ -309,6 +318,9 @@ async fn a_headless_run_persists_a_record_the_history_pane_can_read() {
         1,
         "one isl x one concurrency"
     );
-    assert_eq!(mock.requests.load(Ordering::Relaxed), 1);
+    // 2 coherence questions + the single measured request. At defaults this
+    // benchmark issues 144, so 3 proves the override took effect AND that the
+    // probe cost exactly what it claims.
+    assert_eq!(mock.requests.load(Ordering::Relaxed), 3);
     assert_eq!(outcome.exit_code(), 0);
 }

@@ -40,6 +40,7 @@
 pub mod artifacts;
 pub mod benchmark;
 pub mod benchmarks;
+pub mod coherence;
 pub mod dynamic;
 pub mod executor;
 pub mod headless;
@@ -55,6 +56,7 @@ pub mod result;
 
 pub use artifacts::ArtifactStore;
 pub use benchmark::{Benchmark, BenchmarkDescriptor};
+pub use coherence::CoherencePolicy;
 pub use dynamic::DynBenchmark;
 pub use executor::{BenchmarkExecutor, ExecutorMessage, RunHandle};
 pub use history::{RunRecord, RunSource};

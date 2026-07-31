@@ -57,6 +57,9 @@ pub struct BenchState {
     /// The descriptor of the run in flight — a record needs its name, not
     /// just its id.
     running_descriptor: Option<&'static atlas_plugin::BenchmarkDescriptor>,
+    /// Whether to require a coherent endpoint before measuring. Defaults to
+    /// requiring it; `p` in the form toggles.
+    pub coherence: atlas_plugin::CoherencePolicy,
     pub frame: Option<BenchmarkResult>,
     pub log: VecDeque<LogLine>,
     pub status: String,
@@ -226,7 +229,12 @@ impl BenchState {
         self.started = Some(Instant::now());
         self.running_id = Some(descriptor.id);
         self.running_descriptor = Some(descriptor);
-        self.run = Some(executor.start(descriptor, self.values.clone(), self.target.clone()));
+        self.run = Some(executor.start(
+            descriptor,
+            self.values.clone(),
+            self.target.clone(),
+            self.coherence,
+        ));
         self.view = View::Run;
         Ok(())
     }

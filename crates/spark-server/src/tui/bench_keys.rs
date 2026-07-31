@@ -80,6 +80,15 @@ impl BenchState {
                 let selected = self.selected;
                 self.select(selected);
             }
+            // Toggle the pre-run coherence probe. A base (non-instruct)
+            // checkpoint cannot answer the questions but is still a valid
+            // latency target.
+            KeyCode::Char('p') => {
+                self.coherence = match self.coherence {
+                    atlas_plugin::CoherencePolicy::Require => atlas_plugin::CoherencePolicy::Skip,
+                    atlas_plugin::CoherencePolicy::Skip => atlas_plugin::CoherencePolicy::Require,
+                };
+            }
             KeyCode::Char('s') => return self.request_start(),
             _ => {}
         }
