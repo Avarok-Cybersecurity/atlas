@@ -16,12 +16,19 @@ use crate::cli;
 use crate::main_modules::AppState;
 
 /// What the blocking startup hands to the async tail.
-pub(crate) type Prepared = (
-    Arc<AppState>,
-    Arc<std::sync::atomic::AtomicBool>,
-    String,
-    u16,
-);
+///
+/// A struct rather than a tuple since the scheduler handle joined it: five
+/// positional fields where two are `Arc`s and two are addresses is a swap
+/// waiting to happen at the call site.
+pub(crate) struct Prepared {
+    pub state: Arc<AppState>,
+    pub model_ready: Arc<std::sync::atomic::AtomicBool>,
+    pub bind: String,
+    pub port: u16,
+    /// The scheduler thread. A swap joins it after the drain — that join is
+    /// what proves the model is no longer in use and safe to tear down.
+    pub scheduler: std::thread::JoinHandle<()>,
+}
 
 /// How startup ended — three genuinely different outcomes, which an
 /// `Option<Prepared>` conflated: `None` used to mean "EP worker, no router",
@@ -56,13 +63,19 @@ pub(crate) async fn serve(
 ) -> Result<()> {
     // Signal listeners belong on the runtime, not inside the blocking section.
     match tokio::task::spawn_blocking(move || startup(args, tui_progress)).await?? {
-        Startup::Serve((state, model_ready, bind, port)) => {
+        Startup::Serve(prepared) => {
             // One host per process; the swap publishes into it rather than
             // rebuilding the router, which is why the listener survives.
             let host = Arc::new(crate::main_modules::model_host::ModelHost::with_model(
-                state,
+                prepared.state,
             ));
-            crate::main_modules::serve_router::build_and_serve(host, model_ready, &bind, port).await
+            crate::main_modules::serve_router::build_and_serve(
+                host,
+                prepared.model_ready,
+                &prepared.bind,
+                prepared.port,
+            )
+            .await
         }
         Startup::Worker => Ok(()),
         // Nothing to serve yet, but plenty to do: the dashboard is running and

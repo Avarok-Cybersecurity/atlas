@@ -743,7 +743,12 @@ pub(crate) fn load_model(
     // Capture the runtime handle IN async context so the scheduler OS thread
     // can detach terminal stream sends (Done/Error) as tokio tasks.
     scheduler::capture_runtime_handle();
-    std::thread::spawn(move || {
+    // RETAINED, not detached. A swap has to know when the scheduler has
+    // actually finished: dropping every `Arc<AppState>` closes `request_tx`,
+    // the loop drains and returns, and only THEN is the model free to tear
+    // down. Without the handle there is no way to wait for that, and the
+    // teardown would race a scheduler still touching the weights.
+    let scheduler_handle = std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
             request_rx,
@@ -985,7 +990,13 @@ pub(crate) fn load_model(
     serve_phases::log_behavior_audit(&args, &ptx_set);
 
     // 9-11. Router + HTTP server run on the async side; hand them the pieces.
-    Ok(Some((state, model_ready, args.bind, args.port)))
+    Ok(Some(Prepared {
+        state,
+        model_ready,
+        bind: args.bind,
+        port: args.port,
+        scheduler: scheduler_handle,
+    }))
 }
 
 #[cfg(test)]
