@@ -28,31 +28,6 @@ pub enum View {
     Run,
 }
 
-/// A finished run, as read back from disk.
-pub struct HistoryEntry {
-    pub benchmark_id: String,
-    /// When it finished, as unix seconds, taken from the filename.
-    pub recorded_at: u64,
-    pub frame: BenchmarkResult,
-}
-
-impl HistoryEntry {
-    /// Human age. A run list is read to answer "which of these is recent?",
-    /// and a raw epoch answers that for nobody.
-    pub fn age_text(&self) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        match now.saturating_sub(self.recorded_at) {
-            0..=90 => "just now".into(),
-            s @ 91..=5400 => format!("{} min ago", s / 60),
-            s @ 5401..=172_800 => format!("{} h ago", s / 3600),
-            s => format!("{} d ago", s / 86_400),
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct BenchState {
     /// Index into [`registry::all`].
@@ -79,6 +54,9 @@ pub struct BenchState {
     run: Option<RunHandle>,
     /// The benchmark the in-flight (or last) run belongs to.
     pub running_id: Option<&'static str>,
+    /// The descriptor of the run in flight — a record needs its name, not
+    /// just its id.
+    running_descriptor: Option<&'static atlas_plugin::BenchmarkDescriptor>,
     pub frame: Option<BenchmarkResult>,
     pub log: VecDeque<LogLine>,
     pub status: String,
@@ -87,7 +65,7 @@ pub struct BenchState {
     pub started: Option<Instant>,
     pub table_scroll: usize,
 
-    pub history: Vec<HistoryEntry>,
+    pub history: Vec<atlas_plugin::RunRecord>,
     pub history_row: usize,
     history_loaded: bool,
     /// Set once a terminal frame has been persisted, so it is written once.
@@ -247,6 +225,7 @@ impl BenchState {
         self.persisted = false;
         self.started = Some(Instant::now());
         self.running_id = Some(descriptor.id);
+        self.running_descriptor = Some(descriptor);
         self.run = Some(executor.start(descriptor, self.values.clone(), self.target.clone()));
         self.view = View::Run;
         Ok(())
@@ -312,24 +291,30 @@ impl BenchState {
         self.log.push_back(line);
     }
 
-    /// Write the terminal frame to `~/.atlas/runs/<id>/`, once.
+    /// Record the terminal frame, once.
+    ///
+    /// Goes through `atlas_plugin::history`, the same writer the CLI uses, so a
+    /// run started here and a run started headlessly land in one store with one
+    /// format — and both carry their parameters and target, which the old
+    /// frame-only write did not.
     fn persist(&mut self, frame: &BenchmarkResult) {
         if self.persisted {
             return;
         }
         self.persisted = true;
-        let (Some(executor), Some(id)) = (&self.executor, self.running_id) else {
+        let (Some(executor), Some(descriptor)) = (&self.executor, self.running_descriptor) else {
             return;
         };
-        let Ok(dir) = executor.artifacts().runs_dir(id) else {
-            return;
-        };
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if let Ok(json) = serde_json::to_string_pretty(frame) {
-            let _ = std::fs::write(dir.join(format!("run-{stamp}.json")), json);
+        let mut record = atlas_plugin::RunRecord::new(
+            descriptor,
+            &self.values,
+            &self.target,
+            atlas_plugin::RunSource::Tui,
+            crate::cli::ATLAS_VERSION,
+            frame.clone(),
+        );
+        if let Err(e) = atlas_plugin::history::save(executor.artifacts(), &mut record) {
+            tracing::warn!("could not record this run: {e:#}");
         }
         // The next visit to History re-reads the directory rather than trying
         // to keep an in-memory list in sync with the filesystem.
@@ -337,51 +322,19 @@ impl BenchState {
     }
 
     /// Populate the History pane. Lazy and re-run after each persisted frame.
+    ///
+    /// Sorted newest-first across ALL benchmarks rather than grouped by
+    /// benchmark: every row already prints its own age and id, and a single
+    /// chronological list is what "what ran recently" actually asks for.
     pub fn load_history(&mut self) {
         if self.history_loaded {
             return;
         }
         self.history_loaded = true;
-        self.history.clear();
-        let Some(executor) = &self.executor else {
-            return;
+        self.history = match &self.executor {
+            Some(executor) => atlas_plugin::history::load_all(executor.artifacts()),
+            None => Vec::new(),
         };
-        for descriptor in registry::all() {
-            let Ok(dir) = executor.artifacts().runs_dir(descriptor.id) else {
-                continue;
-            };
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            let mut files: Vec<_> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("run-") && n.ends_with(".json"))
-                })
-                .collect();
-            files.sort();
-            for path in files.into_iter().rev() {
-                let Ok(text) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let Ok(frame) = serde_json::from_str::<BenchmarkResult>(&text) else {
-                    continue;
-                };
-                let recorded_at = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|s| s.trim_start_matches("run-").parse().ok())
-                    .unwrap_or(0);
-                self.history.push(HistoryEntry {
-                    benchmark_id: descriptor.id.to_string(),
-                    recorded_at,
-                    frame,
-                });
-            }
-        }
         self.history_row = self.history_row.min(self.history.len().saturating_sub(1));
     }
 

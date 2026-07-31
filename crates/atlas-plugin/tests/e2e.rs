@@ -223,3 +223,92 @@ async fn cancellation_stops_a_run_between_steps() {
     assert!(format!("{err:#}").contains("cancelled"), "{err:#}");
     assert!(stream.next().await.is_none());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_run_persists_a_record_the_history_pane_can_read() {
+    // The cross-path guarantee: a run driven with no terminal writes the same
+    // record, in the same store, that the dashboard's History pane reads.
+    let mock = mock_endpoint::start(8, Duration::from_millis(20), Duration::from_millis(2)).await;
+    let store = temp_store("headless");
+    let executor =
+        atlas_plugin::BenchmarkExecutor::new(tokio::runtime::Handle::current(), store.clone());
+    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let specs = descriptor.build().parameters();
+    let values = ParamValues::from_overrides(
+        &specs,
+        [
+            ("concurrencies", "1"),
+            ("isls", "128"),
+            ("warmup", "0"),
+            ("osl", "8"),
+        ],
+    )
+    .expect("overrides parse");
+    let target = TargetEndpoint::local(mock.port, "mock");
+
+    // `run_blocking` sleeps its thread, so it must not run on a runtime worker.
+    let (want_values, want_target) = (values.clone(), target.clone());
+    let outcome = tokio::task::spawn_blocking(move || {
+        atlas_plugin::headless::run_blocking(
+            &executor,
+            atlas_plugin::headless::RunRequest {
+                descriptor,
+                values,
+                target,
+                options: atlas_plugin::headless::HeadlessOptions::cli("1.0.0-beta-preview"),
+            },
+            &mut atlas_plugin::headless::SilentReporter,
+            &|| false,
+        )
+    })
+    .await
+    .expect("join")
+    .expect("drives");
+
+    // 1. Written where the History pane looks, under a nanosecond-keyed name.
+    let path = outcome.saved_to.as_ref().expect("saved");
+    assert_eq!(
+        path.parent().expect("parent"),
+        store.root().join("runs").join("concurrency-sweep")
+    );
+    let stem = path.file_stem().expect("stem").to_str().expect("utf8");
+    assert_eq!(stem, outcome.record.run_id, "the stem addresses the record");
+    let digits = stem.trim_start_matches("run-");
+    assert_eq!(
+        digits.len(),
+        19,
+        "fixed width keeps sort order chronological"
+    );
+    assert!(digits.chars().all(|c| c.is_ascii_digit()), "{stem}");
+
+    // 2. Re-read through the public reader, not the in-memory value.
+    let back = atlas_plugin::history::load(&store, "concurrency-sweep");
+    assert_eq!(back.len(), 1, "exactly one run in the directory");
+    let r = &back[0];
+
+    // 3. Identity and provenance.
+    assert_eq!(r.schema, atlas_plugin::history::SCHEMA);
+    assert_eq!(r.benchmark_name, "Concurrency Sweep");
+    assert_eq!(r.source, atlas_plugin::RunSource::Cli);
+    assert_eq!(r.atlas_version, "1.0.0-beta-preview");
+    assert!(!r.is_legacy());
+
+    // 4. The WHOLE configuration, defaults included — not just the overrides.
+    assert_eq!(r.params.len(), specs.len(), "{:?}", r.params);
+    assert_eq!(r.params["osl"], "8");
+    assert_eq!(r.params["prompt_mode"], "count", "an untouched default");
+    assert_eq!(r.values(&specs).expect("rehydrates"), want_values);
+    assert_eq!(r.target(), want_target);
+
+    // 5. The measurement itself, and proof the overrides really applied: at
+    //    defaults this benchmark issues 144 requests, so exactly one means the
+    //    single-cell override took effect rather than silently falling back.
+    assert_eq!(r.frame.status, RunStatus::Completed);
+    assert_eq!(
+        r.frame.table.as_ref().expect("table").rows.len(),
+        1,
+        "one isl x one concurrency"
+    );
+    assert_eq!(mock.requests.load(Ordering::Relaxed), 1);
+    assert_eq!(outcome.exit_code(), 0);
+}

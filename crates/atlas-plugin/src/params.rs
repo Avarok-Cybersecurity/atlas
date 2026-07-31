@@ -186,7 +186,7 @@ impl ParamSpec {
 /// bug, and silently substituting a value would hide it behind a plausible
 /// number.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct ParamValues(BTreeMap<String, ParamValue>);
+pub struct ParamValues(pub(crate) BTreeMap<String, ParamValue>);
 
 impl ParamValues {
     /// Starting values for a schema. The spec is the only source of defaults.
