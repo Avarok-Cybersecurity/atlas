@@ -129,7 +129,8 @@ fn startup(
     }
 
     // `None` = EP worker rank: it ran its command loop and the head has exited.
-    match super::serve_load::load_model(args, tui_handles_tx)? {
+    let carried = super::serve_load::Carried::from_env();
+    match super::serve_load::load_model(args, tui_handles_tx, carried)? {
         Some(prepared) => Ok(Startup::Serve(prepared)),
         None => Ok(Startup::Worker),
     }

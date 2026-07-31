@@ -39,11 +39,47 @@ use crate::{
 
 /// Load a model and build everything derived from it.
 ///
+/// State that OUTLIVES any model and must be carried across a swap.
+///
+/// These live on `AppState` but are not derived from the checkpoint. Rebuilding
+/// them on a swap silently drops stored conversations and responses and resets
+/// every rate-limit bucket — no error, just a user noticing their history gone.
+/// Passing them in makes carrying them the only way to load a second model:
+/// the compiler asks for them, so nobody has to remember.
+#[derive(Clone)]
+pub(crate) struct Carried {
+    pub response_store: std::sync::Arc<response_store::ResponseStore>,
+    pub rate_limiter: std::sync::Arc<rate_limiter::RateLimiter>,
+    pub conversation_store: std::sync::Arc<conversation_store::ConversationStore>,
+}
+
+impl Carried {
+    /// First boot: build them once, from the environment.
+    pub fn from_env() -> Self {
+        Self {
+            // `from_env` already hands back an Arc.
+            response_store: response_store::ResponseStore::from_env(),
+            rate_limiter: rate_limiter::RateLimiter::from_env(),
+            conversation_store: conversation_store::ConversationStore::from_env(),
+        }
+    }
+
+    /// A swap: take them from the model being replaced.
+    pub fn from_previous(previous: &AppState) -> Self {
+        Self {
+            response_store: previous.response_store.clone(),
+            rate_limiter: previous.rate_limiter.clone(),
+            conversation_store: previous.conversation_store.clone(),
+        }
+    }
+}
+
 /// `Ok(None)` means this rank is an EP worker: it ran its command loop and has
 /// nothing for the async tail to serve.
 pub(crate) fn load_model(
     mut args: cli::ServeArgs,
     tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>,
+    carried: Carried,
 ) -> Result<Option<Prepared>> {
     // 0. Resolve model directory from HF ID or path
     spark_runtime::progress::phase(1, "model resolve");
@@ -747,9 +783,12 @@ pub(crate) fn load_model(
 
     // 8. Build app state
     let model_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let response_store = response_store::ResponseStore::from_env();
-    let rate_limiter = rate_limiter::RateLimiter::from_env();
-    let conversation_store = conversation_store::ConversationStore::from_env();
+    // Carried, never rebuilt — see `Carried`.
+    let Carried {
+        response_store,
+        rate_limiter,
+        conversation_store,
+    } = carried;
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
     let auth = build_auth_config(&args)?;
@@ -948,3 +987,7 @@ pub(crate) fn load_model(
     // 9-11. Router + HTTP server run on the async side; hand them the pieces.
     Ok(Some((state, model_ready, args.bind, args.port)))
 }
+
+#[cfg(test)]
+#[path = "serve_load_tests.rs"]
+mod tests;
