@@ -83,6 +83,24 @@ pub fn padded_batch_n(n: usize) -> usize {
 }
 
 pub trait Model: Send + Sync {
+    /// Release the device memory this model owns, in reverse construction
+    /// order.
+    ///
+    /// Called by the host when the model is being replaced, **after** the
+    /// scheduler has drained and the stream is synchronised — the only point at
+    /// which a device free is safe on GB10, where a free interleaved with other
+    /// allocation traffic corrupts neighbouring allocations. See
+    /// `atlas_core::scope` for why this is not `Drop`: `Drop` can express
+    /// neither the ordering nor the failure.
+    ///
+    /// Default: a no-op returning `Ok`, which is honest for the mock and
+    /// translation models that own no pooled device memory. A model that DOES
+    /// own pools and leaves this unimplemented leaks them — loudly, as the next
+    /// load failing to fit, never as wrong output.
+    fn teardown(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Poll TQ+ InnerQ calibration for this model. Called once per prefill
     /// chunk. Default: a no-op, which is every model without a driver — the
     /// scheduler used to reach a process-wide `OnceLock` for this, which meant

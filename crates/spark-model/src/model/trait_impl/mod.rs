@@ -40,6 +40,10 @@ mod verify_d;
 mod verify_fused;
 
 impl Model for TransformerModel {
+    fn teardown(&mut self) -> Result<()> {
+        self.release_pools()
+    }
+
     /// Poll this model's own InnerQ driver. A miss is logged, never fatal — it
     /// is a diagnostic lever, not part of serving.
     #[cfg(feature = "cuda")]

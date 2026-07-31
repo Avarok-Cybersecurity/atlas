@@ -368,3 +368,53 @@ pub(crate) struct PinnedMetaStaging {
 unsafe impl Send for TransformerModel {}
 // SAFETY: Model methods are only called from the scheduler thread. No concurrent &self access.
 unsafe impl Sync for TransformerModel {}
+
+/// Release every pool this model owns, newest first.
+///
+/// Construction order is buffers → kv cache → ssm pools → derived, so release
+/// runs the reverse. `Teardown` is used rather than a hand-rolled sequence
+/// because it attempts every resource even after one fails: a half-torn-down
+/// GPU is worse than a reported error.
+///
+/// NOT released here: the weights. `build_model` takes `store: &WeightStore`
+/// and the layers only copy pointers out of it, so this model does not own
+/// them — the host that retained the store releases it after this returns.
+impl TransformerModel {
+    pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
+        use atlas_core::scope::ModelResource;
+
+        let gpu: &dyn GpuBackend = self.gpu.as_ref();
+        let mut first_error: Option<anyhow::Error> = None;
+        let mut attempt = |label: &'static str, r: anyhow::Result<()>| {
+            if let Err(e) = r
+                && first_error.is_none()
+            {
+                first_error = Some(e.context(label));
+            }
+        };
+
+        attempt("derived weights", self.derived.release(gpu));
+        attempt("ssm snapshots", self.ssm_snapshots.release(gpu));
+        // The pool is Arc'd because slots are handed out to sequences. A live
+        // clone here means something still holds a slot, which is a drain bug,
+        // not a teardown one — so it is reported rather than forced.
+        match std::sync::Arc::get_mut(&mut self.ssm_pool) {
+            Some(pool) => attempt("ssm state pool", pool.release(gpu)),
+            None => attempt(
+                "ssm state pool",
+                Err(anyhow::anyhow!(
+                    "{} handle(s) still hold the SSM pool — a sequence was not \
+                     released before teardown",
+                    std::sync::Arc::strong_count(&self.ssm_pool) - 1
+                )),
+            ),
+        }
+        attempt("kv cache", self.kv_cache.lock().release(gpu));
+        attempt("buffer arena", self.buffers.release(gpu));
+
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
