@@ -46,6 +46,9 @@ spark-storage = { path = "../spark-storage", default-features = false }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Blocking HTTP for the recipe fetch, which runs on its own std::thread and
+# never touches the async runtime. Already in the lock via atlas-spark-bench.
+ureq = { version = "3", features = ["json"] }
 thiserror = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["json"] }

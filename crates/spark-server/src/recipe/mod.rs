@@ -6,6 +6,8 @@
 //! model id, the flags, and the measured rationale for them. This module reads
 //! one and turns it into argv; `schema` owns the key→flag mapping.
 
+pub mod fetch;
+mod fetch_github;
 pub mod schema;
 pub mod yaml;
 

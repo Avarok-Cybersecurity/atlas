@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The GitHub half of the recipe fetch: two endpoints and the cache write.
+//!
+//! Split from `fetch.rs` so each file stays inside the 250-line limit. The
+//! threading contract is stated there and holds here too — every call in this
+//! file is blocking, and none of it may run on the async runtime.
+
+use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use super::Recipe;
+use super::fetch::{AGENT, INDEX, Index, REPO, TIMEOUT, cache_dir, unix_now};
+
+pub(super) fn try_refresh(root: &Path) -> Result<Index> {
+    let (tree_sha, paths) = list_recipe_paths()?;
+    if paths.is_empty() {
+        bail!("{REPO}@{tree_sha} lists no recipes/**/*.yaml");
+    }
+    let mut files: BTreeMap<String, String> = BTreeMap::new();
+    let mut recipes = Vec::new();
+    for path in &paths {
+        let body = get(&format!(
+            "https://raw.githubusercontent.com/{REPO}/{tree_sha}/{path}"
+        ))
+        .with_context(|| format!("fetching {path}"))?;
+        let id = recipe_id(path);
+        match Recipe::parse(id.clone(), &body) {
+            Ok(r) => recipes.push(r),
+            // One malformed recipe upstream must not cost the other 24.
+            Err(e) => tracing::warn!("skipping recipe {id}: {e:#}"),
+        }
+        files.insert(id, body);
+    }
+    recipes.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let fetched_at = unix_now();
+    write_cache(root, &tree_sha, fetched_at, &files)
+        .unwrap_or_else(|e| tracing::warn!("could not cache recipes: {e:#}"));
+    Ok(Index {
+        recipes,
+        tree_sha,
+        fetched_at,
+        offline: None,
+    })
+}
+
+/// `recipes/qwen3.6/foo.yaml` → `qwen3.6/foo`.
+pub(super) fn recipe_id(path: &str) -> String {
+    path.trim_start_matches("recipes/")
+        .trim_end_matches(".yaml")
+        .to_string()
+}
+
+/// One API call: the tree sha and every `recipes/**/*.yaml` under it.
+fn list_recipe_paths() -> Result<(String, Vec<String>)> {
+    let body = get(&format!(
+        "https://api.github.com/repos/{REPO}/git/trees/main?recursive=1"
+    ))
+    .context("listing the recipe tree")?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&body).context("tree response is not JSON")?;
+    let sha = doc
+        .get("sha")
+        .and_then(|s| s.as_str())
+        .context("tree response has no sha")?
+        .to_string();
+    // `truncated` means GitHub cut the listing short; a partial Library that
+    // looks complete is worse than an error.
+    if doc.get("truncated").and_then(|t| t.as_bool()) == Some(true) {
+        bail!("GitHub truncated the tree listing for {REPO}");
+    }
+    let entries = doc
+        .get("tree")
+        .and_then(|t| t.as_array())
+        .context("tree response has no tree")?;
+    let mut paths: Vec<String> = entries
+        .iter()
+        .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("blob"))
+        .filter_map(|e| e.get("path").and_then(|p| p.as_str()))
+        .filter(|p| p.starts_with("recipes/") && p.ends_with(".yaml"))
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    Ok((sha, paths))
+}
+
+fn get(url: &str) -> Result<String> {
+    let response = ureq::get(url)
+        .header("User-Agent", AGENT)
+        .config()
+        .timeout_global(Some(TIMEOUT))
+        .build()
+        .call()
+        .with_context(|| format!("GET {url}"))?;
+    Ok(response.into_body().read_to_string()?)
+}
+
+/// Write the cache atomically: a half-written index read by the next start-up
+/// would be indistinguishable from a corrupt one.
+pub(super) fn write_cache(
+    root: &Path,
+    tree_sha: &str,
+    fetched_at: u64,
+    files: &BTreeMap<String, String>,
+) -> Result<()> {
+    let dir = cache_dir(root);
+    std::fs::create_dir_all(&dir)?;
+    let doc = serde_json::json!({
+        "tree_sha": tree_sha,
+        "fetched_at": fetched_at,
+        "files": files,
+    });
+    let tmp = dir.join("index.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;
+    std::fs::rename(&tmp, dir.join(INDEX))?;
+    Ok(())
+}
