@@ -64,8 +64,12 @@ pub(crate) async fn serve(
     // Signal listeners belong on the runtime, not inside the blocking section.
     match tokio::task::spawn_blocking(move || startup(args, tui_progress)).await?? {
         Startup::Serve((state, model_ready, bind, port)) => {
-            crate::main_modules::serve_router::build_and_serve(state, model_ready, &bind, port)
-                .await
+            // One host per process; the swap publishes into it rather than
+            // rebuilding the router, which is why the listener survives.
+            let host = Arc::new(crate::main_modules::model_host::ModelHost::with_model(
+                state,
+            ));
+            crate::main_modules::serve_router::build_and_serve(host, model_ready, &bind, port).await
         }
         Startup::Worker => Ok(()),
         // Nothing to serve yet, but plenty to do: the dashboard is running and

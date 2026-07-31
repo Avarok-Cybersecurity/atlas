@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -82,7 +83,7 @@ pub(super) fn assistant_incoming_from_ir(
 /// completion, this endpoint returns the stored body verbatim. Otherwise
 /// 404 with a clear error so Helicone/Langfuse-style clients fall back.
 pub async fn get_stored_completion(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     match state
@@ -109,7 +110,7 @@ pub async fn get_stored_completion(
 
 /// GET /v1/responses/{id} — retrieve a stored Response body.
 pub async fn get_stored_response(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     match state
@@ -132,7 +133,7 @@ pub async fn get_stored_response(
 /// 404 on miss. Deletion removes the entry from the in-memory LRU and,
 /// when the filesystem backend is active, unlinks the `<id>.json` file.
 pub async fn delete_stored_response(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     let existed = state
@@ -164,7 +165,7 @@ pub async fn delete_stored_response(
 /// list — the whole transcript fits in a single page for any realistic
 /// multi-turn conversation.
 pub async fn list_response_input_items(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {

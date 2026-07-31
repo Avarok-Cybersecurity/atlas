@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -128,8 +129,15 @@ pub async fn metrics_handler() -> impl IntoResponse {
 }
 
 /// GET /health — readiness probe (503 while model is loading).
-pub async fn health(State(state): State<Arc<AppState>>) -> Response {
-    if state.model_ready.load(std::sync::atomic::Ordering::Relaxed) {
+pub async fn health(
+    State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
+) -> Response {
+    // Takes the HOST, not the model: reporting "no model" is the whole point of
+    // this endpoint, so requiring one would make it unanswerable in exactly the
+    // state it exists to describe.
+    if let Some(state) = host.current()
+        && state.model_ready.load(std::sync::atomic::Ordering::Relaxed)
+    {
         Json(serde_json::json!({"status": "ready", "model": &state.model_name})).into_response()
     } else {
         (
@@ -147,7 +155,7 @@ pub async fn health_live() -> &'static str {
 
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.
 pub async fn tokenize(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<crate::openai::TokenizeRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -208,7 +216,7 @@ pub struct DetokenizeRequest {
 
 /// POST /detokenize — decode token IDs back to text.
 pub async fn detokenize(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<DetokenizeRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {

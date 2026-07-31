@@ -2,7 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
-use axum::extract::State;
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive};
@@ -95,7 +95,7 @@ fn validate_token_ids(state: &AppState, ids: &[u32]) -> Result<(), (StatusCode, 
 }
 
 pub async fn completions(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {

@@ -31,6 +31,7 @@ mod sampling_setup;
 mod template;
 mod thinking;
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -73,7 +74,7 @@ pub(crate) fn test_build_json_messages(entries: &[msg_entry::MsgEntry]) -> Vec<s
 use super::compact::openai_error_response;
 
 pub async fn chat_completions(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     body: axum::body::Bytes,
 ) -> Response {
