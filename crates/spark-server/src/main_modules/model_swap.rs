@@ -21,16 +21,27 @@
 //! 5. **Load the new model**, carrying the process-scoped stores forward.
 //! 6. **Publish.** Requests resume against the new model.
 //!
-//! **The cost, stated plainly:** the swap is committed, not transactional. By
-//! step 4 the old model is gone, so a failure in step 5 leaves the server with
-//! nothing loaded rather than with what it had. The host reports that honestly
-//! (503, `/health` "loading") and the previous argv is returned so a caller can
-//! offer to restore it. Validating the new config BEFORE step 1 is what keeps
-//! that window small — a bad recipe never reaches the drain.
+//! **The cost, and what is done about it.** The swap is committed: by step 4
+//! the old model is gone, so a failure in step 5 cannot be undone by simply
+//! not proceeding. Three things narrow that window, in order of how much they
+//! buy:
+//!
+//! 1. **Validate before step 1.** A bad flag combination, an absent
+//!    checkpoint or a multi-rank deployment never reaches the drain, so the
+//!    overwhelmingly common failure costs nothing at all.
+//! 2. **Restore on failure.** If the new model fails to load, the previous
+//!    argv is reloaded automatically. The memory it needs was just freed by
+//!    its own teardown, so the restore is loading a model that demonstrably
+//!    fit moments ago — the case with the best odds of succeeding.
+//! 3. **Report honestly when both fail.** No model is loaded, `/health` says
+//!    so, requests get 503, and the error names BOTH failures — the one that
+//!    started it and the one that prevented recovery. A restore that fails
+//!    silently is worse than no restore, because the operator then debugs the
+//!    wrong model.
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::model_host::ModelHost;
 use super::serve_load::{Carried, load_model};
@@ -49,7 +60,6 @@ pub(crate) struct SwapOutcome {
 pub(crate) fn swap(
     host: &Arc<ModelHost>,
     next: cli::ServeArgs,
-    previous_args: Option<cli::ServeArgs>,
     tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>,
 ) -> Result<SwapOutcome> {
     // Refuse before anything is torn down. A bad flag combination, a missing
@@ -67,6 +77,9 @@ pub(crate) fn swap(
         next.world_size,
         next.rank
     );
+
+    // Taken from the host, not a parameter: see `ModelHost::args`.
+    let previous_args = host.args();
 
     // 1 + 2. Stop admitting work, and release the state that owns request_tx.
     // The stores are taken FIRST: they must outlive the model being dropped.
@@ -91,16 +104,46 @@ pub(crate) fn swap(
 
     // 4 + 5. The model drops as the scheduler thread unwinds, which is where
     // `Model::teardown` frees its pools; then the new one loads.
-    let prepared = load_model(next, tui_handles_tx, carried)
-        .context("loading the new model")?
-        .context("hot-swap reached an EP-worker path on rank 0, which cannot happen")?;
+    let next_args = next.clone();
+    let load_err = match load_model(next, tui_handles_tx.clone(), carried.clone()) {
+        Ok(Some(prepared)) => {
+            // 6.
+            host.set_scheduler(prepared.scheduler);
+            host.set_args(next_args);
+            host.publish(prepared.state);
+            return Ok(SwapOutcome {
+                previous: previous_args,
+            });
+        }
+        Ok(None) => anyhow::anyhow!("hot-swap reached an EP-worker path on rank 0"),
+        Err(e) => e,
+    };
 
-    // 6.
-    host.set_scheduler(prepared.scheduler);
-    host.publish(prepared.state);
-    Ok(SwapOutcome {
-        previous: previous_args,
-    })
+    // The new model did not load and the old one is already gone. Put the old
+    // one back: its memory was freed by its own teardown moments ago, so this
+    // is the load with the best chance of succeeding.
+    let Some(previous) = previous_args else {
+        return Err(load_err
+            .context("the new model failed to load and there was no previous model to restore"));
+    };
+    tracing::warn!("load failed, restoring the previous model: {load_err:#}");
+    match load_model(previous.clone(), tui_handles_tx, carried) {
+        Ok(Some(prepared)) => {
+            host.set_scheduler(prepared.scheduler);
+            host.set_args(previous);
+            host.publish(prepared.state);
+            // Deliberately an Err: the requested swap did NOT happen, and
+            // returning Ok would tell the caller it did.
+            Err(load_err.context("the new model failed to load; the previous one was restored"))
+        }
+        // Both failed. Name both — an operator told only about the restore
+        // failure debugs the wrong model.
+        Ok(None) => Err(load_err.context("restore reached an EP-worker path")),
+        Err(restore_err) => Err(load_err.context(format!(
+            "the new model failed to load AND the previous one could not be \
+             restored ({restore_err:#}) — no model is loaded"
+        ))),
+    }
 }
 
 #[cfg(test)]

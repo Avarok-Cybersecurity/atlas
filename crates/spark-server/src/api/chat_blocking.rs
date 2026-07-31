@@ -506,7 +506,9 @@ fn finalize_response(
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(total_completion_tokens as u64);
-    crate::metrics::TTFT_SECONDS.observe(first_ttft / 1000.0);
+    crate::metrics::TTFT_SECONDS
+        .with_label_values(&[state.model_name.as_str()])
+        .observe(first_ttft / 1000.0);
 
     // Rate-limit true-up. Middleware admitted with a conservative
     // reservation of `max_seq_len` tokens; refund the difference.

@@ -29,6 +29,24 @@ pub struct ServeArgs {
     #[arg(long)]
     pub auto_swap: bool,
 
+    /// Forbid request-triggered model loading outright.
+    ///
+    /// For deployments where the served model is part of the contract: a
+    /// client must never be able to change what the endpoint is running, no
+    /// matter what else is on the command line.
+    ///
+    /// **This WINS over `--auto-swap`** rather than conflicting with it. A
+    /// conflict error would be the wrong behaviour here: the enabling flag
+    /// typically comes from a shared base config or an image's default command,
+    /// and the operator locking the deployment down appends theirs. Refusing to
+    /// start would punish exactly the person doing the safe thing, and — worse
+    /// — the natural workaround is to delete the deny flag.
+    ///
+    /// Only affects REQUEST-triggered swaps. An operator at the dashboard can
+    /// still change the model; this is about what a client can cause.
+    #[arg(long)]
+    pub no_auto_swap: bool,
+
     /// Load model directly from this filesystem path (skips HF cache resolution).
     #[arg(long, value_name = "PATH")]
     pub model_from_path: Option<PathBuf>,

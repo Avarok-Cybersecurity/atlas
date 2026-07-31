@@ -101,7 +101,6 @@ use spark_runtime::sampler::{
     SamplingParams, apply_penalties_and_bias, sample_with_params, sample_with_params_history,
 };
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -310,9 +309,16 @@ pub fn run(
     let mut swapped: Vec<SwappedSeq> = Vec::new();
     let mut spill_manager: Option<KvSpillManager> = if swap_space_gb > 0 {
         let max_bytes = swap_space_gb as u64 * 1024 * 1024 * 1024;
-        match KvSpillManager::new(PathBuf::from("/tmp/atlas-swap"), max_bytes) {
+        // Per-PROCESS directory. `KvSpillManager::new` wipes stale `swap_*` files
+        // on construction, which is correct for a restart and correct across a
+        // hot-swap (the old scheduler is joined before the new one is built, so
+        // they never overlap) — but a SHARED path means two `spark serve`
+        // processes on one box wipe each other's live spill files. That is a
+        // pre-existing hazard this work surfaced rather than introduced.
+        let spill_dir = std::env::temp_dir().join(format!("atlas-swap-{}", std::process::id()));
+        match KvSpillManager::new(spill_dir.clone(), max_bytes) {
             Ok(mgr) => {
-                tracing::info!("Swap space: {swap_space_gb} GB at /tmp/atlas-swap/");
+                tracing::info!("Swap space: {swap_space_gb} GB at {}", spill_dir.display());
                 Some(mgr)
             }
             Err(e) => {

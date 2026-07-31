@@ -276,7 +276,7 @@ impl LibState {
         std::thread::Builder::new()
             .name("atlas-swap".into())
             .spawn(move || {
-                if let Err(e) = crate::main_modules::model_swap::swap(&host, args, None, None) {
+                if let Err(e) = crate::main_modules::model_swap::swap(&host, args, None) {
                     // The host reports the failure honestly (503, /health
                     // "loading"); this line is what says WHY in the log ring.
                     tracing::error!(

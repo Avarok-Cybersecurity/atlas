@@ -64,6 +64,10 @@ pub(crate) async fn serve(
     // One host for the process lifetime, created BEFORE startup so the
     // dashboard can hold it and trigger a swap. The load publishes into it.
     let host = Arc::new(crate::main_modules::model_host::ModelHost::empty());
+    // Recorded before `args` moves into startup: the FIRST swap restores to
+    // this if its load fails, and without it the first swap is the one swap
+    // with no safety net.
+    host.set_args(args.clone());
     let startup_host = host.clone();
     match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {

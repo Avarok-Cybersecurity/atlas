@@ -233,7 +233,9 @@ pub(super) fn handle_done(
     // without a terminal event still decrements.)
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(ctx.prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(completion_tokens as u64);
-    crate::metrics::TTFT_SECONDS.observe(time_to_first_token_ms / 1000.0);
+    crate::metrics::TTFT_SECONDS
+        .with_label_values(&[ctx.model.as_str()])
+        .observe(time_to_first_token_ms / 1000.0);
 
     // Rate-limit true-up.
     if let Some(ref rctx) = ctx.req_ctx {

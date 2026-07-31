@@ -33,6 +33,12 @@ pub struct ModelHost {
     /// whoever performs the swap must be able to take it, and that is not the
     /// one call site that first built the server.
     scheduler: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The argv the live model was loaded from.
+    ///
+    /// Kept here, not passed to `swap`, because a caller that has to supply it
+    /// is a caller that can forget: the first one did, which silently disabled
+    /// restore-on-failure. The host always knows what it is running.
+    args: parking_lot::Mutex<Option<crate::cli::ServeArgs>>,
 }
 
 impl ModelHost {
@@ -41,6 +47,7 @@ impl ModelHost {
         Self {
             current: parking_lot::RwLock::new(Some(state)),
             scheduler: parking_lot::Mutex::new(None),
+            args: parking_lot::Mutex::new(None),
         }
     }
 
@@ -50,6 +57,7 @@ impl ModelHost {
         Self {
             current: parking_lot::RwLock::new(None),
             scheduler: parking_lot::Mutex::new(None),
+            args: parking_lot::Mutex::new(None),
         }
     }
 
@@ -81,6 +89,15 @@ impl ModelHost {
     /// Take the current scheduler, for a swap to join.
     pub fn take_scheduler(&self) -> Option<std::thread::JoinHandle<()>> {
         self.scheduler.lock().take()
+    }
+
+    /// Record what the live model was loaded from, for a restore.
+    pub fn set_args(&self, args: crate::cli::ServeArgs) {
+        *self.args.lock() = Some(args);
+    }
+
+    pub fn args(&self) -> Option<crate::cli::ServeArgs> {
+        self.args.lock().clone()
     }
 
     pub fn is_loaded(&self) -> bool {

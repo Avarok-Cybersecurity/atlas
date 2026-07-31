@@ -34,6 +34,13 @@ pub(crate) enum Decision {
     SwapTo(String),
 }
 
+/// Is request-triggered swapping permitted for this deployment?
+///
+/// Deny wins. See `--no-auto-swap` for why that is not a clap conflict.
+pub(crate) fn enabled(args: &crate::cli::ServeArgs) -> bool {
+    args.auto_swap && !args.no_auto_swap
+}
+
 /// Decide what to do about `requested`, given what is live and what is known.
 ///
 /// Matching is by exact HF id: a recipe's `model` field is the id the server

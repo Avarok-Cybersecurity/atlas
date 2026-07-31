@@ -91,3 +91,40 @@ fn matching_is_exact_not_fuzzy() {
 fn an_empty_catalogue_never_swaps() {
     assert_eq!(decide("anything", LIVE, &[]), Decision::ServeCurrent);
 }
+
+mod policy {
+    use super::super::enabled;
+    use crate::cli;
+    use clap::Parser as _;
+
+    fn args(extra: &[&str]) -> cli::ServeArgs {
+        let mut argv = vec!["spark", "serve", "m"];
+        argv.extend_from_slice(extra);
+        match cli::Cli::parse_from(argv).command {
+            cli::Command::Serve(a) => a,
+            cli::Command::Benchmark(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn request_swapping_is_off_unless_asked_for() {
+        assert!(!enabled(&args(&[])));
+        assert!(enabled(&args(&["--auto-swap"])));
+    }
+
+    /// The enterprise case: the enabling flag comes from a base config or an
+    /// image's default command, and the operator locking the deployment down
+    /// appends the deny. Deny must win — and it must not be a clap CONFLICT,
+    /// because refusing to start would punish the person doing the safe thing
+    /// and the obvious workaround is to delete the deny flag.
+    #[test]
+    fn deny_wins_over_enable_rather_than_erroring() {
+        assert!(!enabled(&args(&["--auto-swap", "--no-auto-swap"])));
+        assert!(!enabled(&args(&["--no-auto-swap", "--auto-swap"])));
+    }
+
+    #[test]
+    fn deny_alone_is_valid_and_still_denies() {
+        assert!(!enabled(&args(&["--no-auto-swap"])));
+    }
+}
