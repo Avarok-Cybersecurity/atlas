@@ -30,6 +30,20 @@ type Prepared = (
     u16,
 );
 
+/// How startup ended — three genuinely different outcomes, which an
+/// `Option<Prepared>` conflated: `None` used to mean "EP worker, no router",
+/// and reusing it for "no model yet" would exit the process instead of leaving
+/// the dashboard up.
+enum Startup {
+    /// A model is loaded; serve it.
+    Serve(Prepared),
+    /// EP worker rank: no router here, and the head owns the lifetime.
+    Worker,
+    /// No model was named. The dashboard is the front door: the process stays
+    /// up so the Library can be browsed, and exits when the user asks it to.
+    AwaitingModel,
+}
+
 /// Bring the engine up, then serve.
 ///
 /// Startup — weight load, KV allocation, kernel audit, graph capture — is ~50s of
@@ -48,18 +62,25 @@ pub(crate) async fn serve(
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
 ) -> Result<()> {
     // Signal listeners belong on the runtime, not inside the blocking section.
-    let Some((state, model_ready, bind, port)) =
-        tokio::task::spawn_blocking(move || startup(args, tui_progress)).await??
-    else {
-        return Ok(()); // EP worker: no router on this rank
-    };
-    crate::main_modules::serve_router::build_and_serve(state, model_ready, &bind, port).await
+    match tokio::task::spawn_blocking(move || startup(args, tui_progress)).await?? {
+        Startup::Serve((state, model_ready, bind, port)) => {
+            crate::main_modules::serve_router::build_and_serve(state, model_ready, &bind, port)
+                .await
+        }
+        Startup::Worker => Ok(()),
+        // Nothing to serve yet, but plenty to do: the dashboard is running and
+        // owns the session until the user picks a model or quits.
+        Startup::AwaitingModel => {
+            crate::tui::shutdown::wait().await;
+            Ok(())
+        }
+    }
 }
 
 fn startup(
     mut args: cli::ServeArgs,
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
-) -> Result<Option<Prepared>> {
+) -> Result<Startup> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
     spark_runtime::progress::phase(0, "banner");
@@ -88,6 +109,26 @@ fn startup(
     // exactly what to change. Hard error, never a warning.
     if let Err(msg) = cli::validate_serve_args(&args) {
         anyhow::bail!("{msg}");
+    }
+
+    // No model named: the dashboard is the front door. Everything above this
+    // point is process-scoped — banner, signal listeners, the TUI thread, flag
+    // validation — and everything below is model-dependent, which is exactly
+    // the boundary a swap re-runs from.
+    if args.model.is_none() && args.model_from_path.is_none() {
+        // A dashboard is what makes a modelless boot useful. Without one there
+        // is nothing to pick a model WITH, so this is a hard error on stderr
+        // rather than a server that sits forever answering nothing — the shape
+        // that looks healthy to a supervisor and serves no one.
+        if tui_handles_tx.is_none() {
+            anyhow::bail!(
+                "no model given, and no dashboard to choose one from.\n\
+                 Pass a MODEL (or --model-from-path), or run on a TTY without \
+                 --no-tui to browse the Library."
+            );
+        }
+        tracing::info!("No model specified — open the Library to choose one");
+        return Ok(Startup::AwaitingModel);
     }
 
     // 0. Resolve model directory from HF ID or path
@@ -541,7 +582,7 @@ fn startup(
     if serve_phases::maybe_run_ep_worker(&args, &mut model_opt, &early_high_speed_swap_cfg)? {
         // An EP worker (rank > 0) never serves HTTP: it ran its command loop and
         // the head has exited. `None` = nothing for the async tail to do.
-        return Ok(None);
+        return Ok(Startup::Worker);
     }
     let model = model_opt.expect("head retains model on rank 0");
 
@@ -991,7 +1032,7 @@ fn startup(
     serve_phases::log_behavior_audit(&args, &ptx_set);
 
     // 9-11. Router + HTTP server run on the async side; hand them the pieces.
-    Ok(Some((state, model_ready, args.bind, args.port)))
+    Ok(Startup::Serve((state, model_ready, args.bind, args.port)))
 }
 
 /// Parse the vLLM-style `--default-chat-template-kwargs` JSON

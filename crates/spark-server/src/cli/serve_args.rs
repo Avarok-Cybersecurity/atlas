@@ -11,7 +11,11 @@ use std::path::PathBuf;
 pub struct ServeArgs {
     /// HuggingFace model ID (e.g. "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4")
     /// or a local directory path containing config.json.
-    #[arg(value_name = "MODEL", required_unless_present = "model_from_path")]
+    /// Optional: omit both this and `--model-from-path` to boot into the
+    /// Library and pick a model there. That is a TTY-only affordance — plain
+    /// mode has no Library to fall back to, so `validate_serve_args` rejects
+    /// the combination rather than starting a server that can serve nothing.
+    #[arg(value_name = "MODEL")]
     pub model: Option<String>,
 
     /// Load model directly from this filesystem path (skips HF cache resolution).
