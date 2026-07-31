@@ -121,3 +121,42 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
     assert_eq!(outcome.exit_code(), 0, "a warning is not a failure");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `/v1/models` must be readable through **chunked** framing.
+///
+/// This is the bug that made the model check silently useless: Atlas replies
+/// with `Transfer-Encoding: chunked`, so the body carries hex length prefixes
+/// and a terminating `0\r\n\r\n`. A plain `from_str` from the first `{` fails
+/// on those trailing bytes, `list_models` errored, and the wrong-model warning
+/// never fired against a real server.
+#[tokio::test]
+async fn the_model_list_survives_chunked_framing() {
+    let mock =
+        mock_endpoint::start_saying(Some("4 Paris".into()), 1, Duration::ZERO, Duration::ZERO)
+            .await;
+    let models = atlas_plugin::http::list_models(&target(mock.port), Duration::from_secs(5))
+        .await
+        .expect("the list parses");
+    assert_eq!(models, vec!["mock".to_string()]);
+}
+
+#[tokio::test]
+async fn a_model_the_server_does_not_serve_is_reported() {
+    let mock =
+        mock_endpoint::start_saying(Some("4 Paris".into()), 1, Duration::ZERO, Duration::ZERO)
+            .await;
+    // The mock serves "mock"; ask for something else.
+    let wrong = TargetEndpoint::local(mock.port, "does/not-exist");
+    let report = coherence::probe(&wrong, Duration::from_secs(5)).await;
+    assert!(!report.is_clean(), "a wrong model name is not clean");
+    let concern = report.concern(&wrong).expect("a concern");
+    assert!(concern.contains("mock"), "names what IS served: {concern}");
+    assert!(concern.contains("does/not-exist"), "{concern}");
+    // The questions still passed — which is exactly why the model list is the
+    // only thing that could have caught this.
+    assert!(
+        report.answers.iter().all(|a| a.passed),
+        "{:?}",
+        report.answers
+    );
+}

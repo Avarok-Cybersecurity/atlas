@@ -190,8 +190,16 @@ pub async fn list_models(target: &TargetEndpoint, timeout: Duration) -> Result<V
     let start = body
         .find('{')
         .context("no JSON in the /v1/models response")?;
-    let doc: serde_json::Value =
-        serde_json::from_str(&body[start..]).context("/v1/models did not return JSON")?;
+    // Parse the FIRST value and ignore whatever follows. Atlas replies with
+    // `Transfer-Encoding: chunked`, so the body carries hex length prefixes and
+    // a terminating `0\r\n\r\n`; plain `from_str` fails on those trailing
+    // bytes, which is exactly how this check came to be silently useless
+    // against a real server while passing against a Content-Length mock.
+    let doc: serde_json::Value = serde_json::Deserializer::from_str(&body[start..])
+        .into_iter()
+        .next()
+        .context("/v1/models returned an empty body")?
+        .context("/v1/models did not return JSON")?;
     Ok(doc
         .get("data")
         .and_then(|d| d.as_array())

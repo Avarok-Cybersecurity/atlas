@@ -66,18 +66,18 @@ pub async fn start_saying(
                 }
                 let head = String::from_utf8_lossy(&request).to_string();
                 if head.starts_with("GET /v1/models") {
-                    let body = br#"{"object":"list","data":[{"id":"mock"}]}"#;
+                    // CHUNKED, like Atlas — not Content-Length. A reader that
+                    // parses from the first `{` to the end of the buffer trips
+                    // over the trailing `0\r\n\r\n`, which is exactly how the
+                    // model check came to be silently useless on a real server.
+                    let body = r#"{"object":"list","data":[{"id":"mock"}]}"#;
                     let _ = socket
                         .write_all(
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                                 Content-Length: {}\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            )
-                            .as_bytes(),
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n                              Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
                         )
                         .await;
-                    let _ = socket.write_all(body).await;
+                    let _ = write_chunk(&mut socket, body).await;
+                    let _ = socket.write_all(b"0\r\n\r\n").await;
                     return;
                 }
                 counter.fetch_add(1, Ordering::Relaxed);
