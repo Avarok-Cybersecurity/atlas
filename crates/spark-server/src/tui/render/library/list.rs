@@ -73,16 +73,27 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Why the recipe list is stale belongs on screen, not only in a log. The
+    // title has room for "offline"; the cause is what the reader has to act on,
+    // and it differs completely — no route needs a proxy, a 403 needs a wait.
+    let mut header: Vec<Line> = Vec::new();
+    if let Some(detail) = app.lib.index.offline_detail() {
+        header.extend(wrap(
+            &detail,
+            inner.width.saturating_sub(2) as usize,
+            theme::warn(),
+        ));
+        header.push(Line::from(""));
+    }
+
     if rows.is_empty() {
         let hint = if app.lib.filter.is_empty() {
             "no models or recipes yet — press r to fetch recipes"
         } else {
             "nothing matches this search"
         };
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(format!(" {hint}"), theme::dim()))),
-            inner,
-        );
+        header.push(Line::from(Span::styled(format!(" {hint}"), theme::dim())));
+        f.render_widget(Paragraph::new(header), inner);
         return;
     }
 
@@ -91,7 +102,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let visible = (inner.height as usize / per_row).max(1);
     let first = app.lib.selected.saturating_sub(visible.saturating_sub(1));
 
-    let mut lines: Vec<Line> = Vec::new();
+    let mut lines: Vec<Line> = header;
     for (i, entry) in rows.iter().enumerate().skip(first).take(visible) {
         let selected = i == app.lib.selected;
         let bar = if selected {

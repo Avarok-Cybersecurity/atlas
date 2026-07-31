@@ -199,3 +199,42 @@ fn live_fetch_against_github() {
     assert_eq!(reread.tree_sha, index.tree_sha);
     eprintln!("{} recipes @ {}", index.recipes.len(), index.tree_sha);
 }
+
+#[test]
+fn a_no_route_failure_tells_the_user_what_to_do_about_it() {
+    // dgx3 sat "offline" with no explanation because the box had no default
+    // route at all. "offline" is not actionable; "set HTTPS_PROXY" is.
+    let index = Index {
+        offline: Some("GET https://api.github.com/…: dns error: Network is unreachable".into()),
+        fetched_at: unix_now() - 86400,
+        ..Index::default()
+    };
+    let detail = index.offline_detail().expect("a reason");
+    assert!(detail.contains("no route"), "{detail}");
+    assert!(detail.contains("HTTPS_PROXY"), "names the fix: {detail}");
+    // The short form still fits a title bar.
+    assert!(index.status_text().len() < 40, "{}", index.status_text());
+}
+
+#[test]
+fn a_rate_limit_is_distinguished_from_a_dead_link() {
+    let index = Index {
+        offline: Some("GET https://api.github.com/…: status 403 rate limit exceeded".into()),
+        ..Index::default()
+    };
+    let detail = index.offline_detail().expect("a reason");
+    assert!(detail.contains("rate-limiting"), "{detail}");
+    assert!(
+        !detail.contains("HTTPS_PROXY"),
+        "a proxy does not fix a rate limit: {detail}"
+    );
+}
+
+#[test]
+fn a_healthy_index_has_no_reason_to_show() {
+    let index = Index {
+        fetched_at: unix_now(),
+        ..Index::default()
+    };
+    assert!(index.offline_detail().is_none());
+}

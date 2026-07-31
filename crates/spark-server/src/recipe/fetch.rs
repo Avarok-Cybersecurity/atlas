@@ -79,6 +79,35 @@ impl Index {
             (None, None) => "up to date".into(),
         }
     }
+
+    /// Why the last fetch failed, phrased for someone who has to fix it.
+    ///
+    /// The title only has room for "offline", which tells the reader nothing
+    /// they cannot already see. The cause matters and differs completely: a
+    /// box with no default route needs a proxy, a 403 needs a rate-limit wait,
+    /// and a TLS failure needs neither.
+    pub fn offline_detail(&self) -> Option<String> {
+        let raw = self.offline.as_ref()?;
+        let lowered = raw.to_lowercase();
+        let hint = if lowered.contains("dns")
+            || lowered.contains("resolve")
+            || lowered.contains("unreachable")
+            || lowered.contains("no route")
+        {
+            "This machine has no route to github.com. Set HTTPS_PROXY to a host \
+             that does — recipes are then fetched through it — or copy \
+             ~/.atlas/atlas-recipes/index.json from a machine that can reach it."
+        } else if lowered.contains("403") || lowered.contains("rate") {
+            "GitHub is rate-limiting this IP. The listing costs one API call per \
+             refresh; the cached recipes below are still usable."
+        } else if lowered.contains("timed out") || lowered.contains("timeout") {
+            "The request timed out. A slow or filtered link will do this; the \
+             cached recipes below are still usable."
+        } else {
+            "The cached recipes below are still usable."
+        };
+        Some(format!("{raw}. {hint}"))
+    }
 }
 
 pub(super) fn unix_now() -> u64 {
