@@ -63,6 +63,33 @@ pub(crate) fn decide(requested: &str, live_model: &str, catalogue: &[Recipe]) ->
     }
 }
 
+/// Load `recipe_id` if the request asked for a model that is not the live one.
+///
+/// Blocking, and long. Call it from `spawn_blocking`.
+///
+/// The re-check after taking the guard is what makes this single-flight rather
+/// than a stampede: while a request waited, the winner may have loaded exactly
+/// the model it wanted, and repeating the load would be a second multi-minute
+/// outage for nothing.
+pub(crate) fn ensure_loaded(
+    host: &std::sync::Arc<super::model_host::ModelHost>,
+    recipe_id: &str,
+    requested_model: &str,
+    catalogue: &[Recipe],
+) -> anyhow::Result<()> {
+    let _guard = host.swap_guard();
+    if host.live_model().as_deref() == Some(requested_model) {
+        return Ok(());
+    }
+    let recipe = catalogue
+        .iter()
+        .find(|r| r.id == recipe_id)
+        .ok_or_else(|| anyhow::anyhow!("recipe {recipe_id} vanished between decide and load"))?;
+    let args = recipe.serve_args(&std::collections::BTreeMap::new())?;
+    super::model_swap::swap(host, args, None)?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "auto_swap_tests.rs"]
 mod tests;

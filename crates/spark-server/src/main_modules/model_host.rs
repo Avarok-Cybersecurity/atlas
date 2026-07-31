@@ -39,6 +39,14 @@ pub struct ModelHost {
     /// is a caller that can forget: the first one did, which silently disabled
     /// restore-on-failure. The host always knows what it is running.
     args: parking_lot::Mutex<Option<crate::cli::ServeArgs>>,
+    /// Held for the duration of a swap.
+    ///
+    /// Without it, N concurrent requests naming an absent model each start
+    /// their own multi-minute load on the same GPU — the second one OOMs
+    /// against the first, and the failure looks like a bad model rather than a
+    /// stampede. Requests queue here and the winner does the work; see
+    /// `swap_guard`.
+    swapping: std::sync::Mutex<()>,
 }
 
 impl ModelHost {
@@ -48,6 +56,7 @@ impl ModelHost {
             current: parking_lot::RwLock::new(Some(state)),
             scheduler: parking_lot::Mutex::new(None),
             args: parking_lot::Mutex::new(None),
+            swapping: std::sync::Mutex::new(()),
         }
     }
 
@@ -58,6 +67,7 @@ impl ModelHost {
             current: parking_lot::RwLock::new(None),
             scheduler: parking_lot::Mutex::new(None),
             args: parking_lot::Mutex::new(None),
+            swapping: std::sync::Mutex::new(()),
         }
     }
 
@@ -98,6 +108,22 @@ impl ModelHost {
 
     pub fn args(&self) -> Option<crate::cli::ServeArgs> {
         self.args.lock().clone()
+    }
+
+    /// Serialise swaps. The caller re-checks what is loaded AFTER acquiring:
+    /// by then another request may have loaded exactly what it wanted, and
+    /// doing it again would be a second outage for no reason.
+    pub fn swap_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        match self.swapping.lock() {
+            Ok(g) => g,
+            // A panic during a previous swap must not wedge every later one.
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// The model id currently being served, if any.
+    pub fn live_model(&self) -> Option<String> {
+        self.current.read().as_ref().map(|s| s.model_name.clone())
     }
 
     pub fn is_loaded(&self) -> bool {
