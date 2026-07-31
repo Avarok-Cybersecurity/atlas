@@ -497,6 +497,9 @@ impl TransformerModel {
         let has_fp8_calibration = config.fp8_kv_calibration_tokens > 0
             && kv_cache.dtype() == spark_runtime::kv_cache::KvCacheDtype::Fp8;
         Ok(Self {
+            // Installed by the factory after construction: the layers read
+            // from the store during `new`, so it cannot be moved in here.
+            weight_store: None,
             config,
             dispatch: crate::layers::ops::GemmDispatch::from_env(),
             derived: crate::layers::ops::DerivedWeights::new(),

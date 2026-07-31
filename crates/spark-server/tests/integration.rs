@@ -98,7 +98,7 @@ fn setup_model(
         Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
     let model = spark_model::factory::build_model(
         config.clone(),
-        &store,
+        store,
         gpu,
         4,          // max_batch_tokens: up to 3 spec-decode verification tokens
         block_size, // kv_block_size = 16
@@ -592,5 +592,111 @@ fn prompt_logprobs_collection_during_prefill() -> Result<()> {
         "no collection without the flag"
     );
     model.free_sequence(&mut seq2)?;
+    Ok(())
+}
+
+/// Free device memory according to the SYSTEM, not to Atlas.
+///
+/// Deliberately external: a leak test that asks the allocator under test how
+/// much it thinks it freed would pass on a bug in that very accounting. The
+/// backend is also gone by the time this is called — it dies with the model.
+///
+/// Two sources, because the answer depends on the hardware:
+///
+/// * **Discrete GPU** — `nvidia-smi --query-gpu=memory.free`.
+/// * **GB10 and other unified-memory parts** — nvidia-smi reports `[N/A]` for
+///   every memory field, because there is no separate VRAM pool to report: the
+///   GPU allocates out of host RAM. `MemAvailable` is the pool. Verified on
+///   dgx3, where `memory.free`, `memory.used` and `memory.total` are all
+///   `[N/A]` while /proc/meminfo shows ~102 GB available.
+///
+/// Getting this wrong would have made the gate unrunnable on the primary
+/// target while still passing on a discrete card.
+fn free_device_memory_bytes() -> Result<usize> {
+    if let Ok(out) = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .output()
+        && out.status.success()
+        && let Some(mib) = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .and_then(|l| l.trim().parse::<usize>().ok())
+    {
+        return Ok(mib * 1024 * 1024);
+    }
+    // Unified memory: the GPU pool is host RAM.
+    let meminfo = std::fs::read_to_string("/proc/meminfo")?;
+    let kb: usize = meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("no MemAvailable in /proc/meminfo"))?;
+    Ok(kb * 1024)
+}
+
+/// **The teardown gate.** Does releasing a model actually give the VRAM back?
+///
+/// This is the measurement the whole in-process hot-swap design rests on. Every
+/// `ModelResource` impl is compile-checked and mock-tested, but a mock cannot
+/// answer the only question that matters: whether a real load followed by a
+/// real `teardown()` returns free memory to where it started.
+///
+/// Three cycles, not one. A single load/release pair passes even when a
+/// per-cycle leak exists — the leak has to accumulate before it is visible
+/// against allocator noise, and a per-cycle leak is exactly what a forgotten
+/// resource produces.
+///
+/// Run it deliberately:
+/// ```text
+/// ATLAS_INTEGRATION_MODEL_DIR=<snapshot> \
+///   cargo test -p spark-server --test integration teardown_returns -- --ignored --nocapture
+/// ```
+/// Before trusting any self-relative number, check nothing else is on the GPU:
+/// `nvidia-smi --query-compute-apps=pid,used_memory --format=csv`.
+#[test]
+#[ignore] // Requires GPU + model weights
+fn teardown_returns_the_vram_it_took() -> Result<()> {
+    let model_dir = model_dir_path();
+    if !model_dir.exists() {
+        eprintln!("skipping: {} does not exist", model_dir.display());
+        return Ok(());
+    }
+
+    // Tolerance, not equality. The CUDA context, the module set and the
+    // allocator's bookkeeping are not model state and do not come back; on a
+    // unified-memory part the reading also moves with page cache and whatever
+    // else the host is doing. What must come back is the model's share, which
+    // is tens of GB — so a gigabyte of slack cannot hide a real leak.
+    const TOLERANCE_BYTES: usize = 1024 * 1024 * 1024;
+    const CYCLES: usize = 3;
+
+    let mut baseline: Option<usize> = None;
+    for cycle in 1..=CYCLES {
+        let (mut model, _config) = setup_model(&model_dir)?;
+        // First cycle's post-load reading is not a baseline: the context and
+        // modules are created lazily on the first load and legitimately persist.
+        model.teardown()?;
+        drop(model);
+
+        let free = free_device_memory_bytes()?;
+        eprintln!(
+            "cycle {cycle}/{CYCLES}: {:.2} GB free after teardown",
+            free as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        match baseline {
+            None => baseline = Some(free),
+            Some(first) => {
+                let lost = first.saturating_sub(free);
+                assert!(
+                    lost <= TOLERANCE_BYTES,
+                    "cycle {cycle} ended {:.2} GB below the first cycle — a \
+                     per-cycle leak, which means a device-memory owner is not \
+                     registered for teardown",
+                    lost as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+            }
+        }
+    }
     Ok(())
 }

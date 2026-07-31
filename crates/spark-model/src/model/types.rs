@@ -43,6 +43,14 @@ pub struct TransformerModel {
     /// Dropped with the model, so no entry can outlive the allocation it
     /// describes.
     pub(super) derived: crate::layers::ops::DerivedWeights,
+    /// The weight ledger this model was built from.
+    ///
+    /// Held for TEARDOWN, not for lookup: the layers already copied the
+    /// pointers they need out of it during construction. It is the only
+    /// structure that knows every weight allocation, and it used to be dropped
+    /// at the end of `startup()` — leaving that memory live with nothing able
+    /// to free it. `None` once released.
+    pub(super) weight_store: Option<spark_runtime::weights::WeightStore>,
     /// Non-GEMM kernel-path levers, resolved at model construction.
     pub(super) levers: crate::layers::ops::ModelLevers,
     /// Diagnostic counters and one-shot dump latches for this model. Sibling
@@ -380,6 +388,11 @@ unsafe impl Sync for TransformerModel {}
 /// and the layers only copy pointers out of it, so this model does not own
 /// them — the host that retained the store releases it after this returns.
 impl TransformerModel {
+    /// Hand the model the ledger of its own weights, for teardown.
+    pub fn adopt_weight_store(&mut self, store: spark_runtime::weights::WeightStore) {
+        self.weight_store = Some(store);
+    }
+
     pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
         use atlas_core::scope::ModelResource;
 
@@ -411,6 +424,11 @@ impl TransformerModel {
         }
         attempt("kv cache", self.kv_cache.lock().release(gpu));
         attempt("buffer arena", self.buffers.release(gpu));
+        // Weights LAST: the layers hold pointers into them, so they must not be
+        // freed until everything that reads them is gone.
+        if let Some(mut store) = self.weight_store.take() {
+            attempt("weight store", store.release(gpu));
+        }
 
         match first_error {
             Some(e) => Err(e),

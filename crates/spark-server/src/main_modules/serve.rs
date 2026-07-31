@@ -502,7 +502,9 @@ fn startup(
     let model = serve_phases::build_model(
         &args,
         &config,
-        &store,
+        // Moved, not borrowed: the model keeps the ledger so it can free the
+        // weights at teardown. Nothing after this point reads the store.
+        store,
         gpu,
         max_batch_tokens,
         kv_dtype,
