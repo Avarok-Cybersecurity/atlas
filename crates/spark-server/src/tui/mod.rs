@@ -74,6 +74,7 @@ pub struct RunHandles {
 pub fn start(
     args: crate::cli::ServeArgs,
     progress_rx: std::sync::mpsc::Receiver<capture_layer::ProgressEvent>,
+    host: std::sync::Arc<crate::main_modules::model_host::ModelHost>,
 ) -> std::sync::mpsc::Sender<RunHandles> {
     let (levers_tx, levers_rx) = std::sync::mpsc::channel::<RunHandles>();
     let runtime = tokio::runtime::Handle::current();
@@ -87,6 +88,7 @@ pub fn start(
                 .or_else(|| args.model.clone())
                 .unwrap_or_default();
             let mut app = app::App::new(args);
+            app.host = Some(host);
             app.chat.set_runtime(runtime.clone());
             // Benchmarks default to the server they are attached to. A store
             // that cannot be created (no HOME, read-only) is not fatal: the

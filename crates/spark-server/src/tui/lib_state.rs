@@ -254,6 +254,44 @@ impl LibState {
         self.error = None;
     }
 
+    /// Start the selected recipe, replacing whatever is running.
+    ///
+    /// Runs on a worker thread: a load is minutes long and the dashboard must
+    /// stay responsive — the render loop is what draws the progress the user is
+    /// waiting on. The load emits the same `progress::phase` events a first
+    /// boot does, so Main's checklist renders it with no extra plumbing, which
+    /// is why "start a model" and "swap a model" look identical to the user.
+    pub fn launch(
+        &self,
+        host: std::sync::Arc<crate::main_modules::model_host::ModelHost>,
+    ) -> Result<(), String> {
+        let recipe = self.config_recipe().ok_or("no recipe selected")?;
+        // Build and validate argv HERE, on the UI thread, so a bad recipe is a
+        // toast rather than a torn-down model: `swap` re-validates, but by then
+        // the user has already been told the run started.
+        let args = recipe
+            .serve_args(&self.overrides)
+            .map_err(|e| problem_line(&format!("{e:#}")))?;
+        let previous = host.current().map(|s| s.model_name.clone());
+        std::thread::Builder::new()
+            .name("atlas-swap".into())
+            .spawn(move || {
+                if let Err(e) = crate::main_modules::model_swap::swap(&host, args, None, None) {
+                    // The host reports the failure honestly (503, /health
+                    // "loading"); this line is what says WHY in the log ring.
+                    tracing::error!(
+                        "swap failed{}: {e:#}",
+                        previous
+                            .as_deref()
+                            .map(|p| format!(" (was serving {p})"))
+                            .unwrap_or_default()
+                    );
+                }
+            })
+            .map_err(|e| format!("could not start the loader thread: {e}"))?;
+        Ok(())
+    }
+
     /// The argv this form would launch, for the confirm line.
     pub fn preview_argv(&self) -> Option<Vec<String>> {
         self.config_recipe()?.argv(&self.overrides).ok()
@@ -267,7 +305,7 @@ impl LibState {
 /// which tells the reader nothing they did not already know — the actionable
 /// part is `what`, and `fix` when it fits. clap's own errors have no `[1]`
 /// block, so those fall back to their first `error:` line.
-fn problem_line(s: &str) -> String {
+pub(crate) fn problem_line(s: &str) -> String {
     let lines: Vec<&str> = s.lines().map(str::trim).collect();
     let what = lines
         .iter()

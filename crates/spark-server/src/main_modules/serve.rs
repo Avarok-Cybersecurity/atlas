@@ -61,14 +61,13 @@ pub(crate) async fn serve(
     args: cli::ServeArgs,
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
 ) -> Result<()> {
-    // Signal listeners belong on the runtime, not inside the blocking section.
-    match tokio::task::spawn_blocking(move || startup(args, tui_progress)).await?? {
+    // One host for the process lifetime, created BEFORE startup so the
+    // dashboard can hold it and trigger a swap. The load publishes into it.
+    let host = Arc::new(crate::main_modules::model_host::ModelHost::empty());
+    let startup_host = host.clone();
+    match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {
-            // One host per process; the swap publishes into it rather than
-            // rebuilding the router, which is why the listener survives.
-            let host = Arc::new(crate::main_modules::model_host::ModelHost::with_model(
-                prepared.state,
-            ));
+            host.publish(prepared.state);
             // The first load's scheduler belongs to the host too, or the first
             // swap would have nothing to join and would tear down a model with
             // a live scheduler still holding its weights.
@@ -94,6 +93,7 @@ pub(crate) async fn serve(
 fn startup(
     args: cli::ServeArgs,
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
+    host: Arc<crate::main_modules::model_host::ModelHost>,
 ) -> Result<Startup> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
@@ -115,7 +115,7 @@ fn startup(
     if let Some(progress_rx) = tui_progress
         && args.rank == 0
     {
-        tui_handles_tx = Some(crate::tui::start(args.clone(), progress_rx));
+        tui_handles_tx = Some(crate::tui::start(args.clone(), progress_rx, host.clone()));
     }
 
     // Reject contradictory flag combinations up front (issue #288) — before the

@@ -18,6 +18,9 @@ pub enum Outcome {
     None,
     /// Show a message; `error` picks the colour.
     Toast { text: String, error: bool },
+    /// Start the configured recipe. The reducer cannot do it itself — it has no
+    /// handle to the server — so the app layer performs it and reports back.
+    Launch,
 }
 
 impl LibState {
@@ -142,6 +145,7 @@ impl LibState {
                     error: false,
                 };
             }
+            KeyCode::Char('s') => return Outcome::Launch,
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                 self.view = View::Cards;
                 self.error = None;

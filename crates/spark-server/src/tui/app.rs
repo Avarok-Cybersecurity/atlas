@@ -59,6 +59,10 @@ pub struct OpsState {
 
 pub struct App {
     pub args: crate::cli::ServeArgs,
+    /// The model cell, so the Library can start or replace a model.
+    ///
+    /// `None` only in tests, which build an App without a server behind it.
+    pub host: Option<std::sync::Arc<crate::main_modules::model_host::ModelHost>>,
     pub section: Section,
     pub main_sub: MainSub,
     pub bench_sub: BenchSub,
@@ -97,6 +101,7 @@ impl App {
     pub fn new(args: crate::cli::ServeArgs) -> Self {
         Self {
             args,
+            host: None,
             section: Section::Main,
             main_sub: MainSub::Overview,
             bench_sub: BenchSub::Suite,
@@ -341,8 +346,31 @@ impl App {
 
     /// Route into the Library reducer and surface whatever it wants said.
     fn on_library_key(&mut self, key: KeyEvent) {
-        if let super::lib_keys::Outcome::Toast { text, error } = self.lib.on_key(key) {
-            self.toast(text, error);
+        match self.lib.on_key(key) {
+            super::lib_keys::Outcome::Toast { text, error } => self.toast(text, error),
+            super::lib_keys::Outcome::Launch => self.launch_selected_recipe(),
+            super::lib_keys::Outcome::None => {}
+        }
+    }
+
+    /// Start the configured recipe and follow it to Main.
+    ///
+    /// The jump is the point: a load is what the operator wants to watch, and
+    /// Main is where the 12-phase checklist already lives. Resetting the
+    /// progress model first is what makes the SECOND load render as a load —
+    /// without it every phase is still `Done` from the first one.
+    fn launch_selected_recipe(&mut self) {
+        let Some(host) = self.host.clone() else {
+            self.toast("no server attached to this dashboard".to_string(), true);
+            return;
+        };
+        match self.lib.launch(host) {
+            Ok(()) => {
+                self.progress.reset();
+                self.section = Section::Main;
+                self.main_sub = MainSub::Overview;
+            }
+            Err(e) => self.toast(e, true),
         }
     }
 
