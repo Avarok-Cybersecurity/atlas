@@ -84,12 +84,19 @@ pub struct Report {
     /// Set when the endpoint could not be reached or refused the request. This
     /// is a different diagnosis from a wrong answer and is worded differently.
     pub transport_error: Option<String>,
+    /// What `/v1/models` says it is serving, when the requested model is not
+    /// among them. **This is the check that catches a wrong `--model`:** Atlas
+    /// answers a completion whatever name you send, so the questions below
+    /// cannot see the mistake — only the model list can.
+    pub served_instead: Option<Vec<String>>,
 }
 
 impl Report {
     /// Did every check pass and nothing go wrong on the wire?
     pub fn is_clean(&self) -> bool {
-        self.transport_error.is_none() && self.answers.iter().all(|a| a.passed)
+        self.transport_error.is_none()
+            && self.served_instead.is_none()
+            && self.answers.iter().all(|a| a.passed)
     }
 
     /// One line naming what is wrong, or `None` when nothing is.
@@ -102,6 +109,22 @@ impl Report {
             return Some(format!(
                 "{} did not answer a test request: {e}",
                 target.base_url
+            ));
+        }
+        // Reported before the answers: a wrong model name explains everything
+        // downstream of it, and leading with "recall answered oddly" would bury
+        // the cause under a symptom.
+        if let Some(served) = &self.served_instead {
+            let list = if served.is_empty() {
+                "nothing".to_string()
+            } else {
+                served.join(", ")
+            };
+            return Some(format!(
+                "{} is serving {list} — not {:?}, which this benchmark is set to request. \
+                 Atlas answers whatever model name it is sent, so the run WILL produce \
+                 numbers; they will just be for a different model than the one named.",
+                target.base_url, target.model
             ));
         }
         let failed: Vec<&Answer> = self.answers.iter().filter(|a| !a.passed).collect();
@@ -135,6 +158,19 @@ impl Report {
 /// caller has one thing to inspect.
 pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Report {
     let mut report = Report::default();
+
+    // The model list first. It is one cheap request and it is the only thing
+    // that can catch a wrong name, because a completion succeeds regardless.
+    match http::list_models(target, timeout).await {
+        Ok(served) if !served.iter().any(|m| m == &target.model) => {
+            report.served_instead = Some(served);
+        }
+        Ok(_) => {}
+        // Unreadable list: not fatal, and not worth a warning of its own — the
+        // questions below will fail too if the endpoint is genuinely broken.
+        Err(e) => tracing::debug!("could not read the model list: {e:#}"),
+    }
+
     for check in CHECKS {
         match ask(target, check, timeout).await {
             Ok(answer) => report.answers.push(answer),

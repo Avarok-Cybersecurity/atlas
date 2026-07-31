@@ -179,6 +179,31 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
     carried
 }
 
+/// The model ids `GET /v1/models` reports.
+///
+/// [`probe`] checks only the status line; this parses the body, which is the
+/// difference between "something is listening" and "it is serving what you
+/// asked for". Atlas answers a completion regardless of the `model` field, so
+/// a wrong name is otherwise invisible until the numbers look strange.
+pub async fn list_models(target: &TargetEndpoint, timeout: Duration) -> Result<Vec<String>> {
+    let body = get_models(target, timeout).await?;
+    let start = body
+        .find('{')
+        .context("no JSON in the /v1/models response")?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&body[start..]).context("/v1/models did not return JSON")?;
+    Ok(doc
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r.get("id").and_then(|i| i.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// `GET /v1/models` — used as a reachability probe before a sweep starts, so a
 /// wrong port fails in a second instead of producing a suspiciously fast run.
 pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Result<()> {
@@ -208,6 +233,36 @@ pub async fn probe(target: &TargetEndpoint, timeout: Duration) -> Result<()> {
         bail!("{} /v1/models returned {status:?}", target.base_url);
     }
     Ok(())
+}
+
+/// The whole `/v1/models` response, headers included.
+async fn get_models(target: &TargetEndpoint, timeout: Duration) -> Result<String> {
+    let (host, port) = target.host_port()?;
+    let fut = async {
+        let mut sock = TcpStream::connect((host.as_str(), port)).await?;
+        let req =
+            format!("GET /v1/models HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+        sock.write_all(req.as_bytes()).await?;
+        let mut body = Vec::new();
+        let mut buf = [0u8; 4096];
+        // Read to EOF: `Connection: close` means the server ends the body, and
+        // a fixed cap would truncate a long model list into invalid JSON.
+        loop {
+            let n = sock.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&buf[..n]);
+            if body.len() > 1 << 20 {
+                break;
+            }
+        }
+        anyhow::Ok(String::from_utf8_lossy(&body).into_owned())
+    };
+    tokio::time::timeout(timeout, fut)
+        .await
+        .map_err(|_| anyhow!("{} did not answer within {:?}", target.base_url, timeout))?
+        .with_context(|| format!("reading models from {}", target.base_url))
 }
 
 /// Incremental HTTP response reader: status/header parse, chunked decode, then

@@ -85,6 +85,7 @@ fn an_empty_answer_reads_as_answered_nothing() {
             passed: false,
         }],
         transport_error: None,
+        served_instead: None,
     };
     let target = TargetEndpoint::local(8888, "m");
     let concern = report.concern(&target).expect("a concern");
@@ -102,6 +103,7 @@ fn the_concern_describes_rather_than_forbids() {
             passed: false,
         }],
         transport_error: None,
+        served_instead: None,
     };
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
@@ -120,6 +122,7 @@ fn a_transport_error_is_worded_as_one() {
     let report = Report {
         answers: Vec::new(),
         transport_error: Some("connection refused".into()),
+        served_instead: None,
     };
     let concern = report
         .concern(&TargetEndpoint::local(8888, "m"))
@@ -140,6 +143,7 @@ fn a_clean_report_has_nothing_to_say() {
             passed: true,
         }],
         transport_error: None,
+        served_instead: None,
     };
     assert!(report.is_clean());
     assert!(report.concern(&TargetEndpoint::local(8888, "m")).is_none());
@@ -161,4 +165,50 @@ fn truncate_counts_characters_not_bytes() {
     let s = "é".repeat(200);
     let out = truncate(&s, 10);
     assert_eq!(out.chars().count(), 11);
+}
+
+#[test]
+fn a_wrong_model_name_is_reported_ahead_of_the_answers() {
+    // THE case this check exists for: Atlas answers a completion whatever
+    // model name it is sent, so the questions cannot see the mistake. Only the
+    // model list can — and it must lead, because a wrong name explains any
+    // oddity downstream of it.
+    let report = Report {
+        answers: vec![Answer {
+            label: "recall",
+            answer: String::new(),
+            passed: false,
+        }],
+        transport_error: None,
+        served_instead: Some(vec!["nvidia/Qwen3.6-27B-NVFP4".into()]),
+    };
+    let target = TargetEndpoint::local(8888, "does/not-exist");
+    let concern = report.concern(&target).expect("a concern");
+    assert!(
+        concern.contains("nvidia/Qwen3.6-27B-NVFP4"),
+        "names what IS served: {concern}"
+    );
+    assert!(
+        concern.contains("does/not-exist"),
+        "and what was asked for: {concern}"
+    );
+    assert!(
+        !concern.contains("answered nothing"),
+        "the cause leads, not the symptom: {concern}"
+    );
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn a_server_serving_the_requested_model_is_clean() {
+    let report = Report {
+        answers: vec![Answer {
+            label: "recall",
+            answer: "Paris".into(),
+            passed: true,
+        }],
+        transport_error: None,
+        served_instead: None,
+    };
+    assert!(report.is_clean());
 }

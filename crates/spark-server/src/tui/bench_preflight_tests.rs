@@ -28,6 +28,7 @@ fn a_clean_check_starts_the_run_without_asking() {
             passed: true,
         }],
         transport_error: None,
+        served_instead: None,
     });
     assert_eq!(pre.poll(&target()), Some(true));
 }
@@ -41,6 +42,7 @@ fn a_concern_stops_to_ask_and_keeps_the_reason() {
             passed: false,
         }],
         transport_error: None,
+        served_instead: None,
     });
     assert_eq!(pre.poll(&target()), Some(false));
     match &pre.phase {
