@@ -9,6 +9,7 @@ pub(crate) mod middleware;
 pub(crate) mod model_host;
 pub(crate) mod promotion;
 pub(crate) mod serve;
+pub(crate) mod serve_load;
 pub(crate) mod serve_phases;
 mod serve_router;
 

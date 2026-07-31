@@ -70,10 +70,17 @@ jobs:
             # to the sampler context; splitting risks inflating the
             # cross-file pub(super) surface.
             "crates/spark-server/src/scheduler/decode_logits_step.rs"
-            # 516 LoC — startup orchestration (12 phases, all named).
-            # Already heavily split (`serve_phases`, `serve_router`); the
-            # remaining body is the linear bootstrapping sequence.
-            "crates/spark-server/src/main_modules/serve.rs"
+            # 950 LoC — the model-dependent half of startup (phases 1-10),
+            # split OUT of serve.rs so a hot-swap can run it twice. Same
+            # rationale the serve.rs entry carried, and the same code: this is
+            # the linear bootstrapping sequence, already heavily split into
+            # `serve_phases`. Splitting it further needs a context struct
+            # threading ~40 locals between phases, which makes the load order —
+            # the thing that actually matters here — harder to read, not easier.
+            #
+            # serve.rs itself is now 356 LoC and OFF this list: the allow-listed
+            # body shrank from 1260 to 950 by moving, not by growing.
+            "crates/spark-server/src/main_modules/serve_load.rs"
             # 524 LoC — Qwen3 attention layer kernel-handle bootstrap.
             # The TurboQuant+ asymmetric variants extend several existing
             # `match kv_dtype` arms (turbo3 + asym pair members route to
