@@ -95,6 +95,12 @@ pub struct DenseFfnLayer {
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
+    // W4A8 integer-DP4A batch-2 decode kernels (MTP K=2 verify). Engaged when
+    // ATLAS_W4A16_DP4A=1 (ops::dp4a_enabled) AND all three handles are present.
+    // KernelHandle(0) on miss → arm skipped, float batch2 path used.
+    dp4a_quant_k: KernelHandle,
+    dp4a_dual_batch2_k: KernelHandle,
+    dp4a_batch2_k: KernelHandle,
     /// M<=4 batched GEMV (K=4 verify FFN); 0-handle when absent.
     w4a16_gemv_batch4: KernelHandle,
     /// M<=8 batched GEMV (chain-verify K=5..8 FFN); 0-handle when absent.
@@ -125,6 +131,12 @@ pub struct DenseFfnLayer {
     // operands cut shared-memory load instructions ~4x (the v2 BF16 path is
     // smem-bandwidth-bound, L1/TEX 90% per ncu), and M64's lower register pressure
     // lifts occupancy → measured ~44 TFLOP/s vs ~30 for v2 (~1.47x prefill) on dgx1.
+    // NOTE: "FP8 M64" names the GB10 build only. There `w4a16_gemm_t` compiles
+    // an FP8 E4M3 branch (cosine ~0.9997, LOSSY — it broke coherence on a
+    // Fibonacci gen). The strix-hip `w4a16_gemm.cu` has NO `#ifdef` at all, so
+    // the same symbol there is the plain NVFP4 dequant path and is lossless;
+    // that is why it is the native-HIP default above and why the flag below is
+    // a no-op on that target.
     // LOSSY (FP8 E4M3, cosine ~0.9997) — OPT-IN via ATLAS_FP8_M64_PREFILL, gated on
     // quality. KernelHandle(0) on miss → dispatch unchanged.
     w4a16_gemm_t_k: KernelHandle,
@@ -271,6 +283,13 @@ impl DenseFfnLayer {
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
+            dp4a_quant_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "quantize_act_int8_g16"),
+            dp4a_dual_batch2_k: super::try_kernel(
+                gpu,
+                "w4a16_gemv_dp4a",
+                "w4a16_gemv_dp4a_dual_batch2",
+            ),
+            dp4a_batch2_k: super::try_kernel(gpu, "w4a16_gemv_dp4a", "w4a16_gemv_dp4a_batch2"),
             w4a16_gemv_batch4: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
             w4a16_gemv_batch8: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
@@ -1018,6 +1037,10 @@ impl DenseFfnLayer {
 
     /// K=2 speculative: batched GEMV for 2 tokens.
     /// 3 launches: dual batch2 (gate+up) + silu_mul + batch2 (down).
+    /// DP4A path (ATLAS_W4A16_DP4A=1 + kernels present): int8-quant the 2 token
+    /// activations once, then W4A8 sudot4 batch2 GEMVs sharing the weight read —
+    /// the ~25% win on the bandwidth-bound verify GEMV (76% of decode time per
+    /// rocprofv3). Falls back to the float batch2 path otherwise.
     pub fn forward_k2(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
@@ -1025,41 +1048,119 @@ impl DenseFfnLayer {
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
 
-        // Fused gate+up for 2 tokens
-        ops::w4a16_gemv_dual_batch2(
-            ctx.gpu,
-            self.w4a16_gemv_dual_batch2,
-            input,
-            &self.weights.gate_proj,
-            gate_out,
-            &self.weights.up_proj,
-            up_out,
-            inter,
-            h,
-            stream,
-        )?;
-        ops::silu_mul(
-            ctx.gpu,
-            self.act_mul,
-            gate_out,
-            up_out,
-            gate_out,
-            2 * inter,
-            stream,
-        )?;
-        let output = ctx.buffers.moe_output();
-        ops::w4a16_gemv_batch2(
-            ctx.gpu,
-            self.w4a16_gemv_batch2,
-            gate_out,
-            &self.weights.down_proj,
-            output,
-            h,
-            inter,
-            stream,
-        )?;
-
-        Ok(())
+        if ops::dp4a_enabled()
+            && self.dp4a_quant_k.0 != 0
+            && self.dp4a_dual_batch2_k.0 != 0
+            && self.dp4a_batch2_k.0 != 0
+        {
+            // Reuse the shared dense-FFN int8 activation-quant scratch (sized for
+            // prefill max_batch × K — plenty for M=2 decode). Layout [2,K] row-major.
+            let a_q = ctx.buffers.ffn_act_a();
+            let a_scale = ctx.buffers.ffn_act_scale();
+            // Quantize the 2 verify-token inputs [2, h] BF16 -> int8 [2, h] + f32 [2, h/16].
+            ops::quantize_act_int8(ctx.gpu, self.dp4a_quant_k, input, a_q, a_scale, h, stream)?;
+            ops::quantize_act_int8(
+                ctx.gpu,
+                self.dp4a_quant_k,
+                input.offset(h as usize * 2),
+                a_q.offset(h as usize),
+                a_scale.offset((h / 16) as usize * 4),
+                h,
+                stream,
+            )?;
+            // Fused gate+up DP4A batch2 (weight read shared across the 2 tokens).
+            ops::w4a16_gemv_dp4a_dual_batch2(
+                ctx.gpu,
+                self.dp4a_dual_batch2_k,
+                a_q,
+                a_scale,
+                &self.weights.gate_proj,
+                gate_out,
+                &self.weights.up_proj,
+                up_out,
+                inter,
+                h,
+                stream,
+            )?;
+            // SiLU(gate)*up (float, reused) -> gate_out [2, inter].
+            ops::silu_mul(
+                ctx.gpu,
+                self.act_mul,
+                gate_out,
+                up_out,
+                gate_out,
+                2 * inter,
+                stream,
+            )?;
+            // Quantize the down-proj input [2, inter] BF16 -> int8 [2, inter] (reuse scratch).
+            let output = ctx.buffers.moe_output();
+            ops::quantize_act_int8(
+                ctx.gpu,
+                self.dp4a_quant_k,
+                gate_out,
+                a_q,
+                a_scale,
+                inter,
+                stream,
+            )?;
+            ops::quantize_act_int8(
+                ctx.gpu,
+                self.dp4a_quant_k,
+                gate_out.offset(inter as usize * 2),
+                a_q.offset(inter as usize),
+                a_scale.offset((inter / 16) as usize * 4),
+                inter,
+                stream,
+            )?;
+            // Down DP4A batch2.
+            ops::w4a16_gemv_dp4a_batch2(
+                ctx.gpu,
+                self.dp4a_batch2_k,
+                a_q,
+                a_scale,
+                &self.weights.down_proj,
+                output,
+                h,
+                inter,
+                stream,
+            )?;
+            Ok(())
+        } else {
+            // Float batch2 path (default).
+            ops::w4a16_gemv_dual_batch2(
+                ctx.gpu,
+                self.w4a16_gemv_dual_batch2,
+                input,
+                &self.weights.gate_proj,
+                gate_out,
+                &self.weights.up_proj,
+                up_out,
+                inter,
+                h,
+                stream,
+            )?;
+            ops::silu_mul(
+                ctx.gpu,
+                self.act_mul,
+                gate_out,
+                up_out,
+                gate_out,
+                2 * inter,
+                stream,
+            )?;
+            let output = ctx.buffers.moe_output();
+            ops::w4a16_gemv_batch2(
+                ctx.gpu,
+                self.w4a16_gemv_batch2,
+                gate_out,
+                &self.weights.down_proj,
+                output,
+                h,
+                inter,
+                stream,
+            )?;
+            Ok(())
+        }
     }
 
     /// K=3 speculative: batched GEMV for 3 tokens.
@@ -1228,7 +1329,17 @@ impl DenseFfnLayer {
         }
         if let Some(wt) = wt {
             if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
-                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
+                // gfx1151 native-HIP: `w4a16_gemm_t_k64` is 0.61-0.77x of the
+                // M_TILE=64 `w4a16_gemm_t` at every measured shape (K_STEP=64
+                // costs 45248 B LDS, so fewer CTAs stay resident than the
+                // halved barrier count is worth). Measured on the real FFN
+                // shapes by `examples/strix_ffn_bench`. NVIDIA keeps this arm:
+                // it was selected there on the w4a16_m17_bench numbers.
+                if !cfg!(atlas_hip)
+                    && k >= 8192
+                    && k.is_multiple_of(64)
+                    && self.w4a16_gemm_t_k64_k.0 != 0
+                {
                     return ops::w4a16_gemm_n128(
                         ctx.gpu,
                         self.w4a16_gemm_t_k64_k,
@@ -1707,6 +1818,28 @@ impl DenseFfnLayer {
                     // priority.
                     Some(wt) if m <= 64 => {
                         self.w4a16_prefill_gemm(ctx, $w, Some(&wt), $in, $out, m, $n, $k, stream)?
+                    }
+                    // gfx1151 native-HIP: the M_TILE=64 `w4a16_gemm_t` beats the
+                    // M_TILE=128 `w4a16_gemm_t_m128` at EVERY measured shape
+                    // (1.16-2.09x over M=17..2048, both FFN shapes). m128 needs
+                    // 34432 B LDS and 256 VGPRs *with spill* -> 3 waves/SIMD;
+                    // the M64 tiling needs 24192 B and does not spill. Output is
+                    // byte-identical (per-output-element K accumulation order is
+                    // unchanged; only which CTA owns which m-rows differs) --
+                    // verified by `examples/strix_ffn_bench` byte-compare and a
+                    // 6484-position prompt-logprob diff (max|dlp| = 0, KL = 0).
+                    Some(wt) if cfg!(atlas_hip) && self.w4a16_gemm_t_k.0 != 0 => {
+                        ops::w4a16_gemm_n128(
+                            ctx.gpu,
+                            self.w4a16_gemm_t_k,
+                            $in,
+                            &wt,
+                            $out,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?
                     }
                     // Prefer v2 (8-warp) > t_m128 (4-warp) > scalar-tile base.
                     Some(wt) if self.w4a16_gemm_t_m128_v2_k.0 != 0 => ops::w4a16_gemm_n128_m128_v2(

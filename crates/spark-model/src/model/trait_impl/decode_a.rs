@@ -223,11 +223,11 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
+            midchunk_capture: None,
             // Hash-MoE: the single decode token ID (uploaded above every step
             // before graph replay). MoE reads it at offset 0.
             token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: single-seq decode never routes prefill.
-            midchunk_capture: None,
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.

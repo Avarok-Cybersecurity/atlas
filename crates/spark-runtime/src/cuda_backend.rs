@@ -11,6 +11,7 @@ use std::ffi::c_void;
 use anyhow::{Result, bail};
 use atlas_core::registry::AtlasRegistry;
 
+mod copy2d;
 mod gpu_impl;
 
 // ── Raw CUDA driver API for memory operations ──

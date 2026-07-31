@@ -233,8 +233,6 @@ pub struct ForwardContext<'a> {
     /// into SHARED prefix-cache blocks — non-exact recompute poisons them
     /// and the drift ratchets across turns (2026-06-10 warm-hit stutter).
     pub gdn_exact_replay: bool,
-    /// Device `[num_tokens]` u32 token IDs for the tokens being processed this
-    /// pass, in the SAME order the per-token MoE loop visits them. Required by
     /// DeepSeek-V4 hash-MoE layers (static `tid2eid[token_id]` routing); `None`
     /// for models without hash routing. Must be a STABLE address across the
     /// layer loop (and, under CUDA-graph decode, uploaded before each replay).
@@ -267,6 +265,7 @@ pub struct ForwardContext<'a> {
 /// `ssm_layer_counter` is a fresh per-pass counter: each SSM layer's prefill
 /// increments it once, in model order, so the value indexes `h_dsts`/`conv_dsts`
 /// (which are in the same SSM-layer order as the snapshot pool).
+#[derive(Clone, Copy)]
 pub struct MidchunkCapture<'a> {
     /// Split point in local token coordinates: capture state AFTER this many
     /// tokens (== `tb - proc_start`).

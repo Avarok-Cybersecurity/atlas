@@ -389,12 +389,12 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: false,
             gdn_exact_replay: false,
+            midchunk_capture: None,
             token_ids: None,
             // #30: batched multi-seq prefill legitimately mixes adapters and keeps
             // the bgmv (via multi_seq/qkv.rs); its attn_metadata is None so it never
             // reaches paged_qkv's routed path anyway. Must stay None.
             routed_lora_layers: None,
-            midchunk_capture: None,
         };
 
         // h_state_ptrs scratch slot offset (used JIT per SSM layer).

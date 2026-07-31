@@ -118,16 +118,57 @@ impl TransformerModel {
             // Double-GEMV: reads weights once, computes 2 outputs.
             // GEMM M=2 with 64×64 tiles wastes 97% of M-dimension → ~3× slower.
             if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                ops::w4a16_gemv_batch2(
-                    self.gpu.as_ref(),
-                    self.w4a16_gemv_batch2_kernel,
-                    hidden,
-                    nvfp4,
-                    logits,
-                    v,
-                    h,
-                    stream,
-                )?;
+                if ops::dp4a_enabled()
+                    && self.dp4a_lm_head_batch2_k.0 != 0
+                    && self.dp4a_quant_k.0 != 0
+                    && std::env::var_os("ATLAS_DP4A_LM_HEAD").is_some()
+                {
+                    // W4A8 DP4A batch2: int8-quant the 2 verify hidden [2, h] ->
+                    // int8 [2, h] + f32 [2, h/16] (reuse shared FFN act-quant scratch),
+                    // then dp4a batch2 GEMV sharing the lm_head weight read.
+                    let a_q = self.buffers.ffn_act_a();
+                    let a_scale = self.buffers.ffn_act_scale();
+                    ops::quantize_act_int8(
+                        self.gpu.as_ref(),
+                        self.dp4a_quant_k,
+                        hidden,
+                        a_q,
+                        a_scale,
+                        h,
+                        stream,
+                    )?;
+                    ops::quantize_act_int8(
+                        self.gpu.as_ref(),
+                        self.dp4a_quant_k,
+                        hidden.offset(h as usize * 2),
+                        a_q.offset(h as usize),
+                        a_scale.offset((h / 16) as usize * 4),
+                        h,
+                        stream,
+                    )?;
+                    ops::w4a16_gemv_dp4a_batch2(
+                        self.gpu.as_ref(),
+                        self.dp4a_lm_head_batch2_k,
+                        a_q,
+                        a_scale,
+                        nvfp4,
+                        logits,
+                        v,
+                        h,
+                        stream,
+                    )?;
+                } else {
+                    ops::w4a16_gemv_batch2(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemv_batch2_kernel,
+                        hidden,
+                        nvfp4,
+                        logits,
+                        v,
+                        h,
+                        stream,
+                    )?;
+                }
             } else {
                 // Dense fallback: 2× GEMV. Stays BF16 even when
                 // use_fp32_logits is on — the FP32 path is decode-only
@@ -155,6 +196,30 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+        } else if cfg!(atlas_scale)
+            && num_tokens == 3
+            && self.w4a16_gemv_batch3_kernel.0 != 0
+            && let Some(ref nvfp4) = self.lm_head_nvfp4
+        {
+            // Strix K=3 verify (num_drafts=2): batch3 GEMV reads the lm_head
+            // weight ONCE for 3 rows instead of w4a16_gemm (M=3 on 64x64 tiles
+            // wastes ~95% of M => ~3x slower). Unblocks deeper MTP drafting.
+            //
+            // AMD-only (`atlas_scale` = strix + strix-hip). The kernel lives in
+            // the shared kernels/gb10 tree, so `try_kernel` resolves it on
+            // NVIDIA too; without this gate GB10 would silently move
+            // num_tokens == 3 off the batch4 arm below and change the K=4
+            // golden decode path.
+            ops::w4a16_gemv_batch3(
+                self.gpu.as_ref(),
+                self.w4a16_gemv_batch3_kernel,
+                hidden,
+                nvfp4,
+                logits,
+                v,
+                h,
+                stream,
+            )?;
         } else if (3..=8).contains(&num_tokens)
             && {
                 if num_tokens <= 4 {

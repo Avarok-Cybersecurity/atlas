@@ -87,9 +87,9 @@ impl TransformerModel {
             comm: None,
             graph_capture: false,
             gdn_exact_replay: false,
+            midchunk_capture: None,
             token_ids: None,
             routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
-            midchunk_capture: None,
         };
         // Give the drafter its prompt context on the first propose of this
         // sequence: whole-prompt prefill on a COLD turn, carried rows + a

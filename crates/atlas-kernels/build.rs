@@ -364,9 +364,14 @@ fn main() {
     let cache_hits = copy_jobs.len();
     let total = nvcc_invocations + cache_hits;
 
-    let n_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(8)
+    let n_threads = std::env::var("ATLAS_HIPCC_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(8)
+        })
         .min(nvcc_invocations.max(1));
 
     if nvcc_invocations > 0 {

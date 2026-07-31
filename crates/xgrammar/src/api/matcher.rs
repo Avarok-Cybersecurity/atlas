@@ -182,6 +182,15 @@ impl GrammarMatcher {
         self.inner.is_terminated()
     }
 
+    /// Whether the root rule is matched at the current position — a stop/EOS
+    /// token is grammatically valid here. Unlike [`Self::is_terminated`] (which,
+    /// with `terminate_without_stop_token=false`, only reports `true` after a
+    /// stop token was accepted), this reflects the matcher's raw completion
+    /// state. Port of the vendored `GrammarMatcher::is_grammar_completed`.
+    pub fn is_grammar_completed(&self) -> bool {
+        self.inner.is_grammar_completed()
+    }
+
     /// Reset the matcher to its initial state. Port of the vendored
     /// `GrammarMatcher::reset`.
     pub fn reset(&mut self) {

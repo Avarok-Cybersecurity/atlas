@@ -78,6 +78,14 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // Strix K=3 verify lm_head GEMV (num_tokens==3). try_kernel: 0-handle
+        // on targets that predate it; impl_a3 dispatch falls back to w4a16_gemm.
+        let w4a16_gemv_batch3_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch3");
+        let dp4a_quant_k =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv_dp4a", "quantize_act_int8_g16");
+        let dp4a_lm_head_batch2_k =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv_dp4a", "w4a16_gemv_dp4a_batch2");
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
         // 0-handle on targets that predate it; dispatch falls back).
         let w4a16_gemv_batch4_kernel =
@@ -514,6 +522,9 @@ impl TransformerModel {
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            w4a16_gemv_batch3_kernel,
+            dp4a_quant_k,
+            dp4a_lm_head_batch2_k,
             w4a16_gemv_batch4_kernel,
             w4a16_gemv_batch8_kernel,
             dense_gemv_fp8w_kernel,

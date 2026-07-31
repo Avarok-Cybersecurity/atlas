@@ -189,6 +189,12 @@ impl TransformerModel {
         // Double-check: explicit sync to guarantee zero is complete
         self.gpu.synchronize(self.gpu.default_stream())?;
 
+        // ATLAS_MTP_DRAFTER_PREFILL / CARRY: reset per-sequence capture trackers
+        // so a new sequence never reads a previous one's hiddens.
+        self.mtp_prefill_capture_len
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        *self.mtp_store_range.lock() = (0, 0);
+
         // Allocate MTP proposer state (owns its own KV cache block table)
         let proposer_state = match &self.proposer {
             Some(p) => Some(p.alloc_state(self.gpu.as_ref())?),

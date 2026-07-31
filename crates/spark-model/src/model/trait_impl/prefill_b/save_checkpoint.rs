@@ -61,9 +61,17 @@ impl TransformerModel {
         // Making the interval a real generator (splitting chunks at interval
         // boundaries) is a behaviour change with a prefill-throughput cost
         // and is deliberately NOT made here; it needs its own measured A/B.
+        // Opt-in (`ATLAS_SSM_TAIL_CKPT=1`, default OFF) index-only tail insert,
+        // carried over from the Strix branch. Uses the spark_runtime boundary
+        // helper so save and lookup agree (SSOT). Kept as a SEPARATE predicate
+        // from `is_prompt_tail` above: main's checkpoint-firing policy is
+        // unchanged by default, and this only widens the guard when the env
+        // var is explicitly set. Consumed by the `if is_tail` block below.
+        let is_tail = spark_runtime::ssm_tail_ckpt_enabled()
+            && spark_runtime::ssm_tail_boundary(tokens.len(), bs) == Some(end_token);
         let on_interval = self.ssm_checkpoint_interval > 0
             && end_block.is_multiple_of(self.ssm_checkpoint_interval);
-        if end_block == 0 || !(is_prompt_tail || on_interval) {
+        if end_block == 0 || !(is_prompt_tail || on_interval || is_tail) {
             return Ok(());
         }
         // Stale-V cap (mirrors finalize_last): never checkpoint-cache a block
@@ -151,6 +159,24 @@ impl TransformerModel {
         // prior image's state.
         if self.tokens_have_vision_pad(boundary_tokens) {
             self.ssm_snapshots.free(snap_id);
+            return Ok(());
+        }
+        if is_tail {
+            // Index-only: `finalize_last` inserts [0, total) for this same turn and
+            // owns the ref_count/disk-ref bookkeeping. Re-inserting the whole prefix
+            // here measured ~0.9 s/turn. Superseding the session's previous tail keeps
+            // the cold 512-grid checkpoints alive (they are the fallback restore points).
+            for old in self.prefix_cache.insert_tail_snapshot(
+                boundary_tokens,
+                snap_id,
+                seq.session_hash,
+                seq.adapter_id,
+            ) {
+                self.ssm_snapshots.free(old);
+            }
+            tracing::info!(
+                "tail SSM checkpoint saved at token {end_token} (snapshot_id {snap_id})"
+            );
             return Ok(());
         }
         let boundary_disk = if seq.disk_block_ids.len() >= end_block {

@@ -72,6 +72,12 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// Strix K=3 verify lm_head GEMV (num_tokens==3); 0-handle when absent.
+    pub(super) w4a16_gemv_batch3_kernel: KernelHandle,
+    /// W4A8 DP4A batch-2 verify kernels (lm_head_batched DP4A path). Engaged when
+    /// ATLAS_W4A16_DP4A=1 AND both handles present; float batch2 is the fallback.
+    pub(super) dp4a_quant_k: KernelHandle,
+    pub(super) dp4a_lm_head_batch2_k: KernelHandle,
     /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
     /// read for all rows; nsys 2026-07-18: the M64-tile `w4a16_gemm` at M=4
     /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).

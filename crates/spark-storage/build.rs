@@ -59,7 +59,7 @@ fn main() {
     if std::env::var("DEP_ATLAS_RDMA_SHIM_HAS_VERBS").is_ok() {
         println!("cargo:rustc-cfg=atlas_rdma_verbs");
     }
-    if skip_build() {
+    if skip_build() || hip_target() {
         emit_stub();
         println!("cargo:rerun-if-changed=build.rs");
         return;
@@ -86,6 +86,23 @@ fn skip_build() -> bool {
         )
     };
     truthy("ATLAS_SKIP_BUILD") || truthy("SKIP_ATLAS_BUILD")
+}
+
+/// True for native-HIP targets (`ATLAS_TARGET_HW=strix-hip`, ...).
+///
+/// spark-storage compiles its 5 predictor kernels via `find_nvcc()`, which
+/// panics on a pure-ROCm box with no CUDA toolkit (#326): atlas-kernels routes
+/// through `resolve_compute_target()` and builds fine via hipcc, but this crate
+/// never had HIP awareness. The predictors are only reachable through
+/// `--high-speed-swap`, which the documented Strix serve config does not use, so
+/// stub the registry instead of requiring an nvcc shim on PATH.
+///
+/// `ATLAS_SKIP_BUILD=1` is NOT a substitute — it stubs atlas-kernels too, which
+/// kills every compute kernel.
+fn hip_target() -> bool {
+    std::env::var("ATLAS_TARGET_HW")
+        .map(|hw| hw.contains("hip"))
+        .unwrap_or(false)
 }
 
 fn emit_stub() {

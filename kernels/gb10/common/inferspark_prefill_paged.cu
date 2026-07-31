@@ -16,7 +16,7 @@
         const unsigned int _cpr = HDIM / 8; \
         const unsigned long long _ps = (unsigned long long)cache_block_size * num_kv_heads * head_dim; \
         const unsigned long long _rs = (unsigned long long)num_kv_heads * head_dim; \
-        for (unsigned int _i = t; _i < TILE_CHUNKS; _i += (stride)) { \
+        for (unsigned int _i = t; _i < (BC * (HDIM / 8)); _i += (stride)) { \
             unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
             unsigned int _pos = (kv_s) + _row; \
             if (_pos < (kv_l)) { \

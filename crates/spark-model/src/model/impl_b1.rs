@@ -368,11 +368,11 @@ impl TransformerModel {
                 comm: ctx.comm,
                 graph_capture: ctx.graph_capture,
                 gdn_exact_replay: false,
+                midchunk_capture: None,
                 token_ids: None,
                 // #30: forward the parent's routing (None on this decode-profiling
                 // path, but never silently drop it if a prefill ever re-wraps).
                 routed_lora_layers: ctx.routed_lora_layers,
-                midchunk_capture: None,
             }
         };
 
@@ -564,9 +564,9 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: false, // Eager mode — no CUDA graph
             gdn_exact_replay: false,
+            midchunk_capture: None,
             token_ids: None,
             routed_lora_layers: None, // #30: offline single-seq decode; no prefill route.
-            midchunk_capture: None,
         };
 
         // Eager layer loop: skip SSM layers, run attention layers only

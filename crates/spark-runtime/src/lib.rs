@@ -4,18 +4,19 @@
 #![deny(clippy::all)]
 
 pub mod buffers;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(atlas_scale)))]
 pub mod cublaslt;
-// Metal/no-cuda builds get unreachable stubs so spark-model's unconditional
-// references to these cuda-only entry points still resolve (compile-only).
-#[cfg(not(feature = "cuda"))]
+// Metal/no-cuda AND native-AMD (atlas_scale) builds get unreachable stubs so
+// spark-model's unconditional references to these cuda-only entry points still
+// resolve (compile-only). Strix has no cuBLASLt to link.
+#[cfg(any(not(feature = "cuda"), atlas_scale))]
 #[path = "cublaslt_metal_stub.rs"]
 pub mod cublaslt;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(atlas_scale)))]
 pub mod cutlass;
-#[cfg(not(feature = "cuda"))]
+#[cfg(any(not(feature = "cuda"), atlas_scale))]
 #[path = "cutlass_metal_stub.rs"]
 pub mod cutlass;
 #[cfg(unix)]
