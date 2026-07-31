@@ -110,7 +110,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "atlas-activation"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "thiserror",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-core"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "cudarc",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-embed"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "thiserror",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-kernels"
-version = "0.1.1"
+version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "toml",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-norm"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "thiserror",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-plugin"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "futures",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-quant"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "thiserror",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-rdma"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "cc",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-reduce"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "thiserror",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-spark-bench"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-tier"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "cufile-sys"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "libc",
  "libloading 0.8.9",
@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "spark-comm"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "spark-model"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "spark-nllb"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "half",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "spark-runtime"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "spark-server"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-core",
@@ -2416,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "spark-storage"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-rdma",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "xgrammar"
-version = "0.2.0"
+version = "1.0.0-beta-preview"
 dependencies = [
  "ahash",
  "bitvec",

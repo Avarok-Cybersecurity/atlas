@@ -1,6 +1,6 @@
 [package]
 name = "atlas-kernels"
-version = "0.1.1"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{quant}/*.cu"
