@@ -6,6 +6,7 @@ pub(crate) mod app_state;
 pub(crate) mod byte_count;
 pub(crate) mod kv_dtypes;
 pub(crate) mod middleware;
+pub(crate) mod model_host;
 pub(crate) mod promotion;
 pub(crate) mod serve;
 pub(crate) mod serve_phases;
