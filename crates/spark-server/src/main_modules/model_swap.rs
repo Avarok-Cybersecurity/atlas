@@ -54,6 +54,32 @@ pub(crate) struct SwapOutcome {
     pub previous: Option<cli::ServeArgs>,
 }
 
+/// Refuse a model this binary has no kernels for, BEFORE anything is released.
+///
+/// The check itself already exists inside the load — but it runs at phase 3,
+/// long after the outgoing model has been torn down. Discovering it there cost
+/// a live server its model: the 35B was rejected for `model_type
+/// 'qwen3_6_moe'`, and by then the 27B was gone and its restore failed on the
+/// memory the dead attempt had taken. Reading a JSON file to find that out is
+/// cheap; finding out with no model loaded is not.
+fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
+    let model_dir = super::serve_phases::resolve_model_dir(args)?;
+    let (config, _) = super::serve_phases::load_model_config(&model_dir)?;
+    if atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size).is_none() {
+        anyhow::bail!(
+            "this build has no compiled kernels for model_type '{}' / hidden_size={} \
+             (available: {:?}) — the running model is untouched",
+            config.model_type,
+            config.hidden_size,
+            atlas_kernels::available_targets()
+                .iter()
+                .map(|t| &t.target.model)
+                .collect::<Vec<_>>()
+        );
+    }
+    Ok(())
+}
+
 /// Copy the flags that describe the PROCESS, not the model, from the argv that
 /// is running onto the argv that is about to.
 ///
@@ -174,6 +200,10 @@ pub(crate) fn swap(
         next.world_size,
         next.rank
     );
+
+    // Cheapest checks first: this one reads the checkpoint's config.json, so it
+    // runs after the two that need nothing but the argv.
+    preflight_kernel_target(&next)?;
 
     // 1 + 2. Stop admitting work, and release the state that owns request_tx.
     let carried = release_state(host, DRAIN_GRACE)?;

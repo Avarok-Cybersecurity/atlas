@@ -201,6 +201,32 @@ impl AtlasCudaBackend {
     }
 }
 
+/// Last-resort reclamation for a backend that never reached model teardown.
+///
+/// A load that FAILS part-way leaves whatever it had already allocated on the
+/// ledger, and no `Model` is ever built to tear down. On a hot-swap that memory
+/// is not merely leaked, it is actively harmful: the outgoing model is already
+/// gone, and the restore then loads into a budget the dead attempt is still
+/// holding. That is not hypothetical — a 35B swap failed at kernel selection
+/// and the 27B restore died with "only 14.08 GB remains but 17.38 GB is
+/// needed", leaving the server with no model at all.
+///
+/// On the normal path this frees nothing: `Model::teardown` drains the ledger
+/// first, so the sweep finds an empty set. Freeing here is the safe case
+/// described in `atlas_core::scope` — nothing is allocating against a backend
+/// that is being dropped.
+impl Drop for AtlasCudaBackend {
+    fn drop(&mut self) {
+        let swept = self.sweep_unreleased();
+        if swept > 0 {
+            tracing::warn!(
+                "backend drop reclaimed {swept} allocation(s) from a load that never \
+                 completed — expected after a failed load, a leak anywhere else"
+            );
+        }
+    }
+}
+
 // ── OOM Watchdog ────────────────────────────────────────────────────
 //
 // Background task that polls GPU free memory every `interval` and calls

@@ -121,3 +121,31 @@ fn a_recipes_port_cannot_move_a_socket_that_is_already_bound() {
     super::carry_process_flags(&mut next, &previous);
     assert_eq!(next.port, 8888, "the bound port is authoritative");
 }
+
+#[test]
+fn a_model_this_build_has_no_kernels_for_is_refused_before_teardown() {
+    // The failure that cost a live server its model: the 35B was rejected for
+    // `model_type 'qwen3_6_moe'` at phase 3 of the load — after the 27B had
+    // been released — and the restore then failed on memory the dead attempt
+    // still held. The check is a JSON read; it belongs before the teardown.
+    let host = Arc::new(ModelHost::empty());
+    let dir = tempfile::tempdir().expect("tmp");
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"model_type":"no_such_architecture","hidden_size":4096,"num_hidden_layers":1}"#,
+    )
+    .expect("write");
+
+    use clap::Parser as _;
+    let args = cli::ServeArgs::parse_from(["spark", dir.path().to_str().expect("utf8")]);
+    let err = super::swap(&host, args, None).expect_err("refused");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("no compiled kernels") || text.contains("no_such_architecture"),
+        "{text}"
+    );
+    assert!(
+        text.contains("running model is untouched") || host.current().is_none(),
+        "nothing was torn down: {text}"
+    );
+}

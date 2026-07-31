@@ -83,12 +83,16 @@ pub(crate) async fn require_auth_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    // No model: every route that needs one answers 503 anyway, so there is
-    // nothing to authorise access to.
-    let Some(state) = host.current() else {
-        return next.run(req).await;
-    };
-    let Some(auth_cfg) = state.auth.as_ref() else {
+    // Take the auth config and let the model GO, before `next.run` — a layer
+    // that holds its `Arc<AppState>` across the inner call holds it for the
+    // whole request, and a swap triggered BY that request can then never
+    // release the outgoing model. Two layers doing this is exactly the "2
+    // reference(s) outlived the drain window" a live swap reported. Both
+    // fields are already `Arc`, so this costs a refcount bump, not a copy.
+    //
+    // No model at all: every route that needs one answers 503 anyway, so
+    // there is nothing to authorise access to.
+    let Some(auth_cfg) = host.current().and_then(|state| state.auth.clone()) else {
         return next.run(req).await;
     };
     let path = req.uri().path();
@@ -150,14 +154,19 @@ pub(crate) async fn rate_limit_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::{HeaderName, HeaderValue, StatusCode};
-    let Some(state) = host.current() else {
+    // See `require_auth_middleware`: the model must not be held across
+    // `next.run`.
+    let Some((rate_limiter, max_seq_len)) = host
+        .current()
+        .map(|state| (state.rate_limiter.clone(), state.max_seq_len))
+    else {
         return next.run(req).await;
     };
     use axum::response::IntoResponse;
 
     // Only apply to /v1/* routes — health/metrics/tokenize stay open.
     let is_v1 = req.uri().path().starts_with("/v1/");
-    if !is_v1 || !state.rate_limiter.config().is_enabled() {
+    if !is_v1 || !rate_limiter.config().is_enabled() {
         return next.run(req).await;
     }
 
@@ -175,9 +184,9 @@ pub(crate) async fn rate_limit_middleware(
     // for streaming paths (handlers call `refund_tokens` with the actual
     // usage). This over-counts for small requests but prevents a single
     // client from consuming the whole TPM budget in one burst.
-    let estimated = state.max_seq_len as u64;
+    let estimated = max_seq_len as u64;
 
-    let decision = state.rate_limiter.admit(&identity, estimated);
+    let decision = rate_limiter.admit(&identity, estimated);
     if !decision.allowed {
         let (param, code) = match decision.denied_by {
             Some(rate_limiter::DenialReason::Requests) => ("requests", "rate_limit_exceeded"),
