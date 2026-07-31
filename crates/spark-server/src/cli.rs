@@ -4,8 +4,12 @@
 
 use clap::Parser;
 
+mod bench_args;
+mod bench_print;
+pub mod bench_run;
 mod serve_args;
 mod validate;
+pub use bench_args::BenchmarkArgs;
 pub use serve_args::ServeArgs;
 pub use validate::validate_serve_args;
 
@@ -32,6 +36,8 @@ pub struct Cli {
 pub enum Command {
     /// Start the inference server.
     Serve(ServeArgs),
+    /// Run and inspect the benchmark suite, without the dashboard.
+    Benchmark(BenchmarkArgs),
 }
 
 #[cfg(test)]

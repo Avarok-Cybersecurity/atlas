@@ -80,6 +80,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let no_tui = match &cli.command {
         Command::Serve(args) => args.no_tui || args.rank > 0,
+        // The benchmark subcommand is a script's entry point: always plain, so
+        // nothing here reaches `tui::start` or takes the terminal.
+        Command::Benchmark(_) => true,
     };
 
     let tui_channels = if tui::plain_mode(no_tui) {
@@ -106,6 +109,15 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
     tui::shutdown::arm_startup_escape(shutdown_tx);
     let result = match cli.command {
+        Command::Benchmark(args) => {
+            // No model load, so none of the startup-escape plumbing below
+            // applies — `dispatch` installs its own Ctrl-C handling. Drop the
+            // receiver explicitly: `let _ =` on a future silently discards it
+            // without polling, which is a different thing and one clippy is
+            // right to flag.
+            drop(shutdown_rx);
+            cli::bench_run::dispatch(args).await
+        }
         Command::Serve(args) => {
             let serving = serve(args, tui_channels);
             tokio::pin!(serving);

@@ -143,6 +143,63 @@ The headline "3.6× faster than NVIDIA's 36 tok/s" is apples-to-apples against N
 
 ## Files to read
 
+## From the CLI
+
+The benchmark suite the dashboard runs is also a subcommand, so a benchmark can
+be scripted, run in CI, or driven over SSH with no terminal attached.
+
+```
+atlas benchmark list                      # the suite
+atlas benchmark list concurrency-sweep    # one benchmark's parameters
+atlas benchmark run  concurrency-sweep --model <served-model>
+atlas benchmark history
+```
+
+`run` drives an endpoint that is **already serving** — it never loads a model
+and never touches the GPU. Point it somewhere else with `--url`:
+
+```
+atlas benchmark run concurrency-sweep \
+  --url http://10.10.10.3:8888 --model Qwen/Qwen3.6-35B-A3B-FP8 \
+  --param concurrencies=1,2,4 --param isls=128 --param osl=64
+```
+
+`--param` takes any key from `atlas benchmark list <id>`; anything you leave out
+takes the schema default. An unknown key is an error listing the valid ones,
+because a silently-ignored override produces a run measuring something other
+than what you asked for.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | ran, and the gate passed (or had no verdict) |
+| 1 | the run itself failed or was cancelled — the harness could not measure |
+| 2 | the run completed and the **gate** said no |
+
+1 and 2 are distinct so a script can tell "the harness broke" from "the model
+missed the bar". `--no-fail-on-verdict` collapses 2 into 0 when you are
+collecting numbers rather than gating on them.
+
+### Run history
+
+Every run — from the CLI *or* the dashboard — is recorded under
+`~/.atlas/runs/<benchmark-id>/`, carrying the result, every parameter used (not
+just the ones you overrode), the target, the source, and the Atlas version. So
+a stored run says what it measured and can be reproduced.
+
+```
+atlas benchmark history --id concurrency-sweep --limit 5
+atlas benchmark history --run run-1785000000123456789 --format json | jq .params
+```
+
+One store, both directions: a CLI run appears in the dashboard's Benchmarks →
+History pane, and a dashboard run appears in `atlas benchmark history` marked
+`tui`.
+
+Machine-readable output goes to **stdout**, progress to **stderr**, so
+`--format json > run.json` is a clean file. `ATLAS_HOME` relocates the store.
+
 - `crates/atlas-spark-bench/src/lib.rs` — E2E harness.
 - Each primitive crate's `benches/*.rs` — per-kernel micro.
 - `bench/*.json` — pinned result snapshots.

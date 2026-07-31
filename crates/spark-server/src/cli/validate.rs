@@ -266,6 +266,7 @@ mod tests {
         argv.extend_from_slice(extra);
         match super::super::Cli::parse_from(argv).command {
             super::super::Command::Serve(a) => a,
+            super::super::Command::Benchmark(_) => unreachable!("this test parses a serve command"),
         }
     }
 
