@@ -76,3 +76,48 @@ fn the_host_remembers_what_it_is_running() {
         "a swap can now restore to what was running"
     );
 }
+
+#[test]
+fn a_recipe_cannot_switch_off_the_operators_auto_swap_policy() {
+    // The real failure: a server started with --auto-swap loaded a recipe from
+    // the Library, the recipe's argv replaced the host's, and auto-swap was
+    // silently off from then on. Nothing logged, nothing failed — the next
+    // request that should have swapped was just served by the old model.
+    use clap::Parser as _;
+    let previous = cli::ServeArgs::parse_from(["spark", "org/live", "--auto-swap"]);
+    let mut next = cli::ServeArgs::parse_from(["spark", "org/next"]);
+    assert!(!next.auto_swap, "the recipe says nothing about it");
+
+    super::carry_process_flags(&mut next, &previous);
+    assert!(next.auto_swap, "the operator's policy survives the swap");
+    assert_eq!(
+        next.model.as_deref(),
+        Some("org/next"),
+        "the MODEL still swaps"
+    );
+}
+
+#[test]
+fn a_recipe_cannot_switch_on_auto_swap_where_it_was_forbidden() {
+    // The direction that matters for an enterprise deployment: --no-auto-swap
+    // is a deployment contract, and a fetched recipe must not be able to
+    // loosen it.
+    use clap::Parser as _;
+    let previous = cli::ServeArgs::parse_from(["spark", "org/live", "--no-auto-swap"]);
+    let mut next = cli::ServeArgs::parse_from(["spark", "org/next", "--auto-swap"]);
+    super::carry_process_flags(&mut next, &previous);
+    assert!(next.no_auto_swap, "the prohibition survives");
+    assert!(
+        !super::super::auto_swap::enabled(&next),
+        "and still wins over --auto-swap"
+    );
+}
+
+#[test]
+fn a_recipes_port_cannot_move_a_socket_that_is_already_bound() {
+    use clap::Parser as _;
+    let previous = cli::ServeArgs::parse_from(["spark", "org/live", "--port", "8888"]);
+    let mut next = cli::ServeArgs::parse_from(["spark", "org/next", "--port", "9100"]);
+    super::carry_process_flags(&mut next, &previous);
+    assert_eq!(next.port, 8888, "the bound port is authoritative");
+}

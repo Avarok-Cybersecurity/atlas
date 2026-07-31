@@ -68,6 +68,10 @@ pub(crate) async fn serve(
     // this if its load fails, and without it the first swap is the one swap
     // with no safety net.
     host.set_args(args.clone());
+    // Captured before `args` moves into startup. The listener binds once for
+    // the process lifetime, so a model chosen later serves on THIS address
+    // whatever its recipe says — see the port check in `model_swap`.
+    let (bind_addr, bind_port) = (args.bind.clone(), args.port);
     let startup_host = host.clone();
     match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {
@@ -76,20 +80,19 @@ pub(crate) async fn serve(
             // swap would have nothing to join and would tear down a model with
             // a live scheduler still holding its weights.
             host.set_scheduler(prepared.scheduler);
-            crate::main_modules::serve_router::build_and_serve(
-                host,
-                prepared.model_ready,
-                &prepared.bind,
-                prepared.port,
-            )
-            .await
+            crate::main_modules::serve_router::build_and_serve(host, &prepared.bind, prepared.port)
+                .await
         }
         Startup::Worker => Ok(()),
-        // Nothing to serve yet, but plenty to do: the dashboard is running and
-        // owns the session until the user picks a model or quits.
+        // Nothing to serve YET — but the listener still comes up. Waiting for
+        // shutdown instead would mean a model chosen from the Library loads
+        // into a process that never binds a port, so it reaches "serving" with
+        // nothing to serve it. The socket is bound once for the process
+        // lifetime; until a model is published every route answers 503
+        // `model_not_loaded`, which is the same shape a client already handles
+        // during startup.
         Startup::AwaitingModel => {
-            crate::tui::shutdown::wait().await;
-            Ok(())
+            crate::main_modules::serve_router::build_and_serve(host, &bind_addr, bind_port).await
         }
     }
 }

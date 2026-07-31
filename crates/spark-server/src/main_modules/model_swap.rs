@@ -54,6 +54,79 @@ pub(crate) struct SwapOutcome {
     pub previous: Option<cli::ServeArgs>,
 }
 
+/// Copy the flags that describe the PROCESS, not the model, from the argv that
+/// is running onto the argv that is about to.
+///
+/// A recipe describes a model: its checkpoint, quantization, context, batch
+/// shape. It has no business deciding whether this deployment permits
+/// request-triggered loading, or which socket the operator bound. Letting a
+/// recipe's argv replace those wholesale is not a hypothetical: launching one
+/// from the Library dropped `--auto-swap` from a server started with it, so
+/// the very next request that should have swapped was quietly served by the
+/// old model with nothing logged.
+///
+/// The socket is the starker case — it is bound for the process lifetime and
+/// cannot move, so a recipe's port is unserveable by construction.
+fn carry_process_flags(next: &mut cli::ServeArgs, previous: &cli::ServeArgs) {
+    next.auto_swap = previous.auto_swap;
+    next.no_auto_swap = previous.no_auto_swap;
+    next.bind = previous.bind.clone();
+    next.port = previous.port;
+}
+
+/// How long in-flight requests get to release the outgoing model before the
+/// swap gives up and puts it back. Matches the adapter hot-load's quiescence
+/// window (`app_state.rs`), which solves the same "wait for readers" problem.
+const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Block until `state` has no other owners, returning how many remain.
+///
+/// Split out from `release_state` so the waiting rule is testable without
+/// standing up an `AppState`, which needs a loaded model.
+fn wait_for_sole_owner<T>(state: &Arc<T>, grace: std::time::Duration) -> usize {
+    let deadline = std::time::Instant::now() + grace;
+    while Arc::strong_count(state) > 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Arc::strong_count(state) - 1
+}
+
+/// Take the outgoing model out of the host and drop it, carrying the
+/// process-scoped stores forward.
+///
+/// The wait is the point. An `Arc<AppState>` that outlives this window keeps
+/// `request_tx` open, so the scheduler never drains and the join below never
+/// returns — the swap wedges the server with no model loaded and no way back.
+/// That is not hypothetical: a middleware layer bound one for the router's
+/// lifetime and did exactly that to a live server. Two kinds of holder reach
+/// this point and the wait separates them: an in-flight request finishes on its
+/// own, while a structural leak never does and is reported as a refusal, with
+/// the model put back and still serving.
+fn release_state(host: &Arc<ModelHost>, grace: std::time::Duration) -> Result<Carried> {
+    // Nothing loaded — the modelless boot. Nothing to drain, nothing to lose,
+    // which is why that path is the safest one to exercise first.
+    let Some(state) = host.take() else {
+        return Ok(Carried::from_env());
+    };
+    let carried = Carried::from_previous(&state);
+    let holders = wait_for_sole_owner(&state, grace);
+    if holders > 0 {
+        // Transactional: the host had it a moment ago and nothing has been
+        // freed, so putting it back restores the exact state we started in.
+        host.publish(state);
+        anyhow::bail!(
+            "cannot swap: {holders} reference(s) to the running model outlived \
+             the {}s drain window, so it can never be released. The model is \
+             still serving. This is a leaked `Arc<AppState>` — most likely one \
+             bound into a router layer or a spawned task rather than resolved \
+             per request.",
+            grace.as_secs()
+        );
+    }
+    drop(state);
+    Ok(carried)
+}
+
 /// Replace the running model with the one `next` describes.
 ///
 /// Blocking — it loads a model. Call it off the runtime.
@@ -62,11 +135,35 @@ pub(crate) fn swap(
     next: cli::ServeArgs,
     tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>,
 ) -> Result<SwapOutcome> {
+    // Taken from the host, not a parameter: see `ModelHost::args`.
+    let previous_args = host.args();
+
+    let mut next = next;
+    if let Some(previous) = previous_args.as_ref() {
+        if next.port != previous.port || next.bind != previous.bind {
+            tracing::warn!(
+                "this recipe asks to bind {}:{}, but the listener is on {}:{} for the process \
+                 lifetime — serving the new model there instead",
+                next.bind,
+                next.port,
+                previous.bind,
+                previous.port
+            );
+        }
+        carry_process_flags(&mut next, previous);
+    }
+
     // Refuse before anything is torn down. A bad flag combination, a missing
     // checkpoint or an impossible VRAM budget must cost nothing — the window
     // where the server has no model is opened only for a config that has
     // already passed everything cheap.
     cli::validate_serve_args(&next).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // The load spawns Tokio tasks. Entering here rather than at each call site
+    // means a caller that is already inside the runtime and one that is not
+    // (the TUI's plain thread) both work, and neither has to know which it is.
+    let runtime = host.runtime();
+    let _entered = runtime.as_ref().map(|h| h.enter());
 
     // Multi-rank is out of scope and must fail loudly rather than half-swap:
     // the EP worker takes the model by `Option::take` and only returns when the
@@ -78,22 +175,8 @@ pub(crate) fn swap(
         next.rank
     );
 
-    // Taken from the host, not a parameter: see `ModelHost::args`.
-    let previous_args = host.args();
-
     // 1 + 2. Stop admitting work, and release the state that owns request_tx.
-    // The stores are taken FIRST: they must outlive the model being dropped.
-    let carried = match host.current() {
-        Some(state) => {
-            let carried = Carried::from_previous(&state);
-            host.clear();
-            drop(state);
-            carried
-        }
-        // Nothing loaded — the modelless boot. Nothing to drain, nothing to
-        // lose, which is why this path is the safest one to exercise first.
-        None => Carried::from_env(),
-    };
+    let carried = release_state(host, DRAIN_GRACE)?;
 
     // 3. Wait for the scheduler to finish draining.
     if let Some(handle) = host.take_scheduler() {
@@ -111,6 +194,15 @@ pub(crate) fn swap(
             host.set_scheduler(prepared.scheduler);
             host.set_args(next_args);
             host.publish(prepared.state);
+            // The last two phases belong to the LISTENER, which a swap does not
+            // touch — it was bound at boot and never stopped. Leaving them
+            // pending would freeze the checklist at 10/12 and the status pill
+            // at LOADING while the model is demonstrably serving requests.
+            if let Some((_, port)) = host.bound() {
+                spark_runtime::progress::phase(10, "router");
+                spark_runtime::progress::phase(11, "listening");
+                spark_runtime::progress::ready(port);
+            }
             return Ok(SwapOutcome {
                 previous: previous_args,
             });
@@ -149,3 +241,46 @@ pub(crate) fn swap(
 #[cfg(test)]
 #[path = "model_swap_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod drain_tests {
+    use super::wait_for_sole_owner;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_holder_that_lets_go_is_waited_for_rather_than_refused() {
+        // An in-flight request is a legitimate holder. Refusing the swap the
+        // instant one exists would make swapping impossible under any load.
+        let state = Arc::new(0u32);
+        let borrowed = state.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(borrowed);
+        });
+        assert_eq!(wait_for_sole_owner(&state, Duration::from_secs(5)), 0);
+    }
+
+    #[test]
+    fn a_holder_that_never_lets_go_is_reported_not_waited_on_forever() {
+        // The deadlock this exists to prevent: a leaked Arc keeps request_tx
+        // open, so joining the scheduler never returns. Bounded wait, then say
+        // how many are stuck.
+        let state = Arc::new(0u32);
+        let _leaked = state.clone();
+        let began = Instant::now();
+        assert_eq!(wait_for_sole_owner(&state, Duration::from_millis(200)), 1);
+        assert!(began.elapsed() < Duration::from_secs(2), "bounded");
+    }
+
+    #[test]
+    fn an_unshared_state_is_released_without_waiting() {
+        let state = Arc::new(0u32);
+        let began = Instant::now();
+        assert_eq!(wait_for_sole_owner(&state, Duration::from_secs(30)), 0);
+        assert!(
+            began.elapsed() < Duration::from_millis(50),
+            "no sleep at all"
+        );
+    }
+}

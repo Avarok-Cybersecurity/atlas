@@ -41,3 +41,29 @@ fn clear_refuses_requests_without_destroying_in_flight_ones() {
     assert!(cell.read().is_none(), "new requests are refused");
     assert_eq!(*taken, 7, "the one already running still completes");
 }
+
+#[test]
+fn a_host_built_inside_the_runtime_lets_a_plain_thread_spawn() {
+    // The Library drives swaps from a plain `std::thread`, and the load path
+    // spawns Tokio tasks. Before the host carried the handle, the first launch
+    // panicked with "there is no reactor running" — after the outgoing model
+    // had already been released, so it took the server down with it.
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let host = rt.block_on(async { Arc::new(ModelHost::empty()) });
+    assert!(host.runtime().is_some(), "captured at construction");
+
+    let spawned = std::thread::spawn(move || {
+        let handle = host.runtime().expect("a handle");
+        let _entered = handle.enter();
+        // The exact call that panicked.
+        tokio::spawn(async {});
+    })
+    .join();
+    assert!(spawned.is_ok(), "no reactor panic off the runtime");
+}
+
+#[test]
+fn a_host_built_outside_a_runtime_has_no_handle_rather_than_panicking() {
+    let host = ModelHost::empty();
+    assert!(host.runtime().is_none());
+}

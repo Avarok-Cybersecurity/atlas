@@ -34,6 +34,7 @@ pub mod shutdown;
 pub mod terminal_guard;
 
 pub mod app;
+mod app_input;
 pub mod bench_keys;
 pub mod bench_preflight;
 pub mod bench_state;

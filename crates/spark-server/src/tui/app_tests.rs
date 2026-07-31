@@ -135,3 +135,39 @@ fn the_watchdog_command_says_so_when_no_run_is_attached() {
         app.ops.output
     );
 }
+
+#[test]
+fn a_no_argument_boot_opens_the_library_rather_than_an_empty_main() {
+    // Main has nothing to show without a model: a 0/12 checklist and a LOADING
+    // pill for a load that is not running. The Library is the only screen that
+    // can move the user forward.
+    use clap::Parser as _;
+    let mut args = crate::cli::ServeArgs::parse_from(["spark", "m"]);
+    args.model = None;
+    let app = App::new(args);
+    assert!(app.awaiting_model);
+    assert_eq!(app.section, Section::Library);
+}
+
+#[test]
+fn a_boot_with_a_model_still_opens_main() {
+    use clap::Parser as _;
+    let args = crate::cli::ServeArgs::parse_from(["spark", "org/m"]);
+    let app = App::new(args);
+    assert!(!app.awaiting_model, "a model was named");
+    assert_eq!(app.section, Section::Main);
+}
+
+#[test]
+fn launching_from_the_library_stops_claiming_there_is_no_model() {
+    // Otherwise the pill stays on NO MODEL through the whole load.
+    use clap::Parser as _;
+    let mut args = crate::cli::ServeArgs::parse_from(["spark", "m"]);
+    args.model = None;
+    let mut app = App::new(args);
+    assert!(app.awaiting_model);
+    // No host attached, so the launch is refused — and the flag must survive
+    // that, because nothing was started.
+    app.launch_selected_recipe();
+    assert!(app.awaiting_model, "a refused launch loaded nothing");
+}

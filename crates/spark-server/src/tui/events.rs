@@ -56,7 +56,15 @@ pub fn run(
                     app.on_key(k)
                 }
                 Ok(Event::Mouse(m)) => on_mouse(&mut app, m, terminal.size().ok()),
-                Ok(Event::Resize(..)) => {}
+                // Ratatui diffs against the frame it last drew, so on a resize
+                // the cells the OLD layout wrote and the NEW one does not
+                // reach are never overwritten — they persist as fragments of a
+                // previous frame. Observed on a pane that grew from 80x24: a
+                // stale panel title reading "0 recipes never fetched" sat above
+                // a list of 25. A full clear discards the diff baseline.
+                Ok(Event::Resize(..)) => {
+                    let _ = terminal.clear();
+                }
                 _ => {}
             }
         }

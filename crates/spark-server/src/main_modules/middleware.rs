@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use crate::main_modules::AppState;
 use crate::rate_limiter;
 
 /// OpenAI-compatible observability headers. Injects on every `/v1/*`
@@ -74,11 +73,21 @@ pub(crate) async fn openai_observability_middleware(
 /// surface "missing_api_key" / "invalid_api_key" the same way they do
 /// against `api.openai.com`.
 pub(crate) async fn require_auth_middleware(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    // The HOST, resolved per request — never a bound `Arc<AppState>`. A clone
+    // held for the router's lifetime keeps `request_tx` open, so the scheduler
+    // never drains and a swap's join blocks forever. That deadlock is not
+    // hypothetical: it wedged a live server, and nothing in the type system
+    // says "this Arc must not outlive the model".
+    axum::extract::State(host): axum::extract::State<Arc<super::model_host::ModelHost>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    // No model: every route that needs one answers 503 anyway, so there is
+    // nothing to authorise access to.
+    let Some(state) = host.current() else {
+        return next.run(req).await;
+    };
     let Some(auth_cfg) = state.auth.as_ref() else {
         return next.run(req).await;
     };
@@ -134,11 +143,16 @@ pub(crate) async fn require_auth_middleware(
 /// `openai_observability_middleware`. When the limiter is disabled, this
 /// middleware is a pass-through (the observability stubs stand).
 pub(crate) async fn rate_limit_middleware(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    // See `require_auth_middleware`: resolved per request so no clone outlives
+    // the model.
+    axum::extract::State(host): axum::extract::State<Arc<super::model_host::ModelHost>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::{HeaderName, HeaderValue, StatusCode};
+    let Some(state) = host.current() else {
+        return next.run(req).await;
+    };
     use axum::response::IntoResponse;
 
     // Only apply to /v1/* routes — health/metrics/tokenize stay open.

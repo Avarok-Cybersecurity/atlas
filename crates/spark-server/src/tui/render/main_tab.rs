@@ -41,10 +41,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_phases(f: &mut Frame, app: &App, area: Rect) {
     let (done, total, secs) = app.progress.phase_counts();
-    let block = panel(format!("STARTUP ─ {done}/{total} ── {secs:.1}s ─"), false);
+    // A spinner and a climbing clock against a load that is not running is a
+    // lie the reader has no way to check. Say what is actually true.
+    let block = panel(
+        if app.awaiting_model {
+            "STARTUP ─ awaiting a model ─".to_string()
+        } else {
+            format!("STARTUP ─ {done}/{total} ── {secs:.1}s ─")
+        },
+        false,
+    );
     let mut lines = Vec::new();
     for p in &app.progress.phases {
-        let (glyph, gstyle, label_style) = match p.state {
+        let state = if app.awaiting_model {
+            PhaseState::Pending
+        } else {
+            p.state
+        };
+        let (glyph, gstyle, label_style) = match state {
             PhaseState::Done => ("✓", theme::brand_green(), theme::text2()),
             PhaseState::Running => (
                 theme::SPINNER[(app.tick as usize) % theme::SPINNER.len()],
@@ -53,7 +67,7 @@ fn draw_phases(f: &mut Frame, app: &App, area: Rect) {
             ),
             PhaseState::Pending => ("○", theme::dim(), theme::dim()),
         };
-        let secs = match p.state {
+        let secs = match state {
             PhaseState::Done if p.secs > 0.005 => format!("{:>7.1}s", p.secs),
             PhaseState::Running => {
                 format!(

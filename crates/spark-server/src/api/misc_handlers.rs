@@ -135,9 +135,13 @@ pub async fn health(
     // Takes the HOST, not the model: reporting "no model" is the whole point of
     // this endpoint, so requiring one would make it unanswerable in exactly the
     // state it exists to describe.
-    if let Some(state) = host.current()
-        && state.model_ready.load(std::sync::atomic::Ordering::Relaxed)
-    {
+    // A published model IS a ready one: the scheduler is running before the
+    // state is published, and the listener does not bind until after. A second
+    // readiness flag alongside it was a duplicate source of truth, and a stale
+    // one — the swap published a new model while the router still held the
+    // ORIGINAL flag, so /health reported "loading" forever after the first
+    // swap.
+    if let Some(state) = host.current() {
         Json(serde_json::json!({"status": "ready", "model": &state.model_name})).into_response()
     } else {
         (

@@ -47,6 +47,21 @@ pub struct ModelHost {
     /// stampede. Requests queue here and the winner does the work; see
     /// `swap_guard`.
     swapping: std::sync::Mutex<()>,
+    /// The server's Tokio runtime.
+    ///
+    /// A swap re-runs the load, and the load spawns Tokio tasks (the OOM
+    /// watchdog, for one). The TUI drives swaps from a plain `std::thread`
+    /// with no runtime in scope, so without this the first Library launch
+    /// panics with "there is no reactor running" — after the old model has
+    /// already been released. Held by the host because BOTH swap callers need
+    /// it and only one of them happens to be inside the runtime already.
+    runtime: parking_lot::Mutex<Option<tokio::runtime::Handle>>,
+    /// Where the listener actually bound, once it has.
+    ///
+    /// A swap cannot move the socket — it is bound for the process lifetime —
+    /// so a recipe naming a different port would otherwise serve on the old
+    /// one with nothing saying so.
+    bound: parking_lot::Mutex<Option<(String, u16)>>,
 }
 
 impl ModelHost {
@@ -57,6 +72,8 @@ impl ModelHost {
             scheduler: parking_lot::Mutex::new(None),
             args: parking_lot::Mutex::new(None),
             swapping: std::sync::Mutex::new(()),
+            runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
+            bound: parking_lot::Mutex::new(None),
         }
     }
 
@@ -68,6 +85,8 @@ impl ModelHost {
             scheduler: parking_lot::Mutex::new(None),
             args: parking_lot::Mutex::new(None),
             swapping: std::sync::Mutex::new(()),
+            runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
+            bound: parking_lot::Mutex::new(None),
         }
     }
 
@@ -78,6 +97,32 @@ impl ModelHost {
     /// model it started with even if a swap lands mid-flight.
     pub fn current(&self) -> Option<Arc<AppState>> {
         self.current.read().clone()
+    }
+
+    /// Record where the listener bound.
+    pub fn set_bound(&self, addr: String, port: u16) {
+        *self.bound.lock() = Some((addr, port));
+    }
+
+    /// Where the listener bound, if it has.
+    pub fn bound(&self) -> Option<(String, u16)> {
+        self.bound.lock().clone()
+    }
+
+    /// The runtime a swap must run inside, if one was in scope at construction.
+    pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.runtime.lock().clone()
+    }
+
+    /// Attach the runtime after the fact, for a host built outside it.
+    pub fn set_runtime(&self, handle: tokio::runtime::Handle) {
+        *self.runtime.lock() = Some(handle);
+    }
+
+    /// Remove the current model and hand it back, so the caller can prove it is
+    /// the last owner before dropping it. `clear` discards that proof.
+    pub fn take(&self) -> Option<Arc<AppState>> {
+        self.current.write().take()
     }
 
     /// Install a newly loaded model. The previous `Arc` stays alive for as long

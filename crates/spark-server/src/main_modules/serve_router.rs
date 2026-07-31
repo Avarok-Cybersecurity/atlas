@@ -18,16 +18,11 @@ use crate::main_modules::middleware::{
 
 pub(crate) async fn build_and_serve(
     host: Arc<crate::main_modules::model_host::ModelHost>,
-    model_ready: Arc<std::sync::atomic::AtomicBool>,
     bind: &str,
     port: u16,
 ) -> Result<()> {
     spark_runtime::progress::phase(10, "router");
-    // The middleware layers below need a concrete AppState; a router is only
-    // built once a model is loaded, so this is present by construction.
-    let bound_state = host
-        .current()
-        .ok_or_else(|| anyhow::anyhow!("router built with no model loaded"))?;
+    host.set_bound(bind.to_string(), port);
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([
@@ -123,16 +118,15 @@ pub(crate) async fn build_and_serve(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),
         ))
-        // These two read only PROCESS-scoped state (rate-limit buckets, the
-        // auth key), so they bind the AppState present at build time rather
-        // than resolving per request. Both survive a swap because the swap
-        // carries those Arcs forward rather than rebuilding them.
+        // The HOST, not a bound AppState. Binding one here is what deadlocked
+        // the first live swap: the clone kept `request_tx` open, the scheduler
+        // never drained, and the join never returned.
         .layer(axum::middleware::from_fn_with_state(
-            bound_state.clone(),
+            host.clone(),
             rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            bound_state.clone(),
+            host.clone(),
             require_auth_middleware,
         ))
         .layer(axum::middleware::from_fn(openai_observability_middleware))
@@ -144,7 +138,6 @@ pub(crate) async fn build_and_serve(
         .with_state(host.clone());
 
     // Model loaded, scheduler running — mark as ready.
-    model_ready.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let addr = format!("{bind}:{port}");
     if bind == "0.0.0.0" {

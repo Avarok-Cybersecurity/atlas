@@ -63,6 +63,9 @@ pub struct App {
     ///
     /// `None` only in tests, which build an App without a server behind it.
     pub host: Option<std::sync::Arc<crate::main_modules::model_host::ModelHost>>,
+    /// No model loaded, so the startup checklist is not tracking anything.
+    /// Cleared the moment a load starts, including one begun from the Library.
+    pub awaiting_model: bool,
     pub section: Section,
     pub main_sub: MainSub,
     pub bench_sub: BenchSub,
@@ -99,10 +102,20 @@ pub struct App {
 
 impl App {
     pub fn new(args: crate::cli::ServeArgs) -> Self {
+        // With no model there is nothing for Main to show — its checklist would
+        // sit at 0/12 and its status pill would read LOADING for a load that is
+        // not happening. The Library is the only screen that can move the user
+        // forward, so it is where a no-argument boot lands.
+        let awaiting_model = args.model.is_none() && args.model_from_path.is_none();
         Self {
+            awaiting_model,
             args,
             host: None,
-            section: Section::Main,
+            section: if awaiting_model {
+                Section::Library
+            } else {
+                Section::Main
+            },
             main_sub: MainSub::Overview,
             bench_sub: BenchSub::Suite,
             run: None,
@@ -345,7 +358,7 @@ impl App {
     }
 
     /// Route into the Library reducer and surface whatever it wants said.
-    fn on_library_key(&mut self, key: KeyEvent) {
+    pub(super) fn on_library_key(&mut self, key: KeyEvent) {
         match self.lib.on_key(key) {
             super::lib_keys::Outcome::Toast { text, error } => self.toast(text, error),
             super::lib_keys::Outcome::Launch => self.launch_selected_recipe(),
@@ -367,6 +380,9 @@ impl App {
         match self.lib.launch(host) {
             Ok(()) => {
                 self.progress.reset();
+                // A load is now genuinely in flight, so the checklist is
+                // tracking something again and the pill may say LOADING.
+                self.awaiting_model = false;
                 self.section = Section::Main;
                 self.main_sub = MainSub::Overview;
             }
@@ -375,86 +391,11 @@ impl App {
     }
 
     /// Route into the Benchmarks reducer and surface whatever it wants said.
-    fn on_bench_key(&mut self, key: KeyEvent) {
+    pub(super) fn on_bench_key(&mut self, key: KeyEvent) {
         if let super::bench_keys::Outcome::Toast { text, error } =
             self.bench.on_key(key, self.bench_sub)
         {
             self.toast(text, error);
-        }
-    }
-
-    fn on_input_key(&mut self, key: KeyEvent) {
-        // Which buffer?
-        if self.log_filter_editing {
-            edit_line(&mut self.log_filter, key, &mut self.log_filter_editing);
-            return;
-        }
-        if self.section == Section::Library {
-            self.on_library_key(key);
-            return;
-        }
-        if self.section == Section::Benchmarks {
-            self.on_bench_key(key);
-            return;
-        }
-        // Terminal input.
-        match self.term_sub {
-            TermSub::Ops => match key.code {
-                KeyCode::Esc => self.focus = Focus::Content,
-                KeyCode::Enter => {
-                    let line = std::mem::take(&mut self.ops.input);
-                    if !line.trim().is_empty() {
-                        self.ops.history.push(line.clone());
-                        self.ops.history_pos = None;
-                        super::commands::execute(&line, self);
-                    }
-                }
-                KeyCode::Up => {
-                    let h = &self.ops.history;
-                    if !h.is_empty() {
-                        let pos = match self.ops.history_pos {
-                            None => h.len() - 1,
-                            Some(p) => p.saturating_sub(1),
-                        };
-                        self.ops.history_pos = Some(pos);
-                        self.ops.input = h[pos].clone();
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.ops.input.pop();
-                }
-                KeyCode::Char(c) => self.ops.input.push(c),
-                _ => {}
-            },
-            TermSub::Chat => match key.code {
-                KeyCode::Esc => {
-                    self.chat.cancel();
-                    self.focus = Focus::Content;
-                }
-                // Enter sends; a trailing backslash continues onto a new
-                // line (Ctrl+Enter is indistinguishable from Enter in legacy
-                // terminal protocols, so it cannot be the only send chord).
-                KeyCode::Enter => {
-                    if let Some(stripped) = self.chat.input.strip_suffix('\\') {
-                        self.chat.input = format!("{stripped}\n");
-                    } else {
-                        self.chat.send(self.args.port);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.chat.input.pop();
-                }
-                // Transcript scrollback stays live while the input holds focus —
-                // that is where you are while a reply streams, and Up/Down are
-                // otherwise unused here (unlike Ops, which spends them on history).
-                KeyCode::Up => self.chat.scroll_by(1),
-                KeyCode::Down => self.chat.scroll_by(-1),
-                KeyCode::PageUp => self.chat.scroll_by(10),
-                KeyCode::PageDown => self.chat.scroll_by(-10),
-                KeyCode::End => self.chat.follow(),
-                KeyCode::Char(c) => self.chat.input.push(c),
-                _ => {}
-            },
         }
     }
 
@@ -468,7 +409,7 @@ impl App {
 }
 
 /// Minimal single-line editor for the two filter boxes.
-fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
+pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
     match key.code {
         KeyCode::Esc => {
             buf.clear();

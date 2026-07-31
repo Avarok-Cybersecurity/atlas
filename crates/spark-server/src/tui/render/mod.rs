@@ -21,6 +21,16 @@ use super::{logo, theme};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    // Reset every cell's SYMBOL first. The base block below sets a background
+    // style, and `Block::render` does that with `set_style`, which repaints
+    // colour but leaves the glyph that was already there. A `Block`'s inner
+    // area is only overwritten where a child widget actually draws, so any
+    // frame whose content shrank or shifted left the previous frame's
+    // characters on screen — a stale "MODELS ─ 0 ─ recipes never fetched"
+    // header sat two rows above a live list of 25, updating in place while the
+    // ghost above it never changed. Clearing costs one buffer pass; the
+    // terminal diff still only emits cells that actually changed.
+    f.render_widget(ratatui::widgets::Clear, area);
     // Paint the base surface.
     f.render_widget(
         Block::default().style(Style::default().bg(theme::BG_BASE.color())),
@@ -100,8 +110,12 @@ fn draw_glow_ring(f: &mut Frame, app: &App, area: Rect) -> Rect {
 }
 
 fn status_pill(app: &App) -> Span<'static> {
+    // Three states, not two: "loading" for a load that is not running reads as
+    // a hang, which is exactly how a no-argument boot looked.
     let (label, bg) = if app.progress.ready {
         (" ● SERVING ", theme::GREEN)
+    } else if app.awaiting_model {
+        (" ○ NO MODEL ", theme::TEXT_DIM)
     } else {
         (" ● LOADING ", theme::WARN)
     };
