@@ -57,6 +57,7 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              normalized_single_turn_score against the MLPerf-edge floor (83.64 / 85.32). \
              Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
     duration_hint: "~3.5 h",
+    updated: "2026-07-31",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets, D on the dense
     // 27B MLPerf checkpoint — so both families are legitimate here, and only a
@@ -79,6 +80,7 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              stays comparable — it just removes the sampling noise, at roughly 3.6× the wall \
              time.",
     duration_hint: "~12 h",
+    updated: "2026-07-31",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets, D on the dense
     // 27B MLPerf checkpoint — so both families are legitimate here, and only a

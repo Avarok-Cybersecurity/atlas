@@ -97,6 +97,12 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
             theme::text2(),
         ),
     ]));
+    // When the MEASUREMENT last changed — the fact that decides whether two
+    // runs are comparable. Same question the Library answers for a recipe.
+    lines.push(Line::from(vec![
+        Span::styled(" Updated     ", theme::dim()),
+        Span::styled(descriptor.updated.to_string(), theme::text2()),
+    ]));
     lines.push(Line::from(vec![
         Span::styled(" Target      ", theme::dim()),
         Span::styled(app.bench.target.base_url.clone(), theme::brand_cyan()),

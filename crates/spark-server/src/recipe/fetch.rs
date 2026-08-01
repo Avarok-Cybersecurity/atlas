@@ -217,27 +217,21 @@ fn refresh_with(root: &Path, fetch: impl FnOnce() -> Result<Index>) -> Index {
 /// it removes is the remaining *queue*, not the request in flight. Quitting the
 /// dashboard mid-refresh no longer leaves workers running to the 20 s timeout.
 pub fn refresh_in_background(root: &Path) -> (std::sync::mpsc::Receiver<Index>, Arc<AtomicBool>) {
-    let (tx, rx) = std::sync::mpsc::channel();
     let owned = root.to_path_buf();
     let cancel = Arc::new(AtomicBool::new(false));
-    let spawned = std::thread::Builder::new()
-        .name("atlas-recipes".into())
-        .spawn({
-            let tx = tx.clone();
+    let rx = crate::tui::worker::spawn(
+        "atlas-recipes",
+        {
             let cancel = Arc::clone(&cancel);
-            move || {
-                // A disconnected receiver means the UI moved on, not an error.
-                let _ = tx.send(refresh(&owned, &cancel));
-            }
-        });
-    if let Err(e) = spawned {
-        // Still answer, with what is on disk: the caller polls one receiver and
-        // must not need a second code path for "the thread would not start".
-        tracing::warn!("could not spawn the recipe fetcher: {e}");
-        let mut index = cached(root);
-        index.offline = Some(format!("fetcher thread unavailable: {e}"));
-        let _ = tx.send(index);
-    }
+            move || refresh(&owned, &cancel)
+        },
+        // Still answer, with what is on disk.
+        |e| {
+            let mut index = cached(root);
+            index.offline = Some(format!("fetcher thread unavailable: {e}"));
+            index
+        },
+    );
     (rx, cancel)
 }
 
@@ -269,27 +263,21 @@ mod tests;
 /// arrives the selection may have moved, and a date applied to whatever happens
 /// to be selected then would be silently wrong.
 pub fn updated_in_background(id: &str) -> std::sync::mpsc::Receiver<(String, Option<String>)> {
-    let (tx, rx) = std::sync::mpsc::channel();
     let owned = id.to_string();
-    let spawned = std::thread::Builder::new()
-        .name("atlas-recipe-date".into())
-        .spawn({
-            let tx = tx.clone();
-            move || {
-                let date = fetch_github::commit_date(&owned)
-                    .map_err(|e| {
-                        // Offline is normal here, exactly as for the index: a
-                        // date we could not look up is an absent row, never an
-                        // error screen.
-                        tracing::debug!("could not date recipe {owned}: {e:#}");
-                    })
-                    .ok();
-                let _ = tx.send((owned, date));
-            }
-        });
-    if let Err(e) = spawned {
-        tracing::warn!("could not spawn the recipe dater: {e}");
-        let _ = tx.send((id.to_string(), None));
-    }
-    rx
+    let fallback_id = id.to_string();
+    crate::tui::worker::spawn(
+        "atlas-recipe-date",
+        move || {
+            let date = fetch_github::commit_date(&owned)
+                .map_err(|e| {
+                    // Offline is normal here, exactly as for the index: a date
+                    // we could not look up is an absent row, never an error
+                    // screen.
+                    tracing::debug!("could not date recipe {owned}: {e:#}");
+                })
+                .ok();
+            (owned, date)
+        },
+        |_| (fallback_id, None),
+    )
 }

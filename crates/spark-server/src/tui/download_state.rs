@@ -192,18 +192,19 @@ impl DownloadState {
         if self.pending_check.is_some() {
             return ("already checking a model".into(), true);
         }
-        let (tx, rx) = std::sync::mpsc::channel();
         let owned = repo.to_string();
-        let spawned = std::thread::Builder::new()
-            .name("atlas-freshness".into())
-            .spawn(move || {
+        let fallback = repo.to_string();
+        let rx = crate::tui::worker::spawn(
+            "atlas-freshness",
+            move || {
+                // An unreachable Hub is `Unknown`, which draws no badge —
+                // never a "stale" claim the network could not support.
                 let f = crate::model_download::stale::check(&owned, &cache_root)
                     .unwrap_or(Freshness::Unknown);
-                let _ = tx.send((owned, f));
-            });
-        if let Err(e) = spawned {
-            return (format!("could not check: {e}"), true);
-        }
+                (owned, f)
+            },
+            |_| (fallback, Freshness::Unknown),
+        );
         self.pending_check = Some(rx);
         self.checking = Some(repo.to_string());
         (format!("checking {repo}…"), false)

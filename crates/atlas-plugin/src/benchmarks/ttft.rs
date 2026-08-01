@@ -47,6 +47,7 @@ pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              recorded on this box — the guard that catches an optimization silently falling back \
              to a slow path while the correctness gates stay green.",
     duration_hint: "~3–6 min",
+    updated: "2026-07-31",
     needs_confirmation: false,
     // A TTFT gate compares against a baseline recorded on the SAME box and
     // model, which it stores itself — so it is meaningful for any checkpoint
@@ -64,6 +65,7 @@ pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              on its own, with the cache's contribution removed — the warm gate cannot see a \
              prefill regression that caching is hiding.",
     duration_hint: "~3–6 min",
+    updated: "2026-07-31",
     needs_confirmation: false,
     // A TTFT gate compares against a baseline recorded on the SAME box and
     // model, which it stores itself — so it is meaningful for any checkpoint

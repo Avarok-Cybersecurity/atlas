@@ -164,22 +164,12 @@ pub fn human_size(bytes: u64) -> String {
 pub fn scan_in_background(
     cache_dir: Option<&Path>,
 ) -> std::sync::mpsc::Receiver<Vec<LibraryEntry>> {
-    let (tx, rx) = std::sync::mpsc::channel();
     let owned = cache_dir.map(|p| p.to_path_buf());
-    let spawned = std::thread::Builder::new()
-        .name("atlas-libscan".into())
-        .spawn({
-            let tx = tx.clone();
-            move || {
-                // A disconnected receiver means the UI moved on, not an error.
-                let _ = tx.send(scan(owned.as_deref()));
-            }
-        });
-    if let Err(e) = spawned {
-        // Answer anyway, so the caller needs no second code path. An empty
-        // list is what `scan` itself returns for an unreadable cache.
-        tracing::warn!("could not spawn the library scanner: {e}");
-        let _ = tx.send(Vec::new());
-    }
-    rx
+    // An empty list is what `scan` itself returns for an unreadable cache, so
+    // it is also the honest answer when the scanner cannot start.
+    crate::tui::worker::spawn(
+        "atlas-libscan",
+        move || scan(owned.as_deref()),
+        |_| Vec::new(),
+    )
 }

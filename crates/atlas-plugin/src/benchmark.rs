@@ -35,6 +35,16 @@ pub struct BenchmarkDescriptor {
     pub detail: &'static str,
     /// Rough wall time at default parameters, e.g. `"~15 min"`.
     pub duration_hint: &'static str,
+    /// When this benchmark's definition last changed, as `YYYY-MM-DD`.
+    ///
+    /// Not when the code was edited — when the MEASUREMENT changed: new
+    /// thresholds, a different prompt set, a changed scoring rule. That is the
+    /// date that decides whether two runs are comparable, which is the only
+    /// question a reader has when they look at it.
+    ///
+    /// A compiled-in literal rather than a lookup: a benchmark ships with the
+    /// binary, so unlike a recipe there is no upstream to ask.
+    pub updated: &'static str,
     /// True when starting has a side effect beyond load on the endpoint. The
     /// pane requires an explicit confirmation for these — currently only the
     /// agentic test, which executes model-authored shell in a sandbox.
@@ -109,3 +119,7 @@ pub trait Benchmark: Plugin {
         async { Ok(()) }
     }
 }
+
+#[cfg(test)]
+#[path = "benchmark_desc_tests.rs"]
+mod desc_tests;

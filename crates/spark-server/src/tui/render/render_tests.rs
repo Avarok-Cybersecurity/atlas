@@ -392,3 +392,21 @@ mod preflight {
         );
     }
 }
+
+#[test]
+fn the_benchmark_detail_pane_says_when_the_measurement_last_changed() {
+    // The same question the Library answers for a recipe, asked of a
+    // benchmark: two runs are only comparable if the definition between them
+    // did not move. Without this the reader has no way to know.
+    let mut a = app();
+    a.section = Section::Benchmarks;
+    a.bench.view = View::List;
+    let out = render(&a, 200, 50);
+    assert!(out.contains("Updated"), "the row is drawn:\n{out}");
+    let d = a
+        .bench
+        .descriptor()
+        .expect("a benchmark is selected")
+        .updated;
+    assert!(out.contains(d), "and carries the date {d}:\n{out}");
+}

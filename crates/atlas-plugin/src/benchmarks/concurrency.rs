@@ -36,6 +36,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              aggregate output throughput. This is the curve the GB10 concurrency campaign is \
              measured on — C=1 is where Atlas leads, C=16 is the bar.",
     duration_hint: "~10–30 min",
+    updated: "2026-07-31",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.

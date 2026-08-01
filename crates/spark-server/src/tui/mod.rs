@@ -26,6 +26,44 @@
 //!   chat            loopback SSE chat client for the served model
 //!   data/           pollers: metrics deltas, library scan, kernel rows
 //!   render/         one file per section, pure App-state -> Frame
+//!   worker          the one way to run work off the render thread
+//!
+//! # Where the sync/async boundary is
+//!
+//! **The render thread never polls a future. Its only contact with work
+//! happening elsewhere is `try_recv` on a channel.** That single rule is what
+//! keeps this tree comprehensible, and
+//! `.github/workflows/tui-threading.yml` fails the build if it is broken. Two
+//! consequences worth stating plainly, because both were once decided
+//! case-by-case:
+//!
+//! **Which side does a piece of work belong on?** Ask what it needs, not what
+//! is fashionable:
+//!
+//!   * ASYNC, on the SERVING runtime — work that is already async, or that
+//!     talks to this server over its own HTTP API. `chat` (loopback SSE) and
+//!     `bench_preflight` + `atlas-plugin`'s executor (benchmarks are async
+//!     end to end). These take a `tokio::runtime::Handle` captured at start.
+//!   * SYNC, on a named `std::thread` — everything with no runtime need:
+//!     blocking HTTPS via `ureq` (recipe index, recipe dates, model downloads,
+//!     freshness checks), filesystem walks (the HF cache scan), and CUDA (the
+//!     model swap). None of these are faster async, and an async filesystem
+//!     does not exist — `tokio::fs` is a thread pool with nicer syntax.
+//!
+//! **Both sides answer the same way**, which is why the render loop needs only
+//! one shape: a `std::sync::mpsc::Sender`, drained with `try_recv` on the tick.
+//! There is no second idiom to learn and no third place to look.
+//!
+//! The threads, all named so a stack dump during an incident is attributable:
+//! `atlas-tui` (this render loop) · `atlas-recipes` · `atlas-recipe-date` ·
+//! `atlas-libscan` · `atlas-download` · `atlas-freshness` · `atlas-swap`.
+//!
+//! The first five one-shot workers go through [`worker::spawn`], which owns the
+//! part that is easy to forget: answering anyway when the thread will not
+//! start, so a receiver cannot be polled forever. Two do not, for reasons:
+//! `atlas-download` is a STREAMING producer (many progress messages, not one
+//! result), and `atlas-swap` sends only on FAILURE — silence means "still
+//! loading" — so an always-send helper would change what its silence means.
 
 pub mod capture_layer;
 pub mod init;
@@ -49,6 +87,7 @@ pub mod logo;
 pub mod progress;
 pub mod section;
 pub mod theme;
+pub mod worker;
 
 pub mod chat;
 pub mod data;
