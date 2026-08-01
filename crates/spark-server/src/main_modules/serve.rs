@@ -126,7 +126,11 @@ fn startup(
     if let Some(progress_rx) = tui_progress
         && args.rank == 0
     {
-        tui_handles_tx = Some(crate::tui::start(args.clone(), progress_rx, host.clone()));
+        let tx = crate::tui::start(args.clone(), progress_rx, host.clone());
+        // Every later load republishes through this, so the dashboard follows
+        // the model that is actually serving.
+        host.set_tui_handles(tx.clone());
+        tui_handles_tx = Some(tx);
     }
 
     // Reject contradictory flag combinations up front (issue #288) — before the

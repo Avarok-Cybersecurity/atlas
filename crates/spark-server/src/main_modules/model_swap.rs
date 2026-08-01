@@ -194,11 +194,7 @@ fn signal_listener_phases(host: &Arc<ModelHost>) {
 /// Replace the running model with the one `next` describes.
 ///
 /// Blocking — it loads a model. Call it off the runtime.
-pub(crate) fn swap(
-    host: &Arc<ModelHost>,
-    next: cli::ServeArgs,
-    tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>,
-) -> Result<SwapOutcome> {
+pub(crate) fn swap(host: &Arc<ModelHost>, next: cli::ServeArgs) -> Result<SwapOutcome> {
     // Serialised HERE, not at one call site. Two swaps at once both call
     // `ModelHost::take`; the second gets `None`, mistakes it for a modelless
     // boot, rebuilds the carried stores from scratch (losing every stored
@@ -282,6 +278,9 @@ pub(crate) fn swap(
     // 4 + 5. The model drops as the scheduler thread unwinds, which is where
     // `Model::teardown` frees its pools; then the new one loads.
     let next_args = next.clone();
+    // From the HOST: a swap must republish its handles or the dashboard keeps
+    // sampling the scheduler it just joined.
+    let tui_handles_tx = host.tui_handles();
     let load_err = match load_model(next, tui_handles_tx.clone(), carried.clone()) {
         Ok(Some(prepared)) => {
             // 6.

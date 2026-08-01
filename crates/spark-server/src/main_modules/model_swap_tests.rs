@@ -22,7 +22,7 @@ fn args(extra: &[&str]) -> cli::ServeArgs {
 fn an_invalid_config_is_refused_before_anything_is_torn_down() {
     let host = Arc::new(ModelHost::empty());
     let bad = args(&["--scheduling-policy", "nonsense"]);
-    let err = swap(&host, bad, None).expect_err("refused");
+    let err = swap(&host, bad).expect_err("refused");
     let text = format!("{err:#}");
     assert!(text.contains("scheduling-policy"), "{text}");
     assert!(
@@ -38,7 +38,7 @@ fn an_invalid_config_is_refused_before_anything_is_torn_down() {
 fn a_multi_rank_deployment_is_refused() {
     let host = Arc::new(ModelHost::empty());
     let multi = args(&["--world-size", "2"]);
-    let err = swap(&host, multi, None).expect_err("refused");
+    let err = swap(&host, multi).expect_err("refused");
     assert!(format!("{err:#}").contains("single-node only"));
 }
 
@@ -50,7 +50,7 @@ fn a_refused_swap_leaves_the_running_model_alone() {
     // property is that `clear()` is never reached, which `is_loaded` observes.
     let host = Arc::new(ModelHost::empty());
     assert!(!host.is_loaded());
-    let _ = swap(&host, args(&["--world-size", "4"]), None);
+    let _ = swap(&host, args(&["--world-size", "4"]));
     assert!(!host.is_loaded(), "clear() must not have run");
 }
 
@@ -138,7 +138,7 @@ fn a_model_this_build_has_no_kernels_for_is_refused_before_teardown() {
 
     use clap::Parser as _;
     let args = cli::ServeArgs::parse_from(["spark", dir.path().to_str().expect("utf8")]);
-    let err = super::swap(&host, args, None).expect_err("refused");
+    let err = super::swap(&host, args).expect_err("refused");
     let text = format!("{err:#}");
     assert!(
         text.contains("no compiled kernels") || text.contains("no_such_architecture"),
@@ -229,7 +229,7 @@ fn a_recipe_cannot_turn_off_authentication() {
     use clap::Parser as _;
     let mut args = cli::ServeArgs::parse_from(["spark", "org/m"]);
     args.world_size = 2;
-    let _ = super::swap(&host, args, None);
+    let _ = super::swap(&host, args);
 
     assert!(
         host.auth().is_some(),

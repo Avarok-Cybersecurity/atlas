@@ -139,3 +139,21 @@ fn auto_swap_is_answered_without_cloning_the_whole_argv() {
     ]));
     assert!(!host.auto_swap_enabled(), "the prohibition still wins");
 }
+
+#[test]
+fn the_dashboard_channel_survives_for_later_loads() {
+    // The Stats pane samples the run handles every tick and Ops toggles levers
+    // through them. Both swap paths used to pass `None` because neither had
+    // the sender, so after a swap the dashboard kept sampling a scheduler that
+    // had already been joined.
+    let host = ModelHost::empty();
+    assert!(host.tui_handles().is_none(), "no dashboard yet");
+
+    let (tx, rx) = std::sync::mpsc::channel::<crate::tui::RunHandles>();
+    host.set_tui_handles(tx);
+    assert!(
+        host.tui_handles().is_some(),
+        "a later load can publish through it"
+    );
+    drop(rx);
+}

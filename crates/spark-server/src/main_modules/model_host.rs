@@ -79,6 +79,15 @@ pub struct ModelHost {
     /// `refund_tokens` through that one, and two instances would mean refunds
     /// crediting buckets the middleware never debited.
     process: parking_lot::RwLock<Option<super::serve_load::Carried>>,
+    /// Where each load publishes its run handles for the dashboard.
+    ///
+    /// The Stats pane samples these every tick and the Ops surface toggles
+    /// levers through them, so a swap that does not republish leaves the
+    /// dashboard reading a scheduler that has already been joined — frozen
+    /// numbers, and lever toggles that write to a model nothing is serving.
+    /// Both swap paths used to pass `None` here because neither had the
+    /// sender; the host does.
+    tui_handles: parking_lot::RwLock<Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>>,
 }
 
 impl ModelHost {
@@ -94,6 +103,7 @@ impl ModelHost {
             bound: parking_lot::RwLock::new(None),
             auth: parking_lot::RwLock::new(None),
             process: parking_lot::RwLock::new(None),
+            tui_handles: parking_lot::RwLock::new(None),
         }
     }
 
@@ -147,6 +157,16 @@ impl ModelHost {
             .read()
             .as_ref()
             .is_some_and(super::auto_swap::enabled)
+    }
+
+    /// Install the dashboard's run-handle channel. Called once, at boot.
+    pub(crate) fn set_tui_handles(&self, tx: std::sync::mpsc::Sender<crate::tui::RunHandles>) {
+        *self.tui_handles.write() = Some(tx);
+    }
+
+    /// The dashboard's run-handle channel, if a dashboard is running.
+    pub(crate) fn tui_handles(&self) -> Option<std::sync::mpsc::Sender<crate::tui::RunHandles>> {
+        self.tui_handles.read().clone()
     }
 
     /// Record where the listener bound.

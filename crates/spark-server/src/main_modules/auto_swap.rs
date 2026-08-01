@@ -88,7 +88,7 @@ pub(crate) fn ensure_loaded(
         .find(|r| r.id == recipe_id)
         .ok_or_else(|| anyhow::anyhow!("recipe {recipe_id} vanished between decide and load"))?;
     let args = recipe.serve_args(&std::collections::BTreeMap::new())?;
-    super::model_swap::swap(host, args, None)?;
+    super::model_swap::swap(host, args)?;
     Ok(())
 }
 
