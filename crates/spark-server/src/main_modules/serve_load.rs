@@ -55,11 +55,16 @@ pub(crate) struct Carried {
 
 impl Carried {
     /// First boot: build them once, from the environment.
-    pub fn from_env() -> Self {
+    ///
+    /// The rate limiter is passed IN, not built here: it is installed on the
+    /// host before the listener binds so the middleware can reach it while no
+    /// model is loaded, and it must be the same `Arc` the handlers refund
+    /// through.
+    pub fn from_env(rate_limiter: std::sync::Arc<rate_limiter::RateLimiter>) -> Self {
         Self {
             // `from_env` already hands back an Arc.
             response_store: response_store::ResponseStore::from_env(),
-            rate_limiter: rate_limiter::RateLimiter::from_env(),
+            rate_limiter,
             conversation_store: conversation_store::ConversationStore::from_env(),
         }
     }

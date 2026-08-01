@@ -88,3 +88,21 @@ fn the_auth_policy_survives_having_no_model() {
         "the policy is in force with no model loaded"
     );
 }
+
+#[test]
+fn the_rate_limiter_survives_having_no_model() {
+    // Same shape as the auth bypass: read off AppState it does not exist while
+    // no model is loaded, and every /v1/* request in that window went through
+    // the middleware unlimited.
+    let host = ModelHost::empty();
+    assert!(host.current().is_none(), "no model, by construction");
+    assert!(host.rate_limiter().is_none(), "and none installed yet");
+
+    let rl = crate::rate_limiter::RateLimiter::from_env();
+    host.set_rate_limiter(rl.clone());
+    let got = host.rate_limiter().expect("in force with no model loaded");
+    assert!(
+        std::sync::Arc::ptr_eq(&got, &rl),
+        "and it is the same instance, not a rebuild"
+    );
+}

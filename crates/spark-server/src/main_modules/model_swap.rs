@@ -150,7 +150,10 @@ fn release_state(host: &Arc<ModelHost>, grace: std::time::Duration) -> Result<Ca
     // Nothing loaded — the modelless boot. Nothing to drain, nothing to lose,
     // which is why that path is the safest one to exercise first.
     let Some(state) = host.take() else {
-        return Ok(Carried::from_env());
+        return Ok(Carried::from_env(
+            host.rate_limiter()
+                .unwrap_or_else(crate::rate_limiter::RateLimiter::from_env),
+        ));
     };
     let carried = Carried::from_previous(&state);
     let holders = wait_for_sole_owner(&state, grace);

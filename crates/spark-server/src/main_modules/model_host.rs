@@ -70,6 +70,15 @@ pub struct ModelHost {
     /// request is authorised cannot depend on whether a model happens to be
     /// loaded.
     auth: parking_lot::Mutex<Option<Arc<crate::auth::AuthConfig>>>,
+    /// The rate limiter, which is likewise a property of the PROCESS.
+    ///
+    /// Same reasoning as `auth`, and the same bug if it lives elsewhere: read
+    /// off `AppState`, it does not exist while no model is loaded, so every
+    /// `/v1/*` request in that window bypassed the limiter entirely. It is
+    /// also the SAME `Arc` the model's `AppState` holds — handlers call
+    /// `refund_tokens` through that one, and two instances would mean refunds
+    /// crediting buckets the middleware never debited.
+    rate_limiter: parking_lot::Mutex<Option<Arc<crate::rate_limiter::RateLimiter>>>,
 }
 
 impl ModelHost {
@@ -83,6 +92,7 @@ impl ModelHost {
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
             auth: parking_lot::Mutex::new(None),
+            rate_limiter: parking_lot::Mutex::new(None),
         }
     }
 
@@ -97,6 +107,7 @@ impl ModelHost {
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
             auth: parking_lot::Mutex::new(None),
+            rate_limiter: parking_lot::Mutex::new(None),
         }
     }
 
@@ -117,6 +128,16 @@ impl ModelHost {
     /// The API-key policy, if one is configured.
     pub fn auth(&self) -> Option<Arc<crate::auth::AuthConfig>> {
         self.auth.lock().clone()
+    }
+
+    /// Install the process's rate limiter. Called once, before any load.
+    pub fn set_rate_limiter(&self, rl: Arc<crate::rate_limiter::RateLimiter>) {
+        *self.rate_limiter.lock() = Some(rl);
+    }
+
+    /// The process's rate limiter, if one has been installed.
+    pub fn rate_limiter(&self) -> Option<Arc<crate::rate_limiter::RateLimiter>> {
+        self.rate_limiter.lock().clone()
     }
 
     /// Record where the listener bound.

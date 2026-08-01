@@ -143,12 +143,18 @@ pub(crate) async fn rate_limit_middleware(
     use axum::http::{HeaderName, HeaderValue, StatusCode};
     // See `require_auth_middleware`: the model must not be held across
     // `next.run`.
-    let Some((rate_limiter, max_seq_len)) = host
-        .current()
-        .map(|state| (state.rate_limiter.clone(), state.max_seq_len))
-    else {
+    // From the HOST, so the limiter is in force whether or not a model is
+    // loaded. Read off `AppState` it did not exist in that window, and every
+    // /v1/* request went through unlimited — the same shape as the auth
+    // bypass fixed alongside it.
+    let Some(rate_limiter) = host.rate_limiter() else {
         return next.run(req).await;
     };
+    // The token estimate IS model-derived. With no model the request cannot
+    // consume any, so it reserves none and is still counted as a request —
+    // which is the axis that matters for a client hammering a server that has
+    // nothing loaded.
+    let max_seq_len = host.current().map(|state| state.max_seq_len).unwrap_or(0);
     use axum::response::IntoResponse;
 
     // Only apply to /v1/* routes — health/metrics/tokenize stay open.
