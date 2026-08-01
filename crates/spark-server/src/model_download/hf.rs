@@ -49,20 +49,34 @@ fn agent() -> &'static ureq::Agent {
 /// `huggingface-cli login` writes, which is what a user who has "logged in"
 /// will expect to work.
 pub fn token() -> Option<String> {
-    for var in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"] {
-        if let Ok(v) = std::env::var(var)
-            && !v.trim().is_empty()
-        {
+    let env = ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"].map(|v| std::env::var(v).ok());
+    let file = std::env::var_os("HOME")
+        .and_then(|h| std::fs::read_to_string(Path::new(&h).join(".cache/huggingface/token")).ok());
+    pick_token(&env, file.as_deref())
+}
+
+/// The precedence rule, with the lookups hoisted out.
+///
+/// Separated from [`token`] because the rule is the part worth testing and the
+/// I/O is the part that makes it untestable: asserting on real environment
+/// variables means mutating process-global state from a test, which is how you
+/// get a suite that fails one run in four depending on ordering.
+///
+/// Blank is treated as absent throughout — an exported-but-empty `HF_TOKEN` is
+/// a very common shell accident, and sending `Authorization: Bearer ` turns a
+/// public model into a 401.
+pub(super) fn pick_token(env: &[Option<String>], file: Option<&str>) -> Option<String> {
+    for v in env.iter().flatten() {
+        if !v.trim().is_empty() {
             return Some(v.trim().to_string());
         }
     }
-    let home = std::env::var_os("HOME")?;
-    let path = Path::new(&home).join(".cache/huggingface/token");
-    let v = std::fs::read_to_string(path).ok()?;
-    (!v.trim().is_empty()).then(|| v.trim().to_string())
+    file.map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
-fn classify(repo: &str, status: u16, had_token: bool) -> DownloadError {
+pub(super) fn classify(repo: &str, status: u16, had_token: bool) -> DownloadError {
     match status {
         401 | 403 => DownloadError::Gated {
             repo: repo.into(),
@@ -266,8 +280,29 @@ pub fn part_path(dest: &Path) -> PathBuf {
     ))
 }
 
-/// Free bytes on the filesystem holding `path`.
+/// Free bytes on the filesystem that will hold `path`.
+///
+/// Walks up to the nearest EXISTING ancestor, because on a first download the
+/// cache directory does not exist yet — and `statvfs` on a missing path fails,
+/// which silently skipped the space check at exactly the moment it was most
+/// useful.
+///
+/// It must measure the cache root itself (or its nearest real ancestor) and
+/// never a fixed `parent()`: a cache holding terabytes of checkpoints is very
+/// plausibly its own mount, and its parent is then a different filesystem — so
+/// the check would have guarded the wrong disk.
 pub fn free_bytes(path: &Path) -> Option<u64> {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if let Some(n) = statvfs_avail(p) {
+            return Some(n);
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+fn statvfs_avail(path: &Path) -> Option<u64> {
     let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     // SAFETY: `c` is a valid NUL-terminated path; `stat` is written only by
     // the call and read only on success.

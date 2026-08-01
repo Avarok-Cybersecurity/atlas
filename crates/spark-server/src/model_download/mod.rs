@@ -228,14 +228,10 @@ fn run(
         .sum();
 
     // Refuse before the first byte rather than filling the disk and failing
-    // two hours in.
-    if total > already
-        && let Some(free) = hf::free_bytes(cache_root.parent().unwrap_or(cache_root))
-    {
-        let need = total - already;
-        if need > free {
-            return Err(DownloadError::NotEnoughSpace { need, free });
-        }
+    // two hours in. The syscall and the decision are separate so the decision
+    // can be tested without a full disk to hand.
+    if let Some(free) = hf::free_bytes(cache_root) {
+        fits(total, already, free)?;
     }
 
     let _ = tx.send(DownloadMsg::Planned {
@@ -299,6 +295,18 @@ fn run(
     // Only now is the model real. See the module doc.
     hf::publish(cache_root, repo, &revision).map_err(|e| DownloadError::Io(format!("{e:#}")))?;
     let _ = tx.send(DownloadMsg::Done { snapshot, revision });
+    Ok(())
+}
+
+/// Is there room for what is left to fetch?
+///
+/// Pure, so the interesting cases — exactly enough, one byte short, a resumed
+/// download that now fits — are testable without arranging a full filesystem.
+fn fits(total: u64, already: u64, free: u64) -> Result<(), DownloadError> {
+    let need = total.saturating_sub(already);
+    if need > free {
+        return Err(DownloadError::NotEnoughSpace { need, free });
+    }
     Ok(())
 }
 

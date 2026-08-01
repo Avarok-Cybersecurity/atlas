@@ -201,11 +201,47 @@ fn free_bytes_reports_something_for_a_real_directory() {
 }
 
 #[test]
-fn free_bytes_is_none_for_a_path_that_does_not_exist() {
-    assert_eq!(
-        hf::free_bytes(Path::new("/definitely/not/here/at/all")),
-        None
+fn free_bytes_measures_the_cache_root_even_before_it_exists() {
+    // A first download creates the cache directory, so at pre-flight time the
+    // path is usually MISSING — and `statvfs` on a missing path fails. Falling
+    // back to None skipped the space check exactly when it mattered most.
+    let c = Cache::new("statvfs-missing");
+    let not_yet = c.0.join("models--org--m/snapshots/rev1");
+    assert!(!not_yet.exists());
+    let free = hf::free_bytes(&not_yet).expect("walks up to a real ancestor");
+    assert!(free > 0);
+    // And it agrees with the root it will actually be created under.
+    let root_free = hf::free_bytes(&c.0).expect("root exists");
+    assert!(
+        free.abs_diff(root_free) < root_free / 100,
+        "the answer must describe the filesystem the files will land on"
     );
+}
+
+#[test]
+fn free_bytes_is_none_only_when_nothing_up_the_tree_can_be_measured() {
+    // "/" always exists, so an absolute nonsense path still resolves — which
+    // is correct: that IS the filesystem the write would be attempted on.
+    assert!(hf::free_bytes(Path::new("/definitely/not/here/at/all")).is_some());
+}
+
+#[test]
+fn the_space_check_refuses_only_when_it_genuinely_will_not_fit() {
+    use super::fits;
+    // Exactly enough is enough.
+    assert!(fits(100, 0, 100).is_ok());
+    // One byte short is not.
+    match fits(101, 0, 100) {
+        Err(DownloadError::NotEnoughSpace { need, free }) => {
+            assert_eq!((need, free), (101, 100));
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // A resumed download only needs the REMAINDER — refusing on the full size
+    // would block a download that is 90% done and fits easily.
+    assert!(fits(1_000, 950, 100).is_ok());
+    // And an over-complete `.part` must not underflow into a huge `need`.
+    assert!(fits(100, 250, 0).is_ok());
 }
 
 // ---- network tests, run by hand ----
@@ -328,4 +364,94 @@ fn a_part_file_does_not_count_as_a_shard() {
         ],
     );
     assert!(hf::publish(&c.0, "org/m", "rev1").is_err());
+}
+
+#[test]
+fn the_token_precedence_rule_prefers_the_environment_then_the_login_file() {
+    use super::hf::pick_token;
+    let some = |s: &str| Some(s.to_string());
+
+    // Nothing anywhere: public models need no token, so this is normal.
+    assert_eq!(pick_token(&[None, None], None), None);
+
+    // The login file is the fallback — what `huggingface-cli login` writes,
+    // which a user who has "logged in" expects to work.
+    assert_eq!(
+        pick_token(&[None, None], Some("from-file")).as_deref(),
+        Some("from-file")
+    );
+
+    // HF_TOKEN wins over the file...
+    assert_eq!(
+        pick_token(&[some("env-a"), None], Some("from-file")).as_deref(),
+        Some("env-a")
+    );
+    // ...and over the second variable.
+    assert_eq!(
+        pick_token(&[some("env-a"), some("env-b")], None).as_deref(),
+        Some("env-a")
+    );
+    // The second variable is still honoured when the first is unset.
+    assert_eq!(
+        pick_token(&[None, some("env-b")], None).as_deref(),
+        Some("env-b")
+    );
+}
+
+#[test]
+fn a_blank_token_reads_as_absent_rather_than_as_a_credential() {
+    use super::hf::pick_token;
+    // `export HF_TOKEN=` is a common shell accident, and sending
+    // `Authorization: Bearer ` turns a PUBLIC model into a 401 — a download
+    // that would have worked failing with "requires credentials".
+    assert_eq!(pick_token(&[Some(String::new()), None], None), None);
+    assert_eq!(pick_token(&[Some("   ".into()), None], None), None);
+    assert_eq!(pick_token(&[None, None], Some("\n")), None);
+    // And a real token with the trailing newline every file has is usable.
+    assert_eq!(
+        pick_token(&[None, None], Some("hf_realtoken\n")).as_deref(),
+        Some("hf_realtoken")
+    );
+    // A blank env var must not shadow a good file.
+    assert_eq!(
+        pick_token(&[Some("  ".into()), None], Some("hf_realtoken")).as_deref(),
+        Some("hf_realtoken")
+    );
+}
+
+#[test]
+fn hub_statuses_map_to_causes_a_reader_can_act_on() {
+    use super::hf::classify;
+    // 401 and 403 are the same *class* of problem but different actions, and
+    // the token is what tells them apart — so the flag, not the code, decides
+    // the wording.
+    assert_eq!(
+        classify("org/m", 401, false),
+        DownloadError::Gated {
+            repo: "org/m".into(),
+            had_token: false
+        }
+    );
+    assert_eq!(
+        classify("org/m", 403, true),
+        DownloadError::Gated {
+            repo: "org/m".into(),
+            had_token: true
+        }
+    );
+    assert_eq!(
+        classify("org/m", 404, false),
+        DownloadError::NotFound {
+            repo: "org/m".into()
+        }
+    );
+    assert_eq!(classify("org/m", 429, false), DownloadError::RateLimited);
+    // Anything else keeps the number rather than inventing a cause.
+    assert_eq!(
+        classify("org/m", 502, false),
+        DownloadError::Http {
+            repo: "org/m".into(),
+            status: 502
+        }
+    );
 }
