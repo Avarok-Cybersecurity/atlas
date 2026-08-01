@@ -325,7 +325,18 @@ fn statvfs_avail(path: &Path) -> Option<u64> {
     // the call and read only on success.
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
-        (libc::statvfs(c.as_ptr(), &mut stat) == 0).then(|| stat.f_bavail * stat.f_frsize)
+        // Call FIRST, read after — `stat` is zeroed until `statvfs` fills it.
+        if libc::statvfs(c.as_ptr(), &mut stat) != 0 {
+            return None;
+        }
+        // The casts are NOT redundant, whatever clippy says on this host:
+        // `statvfs`'s field widths differ by platform. On Linux both are u64,
+        // so clippy flags them as `unnecessary_cast` — on macOS `f_frsize` is
+        // u32 and `f_bavail` is u64, and without the casts the multiply does
+        // not compile at all. Removing them on clippy's advice is exactly how
+        // the macOS/metal CI job broke.
+        #[allow(clippy::unnecessary_cast)]
+        Some(stat.f_bavail as u64 * stat.f_frsize as u64)
     }
 }
 
