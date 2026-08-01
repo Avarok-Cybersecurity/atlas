@@ -366,6 +366,13 @@ fn library_hints(app: &App) -> &'static str {
     match (app.lib.view, app.lib.editing) {
         (View::Cards, _) => "j/k move · ⏎ configure · Esc back to models",
         (View::Config, true) => "⏎ commit · Esc cancel",
+        // `s` cannot start a model whose weights are absent, so the footer
+        // says so BEFORE it is pressed rather than leaving the user to find
+        // out from a refusal. Naming the way out matters more than naming the
+        // key that will not work.
+        (View::Config, false) if !app.lib.selected_has_weights() => {
+            "⚠ weights not downloaded · Esc then d to download · ⏎ edit"
+        }
         (View::Config, false) => {
             "j/k move · ⏎ edit · d recipe defaults · s START · Esc back to recipes"
         }

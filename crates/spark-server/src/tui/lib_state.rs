@@ -47,7 +47,7 @@ pub struct LibState {
     /// with it, so the two cannot disagree about whether one is running.
     fetch_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// An in-flight scan of the local HF cache.
-    pending_scan: Option<Receiver<Vec<LibraryEntry>>>,
+    pub(super) pending_scan: Option<Receiver<Vec<LibraryEntry>>>,
     /// The local cache needs re-scanning. Set by the reducer, which has no
     /// access to `App`; the event loop drains it into `App::library_dirty`.
     pub mark_dirty: bool,
@@ -74,7 +74,7 @@ pub struct LibState {
     /// else — the dashboard kept showing a load that had already given up.
     launch_result: Option<Receiver<String>>,
     /// The store root, so a refresh knows where the cache lives.
-    root: Option<std::path::PathBuf>,
+    pub(super) root: Option<std::path::PathBuf>,
 
     // --- config form ---
     /// Edited values, keyed as the recipe keys them. Only touched keys appear,
@@ -111,47 +111,6 @@ impl LibState {
         self.pending = Some(rx);
         self.fetch_cancel = Some(cancel);
         self.fetching = true;
-    }
-
-    /// Has the recipe store been attached yet?
-    ///
-    /// Distinguishes "first entry into the Library" from "rescan": the local
-    /// scan may run many times, but attaching — and the GitHub fetch it kicks
-    /// off — happens once.
-    pub fn attached(&self) -> bool {
-        self.root.is_some()
-    }
-
-    /// Start a background scan of the local HF cache.
-    ///
-    /// Idempotent: a second call while one is in flight is ignored, so a
-    /// dirty flag set repeatedly cannot spawn a thread per frame.
-    pub fn start_scan(&mut self, cache_dir: Option<&std::path::Path>) {
-        if self.pending_scan.is_some() {
-            return;
-        }
-        self.pending_scan = Some(crate::tui::data::library::scan_in_background(cache_dir));
-    }
-
-    /// Collect a finished scan, if one has landed.
-    ///
-    /// Returns the new entries for the caller to store. During the scan the
-    /// previous list keeps rendering, so there is no empty frame and no
-    /// flicker — the list simply becomes more correct.
-    pub fn poll_scan(&mut self) -> Option<Vec<LibraryEntry>> {
-        let rx = self.pending_scan.as_ref()?;
-        match rx.try_recv() {
-            Ok(found) => {
-                self.pending_scan = None;
-                Some(found)
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => None,
-            // The scanner thread died. Keep the list that is on screen.
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.pending_scan = None;
-                None
-            }
-        }
     }
 
     /// Stop an in-flight refresh, if there is one.
@@ -411,6 +370,18 @@ impl LibState {
         host: std::sync::Arc<crate::main_modules::model_host::ModelHost>,
     ) -> Result<(), String> {
         let recipe = self.config_recipe().ok_or("no recipe selected")?;
+        // Refuse a launch whose weights are not on disk, HERE, rather than
+        // spawning a swap that will fail in `resolve_model_dir` seconds later.
+        // The old path tore down whatever was serving, reset the checklist,
+        // sent the user to Main and only then said it could not find the
+        // model — with nothing to do about it. The weights are downloadable
+        // now, so the honest answer is to say so before anything is torn down.
+        if !self.selected_has_weights() {
+            return Err(format!(
+                "{} is not downloaded — press Esc, then d to download it",
+                recipe.model
+            ));
+        }
         // Build and validate argv HERE, on the UI thread, so a bad recipe is a
         // toast rather than a torn-down model: `swap` re-validates, but by then
         // the user has already been told the run started.
@@ -444,6 +415,16 @@ impl LibState {
             })
             .map_err(|e| format!("could not start the loader thread: {e}"))?;
         Ok(())
+    }
+
+    /// Are the selected model's weights actually on disk and complete?
+    ///
+    /// `has_weights` means "the resolver would load this" — a real shard AND a
+    /// published `refs/main` — so a half-finished download reads as false,
+    /// which is what makes the refusal above correct rather than merely
+    /// cautious.
+    pub fn selected_has_weights(&self) -> bool {
+        self.current().is_some_and(|e| e.has_weights())
     }
 
     /// The argv this form would launch, for the confirm line.

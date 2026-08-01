@@ -82,6 +82,7 @@ pub mod download_state;
 pub mod events;
 pub mod lib_dates;
 pub mod lib_keys;
+pub mod lib_scan;
 pub mod lib_state;
 pub mod logo;
 pub mod progress;
