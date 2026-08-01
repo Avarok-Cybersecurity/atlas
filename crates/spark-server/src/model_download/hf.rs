@@ -336,6 +336,50 @@ fn statvfs_avail(_path: &Path) -> Option<u64> {
     None
 }
 
+/// Free and total bytes of the filesystem holding `path`.
+///
+/// Shares one `statvfs` with [`free_bytes`] rather than adding a second
+/// syscall wrapper: the download pre-flight wants "how much room is left" and
+/// the startup check wants "how full is it", and those are two readings of the
+/// same number.
+pub fn disk_usage(path: &Path) -> Option<(u64, u64)> {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if let Some(u) = statvfs_usage(p) {
+            return Some(u);
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn statvfs_usage(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(unix)]
+fn statvfs_usage(path: &Path) -> Option<(u64, u64)> {
+    let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+    // SAFETY: as in `statvfs_avail` — valid NUL-terminated path, `stat` read
+    // only after a successful call.
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c.as_ptr(), &mut stat) != 0 {
+            return None;
+        }
+        // `f_bavail` is what a NON-ROOT process may use; `f_blocks` is the
+        // whole filesystem. Using `f_bfree` here would under-report fullness,
+        // because it counts the reserved blocks an unprivileged writer cannot
+        // touch — the ones a download would fail on anyway.
+        #[allow(clippy::unnecessary_cast)]
+        let free = stat.f_bavail as u64 * stat.f_frsize as u64;
+        #[allow(clippy::unnecessary_cast)]
+        let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+        (total > 0).then_some((free, total))
+    }
+}
+
 #[cfg(unix)]
 fn statvfs_avail(path: &Path) -> Option<u64> {
     let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;

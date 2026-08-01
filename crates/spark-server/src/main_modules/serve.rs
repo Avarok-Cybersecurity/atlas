@@ -108,6 +108,10 @@ fn startup(
 ) -> Result<Startup> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
+    // Before anything writes: a nearly-full disk shows up later as a download
+    // that dies mid-shard or as page-cache thrashing that reads like a
+    // regression. One line now is cheaper than either diagnosis.
+    crate::disk_guard::warn_if_nearly_full(args.cache_dir.as_deref());
     spark_runtime::progress::phase(0, "banner");
 
     // Clean shutdown: SIGINT/SIGTERM now request a drain-and-exit instead of

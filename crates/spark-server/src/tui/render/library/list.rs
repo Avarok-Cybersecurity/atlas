@@ -301,10 +301,24 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
     let job = app.download.job.as_ref().filter(|j| j.repo == model)?;
     let mut spans = vec![Span::raw("   ")];
 
+    // A spinner ALWAYS, in front of whatever else this line says. On a 20 GB
+    // model the first several minutes are under one percent, and a bar that
+    // renders as twelve empty cells next to "0%" is indistinguishable from a
+    // download that never started — which is exactly how this was first
+    // reported. The spinner is the part that says "still moving" when the
+    // numbers cannot yet.
+    let phase = (app.tick as usize / 2) % theme::SPINNER.len();
+    spans.push(Span::styled(theme::SPINNER[phase], theme::brand_cyan()));
+    spans.push(Span::raw(" "));
+
     match job.fraction() {
         Some(f) => {
             const CELLS: usize = 12;
-            let filled = (f * CELLS as f64).round() as usize;
+            // At least one cell once ANY bytes have moved: rounding 0.75% of
+            // twelve cells to zero drew an empty bar for a download that was
+            // running fine.
+            let exact = (f * CELLS as f64).round() as usize;
+            let filled = if job.done > 0 { exact.max(1) } else { exact };
             spans.push(Span::styled(
                 "▓".repeat(filled.min(CELLS)),
                 theme::brand_cyan(),
@@ -313,18 +327,20 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
                 "░".repeat(CELLS.saturating_sub(filled)),
                 theme::dim(),
             ));
+            // One decimal below 10%, because "0%" for twenty minutes of real
+            // progress reads as a stall. Whole numbers above that.
+            let pct = f * 100.0;
             spans.push(Span::styled(
-                format!("  {:>3.0}%", f * 100.0),
+                if pct < 10.0 {
+                    format!("  {pct:>4.1}%")
+                } else {
+                    format!("  {pct:>3.0}%")
+                },
                 theme::text(),
             ));
         }
-        // The Hub did not report sizes. A bar pinned at zero would read as a
-        // stall, so show motion instead of a fraction we do not have.
-        None => {
-            let phase = (app.tick as usize / 2) % theme::SPINNER.len();
-            spans.push(Span::styled(theme::SPINNER[phase], theme::brand_cyan()));
-            spans.push(Span::styled("  fetching", theme::text()));
-        }
+        // The Hub did not report sizes, so there is no fraction to draw.
+        None => spans.push(Span::styled("fetching", theme::text())),
     }
 
     if job.cancelling {
@@ -339,16 +355,21 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
             theme::text2(),
         ));
     }
-    if width >= 78
-        && let Some((i, of, _)) = &job.file
-    {
-        spans.push(Span::styled(format!("  file {i}/{of}"), theme::dim()));
-    }
-    if width >= 96 && job.rate_bps > 0.0 {
+    // Rate BEFORE the file counter, and at a much lower threshold. The list
+    // pane is roughly half the content area, so at a 200-column terminal this
+    // line gets ~85 columns — the old 96 threshold meant the rate, the one
+    // field that proves bytes are moving, never appeared at any realistic
+    // window size.
+    if width >= 70 && job.rate_bps > 0.0 {
         spans.push(Span::styled(
             format!("  {:.0} MB/s", job.rate_bps / 1e6),
             theme::dim(),
         ));
+    }
+    if width >= 88
+        && let Some((i, of, _)) = &job.file
+    {
+        spans.push(Span::styled(format!("  file {i}/{of}"), theme::dim()));
     }
     Some(Line::from(spans))
 }
