@@ -205,3 +205,34 @@ fn a_swap_is_refused_once_shutdown_has_been_requested() {
     assert!(format!("{err:#}").contains("shutdown"), "{err:#}");
     super::refuse_if_shutting_down(false).expect("a live process may swap");
 }
+
+#[test]
+fn a_recipe_cannot_turn_off_authentication() {
+    // A swap replaces the ENTIRE argv with the recipe's, and `require_auth` is
+    // deliberately not among the flags `carry_process_flags` carries. If the
+    // live policy were read from those args, swapping to any recipe that omits
+    // them — which is every recipe in the published catalogue — would silently
+    // unauthenticate the endpoint.
+    //
+    // It is not read from them: the policy is installed on the host before the
+    // listener binds and no swap path touches it. This test exists so that
+    // stays true; a future `host.set_auth(...)` inside `swap` would fail here
+    // rather than in production.
+    let host = Arc::new(ModelHost::empty());
+    let cfg = std::sync::Arc::new(
+        crate::auth::AuthConfig::from_inline("sk-test-token").expect("valid token"),
+    );
+    host.set_auth(Some(cfg));
+
+    // Any swap that gets far enough to have replaced argv will do; this one is
+    // refused at the multi-rank gate, which is after the argv is taken.
+    use clap::Parser as _;
+    let mut args = cli::ServeArgs::parse_from(["spark", "org/m"]);
+    args.world_size = 2;
+    let _ = super::swap(&host, args, None);
+
+    assert!(
+        host.auth().is_some(),
+        "the API-key policy must not be a casualty of a swap"
+    );
+}
