@@ -105,15 +105,55 @@ impl LibState {
         }
     }
 
-    /// Re-join and clamp the selection.
+    /// Re-join, keeping the selection on the MODEL the user had, not the index.
+    ///
+    /// A background fetch lands on whatever screen the user is on, and the join
+    /// re-sorts (runnable rows first, then by id). Clamping an index is not
+    /// enough: row 2 before the refresh and row 2 after it can be different
+    /// models, so the cards, the settings form, and what `s` launches all
+    /// change silently underneath. Anchoring to the model id makes a refresh
+    /// invisible when the model survives, and explicit when it does not.
     pub fn rebuild(&mut self, local: &[LibraryEntry]) {
+        let anchor = self.current().map(|e| e.model.clone());
+        let card_anchor = self.selected_card().map(|r| r.id.clone());
         self.rows = catalogue::join(&self.index.recipes, local);
+
+        if let Some(model) = anchor {
+            match self.visible().iter().position(|e| e.model == model) {
+                Some(i) => self.selected = i,
+                // The model the user was reading about is no longer listed.
+                // Staying in its cards would show another model's recipes under
+                // its heading, so step back to the list rather than lie.
+                None => self.view = View::List,
+            }
+        }
+        // Same argument one level down: a model can keep its row and lose a
+        // recipe. If the recipe the user was editing is gone, its edits are
+        // edits to nothing — carrying them onto whichever recipe inherits the
+        // index would silently launch a config the user never typed.
+        if let Some(id) = card_anchor {
+            match self.cards().iter().position(|r| r.id == id) {
+                Some(i) => self.card = i,
+                None => {
+                    self.overrides.clear();
+                    self.editing = false;
+                    if self.view == View::Config {
+                        self.view = View::Cards;
+                    }
+                }
+            }
+        }
         self.clamp();
     }
 
     fn clamp(&mut self) {
         let n = self.visible().len();
         self.selected = self.selected.min(n.saturating_sub(1));
+        // `card` and `row` index into lists that a refresh can shorten.
+        let cards = self.cards().len();
+        self.card = self.card.min(cards.saturating_sub(1));
+        let rows = self.config_rows().len();
+        self.row = self.row.min(rows.saturating_sub(1));
     }
 
     /// Rows passing the filter.

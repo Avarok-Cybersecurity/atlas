@@ -272,3 +272,81 @@ fn a_clap_error_without_a_numbered_block_still_reads() {
     let line = problem_line("error: invalid value 'x' for '--port <PORT>'");
     assert!(line.contains("invalid value"), "{line}");
 }
+
+#[test]
+fn a_refresh_keeps_the_selection_on_the_same_model_not_the_same_row() {
+    // The join sorts runnable rows first. A background fetch that makes an
+    // earlier-sorting model runnable shifts every row below it, so an index
+    // kept across the rebuild points at a DIFFERENT model — and the cards, the
+    // form and what `s` launches all change under the user.
+    let mut s = state_with_recipe();
+    let mine = s.current().expect("a row").model.clone();
+    s.rebuild(&[local_of(&mine), local_of("aaa/sorts-first")]);
+    let before = s.current().expect("a row").model.clone();
+    assert_eq!(before, mine, "still the model I had selected");
+
+    // And again with the newcomer genuinely ahead of it in the order.
+    s.rebuild(&[local_of("aaa/sorts-first"), local_of(&mine)]);
+    assert_eq!(
+        s.current().expect("a row").model,
+        mine,
+        "a reshuffle must not move the selection to another model"
+    );
+}
+
+#[test]
+fn a_refresh_that_removes_the_open_model_steps_back_to_the_list() {
+    // Staying in Cards would render another model's recipes under the heading
+    // of the one that vanished.
+    let mut s = state_with_recipe();
+    s.open_cards().expect("opens");
+    assert_eq!(s.view, View::Cards);
+    s.index = Index::default(); // the fetch came back with nothing
+    s.rebuild(&[]);
+    assert_eq!(
+        s.view,
+        View::List,
+        "cannot stay in a vanished model's cards"
+    );
+}
+
+#[test]
+fn a_shorter_recipe_list_cannot_leave_the_card_index_dangling() {
+    let mut s = state_with_recipe();
+    s.open_cards().expect("opens");
+    s.card = 5; // as if a longer list had been shown
+    s.rebuild(&[local_of(&real_recipe().model)]);
+    assert!(
+        s.card < s.cards().len().max(1),
+        "card {} out of {} ",
+        s.card,
+        s.cards().len()
+    );
+}
+
+#[test]
+fn edits_do_not_survive_onto_a_recipe_the_user_never_opened() {
+    // If the recipe being edited disappears in a refresh, its overrides are
+    // edits to nothing. Carrying them onto whichever recipe inherits the index
+    // would launch a configuration the user never typed.
+    let mut s = state_with_recipe();
+    s.open_cards().expect("opens");
+    s.open_config().expect("opens");
+    s.row = s
+        .config_rows()
+        .iter()
+        .position(|(k, _, _)| k == "port")
+        .expect("port");
+    s.editing = true;
+    s.edit_buffer = "9100".into();
+    s.commit_edit();
+    assert_eq!(s.overrides.len(), 1);
+
+    s.index = Index::default(); // the recipe is gone
+    s.rebuild(&[local_of(&real_recipe().model)]);
+    assert!(
+        s.overrides.is_empty(),
+        "edits to a vanished recipe are dropped"
+    );
+    assert!(!s.editing);
+}
