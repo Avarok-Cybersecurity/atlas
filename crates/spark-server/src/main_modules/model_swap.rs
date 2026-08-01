@@ -116,6 +116,11 @@ fn carry_process_flags(next: &mut cli::ServeArgs, previous: &cli::ServeArgs) {
     next.no_auto_swap = previous.no_auto_swap;
     next.bind = previous.bind.clone();
     next.port = previous.port;
+    // Request dumping is an operator's observability choice, and no recipe
+    // sets it. Without this, a swap replaces argv with the recipe's and the
+    // dump silently stops — the file stays where it was, simply never written
+    // to again, which is the worst way for a diagnostic to fail.
+    next.dump = previous.dump.clone();
 }
 
 /// How long in-flight requests get to release the outgoing model before the

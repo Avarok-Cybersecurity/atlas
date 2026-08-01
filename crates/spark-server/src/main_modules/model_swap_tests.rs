@@ -236,3 +236,23 @@ fn a_recipe_cannot_turn_off_authentication() {
         "the API-key policy must not be a casualty of a swap"
     );
 }
+
+#[test]
+fn a_swap_does_not_silently_stop_request_dumping() {
+    // `--dump` is an operator's observability choice and no recipe sets it.
+    // Left uncarried, a swap replaces argv with the recipe's and the dump just
+    // stops: the file stays where it was and is never written to again, which
+    // is the worst way for a diagnostic to fail — it looks like no traffic.
+    use clap::Parser as _;
+    let previous = cli::ServeArgs::parse_from(["spark", "org/live", "--dump", "/tmp/probe.jsonl"]);
+    let mut next = cli::ServeArgs::parse_from(["spark", "org/next"]);
+    assert!(next.dump.is_none(), "the recipe says nothing about it");
+
+    super::carry_process_flags(&mut next, &previous);
+    assert_eq!(next.dump.as_deref(), Some("/tmp/probe.jsonl"));
+    assert_eq!(
+        next.model.as_deref(),
+        Some("org/next"),
+        "the MODEL still swaps"
+    );
+}
