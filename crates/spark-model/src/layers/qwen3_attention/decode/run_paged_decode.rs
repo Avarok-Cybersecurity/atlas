@@ -580,9 +580,13 @@ impl Qwen3AttentionLayer {
                 // serial-looking workload ever shares a batch (root-cause probe for
                 // batch>1 temp-0 nondeterminism).
                 if num_seqs != 1 && std::env::var("ATLAS_ATTN_DBG").is_ok() {
-                    eprintln!(
+                    tracing::debug!(
                         "ATTN_DBG L{} num_seqs={} num_splits={} (NUM_SMS={} nq={})",
-                        self.attn_layer_idx, num_seqs, num_splits, NUM_SMS, num_q_heads
+                        self.attn_layer_idx,
+                        num_seqs,
+                        num_splits,
+                        NUM_SMS,
+                        num_q_heads
                     );
                 }
 

@@ -426,7 +426,7 @@ mod tests {
                 cudaFree(p as *mut c_void);
             }
         }
-        eprintln!("FLASHINFER_RAGGED worst_cos={worst_cos:.6} max_rel={max_rel:.4}");
+        tracing::debug!("FLASHINFER_RAGGED worst_cos={worst_cos:.6} max_rel={max_rel:.4}");
         assert!(
             worst_cos > 0.99,
             "FlashInfer ragged prefill diverges from CPU ref: cos {worst_cos}"

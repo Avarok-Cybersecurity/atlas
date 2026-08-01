@@ -421,7 +421,7 @@ impl DenseFfnLayer {
             // static meant only the first model in the process reported the
             // decision.
             if gpu.op_cache().once("log:ffn_mmq_freed_twins") {
-                eprintln!(
+                tracing::info!(
                     "[atlas] ATLAS_FFN_MMQ: freed transposed FFN `_t` copies (dead under Q4_K prefill) — Q4_K weights net to ~0 vs NVFP4 baseline"
                 );
             }
@@ -511,7 +511,7 @@ impl DenseFfnLayer {
             // static meant only the first model in the process reported the
             // decision.
             if gpu.op_cache().once("log:ffn_fp4mmq_freed_twins") {
-                eprintln!(
+                tracing::info!(
                     "[atlas] ATLAS_FFN_NVFP4_MMQ: freed gate/up `_t` copies (dead under FP4-MMQ prefill) — block_nvfp4 copies net to ~0 vs NVFP4 baseline"
                 );
             }
@@ -1482,7 +1482,7 @@ impl DenseFfnLayer {
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_int8_prefill") {
-                eprintln!(
+                tracing::info!(
                     "[atlas] ATLAS_INT8_PREFILL=1: dense-FFN prefill via int8_gemm_faith2 (W4A8 requant→int8 MMA, lossy ~0.99998 cosine)"
                 );
             }
@@ -1504,7 +1504,7 @@ impl DenseFfnLayer {
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_fp4_mmq_prefill") {
-                eprintln!(
+                tracing::info!(
                     "[atlas] ATLAS_FFN_NVFP4_MMQ=1: dense-FFN gate/up prefill via vendored llama NVFP4 W4A4 MMQ (block-scale FP4 MMA, ~80 TFLOP/s vs t_m128 ~51)"
                 );
             }
@@ -1557,7 +1557,7 @@ impl DenseFfnLayer {
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_fp4_prefill") {
-                eprintln!(
+                tracing::info!(
                     "[atlas] ATLAS_FP4_PREFILL=1: dense-FFN prefill via w4a4_gemm (native FP4 MMA sm_121a, W4A4)"
                 );
             }
@@ -1585,7 +1585,7 @@ impl DenseFfnLayer {
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_q4k_prefill") {
-                eprintln!(
+                tracing::info!(
                     "[atlas] ATLAS_FFN_MMQ=1: dense-FFN prefill via vendored llama Q4_K MMQ (W4A8, +25%/+10% gate·down vs faith2)"
                 );
             }
