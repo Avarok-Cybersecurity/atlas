@@ -51,6 +51,23 @@ pub struct RunMetrics {
     pub baseline_free_bytes: AtomicUsize,
     /// `(module, func, loaded)` for every kernel lookup this run made.
     pub kernel_audit: Mutex<Vec<(String, String, bool)>>,
+
+    // ── Per-run baselines for the counters above ──
+    //
+    // `cache_hits`, `cache_misses` and `cache_hit_tokens` are exported on
+    // /metrics as `atlas_prefix_cache_*_total`, declared `TYPE counter`, and a
+    // counter must only ever climb. Zeroing them was harmless while a backend
+    // was built exactly once per process — the reset happened before anything
+    // could scrape. Hot-swap builds one per load, so the same call now resets
+    // live counters mid-life, which reads to Prometheus as a restart and
+    // corrupts `rate()` and `increase()` across the swap.
+    //
+    // The counters therefore stay cumulative, and "this run" is DERIVED by
+    // subtracting a snapshot taken when the run began. One authoritative
+    // number, two views of it.
+    run_base_cache_hits: AtomicU64,
+    run_base_cache_misses: AtomicU64,
+    run_base_cache_hit_tokens: AtomicU64,
 }
 
 /// The mailbox. See the module doc for why this one is static.
@@ -61,16 +78,21 @@ pub fn metrics() -> &'static RunMetrics {
     &METRICS
 }
 
-/// Clear the run mailbox. Call once, when a new model's backend is built.
+/// Begin a new run's accounting. Called when a new model's backend is built.
+///
+/// The monotonic counters are SNAPSHOTTED, not cleared — see the baseline
+/// fields. Everything else here is per-run scratch that nothing exports, so it
+/// is cleared outright.
 pub fn reset_for_new_run() {
     let m = metrics();
-    for c in [
-        &m.cache_hits,
-        &m.cache_misses,
-        &m.cache_hit_tokens,
-        &m.low_entropy_tokens,
-        &m.total_sampled_tokens,
+    for (counter, base) in [
+        (&m.cache_hits, &m.run_base_cache_hits),
+        (&m.cache_misses, &m.run_base_cache_misses),
+        (&m.cache_hit_tokens, &m.run_base_cache_hit_tokens),
     ] {
+        base.store(counter.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+    for c in [&m.low_entropy_tokens, &m.total_sampled_tokens] {
         c.store(0, Ordering::Relaxed);
     }
     m.baseline_free_bytes.store(0, Ordering::Relaxed);
@@ -78,6 +100,24 @@ pub fn reset_for_new_run() {
     if let Ok(mut v) = m.kernel_audit.lock() {
         v.clear();
     }
+}
+
+/// Prefix-cache activity since the CURRENT model was loaded.
+///
+/// The dashboard asks "how is this model doing", not "how has this process
+/// done since boot"; after a swap those differ. Prometheus wants the opposite
+/// and reads the cumulative counters directly.
+pub fn cache_counts_this_run() -> (u64, u64, u64) {
+    let m = metrics();
+    let sub = |c: &AtomicU64, b: &AtomicU64| {
+        c.load(Ordering::Relaxed)
+            .saturating_sub(b.load(Ordering::Relaxed))
+    };
+    (
+        sub(&m.cache_hits, &m.run_base_cache_hits),
+        sub(&m.cache_misses, &m.run_base_cache_misses),
+        sub(&m.cache_hit_tokens, &m.run_base_cache_hit_tokens),
+    )
 }
 
 #[cfg(test)]
@@ -93,23 +133,64 @@ mod tests {
     /// a process-global counter costs even when a global is the right shape.
     /// A run's worth of hits is orders of magnitude above the handful a
     /// concurrent test contributes, so the drop is unambiguous.
+    /// The assertion here is INVERTED from what it was, deliberately.
+    ///
+    /// It used to require that `cache_hit_count()` itself dropped to near zero.
+    /// That was correct while a backend was built exactly once per process: the
+    /// reset ran before anything could observe the counter. Hot-swap builds one
+    /// per load, and the same value is exported on /metrics as
+    /// `atlas_prefix_cache_hits_total`, declared `TYPE counter` — so the old
+    /// behaviour resets a live counter, which Prometheus reads as a restart.
+    ///
+    /// A new run still starts from the bottom; the counter is no longer the
+    /// thing that moves.
     #[test]
     fn a_new_run_starts_from_the_bottom() {
         const RUN: u64 = 10_000;
         for _ in 0..RUN {
             crate::prefix_cache::record_cache_hit(1);
         }
-        assert!(
-            crate::prefix_cache::cache_hit_count() >= RUN,
-            "the run accumulated"
-        );
+        let cumulative = crate::prefix_cache::cache_hit_count();
+        assert!(cumulative >= RUN, "the run accumulated");
 
         reset_for_new_run();
 
         assert!(
-            crate::prefix_cache::cache_hit_count() < RUN / 10,
-            "the next run does not inherit the previous run's hit count"
+            crate::prefix_cache::cache_hit_count() >= cumulative,
+            "the exported counter must never go backwards"
         );
-        assert!(crate::prefix_cache::cache_hit_tokens_total() < RUN / 10);
+        let (hits, _, tokens) = cache_counts_this_run();
+        assert!(
+            hits < RUN / 10,
+            "but the next run does not inherit the previous run's hits"
+        );
+        assert!(tokens < RUN / 10);
+    }
+}
+
+#[cfg(test)]
+mod swap_counter_tests {
+    use super::*;
+
+    /// Deliberately expressed as `>=` against a value read at the start, not as
+    /// an equality. Other tests in this binary record into the same global
+    /// mailbox concurrently — they can only ADD, so a lower bound is immune to
+    /// them, and an exact assertion here was flaky on the first run of four.
+    #[test]
+    fn a_new_run_does_not_move_the_counters_prometheus_exports() {
+        // atlas_prefix_cache_hits_total is declared TYPE counter, and a counter
+        // must only ever climb. Zeroing it was harmless when a backend was
+        // built once per process; hot-swap builds one per load, so the same
+        // call would reset a live counter and read to Prometheus as a restart.
+        let m = metrics();
+        let before = m.cache_hits.load(Ordering::Relaxed);
+        m.cache_hits.fetch_add(7, Ordering::Relaxed);
+
+        reset_for_new_run();
+
+        assert!(
+            m.cache_hits.load(Ordering::Relaxed) >= before + 7,
+            "the cumulative counter must not go backwards across a swap"
+        );
     }
 }

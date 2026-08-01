@@ -198,10 +198,12 @@ impl StatsModel {
         // Spec-decode accept per K from the labeled counter vec.
         self.spec_accept = spec_accept_from_gather();
 
-        // Prefix cache + sampler globals.
-        let hits = spark_runtime::prefix_cache::cache_hit_count();
-        let misses = spark_runtime::prefix_cache::cache_miss_count();
-        self.prefix_hit_tokens = spark_runtime::prefix_cache::cache_hit_tokens_total();
+        // Prefix cache + sampler globals. Scoped to the CURRENT model: the
+        // cumulative counters behind these are what /metrics exports, and
+        // after a swap they still carry the previous model's cache activity,
+        // which is not what this pane is describing.
+        let (hits, misses, hit_tokens) = spark_runtime::run_metrics::cache_counts_this_run();
+        self.prefix_hit_tokens = hit_tokens;
         self.prefix_hit_rate = (hits + misses > 0).then(|| hits as f64 / (hits + misses) as f64);
         self.entropy = spark_runtime::sampler::last_entropy() as f64;
         self.entropy_history.push(self.entropy);
