@@ -112,10 +112,10 @@ fn draw_glow_ring(f: &mut Frame, app: &App, area: Rect) -> Rect {
 fn status_pill(app: &App) -> Span<'static> {
     // Three states, not two: "loading" for a load that is not running reads as
     // a hang, which is exactly how a no-argument boot looked.
-    let (label, bg) = if app.progress.ready {
-        (" ● SERVING ", theme::GREEN)
-    } else if app.awaiting_model {
+    let (label, bg) = if app.awaiting_model {
         (" ○ NO MODEL ", theme::TEXT_DIM)
+    } else if app.progress.ready {
+        (" ● SERVING ", theme::GREEN)
     } else {
         (" ● LOADING ", theme::WARN)
     };

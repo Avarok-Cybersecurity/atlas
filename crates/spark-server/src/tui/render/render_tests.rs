@@ -392,3 +392,27 @@ mod preflight {
         );
     }
 }
+
+#[test]
+fn the_status_pill_does_not_claim_to_be_serving_with_no_model() {
+    // `progress.ready` means the LISTENER is up. Since the no-model boot binds
+    // a socket, that is true before any model exists, and checking it first
+    // reported "SERVING" on a server serving nothing.
+    use clap::Parser as _;
+    let mut args = crate::cli::ServeArgs::parse_from(["spark", "m"]);
+    args.model = None;
+    let mut app = crate::tui::app::App::new(args);
+    assert!(app.awaiting_model, "no model was named");
+
+    app.progress.ready = true; // the listener came up
+    let pill = super::status_pill(&app);
+    assert!(
+        pill.content.contains("NO MODEL"),
+        "a bound socket is not a loaded model: {:?}",
+        pill.content
+    );
+
+    // And once a model is actually loaded it says so.
+    app.awaiting_model = false;
+    assert!(super::status_pill(&app).content.contains("SERVING"));
+}
