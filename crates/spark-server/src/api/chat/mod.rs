@@ -107,20 +107,31 @@ pub async fn chat_completions(
         && crate::main_modules::auto_swap::enabled(&args)
     {
         let live = host.live_model().unwrap_or_default();
-        let store = atlas_plugin::ArtifactStore::discover().ok();
-        let catalogue = store
-            .map(|s| crate::recipe::fetch::cached(s.root()).recipes)
-            .unwrap_or_default();
-        if let crate::main_modules::auto_swap::Decision::SwapTo(recipe_id) =
-            crate::main_modules::auto_swap::decide(&req.model, &live, &catalogue)
-        {
+        // Short-circuit the overwhelmingly common case — a client naming the
+        // model that is already loaded — before touching the disk. Reading the
+        // recipe index means an `ArtifactStore::discover` plus a JSON parse,
+        // and doing that per request put blocking I/O on a runtime worker in
+        // the hot path of every completion.
+        if !req.model.is_empty() && req.model != live {
             let requested = req.model.clone();
             let swap_host = host.clone();
-            // Blocking and minutes long — it must not run on a runtime worker.
+            // Both the catalogue read and the load are blocking, so BOTH belong
+            // off the runtime — the decision needs the index, and the index is
+            // on disk.
             let outcome = tokio::task::spawn_blocking(move || {
-                crate::main_modules::auto_swap::ensure_loaded(
-                    &swap_host, &recipe_id, &requested, &catalogue,
-                )
+                let catalogue = atlas_plugin::ArtifactStore::discover()
+                    .ok()
+                    .map(|s| crate::recipe::fetch::cached(s.root()).recipes)
+                    .unwrap_or_default();
+                match crate::main_modules::auto_swap::decide(&requested, &live, &catalogue) {
+                    crate::main_modules::auto_swap::Decision::SwapTo(recipe_id) => {
+                        crate::main_modules::auto_swap::ensure_loaded(
+                            &swap_host, &recipe_id, &requested, &catalogue,
+                        )
+                    }
+                    // Unknown to the catalogue, or already live: serve as-is.
+                    crate::main_modules::auto_swap::Decision::ServeCurrent => Ok(()),
+                }
             })
             .await;
             match outcome {
