@@ -176,6 +176,21 @@ fn release_state(host: &Arc<ModelHost>, grace: std::time::Duration) -> Result<Ca
     Ok(carried)
 }
 
+/// Mark the router/listening phases done and announce ready.
+///
+/// The listener is bound at boot and a swap never touches it, so `load_model`
+/// cannot emit these itself — but a dashboard that never sees them keeps a
+/// half-finished checklist and a LOADING pill over a server that is serving.
+/// Both the swap and the restore need it, which is why it is a function and
+/// not two copies.
+fn signal_listener_phases(host: &Arc<ModelHost>) {
+    if let Some((_, port)) = host.bound() {
+        spark_runtime::progress::phase(10, "router");
+        spark_runtime::progress::phase(11, "listening");
+        spark_runtime::progress::ready(port);
+    }
+}
+
 /// Replace the running model with the one `next` describes.
 ///
 /// Blocking — it loads a model. Call it off the runtime.
@@ -273,15 +288,7 @@ pub(crate) fn swap(
             host.set_scheduler(prepared.scheduler);
             host.set_args(next_args);
             host.publish(prepared.state);
-            // The last two phases belong to the LISTENER, which a swap does not
-            // touch — it was bound at boot and never stopped. Leaving them
-            // pending would freeze the checklist at 10/12 and the status pill
-            // at LOADING while the model is demonstrably serving requests.
-            if let Some((_, port)) = host.bound() {
-                spark_runtime::progress::phase(10, "router");
-                spark_runtime::progress::phase(11, "listening");
-                spark_runtime::progress::ready(port);
-            }
+            signal_listener_phases(host);
             return Ok(SwapOutcome {
                 previous: previous_args,
             });
@@ -303,6 +310,12 @@ pub(crate) fn swap(
             host.set_scheduler(prepared.scheduler);
             host.set_args(previous);
             host.publish(prepared.state);
+            // The restored model is serving, so the dashboard must say so.
+            // Without this the checklist stays frozen part-way and the pill
+            // reads LOADING for a server that is answering requests — the same
+            // defect the success path above was fixed for, on the branch
+            // nobody looks at until a load has already failed.
+            signal_listener_phases(host);
             // Deliberately an Err: the requested swap did NOT happen, and
             // returning Ok would tell the caller it did.
             Err(load_err.context("the new model failed to load; the previous one was restored"))
