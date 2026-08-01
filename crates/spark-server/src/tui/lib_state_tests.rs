@@ -350,3 +350,36 @@ fn edits_do_not_survive_onto_a_recipe_the_user_never_opened() {
     );
     assert!(!s.editing);
 }
+
+#[test]
+fn a_multi_node_recipe_can_still_be_opened_and_read() {
+    // It cannot be STARTED here — `model_swap::swap` refuses world_size > 1 —
+    // and the card says so. But the settings are still worth reading, so the
+    // form opens. An earlier version of this refused at `open_config`, which
+    // was a restriction invented to fix a bug that did not exist: a harness
+    // that rendered argv from `defaults:` alone reproduced the very failure
+    // `Recipe::serve_args` already prevents by emitting `--world-size` from
+    // `min_nodes`.
+    let mut recipe = real_recipe();
+    recipe.min_nodes = 2;
+    let local = vec![local_of(&recipe.model)];
+    let mut s = LibState {
+        index: Index {
+            recipes: vec![recipe],
+            ..Index::default()
+        },
+        ..LibState::default()
+    };
+    s.rebuild(&local);
+    s.open_cards().expect("cards open");
+    s.open_config().expect("and so does the form");
+
+    // And the argv it renders is the valid one, not the one that trips the
+    // world-size check.
+    let argv = s.preview_argv().expect("renders");
+    let i = argv
+        .iter()
+        .position(|a| a == "--world-size")
+        .expect("world-size is emitted from min_nodes");
+    assert_eq!(argv[i + 1], "2");
+}

@@ -193,13 +193,22 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
     lines.push(Line::from(""));
+    // Say on the card what Enter will do, including when it will refuse. A
+    // multi-node recipe reaching the form only to fail on a world-size check
+    // sends the reader after the wrong fix.
+    let launchable = recipe.is_atlas() && recipe.min_nodes <= 1;
     lines.push(Line::from(Span::styled(
-        if recipe.is_atlas() {
-            " ⏎ configure and start"
+        if launchable {
+            " ⏎ configure and start".to_string()
+        } else if !recipe.is_atlas() {
+            " this runtime cannot be launched from here".to_string()
         } else {
-            " this runtime cannot be launched from here"
+            format!(
+                " needs {} nodes — the dashboard starts single-node runs only",
+                recipe.min_nodes
+            )
         },
-        if recipe.is_atlas() {
+        if launchable {
             theme::brand_cyan()
         } else {
             theme::warn()
