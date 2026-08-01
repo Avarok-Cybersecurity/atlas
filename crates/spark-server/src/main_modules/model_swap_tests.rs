@@ -256,3 +256,32 @@ fn a_swap_does_not_silently_stop_request_dumping() {
         "the MODEL still swaps"
     );
 }
+
+#[test]
+fn a_repeat_of_the_live_config_is_a_no_op_even_with_process_flags_set() {
+    // The live argv holds the carried flags; a recipe's does not. Comparing
+    // them before carrying meant they could never be equal whenever any
+    // process flag was set — so with --auto-swap on, which is exactly when
+    // requests queue behind a swap, every queued request redid the load the
+    // winner had just finished.
+    use clap::Parser as _;
+
+    // What the host stores after a swap: the recipe's argv plus carried flags.
+    let mut live = cli::ServeArgs::parse_from(["spark", "org/m"]);
+    let operator =
+        cli::ServeArgs::parse_from(["spark", "org/boot", "--auto-swap", "--dump", "/tmp/d.jsonl"]);
+    super::carry_process_flags(&mut live, &operator);
+
+    // What a queued request brings: the same recipe, without those flags.
+    let mut queued = cli::ServeArgs::parse_from(["spark", "org/m"]);
+    assert_ne!(
+        live, queued,
+        "they differ before carrying — the old comparison"
+    );
+
+    super::carry_process_flags(&mut queued, &live);
+    assert_eq!(
+        live, queued,
+        "and are equal after it, which is what makes the no-op fire"
+    );
+}

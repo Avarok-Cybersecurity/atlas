@@ -195,15 +195,6 @@ pub(crate) fn swap(
     // Taken from the host, not a parameter: see `ModelHost::args`.
     let previous_args = host.args();
 
-    // Whoever waited on the guard may be asking for what the winner just
-    // loaded. Compared as a WHOLE argv rather than by model id, because
-    // switching between two recipes for the SAME checkpoint is a real swap.
-    if previous_args.as_ref() == Some(&next) && host.current().is_some() {
-        return Ok(SwapOutcome {
-            previous: previous_args,
-        });
-    }
-
     let mut next = next;
     if let Some(previous) = previous_args.as_ref() {
         if next.port != previous.port || next.bind != previous.bind {
@@ -217,6 +208,22 @@ pub(crate) fn swap(
             );
         }
         carry_process_flags(&mut next, previous);
+    }
+
+    // Whoever waited on the guard may be asking for what the winner just
+    // loaded. Compared as a WHOLE argv rather than by model id, because
+    // switching between two recipes for the SAME checkpoint is a real swap.
+    //
+    // AFTER carrying, not before. `previous_args` is the LIVE argv and already
+    // holds the carried flags; `next` is the recipe's and does not. Comparing
+    // them first meant the two could never be equal whenever any process flag
+    // was set — so with --auto-swap on, which is exactly when requests queue
+    // behind a swap, every queued request redid the load the winner had just
+    // finished. That is the stampede this check exists to prevent.
+    if previous_args.as_ref() == Some(&next) && host.current().is_some() {
+        return Ok(SwapOutcome {
+            previous: previous_args,
+        });
     }
 
     // Refuse before anything is torn down. A bad flag combination, a missing
