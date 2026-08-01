@@ -254,6 +254,26 @@ pub(crate) fn swap(host: &Arc<ModelHost>, next: cli::ServeArgs) -> Result<SwapOu
     // Multi-rank is out of scope and must fail loudly rather than half-swap:
     // the EP worker takes the model by `Option::take` and only returns when the
     // head exits, so there is no "load a different model" command to send it.
+    //
+    // UNTESTED ON HARDWARE as of 2026-08-01, and deliberately so: everything
+    // else in this file was exercised on a live GB10, but multi-node needs two
+    // boxes and a real EP deployment, which was not available while this was
+    // written. What IS verified is that the refusal fires — see
+    // `a_multi_rank_deployment_is_refused`. What is NOT verified is the
+    // behaviour of a head or worker that reaches this path in a genuine
+    // world_size > 1 run.
+    //
+    // INTENT: test and debug this against a real two-node EP deployment
+    // (dgx1 head + dgx2 worker over the RoCE fabric). Two things to establish
+    // first, because the refusal above may be too blunt or not blunt enough:
+    //
+    //   1. Does a WORKER rank ever reach `swap` at all? It should not — the EP
+    //      worker path returns `Startup::Worker` and never publishes into the
+    //      host — but that has not been observed, only read.
+    //   2. If a head swaps while workers are live, the workers keep the old
+    //      model. Refusing is the safe answer today; the real fix is a
+    //      "load this instead" command on the EP control channel, which does
+    //      not exist yet. Until it does, this gate is load-bearing.
     anyhow::ensure!(
         next.world_size <= 1 && next.rank == 0,
         "hot-swap is single-node only (world_size={}, rank={})",
