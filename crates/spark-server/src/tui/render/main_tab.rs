@@ -192,12 +192,7 @@ fn draw_weight_load(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_ready_strip(f: &mut Frame, app: &App, area: Rect) {
     let block = panel("READY ─".into(), false);
-    let model = app
-        .args
-        .model_name
-        .clone()
-        .or_else(|| app.args.model.clone())
-        .unwrap_or_default();
+    let model = super::live_model_name(app);
     let line = Line::from(vec![
         Span::styled(" ✓ ", theme::brand_green().add_modifier(Modifier::BOLD)),
         Span::styled(model, theme::text().add_modifier(Modifier::BOLD)),

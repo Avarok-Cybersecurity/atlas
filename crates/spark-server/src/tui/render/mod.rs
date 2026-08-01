@@ -160,12 +160,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
                 ..area
             },
         );
-        let model = app
-            .args
-            .model_name
-            .clone()
-            .or_else(|| app.args.model.clone())
-            .unwrap_or_default();
+        let model = live_model_name(app);
         let sub = Line::from(Span::styled(
             format!(
                 "{model} · kv {} · :{} ",
@@ -445,6 +440,22 @@ fn library_hints(app: &App) -> &'static str {
         }
         (View::List, _) => "j/k move · ⏎ configure · / search · r refresh · 1-6 jump · ? help",
     }
+}
+
+/// The model actually being served, or the one the argv asked for.
+///
+/// `args` is the argv the dashboard STARTED with. It is empty for `spark serve`
+/// with no model, so a Library launch rendered a blank name, and after a
+/// request-triggered swap it would have gone on naming the model the process
+/// booted with. Three panes asked the same question and all three asked the
+/// wrong source; the host is the one that knows.
+pub(crate) fn live_model_name(app: &App) -> String {
+    app.host
+        .as_ref()
+        .and_then(|h| h.live_model())
+        .or_else(|| app.args.model_name.clone())
+        .or_else(|| app.args.model.clone())
+        .unwrap_or_default()
 }
 
 pub(crate) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Vec<Line<'static>> {

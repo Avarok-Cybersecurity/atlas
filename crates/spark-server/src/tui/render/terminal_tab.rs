@@ -148,11 +148,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let block = panel(
         format!(
             "CHAT ─ {} ─{}",
-            app.args
-                .model_name
-                .clone()
-                .or_else(|| app.args.model.clone())
-                .unwrap_or_default(),
+            super::live_model_name(app),
             match (app.chat.streaming, app.chat.scroll) {
                 (_, Some(n)) => format!(" ↑{n} ─ End follows ─"),
                 (true, None) => " streaming ─".to_string(),
