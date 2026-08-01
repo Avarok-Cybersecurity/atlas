@@ -113,6 +113,14 @@ pub fn run(
             }
             if app.section == Section::Library {
                 app.lib.poll(&app.library);
+                app.lib.poll_date();
+                // A recipe carrying no `metadata.updated` gets its date from
+                // GitHub's commit history — but only the one being read, and
+                // only once. `want_date_for` is a no-op unless all three of
+                // those hold, so calling it every tick is free.
+                if let Some(id) = app.lib.visible_recipe_id() {
+                    app.lib.want_date_for(&id);
+                }
             }
             // Run history: lazily too, and re-read after a run persists a frame
             // (`load_history` is a no-op until something invalidates it).

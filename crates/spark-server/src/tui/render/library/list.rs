@@ -177,6 +177,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
             for (label, value) in [
                 ("recipe", recipe.id.clone()),
                 ("maintainer", recipe.maintainer.clone()),
+                ("updated", app.lib.date_text(recipe)),
                 ("quantization", recipe.quantization.clone()),
                 ("kv cache", recipe.kv_dtype.clone()),
                 ("container", recipe.container.clone()),

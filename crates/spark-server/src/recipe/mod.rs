@@ -37,6 +37,12 @@ pub struct Recipe {
     pub model_params: String,
     pub quantization: String,
     pub kv_dtype: String,
+    /// When this recipe was last published or updated, from
+    /// `metadata.updated`. Empty when the recipe does not carry one — which
+    /// today is all of them, since the key is new. Deliberately a plain string
+    /// rather than a parsed date: it is displayed, never compared, and a
+    /// recipe with a malformed date should still load and serve.
+    pub updated: String,
     /// The `defaults:` block verbatim.
     pub defaults: BTreeMap<String, String>,
 }
@@ -100,6 +106,7 @@ impl Recipe {
             model_params: meta_str("model_params"),
             quantization: meta_str("quantization"),
             kv_dtype: meta_str("kv_dtype"),
+            updated: meta_str("updated"),
             defaults,
             id,
         })

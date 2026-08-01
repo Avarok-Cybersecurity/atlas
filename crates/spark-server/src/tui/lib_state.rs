@@ -43,6 +43,22 @@ pub struct LibState {
     /// Set while a fetch is in flight, for the title spinner.
     pub fetching: bool,
     pending: Option<Receiver<Index>>,
+    /// The recipe id whose date is being looked up, and the channel it will
+    /// arrive on. `Some` drives the skeleton placeholder in the detail pane.
+    ///
+    /// One at a time, and only for the recipe on screen: dating the whole index
+    /// costs one rate-limited GitHub call per recipe against a 60/hour limit.
+    pub dating: Option<String>,
+    pub(super) pending_date: Option<Receiver<(String, Option<String>)>>,
+    /// Recipe ids already looked up, so a redraw cannot re-ask. Holds ids whose
+    /// lookup FAILED too — an offline box must not spend a thread per frame
+    /// rediscovering that it is offline.
+    pub(super) dated: std::collections::HashSet<String>,
+    /// Dates fetched from GitHub this session, by recipe id.
+    ///
+    /// Deliberately NOT written back into `index.recipes`: a background refresh
+    /// replaces `index` wholesale, which silently discarded them.
+    pub(super) fetched_dates: std::collections::HashMap<String, String>,
     /// The loader thread's outcome, if a launch is in flight.
     ///
     /// `launch` returns when the thread is SPAWNED, not when the swap

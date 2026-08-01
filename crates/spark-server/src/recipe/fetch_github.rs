@@ -117,3 +117,30 @@ pub(super) fn write_cache(
     std::fs::rename(&tmp, dir.join(INDEX))?;
     Ok(())
 }
+
+/// The date of the last commit touching one recipe file, as `YYYY-MM-DD`.
+///
+/// The fallback for a recipe that carries no `metadata.updated`. Costs **one**
+/// rate-limited API call, which is why it is never called for a whole index:
+/// 25 recipes against the unauthenticated limit of 60/hour would be exhausted
+/// by two refreshes. The caller asks for one recipe at a time, on demand.
+pub(super) fn commit_date(id: &str) -> Result<String> {
+    // `per_page=1` — we want the most recent commit touching this path, not its
+    // history. GitHub orders newest first.
+    let body = get(&format!(
+        "https://api.github.com/repos/{REPO}/commits?path=recipes/{id}.yaml&per_page=1"
+    ))
+    .with_context(|| format!("dating recipe {id}"))?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&body).context("commits response is not JSON")?;
+    let date = doc
+        .get(0)
+        .and_then(|c| c.get("commit"))
+        .and_then(|c| c.get("committer"))
+        .and_then(|c| c.get("date"))
+        .and_then(|d| d.as_str())
+        .with_context(|| format!("no commit found for recipe {id}"))?;
+    // ISO-8601 `2026-08-01T12:34:56Z` → the date alone. A time of day is noise
+    // for "when was this last updated", and the YAML key is a plain date.
+    Ok(date.split('T').next().unwrap_or(date).to_string())
+}

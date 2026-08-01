@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Recipe;
-use super::fetch_github::try_refresh;
+use super::fetch_github::{self, try_refresh};
 
 pub(super) const REPO: &str = "Avarok-Cybersecurity/atlas-recipes";
 pub(super) const CACHE: &str = "atlas-recipes";
@@ -231,3 +231,43 @@ fn one_line(s: &str) -> String {
 #[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod tests;
+
+/// Ask GitHub when one recipe was last changed, off the render thread.
+///
+/// The lazy half of the recipe date: `metadata.updated` is authoritative when a
+/// recipe carries one, and this fills the gap for the rest. It is deliberately
+/// **one recipe at a time, on demand** — see [`fetch_github::commit_date`] for
+/// why dating the whole index is not an option.
+///
+/// Same threading contract as [`refresh_in_background`], and for the same
+/// reason: a plain `std::thread` and a `std::sync::mpsc::Receiver` the UI polls
+/// on its tick. Nothing here touches the async runtime.
+///
+/// The recipe id is echoed back in the message because by the time an answer
+/// arrives the selection may have moved, and a date applied to whatever happens
+/// to be selected then would be silently wrong.
+pub fn updated_in_background(id: &str) -> std::sync::mpsc::Receiver<(String, Option<String>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = id.to_string();
+    let spawned = std::thread::Builder::new()
+        .name("atlas-recipe-date".into())
+        .spawn({
+            let tx = tx.clone();
+            move || {
+                let date = fetch_github::commit_date(&owned)
+                    .map_err(|e| {
+                        // Offline is normal here, exactly as for the index: a
+                        // date we could not look up is an absent row, never an
+                        // error screen.
+                        tracing::debug!("could not date recipe {owned}: {e:#}");
+                    })
+                    .ok();
+                let _ = tx.send((owned, date));
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("could not spawn the recipe dater: {e}");
+        let _ = tx.send((id.to_string(), None));
+    }
+    rx
+}

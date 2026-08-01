@@ -17,6 +17,7 @@ fn recipe(id: &str, model: &str, runtime: &str) -> Recipe {
         model_params: "27B".into(),
         quantization: "nvfp4".into(),
         kv_dtype: "bf16".into(),
+        updated: "2026-08-01".into(),
         defaults: BTreeMap::from([("port".into(), "8888".into())]),
     }
 }

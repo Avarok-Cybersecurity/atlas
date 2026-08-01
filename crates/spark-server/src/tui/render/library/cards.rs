@@ -164,6 +164,10 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     for (label, value) in [
         ("model", recipe.model.clone()),
         ("maintainer", recipe.maintainer.clone()),
+        // Empty until a recipe carries `metadata.updated` or GitHub answers
+        // with the file's last-commit date; the loop below skips empty values,
+        // so an undated recipe draws no row rather than a blank one.
+        ("updated", app.lib.date_text(recipe)),
         ("kv cache", recipe.kv_dtype.clone()),
         ("container", recipe.container.clone()),
     ] {

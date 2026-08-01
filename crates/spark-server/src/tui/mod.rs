@@ -40,6 +40,7 @@ pub mod bench_preflight;
 pub mod bench_state;
 pub mod commands;
 pub mod events;
+pub mod lib_dates;
 pub mod lib_keys;
 pub mod lib_state;
 pub mod logo;

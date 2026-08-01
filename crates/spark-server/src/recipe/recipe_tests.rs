@@ -158,3 +158,62 @@ fn a_vllm_recipe_is_readable_but_not_launchable() {
     let err = format!("{:#}", v1.argv(&BTreeMap::new()).expect_err("refused"));
     assert!(err.contains("runtime: atlas"), "{err}");
 }
+
+#[test]
+fn an_updated_date_is_read_from_metadata() {
+    let text = "\
+recipe_version: \"2\"
+model: org/model
+container: atlas
+metadata:
+  updated: \"2026-08-01\"
+defaults:
+  max-batch-size: \"8\"
+";
+    let r = Recipe::parse("fam/stem", text).expect("parses");
+    assert_eq!(r.updated, "2026-08-01");
+}
+
+#[test]
+fn a_recipe_without_a_date_still_parses_and_reports_none() {
+    // Every recipe published today is in this state — the key is new. An
+    // undated recipe must load and serve exactly as before; the UI skips
+    // empty values, so it draws no row rather than a blank one.
+    let text = "\
+recipe_version: \"2\"
+model: org/model
+container: atlas
+metadata:
+  maintainer: someone
+defaults:
+  max-batch-size: \"8\"
+";
+    let r = Recipe::parse("fam/stem", text).expect("parses without a date");
+    assert!(r.updated.is_empty());
+    assert_eq!(r.maintainer, "someone", "other metadata is unaffected");
+}
+
+#[test]
+fn the_whole_vendored_corpus_still_parses_with_the_new_field() {
+    // The field is additive; adding it must not have made any existing recipe
+    // unreadable. None of them carry a date yet.
+    for r in all() {
+        assert!(
+            r.updated.is_empty(),
+            "{} unexpectedly carries a date: {:?}",
+            r.id,
+            r.updated
+        );
+    }
+}
+
+/// Network test: proves the commit-date fallback actually resolves against the
+/// real repo. Ignored by default so the suite stays offline-clean.
+#[test]
+#[ignore = "network"]
+fn the_commit_date_fallback_resolves_against_the_real_repo() {
+    let d = super::fetch_github::commit_date("qwen3-coder-next/qwen3-coder-next-fp8")
+        .expect("the recipe exists in the repo");
+    assert_eq!(d.len(), 10, "YYYY-MM-DD, got {d:?}");
+    assert!(d.starts_with("20"), "{d}");
+}
