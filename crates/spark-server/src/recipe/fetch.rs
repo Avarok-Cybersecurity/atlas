@@ -7,20 +7,33 @@
 //! is a broken Library. So every read returns whatever is on disk, annotated
 //! with its age, and the network only ever *improves* that answer.
 //!
-//! # Threading: this module is entirely synchronous
+//! # Threading
 //!
-//! The TUI runs on its own `std::thread` (`tui::start`), not as a tokio task,
-//! so a blocking HTTP client is the correct fit and `ureq` is already in the
-//! lock — no new dependency, and nothing here ever enters the async runtime.
-//! **Blocking and non-blocking are not mixed:** there is no `spawn_blocking`,
-//! no `block_on`, and no future in this file.
+//! **The one rule, for the whole dashboard: the render thread never polls a
+//! future. Its only interaction with work happening elsewhere is `try_recv` on
+//! a channel.** `.github/workflows/tui-threading.yml` enforces it; this
+//! paragraph only explains it.
 //!
-//! What a 20-second fetch must not do is freeze the render loop, so
-//! [`refresh_in_background`] spawns a plain `std::thread` and returns a
-//! `std::sync::mpsc::Receiver`. The UI polls it with `try_recv` on its normal
-//! tick — the same shape the dashboard already uses for progress events.
+//! That is the rule, and not "this module is synchronous" — which is what it
+//! used to say, and which contradicted `tui/chat.rs` and
+//! `atlas-plugin/src/executor.rs`, both of which legitimately spawn tokio
+//! tasks and answer over a `std::sync::mpsc`. Two documented contracts that
+//! disagree are worse than one that is merely narrow.
 //!
-//! Two requests to list, then one per file:
+//! Within that rule, this module uses blocking `ureq` on plain `std::thread`s,
+//! because `ureq` is already in the lock and the async alternative is not: the
+//! leanest `reqwest` configuration measured here added **26 crates**, and its
+//! default TLS provider added 48 including `aws-lc-sys`, which needs cmake and
+//! a C toolchain at build time. For fetching a few KB of YAML that is not a
+//! trade worth making, and it would have to be made again for every platform
+//! the release workflow targets.
+//!
+//! So a 20-second fetch stays off the render loop the same way it always did:
+//! [`refresh_in_background`] spawns a thread and returns a `Receiver`, plus a
+//! cancel flag so quitting mid-refresh does not leave workers running.
+//!
+//! One request to list, then one per file, fetched concurrently over a shared
+//! agent:
 //!
 //! 1. `GET /repos/{repo}/git/trees/main?recursive=1` — one API call, and it
 //!    yields the tree sha.
@@ -32,6 +45,8 @@
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Recipe;
@@ -173,8 +188,8 @@ fn parse_cache(text: &str) -> Result<Index> {
 ///
 /// Blocking, and safe to call directly only from a thread that is allowed to
 /// block for [`TIMEOUT`]. From the UI use [`refresh_in_background`].
-pub fn refresh(root: &Path) -> Index {
-    refresh_with(root, || try_refresh(root))
+pub fn refresh(root: &Path, cancel: &AtomicBool) -> Index {
+    refresh_with(root, || try_refresh(root, cancel))
 }
 
 /// The fallback rule, with the network injected so it can be tested without
@@ -196,16 +211,23 @@ fn refresh_with(root: &Path, fetch: impl FnOnce() -> Result<Index>) -> Index {
 /// program has no runtime, and borrowing one only to run blocking I/O on it
 /// would be exactly the mixing this module avoids. A failed spawn yields a
 /// receiver that resolves to the cache, so the caller has no error path.
-pub fn refresh_in_background(root: &Path) -> std::sync::mpsc::Receiver<Index> {
+///
+/// The returned flag cancels the refresh. It is checked between files rather
+/// than inside one, which is enough: the files are a few KB each, so the wait
+/// it removes is the remaining *queue*, not the request in flight. Quitting the
+/// dashboard mid-refresh no longer leaves workers running to the 20 s timeout.
+pub fn refresh_in_background(root: &Path) -> (std::sync::mpsc::Receiver<Index>, Arc<AtomicBool>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = root.to_path_buf();
+    let cancel = Arc::new(AtomicBool::new(false));
     let spawned = std::thread::Builder::new()
         .name("atlas-recipes".into())
         .spawn({
             let tx = tx.clone();
+            let cancel = Arc::clone(&cancel);
             move || {
                 // A disconnected receiver means the UI moved on, not an error.
-                let _ = tx.send(refresh(&owned));
+                let _ = tx.send(refresh(&owned, &cancel));
             }
         });
     if let Err(e) = spawned {
@@ -216,7 +238,7 @@ pub fn refresh_in_background(root: &Path) -> std::sync::mpsc::Receiver<Index> {
         index.offline = Some(format!("fetcher thread unavailable: {e}"));
         let _ = tx.send(index);
     }
-    rx
+    (rx, cancel)
 }
 
 /// Collapse a multi-line error chain into something a title bar can hold.

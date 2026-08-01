@@ -43,6 +43,9 @@ pub struct LibState {
     /// Set while a fetch is in flight, for the title spinner.
     pub fetching: bool,
     pending: Option<Receiver<Index>>,
+    /// Cancels the in-flight index refresh. Set beside `pending` and cleared
+    /// with it, so the two cannot disagree about whether one is running.
+    fetch_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The recipe id whose date is being looked up, and the channel it will
     /// arrive on. `Some` drives the skeleton placeholder in the detail pane.
     ///
@@ -99,8 +102,22 @@ impl LibState {
         let Some(root) = &self.root else {
             return;
         };
-        self.pending = Some(fetch::refresh_in_background(root));
+        let (rx, cancel) = fetch::refresh_in_background(root);
+        self.pending = Some(rx);
+        self.fetch_cancel = Some(cancel);
         self.fetching = true;
+    }
+
+    /// Stop an in-flight refresh, if there is one.
+    ///
+    /// Called on the way out of the dashboard. Without it, quitting during a
+    /// refresh left up to eight workers fetching files for a Library nobody was
+    /// going to see, and the process could not finish exiting until the slowest
+    /// of them hit the 20 s timeout.
+    pub fn cancel_refresh(&self) {
+        if let Some(c) = &self.fetch_cancel {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Poll the fetch. Called once per tick; returns true if the list changed.
@@ -112,6 +129,7 @@ impl LibState {
             Ok(index) => {
                 self.index = index;
                 self.pending = None;
+                self.fetch_cancel = None;
                 self.fetching = false;
                 self.rebuild(local);
                 true
@@ -121,6 +139,7 @@ impl LibState {
             // forever; the cache is still on screen.
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.pending = None;
+                self.fetch_cancel = None;
                 self.fetching = false;
                 false
             }

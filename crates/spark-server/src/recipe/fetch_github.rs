@@ -3,29 +3,65 @@
 //! The GitHub half of the recipe fetch: two endpoints and the cache write.
 //!
 //! Split from `fetch.rs` so each file stays inside the 250-line limit. The
-//! threading contract is stated there and holds here too — every call in this
-//! file is blocking, and none of it may run on the async runtime.
+//! threading contract is stated there and holds here too: every call in this
+//! file blocks, so none of it may run anywhere a future is being polled.
 
 use anyhow::{Context, Result, bail};
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::Recipe;
 use super::fetch::{AGENT, INDEX, Index, REPO, TIMEOUT, cache_dir, unix_now};
 
-pub(super) fn try_refresh(root: &Path) -> Result<Index> {
+/// How many recipe bodies to fetch at once.
+///
+/// The files are a few KB each, so this is bounded by round trips rather than
+/// bandwidth, and the win is almost entirely in overlapping them. Eight is
+/// enough to hide the latency without opening a socket per recipe against a
+/// host that would be within its rights to object.
+const FETCH_WIDTH: usize = 8;
+
+pub(super) fn try_refresh(root: &Path, cancel: &AtomicBool) -> Result<Index> {
     let (tree_sha, paths) = list_recipe_paths()?;
     if paths.is_empty() {
         bail!("{REPO}@{tree_sha} lists no recipes/**/*.yaml");
     }
+    // Fetched concurrently. Serially, each of the ~25 files paid its own TCP
+    // and TLS handshake — the agent below now reuses the connection, and this
+    // overlaps what is left. That sequential loop was the whole of the
+    // "fetching recipes…" wait.
+    let next = AtomicUsize::new(0);
+    let out: Mutex<Vec<(String, String)>> = Mutex::new(Vec::with_capacity(paths.len()));
+    let width = FETCH_WIDTH.min(paths.len());
+    std::thread::scope(|scope| {
+        for _ in 0..width {
+            scope.spawn(|| {
+                loop {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = paths.get(i) else { return };
+                    let url = format!("https://raw.githubusercontent.com/{REPO}/{tree_sha}/{path}");
+                    match get(&url) {
+                        Ok(body) => out.lock().push((recipe_id(path), body)),
+                        // One unreachable file must not cost the other 24; it
+                        // simply will not appear in this refresh.
+                        Err(e) => tracing::warn!("skipping recipe {path}: {e:#}"),
+                    }
+                }
+            });
+        }
+    });
+    if cancel.load(Ordering::Relaxed) {
+        bail!("refresh cancelled");
+    }
+
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     let mut recipes = Vec::new();
-    for path in &paths {
-        let body = get(&format!(
-            "https://raw.githubusercontent.com/{REPO}/{tree_sha}/{path}"
-        ))
-        .with_context(|| format!("fetching {path}"))?;
-        let id = recipe_id(path);
+    for (id, body) in out.into_inner() {
         match Recipe::parse(id.clone(), &body) {
             Ok(r) => recipes.push(r),
             // One malformed recipe upstream must not cost the other 24.
@@ -33,6 +69,8 @@ pub(super) fn try_refresh(root: &Path) -> Result<Index> {
         }
         files.insert(id, body);
     }
+    // Sorted explicitly: the fetch order is now nondeterministic, and the
+    // Library's row order must not be.
     recipes.sort_by(|a, b| a.id.cmp(&b.id));
 
     let fetched_at = unix_now();
@@ -86,12 +124,27 @@ fn list_recipe_paths() -> Result<(String, Vec<String>)> {
     Ok((sha, paths))
 }
 
+/// One agent for the whole process, so TLS sessions and TCP connections are
+/// reused across requests.
+///
+/// `ureq::get(url)` builds a fresh agent per call, which meant every one of the
+/// ~25 recipe bodies paid a full handshake to the same host. Sharing one agent
+/// is the larger half of the refresh speed-up; the concurrency above is the
+/// other half.
+fn agent() -> &'static ureq::Agent {
+    static AGENT_POOL: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT_POOL.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(TIMEOUT))
+            .build()
+            .into()
+    })
+}
+
 fn get(url: &str) -> Result<String> {
-    let response = ureq::get(url)
+    let response = agent()
+        .get(url)
         .header("User-Agent", AGENT)
-        .config()
-        .timeout_global(Some(TIMEOUT))
-        .build()
         .call()
         .with_context(|| format!("GET {url}"))?;
     Ok(response.into_body().read_to_string()?)

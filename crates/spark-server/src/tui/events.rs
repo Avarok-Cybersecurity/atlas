@@ -150,6 +150,10 @@ pub fn run(
             break;
         }
     }
+    // Nothing is going to render the answer now, so stop asking for it. Eight
+    // in-flight recipe fetches would otherwise run to the 20 s timeout while
+    // the process is trying to exit.
+    app.lib.cancel_refresh();
     TUI_ACTIVE.store(false, Ordering::SeqCst);
     drop(guard); // restore terminal; logs fall back to stdout
     if app.should_quit && !app.detach {

@@ -181,7 +181,7 @@ fn the_cache_is_written_atomically() {
 #[ignore = "needs the network"]
 fn live_fetch_against_github() {
     let dir = Dir::new("live-github");
-    let index = refresh(&dir.0);
+    let index = refresh(&dir.0, &std::sync::atomic::AtomicBool::new(false));
     assert!(index.offline.is_none(), "fetch failed: {:?}", index.offline);
     assert_eq!(index.recipes.len(), 25, "the corpus is 25 recipes");
     assert_eq!(index.recipes.iter().filter(|r| r.is_atlas()).count(), 23);
@@ -237,4 +237,56 @@ fn a_healthy_index_has_no_reason_to_show() {
         ..Index::default()
     };
     assert!(index.offline_detail().is_none());
+}
+
+#[test]
+fn a_cancelled_refresh_serves_the_cache_rather_than_a_partial_index() {
+    // Cancellation must not look like a successful fetch that happened to
+    // return fewer recipes — that would overwrite the cache with a subset.
+    let dir = Dir::new("cancelled");
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let index = refresh(&dir.0, &cancel);
+    assert!(
+        index.offline.is_some(),
+        "a cancelled refresh is not a live index"
+    );
+}
+
+/// Network test: the concurrent fetch must return the same corpus the
+/// sequential one did, in the same order.
+#[test]
+#[ignore = "needs the network"]
+fn a_concurrent_refresh_is_ordered_and_complete() {
+    let dir = Dir::new("concurrent-order");
+    let index = refresh(&dir.0, &std::sync::atomic::AtomicBool::new(false));
+    assert!(index.offline.is_none(), "fetch failed: {:?}", index.offline);
+    assert_eq!(index.recipes.len(), 25);
+    // Fetch order is now nondeterministic; row order must not be.
+    let mut sorted = index.recipes.clone();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(
+        index.recipes.iter().map(|r| &r.id).collect::<Vec<_>>(),
+        sorted.iter().map(|r| &r.id).collect::<Vec<_>>(),
+        "recipes must be sorted regardless of which worker finished first"
+    );
+}
+
+/// Network test: how long a cold refresh actually takes. Not an assertion on a
+/// wall-clock number — that would be a flaky test — just a measurement, so the
+/// claim that the concurrent fetch is faster can be checked rather than
+/// asserted from a comment.
+#[test]
+#[ignore = "needs the network"]
+fn measure_refresh_wall_time() {
+    let dir = Dir::new("measure-refresh");
+    let t = std::time::Instant::now();
+    let index = refresh(&dir.0, &std::sync::atomic::AtomicBool::new(false));
+    let elapsed = t.elapsed();
+    eprintln!(
+        "refresh: {:?} for {} recipes (offline={:?})",
+        elapsed,
+        index.recipes.len(),
+        index.offline
+    );
+    assert!(index.offline.is_none());
 }

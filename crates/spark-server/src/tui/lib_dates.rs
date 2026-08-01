@@ -19,10 +19,9 @@
 //!
 //! ## Threading
 //!
-//! The same contract as `recipe::fetch`, which this calls into: a plain
-//! `std::thread` and a `std::sync::mpsc::Receiver` polled with `try_recv` on
-//! the render tick. Nothing here blocks the UI and nothing here enters the
-//! async runtime.
+//! The same contract as `recipe::fetch`, which this calls into: the render
+//! thread never polls a future, only `try_recv`s. The work happens on a plain
+//! `std::thread`.
 
 use super::lib_state::{LibState, View};
 
