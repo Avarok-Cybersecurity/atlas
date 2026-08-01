@@ -22,7 +22,6 @@ use crate::main_modules::AppState;
 /// waiting to happen at the call site.
 pub(crate) struct Prepared {
     pub state: Arc<AppState>,
-    pub model_ready: Arc<std::sync::atomic::AtomicBool>,
     pub bind: String,
     pub port: u16,
     /// The scheduler thread. A swap joins it after the drain — that join is

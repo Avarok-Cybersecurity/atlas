@@ -46,8 +46,8 @@ pub(crate) async fn openai_observability_middleware(
 }
 
 /// Bearer-token gate. Active when the operator passed `--require-auth`
-/// (which lands in `AppState.auth` as `Some(...)`); otherwise this is a
-/// pass-through. When active, requests to `/v1/*`, `/tokenize`, and
+/// (which installs the policy on the HOST, not on any model); otherwise this
+/// is a pass-through. When active, requests to `/v1/*`, `/tokenize`, and
 /// `/detokenize` must carry `Authorization: Bearer <token>` matching one
 /// of the loaded tokens. Health / metrics / liveness paths stay open
 /// (they're scrape targets / discovery endpoints, expected to be

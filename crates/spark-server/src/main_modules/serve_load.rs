@@ -787,7 +787,6 @@ pub(crate) fn load_model(
     let tool_call_parser = serve_phases::resolve_tool_call_parser(&args, &ptx_set, &config)?;
 
     // 8. Build app state
-    let model_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Carried, never rebuilt — see `Carried`.
     let Carried {
         response_store,
@@ -954,7 +953,6 @@ pub(crate) fn load_model(
         sampling_presets,
         tool_call_start_token_id: tool_call_start_token,
         auto_compact_threshold: args.auto_compact,
-        model_ready: model_ready.clone(),
         request_timeout: args.request_timeout,
         // Behavior and effective_context from MODEL.toml, embedded at build time.
         effective_context: 0, // TODO: embed effective_context in TargetPtxSet
@@ -990,7 +988,6 @@ pub(crate) fn load_model(
     // 9-11. Router + HTTP server run on the async side; hand them the pieces.
     Ok(Some(Prepared {
         state,
-        model_ready,
         bind: args.bind,
         port: args.port,
         scheduler: scheduler_handle,

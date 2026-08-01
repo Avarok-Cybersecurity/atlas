@@ -96,8 +96,6 @@ pub struct AppState {
     pub tool_call_start_token_id: Option<u32>,
     /// Auto-compact threshold (fraction of max_seq_len). None = disabled.
     pub auto_compact_threshold: Option<f32>,
-    /// Readiness flag: true after model is loaded and scheduler is running.
-    pub model_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
     /// Effective context length for agentic tasks (from MODEL.toml).
