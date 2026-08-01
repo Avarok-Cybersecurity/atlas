@@ -43,6 +43,12 @@ pub struct LibState {
     /// Set while a fetch is in flight, for the title spinner.
     pub fetching: bool,
     pending: Option<Receiver<Index>>,
+    /// The loader thread's outcome, if a launch is in flight.
+    ///
+    /// `launch` returns when the thread is SPAWNED, not when the swap
+    /// succeeds, so without this a later failure was a log line and nothing
+    /// else — the dashboard kept showing a load that had already given up.
+    launch_result: Option<Receiver<String>>,
     /// The store root, so a refresh knows where the cache lives.
     root: Option<std::path::PathBuf>,
 
@@ -154,6 +160,24 @@ impl LibState {
         self.card = self.card.min(cards.saturating_sub(1));
         let rows = self.config_rows().len();
         self.row = self.row.min(rows.saturating_sub(1));
+    }
+
+    /// Take the loader's failure, if it reported one.
+    pub fn poll_launch(&mut self) -> Option<String> {
+        let rx = self.launch_result.as_ref()?;
+        match rx.try_recv() {
+            Ok(msg) => {
+                self.launch_result = None;
+                Some(msg)
+            }
+            // Empty: still loading. Disconnected without a message: the thread
+            // finished successfully and dropped the sender.
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.launch_result = None;
+                None
+            }
+        }
     }
 
     /// Rows passing the filter.
@@ -302,7 +326,7 @@ impl LibState {
     /// boot does, so Main's checklist renders it with no extra plumbing, which
     /// is why "start a model" and "swap a model" look identical to the user.
     pub fn launch(
-        &self,
+        &mut self,
         host: std::sync::Arc<crate::main_modules::model_host::ModelHost>,
     ) -> Result<(), String> {
         let recipe = self.config_recipe().ok_or("no recipe selected")?;
@@ -313,6 +337,13 @@ impl LibState {
             .serve_args(&self.overrides)
             .map_err(|e| problem_line(&format!("{e:#}")))?;
         let previous = host.current().map(|s| s.model_name.clone());
+        // The loader reports back. `launch` returns as soon as the thread is
+        // SPAWNED, so a swap that fails afterwards — no compiled kernels for
+        // that model, a shutdown, or the load itself — used to be visible only
+        // as a log line, while the dashboard sat on a reset 0/12 checklist and
+        // a LOADING pill for a load that had already given up.
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        self.launch_result = Some(rx);
         std::thread::Builder::new()
             .name("atlas-swap".into())
             .spawn(move || {
@@ -326,6 +357,8 @@ impl LibState {
                             .map(|p| format!(" (was serving {p})"))
                             .unwrap_or_default()
                     );
+                    // A disconnected receiver means the dashboard moved on.
+                    let _ = tx.send(format!("{e:#}"));
                 }
             })
             .map_err(|e| format!("could not start the loader thread: {e}"))?;

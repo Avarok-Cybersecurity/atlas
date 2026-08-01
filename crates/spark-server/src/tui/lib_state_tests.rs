@@ -383,3 +383,41 @@ fn a_multi_node_recipe_can_still_be_opened_and_read() {
         .expect("world-size is emitted from min_nodes");
     assert_eq!(argv[i + 1], "2");
 }
+
+#[test]
+fn a_launch_that_fails_after_spawning_is_reported_not_swallowed() {
+    // `launch` returns when the loader THREAD starts, not when the swap
+    // succeeds. The dashboard resets its checklist and sets the pill to
+    // LOADING at that moment, so a failure afterwards — no compiled kernels
+    // for that model, say — left both showing a load that had given up.
+    let mut s = state_with_recipe();
+    assert!(s.poll_launch().is_none(), "nothing in flight yet");
+
+    // Stand in for the loader thread: it reports its error on this channel.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    s.launch_result = Some(rx);
+    assert!(
+        s.poll_launch().is_none(),
+        "still loading — nothing said yet"
+    );
+
+    tx.send("this build has no compiled kernels for qwen3_6_moe".into())
+        .expect("send");
+    let got = s.poll_launch().expect("the failure surfaces");
+    assert!(got.contains("no compiled kernels"), "{got}");
+    assert!(
+        s.poll_launch().is_none(),
+        "and it is reported once, not every tick"
+    );
+}
+
+#[test]
+fn a_launch_that_succeeds_reports_nothing() {
+    // The thread drops its sender on success; a disconnect with no message is
+    // not an error to show the user.
+    let mut s = state_with_recipe();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    s.launch_result = Some(rx);
+    drop(tx);
+    assert!(s.poll_launch().is_none(), "silence means it worked");
+}

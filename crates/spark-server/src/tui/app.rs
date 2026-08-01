@@ -183,6 +183,19 @@ impl App {
         // Info toasts auto-dismiss after 5s; errors persist.
         self.toasts
             .retain(|t| t.error || t.at.elapsed().as_secs() < 5);
+        // A launch that failed after its thread started must not leave the
+        // dashboard showing a load. The checklist was reset and the pill set
+        // to LOADING the moment the thread spawned; if the swap then refused
+        // — no compiled kernels for that model, say — nothing else would ever
+        // correct them.
+        if let Some(err) = self.lib.poll_launch() {
+            let live = self.host.as_ref().and_then(|h| h.live_model());
+            self.awaiting_model = live.is_none();
+            self.progress.reset();
+            self.repaint = true;
+            self.toast(super::lib_state::problem_line(&err), true);
+        }
+
         // Keep the benchmark target on the model that is actually serving.
         if let Some(name) = self
             .host
