@@ -191,17 +191,37 @@ pub fn save(store: &ArtifactStore, record: &mut RunRecord) -> Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or_default();
+    // Claim the id with `create_new`, not `exists()`. This directory is shared:
+    // the dashboard and `spark benchmark` are separate processes writing the
+    // same tree, and check-then-write lets both conclude the same name is free
+    // and one silently overwrite the other's run. `create_new` is atomic in the
+    // kernel, so exactly one claimant can win.
     let (run_id, path) = loop {
         let id = format!("run-{nanos:019}");
         let path = dir.join(format!("{id}.json"));
-        if !path.exists() {
-            break (id, path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => break (id, path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                nanos = nanos.saturating_add(1);
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("claiming {}", path.display()));
+            }
         }
-        nanos = nanos.saturating_add(1);
     };
     record.run_id = run_id;
     let json = serde_json::to_string_pretty(&record).context("serializing the run record")?;
-    std::fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
+    // Write beside it and rename over the claim. `rename` is atomic, so the
+    // History pane reads either the empty placeholder or the finished record —
+    // never half of one. Writing in place would let a poll land mid-write, and
+    // the reader caches, so a torn read is not merely retried.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("publishing {}", path.display()))?;
     Ok(path)
 }
 

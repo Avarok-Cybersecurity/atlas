@@ -200,3 +200,53 @@ fn find_addresses_a_run_by_its_id() {
     assert_eq!(find(&store, &r.run_id).expect("found").frame.phase, "done");
     assert!(find(&store, "run-0000000000000000000").is_none());
 }
+
+#[test]
+fn concurrent_writers_never_lose_a_run() {
+    // The dashboard and `spark benchmark` are separate processes writing the
+    // same tree. `exists()` then `write` lets both conclude the same name is
+    // free, and one silently overwrites the other's run.
+    let (store, _d) = store();
+    const WRITERS: usize = 8;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+    let store = std::sync::Arc::new(store);
+
+    let handles: Vec<_> = (0..WRITERS)
+        .map(|_| {
+            let (store, barrier) = (store.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                let mut r = record(frame("done"));
+                save(&store, &mut r).expect("saves")
+            })
+        })
+        .collect();
+    let paths: Vec<_> = handles
+        .into_iter()
+        .map(|h| h.join().expect("no panic"))
+        .collect();
+
+    let unique: std::collections::HashSet<_> = paths.iter().collect();
+    assert_eq!(unique.len(), WRITERS, "every writer got its own file");
+    assert_eq!(
+        load(&store, descriptor().id).len(),
+        WRITERS,
+        "and every run is readable afterwards"
+    );
+}
+
+#[test]
+fn a_published_record_is_never_half_written() {
+    // Readers cache, so a torn read is not merely retried — it can hide a run
+    // until something else invalidates. Publishing by rename makes the file
+    // appear complete or not at all.
+    let (store, _d) = store();
+    let mut r = record(frame("done"));
+    let path = save(&store, &mut r).expect("saves");
+    let text = std::fs::read_to_string(&path).expect("readable");
+    serde_json::from_str::<serde_json::Value>(&text).expect("complete JSON");
+    assert!(
+        !path.with_extension("json.tmp").exists(),
+        "no temp file left behind"
+    );
+}

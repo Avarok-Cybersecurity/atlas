@@ -196,3 +196,12 @@ fn the_swap_the_winner_already_performed_is_not_repeated() {
     b.max_batch_size = a.max_batch_size + 1;
     assert_ne!(a, b, "a different recipe for the same model is a real swap");
 }
+
+#[test]
+fn a_swap_is_refused_once_shutdown_has_been_requested() {
+    // Starting a load into an exiting process releases the outgoing model for
+    // a replacement that will never serve anything.
+    let err = super::refuse_if_shutting_down(true).expect_err("refused");
+    assert!(format!("{err:#}").contains("shutdown"), "{err:#}");
+    super::refuse_if_shutting_down(false).expect("a live process may swap");
+}

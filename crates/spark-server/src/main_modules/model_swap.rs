@@ -54,6 +54,24 @@ pub(crate) struct SwapOutcome {
     pub previous: Option<cli::ServeArgs>,
 }
 
+/// Do not start a multi-minute load into a process that is on its way out.
+///
+/// The accept loop stops the moment shutdown is requested, so the model would
+/// finish loading with nothing left to serve it — and the release it performs
+/// first would take the OUTGOING model down with it, turning a clean drain
+/// into an abrupt one.
+///
+/// Takes the answer rather than reading the global, so the rule is testable
+/// without a test mutating a process-wide latch that has no reset and that
+/// every other test calling `swap` would then trip over.
+fn refuse_if_shutting_down(shutting_down: bool) -> Result<()> {
+    anyhow::ensure!(
+        !shutting_down,
+        "shutdown is in progress — not starting a model load"
+    );
+    Ok(())
+}
+
 /// Refuse a model this binary has no kernels for, BEFORE anything is released.
 ///
 /// The check itself already exists inside the load — but it runs at phase 3,
@@ -201,6 +219,8 @@ pub(crate) fn swap(
     // where the server has no model is opened only for a config that has
     // already passed everything cheap.
     cli::validate_serve_args(&next).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    refuse_if_shutting_down(crate::tui::shutdown::requested())?;
 
     // The load spawns Tokio tasks. Entering here rather than at each call site
     // means a caller that is already inside the runtime and one that is not
