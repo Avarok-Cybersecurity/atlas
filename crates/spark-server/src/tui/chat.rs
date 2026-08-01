@@ -137,7 +137,37 @@ impl ChatState {
     /// Drain pending deltas into the transcript (event-loop tick).
     pub fn pump(&mut self) {
         let Some(rx) = &self.rx else { return };
-        let deltas: Vec<ChatDelta> = rx.try_iter().collect();
+        let mut deltas: Vec<ChatDelta> = rx.try_iter().collect();
+        // `try_iter` stops on Empty and Disconnected alike, so a sender that
+        // died without a terminal delta — a panic in the streaming task — is
+        // indistinguishable from "nothing yet". Left undetected it pins
+        // `streaming` true, and `send` refuses while that is set: the chat
+        // pane locks up for the rest of the process with no indication why.
+        // The recipe fetch has handled this case since it was written; this
+        // did not.
+        //
+        // ONE `try_recv`, and its value is kept. A delta can arrive between
+        // `try_iter` ending and this call, and discarding it to learn whether
+        // the channel is alive would drop a token off the reply.
+        let mut disconnected = false;
+        if deltas.is_empty() && self.streaming {
+            match rx.try_recv() {
+                Ok(d) => deltas.push(d),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => disconnected = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if disconnected {
+            if let Some(m) = self.transcript.last_mut()
+                && m.text.is_empty()
+            {
+                m.text = "(the reply ended without finishing)".into();
+            }
+            self.streaming = false;
+            self.rx = None;
+            self.cancel = None;
+            return;
+        }
         for d in deltas {
             match d {
                 ChatDelta::Token(t) => {
@@ -293,4 +323,62 @@ async fn stream_chat(port: u16, messages: Vec<(String, String)>, tx: Sender<Chat
 
 fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+#[cfg(test)]
+mod pump_tests {
+    use super::*;
+
+    fn streaming_state() -> (ChatState, Sender<ChatDelta>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut s = ChatState::default();
+        s.transcript.push(ChatMessage {
+            role: Role::Model,
+            text: String::new(),
+            ttft_ms: None,
+            tok_per_s: None,
+            tokens: 0,
+        });
+        s.streaming = true;
+        s.rx = Some(rx);
+        (s, tx)
+    }
+
+    #[test]
+    fn a_sender_that_dies_without_finishing_unsticks_the_pane() {
+        // `send` refuses while `streaming` is set, so a dropped sender used to
+        // lock the chat pane for the rest of the process.
+        let (mut s, tx) = streaming_state();
+        drop(tx);
+        s.pump();
+        assert!(!s.streaming, "the pane is usable again");
+        assert!(s.rx.is_none());
+        assert!(
+            s.transcript
+                .last()
+                .expect("a message")
+                .text
+                .contains("without finishing"),
+            "and says why"
+        );
+    }
+
+    #[test]
+    fn a_delta_racing_the_disconnect_check_is_not_dropped() {
+        // The check calls try_recv once and KEEPS what it gets: a token can
+        // arrive between `try_iter` ending and that call.
+        let (mut s, tx) = streaming_state();
+        tx.send(ChatDelta::Token("hi".into())).expect("send");
+        s.pump();
+        assert!(s.streaming, "still streaming");
+        assert_eq!(s.transcript.last().expect("a message").text, "hi");
+    }
+
+    #[test]
+    fn a_live_channel_with_nothing_pending_is_left_alone() {
+        let (mut s, _tx) = streaming_state();
+        s.pump();
+        assert!(s.streaming, "empty is not dead");
+        assert!(s.rx.is_some());
+    }
 }
