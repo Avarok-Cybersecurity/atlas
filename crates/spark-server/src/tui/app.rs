@@ -89,6 +89,15 @@ pub struct App {
     pub log_filter: String,
     pub log_filter_editing: bool,
     pub kernels: Option<KernelTableModel>,
+    /// Which model the kernel table describes.
+    ///
+    /// The table is built from the audit a LOAD populates. Keyed on
+    /// `kernels.is_none()` alone it was built once, and since this branch made
+    /// the no-model boot report `progress.ready` (the listener is up, not a
+    /// model), that once was at boot with an empty audit — every module
+    /// unresolved, a spurious "N kernel lookup(s) unresolved" toast, and the
+    /// pane frozen that way through every model loaded afterwards.
+    pub kernels_for: Option<String>,
     pub kernel_scroll: usize,
     pub kernel_filter: String,
     pub library: Vec<LibraryEntry>,
@@ -139,6 +148,7 @@ impl App {
             log_filter: String::new(),
             log_filter_editing: false,
             kernels: None,
+            kernels_for: None,
             kernel_scroll: 0,
             kernel_filter: String::new(),
             library: Vec::new(),
@@ -173,8 +183,16 @@ impl App {
         // Info toasts auto-dismiss after 5s; errors persist.
         self.toasts
             .retain(|t| t.error || t.at.elapsed().as_secs() < 5);
-        // Refresh the kernel table once when startup completes.
-        if self.progress.ready && self.kernels.is_none() {
+        // Rebuild the kernel table when a DIFFERENT model finishes loading —
+        // including after a swap, which no `is_none()` guard would notice.
+        let live = self
+            .host
+            .as_ref()
+            .and_then(|h| h.live_model())
+            .or_else(|| self.args.model_name.clone())
+            .or_else(|| self.args.model.clone());
+        if self.progress.ready && !self.awaiting_model && live.is_some() && self.kernels_for != live
+        {
             let model = super::data::kernels::build();
             if !model.missing.is_empty() {
                 let n = model.missing.len();
@@ -184,6 +202,7 @@ impl App {
                 );
             }
             self.kernels = Some(model);
+            self.kernels_for = live;
         }
     }
 

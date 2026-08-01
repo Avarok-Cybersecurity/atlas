@@ -190,3 +190,38 @@ fn changing_section_asks_for_a_full_repaint() {
         "jumping to the section already shown does not"
     );
 }
+
+#[test]
+fn the_kernel_table_is_not_built_before_a_model_exists() {
+    // It is built from the audit a LOAD populates. `progress.ready` means the
+    // listener is up, which on a no-model boot is true with an empty audit —
+    // so it used to build a table of unresolved modules, toast about them, and
+    // then never rebuild because the guard was `kernels.is_none()`.
+    use clap::Parser as _;
+    let mut args = crate::cli::ServeArgs::parse_from(["spark", "m"]);
+    args.model = None;
+    let mut app = App::new(args);
+    app.progress.ready = true; // the listener came up
+    app.on_tick();
+    assert!(app.kernels.is_none(), "nothing to describe yet");
+    assert!(app.kernels_for.is_none());
+}
+
+#[test]
+fn the_kernel_table_is_built_once_per_model() {
+    use clap::Parser as _;
+    let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "org/a"]));
+    app.progress.ready = true;
+    app.on_tick();
+    assert_eq!(
+        app.kernels_for.as_deref(),
+        Some("org/a"),
+        "built for the model"
+    );
+    let built = app.kernels.is_some();
+    assert!(built);
+
+    // A tick with the same model does not rebuild; the key is unchanged.
+    app.on_tick();
+    assert_eq!(app.kernels_for.as_deref(), Some("org/a"));
+}

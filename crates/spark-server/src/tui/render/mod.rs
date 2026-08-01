@@ -130,7 +130,11 @@ fn status_pill(app: &App) -> Span<'static> {
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
     // Chevron wave only during loading (motion restraint).
-    let wave = if app.progress.ready {
+    //
+    // Same distinction as the status pill: `progress.ready` is the LISTENER,
+    // and a settled logo next to "NO MODEL" reads as a finished load that has
+    // not happened.
+    let wave = if app.progress.ready && !app.awaiting_model {
         None
     } else {
         Some((app.tick / 3) as usize % 3)
