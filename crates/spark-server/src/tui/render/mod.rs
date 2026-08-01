@@ -292,6 +292,12 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("Enter", "focus input (Terminal) / edit field (Benchmarks)"),
         ("s", "start the configured benchmark"),
         ("c", "cancel the running benchmark"),
+        (
+            "d",
+            "Library: download / resume / update the selected model",
+        ),
+        ("x", "Library: stop the running download"),
+        ("u", "Library: check the selected model for updates"),
         ("Ctrl+Enter", "send chat message"),
         ("Esc", "back / cancel"),
         ("Ctrl+C", "clean shutdown (drain + exit)"),
@@ -363,7 +369,9 @@ fn library_hints(app: &App) -> &'static str {
         (View::Config, false) => {
             "j/k move · ⏎ edit · d recipe defaults · s START · Esc back to recipes"
         }
-        (View::List, _) => "j/k move · ⏎ configure · / search · r refresh · 1-6 jump · ? help",
+        (View::List, _) => {
+            "j/k move · ⏎ configure · d download · x stop · / search · r refresh · ? help"
+        }
     }
 }
 

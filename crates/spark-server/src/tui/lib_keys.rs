@@ -21,6 +21,13 @@ pub enum Outcome {
     /// Start the configured recipe. The reducer cannot do it itself — it has no
     /// handle to the server — so the app layer performs it and reports back.
     Launch,
+    /// Download, resume, or update the selected model. Same division of labour
+    /// as `Launch`: the reducer has no cache-dir handle, so `App` performs it.
+    Download,
+    /// Stop the running download. A second press abandons it.
+    CancelDownload,
+    /// Check whether the selected model is behind the Hub.
+    CheckFresh,
 }
 
 impl LibState {
@@ -64,11 +71,26 @@ impl LibState {
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char('/') => self.filter_editing = true,
+            // `d` is "restore defaults" in the CONFIG pane — a different
+            // screen, so no conflict, and `d` for download is the obvious
+            // mnemonic here. `x` rather than `c` for cancel because the help
+            // modal already teaches `c` as "cancel the running benchmark", and
+            // one key with two meanings in adjacent sections is exactly what
+            // this module's doc warns against.
+            KeyCode::Char('d') => return Outcome::Download,
+            KeyCode::Char('x') => return Outcome::CancelDownload,
+            KeyCode::Char('u') => return Outcome::CheckFresh,
             KeyCode::Char('r') => {
                 if self.fetching {
                     return Outcome::None;
                 }
                 self.refresh();
+                // Also re-scan the local cache: `r` reads as "bring this list
+                // up to date", and a model that appeared on disk since the
+                // last scan is exactly what a reader pressing it expects to
+                // show up. The scan is local and cheap; the fetch is neither,
+                // which is why only this key does both.
+                self.mark_dirty = true;
                 // Report what actually happened. `refresh` is a no-op without a
                 // store to cache into, and announcing a fetch that never
                 // started would leave the user waiting for nothing.

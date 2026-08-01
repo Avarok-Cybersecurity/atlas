@@ -46,6 +46,11 @@ pub struct LibState {
     /// Cancels the in-flight index refresh. Set beside `pending` and cleared
     /// with it, so the two cannot disagree about whether one is running.
     fetch_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// An in-flight scan of the local HF cache.
+    pending_scan: Option<Receiver<Vec<LibraryEntry>>>,
+    /// The local cache needs re-scanning. Set by the reducer, which has no
+    /// access to `App`; the event loop drains it into `App::library_dirty`.
+    pub mark_dirty: bool,
     /// The recipe id whose date is being looked up, and the channel it will
     /// arrive on. `Some` drives the skeleton placeholder in the detail pane.
     ///
@@ -106,6 +111,47 @@ impl LibState {
         self.pending = Some(rx);
         self.fetch_cancel = Some(cancel);
         self.fetching = true;
+    }
+
+    /// Has the recipe store been attached yet?
+    ///
+    /// Distinguishes "first entry into the Library" from "rescan": the local
+    /// scan may run many times, but attaching — and the GitHub fetch it kicks
+    /// off — happens once.
+    pub fn attached(&self) -> bool {
+        self.root.is_some()
+    }
+
+    /// Start a background scan of the local HF cache.
+    ///
+    /// Idempotent: a second call while one is in flight is ignored, so a
+    /// dirty flag set repeatedly cannot spawn a thread per frame.
+    pub fn start_scan(&mut self, cache_dir: Option<&std::path::Path>) {
+        if self.pending_scan.is_some() {
+            return;
+        }
+        self.pending_scan = Some(crate::tui::data::library::scan_in_background(cache_dir));
+    }
+
+    /// Collect a finished scan, if one has landed.
+    ///
+    /// Returns the new entries for the caller to store. During the scan the
+    /// previous list keeps rendering, so there is no empty frame and no
+    /// flicker — the list simply becomes more correct.
+    pub fn poll_scan(&mut self) -> Option<Vec<LibraryEntry>> {
+        let rx = self.pending_scan.as_ref()?;
+        match rx.try_recv() {
+            Ok(found) => {
+                self.pending_scan = None;
+                Some(found)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            // The scanner thread died. Keep the list that is on screen.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_scan = None;
+                None
+            }
+        }
     }
 
     /// Stop an in-flight refresh, if there is one.

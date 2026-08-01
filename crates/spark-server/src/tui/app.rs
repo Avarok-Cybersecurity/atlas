@@ -101,8 +101,17 @@ pub struct App {
     pub kernel_scroll: usize,
     pub kernel_filter: String,
     pub library: Vec<LibraryEntry>,
+    /// The local cache needs (re)scanning.
+    ///
+    /// Was a `let mut library_scanned = false` local to the event loop, which
+    /// made "scan once, lazily" easy and "scan again after a download"
+    /// impossible. Set by a finished or cancelled download, and by a manual
+    /// refresh; cleared when a scan is started.
+    pub library_dirty: bool,
     /// The Library section: joined recipes + local weights, and the edit form.
     pub lib: crate::tui::lib_state::LibState,
+    /// Model downloads and update checks.
+    pub download: crate::tui::download_state::DownloadState,
     pub network_selected: usize,
     pub network_detail: bool,
     pub ops: OpsState,
@@ -152,6 +161,8 @@ impl App {
             kernel_scroll: 0,
             kernel_filter: String::new(),
             library: Vec::new(),
+            library_dirty: true,
+            download: Default::default(),
             lib: Default::default(),
             network_selected: 0,
             network_detail: false,
@@ -418,32 +429,13 @@ impl App {
         match self.lib.on_key(key) {
             super::lib_keys::Outcome::Toast { text, error } => self.toast(text, error),
             super::lib_keys::Outcome::Launch => self.launch_selected_recipe(),
+            super::lib_keys::Outcome::Download => self.download_selected_model(),
+            super::lib_keys::Outcome::CancelDownload => match self.download.cancel() {
+                Some((text, error)) => self.toast(text, error),
+                None => self.toast("nothing is downloading".to_string(), false),
+            },
+            super::lib_keys::Outcome::CheckFresh => self.check_selected_model(),
             super::lib_keys::Outcome::None => {}
-        }
-    }
-
-    /// Start the configured recipe and follow it to Main.
-    ///
-    /// The jump is the point: a load is what the operator wants to watch, and
-    /// Main is where the 12-phase checklist already lives. Resetting the
-    /// progress model first is what makes the SECOND load render as a load —
-    /// without it every phase is still `Done` from the first one.
-    fn launch_selected_recipe(&mut self) {
-        let Some(host) = self.host.clone() else {
-            self.toast("no server attached to this dashboard".to_string(), true);
-            return;
-        };
-        match self.lib.launch(host) {
-            Ok(()) => {
-                self.progress.reset();
-                // A load is now genuinely in flight, so the checklist is
-                // tracking something again and the pill may say LOADING.
-                self.awaiting_model = false;
-                self.repaint = true;
-                self.section = Section::Main;
-                self.main_sub = MainSub::Overview;
-            }
-            Err(e) => self.toast(e, true),
         }
     }
 

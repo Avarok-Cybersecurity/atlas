@@ -52,7 +52,6 @@ pub fn run(
 
     let mut last_tick = Instant::now();
     let mut ticks: u32 = 0;
-    let mut library_scanned = false;
 
     loop {
         // 1. Input (poll ≤50ms keeps both input latency and tick cadence).
@@ -84,6 +83,21 @@ pub fn run(
         }
         app.chat.pump();
         app.bench.pump();
+        // Downloads are pumped UNCONDITIONALLY, not only in the Library: one
+        // started there must still finish, and report, if the user navigates
+        // away to watch the logs — the same argument as `poll_preflight`.
+        if let Some(settled) = app.download.pump() {
+            // Either outcome changed the cache: a finished download adds a
+            // model, a stopped one changes the reported size.
+            app.library_dirty = true;
+            if let crate::tui::download_state::Settled::Finished(_) = settled {
+                // A new model may satisfy a recipe that had none.
+                app.repaint = true;
+            }
+        }
+        if let Some((text, error)) = app.download.last_message.take() {
+            app.toast(text, error);
+        }
         // 3. Tick.
         if last_tick.elapsed() >= TICK {
             last_tick = Instant::now();
@@ -92,13 +106,23 @@ pub fn run(
             if ticks.is_multiple_of(SAMPLE_EVERY) {
                 app.stats.sample(app.run.as_ref());
             }
-            // Library: scan the local cache once, lazily, on first entry
-            // (fs-only), attach the recipe cache, and kick one background
-            // fetch. The fetch runs on its own std::thread; `poll` below only
-            // ever does a try_recv, so a slow network cannot cost a frame.
-            if !library_scanned && app.section == Section::Library {
-                library_scanned = true;
-                app.library = super::data::library::scan(app.args.cache_dir.as_deref());
+            // Library: scan the local cache lazily on entry, and again
+            // whenever something changed it — a finished download must appear
+            // without a restart. The scan now runs on its own thread
+            // (`poll_scan` below only try_recvs), because it stats every blob
+            // directory and was doing that on the render thread.
+            // The reducer cannot reach `App`, so it raises a flag here.
+            if std::mem::take(&mut app.lib.mark_dirty) {
+                app.library_dirty = true;
+            }
+            if app.library_dirty && app.section == Section::Library {
+                app.library_dirty = false;
+                app.lib.start_scan(app.args.cache_dir.as_deref());
+            }
+            // The recipe half is genuinely once-only: a rescan must NOT
+            // re-trigger a GitHub fetch, which is rate-limited and unrelated to
+            // what changed on disk.
+            if app.section == Section::Library && !app.lib.attached() {
                 match atlas_plugin::ArtifactStore::discover() {
                     Ok(store) => {
                         app.lib.attach(store.root().to_path_buf(), &app.library);
@@ -112,6 +136,10 @@ pub fn run(
                 }
             }
             if app.section == Section::Library {
+                if let Some(found) = app.lib.poll_scan() {
+                    app.library = found;
+                    app.lib.rebuild(&app.library);
+                }
                 app.lib.poll(&app.library);
                 app.lib.poll_date();
                 // A recipe carrying no `metadata.updated` gets its date from

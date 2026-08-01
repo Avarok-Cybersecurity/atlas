@@ -73,10 +73,37 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
         else {
             continue;
         };
-        let has_weights = crate::model_resolver::snapshot_has_weights(&snap);
+        // "Ready" has to mean "the loader would accept this", not "some file
+        // that looks like weights is present". Two ways it can differ, both
+        // reachable the moment downloads exist:
+        //   * `snapshot_has_weights` counts `model.safetensors.index.json`,
+        //     which is small and lands FIRST — so a download that has barely
+        //     started reads as complete;
+        //   * a download that never finished has no `refs/main`, which is what
+        //     the resolver actually keys on.
+        let has_shard = std::fs::read_dir(&snap)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok()).any(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.ends_with(".safetensors"))
+                })
+            })
+            .unwrap_or(false);
+        let published = e.path().join("refs/main").exists();
+        let has_weights = has_shard && published;
         let mut entry = LibraryEntry {
             id,
-            size_bytes: dir_size(&e.path().join("blobs")),
+            // `blobs/` is where huggingface-cli puts the real bytes, with
+            // snapshots/ as symlinks into it — so `len()` of a snapshot entry
+            // would measure the link, not the model. Atlas's own downloader
+            // writes the files directly into snapshots/ and has no blobs/ at
+            // all, which reported every model it fetched as 0 MB. Measure
+            // whichever layout this model actually uses.
+            size_bytes: match dir_size(&e.path().join("blobs")) {
+                0 => dir_size(&snap),
+                n => n,
+            },
             snapshot_dir: snap.clone(),
             has_weights,
             model_type: "?".into(),
@@ -122,4 +149,37 @@ pub fn human_size(bytes: u64) -> String {
     } else {
         format!("{} MB", bytes / (1024 * 1024))
     }
+}
+
+/// Run [`scan`] on its own thread, delivering the result over a channel.
+///
+/// The scan recursively `read_dir`s every `models--*/blobs`, which on a cache
+/// holding a few dozen multi-gigabyte checkpoints is tens of milliseconds to
+/// seconds with a cold page cache — and it was running on the render thread.
+/// It also needs to be re-runnable now, because a finished download must
+/// appear without restarting the dashboard.
+///
+/// Same shape as `recipe::fetch::refresh_in_background`, and the same rule:
+/// the render thread only ever `try_recv`s.
+pub fn scan_in_background(
+    cache_dir: Option<&Path>,
+) -> std::sync::mpsc::Receiver<Vec<LibraryEntry>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = cache_dir.map(|p| p.to_path_buf());
+    let spawned = std::thread::Builder::new()
+        .name("atlas-libscan".into())
+        .spawn({
+            let tx = tx.clone();
+            move || {
+                // A disconnected receiver means the UI moved on, not an error.
+                let _ = tx.send(scan(owned.as_deref()));
+            }
+        });
+    if let Err(e) = spawned {
+        // Answer anyway, so the caller needs no second code path. An empty
+        // list is what `scan` itself returns for an unreadable cache.
+        tracing::warn!("could not spawn the library scanner: {e}");
+        let _ = tx.send(Vec::new());
+    }
+    rx
 }

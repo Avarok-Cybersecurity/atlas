@@ -42,6 +42,7 @@ mod loop_simhash;
 mod lqer;
 mod main_modules;
 pub mod metrics;
+mod model_download;
 mod model_resolver;
 mod moe_quality;
 mod ngram;

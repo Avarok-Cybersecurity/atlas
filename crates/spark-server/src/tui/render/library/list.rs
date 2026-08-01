@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
 /// `▐recipe▌` and `▐optimized▌`. Two independent facts: a recipe with no
 /// compiled kernel target still serves, on generic kernels.
-fn badges(entry: &Entry) -> Vec<Span<'static>> {
+fn badges(app: &App, entry: &Entry) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     if let Some(r) = entry.primary() {
         let (label, style) = if r.is_atlas() {
@@ -44,6 +44,23 @@ fn badges(entry: &Entry) -> Vec<Span<'static>> {
             " optimized ",
             theme::brand_cyan().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         ));
+        out.push(Span::raw(" "));
+    }
+    // Last, so it is the first thing dropped when the pane is narrow, and only
+    // for a CONFIRMED mismatch: an unreachable Hub reports `Unknown`, which
+    // draws nothing. A stale badge shown because the network was down would be
+    // a lie about the user's disk.
+    match app.download.freshness.get(&entry.model) {
+        Some(f) if f.is_stale() => out.push(Span::styled(
+            " update ",
+            theme::warn().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )),
+        _ if app.download.checking.as_deref() == Some(entry.model.as_str()) => {
+            // Skeleton in the place the badge will occupy, so the row does not
+            // reflow when the answer lands.
+            out.push(Span::styled(" ░░░░░░ ", theme::dim()));
+        }
+        _ => {}
     }
     out
 }
@@ -110,8 +127,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Span::raw(" ")
         };
-        // A checkmark means "the weights are here", nothing else.
-        let mark = if entry.has_weights() {
+        // A checkmark means "the weights are here", nothing else. A download
+        // in flight owns the glyph while it runs.
+        let mark = if app.download.is_downloading(&entry.model) {
+            Span::styled("↓ ", theme::brand_cyan())
+        } else if entry.has_weights() {
             Span::styled("✓ ", theme::brand_green())
         } else if entry.local.is_some() {
             Span::styled("◐ ", theme::warn())
@@ -134,26 +154,34 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         lines.push(head);
 
         let mut second = vec![Span::raw("   ")];
-        second.extend(badges(entry));
+        second.extend(badges(app, entry));
         let subtitle = entry.subtitle();
         if !subtitle.is_empty() {
             second.push(Span::styled(format!(" {subtitle}"), theme::dim()));
         }
         lines.push(Line::from(second));
-        lines.push(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(entry.size_text(), theme::text2()),
-            Span::styled(
-                match entry.recipes.len() {
-                    0 => "  ·  no recipe".to_string(),
-                    // One recipe still names itself; several become a count,
-                    // because listing three stems is what the card view is for.
-                    1 => format!("  ·  {}", entry.recipes[0].id),
-                    n => format!("  ·  {n} recipes"),
-                },
-                theme::dim(),
-            ),
-        ]));
+        // Line three is either the model's size, or — while it is being
+        // fetched — that same line turned into a progress bar. Reusing the
+        // line is deliberate: `per_row` stays 3, so no scroll arithmetic
+        // changes, and the progress stays attached to the model it belongs to
+        // instead of floating in a modal.
+        lines.push(match progress_line(app, &entry.model, inner.width) {
+            Some(l) => l,
+            None => Line::from(vec![
+                Span::raw("   "),
+                Span::styled(entry.size_text(), theme::text2()),
+                Span::styled(
+                    match entry.recipes.len() {
+                        0 => "  ·  no recipe".to_string(),
+                        // One recipe still names itself; several become a count,
+                        // because listing three stems is what the card view is for.
+                        1 => format!("  ·  {}", entry.recipes[0].id),
+                        n => format!("  ·  {n} recipes"),
+                    },
+                    theme::dim(),
+                ),
+            ]),
+        });
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -251,11 +279,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        match (entry.runnable_now(), entry.has_recipe()) {
-            (true, _) => " ⏎ choose a recipe",
-            (_, true) => " ⏎ choose a recipe  ·  weights must be downloaded first",
-            _ => " no recipe to configure",
-        },
+        detail_footer(app, entry),
         theme::brand_cyan(),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -266,4 +290,102 @@ fn kv(label: &str, value: &str) -> Line<'static> {
         Span::styled(format!("  {label:<14}"), theme::dim()),
         Span::styled(value.to_string(), theme::text()),
     ])
+}
+
+/// The progress line for a model, if one is being downloaded.
+///
+/// Degrades right-to-left as the pane narrows — rate first, then the file
+/// counter, then the byte pair — so the bar and percentage, which are the
+/// parts that answer "is this still moving", survive longest.
+fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
+    let job = app.download.job.as_ref().filter(|j| j.repo == model)?;
+    let mut spans = vec![Span::raw("   ")];
+
+    match job.fraction() {
+        Some(f) => {
+            const CELLS: usize = 12;
+            let filled = (f * CELLS as f64).round() as usize;
+            spans.push(Span::styled(
+                "▓".repeat(filled.min(CELLS)),
+                theme::brand_cyan(),
+            ));
+            spans.push(Span::styled(
+                "░".repeat(CELLS.saturating_sub(filled)),
+                theme::dim(),
+            ));
+            spans.push(Span::styled(
+                format!("  {:>3.0}%", f * 100.0),
+                theme::text(),
+            ));
+        }
+        // The Hub did not report sizes. A bar pinned at zero would read as a
+        // stall, so show motion instead of a fraction we do not have.
+        None => {
+            let phase = (app.tick as usize / 2) % theme::SPINNER.len();
+            spans.push(Span::styled(theme::SPINNER[phase], theme::brand_cyan()));
+            spans.push(Span::styled("  fetching", theme::text()));
+        }
+    }
+
+    if job.cancelling {
+        // Cancellation is honoured within a chunk, but saying so beats a bar
+        // that keeps moving after the user asked it to stop.
+        spans.push(Span::styled("  stopping…", theme::warn()));
+        return Some(Line::from(spans));
+    }
+    if width >= 60 && job.total > 0 {
+        spans.push(Span::styled(
+            format!("  {} / {}", gb(job.done), gb(job.total)),
+            theme::text2(),
+        ));
+    }
+    if width >= 78
+        && let Some((i, of, _)) = &job.file
+    {
+        spans.push(Span::styled(format!("  file {i}/{of}"), theme::dim()));
+    }
+    if width >= 96 && job.rate_bps > 0.0 {
+        spans.push(Span::styled(
+            format!("  {:.0} MB/s", job.rate_bps / 1e6),
+            theme::dim(),
+        ));
+    }
+    Some(Line::from(spans))
+}
+
+fn gb(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{:.0} MB", bytes as f64 / 1e6)
+    }
+}
+
+/// What the keys will do for THIS row, said on the row itself.
+///
+/// The alternative — one static hint listing every key — makes the reader work
+/// out which of them apply, and `d` means three different things depending on
+/// what is on disk.
+fn detail_footer(app: &App, entry: &Entry) -> String {
+    if app.download.is_downloading(&entry.model) {
+        return " x stop the download  ·  ⏎ choose a recipe".into();
+    }
+    let stale = app
+        .download
+        .freshness
+        .get(&entry.model)
+        .is_some_and(|f| f.is_stale());
+    match (
+        entry.runnable_now(),
+        entry.has_recipe(),
+        entry.local.is_some(),
+    ) {
+        // Everything is here. Only mention updating if we KNOW it is behind.
+        (true, _, _) if stale => " d update  ·  ⏎ choose a recipe".into(),
+        (true, _, _) => " ⏎ choose a recipe  ·  u check for updates".into(),
+        // On disk but unloadable: a previous download did not finish.
+        (_, true, true) => " d resume the download  ·  ⏎ choose a recipe".into(),
+        (_, true, false) => " d download the weights  ·  ⏎ choose a recipe".into(),
+        _ => " d download the weights".into(),
+    }
 }
