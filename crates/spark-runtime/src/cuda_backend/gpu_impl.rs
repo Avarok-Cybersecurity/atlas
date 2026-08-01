@@ -86,7 +86,15 @@ impl GpuBackend for AtlasCudaBackend {
         // free would be double-freed at teardown.
         self.forget_alloc(ptr);
         let status = unsafe { cuMemFree_v2(ptr.0) };
-        if status != 0 {
+        // A context that is already being destroyed reports every free as
+        // failing, and at process exit that is the normal case, not an error:
+        // the driver has reclaimed the allocation by definition. Two other
+        // free paths in this crate already consult `is_teardown_noop`; this one
+        // did not, so wiring `Model::teardown` into shutdown turned a benign
+        // status 4 into `ERROR model teardown reported a failure` on every
+        // clean exit — the exact species of false alarm this work set out to
+        // remove.
+        if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())

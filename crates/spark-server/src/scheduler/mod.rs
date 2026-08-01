@@ -771,5 +771,23 @@ pub fn run(
     }
     // Shutdown applies to every slot the worker has; seq_id is ignored.
     let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
+
+    // Release the model's device memory HERE, in order and able to report a
+    // failure, before the `Box` drops.
+    //
+    // This is the point the whole `ModelResource`/`Teardown` mechanism was
+    // built for, and until now nothing called it: `Model::teardown` had no
+    // caller anywhere in production, so the ordered release was dead code and
+    // every allocation fell through to the backend's `Drop` sweep — thousands
+    // of them per swap (3370, then 3973, on two successful swaps). The sweep is
+    // the intended BACKSTOP for what no owner claims, not the mechanism. `Drop`
+    // is neither ordered nor able to fail, which is precisely why `Teardown`
+    // exists.
+    //
+    // Every sequence above has been freed and no request can arrive, so this is
+    // the quiescent point frees require on GB10.
+    if let Err(e) = model.teardown() {
+        tracing::error!("model teardown reported a failure: {e:#}");
+    }
     tracing::info!("Scheduler stopped");
 }

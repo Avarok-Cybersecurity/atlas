@@ -219,9 +219,17 @@ impl Drop for AtlasCudaBackend {
     fn drop(&mut self) {
         let swept = self.sweep_unreleased();
         if swept > 0 {
+            // Not necessarily a failure: a load abandoned part-way never
+            // reaches `Model::teardown`, and this is where its allocations come
+            // back. But on a model that DID serve, teardown has already drained
+            // the ledger, so anything here belongs to an owner that never
+            // registered — say which without asserting a cause the log cannot
+            // know. (An earlier wording claimed "from a load that never
+            // completed"; it fired on two perfectly healthy swaps and would
+            // have sent an operator hunting a failure that had not happened.)
             tracing::warn!(
-                "backend drop reclaimed {swept} allocation(s) from a load that never \
-                 completed — expected after a failed load, a leak anywhere else"
+                "backend drop reclaimed {swept} allocation(s) that no owner released — \
+                 expected if a load was abandoned part-way, otherwise an unregistered owner"
             );
         }
     }
