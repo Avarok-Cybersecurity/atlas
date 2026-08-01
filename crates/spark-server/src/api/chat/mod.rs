@@ -103,9 +103,7 @@ pub async fn chat_completions(
     // Off unless `--auto-swap`, and `--no-auto-swap` overrides that; every
     // other case (absent, unknown, already live) falls through untouched, which
     // is byte-identical to the behaviour before this existed.
-    if let Some(args) = host.args()
-        && crate::main_modules::auto_swap::enabled(&args)
-    {
+    if host.auto_swap_enabled() {
         let live = host.live_model().unwrap_or_default();
         // Short-circuit the overwhelmingly common case — a client naming the
         // model that is already loaded — before touching the disk. Reading the

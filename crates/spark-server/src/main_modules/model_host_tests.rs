@@ -110,3 +110,32 @@ fn the_rate_limiter_survives_having_no_model() {
     // model, and gating them on one made stored data unreadable mid-swap.
     assert!(host.process().is_some(), "the stores are reachable too");
 }
+
+#[test]
+fn auto_swap_is_answered_without_cloning_the_whole_argv() {
+    // `args()` clones ServeArgs — around a hundred fields, several of them
+    // String, Vec and PathBuf — and the chat path called it on every request
+    // to read two booleans.
+    use clap::Parser as _;
+    let host = ModelHost::empty();
+    assert!(!host.auto_swap_enabled(), "no argv installed yet");
+
+    host.set_args(crate::cli::ServeArgs::parse_from(["spark", "org/m"]));
+    assert!(!host.auto_swap_enabled(), "off unless asked for");
+
+    host.set_args(crate::cli::ServeArgs::parse_from([
+        "spark",
+        "org/m",
+        "--auto-swap",
+    ]));
+    assert!(host.auto_swap_enabled());
+
+    // --no-auto-swap still wins, as `auto_swap::enabled` defines it.
+    host.set_args(crate::cli::ServeArgs::parse_from([
+        "spark",
+        "org/m",
+        "--auto-swap",
+        "--no-auto-swap",
+    ]));
+    assert!(!host.auto_swap_enabled(), "the prohibition still wins");
+}

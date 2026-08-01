@@ -38,7 +38,7 @@ pub struct ModelHost {
     /// Kept here, not passed to `swap`, because a caller that has to supply it
     /// is a caller that can forget: the first one did, which silently disabled
     /// restore-on-failure. The host always knows what it is running.
-    args: parking_lot::Mutex<Option<crate::cli::ServeArgs>>,
+    args: parking_lot::RwLock<Option<crate::cli::ServeArgs>>,
     /// Held for the duration of a swap.
     ///
     /// Without it, N concurrent requests naming an absent model each start
@@ -55,13 +55,13 @@ pub struct ModelHost {
     /// panics with "there is no reactor running" — after the old model has
     /// already been released. Held by the host because BOTH swap callers need
     /// it and only one of them happens to be inside the runtime already.
-    runtime: parking_lot::Mutex<Option<tokio::runtime::Handle>>,
+    runtime: parking_lot::RwLock<Option<tokio::runtime::Handle>>,
     /// Where the listener actually bound, once it has.
     ///
     /// A swap cannot move the socket — it is bound for the process lifetime —
     /// so a recipe naming a different port would otherwise serve on the old
     /// one with nothing saying so.
-    bound: parking_lot::Mutex<Option<(String, u16)>>,
+    bound: parking_lot::RwLock<Option<(String, u16)>>,
     /// The API-key policy, which belongs to the PROCESS, not to a model.
     ///
     /// It lived on `AppState` and so ceased to exist whenever no model was
@@ -69,7 +69,7 @@ pub struct ModelHost {
     /// that state, while correctly answering 401 once a model was up. Whether a
     /// request is authorised cannot depend on whether a model happens to be
     /// loaded.
-    auth: parking_lot::Mutex<Option<Arc<crate::auth::AuthConfig>>>,
+    auth: parking_lot::RwLock<Option<Arc<crate::auth::AuthConfig>>>,
     /// The rate limiter, which is likewise a property of the PROCESS.
     ///
     /// Same reasoning as `auth`, and the same bug if it lives elsewhere: read
@@ -78,7 +78,7 @@ pub struct ModelHost {
     /// also the SAME `Arc` the model's `AppState` holds — handlers call
     /// `refund_tokens` through that one, and two instances would mean refunds
     /// crediting buckets the middleware never debited.
-    process: parking_lot::Mutex<Option<super::serve_load::Carried>>,
+    process: parking_lot::RwLock<Option<super::serve_load::Carried>>,
 }
 
 impl ModelHost {
@@ -87,12 +87,12 @@ impl ModelHost {
         Self {
             current: parking_lot::RwLock::new(Some(state)),
             scheduler: parking_lot::Mutex::new(None),
-            args: parking_lot::Mutex::new(None),
+            args: parking_lot::RwLock::new(None),
             swapping: parking_lot::Mutex::new(()),
-            runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
-            bound: parking_lot::Mutex::new(None),
-            auth: parking_lot::Mutex::new(None),
-            process: parking_lot::Mutex::new(None),
+            runtime: parking_lot::RwLock::new(tokio::runtime::Handle::try_current().ok()),
+            bound: parking_lot::RwLock::new(None),
+            auth: parking_lot::RwLock::new(None),
+            process: parking_lot::RwLock::new(None),
         }
     }
 
@@ -102,12 +102,12 @@ impl ModelHost {
         Self {
             current: parking_lot::RwLock::new(None),
             scheduler: parking_lot::Mutex::new(None),
-            args: parking_lot::Mutex::new(None),
+            args: parking_lot::RwLock::new(None),
             swapping: parking_lot::Mutex::new(()),
-            runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
-            bound: parking_lot::Mutex::new(None),
-            auth: parking_lot::Mutex::new(None),
-            process: parking_lot::Mutex::new(None),
+            runtime: parking_lot::RwLock::new(tokio::runtime::Handle::try_current().ok()),
+            bound: parking_lot::RwLock::new(None),
+            auth: parking_lot::RwLock::new(None),
+            process: parking_lot::RwLock::new(None),
         }
     }
 
@@ -122,17 +122,17 @@ impl ModelHost {
 
     /// Install the process's API-key policy. Called once, before any load.
     pub fn set_auth(&self, cfg: Option<Arc<crate::auth::AuthConfig>>) {
-        *self.auth.lock() = cfg;
+        *self.auth.write() = cfg;
     }
 
     /// The API-key policy, if one is configured.
     pub fn auth(&self) -> Option<Arc<crate::auth::AuthConfig>> {
-        self.auth.lock().clone()
+        self.auth.read().clone()
     }
 
     /// Install the process-scoped state. Called once, before any load.
     pub(crate) fn set_process(&self, carried: super::serve_load::Carried) {
-        *self.process.lock() = Some(carried);
+        *self.process.write() = Some(carried);
     }
 
     /// The process-scoped state, if it has been installed.
@@ -142,7 +142,7 @@ impl ModelHost {
     /// that touch only these need no model, and gating them on one made a
     /// stored conversation unreadable for the minute or two a swap takes.
     pub(crate) fn process(&self) -> Option<super::serve_load::Carried> {
-        self.process.lock().clone()
+        self.process.read().clone()
     }
 
     /// The process's rate limiter, if one has been installed.
@@ -150,24 +150,37 @@ impl ModelHost {
         self.process().map(|c| c.rate_limiter)
     }
 
+    /// Whether a request naming another model may trigger a load.
+    ///
+    /// Answers the question without handing back the argv: `args()` clones the
+    /// whole `ServeArgs` — around a hundred fields, several of them `String`,
+    /// `Vec` and `PathBuf` — and the chat path called it on EVERY request to
+    /// read two booleans. The clone cost more than the decision.
+    pub fn auto_swap_enabled(&self) -> bool {
+        self.args
+            .read()
+            .as_ref()
+            .is_some_and(super::auto_swap::enabled)
+    }
+
     /// Record where the listener bound.
     pub fn set_bound(&self, addr: String, port: u16) {
-        *self.bound.lock() = Some((addr, port));
+        *self.bound.write() = Some((addr, port));
     }
 
     /// Where the listener bound, if it has.
     pub fn bound(&self) -> Option<(String, u16)> {
-        self.bound.lock().clone()
+        self.bound.read().clone()
     }
 
     /// The runtime a swap must run inside, if one was in scope at construction.
     pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
-        self.runtime.lock().clone()
+        self.runtime.read().clone()
     }
 
     /// Attach the runtime after the fact, for a host built outside it.
     pub fn set_runtime(&self, handle: tokio::runtime::Handle) {
-        *self.runtime.lock() = Some(handle);
+        *self.runtime.write() = Some(handle);
     }
 
     /// Remove the current model and hand it back, so the caller can prove it is
@@ -199,11 +212,11 @@ impl ModelHost {
 
     /// Record what the live model was loaded from, for a restore.
     pub fn set_args(&self, args: crate::cli::ServeArgs) {
-        *self.args.lock() = Some(args);
+        *self.args.write() = Some(args);
     }
 
     pub fn args(&self) -> Option<crate::cli::ServeArgs> {
-        self.args.lock().clone()
+        self.args.read().clone()
     }
 
     /// Serialise swaps. The caller re-checks what is loaded AFTER acquiring:
