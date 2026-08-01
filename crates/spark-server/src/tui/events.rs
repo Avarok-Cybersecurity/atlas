@@ -56,7 +56,7 @@ pub fn run(
                     app.on_key(k)
                 }
                 Ok(Event::Mouse(m)) => on_mouse(&mut app, m, terminal.size().ok()),
-                // Ratatui diffs against the frame it last drew, so on a resize
+                // ratatui diffs against the frame it last drew, so on a resize
                 // the cells the OLD layout wrote and the NEW one does not
                 // reach are never overwritten — they persist as fragments of a
                 // previous frame. Observed on a pane that grew from 80x24: a

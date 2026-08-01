@@ -174,7 +174,7 @@ fn launching_from_the_library_stops_claiming_there_is_no_model() {
 
 #[test]
 fn changing_section_asks_for_a_full_repaint() {
-    // Ratatui's diff cannot repair cells where its buffer and the terminal have
+    // ratatui's diff cannot repair cells where its buffer and the terminal have
     // diverged. A section change swaps the entire content area, which is both
     // the moment stale glyphs are most visible and a free place to clear.
     use clap::Parser as _;

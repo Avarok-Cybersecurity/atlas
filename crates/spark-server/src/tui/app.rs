@@ -65,7 +65,7 @@ pub struct App {
     pub host: Option<std::sync::Arc<crate::main_modules::model_host::ModelHost>>,
     /// Ask the event loop for a full repaint on the next frame.
     ///
-    /// Ratatui diffs its new buffer against the LAST BUFFER IT DREW, never
+    /// ratatui diffs its new buffer against the LAST BUFFER IT DREW, never
     /// against the terminal. Once the two diverge — a foreign write, a pane
     /// resize tmux reflowed — the diff emits nothing for those cells and the
     /// stale glyphs are permanent: a Library hint stayed on screen through a
