@@ -78,7 +78,7 @@ pub struct ModelHost {
     /// also the SAME `Arc` the model's `AppState` holds — handlers call
     /// `refund_tokens` through that one, and two instances would mean refunds
     /// crediting buckets the middleware never debited.
-    rate_limiter: parking_lot::Mutex<Option<Arc<crate::rate_limiter::RateLimiter>>>,
+    process: parking_lot::Mutex<Option<super::serve_load::Carried>>,
 }
 
 impl ModelHost {
@@ -92,7 +92,7 @@ impl ModelHost {
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
             auth: parking_lot::Mutex::new(None),
-            rate_limiter: parking_lot::Mutex::new(None),
+            process: parking_lot::Mutex::new(None),
         }
     }
 
@@ -107,7 +107,7 @@ impl ModelHost {
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
             auth: parking_lot::Mutex::new(None),
-            rate_limiter: parking_lot::Mutex::new(None),
+            process: parking_lot::Mutex::new(None),
         }
     }
 
@@ -130,14 +130,24 @@ impl ModelHost {
         self.auth.lock().clone()
     }
 
-    /// Install the process's rate limiter. Called once, before any load.
-    pub fn set_rate_limiter(&self, rl: Arc<crate::rate_limiter::RateLimiter>) {
-        *self.rate_limiter.lock() = Some(rl);
+    /// Install the process-scoped state. Called once, before any load.
+    pub(crate) fn set_process(&self, carried: super::serve_load::Carried) {
+        *self.process.lock() = Some(carried);
+    }
+
+    /// The process-scoped state, if it has been installed.
+    ///
+    /// These outlive every model by construction — the stores hold data a
+    /// swap must not lose, and the limiter's buckets must not reset. Handlers
+    /// that touch only these need no model, and gating them on one made a
+    /// stored conversation unreadable for the minute or two a swap takes.
+    pub(crate) fn process(&self) -> Option<super::serve_load::Carried> {
+        self.process.lock().clone()
     }
 
     /// The process's rate limiter, if one has been installed.
     pub fn rate_limiter(&self) -> Option<Arc<crate::rate_limiter::RateLimiter>> {
-        self.rate_limiter.lock().clone()
+        self.process().map(|c| c.rate_limiter)
     }
 
     /// Record where the listener bound.
@@ -258,6 +268,48 @@ where
                     "error": {
                         "message": "no model is loaded",
                         "type": "model_not_loaded",
+                    }
+                })),
+            )
+                .into_response()),
+        }
+    }
+}
+
+/// The process-scoped state, for handlers that need no model.
+///
+/// The conversation and response stores outlive every model — a swap carries
+/// them forward precisely so their contents survive it. A handler that reads
+/// only these has no reason to require a model, and requiring one made stored
+/// data unreadable for the minute or two a swap takes: `GET /v1/conversations/{id}`
+/// answered 503 "no model is loaded" about a conversation that was sitting in
+/// memory, intact, the whole time.
+pub(crate) struct ProcessState(pub super::serve_load::Carried);
+
+impl<S> axum::extract::FromRequestParts<S> for ProcessState
+where
+    Arc<ModelHost>: axum::extract::FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        use axum::extract::FromRef;
+        use axum::response::IntoResponse;
+        let host = Arc::<ModelHost>::from_ref(state);
+        match host.process() {
+            Some(carried) => Ok(Self(carried)),
+            // Installed before the listener binds, so this is unreachable in a
+            // running server; 503 rather than a panic if that ever changes.
+            None => Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "error": {
+                        "message": "server is still starting",
+                        "type": "not_ready",
                     }
                 })),
             )

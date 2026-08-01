@@ -10,7 +10,7 @@ use super::*;
 /// every rate-limit bucket while looking fine.
 #[test]
 fn carried_state_is_the_same_allocation_not_an_equal_one() {
-    let first = Carried::from_env(crate::rate_limiter::RateLimiter::from_env());
+    let first = Carried::from_env();
     let cloned = first.clone();
 
     assert!(
@@ -31,8 +31,8 @@ fn carried_state_is_the_same_allocation_not_an_equal_one() {
 /// `load_model` takes `Carried` rather than building its own.
 #[test]
 fn building_from_env_twice_would_lose_the_stores() {
-    let first = Carried::from_env(crate::rate_limiter::RateLimiter::from_env());
-    let second = Carried::from_env(crate::rate_limiter::RateLimiter::from_env());
+    let first = Carried::from_env();
+    let second = Carried::from_env();
     assert!(
         !std::sync::Arc::ptr_eq(&first.conversation_store, &second.conversation_store),
         "if this ever passes, from_env has become a singleton and the carried \
@@ -45,10 +45,12 @@ fn carried_uses_the_process_limiter_rather_than_minting_its_own() {
     // Handlers refund through `AppState.rate_limiter` and the middleware debits
     // through the host's. If those are two instances, refunds credit buckets
     // the middleware never debited and the accounting silently drifts.
-    let process = crate::rate_limiter::RateLimiter::from_env();
-    let carried = Carried::from_env(process.clone());
+    let host = crate::main_modules::model_host::ModelHost::empty();
+    let carried = Carried::from_env();
+    let process = carried.rate_limiter.clone();
+    host.set_process(carried);
     assert!(
-        std::sync::Arc::ptr_eq(&carried.rate_limiter, &process),
-        "the carried limiter IS the process limiter"
+        std::sync::Arc::ptr_eq(&host.rate_limiter().expect("installed"), &process),
+        "the host's limiter IS the one the model's AppState will hold"
     );
 }

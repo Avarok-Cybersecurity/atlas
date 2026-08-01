@@ -98,11 +98,15 @@ fn the_rate_limiter_survives_having_no_model() {
     assert!(host.current().is_none(), "no model, by construction");
     assert!(host.rate_limiter().is_none(), "and none installed yet");
 
-    let rl = crate::rate_limiter::RateLimiter::from_env();
-    host.set_rate_limiter(rl.clone());
+    let carried = crate::main_modules::serve_load::Carried::from_env();
+    let rl = carried.rate_limiter.clone();
+    host.set_process(carried);
     let got = host.rate_limiter().expect("in force with no model loaded");
     assert!(
         std::sync::Arc::ptr_eq(&got, &rl),
         "and it is the same instance, not a rebuild"
     );
+    // The stores travel with it: a handler that reads only these needs no
+    // model, and gating them on one made stored data unreadable mid-swap.
+    assert!(host.process().is_some(), "the stores are reachable too");
 }

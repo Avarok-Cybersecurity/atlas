@@ -2,7 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
-use crate::main_modules::model_host::CurrentModel;
+use crate::main_modules::model_host::ProcessState;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -79,7 +79,7 @@ pub(super) fn conversation_body(
 /// POST /v1/conversations — create a conversation with optional
 /// initial items + metadata.
 pub async fn create_conversation(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     req: Result<Json<CreateConversationRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -105,19 +105,19 @@ pub async fn create_conversation(
             Some("items_too_many"),
         );
     }
-    let id = state
+    let id = process
         .conversation_store
         .create(items, req.metadata.unwrap_or_default());
-    let snap = state.conversation_store.get(&id).expect("just created");
+    let snap = process.conversation_store.get(&id).expect("just created");
     Json(conversation_body(&snap)).into_response()
 }
 
 /// GET /v1/conversations/{id}
 pub async fn get_conversation(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    match state.conversation_store.get(&id) {
+    match process.conversation_store.get(&id) {
         Some(snap) => Json(conversation_body(&snap)).into_response(),
         None => openai_error_response_with_param(
             StatusCode::NOT_FOUND,
@@ -130,7 +130,7 @@ pub async fn get_conversation(
 
 /// POST /v1/conversations/{id} — update metadata.
 pub async fn update_conversation(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
     req: Result<Json<UpdateConversationRequest>, JsonRejection>,
 ) -> Response {
@@ -143,7 +143,10 @@ pub async fn update_conversation(
             );
         }
     };
-    match state.conversation_store.update_metadata(&id, req.metadata) {
+    match process
+        .conversation_store
+        .update_metadata(&id, req.metadata)
+    {
         Some(snap) => Json(conversation_body(&snap)).into_response(),
         None => openai_error_response_with_param(
             StatusCode::NOT_FOUND,
@@ -156,10 +159,10 @@ pub async fn update_conversation(
 
 /// DELETE /v1/conversations/{id}
 pub async fn delete_conversation(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    if state.conversation_store.delete(&id) {
+    if process.conversation_store.delete(&id) {
         Json(serde_json::json!({
             "id": id,
             "object": "conversation.deleted",
@@ -178,7 +181,7 @@ pub async fn delete_conversation(
 
 /// POST /v1/conversations/{id}/items — append items (≤20/call).
 pub async fn add_conversation_items(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
     req: Result<Json<AddItemsRequest>, JsonRejection>,
 ) -> Response {
@@ -191,7 +194,7 @@ pub async fn add_conversation_items(
             );
         }
     };
-    match state.conversation_store.add_items(&id, req.items) {
+    match process.conversation_store.add_items(&id, req.items) {
         Ok(items) => Json(serde_json::json!({
             "object": "list",
             "data": items,
@@ -222,11 +225,11 @@ pub async fn add_conversation_items(
 /// GET /v1/conversations/{id}/items — list items with `limit` + `order`
 /// query parameters (OpenAI spec: default 20, max 100, order=asc).
 pub async fn list_conversation_items(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(snap) = state.conversation_store.get(&id) else {
+    let Some(snap) = process.conversation_store.get(&id) else {
         return openai_error_response_with_param(
             StatusCode::NOT_FOUND,
             format!("Conversation '{id}' not found."),
@@ -269,10 +272,10 @@ pub async fn list_conversation_items(
 
 /// GET /v1/conversations/{id}/items/{item_id}
 pub async fn get_conversation_item(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path((id, item_id)): axum::extract::Path<(String, String)>,
 ) -> Response {
-    let Some(snap) = state.conversation_store.get(&id) else {
+    let Some(snap) = process.conversation_store.get(&id) else {
         return openai_error_response_with_param(
             StatusCode::NOT_FOUND,
             format!("Conversation '{id}' not found."),
@@ -295,10 +298,10 @@ pub async fn get_conversation_item(
 
 /// DELETE /v1/conversations/{id}/items/{item_id}
 pub async fn delete_conversation_item(
-    CurrentModel(state): CurrentModel,
+    ProcessState(process): ProcessState,
     axum::extract::Path((id, item_id)): axum::extract::Path<(String, String)>,
 ) -> Response {
-    if state.conversation_store.remove_item(&id, &item_id) {
+    if process.conversation_store.remove_item(&id, &item_id) {
         Json(serde_json::json!({
             "id": item_id,
             "object": "conversation.item.deleted",

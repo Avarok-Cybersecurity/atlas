@@ -75,7 +75,7 @@ pub(crate) async fn serve(
     // is up, including while no model is loaded.
     host.set_auth(build_auth_config(&args)?);
     // Likewise process-scoped, and in force before the first model exists.
-    host.set_rate_limiter(crate::rate_limiter::RateLimiter::from_env());
+    host.set_process(super::serve_load::Carried::from_env());
     let startup_host = host.clone();
     match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {
@@ -157,10 +157,9 @@ fn startup(
     }
 
     // `None` = EP worker rank: it ran its command loop and the head has exited.
-    let carried = super::serve_load::Carried::from_env(
-        host.rate_limiter()
-            .expect("the rate limiter is installed before startup"),
-    );
+    let carried = host
+        .process()
+        .expect("process-scoped state is installed before startup");
     match super::serve_load::load_model(args, tui_handles_tx, carried)? {
         Some(prepared) => Ok(Startup::Serve(prepared)),
         None => Ok(Startup::Worker),
