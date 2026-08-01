@@ -79,6 +79,21 @@ pub fn start(
 ) -> std::sync::mpsc::Sender<RunHandles> {
     let (levers_tx, levers_rx) = std::sync::mpsc::channel::<RunHandles>();
     let runtime = tokio::runtime::Handle::current();
+    // Claim the terminal for the dashboard HERE, on the caller's thread,
+    // before the TUI thread exists.
+    //
+    // `SwitchableIo` sends log output to stdout while this is false, and it
+    // used to be set inside the spawned thread's loop — so every line the main
+    // thread logged between the spawn and that store went to stdout, and any
+    // that landed after the thread had entered the alternate screen was
+    // written INTO it. Two lines were enough: the screen scrolled by two rows,
+    // ratatui's idea of where it had drawn no longer matched the terminal, and
+    // its diff then repaired nothing. That is the ghost header sitting above a
+    // live list on the very first screen a user sees.
+    //
+    // Setting it before the spawn closes the window: from here on the only
+    // writer to this terminal is the dashboard.
+    init::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     match std::thread::Builder::new()
         .name("atlas-tui".into())
         .spawn(move || {

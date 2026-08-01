@@ -34,7 +34,13 @@ pub fn run(
             return;
         }
     };
-    TUI_ACTIVE.store(true, Ordering::SeqCst);
+    // Already claimed in `tui::start`, before this thread existed — see the
+    // comment there. Kept as a no-op assertion of the invariant rather than a
+    // second place that decides it.
+    debug_assert!(
+        TUI_ACTIVE.load(Ordering::SeqCst),
+        "start() claims the terminal"
+    );
     let mut terminal = match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
         Ok(t) => t,
         Err(e) => {
