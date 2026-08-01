@@ -13,6 +13,13 @@ name: TUI threading contract
 # What is forbidden is not async — it is BLOCKING THE RENDER THREAD ON IT.
 # `block_on` and `block_in_place` are the two ways to do that by accident.
 
+# Least privilege: this job only reads the checkout to grep it. Without an
+# explicit block the GITHUB_TOKEN inherits the repository default, which
+# CodeQL flags (actions/missing-workflow-permissions) — and it was right to,
+# since nothing here writes anything. Matches ci.yml.
+permissions:
+  contents: read
+
 on:
   pull_request:
     paths:
