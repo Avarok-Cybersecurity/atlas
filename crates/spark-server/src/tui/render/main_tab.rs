@@ -15,7 +15,10 @@ use crate::tui::progress::PhaseState;
 use crate::tui::{log_ring, logo, theme};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let loading = !app.progress.ready;
+    // The listener comes up before any model does, and it reports itself
+    // ready — so with no model this pane claimed "loaded in 0.1s" next to an
+    // empty model name. Readiness of the SOCKET is not readiness of a model.
+    let loading = !app.progress.ready || app.awaiting_model;
     let top_h = if loading { 15 } else { 3 };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -96,6 +99,21 @@ fn draw_weight_load(f: &mut Frame, app: &App, area: Rect) {
     let block = panel(title, false);
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // With nothing loading, the ratio is 0/0 and the bar rendered a full 100%
+    // beside an empty model name. Say what is true instead.
+    if app.awaiting_model {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::default(),
+                Line::from(Span::styled(
+                    "  no model loaded — open the Library (4) to choose one",
+                    theme::dim(),
+                )),
+            ]),
+            inner,
+        );
+        return;
+    }
     let bar_w = inner.width.saturating_sub(22);
 
     let mut lines: Vec<Line> = vec![Line::default()];
