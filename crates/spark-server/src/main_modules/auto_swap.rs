@@ -77,7 +77,9 @@ pub(crate) fn ensure_loaded(
     requested_model: &str,
     catalogue: &[Recipe],
 ) -> anyhow::Result<()> {
-    let _guard = host.swap_guard();
+    // The guard lives in `model_swap::swap` so every caller is covered, and it
+    // re-checks there — taking it here too would deadlock on a non-reentrant
+    // mutex. This early exit is only an optimisation for the uncontended case.
     if host.live_model().as_deref() == Some(requested_model) {
         return Ok(());
     }

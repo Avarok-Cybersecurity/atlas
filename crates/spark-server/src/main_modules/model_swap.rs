@@ -161,8 +161,25 @@ pub(crate) fn swap(
     next: cli::ServeArgs,
     tui_handles_tx: Option<std::sync::mpsc::Sender<crate::tui::RunHandles>>,
 ) -> Result<SwapOutcome> {
+    // Serialised HERE, not at one call site. Two swaps at once both call
+    // `ModelHost::take`; the second gets `None`, mistakes it for a modelless
+    // boot, rebuilds the carried stores from scratch (losing every stored
+    // response and conversation) and loads a second model onto a GPU that is
+    // already loading one. The TUI's Library launch reached `swap` directly
+    // with no guard at all, so pressing `s` twice was enough.
+    let _swapping = host.swap_guard();
+
     // Taken from the host, not a parameter: see `ModelHost::args`.
     let previous_args = host.args();
+
+    // Whoever waited on the guard may be asking for what the winner just
+    // loaded. Compared as a WHOLE argv rather than by model id, because
+    // switching between two recipes for the SAME checkpoint is a real swap.
+    if previous_args.as_ref() == Some(&next) && host.current().is_some() {
+        return Ok(SwapOutcome {
+            previous: previous_args,
+        });
+    }
 
     let mut next = next;
     if let Some(previous) = previous_args.as_ref() {

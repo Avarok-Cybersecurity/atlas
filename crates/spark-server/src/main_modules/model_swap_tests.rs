@@ -149,3 +149,50 @@ fn a_model_this_build_has_no_kernels_for_is_refused_before_teardown() {
         "nothing was torn down: {text}"
     );
 }
+
+#[test]
+fn two_swaps_at_once_do_not_both_tear_down_the_model() {
+    // Unguarded, both callers reach `ModelHost::take`; the loser gets `None`,
+    // reads it as a modelless boot, rebuilds the carried stores from scratch
+    // and loads a second model onto a GPU already loading one. The TUI's
+    // Library launch called `swap` directly, so two presses of `s` was enough.
+    let host = Arc::new(ModelHost::empty());
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let overlapping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let inside = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let threads: Vec<_> = (0..2)
+        .map(|_| {
+            let (host, barrier) = (host.clone(), barrier.clone());
+            let (overlapping, inside) = (overlapping.clone(), inside.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                let _guard = host.swap_guard();
+                if inside.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                    overlapping.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                inside.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("no panic");
+    }
+    assert!(
+        !overlapping.load(std::sync::atomic::Ordering::SeqCst),
+        "two swaps were inside the guard at once"
+    );
+}
+
+#[test]
+fn the_swap_the_winner_already_performed_is_not_repeated() {
+    // Requests that queued behind a swap must not each redo it. Compared as a
+    // whole argv, so switching recipes for the SAME checkpoint still swaps.
+    use clap::Parser as _;
+    let a = cli::ServeArgs::parse_from(["spark", "org/m"]);
+    let mut b = cli::ServeArgs::parse_from(["spark", "org/m"]);
+    assert_eq!(a, b, "same argv");
+    b.max_batch_size = a.max_batch_size + 1;
+    assert_ne!(a, b, "a different recipe for the same model is a real swap");
+}

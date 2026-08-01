@@ -46,7 +46,7 @@ pub struct ModelHost {
     /// against the first, and the failure looks like a bad model rather than a
     /// stampede. Requests queue here and the winner does the work; see
     /// `swap_guard`.
-    swapping: std::sync::Mutex<()>,
+    swapping: parking_lot::Mutex<()>,
     /// The server's Tokio runtime.
     ///
     /// A swap re-runs the load, and the load spawns Tokio tasks (the OOM
@@ -71,7 +71,7 @@ impl ModelHost {
             current: parking_lot::RwLock::new(Some(state)),
             scheduler: parking_lot::Mutex::new(None),
             args: parking_lot::Mutex::new(None),
-            swapping: std::sync::Mutex::new(()),
+            swapping: parking_lot::Mutex::new(()),
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
         }
@@ -84,7 +84,7 @@ impl ModelHost {
             current: parking_lot::RwLock::new(None),
             scheduler: parking_lot::Mutex::new(None),
             args: parking_lot::Mutex::new(None),
-            swapping: std::sync::Mutex::new(()),
+            swapping: parking_lot::Mutex::new(()),
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
         }
@@ -158,12 +158,10 @@ impl ModelHost {
     /// Serialise swaps. The caller re-checks what is loaded AFTER acquiring:
     /// by then another request may have loaded exactly what it wanted, and
     /// doing it again would be a second outage for no reason.
-    pub fn swap_guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        match self.swapping.lock() {
-            Ok(g) => g,
-            // A panic during a previous swap must not wedge every later one.
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    pub fn swap_guard(&self) -> parking_lot::MutexGuard<'_, ()> {
+        // parking_lot: no poisoning, so a panic mid-swap cannot wedge every
+        // later one and there is no `into_inner` branch to get wrong.
+        self.swapping.lock()
     }
 
     /// The model id currently being served, if any.
