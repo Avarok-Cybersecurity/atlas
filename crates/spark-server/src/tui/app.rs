@@ -63,6 +63,16 @@ pub struct App {
     ///
     /// `None` only in tests, which build an App without a server behind it.
     pub host: Option<std::sync::Arc<crate::main_modules::model_host::ModelHost>>,
+    /// Ask the event loop for a full repaint on the next frame.
+    ///
+    /// Ratatui diffs its new buffer against the LAST BUFFER IT DREW, never
+    /// against the terminal. Once the two diverge — a foreign write, a pane
+    /// resize tmux reflowed — the diff emits nothing for those cells and the
+    /// stale glyphs are permanent: a Library hint stayed on screen through a
+    /// model load and a section change, unreachable by any amount of redrawing.
+    /// Only a clear re-establishes the baseline, so it is requested at the
+    /// moments the layout changes wholesale rather than every frame.
+    pub repaint: bool,
     /// No model loaded, so the startup checklist is not tracking anything.
     /// Cleared the moment a load starts, including one begun from the Library.
     pub awaiting_model: bool,
@@ -109,6 +119,7 @@ impl App {
         let awaiting_model = args.model.is_none() && args.model_from_path.is_none();
         Self {
             awaiting_model,
+            repaint: false,
             args,
             host: None,
             section: if awaiting_model {
@@ -271,7 +282,10 @@ impl App {
             .collect()
     }
 
-    fn jump(&mut self, s: Section) {
+    pub(super) fn jump(&mut self, s: Section) {
+        if self.section != s {
+            self.repaint = true;
+        }
         if self.section == s {
             // Repeat-press cycles this section's subsections.
             let n = s.subs().len();
@@ -383,6 +397,7 @@ impl App {
                 // A load is now genuinely in flight, so the checklist is
                 // tracking something again and the pill may say LOADING.
                 self.awaiting_model = false;
+                self.repaint = true;
                 self.section = Section::Main;
                 self.main_sub = MainSub::Overview;
             }

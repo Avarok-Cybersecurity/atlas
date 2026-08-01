@@ -171,3 +171,22 @@ fn launching_from_the_library_stops_claiming_there_is_no_model() {
     app.launch_selected_recipe();
     assert!(app.awaiting_model, "a refused launch loaded nothing");
 }
+
+#[test]
+fn changing_section_asks_for_a_full_repaint() {
+    // Ratatui's diff cannot repair cells where its buffer and the terminal have
+    // diverged. A section change swaps the entire content area, which is both
+    // the moment stale glyphs are most visible and a free place to clear.
+    use clap::Parser as _;
+    let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "m"]));
+    app.repaint = false;
+    app.jump(Section::Library);
+    assert!(app.repaint, "a real change repaints");
+
+    app.repaint = false;
+    app.jump(Section::Library);
+    assert!(
+        !app.repaint,
+        "jumping to the section already shown does not"
+    );
+}

@@ -119,6 +119,11 @@ pub fn run(
             app.bench.poll_preflight();
         }
         // 4. Render.
+        // A wholesale layout change re-establishes the diff baseline; see
+        // `App::repaint`.
+        if std::mem::take(&mut app.repaint) {
+            let _ = terminal.clear();
+        }
         if let Err(e) = terminal.draw(|f| render::draw(f, &app)) {
             tracing::warn!("TUI draw error: {e}; detaching");
             break;
