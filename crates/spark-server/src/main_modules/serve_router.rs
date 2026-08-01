@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use axum::Router;
 use axum::routing::{get, post};
 
@@ -158,9 +158,16 @@ pub(crate) async fn build_and_serve(
              --auth-tokens-file for non-trusted networks."
         );
     }
+    // BIND FIRST, then say so. Announcing the address and marking the phase
+    // before the bind meant a port conflict — the most common startup failure,
+    // and likelier now that a previous server may still hold the socket —
+    // printed "Listening on 127.0.0.1:8888" immediately above "Address already
+    // in use", with the dashboard's checklist showing that phase complete.
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
     tracing::info!("Listening on {addr}");
     spark_runtime::progress::phase(11, "listening");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
     spark_runtime::progress::ready(port);
     serve_with_header_timeout(listener, app).await
 }
