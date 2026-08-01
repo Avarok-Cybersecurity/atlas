@@ -41,21 +41,7 @@ pub(crate) async fn openai_observability_middleware(
     if let Ok(v) = HeaderValue::from_str(&elapsed_ms.to_string()) {
         headers.insert(HeaderName::from_static("openai-processing-ms"), v);
     }
-    // Static "effectively unlimited" stubs (Atlas does not enforce rate limits).
-    for (k, v) in [
-        ("x-ratelimit-limit-requests", "1000000"),
-        ("x-ratelimit-remaining-requests", "999999"),
-        ("x-ratelimit-reset-requests", "0s"),
-        ("x-ratelimit-limit-tokens", "1000000000"),
-        ("x-ratelimit-remaining-tokens", "999999999"),
-        ("x-ratelimit-reset-tokens", "0s"),
-        ("openai-organization", "atlas-local"),
-        ("openai-version", "2026-01-01"),
-    ] {
-        if let Ok(val) = HeaderValue::from_str(v) {
-            headers.insert(HeaderName::from_static(k), val);
-        }
-    }
+    apply_compat_stubs(headers);
     resp
 }
 
@@ -223,6 +209,40 @@ pub(crate) async fn rate_limit_middleware(
     resp
 }
 
+/// Fill in the OpenAI-compat headers a client expects, without clobbering any
+/// the rate limiter already set.
+///
+/// They are a FALLBACK, not an override. The call site's comment used to read
+/// "Atlas does not enforce rate limits" and the loop used `insert`, which was
+/// true when written and became false when the limiter landed: this layer runs
+/// outside `rate_limit_middleware`, so it overwrote the real numbers with
+/// "unlimited, nothing used, no reset" on every response. A client honouring
+/// these headers — the only reason to send them — would never back off, and
+/// would drive straight into the 429s the limiter was configured to prevent.
+/// Measured: RPM=3 rejected the 4th request while every response advertised a
+/// limit of 1000000.
+fn apply_compat_stubs(headers: &mut axum::http::HeaderMap) {
+    use axum::http::{HeaderName, HeaderValue};
+    for (k, v) in [
+        ("x-ratelimit-limit-requests", "1000000"),
+        ("x-ratelimit-remaining-requests", "999999"),
+        ("x-ratelimit-reset-requests", "0s"),
+        ("x-ratelimit-limit-tokens", "1000000000"),
+        ("x-ratelimit-remaining-tokens", "999999999"),
+        ("x-ratelimit-reset-tokens", "0s"),
+        ("openai-organization", "atlas-local"),
+        ("openai-version", "2026-01-01"),
+    ] {
+        let name = HeaderName::from_static(k);
+        if headers.contains_key(&name) {
+            continue;
+        }
+        if let Ok(val) = HeaderValue::from_str(v) {
+            headers.insert(name, val);
+        }
+    }
+}
+
 pub(crate) fn apply_rate_headers(
     headers: &mut axum::http::HeaderMap,
     d: &rate_limiter::RateDecision,
@@ -264,3 +284,7 @@ pub(crate) fn apply_rate_headers(
         format!("{}s", d.tokens.reset_secs),
     );
 }
+
+#[cfg(test)]
+#[path = "middleware_tests.rs"]
+mod tests;
