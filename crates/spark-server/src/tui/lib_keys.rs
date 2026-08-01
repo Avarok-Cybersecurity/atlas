@@ -136,6 +136,15 @@ impl LibState {
                     };
                 }
             }
+            // The same three the list offers, because Cards is where you are
+            // when you have picked a model and are reading its recipes — which
+            // is exactly when you discover you do not have the weights. Making
+            // the user step back to the list first is a step for nothing, and
+            // it is what made the config pane's "Esc, then d" advice wrong by
+            // one keypress.
+            KeyCode::Char('d') => return Outcome::Download,
+            KeyCode::Char('x') => return Outcome::CancelDownload,
+            KeyCode::Char('u') => return Outcome::CheckFresh,
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => self.view = View::List,
             _ => {}
         }

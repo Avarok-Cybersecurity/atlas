@@ -464,3 +464,7 @@ pub(crate) fn problem_line(s: &str) -> String {
 #[cfg(test)]
 #[path = "lib_state_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lib_state_more_tests.rs"]
+mod more_tests;

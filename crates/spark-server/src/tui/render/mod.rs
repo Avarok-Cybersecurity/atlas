@@ -364,7 +364,7 @@ fn library_hints(app: &App) -> &'static str {
         return "type to search · ⏎ keep · Esc clear";
     }
     match (app.lib.view, app.lib.editing) {
-        (View::Cards, _) => "j/k move · ⏎ configure · Esc back to models",
+        (View::Cards, _) => "j/k move · ⏎ configure · d download · u updates · Esc back",
         (View::Config, true) => "⏎ commit · Esc cancel",
         // `s` cannot start a model whose weights are absent, so the footer
         // says so BEFORE it is pressed rather than leaving the user to find

@@ -421,38 +421,3 @@ fn a_launch_that_succeeds_reports_nothing() {
     drop(tx);
     assert!(s.poll_launch().is_none(), "silence means it worked");
 }
-
-#[test]
-fn starting_a_recipe_whose_weights_are_missing_is_refused_before_anything_is_torn_down() {
-    // The reported flow: press start, the swap tears down whatever was
-    // serving, the checklist resets, the dashboard jumps to Main — and only
-    // then does `resolve_model_dir` report that the model is not there, with
-    // nothing to do about it. Now that weights are downloadable, the honest
-    // answer is to refuse up front and name the action.
-    // A recipe with NO local weights — the case the Library now exists to fix.
-    let recipe = real_recipe();
-    let mut s = LibState {
-        index: Index {
-            recipes: vec![recipe],
-            ..Index::default()
-        },
-        ..LibState::default()
-    };
-    s.rebuild(&[]);
-    s.view = View::Config;
-    assert!(!s.selected_has_weights(), "nothing is on disk");
-
-    let err = s
-        .launch(std::sync::Arc::new(
-            crate::main_modules::model_host::ModelHost::empty(),
-        ))
-        .expect_err("a model that is not downloaded cannot be started");
-    assert!(err.contains("not downloaded"), "{err}");
-    assert!(err.contains('d'), "and names the download key: {err}");
-
-    // And with weights present it gets past the check (whatever the swap then
-    // does is the swap's business, not this guard's).
-    let mut ok = state_with_recipe();
-    ok.view = View::Config;
-    assert!(ok.selected_has_weights(), "the fixture has weights");
-}
