@@ -112,6 +112,12 @@ pub struct App {
     pub lib: crate::tui::lib_state::LibState,
     /// Model downloads and update checks.
     pub download: crate::tui::download_state::DownloadState,
+    /// An in-progress or just-finished mouse selection, in cell coordinates.
+    ///
+    /// Lives on `App` rather than in the event loop because the RENDERER needs
+    /// it — the highlight is drawn from here — and because a selection must
+    /// survive the ticks between button-down and button-up.
+    pub selection: Option<crate::tui::selection::Selection>,
     pub network_selected: usize,
     pub network_detail: bool,
     pub ops: OpsState,
@@ -163,6 +169,7 @@ impl App {
             library: Vec::new(),
             library_dirty: true,
             download: Default::default(),
+            selection: None,
             lib: Default::default(),
             network_selected: 0,
             network_detail: false,

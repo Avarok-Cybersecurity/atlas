@@ -79,6 +79,31 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help_open {
         draw_help(f, area);
     }
+    // LAST, over everything including the help overlay: the highlight has to
+    // show what will actually be copied, and what is copied is read back out
+    // of this finished frame.
+    draw_selection(f, app);
+}
+
+/// Paint the drag highlight onto the finished frame.
+///
+/// Reverses the cells rather than setting a colour, so it stays legible over
+/// every panel background, the selected-row tint and the log pane's per-level
+/// colours — a fixed highlight colour is invisible on at least one of them.
+fn draw_selection(f: &mut Frame, app: &App) {
+    let Some(sel) = app.selection.filter(|s| s.is_drag()) else {
+        return;
+    };
+    let area = f.area();
+    let buf = f.buffer_mut();
+    let ((_, sy), (_, ey)) = sel.ordered();
+    for y in sy..=ey.min(area.height.saturating_sub(1)) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            if sel.contains(x, y) {
+                buf[(x, y)].modifier |= Modifier::REVERSED;
+            }
+        }
+    }
 }
 
 /// Paint the content ring and return the area inside it.
@@ -421,3 +446,7 @@ pub(crate) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Ve
     }
     lines
 }
+
+#[cfg(test)]
+#[path = "selection_render_tests.rs"]
+mod selection_tests;

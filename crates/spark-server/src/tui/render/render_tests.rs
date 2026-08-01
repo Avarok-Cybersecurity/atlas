@@ -16,7 +16,7 @@ use super::draw;
 use crate::tui::app::{App, BenchSub, Section};
 use crate::tui::bench_state::View;
 
-fn app() -> App {
+pub(super) fn app() -> App {
     use clap::Parser;
     let mut app = App::new(crate::cli::ServeArgs::parse_from([
         "spark",
@@ -29,7 +29,7 @@ fn app() -> App {
     app
 }
 
-fn render(app: &App, width: u16, height: u16) -> String {
+pub(super) fn render(app: &App, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("backend");
     terminal.draw(|f| draw(f, app)).expect("draw");
     terminal

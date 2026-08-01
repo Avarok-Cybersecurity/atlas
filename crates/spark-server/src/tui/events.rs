@@ -51,6 +51,10 @@ pub fn run(
     };
 
     let mut last_tick = Instant::now();
+    // Set when a drag ends; consumed after the next draw, which is the first
+    // moment the selected text exists anywhere readable.
+    let mut copy_after_draw = false;
+    let mut copy_result: Option<(Result<usize, String>, bool)> = None;
     let mut ticks: u32 = 0;
 
     loop {
@@ -60,7 +64,18 @@ pub fn run(
                 Ok(Event::Key(k)) if k.kind != crossterm::event::KeyEventKind::Release => {
                     app.on_key(k)
                 }
-                Ok(Event::Mouse(m)) => on_mouse(&mut app, m, terminal.size().ok()),
+                Ok(Event::Mouse(m)) => {
+                    let size = terminal.size().ok();
+                    // The copy cannot happen here: the text lives in the
+                    // rendered frame, and between draws there ISN'T one —
+                    // ratatui swaps and RESETS its buffers after each draw, so
+                    // reading `current_buffer_mut()` now returns the blank
+                    // frame about to be drawn into. Flag it and read the frame
+                    // that `terminal.draw` hands back below.
+                    if on_mouse(&mut app, m, size) == MouseOutcome::CopySelection {
+                        copy_after_draw = true;
+                    }
+                }
                 // ratatui diffs against the frame it last drew, so on a resize
                 // the cells the OLD layout wrote and the NEW one does not
                 // reach are never overwritten — they persist as fragments of a
@@ -166,9 +181,32 @@ pub fn run(
         if std::mem::take(&mut app.repaint) {
             let _ = terminal.clear();
         }
-        if let Err(e) = terminal.draw(|f| render::draw(f, &app)) {
-            tracing::warn!("TUI draw error: {e}; detaching");
-            break;
+        match terminal.draw(|f| render::draw(f, &app)) {
+            Err(e) => {
+                tracing::warn!("TUI draw error: {e}; detaching");
+                break;
+            }
+            Ok(frame) => {
+                // `CompletedFrame` borrows the buffer that was just rendered —
+                // the only place the on-screen TEXT exists, and the reason the
+                // copy is deferred to here rather than done in the handler.
+                if std::mem::take(&mut copy_after_draw)
+                    && let Some(sel) = app.selection
+                {
+                    let text = super::selection::extract(frame.buffer, frame.area, &sel);
+                    copy_result = Some((super::clipboard::copy(&text), text.is_empty()));
+                }
+            }
+        }
+        // Toasting needs `&mut app`, which the frame borrow above forbids.
+        if let Some((res, was_empty)) = copy_result.take() {
+            match res {
+                Ok(n) => app.toast(format!("Copied {n} characters to clipboard"), false),
+                // A stray drag across blank space is a non-event, not an error
+                // worth interrupting anyone about.
+                Err(e) if was_empty => tracing::debug!("copy skipped: {e}"),
+                Err(e) => app.toast(e, true),
+            }
         }
         // 5. Exit conditions.
         if shutdown::requested() {
@@ -194,8 +232,22 @@ pub fn run(
     }
 }
 
-fn on_mouse(app: &mut App, m: crossterm::event::MouseEvent, size: Option<ratatui::layout::Size>) {
-    let Some(size) = size else { return };
+/// What the caller must do after a mouse event it cannot do itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MouseOutcome {
+    None,
+    /// A drag finished: read the selection out of the rendered frame and copy.
+    CopySelection,
+}
+
+fn on_mouse(
+    app: &mut App,
+    m: crossterm::event::MouseEvent,
+    size: Option<ratatui::layout::Size>,
+) -> MouseOutcome {
+    let Some(size) = size else {
+        return MouseOutcome::None;
+    };
     let header_h: u16 = if size.height >= 28 { 3 } else { 1 };
     let sidebar_w: u16 = if size.width >= 96 { 18 } else { 4 };
     match m.kind {
@@ -217,22 +269,34 @@ fn on_mouse(app: &mut App, m: crossterm::event::MouseEvent, size: Option<ratatui
                     visual -= subs;
                 }
                 app.sidebar_click(visual);
+                // A sidebar click is navigation, not the start of a drag.
+                app.selection = None;
+            } else {
+                // Anywhere else, the button going down is a potential drag.
+                // Nothing is copied until it actually moves.
+                app.selection = Some(super::selection::Selection::new((m.column, m.row)));
             }
         }
-        MouseEventKind::ScrollUp => {
-            if app.section == Section::Main {
-                let cur = app.log_scroll.unwrap_or(0);
-                app.log_scroll = Some(cur + 3);
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(sel) = app.selection.as_mut() {
+                sel.cursor = (m.column, m.row);
             }
         }
-        MouseEventKind::ScrollDown => {
-            if app.section == Section::Main {
-                match app.log_scroll {
-                    Some(n) if n > 3 => app.log_scroll = Some(n - 3),
-                    _ => app.log_scroll = None,
+        MouseEventKind::Up(MouseButton::Left) => {
+            // Copy on release, and only if the pointer moved: a plain click
+            // would otherwise copy one character and raise a toast every time
+            // anyone touched the dashboard.
+            return match app.selection {
+                Some(sel) if sel.is_drag() => MouseOutcome::CopySelection,
+                _ => {
+                    app.selection = None;
+                    MouseOutcome::None
                 }
-            }
+            };
         }
+        MouseEventKind::ScrollUp => app.scroll(-3),
+        MouseEventKind::ScrollDown => app.scroll(3),
         _ => {}
     }
+    MouseOutcome::None
 }

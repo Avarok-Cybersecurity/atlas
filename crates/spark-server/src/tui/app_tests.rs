@@ -225,3 +225,44 @@ fn the_kernel_table_is_built_once_per_model() {
     app.on_tick();
     assert_eq!(app.kernels_for.as_deref(), Some("org/a"));
 }
+
+#[test]
+fn the_wheel_scrolls_every_section_that_has_anything_to_scroll() {
+    // It used to work only on the Main log pane, which reads as "the mouse
+    // does nothing" in five sections out of six.
+    use crate::tui::app::{MainSub, TermSub};
+    use crate::tui::section::Section;
+
+    let mut a = App::new(clap::Parser::parse_from(["spark", "m"]));
+
+    // Main / Overview: the log pane counts backwards from newest, so wheel-up
+    // must move INTO history and wheel-down must return to following.
+    a.section = Section::Main;
+    a.main_sub = MainSub::Overview;
+    a.scroll(-3);
+    assert_eq!(a.log_scroll, Some(3), "wheel-up enters history");
+    a.scroll(3);
+    assert_eq!(a.log_scroll, None, "wheel-down returns to following newest");
+    a.scroll(3);
+    assert_eq!(a.log_scroll, None, "and cannot scroll past the newest line");
+
+    // Main / Kernels: a plain viewport offset, clamped at zero.
+    a.main_sub = MainSub::Kernels;
+    a.scroll(3);
+    assert_eq!(a.kernel_scroll, 3);
+    a.scroll(-99);
+    assert_eq!(a.kernel_scroll, 0, "clamped, not wrapped into a huge usize");
+
+    // Terminal / Chat has its own scrollback.
+    a.section = Section::Terminal;
+    a.term_sub = TermSub::Chat;
+    a.scroll(-3);
+    assert_eq!(a.chat.scroll, Some(3));
+
+    // Gauges have nothing to scroll and must not panic.
+    for s in [Section::Stats, Section::Network] {
+        a.section = s;
+        a.scroll(3);
+        a.scroll(-3);
+    }
+}

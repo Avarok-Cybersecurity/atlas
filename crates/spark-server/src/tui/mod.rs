@@ -66,14 +66,17 @@
 //! loading" — so an always-send helper would change what its silence means.
 
 pub mod capture_layer;
+pub mod clipboard;
 pub mod init;
 pub mod log_ring;
+pub mod selection;
 pub mod shutdown;
 pub mod terminal_guard;
 
 pub mod app;
 mod app_input;
 pub mod app_library;
+pub mod app_scroll;
 pub mod bench_keys;
 pub mod bench_preflight;
 pub mod bench_state;

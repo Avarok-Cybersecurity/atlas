@@ -83,11 +83,6 @@ parking_lot = "0.12"
 # right backend feature explicitly (cuda or metal). Without this, every
 # member would silently pull in cudarc via atlas-core's `cuda` default.
 atlas-core = { path = "crates/atlas-core", default-features = false }
-atlas-quant = { path = "crates/atlas-quant" }
-atlas-norm = { path = "crates/atlas-norm" }
-atlas-activation = { path = "crates/atlas-activation" }
-atlas-embed = { path = "crates/atlas-embed" }
-atlas-reduce = { path = "crates/atlas-reduce" }
 atlas-kernels = { path = "crates/atlas-kernels" }
 atlas-tier = { path = "crates/atlas-tier" }
 atlas-rdma = { path = "crates/atlas-rdma" }

@@ -2380,6 +2380,7 @@ dependencies = [
  "atlas-kernels",
  "atlas-plugin",
  "axum",
+ "base64 0.22.1",
  "clap",
  "crossterm",
  "futures",
