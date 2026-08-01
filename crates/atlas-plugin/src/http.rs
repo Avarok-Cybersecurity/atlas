@@ -300,7 +300,10 @@ pub fn message_from_body(body: &str) -> Option<String> {
 /// `None` unless it is a non-200 carrying a parseable OpenAI-shaped error.
 ///
 /// For callers that have the entire response in hand rather than a stream, and
-/// deliberately routed through [`Reader`] rather than given its own parser:
+/// deliberately routed through this module's own incremental reader rather than
+/// given a second parser (no intra-doc link: that reader is private, and a
+/// public item linking to a private one is a rustdoc error under this crate's
+/// `deny(warnings)`):
 /// error bodies are framed like any other, this server sends them
 /// `transfer-encoding: chunked`, and a second de-chunker written by hand is
 /// exactly how one caller ends up understanding `14A\r\n{...}` and the other

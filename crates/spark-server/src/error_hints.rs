@@ -6,9 +6,10 @@
 //! accurate and useless: it names a state without naming the way out of it.
 //! Someone who does not already know the Library exists cannot act on it.
 //!
-//! This is the same idea as [`crate::cli::validate`]'s `Violation { what, why,
-//! fix }` — the repo already holds that a diagnostic without a `fix` is only
-//! half of one — applied to the HTTP surface.
+//! This is the same idea as `cli::validate`'s `Violation { what, why, fix }`
+//! — the repo already holds that a diagnostic without a `fix` is only half of
+//! one — applied to the HTTP surface. (Not an intra-doc link: that module is
+//! private, and linking to it from documented code is a rustdoc error here.)
 //!
 //! ## Why the hint is appended to `message` as well as emitted as `hint`
 //!
