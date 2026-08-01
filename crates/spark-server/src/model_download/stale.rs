@@ -42,7 +42,7 @@ pub fn check(repo: &str, cache_root: &Path) -> Result<Freshness, DownloadError> 
     let Some(local) = hf::local_revision(cache_root, repo) else {
         return Ok(Freshness::Missing);
     };
-    let (remote, _) = hf::repo_info(repo)?;
+    let (remote, _) = hf::repo_info(repo, hf::token().as_deref())?;
     Ok(if local == remote {
         Freshness::Current
     } else {

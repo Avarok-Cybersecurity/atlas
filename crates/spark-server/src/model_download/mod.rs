@@ -195,10 +195,12 @@ fn run(
     tx: &Sender<DownloadMsg>,
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
-    let (revision, listing) = hf::repo_info(repo)?;
+    // Resolved once, for the whole job.
+    let tok = hf::token();
+    let (revision, listing) = hf::repo_info(repo, tok.as_deref())?;
 
     // Sizes come from a second endpoint; failing to get them is not fatal.
-    let sizes = hf::sizes(repo, &revision);
+    let sizes = hf::sizes(repo, &revision, tok.as_deref());
     let with_sizes: Vec<plan::RemoteFile> = listing
         .into_iter()
         .map(|mut f| {
@@ -267,17 +269,25 @@ fn run(
         });
         let base = done_bytes;
         let mut last_sent = 0u64;
-        let completed = hf::fetch_file(repo, &revision, &f.name, &dest, cancel, &mut |n| {
-            // One message per megabyte of movement, not per read: the UI ticks
-            // at 10 Hz and a channel full of byte counts is just work.
-            if n.saturating_sub(last_sent) >= 1024 * 1024 {
-                last_sent = n;
-                let _ = tx.send(DownloadMsg::Progress {
-                    done: base + n,
-                    total,
-                });
-            }
-        })?;
+        let completed = hf::fetch_file(
+            repo,
+            &revision,
+            &f.name,
+            &dest,
+            tok.as_deref(),
+            cancel,
+            &mut |n| {
+                // One message per megabyte of movement, not per read: the UI ticks
+                // at 10 Hz and a channel full of byte counts is just work.
+                if n.saturating_sub(last_sent) >= 1024 * 1024 {
+                    last_sent = n;
+                    let _ = tx.send(DownloadMsg::Progress {
+                        done: base + n,
+                        total,
+                    });
+                }
+            },
+        )?;
         if !completed {
             let _ = tx.send(DownloadMsg::Cancelled {
                 completed: i,
@@ -313,3 +323,7 @@ fn fits(total: u64, already: u64, free: u64) -> Result<(), DownloadError> {
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "net_tests.rs"]
+mod net_tests;

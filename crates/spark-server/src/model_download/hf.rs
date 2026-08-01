@@ -44,6 +44,12 @@ fn agent() -> &'static ureq::Agent {
 
 /// The token, if the user has one. Public models need none.
 ///
+/// Resolved ONCE per job by the caller and threaded down, not called from each
+/// request: a nine-shard download otherwise re-read the same file eleven
+/// times, and — more importantly — a function that reaches into the
+/// environment on every call cannot be tested against an unauthenticated Hub
+/// without mutating process-global state.
+///
 /// Looked up explicitly rather than left to a client library so the behaviour
 /// does not change under us: the env vars first, then the file
 /// `huggingface-cli login` writes, which is what a user who has "logged in"
@@ -111,11 +117,13 @@ fn get(
 }
 
 /// The repo's current `main` revision sha, and every file in it.
-pub fn repo_info(repo: &str) -> Result<(String, Vec<RemoteFile>), DownloadError> {
-    let tok = token();
+pub fn repo_info(
+    repo: &str,
+    tok: Option<&str>,
+) -> Result<(String, Vec<RemoteFile>), DownloadError> {
     let had = tok.is_some();
     let url = format!("{HOST}/api/models/{repo}");
-    let body = match get(&url, tok.as_deref(), None) {
+    let body = match get(&url, tok, None) {
         Ok(r) => r
             .into_body()
             .read_to_string()
@@ -151,9 +159,9 @@ pub fn repo_info(repo: &str) -> Result<(String, Vec<RemoteFile>), DownloadError>
 /// A separate endpoint because `/api/models/{repo}` does not report sizes. If
 /// this fails the download still runs — the UI shows bytes transferred without
 /// a percentage, which is degraded but never blocking.
-pub fn sizes(repo: &str, revision: &str) -> Vec<(String, u64)> {
+pub fn sizes(repo: &str, revision: &str, tok: Option<&str>) -> Vec<(String, u64)> {
     let url = format!("{HOST}/api/models/{repo}/tree/{revision}?recursive=1");
-    let Ok(r) = get(&url, token().as_deref(), None) else {
+    let Ok(r) = get(&url, tok, None) else {
         return Vec::new();
     };
     let Ok(body) = r.into_body().read_to_string() else {
@@ -193,10 +201,10 @@ pub fn fetch_file(
     revision: &str,
     name: &str,
     dest: &Path,
+    tok: Option<&str>,
     cancel: &AtomicBool,
     on_bytes: &mut dyn FnMut(u64),
 ) -> Result<bool, DownloadError> {
-    let tok = token();
     let had = tok.is_some();
     // A `.part` sibling is the resume record; no state file of our own.
     //
@@ -209,7 +217,7 @@ pub fn fetch_file(
     let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
     let url = format!("{HOST}/{repo}/resolve/{revision}/{name}");
-    let resp = match get(&url, tok.as_deref(), (have > 0).then_some(have)) {
+    let resp = match get(&url, tok, (have > 0).then_some(have)) {
         Ok(r) => r,
         Err((0, e)) => return Err(DownloadError::Offline(e.to_string())),
         Err((s, _)) => return Err(classify(repo, s, had)),
@@ -246,15 +254,7 @@ pub fn fetch_file(
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n]).map_err(|e| {
-            // ENOSPC is the one IO error worth naming: it is actionable, and
-            // "failed to write" sends the reader looking for the wrong thing.
-            if e.kind() == std::io::ErrorKind::StorageFull {
-                DownloadError::DiskFull
-            } else {
-                DownloadError::Io(e.to_string())
-            }
-        })?;
+        file.write_all(&buf[..n]).map_err(write_error)?;
         written += n as u64;
         on_bytes(written);
     }
@@ -278,6 +278,23 @@ pub fn part_path(dest: &Path) -> PathBuf {
         "{}.part",
         dest.file_name().unwrap_or_default().to_string_lossy()
     ))
+}
+
+/// Classify a write failure.
+///
+/// ENOSPC is the one worth naming: it is actionable and common on a multi-
+/// gigabyte download, and "failed to write" sends the reader looking for a
+/// permissions or corruption problem they do not have.
+///
+/// Separated out because the alternative way to test this is to fill a real
+/// filesystem — and the only one small enough to fill on this box is a 61 GB
+/// tmpfs shared with a machine that is serving a 27B model.
+pub(super) fn write_error(e: std::io::Error) -> DownloadError {
+    if e.kind() == std::io::ErrorKind::StorageFull {
+        DownloadError::DiskFull
+    } else {
+        DownloadError::Io(e.to_string())
+    }
 }
 
 /// Free bytes on the filesystem that will hold `path`.

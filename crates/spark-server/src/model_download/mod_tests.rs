@@ -246,64 +246,6 @@ fn the_space_check_refuses_only_when_it_genuinely_will_not_fit() {
 
 // ---- network tests, run by hand ----
 
-/// The end-to-end proof: download a real (tiny) model and load-resolve it.
-#[test]
-#[ignore = "network"]
-fn a_real_download_produces_a_model_the_resolver_accepts() {
-    let c = Cache::new("real");
-    let repo = "hf-internal-testing/tiny-random-gpt2";
-    let h = start(repo, c.0.clone());
-
-    let mut planned = None;
-    let mut done = None;
-    for msg in h.rx.iter() {
-        match msg {
-            DownloadMsg::Planned {
-                files, total_bytes, ..
-            } => {
-                eprintln!("planned {files} files, {total_bytes} bytes");
-                planned = Some(files);
-            }
-            DownloadMsg::Done { snapshot, revision } => {
-                eprintln!("done {revision} -> {}", snapshot.display());
-                done = Some(snapshot);
-            }
-            DownloadMsg::Failed(e) => panic!("download failed: {}", e.hint()),
-            _ => {}
-        }
-    }
-    assert!(planned.unwrap_or(0) > 0, "something was planned");
-    let snap = done.expect("the download completed");
-    assert!(snap.join("config.json").exists());
-
-    let resolved = crate::model_resolver::resolve_model_dir(repo, Some(&c.0))
-        .expect("a freshly downloaded model must resolve");
-    assert_eq!(resolved, snap);
-}
-
-/// Cancellation must stop promptly and leave resume credit, not a model.
-#[test]
-#[ignore = "network"]
-fn a_cancelled_download_leaves_no_refs_main() {
-    let c = Cache::new("cancel");
-    let repo = "hf-internal-testing/tiny-random-gpt2";
-    let h = start(repo, c.0.clone());
-    h.cancel();
-    let mut cancelled = false;
-    for msg in h.rx.iter() {
-        match msg {
-            DownloadMsg::Cancelled { .. } => cancelled = true,
-            DownloadMsg::Done { .. } => panic!("a cancelled download must not publish"),
-            _ => {}
-        }
-    }
-    assert!(cancelled, "the worker reported the cancellation");
-    assert!(
-        hf::local_revision(&c.0, repo).is_none(),
-        "a cancelled download must not be loadable"
-    );
-}
-
 #[test]
 fn part_files_cannot_collide_between_siblings() {
     // `with_extension("part")` maps `foo.safetensors` and `foo.json` onto the
@@ -454,4 +396,32 @@ fn hub_statuses_map_to_causes_a_reader_can_act_on() {
             status: 502
         }
     );
+}
+
+/// A genuinely gated repo, asked for WITHOUT credentials.
+///
+
+#[test]
+fn a_full_disk_is_reported_as_a_full_disk() {
+    use super::hf::write_error;
+    // ENOSPC is 28 on Linux. Asserting through `from_raw_os_error` rather than
+    // through `ErrorKind::StorageFull` directly is the point: if that mapping
+    // is ever not what the OS actually returns, `DiskFull` would never fire
+    // and a full disk would surface as a generic write failure — which reads
+    // like corruption and sends the reader after the wrong thing.
+    assert_eq!(
+        write_error(std::io::Error::from_raw_os_error(28)),
+        DownloadError::DiskFull
+    );
+    // Anything else keeps its own message rather than being guessed at.
+    match write_error(std::io::Error::from_raw_os_error(13)) {
+        DownloadError::Io(m) => assert!(!m.is_empty(), "permission denied keeps its text"),
+        other => panic!("EACCES is not a full disk: {other:?}"),
+    }
+    // EFBIG (a file-size ulimit or quota) is NOT ENOSPC and must not claim to
+    // be — the fix is different.
+    match write_error(std::io::Error::from_raw_os_error(27)) {
+        DownloadError::Io(_) => {}
+        other => panic!("EFBIG is not a full disk: {other:?}"),
+    }
 }
