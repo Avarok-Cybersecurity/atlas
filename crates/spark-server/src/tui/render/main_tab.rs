@@ -212,7 +212,13 @@ fn draw_ready_strip(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_chips(f: &mut Frame, app: &App, area: Rect) {
-    let chips = logo::badges(&app.args);
+    // The LIVE argv, not the boot one. Every chip here — kv dtype, lm head,
+    // batch, context, scheduler, port — is read from `ServeArgs`, and a swap
+    // replaces the whole argv: after launching a recipe from the Library the
+    // strip went on describing the configuration the process started with,
+    // which for a no-model boot is the bare defaults and a literal "<model>".
+    let live_args = app.host.as_ref().and_then(|h| h.args());
+    let chips = logo::badges(live_args.as_ref().unwrap_or(&app.args));
     let mut spans: Vec<Span> = Vec::new();
     for b in &chips {
         let tint = match b.tint {

@@ -416,3 +416,29 @@ fn the_status_pill_does_not_claim_to_be_serving_with_no_model() {
     app.awaiting_model = false;
     assert!(super::status_pill(&app).content.contains("SERVING"));
 }
+
+#[test]
+fn the_chip_strip_describes_the_running_config_not_the_boot_argv() {
+    // Every chip is read from ServeArgs, and a swap replaces the whole argv.
+    // Boot with no model and the strip showed bare defaults and a literal
+    // "<model>"; launch a recipe and it kept showing them.
+    use clap::Parser as _;
+    let boot = crate::cli::ServeArgs::parse_from(["spark", "m"]);
+    let boot_chips = crate::tui::logo::badges(&boot);
+    let boot_text: String = boot_chips.iter().map(|b| b.text.clone()).collect();
+
+    let mut live = crate::cli::ServeArgs::parse_from(["spark", "org/loaded"]);
+    live.max_batch_size = boot.max_batch_size + 7;
+    let live_chips = crate::tui::logo::badges(&live);
+    let live_text: String = live_chips.iter().map(|b| b.text.clone()).collect();
+
+    assert!(live_text.contains("org/loaded"), "names the live model");
+    assert_ne!(
+        boot_text, live_text,
+        "the strip must be able to differ from the boot argv"
+    );
+    assert!(
+        live_text.contains(&(boot.max_batch_size + 7).to_string()),
+        "and it reports the live batch size: {live_text}"
+    );
+}
