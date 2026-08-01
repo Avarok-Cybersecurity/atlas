@@ -282,8 +282,12 @@ where
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 axum::Json(serde_json::json!({
                     "error": {
-                        "message": "no model is loaded",
+                        "message": crate::error_hints::message_with_hint(
+                            "no model is loaded",
+                            "model_not_loaded",
+                        ),
                         "type": "model_not_loaded",
+                        "hint": crate::error_hints::hint_for("model_not_loaded"),
                     }
                 })),
             )
@@ -324,8 +328,12 @@ where
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 axum::Json(serde_json::json!({
                     "error": {
-                        "message": "server is still starting",
+                        "message": crate::error_hints::message_with_hint(
+                            "server is still starting",
+                            "not_ready",
+                        ),
                         "type": "not_ready",
+                        "hint": crate::error_hints::hint_for("not_ready"),
                     }
                 })),
             )

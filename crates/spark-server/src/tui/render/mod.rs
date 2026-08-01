@@ -4,6 +4,7 @@
 //! sticky footer, toasts, help overlay. Pure `App` → `Frame`.
 
 mod bench;
+mod header;
 mod library;
 mod main_tab;
 mod network_tab;
@@ -17,7 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use super::app::{App, Focus, MainSub, Section};
-use super::{logo, theme};
+use super::theme;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -46,7 +47,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Length(1),
         ])
         .split(area);
-    draw_header(f, app, rows[0], tall);
+    header::draw_header(f, app, rows[0], tall);
 
     let sidebar_w = if area.width >= 96 { 18 } else { 4 };
     let cols = Layout::default()
@@ -107,86 +108,6 @@ fn draw_glow_ring(f: &mut Frame, app: &App, area: Rect) -> Rect {
     let inner = block.inner(area);
     f.render_widget(block, area);
     inner
-}
-
-fn status_pill(app: &App) -> Span<'static> {
-    // Three states, not two: "loading" for a load that is not running reads as
-    // a hang, which is exactly how a no-argument boot looked.
-    let (label, bg) = if app.awaiting_model {
-        (" ○ NO MODEL ", theme::TEXT_DIM)
-    } else if app.progress.ready {
-        (" ● SERVING ", theme::GREEN)
-    } else {
-        (" ● LOADING ", theme::WARN)
-    };
-    Span::styled(
-        label,
-        Style::default()
-            .bg(bg.color())
-            .fg(theme::BG_BASE.color())
-            .add_modifier(Modifier::BOLD),
-    )
-}
-
-fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
-    // Chevron wave only during loading (motion restraint).
-    //
-    // Same distinction as the status pill: `progress.ready` is the LISTENER,
-    // and a settled logo next to "NO MODEL" reads as a finished load that has
-    // not happened.
-    let wave = if app.progress.ready && !app.awaiting_model {
-        None
-    } else {
-        Some((app.tick / 3) as usize % 3)
-    };
-    let up = app.started.elapsed().as_secs();
-    let uptime = format!("up {:02}:{:02}", up / 60 % 100, up % 60);
-    let right = Line::from(vec![
-        status_pill(app),
-        Span::styled(format!("  {uptime} "), theme::text2()),
-    ]);
-    if tall {
-        let lines = logo::three_line(wave);
-        for (i, line) in lines.into_iter().enumerate() {
-            let row = Rect {
-                y: area.y + i as u16,
-                height: 1,
-                ..area
-            };
-            f.render_widget(Paragraph::new(line), row);
-        }
-        // Right cluster row 0; model·quant·port row 1.
-        f.render_widget(
-            Paragraph::new(right).alignment(ratatui::layout::Alignment::Right),
-            Rect {
-                y: area.y,
-                height: 1,
-                ..area
-            },
-        );
-        let model = live_model_name(app);
-        let sub = Line::from(Span::styled(
-            format!(
-                "{model} · kv {} · :{} ",
-                app.args.kv_cache_dtype, app.args.port
-            ),
-            theme::text2(),
-        ));
-        f.render_widget(
-            Paragraph::new(sub).alignment(ratatui::layout::Alignment::Right),
-            Rect {
-                y: area.y + 1,
-                height: 1,
-                ..area
-            },
-        );
-    } else {
-        f.render_widget(Paragraph::new(logo::one_line(wave)), area);
-        f.render_widget(
-            Paragraph::new(right).alignment(ratatui::layout::Alignment::Right),
-            area,
-        );
-    }
 }
 
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {

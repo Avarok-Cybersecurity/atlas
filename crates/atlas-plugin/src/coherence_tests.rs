@@ -296,3 +296,50 @@ fn the_wrong_family_note_outranks_an_odd_answer() {
     );
     assert!(!report.is_clean());
 }
+
+#[test]
+fn a_transport_error_carrying_a_hint_is_not_cut_off_mid_clause() {
+    // The pre-flight modal is where a benchmark run against a modelless server
+    // gets explained, and the explanation now ends in an instruction. Bounding
+    // it at 140 chars truncated that instruction to "choose a model and a…".
+    let e = "endpoint returned \"HTTP/1.1 503 Service Unavailable\": no model is loaded — \
+             open the Library (press 4 in the dashboard), choose a model and a recipe, \
+             and start it; then retry this request";
+    let out = super::one_line(e);
+    assert!(
+        !out.ends_with('…'),
+        "the actionable half must survive the bound: {out}"
+    );
+    assert!(out.contains("retry this request"), "{out}");
+}
+
+#[test]
+fn a_runaway_error_chain_is_still_bounded() {
+    let out = super::one_line(&"boom ".repeat(500));
+    assert!(out.chars().count() <= 281, "still bounded: {}", out.len());
+    assert!(out.ends_with('…'));
+}
+
+#[test]
+fn serving_nothing_does_not_promise_numbers() {
+    // The wrong-model wording ("the run WILL produce numbers; they will just be
+    // for a different model") is false when nothing is loaded: every request is
+    // refused, so there are no numbers at all.
+    let target = TargetEndpoint {
+        base_url: "http://127.0.0.1:8123".into(),
+        model: "x".into(),
+    };
+    let report = Report {
+        served_instead: Some(Vec::new()),
+        ..Default::default()
+    };
+    let c = report
+        .concern(&target)
+        .expect("serving nothing is a concern");
+    assert!(
+        !c.contains("WILL produce"),
+        "must not promise numbers it cannot produce: {c}"
+    );
+    assert!(c.contains("no model loaded"), "{c}");
+    assert!(c.contains("Library"), "and says how to fix it: {c}");
+}

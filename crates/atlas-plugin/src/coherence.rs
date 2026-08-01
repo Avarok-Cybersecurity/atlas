@@ -126,16 +126,25 @@ impl Report {
         // downstream of it, and leading with "recall answered oddly" would bury
         // the cause under a symptom.
         if let Some(served) = &self.served_instead {
-            let list = if served.is_empty() {
-                "nothing".to_string()
-            } else {
-                served.join(", ")
-            };
+            // Serving *nothing* is a different situation from serving the wrong
+            // thing, and the wrong-model wording is actively false about it:
+            // there is no model to answer to a different name, so the run will
+            // not produce numbers at all. It will produce 503s.
+            if served.is_empty() {
+                return Some(format!(
+                    "{} has no model loaded, so this run will produce no numbers — every \
+                     request will be refused. Load a model first: in the dashboard open the \
+                     Library (press 4), choose a model and a recipe, and start it.",
+                    target.base_url
+                ));
+            }
             return Some(format!(
-                "{} is serving {list} — not {:?}, which this benchmark is set to request. \
+                "{} is serving {} — not {:?}, which this benchmark is set to request. \
                  Atlas answers whatever model name it is sent, so the run WILL produce \
                  numbers; they will just be for a different model than the one named.",
-                target.base_url, target.model
+                target.base_url,
+                served.join(", "),
+                target.model
             ));
         }
         let failed: Vec<&Answer> = self.answers.iter().filter(|a| !a.passed).collect();
@@ -226,10 +235,16 @@ pub async fn probe_for(
     report
 }
 
-/// Collapse an error chain to something a single line can hold.
+/// Collapse an error chain to one flowing line, bounded.
+///
+/// The bound is not "what a line holds" — the pre-flight modal wraps this to
+/// as many lines as it needs. It is a guard against an unbounded error chain
+/// filling the screen. 140 was tight enough that adding the actionable half of
+/// a message cut it off mid-clause ("choose a model and a…"), which is the one
+/// part a reader most needs intact.
 fn one_line(s: &str) -> String {
     let flat = s.lines().map(str::trim).collect::<Vec<_>>().join(" ");
-    truncate(&flat, 140)
+    truncate(&flat, 280)
 }
 
 /// One question. A transport or HTTP error propagates rather than counting as a

@@ -102,8 +102,28 @@ pub enum BadgeTint {
 
 /// Derive the header badge chips from ServeArgs — the "significant CLI flags"
 /// strip on the Main tab. Order is display order; chips wrap.
-pub fn badges(a: &crate::cli::ServeArgs) -> Vec<Badge> {
+///
+/// `awaiting_model` is the load-bearing argument. Every chip below except the
+/// address describes a *loaded model*, but they are all read from `ServeArgs`,
+/// which is fully populated by clap defaults whether or not anything is
+/// serving. On a no-model boot that produced a strip reading `<model>`,
+/// `kv fp8`, `batch 8`, `ctx 32k` — a confident description of a configuration
+/// that is not running. The listener, by contrast, really is up: it binds
+/// before any model loads. So when awaiting we emit the state and the way out,
+/// plus the address, and assert nothing else.
+pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
     let mut out = Vec::new();
+    if awaiting_model {
+        out.push(Badge {
+            text: "no model · press 4 for Library".into(),
+            tint: BadgeTint::Neutral,
+        });
+        out.push(Badge {
+            text: format!(":{}", a.port),
+            tint: BadgeTint::Neutral,
+        });
+        return out;
+    }
     let model = a
         .model_name
         .clone()

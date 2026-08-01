@@ -217,8 +217,14 @@ fn draw_chips(f: &mut Frame, app: &App, area: Rect) {
     // replaces the whole argv: after launching a recipe from the Library the
     // strip went on describing the configuration the process started with,
     // which for a no-model boot is the bare defaults and a literal "<model>".
+    //
+    // `app.awaiting_model` for the same reason: with nothing loaded these are
+    // clap defaults, not a running configuration. It is read rather than
+    // recomputed from the host because `App::tick` already derives it there
+    // (app.rs:193) and the status pill reads the same field — one answer to
+    // "is a model loaded", not two that can disagree mid-swap.
     let live_args = app.host.as_ref().and_then(|h| h.args());
-    let chips = logo::badges(live_args.as_ref().unwrap_or(&app.args));
+    let chips = logo::badges(live_args.as_ref().unwrap_or(&app.args), app.awaiting_model);
     let mut spans: Vec<Span> = Vec::new();
     for b in &chips {
         let tint = match b.tint {

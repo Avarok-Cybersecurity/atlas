@@ -87,6 +87,11 @@ async fn chat_stream_inner(target: &TargetEndpoint, body: &Value) -> Result<Chat
     'read: loop {
         let n = sock.read(&mut buf).await.context("read")?;
         if n == 0 {
+            // EOF. If an error response was still being collected — no
+            // Content-Length, server closed to signal the end — report it now
+            // with whatever body arrived, rather than returning an empty
+            // success.
+            reader.finish()?;
             break;
         }
         for line in reader.push(&buf[..n])? {
@@ -273,6 +278,59 @@ async fn get_models(target: &TargetEndpoint, timeout: Duration) -> Result<String
         .with_context(|| format!("reading models from {}", target.base_url))
 }
 
+/// Pull the human-readable message out of an OpenAI-shaped error body.
+///
+/// Returns `None` for anything that is not a JSON object carrying
+/// `error.message` as a string — empty, truncated, HTML from a proxy, a
+/// plain-text 502 — so callers can fall back to the status line.
+///
+/// This lives in `atlas-plugin` rather than in the server because
+/// `spark-server` depends on this crate and not the reverse: putting it here is
+/// what lets the benchmark reader and the server's TUI share one definition
+/// instead of two that can drift.
+pub fn message_from_body(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let msg = v.get("error")?.get("message")?.as_str()?.trim();
+    (!msg.is_empty()).then(|| msg.to_string())
+}
+
+/// The human-readable message from a complete non-200 HTTP response.
+///
+/// Takes the whole response — status line, headers and body — and returns
+/// `None` unless it is a non-200 carrying a parseable OpenAI-shaped error.
+///
+/// For callers that have the entire response in hand rather than a stream, and
+/// deliberately routed through [`Reader`] rather than given its own parser:
+/// error bodies are framed like any other, this server sends them
+/// `transfer-encoding: chunked`, and a second de-chunker written by hand is
+/// exactly how one caller ends up understanding `14A\r\n{...}` and the other
+/// not. There is one decoder, and both use it.
+pub fn error_message_from_response(raw: &[u8]) -> Option<String> {
+    let mut r = Reader::default();
+    // Both may bail — that IS the error being reported — and the decoded body
+    // is what we came for either way.
+    let _ = r.push(raw);
+    let _ = r.finish();
+    r.error_status.as_ref()?;
+    message_from_body(String::from_utf8_lossy(&r.body).trim())
+}
+
+/// Cap on how much of a non-200 body to buffer before reporting it.
+const MAX_ERROR_BODY: usize = 64 * 1024;
+
+fn is_chunked(head: &str) -> bool {
+    head.lines()
+        .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:") && l.contains("chunked"))
+}
+
+/// `Content-Length` from a header block, if declared and parseable.
+fn content_length(head: &str) -> Option<usize> {
+    head.lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        .and_then(|l| l.split_once(':'))
+        .and_then(|(_, v)| v.trim().parse().ok())
+}
+
 /// Incremental HTTP response reader: status/header parse, chunked decode, then
 /// complete lines out. Owns the only place framing can go wrong.
 #[derive(Default)]
@@ -282,12 +340,23 @@ struct Reader {
     chunked: bool,
     body: Vec<u8>,
     consumed: usize,
+    /// Set once a non-200 status line is seen. The reader then switches to
+    /// collecting the body rather than bailing on the spot — see `push`.
+    error_status: Option<String>,
+    error_len: Option<usize>,
+    /// The terminal zero-length chunk has been consumed.
+    chunks_done: bool,
 }
 
 impl Reader {
     /// Feed socket bytes, get back the complete body lines they completed.
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
         self.raw.extend_from_slice(bytes);
+        // Already known to be an error: keep collecting the explanation.
+        if self.error_status.is_some() {
+            self.collect_error()?;
+            return Ok(Vec::new());
+        }
         if self.header_end.is_none() {
             let Some(pos) = find(&self.raw, b"\r\n\r\n") else {
                 return Ok(Vec::new());
@@ -295,11 +364,26 @@ impl Reader {
             let head = String::from_utf8_lossy(&self.raw[..pos]).into_owned();
             let status = head.lines().next().unwrap_or_default().to_string();
             if !status.contains(" 200") {
-                bail!("endpoint returned {status:?}");
+                // Do NOT bail here. The body carries the server's own
+                // explanation — including the actionable hint — and at this
+                // point it may not have arrived yet: headers can land in a read
+                // of their own. Bailing on the status line alone is why every
+                // benchmark failure against a modelless server read
+                // `endpoint returned "HTTP/1.1 503 Service Unavailable"` and
+                // nothing about how to fix it.
+                self.error_status = Some(status);
+                self.error_len = content_length(&head);
+                // Errors are framed like anything else — this server sends
+                // them chunked — so the framing must be decoded before the
+                // body is JSON. Reading it raw yields `14A\r\n{...}\r\n0` and
+                // a parse failure that looks exactly like "no body".
+                self.chunked = is_chunked(&head);
+                self.header_end = Some(pos + 4);
+                self.consumed = pos + 4;
+                self.collect_error()?;
+                return Ok(Vec::new());
             }
-            self.chunked = head.lines().any(|l| {
-                l.to_ascii_lowercase().starts_with("transfer-encoding:") && l.contains("chunked")
-            });
+            self.chunked = is_chunked(&head);
             self.header_end = Some(pos + 4);
             self.consumed = pos + 4;
         }
@@ -310,6 +394,46 @@ impl Reader {
             self.consumed = self.raw.len();
         }
         Ok(self.take_lines())
+    }
+
+    /// Accumulate an error body, decoding its framing, and bail once complete.
+    ///
+    /// "Complete" is the terminal chunk when chunked, the declared
+    /// `Content-Length` when there is one, and the cap otherwise. A body with
+    /// none of those is reported at EOF by [`Reader::finish`], so a server that
+    /// never says how much it is sending and never closes cannot wedge the run.
+    fn collect_error(&mut self) -> Result<()> {
+        if self.chunked {
+            // A malformed chunk header in an error body is not worth failing
+            // twice over: report the status we already have.
+            if self.decode_chunks().is_err() {
+                return self.fail();
+            }
+        } else {
+            self.body.extend_from_slice(&self.raw[self.consumed..]);
+            self.consumed = self.raw.len();
+        }
+        let have = self.body.len();
+        let done =
+            self.chunks_done || self.error_len.is_some_and(|n| have >= n) || have >= MAX_ERROR_BODY;
+        if done { self.fail() } else { Ok(()) }
+    }
+
+    /// Report a pending error, whatever arrived. Called at EOF.
+    fn finish(&self) -> Result<()> {
+        if self.error_status.is_some() {
+            self.fail()?;
+        }
+        Ok(())
+    }
+
+    fn fail(&self) -> Result<()> {
+        let status = self.error_status.clone().unwrap_or_default();
+        let text = String::from_utf8_lossy(&self.body);
+        match message_from_body(text.trim()) {
+            Some(m) => bail!("endpoint returned {status:?}: {m}"),
+            None => bail!("endpoint returned {status:?}"),
+        }
     }
 
     /// Pull every whole chunk currently buffered into `body`. A partial chunk
@@ -335,6 +459,7 @@ impl Reader {
             self.body.extend_from_slice(&rest[start..end]);
             self.consumed += end + 2;
             if size == 0 {
+                self.chunks_done = true;
                 return Ok(());
             }
         }

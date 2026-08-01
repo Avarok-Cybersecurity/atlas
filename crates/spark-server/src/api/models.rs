@@ -85,7 +85,14 @@ pub async fn get_model(
         return (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({
-                "error": {"message": "no model is loaded", "type": "model_not_loaded"}
+                "error": {
+                    "message": crate::error_hints::message_with_hint(
+                        "no model is loaded",
+                        "model_not_loaded",
+                    ),
+                    "type": "model_not_loaded",
+                    "hint": crate::error_hints::hint_for("model_not_loaded"),
+                }
             })),
         )
             .into_response();

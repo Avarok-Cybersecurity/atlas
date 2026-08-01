@@ -11,6 +11,13 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
+/// Cap on how much of a non-200 body to read before giving up on it.
+///
+/// An error body is a small JSON object; anything larger is a proxy's HTML or a
+/// server that will not stop talking, and neither is worth unbounded memory on
+/// the path where something has already gone wrong.
+const MAX_ERROR_BODY: usize = 64 * 1024;
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Role {
     User,
@@ -267,7 +274,24 @@ async fn stream_chat(port: u16, messages: Vec<(String, String)>, tx: Sender<Chat
                 let head = String::from_utf8_lossy(&buf[..pos]).to_string();
                 if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
                     let status = head.lines().next().unwrap_or("?").to_string();
-                    let _ = tx.send(ChatDelta::Error(status));
+                    // Drain the rest of the response before giving up on it.
+                    // Showing only the status line turned every failure into
+                    // "HTTP/1.1 503 Service Unavailable" — the server had
+                    // already explained itself in the body, and the pane threw
+                    // the explanation away. The body is not necessarily in
+                    // `buf` yet: headers can arrive in a read of their own.
+                    while buf.len() < MAX_ERROR_BODY {
+                        match stream.read(&mut tmp).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                        }
+                    }
+                    // The WHOLE response, headers included: the error body is
+                    // chunked, and de-chunking is the shared reader's job.
+                    let msg = atlas_plugin::http::error_message_from_response(&buf)
+                        .map(|m| format!("{status} — {m}"))
+                        .unwrap_or(status);
+                    let _ = tx.send(ChatDelta::Error(msg));
                     return;
                 }
                 consumed = pos + 4;

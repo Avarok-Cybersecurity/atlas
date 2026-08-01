@@ -146,9 +146,14 @@ pub async fn chat_completions(
     // Resolve AFTER any swap, so the request is served by the model it asked
     // for rather than the one that happened to be loaded when it arrived.
     let Some(state) = host.current() else {
-        return openai_error_response(
+        // `_typed`, not the plain form: the plain one derives `error.type` from
+        // the status and would label this `server_error`, which is both wrong
+        // (nothing failed) and inconsistent with the `CurrentModel` extractor,
+        // which reports `model_not_loaded` for the identical condition.
+        return crate::api::compact::openai_error_response_typed(
             StatusCode::SERVICE_UNAVAILABLE,
             "no model is loaded".to_string(),
+            "model_not_loaded",
         );
     };
 
