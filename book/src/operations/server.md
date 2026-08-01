@@ -128,6 +128,46 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 - Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `ATLAS_RATE_LIMIT_RPM` (requests/min) and/or `ATLAS_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `ATLAS_RATE_LIMIT_BURST_RPM` / `ATLAS_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
 - Body-size limit env-configurable via `ATLAS_MAX_BODY_BYTES` (default 8 MiB).
 
+## Changing the model without restarting
+
+A running server can replace its model in place. Three routes reach it, and
+they share one code path:
+
+- **The dashboard.** `spark serve` with no MODEL starts the listener and opens
+  the Library, where a model and one of its recipes can be picked. Selecting
+  one loads it and returns to the Main view.
+- **The Library, on a server that is already serving.** Same flow; the running
+  model is released first.
+- **A client request** naming a different model, Ollama-style — off unless
+  `--auto-swap` is passed.
+
+`--no-auto-swap` forbids request-triggered loading outright and **wins over
+`--auto-swap`** regardless of order. For deployments where the served model is
+part of the contract, pass it: no client can then change what the endpoint is
+running, whatever else is on the command line.
+
+Even with `--auto-swap`, a swap needs a request whose `model` resolves to a
+DIFFERENT model with a known recipe. A name that is absent, unrecognised, or
+already live is served by the current model, exactly as before the flag
+existed.
+
+**What a swap preserves.** Stored responses and conversations, rate-limiter
+buckets, the API-key policy and `--dump` all belong to the process, not the
+model, and survive unchanged — including while no model is loaded, when
+`GET /v1/conversations/{id}` still answers rather than reporting the model
+missing.
+
+**What it cannot change.** The listening socket is bound once for the process
+lifetime, so a recipe's `host`/`port` are ignored with a warning and the model
+serves on the address already bound. Hot-swap is single-node: a recipe needing
+more than one rank is refused rather than half-applied.
+
+**While it runs.** In-flight requests finish on the model they started on. New
+requests that need a model get `503 model_not_loaded` — retriable, and the same
+shape `/health` already reports during startup. A load that fails restores the
+previous model, and one this build has no kernels for is refused before
+anything is released.
+
 ## Chat templating
 
 Tokenization uses the HF `tokenizers` crate plus `minijinja` for chat templates. Atlas ships its own template overrides for a handful of models in `jinja-templates/<family>.j2` when the upstream template has known issues (e.g. template-forced `<think>` seeding). Naming convention: filename matches the HF repo.
