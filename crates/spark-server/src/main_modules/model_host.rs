@@ -82,20 +82,6 @@ pub struct ModelHost {
 }
 
 impl ModelHost {
-    /// A host with a model already loaded — the normal `spark serve <MODEL>`.
-    pub fn with_model(state: Arc<AppState>) -> Self {
-        Self {
-            current: parking_lot::RwLock::new(Some(state)),
-            scheduler: parking_lot::Mutex::new(None),
-            args: parking_lot::RwLock::new(None),
-            swapping: parking_lot::Mutex::new(()),
-            runtime: parking_lot::RwLock::new(tokio::runtime::Handle::try_current().ok()),
-            bound: parking_lot::RwLock::new(None),
-            auth: parking_lot::RwLock::new(None),
-            process: parking_lot::RwLock::new(None),
-        }
-    }
-
     /// A host with nothing loaded yet — `spark serve` with no arguments, where
     /// the dashboard is the front door.
     pub fn empty() -> Self {
@@ -178,13 +164,15 @@ impl ModelHost {
         self.runtime.read().clone()
     }
 
-    /// Attach the runtime after the fact, for a host built outside it.
-    pub fn set_runtime(&self, handle: tokio::runtime::Handle) {
-        *self.runtime.write() = Some(handle);
-    }
-
-    /// Remove the current model and hand it back, so the caller can prove it is
-    /// the last owner before dropping it. `clear` discards that proof.
+    /// Remove the current model and hand it back.
+    ///
+    /// Handing it back is the point: the caller proves it is the last owner
+    /// before dropping it. A `clear()` that merely set the cell to `None`
+    /// existed alongside this and had no callers — deliberately removed rather
+    /// than left available, because using it here is how the first live swap
+    /// deadlocked: without the returned `Arc` there is nothing to check the
+    /// strong count of, the leaked reference goes unnoticed, and the scheduler
+    /// join never returns.
     pub fn take(&self) -> Option<Arc<AppState>> {
         self.current.write().take()
     }
@@ -193,11 +181,6 @@ impl ModelHost {
     /// as any in-flight request still holds it.
     pub fn publish(&self, state: Arc<AppState>) {
         *self.current.write() = Some(state);
-    }
-
-    /// Drop the current model, so requests are refused while a swap runs.
-    pub fn clear(&self) {
-        *self.current.write() = None;
     }
 
     /// Hand over the scheduler of the model just loaded.

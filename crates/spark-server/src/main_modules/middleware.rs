@@ -79,14 +79,17 @@ pub(crate) async fn require_auth_middleware(
     // swap triggered BY that request can then never release the outgoing model
     // — which is precisely the "2 reference(s) outlived the drain window" a
     // live swap reported.
-    let Some(auth_cfg) = host.auth() else {
-        return next.run(req).await;
-    };
+    // Path first, for the same reason as the rate limiter: /health and
+    // /metrics are never gated, and they are the most frequently polled routes
+    // on the server.
     let path = req.uri().path();
     let needs_auth = path.starts_with("/v1/") || path == "/tokenize" || path == "/detokenize";
     if !needs_auth {
         return next.run(req).await;
     }
+    let Some(auth_cfg) = host.auth() else {
+        return next.run(req).await;
+    };
     let presented_token = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -147,21 +150,25 @@ pub(crate) async fn rate_limit_middleware(
     // loaded. Read off `AppState` it did not exist in that window, and every
     // /v1/* request went through unlimited — the same shape as the auth
     // bypass fixed alongside it.
+    use axum::response::IntoResponse;
+
+    // The cheap gate first. Only /v1/* is limited, and /health is polled by
+    // supervisors far more often than the API is called — taking two locks and
+    // cloning an `Arc` before deciding that is work done for nothing.
+    if !req.uri().path().starts_with("/v1/") {
+        return next.run(req).await;
+    }
     let Some(rate_limiter) = host.rate_limiter() else {
         return next.run(req).await;
     };
+    if !rate_limiter.config().is_enabled() {
+        return next.run(req).await;
+    }
     // The token estimate IS model-derived. With no model the request cannot
     // consume any, so it reserves none and is still counted as a request —
     // which is the axis that matters for a client hammering a server that has
     // nothing loaded.
     let max_seq_len = host.current().map(|state| state.max_seq_len).unwrap_or(0);
-    use axum::response::IntoResponse;
-
-    // Only apply to /v1/* routes — health/metrics/tokenize stay open.
-    let is_v1 = req.uri().path().starts_with("/v1/");
-    if !is_v1 || !rate_limiter.config().is_enabled() {
-        return next.run(req).await;
-    }
 
     // Peer addr comes from the ConnectInfo extension injected by
     // `into_make_service_with_connect_info`. Falls through to None when
