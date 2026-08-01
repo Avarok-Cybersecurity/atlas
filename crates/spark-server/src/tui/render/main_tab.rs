@@ -294,9 +294,61 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
         let keep = lines.len().saturating_sub(up);
         lines.truncate(keep);
     }
-    let visible = lines.len().saturating_sub(inner.height as usize);
-    let shown: Vec<Line> = lines.into_iter().skip(visible).collect();
+    // Wrap BEFORE choosing what fits. A long line used to be cut at the panel
+    // edge — the tail of "SSM snapshot pool: ... 48 layers" simply vanished —
+    // and handing `Paragraph` a `Wrap` instead would not fix it: the skip
+    // below counts ENTRIES, so one entry occupying three rows would push the
+    // newest lines off the bottom, which is worse than losing the end of one.
+    // Expanding to visual rows first keeps "the last N rows" true.
+    let width = inner.width as usize;
+    let rows: Vec<Line> = lines
+        .into_iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect();
+    let visible = rows.len().saturating_sub(inner.height as usize);
+    let shown: Vec<Line> = rows.into_iter().skip(visible).collect();
     f.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Break one composed log line into as many rows as it needs.
+///
+/// The prefix spans (timestamp, level, target) are styled separately from the
+/// message, so this wraps the MESSAGE and indents continuations under it —
+/// re-wrapping the whole line as plain text would lose those styles and repeat
+/// the timestamp on every row.
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line];
+    }
+    let prefix: usize = line
+        .spans
+        .iter()
+        .take(3)
+        .map(|s| s.content.chars().count())
+        .sum();
+    let msg = line
+        .spans
+        .last()
+        .map(|s| s.content.to_string())
+        .unwrap_or_default();
+    if prefix + msg.chars().count() <= width {
+        return vec![line];
+    }
+    let style = line.spans.last().map(|s| s.style).unwrap_or_default();
+    let avail = width.saturating_sub(prefix).max(8);
+    let mut chunks = super::wrap(&msg, avail, style);
+    let mut out = Vec::with_capacity(chunks.len());
+    // First row keeps the real prefix; the rest are indented to line up.
+    let head = chunks.remove(0);
+    let mut first: Vec<Span<'static>> = line.spans.iter().take(3).cloned().collect();
+    first.extend(head.spans);
+    out.push(Line::from(first));
+    for c in chunks {
+        let mut row = vec![Span::raw(" ".repeat(prefix))];
+        row.extend(c.spans);
+        out.push(Line::from(row));
+    }
+    out
 }
 
 pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
@@ -418,3 +470,7 @@ impl Wrapped for Paragraph<'_> {
         self.wrap(ratatui::widgets::Wrap { trim: false })
     }
 }
+
+#[cfg(test)]
+#[path = "main_tab_tests.rs"]
+mod wrap_tests;
