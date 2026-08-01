@@ -72,6 +72,9 @@ pub(crate) async fn serve(
     // the process lifetime, so a model chosen later serves on THIS address
     // whatever its recipe says — see the port check in `model_swap`.
     let (bind_addr, bind_port) = (args.bind.clone(), args.port);
+    // Before any load: the policy must be in force from the moment the listener
+    // is up, including while no model is loaded.
+    host.set_auth(build_auth_config(&args)?);
     let startup_host = host.clone();
     match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {

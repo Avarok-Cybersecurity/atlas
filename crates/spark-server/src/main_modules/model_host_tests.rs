@@ -67,3 +67,24 @@ fn a_host_built_outside_a_runtime_has_no_handle_rather_than_panicking() {
     let host = ModelHost::empty();
     assert!(host.runtime().is_none());
 }
+
+#[test]
+fn the_auth_policy_survives_having_no_model() {
+    // It used to live on AppState, so it ceased to exist whenever no model was
+    // loaded — and /v1/models then answered 200 without a token in exactly that
+    // window, while correctly answering 401 once a model was up. Whether a
+    // request is authorised cannot depend on whether a model happens to be
+    // loaded.
+    let host = ModelHost::empty();
+    assert!(host.current().is_none(), "no model, by construction");
+    assert!(host.auth().is_none(), "and none configured yet");
+
+    let cfg = std::sync::Arc::new(
+        crate::auth::AuthConfig::from_inline("sk-test-token").expect("valid token"),
+    );
+    host.set_auth(Some(cfg));
+    assert!(
+        host.auth().is_some(),
+        "the policy is in force with no model loaded"
+    );
+}

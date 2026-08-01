@@ -25,8 +25,8 @@ use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 
 use super::serve::{
-    Prepared, build_auth_config, canonicalize_model_quant, describe_quant_source,
-    parse_default_thinking, quant_pair_compatible, resolve_vision_max_pixels,
+    Prepared, canonicalize_model_quant, describe_quant_source, parse_default_thinking,
+    quant_pair_compatible, resolve_vision_max_pixels,
 };
 use crate::api::InferenceRequest;
 use crate::main_modules::AppState;
@@ -796,7 +796,6 @@ pub(crate) fn load_model(
     } = carried;
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
-    let auth = build_auth_config(&args)?;
     let vision_max_pixels = resolve_vision_max_pixels(&args)?;
     if let Some(max_pixels) = vision_max_pixels {
         tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
@@ -979,7 +978,6 @@ pub(crate) fn load_model(
         rate_limiter,
         conversation_store,
         dump_writer,
-        auth,
         lora_stageable,
         lora_peer_addr,
         promotion,

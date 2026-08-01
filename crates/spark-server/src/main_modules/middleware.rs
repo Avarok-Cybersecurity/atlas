@@ -83,16 +83,17 @@ pub(crate) async fn require_auth_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    // Take the auth config and let the model GO, before `next.run` — a layer
-    // that holds its `Arc<AppState>` across the inner call holds it for the
-    // whole request, and a swap triggered BY that request can then never
-    // release the outgoing model. Two layers doing this is exactly the "2
-    // reference(s) outlived the drain window" a live swap reported. Both
-    // fields are already `Arc`, so this costs a refcount bump, not a copy.
+    // From the HOST, not the model: the policy is process-scoped, so it applies
+    // whether or not a model is loaded. Reading it off `AppState` meant no
+    // model implied no auth, and `/v1/models` answered 200 without a token in
+    // exactly that window.
     //
-    // No model at all: every route that needs one answers 503 anyway, so
-    // there is nothing to authorise access to.
-    let Some(auth_cfg) = host.current().and_then(|state| state.auth.clone()) else {
+    // Taking it by value also matters for the swap: a layer that holds an
+    // `Arc<AppState>` across `next.run` holds it for the whole request, and a
+    // swap triggered BY that request can then never release the outgoing model
+    // — which is precisely the "2 reference(s) outlived the drain window" a
+    // live swap reported.
+    let Some(auth_cfg) = host.auth() else {
         return next.run(req).await;
     };
     let path = req.uri().path();

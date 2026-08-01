@@ -9,8 +9,7 @@ use tokio::sync::mpsc;
 use crate::api::InferenceRequest;
 use crate::tokenizer::ChatTokenizer;
 use crate::{
-    auth, conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store,
-    tool_parser,
+    conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store, tool_parser,
 };
 
 /// Resolve a per-request `adapter` name to a LoRA pool slot index for M2
@@ -132,7 +131,6 @@ pub struct AppState {
     /// Bearer-token auth configuration. `Some` ⇒ `--require-auth` was set
     /// and the middleware enforces `Authorization: Bearer <token>` against
     /// the loaded set. `None` ⇒ auth is disabled (every request passes).
-    pub auth: Option<Arc<auth::AuthConfig>>,
     /// Task #27: STAGEABLE registry — adapters promotable-but-not-resident,
     /// `name -> {peer_stage_id, peft}`, from `--lora-stageable`. Empty ⇒ no
     /// promotion (resident-only serve byte-identical).

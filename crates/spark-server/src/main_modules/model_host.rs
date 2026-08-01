@@ -62,6 +62,14 @@ pub struct ModelHost {
     /// so a recipe naming a different port would otherwise serve on the old
     /// one with nothing saying so.
     bound: parking_lot::Mutex<Option<(String, u16)>>,
+    /// The API-key policy, which belongs to the PROCESS, not to a model.
+    ///
+    /// It lived on `AppState` and so ceased to exist whenever no model was
+    /// loaded — which made `/v1/models` answer 200 without a token in exactly
+    /// that state, while correctly answering 401 once a model was up. Whether a
+    /// request is authorised cannot depend on whether a model happens to be
+    /// loaded.
+    auth: parking_lot::Mutex<Option<Arc<crate::auth::AuthConfig>>>,
 }
 
 impl ModelHost {
@@ -74,6 +82,7 @@ impl ModelHost {
             swapping: parking_lot::Mutex::new(()),
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
+            auth: parking_lot::Mutex::new(None),
         }
     }
 
@@ -87,6 +96,7 @@ impl ModelHost {
             swapping: parking_lot::Mutex::new(()),
             runtime: parking_lot::Mutex::new(tokio::runtime::Handle::try_current().ok()),
             bound: parking_lot::Mutex::new(None),
+            auth: parking_lot::Mutex::new(None),
         }
     }
 
@@ -97,6 +107,16 @@ impl ModelHost {
     /// model it started with even if a swap lands mid-flight.
     pub fn current(&self) -> Option<Arc<AppState>> {
         self.current.read().clone()
+    }
+
+    /// Install the process's API-key policy. Called once, before any load.
+    pub fn set_auth(&self, cfg: Option<Arc<crate::auth::AuthConfig>>) {
+        *self.auth.lock() = cfg;
+    }
+
+    /// The API-key policy, if one is configured.
+    pub fn auth(&self) -> Option<Arc<crate::auth::AuthConfig>> {
+        self.auth.lock().clone()
     }
 
     /// Record where the listener bound.
