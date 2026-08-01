@@ -47,6 +47,16 @@ pub struct BenchState {
     /// Per-field validation messages, shown under the field.
     pub errors: BTreeMap<String, String>,
     pub target: TargetEndpoint,
+    /// True once the operator has typed a model into the target field.
+    ///
+    /// Until then the target follows whatever the server is actually serving.
+    /// It was captured once at dashboard start from the boot argv, which is
+    /// empty for `spark serve` with no model — so runs recorded a blank model
+    /// — and went stale the moment a model was loaded from the Library or a
+    /// request swapped one in. With --auto-swap that is worse than cosmetic: a
+    /// benchmark request carrying the old name is exactly the trigger that
+    /// swaps the server back, mid-run.
+    pub target_model_pinned: bool,
     /// Set for a benchmark whose descriptor demands confirmation.
     pub confirm_open: bool,
 
@@ -80,6 +90,17 @@ pub struct BenchState {
 impl BenchState {
     /// Wire in the executor and the default target. Called once at TUI start,
     /// when the tokio handle exists.
+    /// Point the target at the model that is actually serving.
+    ///
+    /// A no-op once the operator has typed one in: benchmarking a different
+    /// endpoint on purpose is a real thing to want.
+    pub fn follow_live_model(&mut self, live: &str) {
+        if self.target_model_pinned || live.is_empty() || self.target.model == live {
+            return;
+        }
+        self.target = TargetEndpoint::new(self.target.base_url.clone(), live);
+    }
+
     pub fn attach(&mut self, executor: atlas_plugin::BenchmarkExecutor, target: TargetEndpoint) {
         self.executor = Some(executor);
         self.target = target;
@@ -191,6 +212,7 @@ impl BenchState {
                         .insert("__model".into(), "must not be empty".into());
                 } else {
                     self.target = TargetEndpoint::new(self.target.base_url.clone(), trimmed);
+                    self.target_model_pinned = true;
                     self.errors.remove("__model");
                 }
             }

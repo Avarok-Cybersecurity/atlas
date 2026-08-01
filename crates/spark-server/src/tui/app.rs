@@ -183,6 +183,16 @@ impl App {
         // Info toasts auto-dismiss after 5s; errors persist.
         self.toasts
             .retain(|t| t.error || t.at.elapsed().as_secs() < 5);
+        // Keep the benchmark target on the model that is actually serving.
+        if let Some(name) = self
+            .host
+            .as_ref()
+            .and_then(|h| h.live_model())
+            .or_else(|| self.args.model_name.clone())
+            .or_else(|| self.args.model.clone())
+        {
+            self.bench.follow_live_model(&name);
+        }
         // Rebuild the kernel table when a DIFFERENT model finishes loading —
         // including after a swap, which no `is_none()` guard would notice.
         let live = self

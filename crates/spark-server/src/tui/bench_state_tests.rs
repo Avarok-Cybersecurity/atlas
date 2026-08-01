@@ -297,3 +297,43 @@ fn a_run_is_recorded_once_even_if_the_terminal_frame_repeats() {
     s.persist(&frame);
     assert_eq!(atlas_plugin::history::load_all(&store).len(), 1);
 }
+
+#[test]
+fn the_target_follows_the_model_that_is_actually_serving() {
+    // Captured once at dashboard start from the boot argv: empty for
+    // `spark serve` with no model, and stale the moment one is loaded from the
+    // Library or swapped in by a request.
+    let mut s = BenchState {
+        target: atlas_plugin::TargetEndpoint::local(8888, String::new()),
+        ..BenchState::default()
+    };
+    assert_eq!(s.target.model, "");
+
+    s.follow_live_model("org/loaded");
+    assert_eq!(s.target.model, "org/loaded", "picks up the first model");
+
+    s.follow_live_model("org/swapped-in");
+    assert_eq!(s.target.model, "org/swapped-in", "and follows a swap");
+}
+
+#[test]
+fn a_target_the_operator_typed_is_left_alone() {
+    // Benchmarking a different endpoint on purpose is a real thing to want.
+    let mut s = BenchState {
+        target: atlas_plugin::TargetEndpoint::local(8888, "org/mine".to_string()),
+        target_model_pinned: true,
+        ..BenchState::default()
+    };
+    s.follow_live_model("org/something-else");
+    assert_eq!(s.target.model, "org/mine");
+}
+
+#[test]
+fn an_empty_live_model_does_not_blank_the_target() {
+    let mut s = BenchState {
+        target: atlas_plugin::TargetEndpoint::local(8888, "org/a".to_string()),
+        ..BenchState::default()
+    };
+    s.follow_live_model("");
+    assert_eq!(s.target.model, "org/a");
+}
