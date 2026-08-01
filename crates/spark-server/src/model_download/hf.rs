@@ -308,6 +308,9 @@ pub(super) fn write_error(e: std::io::Error) -> DownloadError {
 /// never a fixed `parent()`: a cache holding terabytes of checkpoints is very
 /// plausibly its own mount, and its parent is then a different filesystem — so
 /// the check would have guarded the wrong disk.
+/// `None` on platforms with no `statvfs` — see the non-Unix arm below. Callers
+/// already treat `None` as "cannot measure", so the space pre-flight is simply
+/// skipped there rather than guessing.
 pub fn free_bytes(path: &Path) -> Option<u64> {
     let mut cur = Some(path);
     while let Some(p) = cur {
@@ -319,6 +322,21 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
     None
 }
 
+/// Windows has no `statvfs`, and the answer there needs `GetDiskFreeSpaceExW`
+/// — i.e. the `windows` crate, a dependency this module exists to avoid.
+///
+/// The honest fallback is to admit we cannot measure: the pre-flight is skipped
+/// and a genuinely full disk surfaces mid-write as `DownloadError::DiskFull`,
+/// which is a worse experience but an accurate one. `spark-server` is built for
+/// Windows by the release matrix, so this arm is not hypothetical — an
+/// unconditional `libc::statvfs` failed that build with "cannot find function
+/// `statvfs` in crate `libc`".
+#[cfg(not(unix))]
+fn statvfs_avail(_path: &Path) -> Option<u64> {
+    None
+}
+
+#[cfg(unix)]
 fn statvfs_avail(path: &Path) -> Option<u64> {
     let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     // SAFETY: `c` is a valid NUL-terminated path; `stat` is written only by
