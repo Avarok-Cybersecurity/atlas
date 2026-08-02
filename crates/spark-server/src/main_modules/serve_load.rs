@@ -93,7 +93,18 @@ pub(crate) fn load_model(
 
     tracing::info!("Port: {}", args.port);
 
-    tracing::info!("SSM decode dtype: f32 (full precision)");
+    // Report what is actually in force. This line used to be the literal
+    // "f32 (full precision)" unconditionally, printed before the model config
+    // even loaded — so it could not have reflected the resolved state even in
+    // principle, and it said f32 in every run of the campaign that ran f16.
+    tracing::info!(
+        "SSM decode h-state dtype: {} (--ssm-h-dtype)",
+        if spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() {
+            "f16"
+        } else {
+            "f32 (full precision)"
+        }
+    );
 
     // 1. Load model config (supports HF config.json and Mistral params.json)
     spark_runtime::progress::phase(2, "config");
@@ -527,8 +538,43 @@ pub(crate) fn load_model(
         spark_runtime::kernel_audit::render_kernel_table(
             &ptx_set.modules,
             atlas_kernels::KERNEL_SET_HASH,
+            ptx_set.shadowed_dropped,
         )
     );
+
+    // FAIL FAST on a kernel that this model's dispatch requested, that
+    // `common/` defines, and that this target's kernel file dropped by
+    // shadowing. That conjunction is never intentional: the kernel exists, the
+    // model wanted it, and a stale fork is the only reason it is absent. The
+    // failure is otherwise SILENT — `try_kernel` yields handle 0 and the caller
+    // takes a slower (or disabled) path — which is how the 27B ran with
+    // concurrent decode pinned to its per-sequence fallback while every gate
+    // stayed green. `ATLAS_ALLOW_SHADOWED_KERNELS=1` downgrades this to a
+    // warning for bisects and for a model that deliberately omits a kernel.
+    let fatal = spark_runtime::kernel_audit::fatal_missing(ptx_set.shadowed_dropped);
+    if !fatal.is_empty() {
+        let list = fatal
+            .iter()
+            .map(|(m, f)| format!("{m}::{f}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if std::env::var("ATLAS_ALLOW_SHADOWED_KERNELS").as_deref() == Ok("1") {
+            tracing::warn!(
+                "{} required kernel(s) missing via shadowing ({list}) — continuing because \
+                 ATLAS_ALLOW_SHADOWED_KERNELS=1. Expect silent slow paths.",
+                fatal.len(),
+            );
+        } else {
+            anyhow::bail!(
+                "{} required kernel(s) missing: {list}. This model's dispatch requested them and \
+                 kernels/<hw>/common/ defines them, but this target's kernel file shadows \
+                 common/ without them, so they were never compiled. Port them into the model's \
+                 kernel file (exact piecewise copy from common/), or set \
+                 ATLAS_ALLOW_SHADOWED_KERNELS=1 to run anyway on the slow fallback path.",
+                fatal.len(),
+            );
+        }
+    }
 
     // Phase 6.3 — HSS config built early so the EP worker can install it.
     let early_high_speed_swap_cfg = serve_phases::build_high_speed_swap_config(&args)?;
@@ -627,6 +673,18 @@ pub(crate) fn load_model(
     } else {
         args.max_batch_size
     };
+    // Derived ceiling (wave-14a): the decode-metadata layout, logits rows and
+    // scratch block-table envelope are all DERIVED from max_batch_size
+    // (`spark_runtime::buffers::DecodeMetaLayout`, rows = max(32, bs) —
+    // byte-identical to the old fixed 32-row layout for every bs <= 32).
+    // DECODE_META_MAX_ROWS is the validated policy ceiling; above it, fail
+    // here at serve time instead of mid-decode (aacd29cb's safety intent).
+    anyhow::ensure!(
+        max_batch_size <= spark_runtime::buffers::DECODE_META_MAX_ROWS,
+        "--max-batch-size {max_batch_size} exceeds the derived decode-metadata \
+         ceiling of {} rows (DECODE_META_MAX_ROWS)",
+        spark_runtime::buffers::DECODE_META_MAX_ROWS
+    );
     // `use_speculative` gates the scheduler's `step_mtp` path which already
     // dispatches both MTP and DFlash proposers via the shared `DraftProposer`
     // trait + the `drafts.len() ≥ 4` ladder route to `step_verify_dflash`

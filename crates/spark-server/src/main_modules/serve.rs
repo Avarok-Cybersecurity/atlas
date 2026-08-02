@@ -101,6 +101,38 @@ pub(crate) async fn serve(
     }
 }
 
+/// Publish the command line's kernel-path selections to the crates that
+/// dispatch on them. Called once, before any model is built.
+///
+/// Logged, not silent: a run's kernel selection is the first thing anyone
+/// reproducing a number needs, and reading it back out of the process is not
+/// possible after the fact.
+fn publish_kernel_flags(args: &cli::ServeArgs) {
+    let flags = spark_model::layers::qwen3_ssm::GdnFlags {
+        h_f16: args.ssm_h_dtype == "f16",
+        fused_norm: args.gdn_fused_norm,
+        batched_recurrent: args.ssm_batched_recurrent,
+    };
+    let in_force = spark_model::layers::qwen3_ssm::gdn_flags::set_from_cli(flags);
+    if in_force != flags {
+        tracing::warn!(
+            "GDN flags were already resolved from the environment ({in_force:?}); \
+             the command line's ({flags:?}) did NOT take effect"
+        );
+    }
+    spark_runtime::set_ssm_tail_midchunk(args.ssm_tail_midchunk);
+    crate::scheduler::levers::set_mtp_gate_force(args.mtp_gate == "force");
+    tracing::info!(
+        "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
+         ssm_tail_midchunk={} mtp_gate={}",
+        args.ssm_h_dtype,
+        args.gdn_fused_norm,
+        args.ssm_batched_recurrent,
+        args.ssm_tail_midchunk,
+        args.mtp_gate,
+    );
+}
+
 fn startup(
     args: cli::ServeArgs,
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
@@ -143,6 +175,14 @@ fn startup(
     if let Err(msg) = cli::validate_serve_args(&args) {
         anyhow::bail!("{msg}");
     }
+
+    // Publish the kernel-path flags the command line owns, BEFORE anything can
+    // read them. Each of these used to be an `ATLAS_*` variable read at its own
+    // call site; they are configuration, so they belong on the command line
+    // where `--help` lists them, `ps` shows them, and a recipe can be read
+    // without a ten-line env preamble. The environment stays honoured as a
+    // fallback for scripts that predate the flags.
+    publish_kernel_flags(&args);
 
     // No model named: the dashboard is the front door. Everything above this
     // point is process-scoped — banner, signal listeners, the TUI thread, flag

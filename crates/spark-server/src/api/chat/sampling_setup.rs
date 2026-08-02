@@ -306,13 +306,8 @@ pub(super) fn build_sampling(
         None
     };
 
-    // Timeout deadline.
-    let timeout_secs = req.timeout_secs.unwrap_or(state.request_timeout as f32);
-    let timeout_at = if timeout_secs > 0.0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(timeout_secs))
-    } else {
-        None
-    };
+    // Timeout deadline (SSOT: AppState::request_deadline).
+    let timeout_at = state.request_deadline(req.timeout_secs);
 
     // Pre-resolved from the wire's logprobs/top_logprobs pair at the edge.
     let top_logprobs = req.top_logprobs;

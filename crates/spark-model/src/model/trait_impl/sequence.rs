@@ -86,15 +86,21 @@ impl TransformerModel {
                         seq.adapter_id,
                     )
                 };
-                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
-                // Bump KV block ref_counts so the prefix cache "owns" a reference.
-                // This keeps blocks alive after free_sequence drops the sequence's ref.
-                // Eviction (return_evicted_block) releases these refs when nodes are removed.
-                let mut kv = self.kv_cache.lock();
-                let num_cached_blocks = (seq.tokens.len() / bs).min(seq.block_table.len());
-                for &block_idx in &seq.block_table[..num_cached_blocks] {
-                    kv.inc_ref(block_idx);
-                }
+                // Take the cache's KV ref on exactly the blocks whose radix nodes
+                // this insert created — reported by the insert itself.
+                //
+                // This used to `inc_ref` a RANGE of the finishing sequence's
+                // `block_table` (everything past the matched prefix) on the
+                // assumption that node i holds `block_table[i]`. It does not: when
+                // a node for a token chunk already exists, `insert` keeps that
+                // node's original block, so a sequence that did not get its block
+                // from the cache (no match, or restored from a swap file) has a
+                // DIFFERENT block at that position. The ref then landed on a block
+                // no node referenced, while the node's own block carried none — so
+                // evicting it decremented a ref belonging to a live sequence,
+                // returning an in-use block to the free list to be handed out
+                // again. Reporting the blocks keeps ref lifetime == node lifetime.
+                super::super::block_mgmt::cache_acquires_refs(&acquired, &mut self.kv_cache.lock());
             }
         }
     }
@@ -144,8 +150,23 @@ impl TransformerModel {
 
         // Release prefix cache refs before freeing blocks.
         // (i.e., blocks not shared with the prefix cache).
+        //
+        // Normally `seq.tokens` (prompt + generated) fully covers the matched
+        // prefix, so releasing over it undoes the lookup's radix inc_refs. But a
+        // prefill that matched a prefix then FAILED to allocate its suffix never
+        // populated `seq.tokens` (that happens in a later finalize phase), so
+        // `release(&seq.tokens)` would be a no-op and the matched radix nodes
+        // would stay pinned forever → the pool wedges. When `seq.tokens` is too
+        // short to cover the matched prefix, release over the stashed prefix
+        // tokens instead. Exactly one of the two covers the matched nodes, so
+        // they are released once (never double-released).
+        let release_tokens = if seq.tokens.len() >= seq.cached_prefix_tokens {
+            &seq.tokens
+        } else {
+            &seq.prefix_ref_tokens
+        };
         self.prefix_cache.release(
-            &seq.tokens,
+            release_tokens,
             self.kv_cache.lock().block_size(),
             seq.adapter_id,
         );
@@ -205,10 +226,17 @@ impl TransformerModel {
                 seq.slot_idx
             );
         }
-        // batch_decode_graphs is keyed by padded_n, not slot — but the captured
-        // graphs DO contain per-slot SSM pointers from the active set at capture
-        // time. Drop them all (they'll be re-captured on next batched decode).
-        for (_, graph) in self.batch_decode_graphs.lock().drain() {
+        // batch_decode_graphs is now keyed by the per-row SSM slot VECTOR
+        // (decode_graph_key.rs), so a freed slot's entries are already
+        // unreachable unless the exact same vector recurs — at which point the
+        // slot has been re-claimed and its pool addresses are the same ones the
+        // graph baked (SSM pool addresses are per-SLOT and fixed for the life
+        // of the process). The blanket drain is therefore no longer required
+        // for correctness; it is KEPT deliberately — dropping it would extend a
+        // graph's lifetime across arbitrary request turnover, which is a
+        // separate (unmeasured) risk surface, and re-capture costs one eager
+        // step per completion.
+        for (_, (graph, _)) in self.batch_decode_graphs.lock().0.drain() {
             if let Err(e) = self.gpu.destroy_graph(graph) {
                 tracing::error!("free_sequence: destroy_graph(batch_decode_graphs entry): {e:#}");
             }
@@ -421,5 +449,19 @@ impl TransformerModel {
 
     pub(super) fn num_total_blocks_dispatch(&self) -> usize {
         self.kv_cache.lock().num_blocks()
+    }
+
+    pub(super) fn reclaim_prefix_blocks_dispatch(&self, num_blocks: usize) -> usize {
+        if num_blocks == 0 || !self.prefix_cache.is_active() {
+            return 0;
+        }
+        let evicted = self.prefix_cache.evict(num_blocks);
+        if evicted.is_empty() {
+            return 0;
+        }
+        let mut kv = self.kv_cache.lock();
+        let before = kv.num_free_blocks();
+        super::super::block_mgmt::apply_evicted_blocks(evicted, &mut kv);
+        kv.num_free_blocks().saturating_sub(before)
     }
 }

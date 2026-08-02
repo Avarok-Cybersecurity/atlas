@@ -237,6 +237,26 @@ pub trait GpuBackend: Send + Sync {
         self.copy_h2d(src, dst)
     }
 
+    /// Async device-to-host copy (no stream synchronization).
+    ///
+    /// The counterpart of [`GpuBackend::copy_h2d_async`], and the ONLY D2H
+    /// primitive usable for a batched gather: `copy_d2h` and
+    /// `copy_d2h_on_stream` both `cuStreamSynchronize` INSIDE the call, so an
+    /// N-chunk gather pays N full stream drains. Measured cost of that shape:
+    /// the SSM snapshot spill moved 66,846,720 B as 60 blocking `copy_d2h`
+    /// calls in ~400 ms (~165 MB/s), while the mirror-image scatter
+    /// (`copy_h2d_async` ×60 + ONE `synchronize`) moved the same bytes through
+    /// the same host buffer in ~28 ms.
+    ///
+    /// **Lifetime requirement** (same as `copy_h2d_async`): the destination
+    /// buffer must remain valid, and must not be read or re-used, until the
+    /// next synchronization point on this stream.
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], _stream: u64) -> Result<()> {
+        // Mock/metal fall back to the blocking copy: correct (a stricter
+        // ordering than promised), just not batched.
+        self.copy_d2h(src, dst)
+    }
+
     /// Async device-to-device copy (no stream synchronization).
     fn copy_d2d_async(
         &self,
@@ -311,6 +331,14 @@ pub trait GpuBackend: Send + Sync {
     /// Free device memory in bytes.
     fn free_memory(&self) -> Result<usize>;
 
+    /// Number of streaming multiprocessors (CUDA SMs / HIP CUs) on the device.
+    ///
+    /// Queried from the driver, never assumed: dispatch rules that ask "does
+    /// this grid still fill the machine?" are wrong on every part whose SM
+    /// count differs from the one they were tuned on. Callers must resolve it
+    /// ONCE at construction and keep the value, not call it per launch.
+    fn sm_count(&self) -> Result<u32>;
+
     /// Create a new CUDA stream (for overlapping work).
     fn create_stream(&self) -> Result<u64> {
         Ok(0) // Default: return legacy stream
@@ -363,6 +391,15 @@ pub trait GpuBackend: Send + Sync {
     ///
     /// Returns a raw pointer to `bytes` of page-locked host memory.
     /// Caller must call `free_host_pinned` to release.
+    /// Device-side alias of a page-locked host pointer from
+    /// [`Self::alloc_host_pinned`] (cuMemHostGetDevicePointer). On UMA parts
+    /// (GB10) this lets a KERNEL write results directly into host-visible
+    /// memory, eliminating the copy-engine op for tiny readbacks entirely.
+    /// Default: unsupported.
+    fn host_ptr_to_device(&self, _host: *mut u8) -> Result<DevicePtr> {
+        anyhow::bail!("host_ptr_to_device: not supported by this backend")
+    }
+
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
         // Default: regular heap allocation (mock backend, no pinning)
         let layout = std::alloc::Layout::from_size_align(bytes, 64)

@@ -581,6 +581,14 @@ impl GpuBackend for MetalGpuBackend {
         Ok(max.saturating_sub(used))
     }
 
+    fn sm_count(&self) -> Result<u32> {
+        // Metal exposes no SM/core count. Refuse rather than invent one: the
+        // only consumers are grid-occupancy dispatch rules, and a fabricated
+        // count would mis-tune them silently. No Metal path asks for this
+        // today; if one does, wire it to a real device query first.
+        anyhow::bail!("MetalGpuBackend does not expose a multiprocessor count")
+    }
+
     fn create_stream(&self) -> Result<u64> {
         let queue = self
             .device

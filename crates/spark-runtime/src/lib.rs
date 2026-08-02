@@ -84,6 +84,15 @@ pub fn ssm_tail_ckpt_enabled() -> bool {
 /// floored matched-prefix boundary and the @tb state is copied into a reserved
 /// Marconi snapshot slot in-pass, removing the ~868 ms extra forward pass the
 /// clamp-based `ATLAS_SSM_TAIL_CKPT` path costs.
+/// Publish the command line's `--ssm-tail-midchunk`. Call once, at serve time,
+/// before any prefill runs. The environment remains the fallback for callers
+/// that never set it (tests, examples, older scripts).
+pub fn set_ssm_tail_midchunk(on: bool) {
+    let _ = SSM_TAIL_MIDCHUNK.set(on);
+}
+
+static SSM_TAIL_MIDCHUNK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 pub fn ssm_tail_midchunk_enabled() -> bool {
     // Default ON (2026-07-19): mid-chunk GDN tail capture eliminates the warm-turn
     // SSM replay (~1.17s component of warm TTFT) by capturing state in-pass at the
@@ -91,5 +100,6 @@ pub fn ssm_tail_midchunk_enabled() -> bool {
     // the prior baseline; warm-TTFT -9.3% median / -54% max (tail-spike elimination);
     // 20/20 contamination-clean (session-gate prevents cross-request SSM corruption);
     // BFCL e2e 1007/1007. Opt OUT with ATLAS_SSM_TAIL_MIDCHUNK=0.
-    !matches!(std::env::var("ATLAS_SSM_TAIL_MIDCHUNK").as_deref(), Ok("0"))
+    *SSM_TAIL_MIDCHUNK
+        .get_or_init(|| !matches!(std::env::var("ATLAS_SSM_TAIL_MIDCHUNK").as_deref(), Ok("0")))
 }

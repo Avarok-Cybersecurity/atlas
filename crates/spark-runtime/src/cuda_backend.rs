@@ -15,6 +15,7 @@ use atlas_core::registry::AtlasRegistry;
 
 mod gpu_copy;
 mod gpu_impl;
+mod gpu_impl_graph;
 
 // ── Raw CUDA driver API for memory operations ──
 
@@ -35,7 +36,17 @@ unsafe extern "C" {
     ) -> i32;
     pub(super) fn cuMemcpyDtoDAsync_v2(dst: u64, src: u64, bytes: usize, stream: u64) -> i32;
     pub(super) fn cuStreamSynchronize(stream: u64) -> i32;
+    pub(super) fn cuStreamQuery(stream: u64) -> i32;
+    pub(super) fn cuMemHostGetDevicePointer_v2(
+        dptr: *mut u64,
+        host: *mut std::ffi::c_void,
+        flags: u32,
+    ) -> i32;
     pub(super) fn cuMemGetInfo_v2(free: *mut usize, total: *mut usize) -> i32;
+    /// Device of the calling context, then any `CUdevice_attribute` on it.
+    /// Used for `sm_count` (attribute 16 = MULTIPROCESSOR_COUNT).
+    pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
+    pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;

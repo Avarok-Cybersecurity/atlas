@@ -6,6 +6,13 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+/// Default for `--request-timeout`, in seconds. Named rather than inlined
+/// in the clap attribute because it is a production behavior with a
+/// user-visible consequence (a cut response), not an anonymous literal:
+/// PCND requires the default be documented and overridable, and this is
+/// the single place it is defined.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 300;
+
 /// Arguments for the `serve` subcommand.
 #[derive(Parser, Debug, Clone, PartialEq)]
 pub struct ServeArgs {
@@ -82,6 +89,82 @@ pub struct ServeArgs {
     /// without --kv-high-precision-layers. FP8 is the safe default.
     #[arg(long, default_value = "fp8")]
     pub kv_cache_dtype: String,
+
+    // ── GDN / SSM decode path ──
+    //
+    // These four were `ATLAS_*` environment variables. They are CONFIGURATION,
+    // not diagnostics: the enterprise-concurrency campaign's best recipe needs
+    // three of them, and a recipe that has to carry a ten-line env block is a
+    // recipe nobody can read or audit. A CLI flag satisfies PCND exactly as an
+    // env var does — the value is explicit, never implicit — while also being
+    // discoverable in `--help` and visible in `ps`. The environment variables
+    // remain honoured as a fallback so existing scripts keep working; the flag
+    // WINS when both are given.
+    /// Storage dtype for the GDN decode h-state: `f32` (default) or `f16`.
+    ///
+    /// The decode scan is pure state traffic — it runs at ~90% of GB10's
+    /// row-strided ceiling — so halving the state footprint halves its time:
+    /// +13.25% at C=16, +19.67% at C=32, and 1.286x WALL at C=64.
+    ///
+    /// f32 stays the default deliberately. `f16` changes the h-state numerics,
+    /// which shifts drafter accept patterns and therefore the emitted
+    /// trajectory: a +3.17% token tax was measured in the speculation-ON
+    /// regime (C=1/8/32, p=0.030) and 0.23% with speculation off. The tax
+    /// vanishes at C=64. Choose it per workload — which is precisely why it is
+    /// a flag and not a default.
+    ///
+    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when the flag is
+    /// absent.
+    #[arg(long, default_value = "f32")]
+    pub ssm_h_dtype: String,
+
+    /// Fused GDN output-norm kernel on the decode path (default: off).
+    ///
+    /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
+    /// fused-norm arm, and the unfused arm is FP32-only. Left opt-in because
+    /// its bitwise gate could not certify output-equivalence — the CONTROL leg
+    /// (two identical serves) itself differed on 7 of 42 completions at C=4/16,
+    /// so the flag legs' 5-6 differences are not separable from run-to-run
+    /// nondeterminism. Under PCND an unproven numerics change is explicit
+    /// configuration, not a default.
+    ///
+    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`.
+    #[arg(long, default_value_t = false)]
+    pub gdn_fused_norm: bool,
+
+    /// Batched multi-sequence GDN recurrent decode kernel (default: off).
+    ///
+    /// One strided launch across the batch instead of one per sequence.
+    /// Same bitwise-certification gap as `--gdn-fused-norm`; see that flag.
+    ///
+    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`.
+    #[arg(long, default_value_t = false)]
+    pub ssm_batched_recurrent: bool,
+
+    /// Mid-chunk SSM tail capture on the prefill path (default: on).
+    ///
+    /// Captures GDN recurrent + conv state in-pass at the block-floored
+    /// matched-prefix boundary, removing the ~868 ms extra forward pass the
+    /// clamp-based tail-checkpoint path costs on a warm turn. Off is
+    /// byte-identical to the pre-2026-07-19 baseline.
+    ///
+    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub ssm_tail_midchunk: bool,
+
+    /// MTP throughput gate: `auto` (default) or `force`.
+    ///
+    /// `auto` arms the arbiter, which measures whether speculative verify is
+    /// net-positive in the current regime and stops paying for it when it is
+    /// not. `force` DISARMS the arbiter so verify steps keep flowing even
+    /// where it would measure them net-negative — a diagnostic, needed to
+    /// collect verify samples for attribution, and never a production setting:
+    /// if forcing wins, the GATE is miscalibrated and that is the fix, not
+    /// this flag. To run without speculation at all, omit `--speculative`.
+    ///
+    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force`.
+    #[arg(long, default_value = "auto")]
+    pub mtp_gate: String,
 
     /// LM-head precision: `default` (model-config-driven), `bf16` (final vocab projection
     /// in BF16 — the SAFE DEFAULT, matches vLLM checkpoint precision), `nvfp4` (force the
@@ -449,8 +532,13 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 64)]
     pub high_speed_swap_cache_blocks_per_seq: u32,
 
-    /// Default request timeout in seconds. 0 = no timeout.
-    #[arg(long, default_value_t = 300)]
+    /// Server-side deadline for a single request, in seconds. A request
+    /// that exceeds it is CUT and the response is reported with
+    /// `finish_reason="timeout"` (never "length") plus a WARN log naming
+    /// the slot, elapsed time and tokens emitted — a truncation must never
+    /// look like a normal completion. `0` disables the deadline entirely.
+    /// Overridable per request via the OpenAI `timeout` field.
+    #[arg(long, default_value_t = DEFAULT_REQUEST_TIMEOUT_SECS)]
     pub request_timeout: u32,
 
     /// Enable per-kernel profiling: sync + time each operation within layers.

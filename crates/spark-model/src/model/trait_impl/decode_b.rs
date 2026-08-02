@@ -47,6 +47,13 @@ impl TransformerModel {
     ) -> Result<crate::traits::MixedForwardResult> {
         let n_decode = decode_tokens.len();
         let n_prefill = prefill_chunk_len;
+        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // once, HERE — outside the CUDA-graph region. No-op without the flag.
+        // The PREFILL sequence is deliberately excluded: it is still FP32 and
+        // stays FP32 until it is promoted to decode.
+        for s in decode_seqs.iter_mut() {
+            self.ssm_h_to_f16_dispatch(s)?;
+        }
 
         // Padded decode count for batched decode kernel compatibility
         let padded_n_guard = crate::traits::padded_batch_n(n_decode);
@@ -194,6 +201,21 @@ impl TransformerModel {
         // (shared_expert_intermediate_size × 2 ≤ 32KB observed for any
         // current Atlas model — 64KB is 2× safety margin).
         let decode_meta_base = self.buffers.logits().offset(65536);
+
+        // Derived fit (wave-14a): the widened decode-meta block (24R +
+        // R·max_blocks·4 bytes, R = decode-meta rows) must stay inside the
+        // logits arena behind the 64 KB MoE-scratch guard band above.
+        // ~526 KB at R=64/max_blocks=2049 vs a ~47 MB arena — fail fast if
+        // a future config ever breaks the fit instead of corrupting logits.
+        let meta_lay = self.buffers.decode_meta();
+        anyhow::ensure!(
+            65536 + meta_lay.meta_bytes(self.max_blocks_per_seq as usize)
+                <= self.buffers.sizes().logits,
+            "mixed_forward decode metadata ({} B at {} rows) overflows the logits arena ({} B)",
+            meta_lay.meta_bytes(self.max_blocks_per_seq as usize),
+            meta_lay.rows(),
+            self.buffers.sizes().logits
+        );
 
         let decode_metadata = self.upload_batch_metadata_at(
             decode_seqs,
@@ -451,6 +473,23 @@ impl TransformerModel {
         // token-for-token validation, 0/12). The standard prefill_chunk path
         // keeps its own same-stream (prefill_stream) every-chunk normalize.
         self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
+
+        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+        // rows for the whole-prompt drafter prefill — the standard prefill
+        // paths have always done this, the mixed path never did, so requests
+        // 3..n of a concurrent group (which take this path, since
+        // `spec_step_this_tick` only holds at `active.len() == 1`) drafted
+        // blind. ★ The SOURCE is `prefill_hidden`, not the buffer head: the
+        // mixed layout is [decode rows | prefill rows] and capturing from the
+        // head would store DECODE hiddens as this sequence's prompt hiddens
+        // (poison, not blindness).
+        self.try_mtp_prefill_capture_from(
+            prefill_seq,
+            effective_seq_len_start,
+            proc_count,
+            prefill_hidden,
+            stream,
+        )?;
 
         // Restore decode layer_states to sequences
         for (seq, ls) in decode_seqs

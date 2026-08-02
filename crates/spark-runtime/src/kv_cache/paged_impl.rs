@@ -6,6 +6,7 @@
 
 use anyhow::{Result, bail};
 
+use super::block_trace::BlockTrace;
 use super::{KvCacheConfig, KvCacheDtype, LayerPool, PagedKvCache};
 use crate::gpu::{DevicePtr, GpuBackend};
 
@@ -70,16 +71,22 @@ impl PagedKvCache {
             free_blocks,
             block_ref_counts,
             config,
+            trace: BlockTrace::new(num_blocks),
         })
     }
 
     /// Allocate a free block. Returns block index.
+    #[track_caller]
     pub fn alloc_block(&mut self) -> Result<u32> {
         let idx = self
             .free_blocks
             .pop()
             .ok_or_else(|| anyhow::anyhow!("KV cache exhausted: no free blocks"))?;
         self.block_ref_counts[idx as usize] = 1;
+        if self.trace.is_on() {
+            self.trace
+                .record(idx as usize, "alloc", 1, std::panic::Location::caller());
+        }
         Ok(idx)
     }
 
@@ -145,27 +152,66 @@ impl PagedKvCache {
     }
 
     /// Try to allocate a free block without failing. Returns None if exhausted.
+    #[track_caller]
     pub fn try_alloc_block(&mut self) -> Option<u32> {
         let idx = self.free_blocks.pop()?;
         self.block_ref_counts[idx as usize] = 1;
+        if self.trace.is_on() {
+            self.trace
+                .record(idx as usize, "try_alloc", 1, std::panic::Location::caller());
+        }
         Some(idx)
     }
 
     /// Increment reference count on a block (for prefix cache sharing).
+    #[track_caller]
     pub fn inc_ref(&mut self, block_idx: u32) {
         debug_assert!((block_idx as usize) < self.num_blocks);
         self.block_ref_counts[block_idx as usize] += 1;
+        if self.trace.is_on() {
+            let after = self.block_ref_counts[block_idx as usize];
+            self.trace.record(
+                block_idx as usize,
+                "inc",
+                after,
+                std::panic::Location::caller(),
+            );
+        }
     }
 
     /// Decrement reference count. Returns true if block was freed (count hit 0).
+    #[track_caller]
     pub fn dec_ref(&mut self, block_idx: u32) -> bool {
         let idx = block_idx as usize;
         debug_assert!(idx < self.num_blocks);
+        // Saturating, not wrapping: `debug_assert` is compiled out in release and
+        // the workspace sets no `overflow-checks`, so a 0-ref decrement would wrap
+        // to u32::MAX and pin that block for the process lifetime — a silent,
+        // unrecoverable pool leak. Log loudly and refuse instead; an over-release
+        // is a refcount bug worth seeing, not worth crashing or corrupting for.
         debug_assert!(
             self.block_ref_counts[idx] > 0,
             "dec_ref on block with 0 refs"
         );
+        if self.block_ref_counts[idx] == 0 {
+            let caller = std::panic::Location::caller();
+            tracing::error!(
+                "dec_ref on block {block_idx} with 0 refs (from {caller}) — refcount bug \
+                 (ignoring; would otherwise wrap to u32::MAX and pin the block){}",
+                if self.trace.is_on() {
+                    format!("\n  history: {}", self.trace.dump(idx))
+                } else {
+                    String::from(" [set ATLAS_KV_TRACE=1 for this block's ref history]")
+                }
+            );
+            return false;
+        }
         self.block_ref_counts[idx] -= 1;
+        if self.trace.is_on() {
+            let after = self.block_ref_counts[idx];
+            self.trace
+                .record(idx, "dec", after, std::panic::Location::caller());
+        }
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(block_idx);
             true
@@ -175,11 +221,13 @@ impl PagedKvCache {
     }
 
     /// Free a previously allocated block (decrements ref, frees if count hits 0).
+    #[track_caller]
     pub fn free_block(&mut self, block_idx: u32) {
         self.dec_ref(block_idx);
     }
 
     /// Free all blocks in a block table.
+    #[track_caller]
     pub fn free_blocks(&mut self, block_table: &[u32]) {
         for &idx in block_table {
             self.free_block(idx);
@@ -188,10 +236,52 @@ impl PagedKvCache {
 
     /// Return a block to the free pool directly, bypassing ref counting.
     /// Used by eviction: the radix tree already removed its reference.
+    #[track_caller]
     pub fn return_evicted_block(&mut self, block_idx: u32) {
-        debug_assert!((block_idx as usize) < self.num_blocks);
-        self.block_ref_counts[block_idx as usize] = 0;
-        self.free_blocks.push(block_idx);
+        let idx = block_idx as usize;
+        debug_assert!(idx < self.num_blocks);
+        // Release exactly the prefix cache's OWN reference (the "+1" a cached
+        // block carries per sequence.rs `inc_ref` when the radix node is
+        // inserted), not every reference. Force-zeroing here freed blocks that
+        // an active sequence still held in its block_table whenever the radix
+        // ref-count and the KV pool ref-count had desynced (e.g. a warm prefill
+        // that matched a prefix then failed to allocate its suffix, or the
+        // sliding-window partial-cache path). alloc_block would then re-hand
+        // that still-live block to a new prefill and zero_block would memset it
+        // under a concurrent decode → aliased KV pointer → CUDA_ERROR_ILLEGAL_
+        // ADDRESS (700). Decrementing keeps a still-referenced block alive.
+        //
+        // Push to the free list ONLY on a real 1->0 transition. A block already
+        // at 0 refs is already ON the free list, so pushing again duplicates the
+        // entry and two subsequent `alloc_block`s hand the SAME physical block to
+        // two sequences: they interleave writes into each other's KV, and when
+        // both later free it the second `dec_ref` underflows. That is reachable
+        // whenever the cache returns a block it never took a ref on — notably a
+        // `partial_suffix` block, which `insert` stores but `cache_sequence`
+        // never `inc_ref`s, and which `evict` nevertheless hands back.
+        if self.block_ref_counts[idx] == 0 {
+            tracing::warn!(
+                "return_evicted_block({block_idx}) with 0 refs (from {}) — the prefix cache \
+                 returned a block it holds no reference on; ignoring (re-pushing it would \
+                 duplicate a free-list entry and alias the block across sequences){}",
+                std::panic::Location::caller(),
+                if self.trace.is_on() {
+                    format!("\n  history: {}", self.trace.dump(idx))
+                } else {
+                    String::new()
+                }
+            );
+            return;
+        }
+        self.block_ref_counts[idx] -= 1;
+        if self.trace.is_on() {
+            let after = self.block_ref_counts[idx];
+            self.trace
+                .record(idx, "evict_return", after, std::panic::Location::caller());
+        }
+        if self.block_ref_counts[idx] == 0 {
+            self.free_blocks.push(idx as u32);
+        }
     }
 
     /// Current reference count for a block.

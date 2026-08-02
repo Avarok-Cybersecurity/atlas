@@ -16,11 +16,17 @@ impl MtpHead {
         weights: MtpWeights,
         embed_tokens: DenseWeight,
         lm_head_nvfp4: QuantizedWeight,
+        // Padded transposed twin of the SHARED main head (see the field docs):
+        // `Some` only when the drafter head IS the main head, so routing the
+        // batched-propose lm_head through it is the exact weight at tile-GEMM
+        // bandwidth. Caller passes `None` for dedicated draft heads.
+        lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
         config: &atlas_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         quant: MtpQuantization,
         mtp_vocab_size: u32,
         max_seq_len: usize,
+        main_kv_blocks: usize,
         // This model's levers — the drafter-prefill policy decides whether the
         // dedicated prefill scratch is allocated at all.
         levers: &crate::layers::ops::ModelLevers,
@@ -228,7 +234,21 @@ impl MtpHead {
             layer_dims: vec![],
             cache_blocks_per_seq: None,
         };
-        let mtp_num_blocks = max_seq_len / kv_config.block_size + 1;
+        // The drafter's KV pool must admit EVERY concurrently-drafting
+        // sequence, not one: `max_seq_len/bs + 1` was sized before MTP propose
+        // went batched, and at C=16 x ~2K-token contexts it is ~2x short — the
+        // "KV cache exhausted" ERROR spam from run_mtp_propose_batched is this
+        // pool (the 15K-block MAIN pool never fills on that workload), and each
+        // hit degrades the batched propose to the per-step fallback. Scale by
+        // the MTP concurrency cap, bounded by the main pool's block count: the
+        // drafter cannot need more live tokens than the main KV can hold, so
+        // the cap keeps a 128K `--max-seq-len` config from blindly allocating
+        // seqs x 8K blocks. Cost at the 16K/16-seq bench config: 15,203 blocks
+        // x 64 KB = ~0.97 GB, well inside the serve reserve.
+        let per_seq_blocks = max_seq_len / kv_config.block_size + 1;
+        let mtp_num_blocks = per_seq_blocks
+            .saturating_mul(crate::speculative::mtp_max_seqs())
+            .min(main_kv_blocks.max(per_seq_blocks));
         let kv_cache = PagedKvCache::new(kv_config, mtp_num_blocks, gpu)?;
 
         // Extra kernel handles for BF16/FP8 paths
@@ -377,6 +397,39 @@ impl MtpHead {
             // Batched BF16 GEMM for drafter prefill; 0-handle when the
             // target's kernel set lacks it (prefill then no-ops).
             dense_gemm_k: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16"),
+            dense_gemm_pipelined_k: crate::layers::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
+            w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_gemv_batch16_k: crate::layers::try_kernel(
+                gpu,
+                "w4a16_gemv",
+                "w4a16_gemv_batch16",
+            ),
+            w4a16_gemv_batch32_k: crate::layers::try_kernel(
+                gpu,
+                "w4a16_gemv",
+                "w4a16_gemv_batch32",
+            ),
+            // Propose-side tile-twin routing decided ONCE at construction
+            // (process-static: handle + env + weight presence), so per-n CUDA
+            // graph captures of the batched propose can never see the
+            // selection flip. Kill switch is PRESENCE-style per the house
+            // convention (`ATLAS_NO_MTP_LMHEAD_TGEMM=0` is NOT off).
+            lm_head_nvfp4_t: lm_head_nvfp4_t
+                .filter(|_| std::env::var_os("ATLAS_NO_MTP_LMHEAD_TGEMM").is_none()),
+            w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
+            argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
+            argmax_batch_lp_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch_lp"),
+            // Drafter attention metadata for the batched propose — a
+            // dedicated 64 KB allocation, never an offset into the shared
+            // scratch arena (see the `propose_meta` field docs).
+            propose_meta: gpu.alloc(
+                super::batch_caps::PROPOSE_META_SEQS * super::batch_caps::PROPOSE_META_STRIDE,
+            )?,
             prefill_scratch,
         })
     }

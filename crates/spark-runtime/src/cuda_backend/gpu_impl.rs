@@ -37,11 +37,8 @@ use atlas_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
-    AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
-    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
-    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
+    AtlasCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -114,6 +111,22 @@ impl GpuBackend for AtlasCudaBackend {
 
     fn copy_d2h_on_stream(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
         AtlasCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
+    }
+
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
+        // Deliberately NO cuStreamSynchronize — that is the entire point.
+        // `copy_d2h`/`copy_d2h_on_stream` drain the stream inside every call,
+        // so a multi-chunk gather pays one full drain per chunk (the SSM spill's
+        // 60 chunks × 66 MB measured ~400 ms = ~165 MB/s, vs ~28 ms for the
+        // async H2D scatter of the same bytes). The caller MUST issue exactly
+        // one `synchronize(stream)` before touching `dst`.
+        let status = unsafe {
+            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
+        };
+        if status != 0 {
+            bail!("cuMemcpyDtoHAsync_v2 (async) failed: status {status}");
+        }
+        Ok(())
     }
 
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
@@ -274,191 +287,67 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn begin_capture(&self, stream: u64) -> Result<()> {
-        // CU_STREAM_CAPTURE_MODE_RELAXED = 2
-        // Relaxed mode allows NCCL's internal streams to operate during
-        // graph capture (required for EP all-reduce in CUDA graphs).
-        let status = unsafe { cuStreamBeginCapture(stream, 2) };
-        if status != 0 {
-            bail!("cuStreamBeginCapture failed: status {status}");
-        }
-        Ok(())
+        self.begin_capture_cu(stream)
     }
-
     fn end_capture(&self, stream: u64) -> Result<GraphHandle> {
-        let mut graph: u64 = 0;
-        let status = unsafe { cuStreamEndCapture(stream, &mut graph) };
-        if status != 0 {
-            bail!("cuStreamEndCapture failed: status {status}");
-        }
-        // Instantiate the graph into an executable. NVIDIA's libcuda exports
-        // `cuGraphInstantiateWithFlags`; SCALE (gfx1151) exposes the
-        // ABI-identical `cuGraphInstantiate` — see cuda_backend.rs.
-        let mut graph_exec: u64 = 0;
-        #[cfg(not(atlas_scale))]
-        let status = unsafe { super::cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
-        #[cfg(atlas_scale)]
-        let status = unsafe { super::cuGraphInstantiate(&mut graph_exec, graph, 0) };
-        if status != 0 {
-            unsafe { cuGraphDestroy(graph) };
-            bail!("cuGraphInstantiate failed: status {status}");
-        }
-        // The graph template is no longer needed after instantiation
-        unsafe { cuGraphDestroy(graph) };
-        Ok(GraphHandle(graph_exec))
+        self.end_capture_cu(stream)
     }
-
     fn launch_graph(&self, graph: GraphHandle, stream: u64) -> Result<()> {
-        let status = unsafe { cuGraphLaunch(graph.0, stream) };
-        if status != 0 {
-            bail!("cuGraphLaunch failed: status {status}");
-        }
-        Ok(())
+        self.launch_graph_cu(graph, stream)
     }
-
     fn destroy_graph(&self, graph: GraphHandle) -> Result<()> {
-        if graph.0 != 0 {
-            let status = unsafe { cuGraphExecDestroy(graph.0) };
-            if status != 0 {
-                bail!("cuGraphExecDestroy failed: status {status}");
-            }
-        }
-        Ok(())
+        self.destroy_graph_cu(graph)
     }
-
     fn memset(&self, ptr: DevicePtr, value: u8, bytes: usize) -> Result<()> {
-        let status = unsafe { cuMemsetD8Async(ptr.0, value, bytes, self.default_stream) };
-        if status != 0 {
-            bail!("cuMemsetD8Async failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!("cuStreamSynchronize after memset failed: status {sync}");
-        }
-        Ok(())
+        self.memset_cu(ptr, value, bytes)
     }
-
     fn memset_async(&self, ptr: DevicePtr, value: u8, bytes: usize, stream: u64) -> Result<()> {
-        let status = unsafe { cuMemsetD8Async(ptr.0, value, bytes, stream) };
-        if status != 0 {
-            bail!("cuMemsetD8Async failed: status {status}");
-        }
-        Ok(())
+        self.memset_async_cu(ptr, value, bytes, stream)
     }
-
     fn total_memory(&self) -> Result<usize> {
-        let mut free: usize = 0;
-        let mut total: usize = 0;
-        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
-        if status != 0 {
-            bail!("cuMemGetInfo_v2 failed: status {status}");
-        }
-        Ok(total)
+        self.total_memory_cu()
     }
-
     fn free_memory(&self) -> Result<usize> {
-        let mut free: usize = 0;
-        let mut total: usize = 0;
-        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
-        if status != 0 {
-            bail!("cuMemGetInfo_v2 failed: status {status}");
-        }
-        // On unified memory (GB10), cuMemGetInfo reports Linux "free" memory
-        // which excludes reclaimable buff/cache. Use MemAvailable instead.
-        if let Some(mem_available) = super::system_available_memory_bytes() {
-            free = free.max(mem_available);
-        }
-        Ok(free)
+        self.free_memory_cu()
     }
-
+    fn sm_count(&self) -> Result<u32> {
+        self.sm_count_cu()
+    }
     fn create_stream(&self) -> Result<u64> {
-        let mut stream: u64 = 0;
-        // CU_STREAM_NON_BLOCKING = 1 (does not synchronize with stream 0)
-        let status = unsafe { cuStreamCreate(&mut stream, 1) };
-        if status != 0 {
-            bail!("cuStreamCreate failed: status {status}");
-        }
-        Ok(stream)
+        self.create_stream_cu()
     }
-
     fn bind_to_thread(&self) -> Result<()> {
-        let status = unsafe { cuCtxSetCurrent(self.cuda_ctx) };
-        if status != 0 {
-            bail!("cuCtxSetCurrent failed: status {status}");
-        }
-        Ok(())
+        self.bind_to_thread_cu()
     }
-
     fn create_event(&self) -> Result<u64> {
-        let mut event: u64 = 0;
-        // CU_EVENT_DISABLE_TIMING = 0x02 (skip timing overhead)
-        let status = unsafe { cuEventCreate(&mut event, 0x02) };
-        if status != 0 {
-            bail!("cuEventCreate failed: status {status}");
-        }
-        Ok(event)
+        self.create_event_cu()
     }
-
     fn record_event(&self, event: u64, stream: u64) -> Result<()> {
-        let status = unsafe { cuEventRecord(event, stream) };
-        if status != 0 {
-            bail!("cuEventRecord failed: status {status}");
-        }
-        Ok(())
+        self.record_event_cu(event, stream)
     }
-
     fn stream_wait_event(&self, stream: u64, event: u64) -> Result<()> {
-        let status = unsafe { cuStreamWaitEvent(stream, event, 0) };
-        if status != 0 {
-            bail!("cuStreamWaitEvent failed: status {status}");
-        }
-        Ok(())
+        self.stream_wait_event_cu(stream, event)
     }
-
     fn event_synchronize(&self, event: u64) -> Result<()> {
-        // Block calling thread until all work recorded against `event`
-        // (on whatever stream `record_event` targeted) has completed.
-        // Used in Phase E.2: drafter D2H copy is recorded against this
-        // event, host blocks here just before reading the pinned buffer.
-        let status = unsafe { cuEventSynchronize(event) };
-        if status != 0 {
-            bail!("cuEventSynchronize failed: status {status}");
-        }
-        Ok(())
+        self.event_synchronize_cu(event)
     }
-
     fn destroy_event(&self, event: u64) -> Result<()> {
-        if event != 0 {
-            let status = unsafe { cuEventDestroy_v2(event) };
-            if status != 0 {
-                bail!("cuEventDestroy_v2 failed: status {status}");
-            }
+        self.destroy_event_cu(event)
+    }
+    fn host_ptr_to_device(&self, host: *mut u8) -> Result<DevicePtr> {
+        let mut dptr: u64 = 0;
+        let status =
+            unsafe { super::cuMemHostGetDevicePointer_v2(&mut dptr, host as *mut c_void, 0) };
+        if status != 0 {
+            bail!("cuMemHostGetDevicePointer_v2 failed: status {status}");
         }
-        Ok(())
+        Ok(DevicePtr(dptr))
     }
 
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
-        let mut ptr: *mut c_void = std::ptr::null_mut();
-        let status = unsafe { cuMemAllocHost_v2(&mut ptr, bytes) };
-        if status != 0 {
-            bail!("cuMemAllocHost_v2 failed: status {status}, requested {bytes} bytes");
-        }
-        Ok(ptr as *mut u8)
+        self.alloc_host_pinned_cu(bytes)
     }
-
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
-        if !ptr.is_null() {
-            let status = unsafe { cuMemFreeHost(ptr as *mut c_void) };
-            // The driver tears the primary context down in its own atexit
-            // handler, which can run before ours. Pinned host memory allocated
-            // against a context that no longer exists was already reclaimed
-            // with it — reporting that as a failure is noise at every exit.
-            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
-                bail!(
-                    "cuMemFreeHost failed: {}",
-                    atlas_core::registry::cuda_error_text(status)
-                );
-            }
-        }
-        Ok(())
+        self.free_host_pinned_cu(ptr, _bytes)
     }
 }

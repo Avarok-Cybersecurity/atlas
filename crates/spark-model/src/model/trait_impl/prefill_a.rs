@@ -86,6 +86,7 @@ impl TransformerModel {
         };
         let mut kv_write_start = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = prefix_match.matched_tokens;
+        seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
         // Record the original prompt length — cache_sequence() uses it later
         // to avoid double-bumping ref_counts on the prompt portion.
         seq.prompt_len = n;
@@ -140,7 +141,10 @@ impl TransformerModel {
             self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
         let marconi_skip = if let Some(snap_id) = eff_snapshot {
             let snap_tok = eff_snapshot_tokens;
-            if snap_tok > 0
+            // Below `marconi_min_tokens()` the snapshot restore costs more in lost
+            // drafter acceptance than the skipped prefill saves — see the helper.
+            if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                && snap_tok > 0
                 && kv_write_start <= n
                 && self
                     .ssm_snapshots
@@ -486,7 +490,7 @@ impl TransformerModel {
 
         // ATLAS_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
         // hiddens for the whole-prompt drafter prefill. No-op when disabled.
-        self.try_mtp_prefill_capture(seq_len_start, proc_count, stream)?;
+        self.try_mtp_prefill_capture(seq, seq_len_start, proc_count, stream)?;
 
         // ── 5. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);

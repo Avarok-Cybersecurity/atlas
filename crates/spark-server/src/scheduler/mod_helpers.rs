@@ -61,7 +61,13 @@ pub(super) fn install_high_speed_swap(
 }
 
 /// Co-dispatch admission window: `Some(duration)` when `ATLAS_PREFILL_CODISPATCH=1`,
-/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` (default 5).
+/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS`
+/// (default 100). A burst of concurrent requests arrives over tens of ms
+/// (HTTP accept + tokenize spread); the old 10 ms default admitted only the
+/// first 1-2 arrivals, so the "co"-dispatch cohort was mostly singletons and
+/// the batched path never saw the burst it exists for. 100 ms is one decode
+/// step's worth of TTFT — negligible against the multi-second serialized
+/// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
     let on = std::env::var("ATLAS_PREFILL_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -72,7 +78,7 @@ fn codispatch_window() -> Option<std::time::Duration> {
     let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(10);
+        .unwrap_or(100);
     Some(std::time::Duration::from_millis(ms))
 }
 
@@ -178,6 +184,59 @@ pub(super) fn drain_pending_requests(
         result.push(req);
     }
     result
+}
+
+/// Enforce the server-side per-request deadline on every active sequence.
+///
+/// Runs once per scheduler iteration, immediately before retirement, so it
+/// is INDEPENDENT of which decode path produced the step. The check used to
+/// live inside `decode_logits_step::process_decode_logits`, which the MTP /
+/// speculative path never calls — so with `--speculative` (the config of
+/// record) the deadline was simply not enforced at all, and it only ever
+/// fired at the high concurrencies where the spec path is off. Measured on
+/// dgx2 2026-08-01: a `--request-timeout 5` serve ran a single request for
+/// 145 s to a full 4000 tokens without the deadline firing once.
+///
+/// A deadline cut is an ABNORMAL stop: it sets `guard_stop` so
+/// `finish_sequence` reports `finish_reason="timeout"` instead of deriving
+/// "length" from the last token, which is indistinguishable from a
+/// legitimate max_tokens stop. Retirement is unchanged — the sequence goes
+/// through the same `finish_sequence` → `free_sequence` path as any other
+/// stop, so KV blocks and the SSM `SlotGuard` are released identically.
+pub(super) fn enforce_request_deadlines(active: &mut [ActiveSeq]) {
+    // No clock read and no per-sequence work when nothing is deadlined
+    // (`--request-timeout 0`), so the decode loop pays nothing for this.
+    if !active.iter().any(|a| !a.finished && a.timeout_at.is_some()) {
+        return;
+    }
+    let now = Instant::now();
+    for a in active.iter_mut() {
+        if a.finished {
+            continue;
+        }
+        let Some(deadline) = a.timeout_at else {
+            continue;
+        };
+        if now < deadline {
+            continue;
+        }
+        let emitted = a.output_tokens.len();
+        tracing::warn!(
+            slot = a.seq.slot_idx,
+            session_hash = a.session_hash,
+            elapsed_s = a.request_start.elapsed().as_secs_f64(),
+            budget_s = deadline
+                .saturating_duration_since(a.request_start)
+                .as_secs_f64(),
+            emitted_tokens = emitted,
+            requested_tokens = emitted + a.remaining,
+            "Request TIMEOUT: response TRUNCATED by the server deadline \
+             (--request-timeout / per-request `timeout`); \
+             reporting finish_reason=\"timeout\", not \"length\""
+        );
+        a.guard_stop = Some(GUARD_STOP_REQUEST_TIMEOUT);
+        a.finished = true;
+    }
 }
 
 /// Retire finished sequences. After swap_remove, the last element moves to

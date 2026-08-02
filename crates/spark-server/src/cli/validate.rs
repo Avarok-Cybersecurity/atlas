@@ -24,6 +24,8 @@ use super::ServeArgs;
 const LM_HEAD_DTYPES: &[&str] = &["default", "bf16", "nvfp4", "fp8"];
 const MTP_QUANTS: &[&str] = &["bf16", "fp8", "nvfp4"];
 const SCHEDULING_POLICIES: &[&str] = &["fifo", "slai"];
+const SSM_H_DTYPES: &[&str] = &["f32", "f16"];
+const MTP_GATES: &[&str] = &["auto", "force"];
 const TOOL_CALL_PARSERS: &[&str] = &[
     "hermes",
     "qwen3_coder",
@@ -65,6 +67,21 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         &args.lm_head_dtype,
         LM_HEAD_DTYPES,
     );
+    check_enum(&mut v, "--ssm-h-dtype", &args.ssm_h_dtype, SSM_H_DTYPES);
+    check_enum(&mut v, "--mtp-gate", &args.mtp_gate, MTP_GATES);
+    // The FP16 h-state twins live ONLY on the fused-norm decode arm. Without
+    // it the dispatch lands on an FP32-only kernel pointed at an FP16 pool,
+    // which does not fault — it emits fluent garbage. Reject the pair here,
+    // in milliseconds, rather than at the first decode step of a benchmark.
+    if args.ssm_h_dtype == "f16" && !args.gdn_fused_norm {
+        v.push(Violation::new(
+            "--ssm-h-dtype f16 without --gdn-fused-norm",
+            "the FP16 h-state twins exist only on the fused-norm decode arm; the unfused \
+             arms (gated_delta_rule_decode, ..._decode_f32_strided) are FP32-only and \
+             would read the FP16 pool as FP32 — fluent garbage, not an error",
+            "add --gdn-fused-norm, or use --ssm-h-dtype f32",
+        ));
+    }
     check_enum(
         &mut v,
         "--mtp-quantization",
