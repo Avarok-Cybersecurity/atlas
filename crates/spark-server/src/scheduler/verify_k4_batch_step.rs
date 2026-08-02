@@ -4,7 +4,7 @@
 //! K-vs-batch ladder, task #35).
 //!
 //! Runs the n weight-reading verify forwards of a chunk of verify-ready
-//! sequences as ONE R = Σ ks[i]-row forward (`decode_verify_batched`,
+//! sequences as ONE R = Σ `ks[i]`-row forward (`decode_verify_batched`,
 //! seq-major rows, RAGGED per sequence since D-Cut), then applies its verdict
 //! with the EXISTING single-seq machinery (`k4_apply_verdict`, K-generic).
 //! `k_drafts` (drafts per sequence this step) comes from the ladder —

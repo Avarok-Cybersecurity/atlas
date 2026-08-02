@@ -115,6 +115,8 @@ jobs:
           int cuCtxDestroy_v2(void *a) { (void)a; return 100; }
           int cuCtxGetCurrent(void **a) { (void)a; return 100; }
           int cuCtxSetCurrent(void *a) { (void)a; return 100; }
+          int cuCtxGetDevice(int *a) { (void)a; return 100; }
+          int cuDeviceGetAttribute(int *a, unsigned int b, int c) { (void)a; (void)b; (void)c; return 100; }
           /* Errors */
           int cuGetErrorName(int code, const char **out) { (void)code; (void)out; return 100; }
           int cuGetErrorString(int code, const char **out) { (void)code; (void)out; return 100; }
@@ -122,6 +124,7 @@ jobs:
           int cuStreamCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
           int cuStreamDestroy_v2(void *a) { (void)a; return 100; }
           int cuStreamSynchronize(void *a) { (void)a; return 100; }
+          int cuStreamQuery(void *a) { (void)a; return 100; }
           int cuStreamBeginCapture(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamBeginCapture_v2(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamEndCapture(void *a, void **b) { (void)a; (void)b; return 100; }
