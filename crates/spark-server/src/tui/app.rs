@@ -112,6 +112,10 @@ pub struct App {
     pub lib: crate::tui::lib_state::LibState,
     /// Model downloads and update checks.
     pub download: crate::tui::download_state::DownloadState,
+    /// Scroll ceilings, published by the renderer. See `app_scroll`.
+    pub log_scroll_max: std::cell::Cell<usize>,
+    pub kernel_scroll_max: std::cell::Cell<usize>,
+    pub chat_scroll_max: std::cell::Cell<usize>,
     /// An in-progress or just-finished mouse selection, in cell coordinates.
     ///
     /// Lives on `App` rather than in the event loop because the RENDERER needs
@@ -170,6 +174,9 @@ impl App {
             library_dirty: true,
             download: Default::default(),
             selection: None,
+            log_scroll_max: std::cell::Cell::new(0),
+            kernel_scroll_max: std::cell::Cell::new(0),
+            chat_scroll_max: std::cell::Cell::new(0),
             lib: Default::default(),
             network_selected: 0,
             network_detail: false,
@@ -256,6 +263,13 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        // Any keystroke ends a selection. Its coordinates are SCREEN CELLS, so
+        // the moment the screen changes underneath it — a section switch, a
+        // scroll, a filter — it is highlighting different text than the user
+        // chose, and on another section it highlights nothing meaningful at
+        // all. Reported as a stale highlight following the user between
+        // screens.
+        self.selection = None;
         // Ctrl+C always requests clean shutdown (raw mode swallows SIGINT).
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             super::shutdown::request("Ctrl+C");

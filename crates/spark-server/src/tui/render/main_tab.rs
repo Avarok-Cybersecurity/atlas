@@ -301,6 +301,11 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
             ])
         })
         .collect();
+    // The ceiling the wheel clamps to: everything the pane holds, less what
+    // fits on screen. Recorded before truncation, because truncation is what
+    // the offset DOES.
+    app.log_scroll_max
+        .set(lines.len().saturating_sub(inner.height as usize));
     // Apply scroll: drop from the end when scrolled up.
     if let Some(up) = app.log_scroll {
         let keep = lines.len().saturating_sub(up);
@@ -410,6 +415,11 @@ pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .filter(|r| app.kernel_filter.is_empty() || r.module.contains(&app.kernel_filter))
         .collect();
+    // Two rows of chrome (header + border) come off the visible count; the
+    // ceiling is what remains once a full screen is showing.
+    let kernel_view = rows_layout[idx].height.saturating_sub(3) as usize;
+    app.kernel_scroll_max
+        .set(filtered.len().saturating_sub(kernel_view));
     let title = format!("KERNELS ─ {} modules ─", filtered.len());
     let header = Row::new(vec!["MODULE", "PTX-HASH", "RESOLUTION"])
         .style(theme::text2().add_modifier(Modifier::BOLD));

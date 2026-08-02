@@ -220,6 +220,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // following" precisely when a reply got long enough to matter.
     let h = inner.height as usize;
     let max_off = lines.len().saturating_sub(h);
+    // `max_off` is already exactly the ceiling: scrolled back that far, the
+    // OLDEST line is at the top and there is nothing above it.
+    app.chat_scroll_max.set(max_off);
     let off = match app.chat.scroll {
         None => max_off,
         Some(n) => max_off.saturating_sub(n),

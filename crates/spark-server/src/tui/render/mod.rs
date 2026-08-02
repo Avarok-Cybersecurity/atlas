@@ -267,30 +267,66 @@ fn bench_hints(app: &App) -> &'static str {
     }
 }
 
+/// Toasts, drawn over whatever is underneath them.
+///
+/// They are boxed rather than being a single tinted line. A toast lands on top
+/// of a dense pane — a table, a log, a progress bar — and a one-row strip with
+/// only a background colour to separate it reads as part of that pane rather
+/// than as a message about it. The border is in the toast's own accent colour
+/// (green or red), which is also what tells you at a glance whether something
+/// succeeded or failed.
 fn draw_toasts(f: &mut Frame, app: &App, content: Rect) {
-    let width = 42.min(content.width.saturating_sub(2));
+    // +2 columns and +2 rows per toast for the border box.
+    let width = 44.min(content.width.saturating_sub(2));
+    let inner_w = width.saturating_sub(2) as usize;
     for (i, t) in app.toasts.iter().rev().take(3).enumerate() {
+        // Three rows each now (box + a blank), so they stack without touching.
         let area = Rect {
             x: content.x + content.width.saturating_sub(width + 1),
-            y: content.y + 1 + (i as u16) * 2,
+            y: content.y + 1 + (i as u16) * 4,
             width,
-            height: 1,
+            height: 3,
         };
+        if area.bottom() > content.bottom() || width < 6 {
+            // Not enough room to draw a box honestly; skip rather than clip a
+            // border into something unreadable.
+            continue;
+        }
         let accent = if t.error {
             theme::error()
         } else {
             theme::brand_green()
         };
-        let line = Line::from(vec![
-            Span::styled("▌ ", accent),
-            Span::styled(t.text.clone(), theme::text()),
-        ]);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(accent.add_modifier(Modifier::BOLD))
+            .style(Style::default().bg(theme::BG_RAISED.color()));
+        let inner = block.inner(area);
+        // `Clear` over the WHOLE box, including the border cells: without it
+        // the rounded corners sit on top of whatever glyph was underneath.
         f.render_widget(Clear, area);
+        f.render_widget(block, area);
+        let text = truncate_toast(&t.text, inner_w);
         f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(theme::BG_RAISED.color())),
-            area,
+            Paragraph::new(Line::from(Span::styled(text, theme::text())))
+                .style(Style::default().bg(theme::BG_RAISED.color())),
+            inner,
         );
     }
+}
+
+/// One line, ellipsised, so a long message cannot spill past the border it is
+/// supposed to be inside.
+fn truncate_toast(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let n = text.chars().count();
+    if n <= width {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{head}…")
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {

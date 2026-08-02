@@ -117,3 +117,70 @@ fn the_buffer_to_copy_from_is_the_completed_frame_not_the_current_one() {
          copies a blank screen"
     );
 }
+
+#[test]
+fn a_selection_does_not_survive_a_keystroke() {
+    // Reported: select text, switch screen, and the highlight follows you —
+    // painting reversed cells over unrelated content, because the selection is
+    // stored in SCREEN CELLS and means something different on every screen.
+    use crate::tui::selection::Selection;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let mut a = app();
+    a.section = Section::Main;
+    a.selection = Some(Selection {
+        anchor: (10, 5),
+        cursor: (30, 5),
+    });
+    assert!(a.selection.is_some());
+
+    // Any key at all, including the section-switch keys that triggered the
+    // report.
+    a.on_key(KeyEvent::from(KeyCode::Char('4')));
+    assert!(
+        a.selection.is_none(),
+        "a keystroke must end the selection, not carry it to the next screen"
+    );
+}
+
+#[test]
+fn a_cleared_selection_paints_nothing() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
+    let mut a = app();
+    a.section = Section::Main;
+    a.selection = None;
+
+    let mut t = Terminal::new(TestBackend::new(120, 40)).expect("backend");
+    t.draw(|f| draw(f, &a)).expect("draw");
+    let buf = t.backend().buffer();
+    let reversed = buf
+        .content()
+        .iter()
+        .filter(|c| c.modifier.contains(Modifier::REVERSED))
+        .count();
+    // The dashboard uses REVERSED for its own chips and badges, so this cannot
+    // assert zero — only that the 21-cell selection band is not among them.
+    let before = reversed;
+
+    a.selection = Some(crate::tui::selection::Selection {
+        anchor: (10, 5),
+        cursor: (30, 5),
+    });
+    let mut t2 = Terminal::new(TestBackend::new(120, 40)).expect("backend");
+    t2.draw(|f| draw(f, &a)).expect("draw");
+    let after = t2
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .filter(|c| c.modifier.contains(Modifier::REVERSED))
+        .count();
+    assert_eq!(
+        after,
+        before + 21,
+        "a live selection adds exactly its own cells; a cleared one adds none"
+    );
+}

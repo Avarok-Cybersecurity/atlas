@@ -239,6 +239,9 @@ fn the_wheel_scrolls_every_section_that_has_anything_to_scroll() {
     // must move INTO history and wheel-down must return to following.
     a.section = Section::Main;
     a.main_sub = MainSub::Overview;
+    // The renderer publishes how far back the pane can go; without it there is
+    // nothing above the fold and the wheel correctly refuses to move.
+    a.log_scroll_max.set(100);
     a.scroll(-3);
     assert_eq!(a.log_scroll, Some(3), "wheel-up enters history");
     a.scroll(3);
@@ -248,6 +251,7 @@ fn the_wheel_scrolls_every_section_that_has_anything_to_scroll() {
 
     // Main / Kernels: a plain viewport offset, clamped at zero.
     a.main_sub = MainSub::Kernels;
+    a.kernel_scroll_max.set(100);
     a.scroll(3);
     assert_eq!(a.kernel_scroll, 3);
     a.scroll(-99);
@@ -256,6 +260,7 @@ fn the_wheel_scrolls_every_section_that_has_anything_to_scroll() {
     // Terminal / Chat has its own scrollback.
     a.section = Section::Terminal;
     a.term_sub = TermSub::Chat;
+    a.chat_scroll_max.set(100);
     a.scroll(-3);
     assert_eq!(a.chat.scroll, Some(3));
 
@@ -265,4 +270,56 @@ fn the_wheel_scrolls_every_section_that_has_anything_to_scroll() {
         a.scroll(3);
         a.scroll(-3);
     }
+}
+
+#[test]
+fn scrolling_stops_at_the_limits_instead_of_running_away() {
+    // Reported: past the first or last line the wheel kept "scrolling" — the
+    // pane had gone blank, and coming back took as many turns as had been
+    // spent going up, because the offset had grown without bound.
+    use crate::tui::app::{MainSub, TermSub};
+    use crate::tui::section::Section;
+
+    let mut a = App::new(clap::Parser::parse_from(["spark", "m"]));
+    a.section = Section::Main;
+    a.main_sub = MainSub::Overview;
+    // The renderer publishes the ceiling each frame; 10 lines of scrollback.
+    a.log_scroll_max.set(10);
+
+    for _ in 0..50 {
+        a.scroll(-3); // wheel up, hard
+    }
+    assert_eq!(a.log_scroll, Some(10), "clamped at the oldest line");
+
+    // And coming back is symmetric — four wheel-downs, not fifty.
+    for _ in 0..4 {
+        a.scroll(3);
+    }
+    assert_eq!(a.log_scroll, None, "back to following the newest line");
+
+    // A pane with nothing above the fold cannot scroll at all.
+    a.log_scroll_max.set(0);
+    a.scroll(-9);
+    assert_eq!(a.log_scroll, None);
+
+    // Kernels: same ceiling, and still clamped at zero going the other way.
+    a.main_sub = MainSub::Kernels;
+    a.kernel_scroll_max.set(5);
+    for _ in 0..20 {
+        a.scroll(3);
+    }
+    assert_eq!(a.kernel_scroll, 5, "cannot scroll past the last row");
+    for _ in 0..20 {
+        a.scroll(-3);
+    }
+    assert_eq!(a.kernel_scroll, 0, "nor above the first");
+
+    // Chat scrollback.
+    a.section = Section::Terminal;
+    a.term_sub = TermSub::Chat;
+    a.chat_scroll_max.set(4);
+    for _ in 0..20 {
+        a.scroll(-3);
+    }
+    assert_eq!(a.chat.scroll, Some(4), "clamped at the oldest message");
 }

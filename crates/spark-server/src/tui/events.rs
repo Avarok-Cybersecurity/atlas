@@ -55,6 +55,7 @@ pub fn run(
     // moment the selected text exists anywhere readable.
     let mut copy_after_draw = false;
     let mut copy_result: Option<(Result<usize, String>, bool)> = None;
+    let mut clear_selection = false;
     let mut ticks: u32 = 0;
 
     loop {
@@ -195,10 +196,19 @@ pub fn run(
                 {
                     let text = super::selection::extract(frame.buffer, frame.area, &sel);
                     copy_result = Some((super::clipboard::copy(&text), text.is_empty()));
+                    // Drop the selection now that it has been read. It has
+                    // done its job, and a highlight that outlives the copy
+                    // goes on painting reversed cells over whatever the user
+                    // navigates to next — the coordinates are screen cells,
+                    // so they mean something different on every screen.
+                    clear_selection = true;
                 }
             }
         }
-        // Toasting needs `&mut app`, which the frame borrow above forbids.
+        // Both of these need `&mut app`, which the frame borrow above forbids.
+        if std::mem::take(&mut clear_selection) {
+            app.selection = None;
+        }
         if let Some((res, was_empty)) = copy_result.take() {
             match res {
                 Ok(n) => app.toast(format!("Copied {n} characters to clipboard"), false),
@@ -294,8 +304,17 @@ fn on_mouse(
                 }
             };
         }
-        MouseEventKind::ScrollUp => app.scroll(-3),
-        MouseEventKind::ScrollDown => app.scroll(3),
+        // Scrolling moves the content out from under the highlight, so the
+        // same argument as a keystroke applies: the cells it covers no longer
+        // hold the text that was chosen.
+        MouseEventKind::ScrollUp => {
+            app.selection = None;
+            app.scroll(-3);
+        }
+        MouseEventKind::ScrollDown => {
+            app.selection = None;
+            app.scroll(3);
+        }
         _ => {}
     }
     MouseOutcome::None
