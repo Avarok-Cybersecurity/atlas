@@ -486,7 +486,7 @@ Cherry-picked, in order, after 6.2 exposed the wedge:
 * `493df3ea` (= wip-laguna-lora d27ec6fd, = #373's first commit): stop
   exhaustion crashing CUDA-700 + wedging the pool. VERIFIED on its own
   binary: balanced_long C=8 recovered 21.9 (drops) → **94.6 tok/s, 16/16**.
-  Exhaustion ERRORs still fire (~1000/run) — pressure is real, the pool just
+  Exhaustion ERROR lines still fire (~1000/run) — pressure is real, the pool just
   no longer wedges.
 * #375 complete (`2fe52169`, `000c9ba2`, `d36a54b8`): preempt on decode-time
   and prefill-chunk KV exhaustion instead of failing the batch; make the
@@ -632,7 +632,7 @@ path (and to the 35B MoE it was measured on). Keep it: it costs nothing
 here and protects the spec-off path (96.7 in 6.6 would presumably improve).
 The decode_short recovery 124→~130 attributes to the prefill trio
 (cohort pre-flight + arena-by-staged-tokens), clawing back roughly half of
-6.6's ~9% KV-stack cost. Exhaustion ERRORs unchanged (~1.1K, MTP-driven).
+6.6's ~9% KV-stack cost. Exhaustion ERROR lines unchanged (~1.1K, MTP-driven).
 
 **K4 acceptance at C=16 — "only good at first token" is BY DESIGN** (user
 observation, confirmed): the default K-ladder is `8:3, 16:1`, so at n<=16
@@ -672,7 +672,7 @@ Validation (C=16, slai/16K, spec ON, single reps):
 |---|---|---|---|
 | decode_short | 131.3 | **144.3** | +10% |
 | balanced_long | 93.5 | **123.9** | **+33%** (TPOT p50 148.1 -> 98.9 ms) |
-| exhaustion ERRORs | ~1,100 | **0** | |
+| exhaustion ERROR lines | ~1,100 | **0** | |
 
 This was the largest single C=16 lever found today. Honest decode_short
 now 144.3 vs the 168.9 bar = 0.85x (was 0.73-0.78 at session start).

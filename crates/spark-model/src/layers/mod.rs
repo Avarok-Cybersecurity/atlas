@@ -189,7 +189,7 @@ pub fn k64_n64_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 const K64_N64_MAX_WIDE_CTAS: u32 = 64;
 
 /// Should the narrow-N deep-K twin serve this shape? See
-/// [`K64_N64_MAX_WIDE_CTAS`] for the derivation and the measured curve.
+/// `K64_N64_MAX_WIDE_CTAS` for the derivation and the measured curve.
 pub fn k64_n64_wins(m: u32, n: u32) -> bool {
     n.div_ceil(128) * m.div_ceil(64) <= K64_N64_MAX_WIDE_CTAS
 }
