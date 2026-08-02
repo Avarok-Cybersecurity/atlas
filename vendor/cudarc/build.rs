@@ -31,6 +31,9 @@ fn detect_version_from_env() -> Option<(usize, usize)> {
     match std::env::var("CUDARC_CUDA_VERSION") {
         Ok(version) => {
             let version = version.as_str();
+            if version == "13020" {
+                return Some((13, 1));
+            }
             for &((major, minor), _) in SUPPORTED_CUDA_VERSIONS.iter() {
                 if version == format!("{major}0{minor}0") {
                     return Some((major, minor));
@@ -129,6 +132,10 @@ fn cuda_version_from_build_system() -> (usize, usize) {
     let version_line = stdout.lines().nth(3).unwrap();
     let release_section = version_line.split(", ").nth(1).unwrap();
     let version_number = release_section.split(' ').nth(1).unwrap();
+
+    if version_number == "13.2" {
+        return (13, 1);
+    }
 
     for &((major, minor), _) in SUPPORTED_CUDA_VERSIONS.iter() {
         if version_number == format!("{major}.{minor}") {
