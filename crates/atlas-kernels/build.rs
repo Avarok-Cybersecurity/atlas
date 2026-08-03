@@ -61,6 +61,13 @@ struct Target {
     common_kernel_dir: Option<PathBuf>,
     extra_flags: Vec<String>,
     module_overrides: HashMap<String, String>,
+    /// `(module, kernel)` pairs declared in `[shadow_exempt]` — kernels this
+    /// target may drop from `common/` WITHOUT it being drift, each with a
+    /// stated reason in its KERNEL.toml. Merged common-then-model, same as
+    /// `extra_flags`. Filters the build WARNING only: the pairs stay in
+    /// `shadowed_dropped`, so the startup audit still hard-errors if the
+    /// model's dispatch actually resolves one.
+    shadow_exempt: Vec<(String, String)>,
     sampling_thinking_text: SamplingCat,
     sampling_thinking_coding: SamplingCat,
     sampling_non_thinking: SamplingCat,
@@ -347,7 +354,22 @@ fn main() {
             source_ext,
             &target.module_overrides,
         );
-        if !drops.is_empty() {
+        // Warning-visible subset: everything except the pairs `common/`
+        // declares (with a reason) as superseded in `[shadow_exempt]`. The
+        // FULL `drops` list still goes into `TargetPtxSet::shadowed_dropped`
+        // below, so `kernel_audit::fatal_missing` remains fail-closed for
+        // exempt pairs too — an exemption silences build-log noise, never a
+        // runtime miss.
+        let reportable: Vec<&(String, String)> = drops
+            .iter()
+            .filter(|(m, f)| {
+                !target
+                    .shadow_exempt
+                    .iter()
+                    .any(|(em, ef)| em == m && ef == f)
+            })
+            .collect();
+        if !reportable.is_empty() {
             println!(
                 "cargo:warning=atlas-kernels: ({}, {}) drops {} kernel(s) by shadowing common/: {}. \
                  A dropped kernel fails CLOSED (try_kernel -> handle 0). If the model genuinely \
@@ -355,8 +377,8 @@ fn main() {
                  dispatch actually requests it.",
                 target.model,
                 target.quant,
-                drops.len(),
-                drops
+                reportable.len(),
+                reportable
                     .iter()
                     .map(|(m, f)| format!("{m}::{f}"))
                     .collect::<Vec<_>>()
@@ -928,10 +950,15 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             // flags (deduped, model last) and wins per-key on [modules].
             let mut extra_flags: Vec<String> = Vec::new();
             let mut module_overrides: HashMap<String, String> = HashMap::new();
+            // Shadow-drop exemptions merge the same way: common/ declares the
+            // repo-wide superseded kernels, a model KERNEL.toml adds the ones
+            // only IT may drop (e.g. mistral's divergent RoPE convention).
+            let mut shadow_exempt: Vec<(String, String)> = Vec::new();
             if has_common_dir && common_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&common_kernel_dir, &target_vendor);
                 extra_flags.extend(f);
                 module_overrides.extend(m);
+                shadow_exempt.extend(parse_shadow_exempt(&common_kernel_dir));
             }
             if has_model_dir && model_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&model_kernel_dir, &target_vendor);
@@ -941,7 +968,10 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                     }
                 }
                 module_overrides.extend(m);
+                shadow_exempt.extend(parse_shadow_exempt(&model_kernel_dir));
             }
+            shadow_exempt.sort();
+            shadow_exempt.dedup();
 
             // Parse sampling presets, behavior, and model_types from MODEL.toml
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
@@ -962,6 +992,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 },
                 extra_flags,
                 module_overrides,
+                shadow_exempt,
                 sampling_thinking_text: s_tt,
                 sampling_thinking_coding: s_tc,
                 sampling_non_thinking: s_nt,
@@ -1021,6 +1052,7 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 mod build_parse;
 use build_parse::{
     parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
+    parse_shadow_exempt,
 };
 
 /// Collect kernel-source files with shadowing: common dir provides the
