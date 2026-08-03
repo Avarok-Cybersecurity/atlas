@@ -77,6 +77,7 @@ pub mod app;
 mod app_input;
 pub mod app_library;
 pub mod app_scroll;
+pub mod bench_host;
 pub mod bench_keys;
 pub mod bench_preflight;
 pub mod bench_state;
@@ -149,7 +150,15 @@ pub fn start(
                 .clone()
                 .or_else(|| args.model.clone())
                 .unwrap_or_default();
+            let cache_dir = args.cache_dir.clone();
             let mut app = app::App::new(args);
+            // The Serve Matrix boots checkpoints through this process. Install
+            // the seam before the section can start a run; without it the
+            // benchmark refuses to load and says why, which is the correct
+            // behaviour for a harness with no server, not for this one.
+            atlas_plugin::benchmarks::serve_matrix::host::install(std::sync::Arc::new(
+                bench_host::TuiServeHost::new(host.clone(), cache_dir),
+            ));
             app.host = Some(host);
             app.chat.set_runtime(runtime.clone());
             // Benchmarks default to the server they are attached to. A store

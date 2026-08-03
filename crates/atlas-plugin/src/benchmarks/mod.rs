@@ -11,6 +11,7 @@ pub mod agentic;
 pub mod baseline;
 pub mod bfcl;
 pub mod concurrency;
+pub mod serve_matrix;
 pub mod stats;
 pub mod ttft;
 
