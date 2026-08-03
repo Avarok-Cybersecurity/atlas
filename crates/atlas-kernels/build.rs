@@ -670,6 +670,33 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
     );
 }
 
+#[cfg(windows)]
+fn resolve_dumpbin_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("ATLAS_DUMPBIN") {
+        let candidate = std::path::PathBuf::from(path);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    if let Ok(vctools_dir) = std::env::var("VCToolsInstallDir") {
+        let base = std::path::Path::new(&vctools_dir).join("bin");
+        for (host, target) in [
+            ("Hostx64", "x64"),
+            ("Hostx86", "x86"),
+            ("Hostx64", "x86"),
+            ("Hostx86", "x64"),
+        ] {
+            let candidate = base.join(host).join(target).join("dumpbin.exe");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    std::path::PathBuf::from("dumpbin.exe")
+}
+
 /// Windows native-HIP runtime shim. Builds ONE `cuda.dll` from the real cu*
 /// (libcuda_hip_shim.cpp) and cudart (libcudart_hip_shim.cpp) HIP mappings plus
 /// the cuBLASLt stub, linked against `amdhip64.lib`, and generates its import
@@ -718,13 +745,20 @@ fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::P
     // `SECTn ... External | <name>`; undefined imports (the hip* the shim calls)
     // are `UNDEF` and start with `hip`, so filtering on `External`, not `UNDEF`,
     // and a `cu` name prefix keeps exactly cu*/cudart/cublasLt.
+    let dumpbin = resolve_dumpbin_path();
     let mut exports = Vec::new();
     for obj in &objs {
-        let out = std::process::Command::new("dumpbin")
+        let out = std::process::Command::new(&dumpbin)
             .arg("/SYMBOLS")
             .arg(obj)
             .output()
-            .unwrap_or_else(|e| panic!("dumpbin /SYMBOLS failed on {} ({e})", obj.display()));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "dumpbin /SYMBOLS failed on {} using {} ({e})",
+                    obj.display(),
+                    dumpbin.display()
+                )
+            });
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             if line.contains("External")
                 && !line.contains("UNDEF")

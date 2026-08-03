@@ -58,7 +58,10 @@ __device__ __forceinline__ int __any_sync(unsigned long long, int pred) { return
 __device__ __forceinline__ int __all_sync(unsigned long long, int pred) { return __all(pred); }
 
 // CUDA returns a 32-bit lane mask; AMD wavefronts are 64-wide, so __ballot(1)
-// (the full active-lane mask) is the faithful analogue.
+// (the full active-lane mask) is the faithful analogue. Newer Windows HIP SDKs
+// already provide __activemask(), so only define the fallback when needed.
+#if !defined(HIP_VERSION_MAJOR) || (HIP_VERSION_MAJOR < 7) || defined(HIP_DISABLE_WARP_SYNC_BUILTINS)
 __device__ __forceinline__ unsigned long long __activemask() { return __ballot(1); }
+#endif
 
 #endif  // __HIP_PLATFORM_AMD__ || __HIP__
