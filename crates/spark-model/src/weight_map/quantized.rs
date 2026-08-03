@@ -229,10 +229,22 @@ impl QuantizedWeight {
             let new_weight = gpu.alloc(packed_size)?;
             let new_scale = gpu.alloc(scale_size)?;
             crate::layers::ops::transpose_u8(
-                gpu, tk, self.weight, new_weight, n as u32, half_k as u32, 0,
+                gpu,
+                tk,
+                self.weight,
+                new_weight,
+                n as u32,
+                half_k as u32,
+                0,
             )?;
             crate::layers::ops::transpose_u8(
-                gpu, tk, self.weight_scale, new_scale, n as u32, num_groups as u32, 0,
+                gpu,
+                tk,
+                self.weight_scale,
+                new_scale,
+                n as u32,
+                num_groups as u32,
+                0,
             )?;
             gpu.synchronize(0)?;
             return Ok(QuantizedWeight {
@@ -372,12 +384,24 @@ impl QuantizedWeight {
                 let n = *n;
                 let t_w = gpu.alloc(n * half_k)?;
                 crate::layers::ops::transpose_u8(
-                    gpu, tk, w.weight, t_w, n as u32, half_k as u32, 0,
+                    gpu,
+                    tk,
+                    w.weight,
+                    t_w,
+                    n as u32,
+                    half_k as u32,
+                    0,
                 )?;
                 gpu.copy_d2d_2d_async(t_w, n, new_weight.offset(n_off), stride, n, half_k, 0)?;
                 let t_s = gpu.alloc(n * num_groups)?;
                 crate::layers::ops::transpose_u8(
-                    gpu, tk, w.weight_scale, t_s, n as u32, num_groups as u32, 0,
+                    gpu,
+                    tk,
+                    w.weight_scale,
+                    t_s,
+                    n as u32,
+                    num_groups as u32,
+                    0,
                 )?;
                 gpu.copy_d2d_2d_async(t_s, n, new_scale.offset(n_off), stride, n, num_groups, 0)?;
                 temps.push(t_w);
