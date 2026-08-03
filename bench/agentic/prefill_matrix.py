@@ -18,7 +18,7 @@ prompt would be skipped entirely and the run would measure cache hits.
 Usage:
   python3 prefill_matrix.py <model> [--conc 1,2,4,8] [--isl 1024,2048,4096,8192,16384]
 """
-import argparse, json, os, random, statistics as st, string, sys, time
+import argparse, json, os, random, statistics as st, string, time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 

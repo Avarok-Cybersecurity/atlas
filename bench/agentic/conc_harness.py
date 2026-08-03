@@ -166,7 +166,9 @@ def run_agent(prompt, workdir, timeout, model, max_repeat=0):
         timed_out.set()
         try:
             p.kill()
-        except Exception:
+        except (ProcessLookupError, OSError):
+            # Raced with normal exit: the child finished between the timeout
+            # firing and the kill. Nothing to do — timed_out is already set.
             pass
 
     watchdog = threading.Timer(timeout, _fire)

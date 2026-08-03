@@ -95,6 +95,8 @@ def run_omp(prompt, workdir, timeout, model, thinking=None):
         try:
             events.append(json.loads(ln))
         except json.JSONDecodeError:
+            # Non-JSON line in the event stream (banner text, or a partial line
+            # from a truncated run). Skip it; the surrounding events are usable.
             pass
     return rc, events, wall, err
 
@@ -182,7 +184,9 @@ def verify_webserver(workdir, build_timeout=420, run_timeout=20):
                     if "pong" in body.lower():
                         out["webserver_ok"] = True
                     break
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
+                # Server not up yet: curl exits non-zero or times out until the
+                # port is listening. Keep polling until the deadline.
                 pass
     finally:
         try:
@@ -191,7 +195,9 @@ def verify_webserver(workdir, build_timeout=420, run_timeout=20):
                 srv.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 os.killpg(os.getpgid(srv.pid), signal.SIGKILL)
-        except Exception:
+        except (ProcessLookupError, PermissionError):
+            # Process group already reaped (server exited on its own) or not
+            # ours to signal. Teardown is best-effort; nothing left to kill.
             pass
     return out
 
