@@ -39,8 +39,8 @@ impl Qwen3AttentionLayer {
                 self.reshape_cache_k,
                 k,
                 v,
-                kv_cache.k_pool_ptr(self.attn_layer_idx),
-                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                kv_cache.k_pool_ptr(self.kv_layer_idx),
+                kv_cache.v_pool_ptr(self.kv_layer_idx),
                 slot,
                 num_tokens,
                 num_kv_heads,
@@ -48,7 +48,7 @@ impl Qwen3AttentionLayer {
                 block_size,
                 key_stride,
                 value_stride,
-                kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                 kv_cache.nvfp4_data_bytes() as u64,
                 stream,
             ),
@@ -117,8 +117,8 @@ impl Qwen3AttentionLayer {
                     self.reshape_cache_k,
                     k,
                     v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     slot,
                     num_tokens,
                     num_kv_heads,
@@ -126,7 +126,7 @@ impl Qwen3AttentionLayer {
                     block_size,
                     key_stride,
                     value_stride,
-                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     data_bytes,
                     stream,
                 )
@@ -160,8 +160,8 @@ impl Qwen3AttentionLayer {
                     self.reshape_cache_k,
                     k,
                     v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     slot,
                     num_tokens,
                     num_kv_heads,
@@ -169,8 +169,8 @@ impl Qwen3AttentionLayer {
                     block_size,
                     key_stride,
                     value_stride,
-                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.turbo3_data_bytes() as u64,
                     stream,
                 )
@@ -204,8 +204,8 @@ impl Qwen3AttentionLayer {
                     self.reshape_cache_k,
                     k,
                     v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     slot,
                     num_tokens,
                     num_kv_heads,
@@ -213,8 +213,8 @@ impl Qwen3AttentionLayer {
                     block_size,
                     key_stride,
                     value_stride,
-                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.nvfp4_data_bytes() as u64,
                     stream,
                 )
@@ -243,8 +243,8 @@ impl Qwen3AttentionLayer {
                     self.reshape_cache_k,
                     k,
                     v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     slot,
                     num_tokens,
                     num_kv_heads,
@@ -252,8 +252,8 @@ impl Qwen3AttentionLayer {
                     block_size,
                     key_stride,
                     value_stride,
-                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.turbo2_data_bytes() as u64,
                     stream,
                 )
@@ -296,11 +296,11 @@ impl Qwen3AttentionLayer {
                 }
                 // Dispatch each combo with its own (k_data, v_data) sizes.
                 let k_block_stride =
-                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                    kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
                 let v_block_stride =
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
-                let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
-                let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
+                let k_pool = kv_cache.k_pool_ptr(self.kv_layer_idx);
+                let v_pool = kv_cache.v_pool_ptr(self.kv_layer_idx);
                 match self.kv_dtype {
                     KvCacheDtype::Turbo4KTurbo3V => ops::reshape_and_cache_turbo4k_turbo3v(
                         gpu,
@@ -391,11 +391,11 @@ impl Qwen3AttentionLayer {
                 }
                 let (k_scale, _v_scale) = self.effective_fp8_scales();
                 let k_block_stride =
-                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                    kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
                 let v_block_stride =
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
-                let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
-                let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
+                let k_pool = kv_cache.k_pool_ptr(self.kv_layer_idx);
+                let v_pool = kv_cache.v_pool_ptr(self.kv_layer_idx);
                 match self.kv_dtype {
                     KvCacheDtype::Fp8KTurbo3V => ops::reshape_and_cache_fp8k_turbo3v(
                         gpu,
@@ -465,8 +465,8 @@ impl Qwen3AttentionLayer {
                 self.reshape_cache_k,
                 k,
                 v,
-                kv_cache.k_pool_ptr(self.attn_layer_idx),
-                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                kv_cache.k_pool_ptr(self.kv_layer_idx),
+                kv_cache.v_pool_ptr(self.kv_layer_idx),
                 slot,
                 num_tokens,
                 num_kv_heads,
@@ -488,8 +488,8 @@ impl Qwen3AttentionLayer {
                     self.reshape_cache_k,
                     k,
                     v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     slot,
                     num_tokens,
                     num_kv_heads,

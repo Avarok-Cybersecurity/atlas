@@ -100,6 +100,7 @@ impl Qwen3AttentionLayer {
             post_attn_norm,
             ffn,
             attn_layer_idx,
+            kv_layer_idx: attn_layer_idx,
             lora: None,
             gated,
             mrope_interleaved,

@@ -45,9 +45,10 @@ impl Qwen3AttentionLayer {
         let mla_cache_dim = kv_lora + rope;
         let hd_mla = nope + rope;
         let use_tc = self.dense_gemm_tc_k.0 != 0;
+        let diag_enabled = std::env::var("ATLAS_DIAG_V4").is_ok_and(|v| v == "1" || v == "true");
         let diag_all =
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
-        let diag_this = self.attn_layer_idx == 0 || diag_all;
+        let diag_this = diag_enabled && (self.attn_layer_idx == 0 || diag_all);
 
         // Per-token NaN scan of `normed` (post hc_pre + input_norm) — localizes
         // whether the K-FULL NaN originates upstream (hc_pre) or in the kv proj.
@@ -792,38 +793,30 @@ impl Qwen3AttentionLayer {
 
         // ── 6. Grouped low-rank O projection (block-diagonal wo_a → wo_b) ──
         // wo_a is block-diagonal over o_groups (DeepseekV4GroupedLinear); see
-        // decode/attention_forward_v4.rs. Per-token×group GEMVs avoid the
-        // strided-input limitation of dense_gemm; wo_b stays one GEMM.
+        // decode/attention_forward_v4.rs. grouped_gemm_mla processes all
+        // token/group rows in one launch; wo_b stays one contiguous GEMM.
         let o_groups = ctx.config.o_groups.max(1) as u32;
         let group_in = (nq * hd_mla) / o_groups;
         let latent_dim = o_groups * o_lora;
         let o_latent = ctx.buffers.o_latent();
         let o_out = ctx.buffers.qkv_output();
-        for t in 0..n {
-            for g in 0..o_groups {
-                let in_g = attn_out.offset(((t * nq * hd_mla) + g * group_in) as usize * 2);
-                let w_g = crate::weight_map::DenseWeight {
-                    weight: mla
-                        .wo_a
-                        .weight
-                        .offset((g as usize) * (o_lora as usize) * (group_in as usize) * 2),
-                };
-                let out_g = o_latent.offset(((t * latent_dim) + g * o_lora) as usize * 2);
-                ops::dense_gemv(
-                    ctx.gpu,
-                    self.dense_gemv_k,
-                    in_g,
-                    &w_g,
-                    out_g,
-                    o_lora,
-                    group_in,
-                    stream,
-                )?;
-            }
-        }
+        ops::grouped_gemm_mla(
+            ctx.gpu,
+            self.grouped_gemm_mla_k,
+            attn_out,
+            mla.wo_a.weight,
+            o_latent,
+            n,
+            o_groups,
+            group_in,
+            o_lora,
+            nq * hd_mla,
+            latent_dim,
+            stream,
+        )?;
         ctx.gpu
             .synchronize(stream)
-            .map_err(|e| anyhow::anyhow!("V4 attn: wo_a grouped gemv sync failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("V4 attn: wo_a grouped gemm sync failed: {e}"))?;
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm_k,

@@ -34,10 +34,10 @@ impl Qwen3AttentionLayer {
         inv_sqrt_d: f32,
         stream: u64,
     ) -> Result<()> {
-        let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
-        let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
-        let k_bs = kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
-        let v_bs = kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+        let k_pool = kv_cache.k_pool_ptr(self.kv_layer_idx);
+        let v_pool = kv_cache.v_pool_ptr(self.kv_layer_idx);
+        let k_bs = kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
+        let v_bs = kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
         let sw = self.sliding_window.unwrap_or(0);
         let layer = self.attn_layer_idx;
         match self.kv_dtype {

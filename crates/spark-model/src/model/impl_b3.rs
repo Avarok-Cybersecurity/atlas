@@ -225,6 +225,7 @@ impl TransformerModel {
                 }
             }
         }
+        self.restore_mtp_streams(stream)?;
         let drafts = proposer.propose(
             token,
             self.mtp_hidden_save,

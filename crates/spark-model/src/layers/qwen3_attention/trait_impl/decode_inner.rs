@@ -436,9 +436,10 @@ impl Qwen3AttentionLayer {
         let hc_streams = ctx.buffers.hc_streams();
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
+        let diag_enabled = std::env::var("ATLAS_DIAG_V4").is_ok_and(|v| v == "1" || v == "true");
         let diag_all =
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
-        let diag_this = self.attn_layer_idx == 0 || diag_all;
+        let diag_this = diag_enabled && (self.attn_layer_idx == 0 || diag_all);
 
         // 1. Expand single-stream embedding into hc_mult copies on first layer.
         if is_first_layer {
@@ -667,7 +668,18 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
-        let ffn_out = self.ffn.forward(normed2, ctx, stream)?;
+        let ffn_out = if self.attn_layer_idx == ctx.config.num_hidden_layers
+            && ctx.config.model_type == "deepseek_v4"
+        {
+            // The synthetic V4 MTP body owns all routed experts locally and
+            // prepares transposed pointer tables at load time. Its native
+            // MXFP4 experts must use that one-token prefill dispatch; the
+            // generic NVFP4 decode GEMV dereferences the wrong weight layout.
+            self.ffn.forward_prefill(normed2, 1, ctx, stream)?;
+            ctx.buffers.moe_output()
+        } else {
+            self.ffn.forward(normed2, ctx, stream)?
+        };
 
         if let Some(ref post_norm) = self.post_ffn_out_norm {
             ops::rms_norm(

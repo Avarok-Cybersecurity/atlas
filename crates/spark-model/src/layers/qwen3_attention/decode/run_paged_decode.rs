@@ -53,7 +53,7 @@ impl Qwen3AttentionLayer {
             KvCacheDtype::Nvfp4 if is_v4_flash => {
                 let mla = self.mla.as_ref().unwrap();
                 let kv_cache_dim = (mla.kv_lora_rank + mla.rope) as u32; // 512 + 64 = 576
-                tracing::info!(
+                tracing::trace!(
                     "V4-Flash MLA decode (NVFP4): q_head_dim={}, kv_cache_dim={}",
                     head_dim,
                     kv_cache_dim
@@ -62,8 +62,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     self.mla_paged_decode_k,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -74,7 +74,7 @@ impl Qwen3AttentionLayer {
                     kv_cache_dim,
                     block_size,
                     inv_sqrt_d,
-                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.nvfp4_data_bytes() as u64,
                     num_seqs,
                     stream,
@@ -83,7 +83,7 @@ impl Qwen3AttentionLayer {
             KvCacheDtype::Fp8 if is_v4_flash => {
                 let mla = self.mla.as_ref().unwrap();
                 let kv_cache_dim = (mla.kv_lora_rank + mla.rope) as u32; // 512 + 64 = 576
-                tracing::info!(
+                tracing::trace!(
                     "V4-Flash MLA decode (FP8): q_head_dim={}, kv_cache_dim={}",
                     head_dim,
                     kv_cache_dim
@@ -111,8 +111,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     self.mla_paged_decode_fp8_k,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -125,7 +125,7 @@ impl Qwen3AttentionLayer {
                     inv_sqrt_d,
                     k_scale,
                     v_scale,
-                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     num_seqs,
                     128, // V4 decode sliding_window (config sliding_window=128), item 4a
                     self.mla.as_ref().unwrap().attn_sink,
@@ -157,8 +157,8 @@ impl Qwen3AttentionLayer {
                         gpu,
                         splitk_k,
                         q,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        kv_cache.k_pool_ptr(self.kv_layer_idx),
+                        kv_cache.v_pool_ptr(self.kv_layer_idx),
                         workspace,
                         block_table,
                         seq_lens,
@@ -170,7 +170,7 @@ impl Qwen3AttentionLayer {
                         inv_sqrt_d,
                         num_splits,
                         q_stride,
-                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                        kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                         kv_cache.nvfp4_data_bytes() as u64,
                         num_seqs,
                         stream,
@@ -192,8 +192,8 @@ impl Qwen3AttentionLayer {
                         gpu,
                         self.paged_decode_k,
                         q,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        kv_cache.k_pool_ptr(self.kv_layer_idx),
+                        kv_cache.v_pool_ptr(self.kv_layer_idx),
                         output,
                         block_table,
                         seq_lens,
@@ -205,7 +205,7 @@ impl Qwen3AttentionLayer {
                         block_size,
                         inv_sqrt_d,
                         q_stride,
-                        kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                        kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                         kv_cache.nvfp4_data_bytes() as u64,
                         stream,
                     )
@@ -227,8 +227,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     kernel,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -240,7 +240,7 @@ impl Qwen3AttentionLayer {
                     block_size,
                     inv_sqrt_d,
                     q_stride,
-                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     data_bytes,
                     stream,
                 )
@@ -256,8 +256,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     kernel,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -269,7 +269,7 @@ impl Qwen3AttentionLayer {
                     block_size,
                     inv_sqrt_d,
                     q_stride,
-                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.turbo8_data_bytes() as u64,
                     stream,
                 )
@@ -284,8 +284,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     self.paged_decode_k,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -297,7 +297,7 @@ impl Qwen3AttentionLayer {
                     block_size,
                     inv_sqrt_d,
                     q_stride,
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.turbo3_data_bytes() as u64,
                     sliding,
                     stream,
@@ -312,8 +312,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     self.paged_decode_k,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -325,7 +325,7 @@ impl Qwen3AttentionLayer {
                     block_size,
                     inv_sqrt_d,
                     q_stride,
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.nvfp4_data_bytes() as u64,
                     sliding,
                     stream,
@@ -340,8 +340,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     self.paged_decode_k,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -353,7 +353,7 @@ impl Qwen3AttentionLayer {
                     block_size,
                     inv_sqrt_d,
                     q_stride,
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64,
                     kv_cache.turbo2_data_bytes() as u64,
                     sliding,
                     stream,
@@ -367,11 +367,11 @@ impl Qwen3AttentionLayer {
                 // independent byte layouts.
                 let sliding = self.sliding_window.unwrap_or(0);
                 let k_block_stride =
-                    kv_cache.k_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
+                    kv_cache.k_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
                 let v_block_stride =
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
-                let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
-                let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
+                let k_pool = kv_cache.k_pool_ptr(self.kv_layer_idx);
+                let v_pool = kv_cache.v_pool_ptr(self.kv_layer_idx);
                 match self.kv_dtype {
                     KvCacheDtype::Turbo4KTurbo3V => ops::paged_decode_attn_turbo4k_turbo3v(
                         gpu,
@@ -454,9 +454,9 @@ impl Qwen3AttentionLayer {
                 let sliding = self.sliding_window.unwrap_or(0);
                 let (k_scale, _) = self.effective_fp8_scales();
                 let v_block_stride =
-                    kv_cache.v_block_stride_bytes_for_layer(self.attn_layer_idx) as u64;
-                let k_pool = kv_cache.k_pool_ptr(self.attn_layer_idx);
-                let v_pool = kv_cache.v_pool_ptr(self.attn_layer_idx);
+                    kv_cache.v_block_stride_bytes_for_layer(self.kv_layer_idx) as u64;
+                let k_pool = kv_cache.k_pool_ptr(self.kv_layer_idx);
+                let v_pool = kv_cache.v_pool_ptr(self.kv_layer_idx);
                 match self.kv_dtype {
                     KvCacheDtype::Fp8KTurbo3V => ops::paged_decode_attn_fp8k_turbo3v(
                         gpu,
@@ -545,8 +545,8 @@ impl Qwen3AttentionLayer {
                     gpu,
                     kernel,
                     q,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
+                    kv_cache.k_pool_ptr(self.kv_layer_idx),
+                    kv_cache.v_pool_ptr(self.kv_layer_idx),
                     output,
                     block_table,
                     seq_lens,
@@ -603,8 +603,8 @@ impl Qwen3AttentionLayer {
                         gpu,
                         splitk_k,
                         q,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        kv_cache.k_pool_ptr(self.kv_layer_idx),
+                        kv_cache.v_pool_ptr(self.kv_layer_idx),
                         workspace,
                         block_table,
                         seq_lens,
@@ -645,8 +645,8 @@ impl Qwen3AttentionLayer {
                         gpu,
                         fp8_kernel,
                         q,
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        kv_cache.k_pool_ptr(self.kv_layer_idx),
+                        kv_cache.v_pool_ptr(self.kv_layer_idx),
                         output,
                         block_table,
                         seq_lens,

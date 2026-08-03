@@ -31,6 +31,7 @@ mod prefill_c;
 mod prefill_d;
 mod sequence;
 mod speculative;
+mod speculative_v4;
 mod ssm_fault_in;
 mod verify_a;
 mod verify_b;

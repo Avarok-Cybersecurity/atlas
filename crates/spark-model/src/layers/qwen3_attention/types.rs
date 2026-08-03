@@ -20,6 +20,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) post_attn_norm: DenseWeight,
     pub(super) ffn: FfnComponent,
     pub(super) attn_layer_idx: usize,
+    /// KV cache pool index. Usually == attn_layer_idx; the V4 MTP body
+    /// remaps this to 0 so its private single-layer cache is addressable
+    /// while compress/hash/mHC is_first/is_last still use attn_layer_idx.
+    pub(super) kv_layer_idx: usize,
     /// Startup-static LoRA adapter overlay for the K/V/O projections (v0;
     /// q_proj excluded — gated Q+gate interleave). Installed
     /// post-construction via `set_lora_weights`; `None` = base-only.

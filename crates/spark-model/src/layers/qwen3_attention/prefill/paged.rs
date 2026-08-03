@@ -456,7 +456,7 @@ impl Qwen3AttentionLayer {
                         bmeta_positions.offset(wf * 4),
                         bmeta_positions_h.offset(wf * 4),
                         bmeta_positions_w.offset(wf * 4),
-                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.k_pool_ptr(self.kv_layer_idx),
                         bmeta_slot.offset(wf * 8),
                         n - wf as u32,
                         nkv,

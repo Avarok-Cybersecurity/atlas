@@ -563,6 +563,7 @@ pub fn build_model(
         max_batch_size,
         effective_mtp_quant,
         use_speculative,
+        v4_mtp_module.is_some(),
         prefix_cache,
         mtp_vocab_size,
         comm,
@@ -589,6 +590,10 @@ pub fn build_model(
             model.gpu_backend(),
             mtp_vocab_size,
             max_seq_len,
+            // Must match the dtype the MTP body was assembled with in
+            // `load_v4_mtp_module` — single source of truth for the choice
+            // (BF16 default, ATLAS_V4_MTP_KV_DTYPE=fp8 experimental).
+            crate::layers::deepseek_v4_mtp::v4_mtp_kv_dtype(&attn_layer_dtypes),
         ) {
             Ok(head) => {
                 model.set_dflash_proposer(std::sync::Arc::new(head));

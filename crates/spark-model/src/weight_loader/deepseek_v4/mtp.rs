@@ -129,9 +129,23 @@ pub fn load_v4_mtp_module(
     yarn_inv_freq = super::compute::ensure_yarn_inv_freq(&mut yarn_inv_freq, config, gpu)?;
 
     // Build the body by reusing `assemble_layer` with the `mtp.0` prefix.
-    // layer_idx = num_hidden_layers ⇒ compress_ratios.get()/hash-layer/kv-dtype
-    // all fall to safe defaults (no compressor, no hash routing, bf16 KV).
-    let body = super::assemble::assemble_layer(
+    // layer_idx = num_hidden_layers ⇒ compress_ratios.get()/hash-layer fall to
+    // safe defaults (no compressor, no hash routing).
+    //
+    // KV dtype must NOT fall to the out-of-range BF16 default: the V4 MLA
+    // decode kernel implements the V=K rope reconstruction and the attention
+    // sink only on the FP8 KV path (see the deepseek-v4 recipe / MODEL.toml
+    // notes — "BF16 KV cache causes dtype mismatch and garbage output"). The
+    // MTP body reuses exactly those kernels, so its KV dtype must MATCH the
+    // main attention layers. Measured on 2× GB10 EP=2 with
+    // nvidia/DeepSeek-V4-Flash-NVFP4: a BF16 draft KV yields ~16% draft
+    // acceptance with persistent K2 drift-gauge "confidently wrong attractor"
+    // warnings, while the target itself decodes fine on FP8 KV.
+    let mut mtp_kv_dtypes = layer_kv_dtypes.to_vec();
+    mtp_kv_dtypes.push(crate::layers::deepseek_v4_mtp::v4_mtp_kv_dtype(
+        layer_kv_dtypes,
+    ));
+    let mut body = super::assemble::assemble_layer(
         config.num_hidden_layers,
         prefix,
         true, // force_all_experts — MTP draft runs no-EP on rank 0, needs all experts
@@ -160,8 +174,43 @@ pub fn load_v4_mtp_module(
         store,
         config,
         gpu,
-        layer_kv_dtypes,
+        &mtp_kv_dtypes,
     )?;
+
+    // Remap KV pool index to 0 for the private single-layer MTP cache.
+    if let Some(attn) = body
+        .as_any_mut()
+        .and_then(|a| a.downcast_mut::<crate::layers::Qwen3AttentionLayer>())
+    {
+        attn.set_kv_layer_idx(0);
+        tracing::info!(
+            "DeepSeek-V4 MTP body: kv_layer_idx remapped to 0 (single-layer private cache)"
+        );
+    } else {
+        tracing::warn!(
+            "DeepSeek-V4 MTP body: could not downcast to set kv_layer_idx — KV pool may OOB"
+        );
+    }
+
+    // MTP MoE experts are native Mxfp4E8m0. Prefill MoE (used for MTP drafts
+    // to avoid CUDA-700 on the decode MoE path) requires transposed pointer
+    // tables (gate_ptrs_t). The global factory transpose pass often SKIPPED
+    // under EP=2 memory pressure (~18 GB free vs multi-layer cost). A single
+    // MTP layer still fits — transpose it now or gate+up only.
+    match body.transpose_moe_for_prefill(gpu, config) {
+        Ok(()) => tracing::info!("DeepSeek-V4 MTP body: MoE transpose_for_prefill OK"),
+        Err(e) => {
+            tracing::warn!(
+                "DeepSeek-V4 MTP full MoE transpose failed ({e:#}); trying gate+up only"
+            );
+            body.transpose_moe_gate_up_for_prefill(gpu, config).map_err(|e2| {
+                anyhow::anyhow!(
+                    "DeepSeek-V4 MTP MoE transpose failed (full: {e:#}; gate+up: {e2:#}).                      MTP drafts need E8M0 prefill kernels with gate_ptrs_t."
+                )
+            })?;
+            tracing::info!("DeepSeek-V4 MTP body: MoE gate+up transpose OK (down via scratch)");
+        }
+    }
 
     // ── MTP-specific combiner + final norm ──
     // enorm/hnorm/norm are HF-vanilla RMSNorms — loaded exactly, normalized by

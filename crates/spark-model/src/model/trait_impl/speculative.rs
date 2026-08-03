@@ -339,6 +339,15 @@ impl TransformerModel {
         let src = self.buffers.hidden_states().offset(token_idx * h * fp32);
         self.gpu
             .copy_d2d_async(src, self.mtp_hidden_save, h * fp32, stream)?;
+        // V4 mHC: also capture multi-stream residual for the MTP body.
+        // After the last main block, hc_streams still holds the highway
+        // residual (hc_head collapses into hidden without destroying streams).
+        if !self.mtp_streams_save.is_null() && self.config.hc_mult > 0 {
+            let stream_bytes = self.config.hc_mult * h * 4;
+            let src = self.buffers.hc_streams().offset(token_idx * stream_bytes);
+            self.gpu
+                .copy_d2d_async(src, self.mtp_streams_save, stream_bytes, stream)?;
+        }
         self.last_mtp_hidden_idx
             .store(token_idx, std::sync::atomic::Ordering::Relaxed);
         Ok(())

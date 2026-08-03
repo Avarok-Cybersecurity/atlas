@@ -328,6 +328,19 @@ impl TransformerModel {
             stream,
         )?;
 
+        // The target rows are no longer needed after prompt-logprob
+        // collection. Feed their live V4 highway into the private MTP cache
+        // before the next chunk reuses the arena. On the last chunk the helper
+        // saves/restores the final target hidden around this pass.
+        self.try_v4_mtp_prompt_prefill(
+            tokens,
+            seq,
+            effective_seq_len_start,
+            proc_count,
+            is_last_chunk,
+            stream,
+        )?;
+
         if is_last_chunk {
             // ── Phase 6+7+8: final norm, lm_head, prefix-cache + snapshot save ──
             self.prefill_b_finalize_last(

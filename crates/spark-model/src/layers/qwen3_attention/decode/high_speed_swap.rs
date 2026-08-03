@@ -179,7 +179,7 @@ impl Qwen3AttentionLayer {
             // bytes directly; quantized variants read raw bytes then dequant
             // on the host before disk-write (the streaming kernel reads BF16).
             let layer_dtype = kv_cache.dtype_for_layer(self.attn_layer_idx);
-            let layer_block_bytes = kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx);
+            let layer_block_bytes = kv_cache.block_stride_bytes_for_layer(self.kv_layer_idx);
             let bs_us = bs;
             let nkv_us = nkv as usize;
             let hd_us = hd as usize;
