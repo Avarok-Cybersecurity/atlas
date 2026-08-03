@@ -358,6 +358,20 @@ impl Qwen3SsmLayer {
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
                 super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
             ],
+            // General-K family (gated_delta_rule_wyk.cu). NULL where absent —
+            // dispatch falls back to the shipped K∈{2,3,4,17} kernels and then
+            // to the sequential loop, so an unbuilt module changes nothing.
+            gdn_wyk_k: {
+                let mut a = [KernelHandle(0); 18];
+                for k in 4..=17usize {
+                    a[k] = super::super::try_kernel(
+                        gpu,
+                        "gated_delta_rule_wyk",
+                        &format!("gated_delta_rule_wyk{k}"),
+                    );
+                }
+                a
+            },
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,

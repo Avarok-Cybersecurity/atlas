@@ -265,6 +265,14 @@ pub struct Qwen3SsmLayer {
     /// NULL handles on targets lacking the module → sequential fallback.
     /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
     gdn_wyn_k: [KernelHandle; 4],
+    /// GENERAL-K WY-Chunkwise GDN verify family (2026-07-30), indexed by K.
+    /// `gdn_wyk_k[K]` is the fused kernel for a K-row verify; NULL where the
+    /// .cu did not instantiate that K (indices 0..=3) or on targets without
+    /// the module. Atlas previously shipped fused kernels for K ∈ {2,3,4,17}
+    /// ONLY — every other K fell to the sequential per-token loop, which is
+    /// why intermediate γ was unaffordable. K=4 and K=17 are instantiated as
+    /// CORRECTNESS ORACLES against `gdn_wy4_k` / `gdn_wy17_k`.
+    gdn_wyk_k: [KernelHandle; 18],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,

@@ -341,6 +341,125 @@ impl Qwen3SsmLayer {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
 
+        // ── GENERAL-K FUSED PATH (2026-07-30, ATLAS_GDN_WYK=1) ──
+        // Atlas shipped fused GDN verify kernels for K ∈ {2,3,4,17} only; every
+        // other K fell to the sequential per-token loop (~34 launches/layer ×
+        // 30 SSM layers), which is the reason intermediate γ was unaffordable
+        // and we could only choose between cap4 and full width. Measured on the
+        // SERIAL path K=8 still beat cap4 on MinHeap steady (84.5 vs 79.1) with
+        // tokens/step 3.88 → 5.67, i.e. wide K was winning while handicapped.
+        //
+        // This branch takes precedence for any K the family instantiated, and
+        // reuses the SAME general-N fused conv epilogue the K=17 arm uses.
+        // ORACLE: at K=4 / K=17 it must reproduce wy4 / wy17 accept exactly —
+        // the kernels are the same body with K templated, so a mismatch is a
+        // port bug, not a numerics tradeoff.
+        // Default OFF ⇒ byte-identical dispatch when unset.
+        {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let on = *ON.get_or_init(|| {
+                std::env::var("ATLAS_GDN_WYK").ok().as_deref() == Some("1")
+            });
+            let wyk = self
+                .gdn_wyk_k
+                .get(num_tokens)
+                .copied()
+                .unwrap_or(spark_runtime::gpu::KernelHandle(0));
+            if on && num_tokens >= 4 && wyk.0 != 0 {
+                static FIRED: std::sync::Once = std::sync::Once::new();
+                FIRED.call_once(|| {
+                    tracing::info!("GDN WYK: general-K fused verify FIRED (K={num_tokens})");
+                });
+                // Conv epilogue: single fused launch over all K positions when
+                // the general-N kernel is present and the intermediates pool is
+                // contiguous; otherwise the per-token conv loop (correct, slower).
+                let conv_inter_base = ssm_state.conv_state_intermediates[0];
+                let inter_contiguous = ssm_state
+                    .conv_state_intermediates
+                    .iter()
+                    .take(num_tokens)
+                    .enumerate()
+                    .all(|(t, p)| p.0 == conv_inter_base.0 + (t * conv_bytes) as u64);
+                if self.gdn_verify_fused_conv_kn_k.0 != 0 && inter_contiguous {
+                    ops::gdn_verify_fused_conv_kn(
+                        ctx.gpu,
+                        self.gdn_verify_fused_conv_kn_k,
+                        ssm_state.conv_state,
+                        deinterleaved,
+                        &self.ssm.conv1d,
+                        conv_out_buf,
+                        conv_inter_base,
+                        num_tokens as u32,
+                        conv_dim as u32,
+                        d_conv as u32,
+                        qk_ch,
+                        kd as u32,
+                        qkvz_size as u32,
+                        conv_dim as u32,
+                        (conv_bytes / 4) as u32,
+                        1e-6,
+                        stream,
+                    )?;
+                } else {
+                    for t in 0..(num_tokens as u32) {
+                        let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
+                        let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
+                        ops::conv1d_update_l2norm(
+                            ctx.gpu,
+                            self.conv1d_l2norm_k,
+                            ssm_state.conv_state,
+                            qkv_t,
+                            &self.ssm.conv1d,
+                            conv_out_t,
+                            conv_dim as u32,
+                            d_conv as u32,
+                            1,
+                            qk_ch,
+                            kd as u32,
+                            1e-6,
+                            stream,
+                        )?;
+                        ctx.gpu.copy_d2d_async(
+                            ssm_state.conv_state,
+                            ssm_state.conv_state_intermediates[t as usize],
+                            conv_bytes,
+                            stream,
+                        )?;
+                    }
+                }
+
+                let q_ptr = conv_out_buf;
+                let k_ptr = conv_out_buf.offset(key_dim * bf16);
+                let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
+                let gate_ptr = gates_buf;
+                let beta_ptr = gates_buf.offset(nv * fp32);
+                let inter_stride_floats = (h_bytes / 4) as u32;
+                ops::gdn_decode_wyn(
+                    ctx.gpu,
+                    wyk,
+                    ssm_state.h_state,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    ssm_state.h_state_intermediates[0],
+                    inter_stride_floats,
+                    1, // batch_size
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32, // qk_stride
+                    conv_dim as u32, // v_stride
+                    (nv * 2) as u32, // gb_stride
+                    stream,
+                )?;
+                return Ok(());
+            }
+        }
+
         if num_tokens == 4 {
             // ── K=4 fused path: conv1d+L2norm sequential, GDN WY4 ──
             for t in 0..4u32 {
