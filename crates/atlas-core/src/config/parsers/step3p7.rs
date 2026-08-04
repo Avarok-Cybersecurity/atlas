@@ -221,11 +221,11 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         .unwrap_or(true);
 
     // ── Layer types ─────────────────────────────────────────────────────
-    // KNOWN LIMITATION: Step 3.7 has mixed attention (12 full + 33 sliding
-    // in 45 hidden layers). Atlas currently maps both to FullAttention.
-    // The sliding_window value (512) is set globally but not applied
-    // per-layer. For correct behaviour, Atlas would need per-layer
-    // attention type dispatch. Acceptable for initial bring-up.
+    // Step 3.7 has mixed attention (12 full + 33 sliding in 45 hidden
+    // layers). Both map to KV-cache-consuming attention types: the loader
+    // applies the 512-token sliding window per-layer (set_sliding_window)
+    // and `num_attention_layers()` counts FullAttention + SlidingAttention
+    // so KV pool sizing and layer_kv_dtypes indexing agree (SSOT).
     if config.layer_types.is_empty()
         && let Some(list) = text_config.get("layer_types").and_then(Value::as_array)
     {

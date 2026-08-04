@@ -87,7 +87,7 @@ Gate C's control was built fresh from `c19481aa` as `atlas-gb10:mainctl388` (do 
 - 5 non-turbo `[modules]` renames hoisted to `common/KERNEL.toml`; 22 duplicate lines removed from 6 model tomls.
 - 5 dead **quant-level** `MODEL.toml` files deleted (nothing reads them; the 27B's copy actively contradicted the live one).
 
-★ **Until an `[expected_absent]` harvest sweep runs, the fail-closed gate aborts most models** (51 unresolved on the 27B, 115 on nllb, 81–105 elsewhere — mostly deliberate cross-architecture probes). The intended workflow is: run `--check-kernels` per target, paste the printed list with reasons into each `MODEL.toml`. **This sweep has not been run.**
+★ **Before the `[expected_absent]` harvest sweep ran, the fail-closed gate aborted most models** (51 unresolved on the 27B, 115 on nllb, 81–105 elsewhere — mostly deliberate cross-architecture probes). The intended workflow is: run `--check-kernels` per target, paste the printed list with reasons into each `MODEL.toml`. **This sweep has now been run — see §9a (19/22 targets rc=0, `[expected_absent]` populated in 18 MODEL.tomls).**
 
 ★ `--check-kernels` **cannot skip the weight load** — every lookup is inside a layer constructor taking materialised weights, and *which* constructors run depends on what the loader finds. A weight-free path would resolve a **different** set than a real serve. Budget a real cold load per target.
 
@@ -222,7 +222,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 | # | item | status |
 |---|---|---|
 | 1 | **Compile the combined tree** (4a + 4b) | **DONE 2026-08-03.** Release build `ATLAS_TARGET_MODEL="*"` rc=0 (74 MB binary, all 22 targets). Fixed one real defect the first cargo pass surfaced: `qwen3.6-27b/MODEL.toml` `[expected_absent]` used backslash-newline line-continuation in a TOML basic string (invalid TOML → build panic); converted to a multi-line literal. fmt/clippy(workspace,-tests)/typos all clean. Full `cargo test --workspace`: 70 suites pass (dgx3 needs `LD_LIBRARY_PATH=...libnccl.so.2` for the `spark-model` test binary — environmental). One caveat: `atlas-plugin::e2e::the_warm_gate…` is a timing-sensitive mock test (30 ms TTFT, n=3) that failed once at +3.3% median (limit +3.0%) under heavy box load and passed 3/3 on rerun; it is committed code, not part of §4 |
-| 2 | **`--check-kernels` harvest sweep** | **16/22 targets DONE 2026-08-03** (see §9). `[expected_absent]` populated in 15 MODEL.tomls (294 entries total, every reason cites the dispatch fallback and marks porting UNMEASURED where applicable). `--check-kernels` rc=0 for every target checked. The six not yet checkable are the EP-only/oversized targets (§9) |
+| 2 | **`--check-kernels` harvest sweep** | **19/22 targets DONE 2026-08-03/04** (see §9). `[expected_absent]` populated in 18 MODEL.tomls (350 entries total, every reason cites the dispatch fallback and marks porting UNMEASURED where applicable). `--check-kernels` rc=0 for every target checked — including the three oversized EP=2 targets (DS4/MiniMax/Step) harvested 2026-08-04. Remaining unchecked: `qwen3.5-397b-a17b` (EP=4-only, weights never downloaded), `qwen3.5-27b` (no distinguishing checkpoint) |
 | 3 | **Re-run gates C2/A/C/D** | still open — §4 + the harvest touch `crates/` + `kernels/` (~5 h). NOTE: the kernel-set hash changed only via `[expected_absent]` metadata + KERNEL.toml renames; PTX content unchanged, but per §3 the rule stands |
 | 4 | **Re-verify the C=1..128 sweep on the final binary** | **DONE 2026-08-03** — 8/8 rungs win on the gate image; results + confounds appended to `docs/campaigns/gb10-concurrency-2026-07/STATE.md` |
 | 5 | Nothing blocks **#388 itself** | human approval only |
@@ -278,12 +278,32 @@ Checked rc=0 (unresolved=0) against weights on dgx1/dgx3:
 | gemma-4-26b-a4b / gemma-4-31b | bg-digitalservices NVFP4A16 / nvidia IT | 36/28 |
 | mistral-small-4 | mistralai 119B (dgx3, check-only flags) | 21 |
 | qwen3.5-122b-a10b | Sehyo 122B (util 0.99, bs1, seq 512, slots 0, oom-guard 512 — **check-only**; the 0.99 util is never used for serving) | 22 |
+| deepseek-v4-flash | nvidia DS4-Flash-NVFP4, **EP=2** (dgx1 rank0 ↔ dgx3 rank1; identical report both ranks, hash 0532e96f02d0) | 9 |
+| minimax-m2-229b | lukealonso/MiniMax-M2.7-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash 41a9421cde36) | 12 |
+| step3p7-flash | stepfun-ai Step-3.7-Flash-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash a1a4f6b0f249) — weights must be the **per-expert split** from `scripts/preprocess_step3p7_experts.py` (504 fused → 145,152 per-expert tensors); the fused checkpoint defeats the EP-aware pre-flight (estimates full 120 GB → OOM bail) | 35 |
 
-**Not checkable single-node (weights > one GB10; EP-only, per recipe/docs):**
-`deepseek-v4-flash` (157 GB, recipe says EP=2 REQUIRED — single-node OOM pre-flight proved it),
-`minimax-m2-229b` (136 GB, EP=2 recipe), `step3p7-flash` (121 GB; docs/STEP3P7_FLASH_RESULTS.md
-already records single-GPU BLOCKED + EP=2 PARTIAL/CUDA 700), `qwen3.5-397b-a17b` (EP=4-only, ~200 GB, weights never downloaded), `qwen3.5-27b` (Kbenkhaled checkpoint routes to the qwen3.6-27b target instead — the dense-35B family's own target still has no distinguishing checkpoint checked).
-An EP=2 `--check-kernels` needs `start-ep2.sh`-style launch on both ranks; dgx1(10.10.10.9)↔dgx3(10.10.10.14) RoCE pings OK but passwordless ssh dgx3→dgx1 is NOT set up (timed out).
+**EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/atlas-gb10:7241a95`
+with `--gpus all --ipc=host --network host --device=/dev/infiniband --cap-add=IPC_LOCK
+--cap-add=SYS_NICE --ulimit memlock=-1 --security-opt seccomp=unconfined` + RoCEv2 NCCL env
+(`enp1s0f1np1`/`rocep1s0f1`, GID 3, Simple/Ring, BUFFSIZE 32M), the dev binary bind-mounted over
+`/usr/local/bin/spark:ro` (image binary predates `--check-kernels`), weights at `/model`, and
+`serve --model-from-path /model --check-kernels --rank {0,1} --tp-size 1 --ep-size 2 --world-size 2
+--master-addr <rank0-mesh-ip> --max-seq-len 512 --max-batch-size 1 --gpu-memory-utilization 0.99
+--oom-guard-mb 512` (+ per-target `--kv-cache-dtype`: DS4 fp8, MiniMax/Step bf16).
+
+**Still not checked:**
+`qwen3.5-397b-a17b` (EP=4-only, ~200 GB, needs 4 nodes — weights never downloaded),
+`qwen3.5-27b` (Kbenkhaled checkpoint routes to the qwen3.6-27b target instead — the dense-35B
+family's own target still has no distinguishing checkpoint checked).
+
+**Step 3.7 loader fix (this harvest):** `num_attention_layers()` counted `FullAttention` only,
+undersizing `attn_layer_dtypes` (12) while the Step loader indexes all 45 attention layers
+(12 full + 33 sliding) → `index out of bounds: len 12, index 12` at
+`step3p7/load_layers.rs:414`. Fixed in `atlas-core/src/config/methods.rs`: sliding-attention
+layers consume the paged KV cache exactly like full-attention ones, so every consumer sized from
+that count (KV pool `num_layers`, `attn_layer_dtypes`, loader indexing) must see them all.
+Regression test: `test_num_attention_layers_counts_sliding_attention`. Gemma-4 was unaffected —
+its parser maps sliding→FullAttention.
 
 **Known honesty gaps kept honest in the MODEL.tomls** (all four `gated_delta_rule_decode_f16_*` arms on every GDN target): the FP16-h-state decode arms dispatch these handles UN-PROBED once `--ssm-h-dtype f16` is active; preflight refuses bad env combos but NOT a target that lacks the twins, so the flag on those models is a 0-handle launch. Every such entry carries a `⚠ HONESTY NOTE`. The correct fix is a preflight kernel-presence check — not yet written.
 
