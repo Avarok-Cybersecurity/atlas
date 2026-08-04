@@ -171,13 +171,20 @@ fn cmd_metrics(app: &mut App, filter: &str) {
 fn cmd_kernels(app: &mut App, filter: &str) {
     let rows = spark_runtime::kernel_audit::audit_rows();
     let mut n = 0;
-    for (m, f, ok) in rows {
+    for r in rows {
+        let (m, f, ok) = (&r.module, &r.func, r.loaded);
         if !filter.is_empty() && !m.contains(filter) && !f.contains(filter) {
             continue;
         }
+        // A failed lookup without its dispatch site is a name, not a work item.
+        let site = if ok {
+            String::new()
+        } else {
+            format!("  at {}:{}", r.site.file(), r.site.line())
+        };
         app.ops
             .output
-            .push(format!("  {} {m}::{f}", if ok { "✓" } else { "✗" }));
+            .push(format!("  {} {m}::{f}{site}", if ok { "✓" } else { "✗" }));
         n += 1;
         if n >= 40 {
             app.ops

@@ -201,6 +201,13 @@ pub trait GpuBackend: Send + Sync {
     fn default_stream(&self) -> u64;
 
     /// Look up a kernel function by module and function name.
+    ///
+    /// `#[track_caller]` on the DECLARATION is what makes the caller location
+    /// survive the `&dyn GpuBackend` vtable — every lookup in Atlas goes
+    /// through dynamic dispatch, so without it the audit can only ever name
+    /// the backend's own line. The location is what turns an unresolved-lookup
+    /// report from a name list into a work item.
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
 
     /// This backend's memoized kernel handles and scratch allocations.

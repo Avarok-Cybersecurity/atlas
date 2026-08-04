@@ -4,6 +4,7 @@
 //! sticky footer, toasts, help overlay. Pure `App` → `Frame`.
 
 mod bench;
+mod chat_lines;
 mod header;
 mod library;
 mod main_tab;
@@ -329,9 +330,41 @@ fn truncate_toast(text: &str, width: usize) -> String {
     format!("{head}…")
 }
 
+/// The key map, and the SSOT for how tall its modal has to be.
+const KEYS: [(&str, &str); 18] = [
+    ("1-6", "jump to section (repeat cycles its subsections)"),
+    (
+        "Tab / Shift+Tab",
+        "walk every sidebar row, subsections included",
+    ),
+    ("j/k ↑/↓", "move / scroll"),
+    ("g / G", "top / bottom (follow)"),
+    ("f", "log filter (Main)"),
+    ("/", "search (Library)"),
+    ("←/→ + Enter", "select node / detail (Network)"),
+    ("Enter", "focus input (Terminal) / edit field (Benchmarks)"),
+    ("s / c", "start / cancel the configured benchmark"),
+    (
+        "d",
+        "Library: download / resume / update the selected model",
+    ),
+    ("x", "Library: stop the running download"),
+    ("u", "Library: check the selected model for updates"),
+    ("t / Ctrl+T", "Chat: ask for thinking — auto / off / on"),
+    ("T / Alt+T", "Chat: reasoning collapsed / expanded / hidden"),
+    ("Esc", "back / cancel"),
+    ("Ctrl+C", "clean shutdown (drain + exit)"),
+    ("q", "quit TUI"),
+    ("?", "this help"),
+];
+
 fn draw_help(f: &mut Frame, area: Rect) {
     let w = 64.min(area.width.saturating_sub(4));
-    let h = 18.min(area.height.saturating_sub(4));
+    // Sized to the LIST, not to a number someone typed once: the table has
+    // grown three times since 18 was chosen, and every entry past the
+    // sixteenth was silently below the modal's bottom border — a key nobody
+    // could read is a key nobody has.
+    let h = ((KEYS.len() + 2) as u16).min(area.height.saturating_sub(2));
     let modal = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -339,34 +372,8 @@ fn draw_help(f: &mut Frame, area: Rect) {
         height: h,
     };
     f.render_widget(Clear, modal);
-    let keys = [
-        ("1-6", "jump to section (repeat cycles its subsections)"),
-        (
-            "Tab / Shift+Tab",
-            "walk every sidebar row, subsections included",
-        ),
-        ("j/k ↑/↓", "move / scroll"),
-        ("g / G", "top / bottom (follow)"),
-        ("f", "log filter (Main)"),
-        ("/", "search (Library)"),
-        ("←/→ + Enter", "select node / detail (Network)"),
-        ("Enter", "focus input (Terminal) / edit field (Benchmarks)"),
-        ("s", "start the configured benchmark"),
-        ("c", "cancel the running benchmark"),
-        (
-            "d",
-            "Library: download / resume / update the selected model",
-        ),
-        ("x", "Library: stop the running download"),
-        ("u", "Library: check the selected model for updates"),
-        ("Ctrl+Enter", "send chat message"),
-        ("Esc", "back / cancel"),
-        ("Ctrl+C", "clean shutdown (drain + exit)"),
-        ("q", "quit TUI"),
-        ("?", "this help"),
-    ];
-    let mut lines = vec![Line::default()];
-    for (k, d) in keys {
+    let mut lines = Vec::with_capacity(KEYS.len());
+    for (k, d) in KEYS {
         lines.push(Line::from(vec![
             Span::styled(format!("  {k:<16}"), theme::brand_cyan()),
             Span::styled(d.to_string(), theme::text2()),

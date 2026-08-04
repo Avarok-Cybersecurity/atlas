@@ -503,6 +503,7 @@ impl GpuBackend for MetalGpuBackend {
         0
     }
 
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
         let key: PipelineKey = (module.to_string(), func_name.to_string());
         if let Some(handle) = self.pipeline_cache.lock().get(&key) {

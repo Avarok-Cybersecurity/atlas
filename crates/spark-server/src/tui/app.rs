@@ -242,12 +242,12 @@ impl App {
         if self.progress.ready && !self.awaiting_model && live.is_some() && self.kernels_for != live
         {
             let model = super::data::kernels::build();
-            if !model.missing.is_empty() {
-                let n = model.missing.len();
-                self.toast(
-                    format!("{n} kernel lookup(s) unresolved — Main ▸ Kernels"),
-                    false,
-                );
+            // ONLY the actionable class toasts: an alarm that is almost always
+            // noise is an alarm nobody reads (see `kernel_audit::FailureSplit`).
+            let n = model.missing_required.len();
+            if n > 0 {
+                let msg = format!("{n} kernel lookup(s) unresolved — Main ▸ Kernels");
+                self.toast(msg, false);
             }
             self.kernels = Some(model);
             self.kernels_for = live;
@@ -427,19 +427,9 @@ impl App {
                     self.network_detail = !self.network_detail;
                 }
             }
-            Section::Terminal if self.term_sub == TermSub::Chat => {
-                if up {
-                    self.chat.scroll_by(1);
-                } else if down {
-                    self.chat.scroll_by(-1);
-                } else if matches!(key.code, KeyCode::PageUp) {
-                    self.chat.scroll_by(10);
-                } else if matches!(key.code, KeyCode::PageDown) {
-                    self.chat.scroll_by(-10);
-                } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
-                    self.chat.follow();
-                }
-            }
+            // Chat owns its own keys in `app_input`, where the input-focused
+            // half of the same map already lives.
+            Section::Terminal if self.term_sub == TermSub::Chat => self.on_chat_content_key(key),
             Section::Benchmarks => self.on_bench_key(key),
             Section::Terminal | Section::Stats => {}
         }

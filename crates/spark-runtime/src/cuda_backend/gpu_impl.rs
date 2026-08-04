@@ -199,20 +199,26 @@ impl GpuBackend for AtlasCudaBackend {
         Some(self.registry().clone())
     }
 
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        // The DISPATCH SITE, not this line: `#[track_caller]` here and on the
+        // trait declaration carries the `.kernel(…)` / `try_kernel(…)` caller's
+        // `file:line` through, which is the only part of an unresolved-lookup
+        // report an operator can act on.
+        let site = std::panic::Location::caller();
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
-                crate::kernel_audit::record(module, func_name, true);
+                crate::kernel_audit::record(module, func_name, true, site);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
                 // Optional kernels (try_kernel) land here and fall back silently;
                 // the audit makes that visible in the startup kernel table.
-                crate::kernel_audit::record(module, func_name, false);
+                crate::kernel_audit::record(module, func_name, false, site);
                 Err(anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))
             }
         }

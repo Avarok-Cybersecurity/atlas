@@ -68,6 +68,12 @@ struct Target {
     /// `shadowed_dropped`, so the startup audit still hard-errors if the
     /// model's dispatch actually resolves one.
     shadow_exempt: Vec<(String, String)>,
+    /// `(module, kernel)` pairs declared in MODEL.toml `[expected_absent]` —
+    /// lookups this model's dispatch may issue and fail to resolve WITHOUT that
+    /// being an error, each with a mandatory stated reason. Carried onto
+    /// `TargetPtxSet::expected_absent` and read by the boot audit, which fails
+    /// closed on every unresolved lookup that is NOT declared here.
+    expected_absent: Vec<(String, String)>,
     sampling_thinking_text: SamplingCat,
     sampling_thinking_coding: SamplingCat,
     sampling_non_thinking: SamplingCat,
@@ -357,9 +363,9 @@ fn main() {
         // Warning-visible subset: everything except the pairs `common/`
         // declares (with a reason) as superseded in `[shadow_exempt]`. The
         // FULL `drops` list still goes into `TargetPtxSet::shadowed_dropped`
-        // below, so `kernel_audit::fatal_missing` remains fail-closed for
-        // exempt pairs too — an exemption silences build-log noise, never a
-        // runtime miss.
+        // below, so the startup gate (`kernel_audit::classify_failures`)
+        // remains fail-closed for exempt pairs too — an exemption silences
+        // build-log noise, never a runtime miss.
         let reportable: Vec<&(String, String)> = drops
             .iter()
             .filter(|(m, f)| {
@@ -978,6 +984,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
+            let expected_absent = parse_expected_absent(&model_dir);
 
             targets.push(Target {
                 hw: hw.clone(),
@@ -993,6 +1000,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 extra_flags,
                 module_overrides,
                 shadow_exempt,
+                expected_absent,
                 sampling_thinking_text: s_tt,
                 sampling_thinking_coding: s_tc,
                 sampling_non_thinking: s_nt,
@@ -1051,8 +1059,8 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 #[path = "build_parse.rs"]
 mod build_parse;
 use build_parse::{
-    parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
-    parse_shadow_exempt,
+    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
+    parse_sampling_presets, parse_shadow_exempt,
 };
 
 /// Collect kernel-source files with shadowing: common dir provides the

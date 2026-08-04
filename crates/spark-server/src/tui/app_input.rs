@@ -80,9 +80,25 @@ impl App {
                 KeyCode::PageUp => self.chat.scroll_by(10),
                 KeyCode::PageDown => self.chat.scroll_by(-10),
                 KeyCode::End => self.chat.follow(),
+                // The two thinking toggles, in their chorded forms. They come
+                // BEFORE the catch-all: a bare `t` is text, and `Ctrl+T`
+                // arrives as `Char('t')` with a modifier, so an unguarded
+                // catch-all would type a `t` for it instead.
+                KeyCode::Char('t') => match self.chat.on_view_key(key, true) {
+                    Some(said) => self.toast(said, false),
+                    None => self.chat.input.push('t'),
+                },
                 KeyCode::Char(c) => self.chat.input.push(c),
                 _ => {}
             },
+        }
+    }
+
+    /// Chat keys when the transcript, not the input box, has focus. Bare
+    /// letters are free here, so the toggles get their unchorded forms too.
+    pub(super) fn on_chat_content_key(&mut self, key: KeyEvent) {
+        if let Some(said) = self.chat.on_content_key(key) {
+            self.toast(said, false);
         }
     }
 }

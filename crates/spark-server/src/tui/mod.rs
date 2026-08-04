@@ -23,7 +23,9 @@
 //!   theme           palette + shared styles (brand chevron colors)
 //!   logo            header art + CLI flag badge derivation
 //!   commands        Terminal tab slash-command parser/dispatch
-//!   chat            loopback SSE chat client for the served model
+//!   chat            Chat transcript state + delta reducer
+//!   chat_stream     loopback SSE chat client for the served model
+//!   chat_thinking   thinking: what the client asks for, and how it is drawn
 //!   data/           pollers: metrics deltas, library scan, kernel rows
 //!   render/         one file per section, pure App-state -> Frame
 //!   worker          the one way to run work off the render thread
@@ -95,6 +97,8 @@ pub mod theme;
 pub mod worker;
 
 pub mod chat;
+pub mod chat_stream;
+pub mod chat_thinking;
 pub mod data;
 pub mod render;
 

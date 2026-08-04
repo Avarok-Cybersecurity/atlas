@@ -2643,3 +2643,32 @@ two identical serves differed on 7 of 42 completions (C=4 and C=16). The flag le
 run-to-run nondeterminism. Under PCND an unproven numerics change is explicit configuration,
 so both became CLI flags rather than defaults. **A control leg that is not reproducible
 retires the whole gate, not just the failing arm.**
+
+## 2026-08-03 — C=1..128 sweep re-verification on the final image (8c #4, CLOSED)
+
+Leg results land in `/workspace/w55_sweep/results/` (driver `/workspace/w55_sweep/w55_conc_ladder.py`,
+sha256 6412b12d). Image `avarok/atlas-gb10:7241a95` = gate image = this branch modulo bench-only
+harness deltas, so this IS the #388 binary's sweep. Recipe-derived serve
+(`serve_atlas.sh` ← `recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml`): util 0.85, bs 128, bf16 KV,
+spec-on num-drafts 3, ssm-h f16 + fused-norm, thinking OFF on BOTH engines
+(`chat_template_kwargs:{"enable_thinking":false}`), prompt parity 200=200, temp 0.
+
+| C | Atlas | vLLM | ratio | prev(2026-08-02) |
+|---|---|---|---|---|
+| 1 | 24.34 | 14.69 | **1.656x** | 1.694x |
+| 2 | 35.79 | 28.63 | **1.250x** | 1.281x |
+| 4 | 71.61 | 54.76 | **1.308x** | 1.368x |
+| 8 | 113.13 | 100.50 | **1.126x** | 1.167x |
+| 16 | 199.51 | 169.07 | **1.180x** | 1.205x |
+| 32 | 290.16 | 260.76 | **1.113x** | 1.105x |
+| 64 | 360.82 | 355.04 | **1.016x** | 1.021x |
+| 128 | 429.52 | 423.49 | **1.014x** | 1.040x |
+
+**8/8 rungs reconfirmed** — Atlas wins every rung on tok/s. Atlas absolute tok/s
+within ±0.6% at C≤2, −1.5..−2.7% at C=4..32, −5.3% at C=64, −9.0% at C=128 vs the
+2026-08-02 ladder. Spread: vLLM 0.05–0.63%; Atlas 1.0–4.1% (C=1 rep spread 9%).
+Two confounds on the original ladder are now explained, not denied:
+1. The C=128 "timeout" finish-reason in the Atlas leg traces to `--request-timeout 300s`
+   (Atlas default; vLLM runs no comparable deadline). Control leg reran C=128 with
+   REQ_TIMEOUT=0: 439.43 tok/s vs spec-on 429.52 — the deadline was costing ~2%, not the engine.
+2. Clock probe healthy on every rung (2236–2457 MHz Atlas, 2463–2483 vLLM) — no 513 MHz clamp.

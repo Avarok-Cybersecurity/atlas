@@ -54,6 +54,51 @@ pub struct ServeArgs {
     #[arg(long)]
     pub no_auto_swap: bool,
 
+    /// Serve even when kernel lookups this model's dispatch issued did not
+    /// resolve.
+    ///
+    /// A lookup that returns handle 0 does not error — the caller takes a
+    /// slower (or disabled) dispatch path and nothing says so. That is how the
+    /// 27B ran with concurrent decode pinned to its per-sequence fallback while
+    /// every gate stayed green, so the default is to REFUSE to start and print
+    /// the full list with each dispatch site.
+    ///
+    /// Passing this does not suppress the report: the same enumerated list is
+    /// logged at `warn!` on every boot. A flag that muted the warning would
+    /// recreate the bug it exists to catch.
+    ///
+    /// This replaces `ATLAS_ALLOW_SHADOWED_KERNELS`, which covered only the
+    /// shadow-dropped subset — one switch, and a CLI flag rather than an
+    /// environment variable so it is visible in the command that started the
+    /// process.
+    #[arg(long, default_value_t = false)]
+    pub dangerously_allow_unresolved_kernel_lookups: bool,
+
+    /// Resolve all kernels for the model and exit, reporting any that did not
+    /// resolve. Does not start the server. The EXIT CODE IS THE NUMBER of
+    /// unresolved kernels — 0 means every lookup resolved.
+    ///
+    /// A dry run that stops immediately after the kernel audit: config, GPU
+    /// init, weight load and model construction all run (every lookup lives in
+    /// a layer constructor, so a check that skipped them would resolve a
+    /// DIFFERENT set than a real serve), then the report is printed and the
+    /// process exits. The scheduler is never started and no port is bound.
+    ///
+    /// A POSIX status is 8 bits, so the code is CLAMPED at 255 — 256 would be
+    /// reported as 0, i.e. a broken model reading as a pass. Whenever the clamp
+    /// bites, the true count is printed alongside it and carried in the JSON.
+    ///
+    /// The exit code IGNORES
+    /// `--dangerously-allow-unresolved-kernel-lookups`: a check whose answer
+    /// another flag can silence is worth nothing. Passing both still prints the
+    /// full list and still exits with the count.
+    ///
+    /// A one-line JSON object (`{"atlas_kernel_check": …}`) is printed on
+    /// stdout after the human report, so a sweep over every target can
+    /// aggregate without parsing prose.
+    #[arg(long, default_value_t = false)]
+    pub check_kernels: bool,
+
     /// Load model directly from this filesystem path (skips HF cache resolution).
     #[arg(long, value_name = "PATH")]
     pub model_from_path: Option<PathBuf>,
@@ -87,6 +132,11 @@ pub struct ServeArgs {
     /// KV cache dtype (fp8, bf16, or nvfp4).
     /// Default: fp8. NVFP4 uses less memory but may lose coherence at long context
     /// without --kv-high-precision-layers. FP8 is the safe default.
+    ///
+    /// The `turbo2`/`turbo3`/`turbo4`/`turbo8` variants (and the asymmetric
+    /// `*k_*v` pairs built from them) are EXPERIMENTAL: they are not built for
+    /// every kernel target, and a target that lacks them fails the kv-cache
+    /// kernel preflight at startup rather than serving on a fallback.
     #[arg(long, default_value = "fp8")]
     pub kv_cache_dtype: String,
 
