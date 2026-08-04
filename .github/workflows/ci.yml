@@ -79,6 +79,19 @@ jobs:
       - uses: actions/checkout@v7
       - uses: crate-ci/typos@master
 
+  kernel-structure:
+    name: kernel shadow structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Validates the kernels/{hw} shadowing mechanism (build.rs
+      # collect_cu_files): no shadow byte-identical to its common
+      # namesake (dead override), no duplicate regular copies of the
+      # same shadow across models (symlink to one canonical file
+      # instead). GPU-free: pure content-hash check, exit 1 on any
+      # violation. Stdlib-only; the runner's system python3 suffices.
+      - run: python3 scripts/check_kernel_shadows.py
+
   test:
     name: cargo test --workspace
     runs-on: ubuntu-latest
@@ -360,7 +373,7 @@ jobs:
   release-matrix:
     name: release matrix
     if: github.event_name == 'pull_request'
-    needs: [fmt, clippy, license-headers, typos, test, test-macos-metal]
+    needs: [fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number }}
