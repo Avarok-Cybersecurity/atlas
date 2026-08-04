@@ -28,11 +28,14 @@ vision = true
 model_type = "qwen3_5"
 
 # Kbenkhaled's re-uploaded Qwen3.5-27B-NVFP4 enables MRoPE
-# (mrope_interleaved + mrope_section=[11,11,10]) in text_config.
-# parse_qwen3_5_config rewrites model_type to "qwen3_6_moe" when MRoPE
-# is detected (see atlas-core/src/config.rs:956). hidden_size=5120
-# distinguishes this hybrid 27B from the 35B variant (hidden_size=2048).
-# These kernels already support the MRoPE-interleaved RoPE path.
+# (mrope_interleaved + mrope_section=[11,11,10]) in text_config.rope_parameters.
+# The dispatch rewrite to "qwen3_6_moe" is GATED on is_moe (top model_type
+# qwen3_5_moe/qwen3_vl_moe), so this DENSE hybrid keeps model_type "qwen3_5"
+# and routes here via the wildcard entry (the qwen3_6_moe/5120 entry below is
+# belt-and-braces). hidden_size=5120 distinguishes this hybrid 27B from the
+# 35B variant (hidden_size=2048) under the same model_type. NOTE: in the
+# standard multi-target build the EXACT (qwen3_5, 5120) entry on qwen3.6-27b
+# wins over this wildcard — see HANDOFF §9a; both legs are checked.
 [[model_types]]
 model_type = "qwen3_6_moe"
 hidden_size = 5120
@@ -79,3 +82,94 @@ thinking_default = true
 thinking_in_tools = true
 # 2026-05-23 sweep: explicit 2048 (was unset → 256 default).
 max_thinking_budget = 2048
+
+# ── expected_absent ────────────────────────────────────────────────────────
+# Harvested 2026-08-04 from a SINGLE-TARGET `--check-kernels` run
+# (ATLAS_TARGET_MODEL=qwen3.5-27b build, Kbenkhaled checkpoint): 222 lookups,
+# 33 unresolved, kernel_set_hash 978c5c9c93d2. NOTE: this target's own kernel
+# set is NOT what the standard multi-target build serves for this checkpoint —
+# `ptx_for_config` prefers the exact `(qwen3_5, 5120)` match on qwen3.6-27b
+# over this target's wildcard `(qwen3_5, None)`, so the checkpoint was
+# already checked rc=0 against qwen3.6-27b's set (2026-08-03, hash
+# 6a0211057c4a). This harvest covers this target's own, smaller set
+# (no nvfp4_mmq/q4k/w4a4/w4a16_v2 sources shipped here). Every entry names
+# the dispatch site and the resolved fallback; none are silenced
+# speculatively.
+
+# ⚠ HONESTY NOTE on the four gated_delta_rule arms below: the FP16-h-state
+# decode arms dispatch these handles UN-PROBED once --ssm-h-dtype f16 is
+# active. Preflight refuses f16 for bad env combos but NOT for a target
+# that lacks the twins, so setting the flag on this model is a 0-handle
+# launch, not a fallback. Declared here to unblock the gate; the correct
+# fix is a preflight check on kernel presence. UNMEASURED.
+[expected_absent.gated_delta_rule]
+gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note above. F32 fused-norm arm resolves."
+gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note above. F32 strided-norm arm resolves."
+gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under the resolved half-register gate (ATLAS_GDN_HALF_REG presence, off as shipped)."
+gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
+
+[expected_absent.gated_delta_rule_wy17]
+gated_delta_rule_wy17 = """
+wy17 fused decode (K=17) exists only in qwen3.6-35b-a3b's PTX module
+set (per the init.rs comment); decode_batched checks non-NULL before
+the fused path and keeps the sequential per-token path otherwise."""
+
+[expected_absent.nvfp4_mmq]
+atlas_nvfp4_mmq128_nc = """
+Vendored llama Blackwell block-scale FP4 MMQ dense-FFN prefill family —
+no nvfp4_mmq source ships in THIS target's set (only qwen3.6-27b's).
+finalize gates on ALL family handles != 0 and only fires for
+ATLAS_FFN_NVFP4_MMQ opt-in SiLU models (dense_ffn.rs:473); the resolved
+t_m128 prefill path serves by default. UNMEASURED."""
+atlas_nvfp4_mmq128_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq16_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq16_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq32_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq32_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq64_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq64_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_quantize_bf16 = "MMQ activation-quantize helper — only materialized when the MMQ family resolves and is opted in."
+atlas_nvfp4_repack = "MMQ weight-repack helper — same family-wide gating."
+atlas_nvfp4_scale_bf16 = "MMQ scale helper — same family-wide gating."
+atlas_nvfp4_silu_mul_quant = "MMQ fused SiLU-mul-quant helper — same family-wide gating."
+atlas_nvfp4_silu_mul_scaled = "MMQ fused scaled-SiLU-mul helper — same family-wide gating."
+
+[expected_absent.q4k_mmq]
+atlas_q4k_mmq128_nc = """
+Q4_K FFN MMQ family (ATLAS_FFN_MMQ opt-in) — no q4k source ships in
+THIS target's set. finalize_q4k_load gates on ALL four q4k handles
+!= 0 AND the env flag (dense_ffn.rs:382). The resolved NVFP4 path
+serves by default. UNMEASURED."""
+atlas_q4k_mmq128_wc = "Same Q4_K family — family-wide handle gate plus ATLAS_FFN_MMQ opt-in."
+atlas_q8_1_quantize_ds4_bf16 = "Q4_K activation-quantize helper — only materialized under the same family-wide gating."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K weight-quantize helper — same family-wide gating as the q4k_mmq arms above."
+
+[expected_absent.w4a16]
+int8_gemm_faith2 = """
+Lossy W4A8 dense-FFN prefill twin. Dispatch is DOUBLE-GATED: handle != 0
+AND the ATLAS_INT8_PREFILL env opt-in (dense_ffn.rs:1512), so the
+resolved NVFP4 prefill path serves by default. UNMEASURED."""
+int8_gemm_i32acc = "i32-accumulator variant of the same opt-in int8 family (ATLAS_INT8_PREFILL); handle != 0 gate in dense_ffn.rs."
+requant_w_nvfp4_int8 = "Weight requant helper for the opt-in int8 family — only materialized when ATLAS_INT8_PREFILL is set and the int8 GEMM handles resolve."
+requant_a_bf16_int8 = "Activation requant helper for the same opt-in int8 family; identical gating."
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+layers::tgemm_kernel probes it, then falls back to w4a16_gemm_t, which
+resolves on this target's shadow. UNMEASURED — candidate, not loss."""
+w4a16_gemm_t_k64_p3 = "Same family; layers::k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves here)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N deep-K twin; layers::k64_n64_kernel returns 0-handle when absent, dispatch gates on handle != 0 before firing (probed from both the attention and SSM modules)."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin of w4a16_gemm_t_m128; prefill_weights gates on handle != 0, falls back through the resolved w4a16 m128 path."
+w4a16_gemm_t_m128_bf16_v2 = "Second-generation BF16-projection twin (w4a16_v2_kernel); same handle != 0 gate, falls back to the resolved m128 arm."
+
+[expected_absent.w4a4]
+w4a4_gemm = """
+Dense-FFN native-FP4 prefill arm (ATLAS_FP4_PREFILL env opt-in, lossy
+cos~0.99). Dispatch gates on handle != 0 AND the env flag
+(dense_ffn.rs:1585). UNMEASURED."""
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b's shadow. The attention
+W4A4 prefill path is additionally OPT-IN ONLY (ATLAS_ATTN_W4A4 env) and
+dispatch gates on handle != 0 (paged_qkv.rs:49, paged_oproj.rs:32).
+UNMEASURED."""

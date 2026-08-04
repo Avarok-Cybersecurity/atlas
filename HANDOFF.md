@@ -222,7 +222,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 | # | item | status |
 |---|---|---|
 | 1 | **Compile the combined tree** (4a + 4b) | **DONE 2026-08-03.** Release build `ATLAS_TARGET_MODEL="*"` rc=0 (74 MB binary, all 22 targets). Fixed one real defect the first cargo pass surfaced: `qwen3.6-27b/MODEL.toml` `[expected_absent]` used backslash-newline line-continuation in a TOML basic string (invalid TOML → build panic); converted to a multi-line literal. fmt/clippy(workspace,-tests)/typos all clean. Full `cargo test --workspace`: 70 suites pass (dgx3 needs `LD_LIBRARY_PATH=...libnccl.so.2` for the `spark-model` test binary — environmental). One caveat: `atlas-plugin::e2e::the_warm_gate…` is a timing-sensitive mock test (30 ms TTFT, n=3) that failed once at +3.3% median (limit +3.0%) under heavy box load and passed 3/3 on rerun; it is committed code, not part of §4 |
-| 2 | **`--check-kernels` harvest sweep** | **19/22 targets DONE 2026-08-03/04** (see §9). `[expected_absent]` populated in 18 MODEL.tomls (350 entries total, every reason cites the dispatch fallback and marks porting UNMEASURED where applicable). `--check-kernels` rc=0 for every target checked — including the three oversized EP=2 targets (DS4/MiniMax/Step) harvested 2026-08-04. Remaining unchecked: `qwen3.5-397b-a17b` (EP=4-only, weights never downloaded), `qwen3.5-27b` (no distinguishing checkpoint) |
+| 2 | **`--check-kernels` harvest sweep** | **20/22 targets DONE 2026-08-03/04** (see §9). `[expected_absent]` populated in 19 MODEL.tomls (383 entries total, every reason cites the dispatch fallback and marks porting UNMEASURED where applicable). `--check-kernels` rc=0 for every target checked — including the three oversized EP=2 targets (DS4/MiniMax/Step) harvested 2026-08-04 and `qwen3.5-27b` via single-target build. Remaining: `qwen3.5-397b-a17b` (EP=4-only, weights never downloaded); `qwen3.5-35b-a3b` accepted as legacy (owner decision — unreachable kernel set, identical module map to qwen3.6-35b-a3b) |
 | 3 | **Re-run gates C2/A/C/D** | still open — §4 + the harvest touch `crates/` + `kernels/` (~5 h). NOTE: the kernel-set hash changed only via `[expected_absent]` metadata + KERNEL.toml renames; PTX content unchanged, but per §3 the rule stands |
 | 4 | **Re-verify the C=1..128 sweep on the final binary** | **DONE 2026-08-03** — 8/8 rungs win on the gate image; results + confounds appended to `docs/campaigns/gb10-concurrency-2026-07/STATE.md` |
 | 5 | Nothing blocks **#388 itself** | human approval only |
@@ -281,6 +281,7 @@ Checked rc=0 (unresolved=0) against weights on dgx1/dgx3:
 | deepseek-v4-flash | nvidia DS4-Flash-NVFP4, **EP=2** (dgx1 rank0 ↔ dgx3 rank1; identical report both ranks, hash 0532e96f02d0) | 9 |
 | minimax-m2-229b | lukealonso/MiniMax-M2.7-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash 41a9421cde36) | 12 |
 | step3p7-flash | stepfun-ai Step-3.7-Flash-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash a1a4f6b0f249) — weights must be the **per-expert split** from `scripts/preprocess_step3p7_experts.py` (504 fused → 145,152 per-expert tensors); the fused checkpoint defeats the EP-aware pre-flight (estimates full 120 GB → OOM bail) | 35 |
+| qwen3.5-27b | Kbenkhaled/Qwen3.5-27B-NVFP4 via a **single-target build** (`ATLAS_TARGET_MODEL=qwen3.5-27b`, hash fdf6bfaf23db, dgx1) — the standard multi-target build routes this checkpoint to `qwen3.6-27b` (exact `(qwen3_5, 5120)` match beats this target's wildcard `(qwen3_5, None)`), so that leg was checked separately there (2026-08-03, hash 6a0211057c4a). This target's own set is smaller (no nvfp4_mmq/q4k/w4a4/w4a16_v2 sources). Includes the standard four GDN f16/half-register/smem honesty-note arms | 33 |
 
 **EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/atlas-gb10:7241a95`
 with `--gpus all --ipc=host --network host --device=/dev/infiniband --cap-add=IPC_LOCK
@@ -292,9 +293,17 @@ with `--gpus all --ipc=host --network host --device=/dev/infiniband --cap-add=IP
 --oom-guard-mb 512` (+ per-target `--kv-cache-dtype`: DS4 fp8, MiniMax/Step bf16).
 
 **Still not checked:**
-`qwen3.5-397b-a17b` (EP=4-only, ~200 GB, needs 4 nodes — weights never downloaded),
-`qwen3.5-27b` (Kbenkhaled checkpoint routes to the qwen3.6-27b target instead — the dense-35B
-family's own target still has no distinguishing checkpoint checked).
+`qwen3.5-397b-a17b` (EP=4-only, ~200 GB, needs 4 nodes — weights never downloaded).
+
+**Accepted as legacy (owner decision 2026-08-04):** `qwen3.5-35b-a3b` — its kernel set is
+unreachable in the standard multi-target build. The only fleet checkpoint
+(Sehyo/Qwen3.5-35B-A3B-NVFP4, this target's own `hf_id`) enables MRoPE → dispatch.rs rewrites
+`model_type` to `qwen3_6_moe`, which matches `qwen3.6-35b-a3b`'s exact `(qwen3_6_moe, 2048)`
+entry, not this target's `(qwen3_5_moe, None)` wildcard. Its KERNEL.toml module map is
+identical to qwen3.6-35b-a3b's (diff-empty) and its three `.cu` files are a strict subset, so
+serving it would not exercise any kernel the live set lacks. Retained for reference; a
+single-target build is possible but no checkpoint can route to it, so no harvest applies.
+The note is also pinned at the top of its MODEL.toml.
 
 **Step 3.7 loader fix (this harvest):** `num_attention_layers()` counted `FullAttention` only,
 undersizing `attn_layer_dtypes` (12) while the Step loader indexes all 45 attention layers
