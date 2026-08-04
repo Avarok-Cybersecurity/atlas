@@ -19,6 +19,7 @@ impl Qwen3AttentionLayer {
     pub(crate) fn w4a16_gemm_m128_dispatch(
         &self,
         gpu: &dyn GpuBackend,
+        dispatch: &crate::layers::ops::GemmDispatch,
         input: DevicePtr,
         weight: &crate::weight_map::QuantizedWeight,
         output: DevicePtr,
@@ -27,19 +28,33 @@ impl Qwen3AttentionLayer {
         k: u32,
         stream: u64,
     ) -> anyhow::Result<()> {
-        // ATLAS_W4A16_VARIANT env: "v1", "v2", "v3" — overrides auto.
-        // Default: v2 (3 CTAs/SM, 8 warps). v3 (K_STEP=64, 1 CTA/SM) is
-        // slower in practice; keep it available for A/B but don't default.
-        static VARIANT: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-        let v =
-            *VARIANT.get_or_init(
-                || match std::env::var("ATLAS_W4A16_VARIANT").ok().as_deref() {
-                    Some("v1") => 1,
-                    Some("v2") => 2,
-                    Some("v3") => 3,
-                    _ => 0, // auto (prefer v2)
-                },
+        // ATLAS_W4A16_VARIANT: "v1"/"v2"/"v3" pin a kernel; 0 = auto (v2 — 3
+        // CTAs/SM, 8 warps; v3 with K_STEP=64 is slower in practice, kept for
+        // A/B). Resolved once per model into `GemmDispatch`, which the forward
+        // pass already carries.
+        let v = dispatch.w4a16_variant;
+        // LOSSLESS opt-in: route QKV/o projection prefill through the BF16-TC
+        // kernel (FP4→BF16 dequant + BF16 MMA, bit-identical to base w4a16_gemm)
+        // instead of the default t_m128 which crushes activations to FP8 E4M3.
+        // Gated by ATLAS_BF16_TC_PROJ (default off → unchanged). Removes the
+        // FP8 prefill perturbation on the attention projections.
+        // Load-time weight prep runs before any `TransformerModel` exists to
+        // carry the levers, so this resolves at the point of use. The
+        // interpretation stays SSOT in `ModelLevers`.
+        let bf16_proj = crate::layers::ops::ModelLevers::from_env().bf16_tc_proj;
+        if bf16_proj && self.w4a16_gemm_t_m128_bf16_k.0 != 0 {
+            return crate::layers::ops::w4a16_gemm_n128_m128_bf16(
+                gpu,
+                self.w4a16_gemm_t_m128_bf16_k,
+                input,
+                weight,
+                output,
+                m,
+                n,
+                k,
+                stream,
             );
+        }
         if v == 3 && self.w4a16_gemm_t_m128_v3_k.0 != 0 {
             crate::layers::ops::w4a16_gemm_n128_m128_v3(
                 gpu,
@@ -94,13 +109,16 @@ impl Qwen3AttentionLayer {
         self.o_nvfp4_t = o_nvfp4_t;
     }
 
-    /// Set native FP8 checkpoint weights for `w8a16_gemv` decode path.
+    /// Set native FP8 checkpoint weights for the `w8a16_gemv` decode path.
     ///
-    /// NOTE: Does NOT set `q_fp8`/`k_fp8`/`v_fp8`/`o_fp8` (raw FP8
-    /// prefill pointers) because `fp8_gemm_t` doesn't apply block scales.
-    /// Native FP8 block-scaled weights need per-block scale during GEMM,
-    /// which `fp8_gemm_t` doesn't do. Prefill falls through to the
-    /// NVFP4/BF16 dequant path instead.
+    /// The block-scaled FP8 weights stored here (weight + per-128 `row_scale`)
+    /// are ALSO consumed by block-scaled prefill: `fp8_gemm_t_blockscaled`
+    /// folds both the per-token activation scale and the per-block weight
+    /// scale in an FP32 epilogue. (Historical note: the older single-scale
+    /// `fp8_gemm_t`/`fp8_gemm_n128` prefill could not apply block scales, so
+    /// prefill used to fall through to the NVFP4/BF16 dequant path — that is
+    /// no longer the case; block-scaled prefill is the default, see
+    /// `ops::fp8_blockscaled_prefill_enabled`.)
     pub fn set_fp8_weights(
         &mut self,
         q: Option<Fp8Weight>,
@@ -124,6 +142,26 @@ impl Qwen3AttentionLayer {
         }
     }
 
+    /// Install the startup-static LoRA adapter overlay (post-construction,
+    /// mirroring [`Self::set_fp8_weights`]). `attn` carries the K/V/O pairs;
+    /// `ffn` (when Some) is routed into this layer's dense FFN component —
+    /// it lives here rather than on the model because `self.ffn` is
+    /// `pub(super)`. M0: weights are stored only; compute reads land in M1.
+    pub fn set_lora_weights(
+        &mut self,
+        attn: crate::layers::ops::lora_delta::LoraAttnWeights,
+        ffn: Option<crate::layers::ops::lora_delta::LoraFfnWeights>,
+    ) -> Result<()> {
+        self.lora = Some(attn);
+        if let Some(f) = ffn {
+            match &mut self.ffn {
+                crate::layers::FfnComponent::Dense(d) => d.set_lora_weights(f)?,
+                _ => anyhow::bail!("LoRA: FFN targets on a non-dense FFN layer"),
+            }
+        }
+        Ok(())
+    }
+
     /// Transpose FP8 weights for fast prefill (`w8a16_gemm_t`: coalesced
     /// reads). Must be called after [`Self::set_fp8_weights`]. Allocates
     /// new GPU buffers.
@@ -132,6 +170,16 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> anyhow::Result<()> {
+        // Load-time decision, taken in the weight loader before any
+        // `TransformerModel` exists to carry the config. Resolved at the point
+        // of use rather than cached in a static: the resolution logic stays
+        // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
+        if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
+            tracing::info!(
+                "Skipping attention FP8 prefill transposes because ATLAS_CUTLASS_NVFP4_GEMM=1"
+            );
+            return Ok(());
+        }
         if self.w8a16_gemm_t_k.0 == 0 {
             return Ok(()); // kernel not available
         }
@@ -164,6 +212,22 @@ impl Qwen3AttentionLayer {
         config: &atlas_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
+        // Under native NVFP4 prefill (ATLAS_CUTLASS_NVFP4_GEMM=1) all of Q/K/V/O
+        // take the CUTLASS NVFP4 path; the FP8 predequant outputs (q_fp8..o_fp8)
+        // are read only by the legacy FP8 prefill path and decode never reads
+        // them (decode attention uses its own weights), so they'd be allocated
+        // at load and never used. Skip them — saves ~260MB and a wasted per-
+        // prefill BF16->FP8 activation conversion. Mirrors transpose_fp8_for_prefill.
+        // Load-time decision, taken in the weight loader before any
+        // `TransformerModel` exists to carry the config. Resolved at the point
+        // of use rather than cached in a static: the resolution logic stays
+        // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
+        if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
+            tracing::info!(
+                "Skipping attention FP8 prefill predequant because ATLAS_CUTLASS_NVFP4_GEMM=1"
+            );
+            return Ok(());
+        }
         let predequant_k = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")?;
         let h = config.hidden_size;
         let nq = config.num_attention_heads;

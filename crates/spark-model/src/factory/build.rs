@@ -11,17 +11,24 @@ use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 use spark_runtime::prefix_cache::PrefixCache;
 use spark_runtime::weights::WeightStore;
 
-use super::DflashBuildArgs;
 use super::loader_for_config;
 use super::m2_setup::maybe_run_minimax_m2_moe_transpose;
+use super::{DflashBuildArgs, LoraBuildArgs};
 use crate::layers::MtpQuantization;
 use crate::model::TransformerModel;
 use crate::traits::Model;
 use crate::weight_loader::load_dflash_weights;
 
+mod kv_summary;
+
 pub fn build_model(
     mut config: ModelConfig,
-    store: &WeightStore,
+    // BY VALUE. Every reader below still takes `&WeightStore` — the change is
+    // only in who OWNS it. The store is the one structure that knows every
+    // weight pointer, and it used to be a local in `startup()` that was dropped
+    // once the layers had copied pointers out of it: the memory stayed live
+    // with nothing able to free it. The model owns it now, so `teardown` can.
+    store: WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
     kv_block_size: usize,
@@ -47,9 +54,71 @@ pub fn build_model(
     // DFlash speculative-decoding pairing. `None` = no DFlash; existing
     // MTP / no-spec paths unchanged.
     dflash_args: Option<DflashBuildArgs<'_>>,
+    // Startup-static LoRA adapter (`--lora-adapter`). `None` = base-only.
+    lora_args: Option<LoraBuildArgs<'_>>,
+    // NLLB / M2M-100 translation language pair (tokenizer-resolved
+    // `(src_lang_id, tgt_lang_id)`), resolved server-side. `None` for all other
+    // model types.
+    nllb_lang: Option<(u32, u32)>,
+    // NLLB / M2M-100 PEFT LoRA adapter directory (`--lora-adapter` for an
+    // encoder-decoder checkpoint). `None` = base model.
+    nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn Model>> {
+    // NLLB / M2M-100 is an encoder-decoder model that cannot be represented by
+    // the decoder-only TransformerModel stack. Serve it with the dedicated
+    // `NllbGpuModel`, which reads its weights from the standard `store` — this
+    // returns BEFORE `loader_for_config`, so the decoder-only weight loader
+    // (and its fail-fast) never runs on this path.
+    #[cfg(feature = "cuda")]
+    if matches!(config.model_type.as_str(), "m2m_100" | "nllb") {
+        let (src, tgt) = nllb_lang.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NLLB serving requires --src-lang and --tgt-lang (translation language pair)"
+            )
+        })?;
+        let lang = crate::model::nllb::NllbLang {
+            src_lang_id: src,
+            tgt_lang_id: tgt,
+            decoder_start_id: config.eos_token_id,
+            eos_id: config.eos_token_id,
+            pad_id: 1,
+        };
+        let model = crate::model::nllb::NllbGpuModel::new(
+            &config,
+            &store,
+            gpu,
+            lang,
+            max_seq_len,
+            max_batch_size,
+            nllb_lora_dir.as_deref(),
+        )?;
+        return Ok(Box::new(model));
+    }
+    #[cfg(not(feature = "cuda"))]
+    let _ = (nllb_lang, nllb_lora_dir);
+
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
+
+    // ── LoRA adapter load (pre-arena, pre-KV-sizing) ──
+    // MUST run before `BufferArena::new` and the `gpu.free_memory()`
+    // snapshot below: the pool allocation then lands in `used_so_far`, so
+    // the KV-cache budget shrinks automatically (positional budgeting —
+    // no arithmetic edit needed). Do NOT move this later. Setting
+    // `config.adapter_max_rank` here also lets `BufferSizes` size the
+    // lora_xa/lora_delta/lora_hact scratch.
+    let lora_weights: Option<crate::lora::LoraWeights> = if let Some(ref la) = lora_args {
+        config.adapter_max_rank = la.max_lora_rank;
+        loader.load_lora_adapters(
+            &la.adapters,
+            &config,
+            gpu.as_ref(),
+            la.max_loras,
+            la.max_lora_rank,
+        )?
+    } else {
+        None
+    };
 
     // Pre-construction: when DFlash is active, populate the target's
     // capture-layer indices from the drafter's `dflash_config.target_layer_ids`
@@ -94,11 +163,49 @@ pub fn build_model(
     // "use global num_kv_heads/head_dim for all layers" (backward compatible).
     config.kv_layer_dims = loader.kv_layer_dims(&config);
 
-    let mut layers = loader.load_layers(store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
-    let embed = loader.load_embedding(store, &config)?;
-    let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
-    let lm_head = loader.load_lm_head(store, &config)?;
-    let mtp_weights = loader.load_mtp_weights_multi(store, &config, gpu.as_ref())?;
+    let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
+    let embed = loader.load_embedding(&store, &config, gpu.as_ref())?;
+    let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
+    let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
+    let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
+
+    // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
+    // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path and keep it
+    // — the `DeepseekV4MtpHead` proposer is built from it after the model is
+    // constructed (it needs the resolved draft NVFP4 LM head + the model's
+    // owned GPU backend) and installed via `set_dflash_proposer`. Only built
+    // when `--speculative` is set; otherwise the module is loaded for
+    // verification then dropped.
+    // Only rank 0 runs the MTP draft (no-EP, all experts local). Skip loading it
+    // on the worker ranks — they never call propose(), so it would be dead weight.
+    let v4_mtp_module =
+        if config.model_type == "deepseek_v4" && use_speculative && config.ep_rank == 0 {
+            match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
+                &store,
+                &config,
+                gpu.as_ref(),
+                &attn_layer_dtypes,
+            ) {
+                Ok(Some(m)) => {
+                    tracing::info!(
+                        "DeepSeek-V4 MTP draft module loaded OK (num_mtp_modules={})",
+                        config.num_mtp_modules
+                    );
+                    Some(m)
+                }
+                Ok(None) => {
+                    tracing::info!("DeepSeek-V4: no MTP module in checkpoint (MTP off)");
+                    None
+                }
+                Err(e) => {
+                    tracing::error!("DeepSeek-V4 MTP module load FAILED: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Capability warning: user asked for `--speculative` but the model has no
     // MTP head bundled, so speculative decoding will silently no-op. Surface
     // this loudly so the user knows the flag was inert.
@@ -109,7 +216,7 @@ pub fn build_model(
              or use a checkpoint that ships an MTP head (e.g. `mtp.safetensors`)."
         );
     }
-    let vision_encoder = loader.load_vision_encoder(store, &config, gpu.as_ref())?;
+    let vision_encoder = loader.load_vision_encoder(&store, &config, gpu.as_ref())?;
 
     // If the checkpoint's `quantization_config.ignore_modules` lists MTP
     // (e.g. Sehyo/Qwen3.5-35B-A3B-NVFP4 ignores `mtp.*`), the MTP weights
@@ -117,7 +224,7 @@ pub fn build_model(
     // anyway — which is what `mtp_quant` would otherwise do — produces
     // garbage drafts (vllm PR #38832). Force BF16 in that case.
     let effective_mtp_quant = if !mtp_weights.is_empty() {
-        let quant_fmt = crate::quant_format::detect_quant_format(&config, store);
+        let quant_fmt = crate::quant_format::detect_quant_format(&config, &store);
         if quant_fmt.is_ignored("mtp.fc.weight")
             || quant_fmt.is_ignored("mtp.layers.0.self_attn.q_proj.weight")
         {
@@ -140,13 +247,25 @@ pub fn build_model(
     // draft-only NVFP4 head for MTP — extracted to lm_head_setup.rs
     // (file-size cap; pure code move).
     let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = super::lm_head_setup::setup_lm_heads(
-        store,
+        &store,
         &lm_head,
         &config,
         gpu.as_ref(),
         use_speculative,
         !mtp_weights.is_empty(),
     )?;
+
+    // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
+    // MTP proposer BEFORE `embed` / `lm_head_nvfp4` / `mtp_lm_head_nvfp4` are
+    // moved into `TransformerModel::new`. All are `Copy` (DenseWeight /
+    // QuantizedWeight). The draft head resolves to the separate draft-only
+    // NVFP4 head (main head kept BF16) or the main NVFP4 head. `None` ⇒ no
+    // NVFP4 head available ⇒ the V4 proposer can't draft and is skipped.
+    let v4_mtp_embed = embed;
+    // DeepSeek-V4-Flash keeps the LM head in BF16; the proposer drafts with the
+    // same BF16 head via dense_gemv (drafts are re-verified by the target, so the
+    // draft head only affects acceptance). DenseWeight is Copy.
+    let v4_mtp_lm_head = lm_head;
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
     //
@@ -194,65 +313,95 @@ pub fn build_model(
         cache_blocks_per_seq: hss_cache_blocks_per_seq,
     };
 
-    // Phase 6.2.c — KV-dtype gating for `--high-speed-swap`.
-    //
-    // All quantization variants are now supported via host-side dequant before
-    // disk-write (the orchestrator's tiled-attention kernel reads BF16):
-    //   - BF16    : direct stream; predictor anchor (K_lr) computed natively.
-    //   - FP8     : E4M3 → BF16 (per-tensor calibration scale). Predictor
-    //               degrades to LRU (BF16-only kernel can't read FP8 layout).
-    //   - NVFP4   : E2M1 nibble + per-group FP8 scale → BF16. Predictor LRU.
-    //   - Turbo4  : Lloyd-Max 16-level + per-group FP8 scale + WHT(K/V) on
-    //               disk. Decode flow's WHT(Q)/iWHT(out) bookends handle the
-    //               Walsh-Hadamard round-trip transparently. Predictor LRU.
-    //   - Turbo3  : 3-bit packed (8 vals per 3 bytes), 8-level codebook,
-    //               per-group FP8 scales, WHT bookended. Predictor LRU.
-    //   - Turbo8  : FP8 E4M3 + per-group FP8 scales + WHT bookended.
-    //               Predictor LRU.
-    fn dtype_label(dt: KvCacheDtype) -> &'static str {
-        match dt {
-            KvCacheDtype::Bf16
-            | KvCacheDtype::Bf16KTurbo4V
-            | KvCacheDtype::Bf16KTurbo3V
-            | KvCacheDtype::Bf16KTurbo2V => "BF16",
-            KvCacheDtype::Fp8
-            | KvCacheDtype::Fp8KTurbo4V
-            | KvCacheDtype::Fp8KTurbo3V
-            | KvCacheDtype::Fp8KTurbo2V => "FP8",
-            KvCacheDtype::Nvfp4 => "NVFP4",
-            KvCacheDtype::Turbo3 | KvCacheDtype::Turbo3KTurbo8V | KvCacheDtype::Turbo2 => "Turbo3",
-            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo4KTurbo3V | KvCacheDtype::Turbo4KTurbo8V => {
-                "Turbo4"
-            }
-            KvCacheDtype::Turbo8 => "Turbo8",
-        }
-    }
     if hss_cache_blocks_per_seq.is_some() {
-        let mut counts: std::collections::BTreeMap<&'static str, usize> =
-            std::collections::BTreeMap::new();
-        if kv_config.layer_dtypes.is_empty() {
-            *counts.entry(dtype_label(kv_config.dtype)).or_default() += kv_config.num_layers;
-        } else {
-            for dt in &kv_config.layer_dtypes {
-                *counts.entry(dtype_label(*dt)).or_default() += 1;
-            }
-        }
-        let total: usize = counts.values().sum();
-        let summary: Vec<String> = counts
-            .iter()
-            .map(|(name, n)| format!("{n} {name}"))
-            .collect();
-        tracing::info!(
-            "--high-speed-swap KV: {} attn layers ({}); HBM-shrink applies to all \
-             (Phase 6.2.c proper — host dequant for FP8/NVFP4/Turbo3/Turbo4/Turbo8; \
-             predictor scoring uses LRU for non-BF16 layers)",
-            total,
-            summary.join(" + ")
-        );
+        kv_summary::log_hss_kv_summary(&kv_config);
     }
+    // ── gpu_memory_utilization as fraction of TOTAL GPU memory ──
+    //
+    // User-facing contract (matches vLLM / sparkrun convention):
+    //   total_memory × gpu_memory_utilization = hard ceiling on everything
+    //   this process consumes (weights + buffers + KV cache + reserves).
+    //
+    // KV cache gets whatever remains inside that ceiling after deducting
+    // prior allocations (model weights, buffer arena, CUDA context/driver)
+    // and the inference reserve (SSM state pools, CUDA headroom).  A safety
+    // clamp ensures we never exceed what the device can physically provide
+    // right now (handles external memory pressure on shared-memory /
+    // unified-memory systems like GB10).
+    let total_mem = gpu.total_memory()?;
     let actual_free = gpu.free_memory()?;
-    let allocatable = actual_free.saturating_sub(inference_reserve);
-    let kv_budget = (allocatable as f64 * gpu_memory_utilization) as usize;
+    let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+    let mut used_so_far = total_mem.saturating_sub(actual_free);
+    // GB10 is shared (ComfyUI/voxel/etc.). Raw `used_so_far` counts those
+    // co-tenants against our --gpu-memory-utilization budget, so a low util
+    // needlessly starves the KV pool (vs vLLM, whose util is self-relative).
+    //
+    // We want the KV pool sized against Atlas's OWN footprint (weights +
+    // buffers), excluding co-tenants. Two ways to find that footprint:
+    //
+    //   1. AUTO (default, preferred): free-at-context-init minus free-now =
+    //      exactly what THIS process allocated since startup. Co-tenants that
+    //      were already resident at init are in the baseline, so they cancel
+    //      out — and it self-corrects as co-tenants come and go (no stale
+    //      constant). Requires `set_baseline_free_bytes` to have run (it does
+    //      under the real server; absent under the mock backend → we skip it).
+    //
+    //   2. MANUAL override: ATLAS_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
+    //      wins when explicitly set (>0), for operators who want to RESERVE
+    //      headroom for co-tenants that will arrive LATER (the auto measure
+    //      only sees current state).
+    //
+    // The `.min(actual_free - reserve)` clamp below still guarantees a physical
+    // fit regardless of which path set `used_so_far`.
+    let manual_reserve_gb = std::env::var("ATLAS_KV_EXTERNAL_RESERVE_GB")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|&gb| gb > 0.0);
+    if let Some(gb) = manual_reserve_gb {
+        let ext = (gb * 1024.0 * 1024.0 * 1024.0) as usize;
+        let discounted = used_so_far.saturating_sub(ext);
+        tracing::info!(
+            "ATLAS_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
+             external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
+             Atlas-own {:.1} GB",
+            gib(used_so_far),
+            gib(discounted),
+        );
+        used_so_far = discounted;
+    } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
+        // AUTO: bytes this process consumed since context init.
+        let atlas_own = baseline.saturating_sub(actual_free);
+        // Sanity-gate: baseline must be ≥ free-now, atlas_own positive and no
+        // larger than total used (co-tenants can't be negative). If a co-tenant
+        // *freed* memory during our load, baseline > free-now still holds and
+        // atlas_own just slightly overcounts (conservative — fine). If the
+        // numbers are implausible, fall back to raw used_so_far.
+        if atlas_own > 0 && atlas_own <= used_so_far {
+            tracing::info!(
+                "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
+                 {:.1} GB = Atlas-own {:.1} GB; co-tenants {:.1} GB excluded \
+                 (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
+                gib(baseline),
+                gib(actual_free),
+                gib(atlas_own),
+                gib(used_so_far - atlas_own),
+            );
+            used_so_far = atlas_own;
+        } else {
+            tracing::warn!(
+                "KV budget auto-measure implausible (baseline {:.1} GB, free-now \
+                 {:.1} GB, used {:.1} GB) — using raw used_so_far",
+                gib(baseline),
+                gib(actual_free),
+                gib(used_so_far),
+            );
+        }
+    }
+    let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
+    let kv_budget = total_budget
+        .saturating_sub(used_so_far)
+        .saturating_sub(inference_reserve)
+        .min(actual_free.saturating_sub(inference_reserve));
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink
@@ -294,13 +443,33 @@ pub fn build_model(
             n
         }
         None => {
+            if kv_budget == 0 {
+                anyhow::bail!(
+                    "No memory left for KV cache: total GPU = {:.1} GB, \
+                     --gpu-memory-utilization {:.0}% → budget {:.1} GB, \
+                     but {:.1} GB already consumed + {:.1} GB inference reserve \
+                     = {:.1} GB committed.  Raise --gpu-memory-utilization or \
+                     use a smaller model.",
+                    total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+                    gpu_memory_utilization * 100.0,
+                    total_budget as f64 / (1024.0 * 1024.0 * 1024.0),
+                    used_so_far as f64 / (1024.0 * 1024.0 * 1024.0),
+                    inference_reserve as f64 / (1024.0 * 1024.0 * 1024.0),
+                    (used_so_far + inference_reserve) as f64 / (1024.0 * 1024.0 * 1024.0),
+                );
+            }
             let n = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
             let max_kv_tokens = n * kv_block_size;
             tracing::info!(
-                "KV cache (post-construction): {:.1} GB free, {:.1} GB allocatable, \
-                 {} blocks × {} tok/block = {} max tokens",
-                actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
-                allocatable as f64 / (1024.0 * 1024.0 * 1024.0),
+                "KV cache: {:.1} GB total × {:.0}% util = {:.1} GB budget; \
+                 {:.1} GB pre-KV + {:.1} GB reserve → {:.1} GB for KV \
+                 → {} blocks × {} tok/block = {} max KV tokens",
+                total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+                gpu_memory_utilization * 100.0,
+                total_budget as f64 / (1024.0 * 1024.0 * 1024.0),
+                used_so_far as f64 / (1024.0 * 1024.0 * 1024.0),
+                inference_reserve as f64 / (1024.0 * 1024.0 * 1024.0),
+                kv_budget as f64 / (1024.0 * 1024.0 * 1024.0),
                 n,
                 kv_block_size,
                 max_kv_tokens,
@@ -322,20 +491,47 @@ pub fn build_model(
     if max_concurrent < max_batch_size {
         // Suggest a max_seq_len that lets the requested batch size fit.
         let suggested_max_seq_len = (num_kv_blocks / max_batch_size.max(1)) * kv_block_size;
-        anyhow::bail!(
-            "KV cache can hold at most {} concurrent sequence(s) at --max-seq-len={}, \
-             but --max-batch-size={} was requested. \
-             KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
-             Try --max-seq-len {} (keeps max_batch_size={}) or reduce --max-batch-size.",
-            max_concurrent,
-            max_seq_len,
-            max_batch_size,
-            num_kv_blocks,
-            kv_block_size,
-            blocks_per_seq,
-            suggested_max_seq_len.max(kv_block_size),
-            max_batch_size,
+        // The check is WORST-CASE: it assumes every concurrent sequence reaches
+        // --max-seq-len. With paged KV (blocks allocated on demand) that almost
+        // never holds for real agent traffic (mixed/shorter sequences), so a high
+        // --max-seq-len (e.g. 64K for long agent contexts) needlessly caps
+        // --max-batch-size. ATLAS_KV_OVERCOMMIT=1 downgrades the hard error to a
+        // warning: the scheduler admits up to max_batch_size and the pool fills on
+        // demand (a genuinely over-long burst gets back-pressured by the block
+        // allocator, not a boot-time refusal).
+        let overcommit = matches!(
+            std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
+            Ok("1") | Ok("true")
         );
+        if overcommit {
+            tracing::warn!(
+                "KV OVERCOMMIT: pool fits {} seq(s) at full --max-seq-len={} but \
+                 --max-batch-size={} requested ({} block(s)/seq, {} block(s) total). \
+                 Paged KV allocates on demand; long-context bursts are back-pressured \
+                 at the block allocator, not refused at boot.",
+                max_concurrent,
+                max_seq_len,
+                max_batch_size,
+                blocks_per_seq,
+                num_kv_blocks,
+            );
+        } else {
+            anyhow::bail!(
+                "KV cache can hold at most {} concurrent sequence(s) at --max-seq-len={}, \
+                 but --max-batch-size={} was requested. \
+                 KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
+                 Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
+                 or set ATLAS_KV_OVERCOMMIT=1 to allow on-demand paged allocation.",
+                max_concurrent,
+                max_seq_len,
+                max_batch_size,
+                num_kv_blocks,
+                kv_block_size,
+                blocks_per_seq,
+                suggested_max_seq_len.max(kv_block_size),
+                max_batch_size,
+            );
+        }
     }
     let kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
 
@@ -345,6 +541,9 @@ pub fn build_model(
     // so this clones the device pointer cheaply.
     let target_embed_for_dflash = embed.weight;
     let target_lm_head_for_dflash = lm_head.weight;
+    // NVFP4 lm_head (Copy) shared with the DFlash drafter so its final logits
+    // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
+    let target_lm_head_nvfp4_for_dflash = lm_head_nvfp4;
     let target_hidden_for_dflash = config.hidden_size;
 
     let mut model = TransformerModel::new(
@@ -374,6 +573,33 @@ pub fn build_model(
         ssm_checkpoint_interval,
     )?;
 
+    // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──
+    //
+    // Built here (not inside `new()`, which only knows the Qwen-shaped
+    // `MtpWeights`) because it needs the model's owned GPU backend, the
+    // resolved draft NVFP4 head, and the shared embedding. Installed via the
+    // existing proposer setter. DFlash (below) is CLI-exclusive with
+    // `--speculative`, so the two never both install.
+    if let Some(v4_module) = v4_mtp_module {
+        match crate::layers::DeepseekV4MtpHead::new(
+            v4_module,
+            v4_mtp_embed,
+            v4_mtp_lm_head,
+            model.config_ref(),
+            model.gpu_backend(),
+            mtp_vocab_size,
+            max_seq_len,
+        ) {
+            Ok(head) => {
+                model.set_dflash_proposer(std::sync::Arc::new(head));
+                tracing::info!("DeepSeek-V4 MTP speculative decoding: ENABLED (single-module)");
+            }
+            Err(e) => tracing::warn!(
+                "Failed to build DeepSeek-V4 MTP proposer: {e:#}. Speculative decoding disabled."
+            ),
+        }
+    }
+
     // ── Step 7: DFlash drafter (optional, post-construction) ──
     //
     // Loaded last because it depends on the target's `embed_tokens` and
@@ -391,6 +617,7 @@ pub fn build_model(
                 weights,
                 target_embed_for_dflash,
                 target_lm_head_for_dflash,
+                target_lm_head_nvfp4_for_dflash,
                 target_hidden_for_dflash,
                 args.gamma,
                 args.window_size,
@@ -407,5 +634,16 @@ pub fn build_model(
         }
     }
 
+    // ── Step 8: LoRA adapter install (optional, post-construction) ──
+    // The pool/tables were loaded up top (pre-KV-sizing); this walk copies
+    // the per-layer pairs into the layer structs. M0: layers only STORE the
+    // adapter — base output is unchanged until the M1 compute insertions.
+    model.set_lora_weights(lora_weights)?;
+
+    // Every layer has taken the pointers it needs; hand the ledger to the model
+    // so `teardown` can free the weights. Dropping it here — which is what used
+    // to happen — orphaned the memory: live, referenced by the layers, with
+    // nothing owning the ability to release it.
+    model.adopt_weight_store(store);
     Ok(Box::new(model))
 }

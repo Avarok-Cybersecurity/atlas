@@ -18,9 +18,7 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::layer::{
-    ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState, TransformerLayer,
-};
+use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, SsmLayerState};
 use crate::layers::FfnComponent;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8Weight, QuantizedWeight, SsmWeights};
@@ -56,6 +54,9 @@ pub struct Qwen3SsmLayer {
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
     dense_gemv_k: KernelHandle,
+    /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
+    /// both verify tokens instead of two M=1 `dense_gemv` reads.
+    dense_gemv_batch2_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
     w8a16_gemv_k: KernelHandle,
     w4a16_gemv_qkvz_k: KernelHandle,
@@ -65,16 +66,23 @@ pub struct Qwen3SsmLayer {
     conv1d_l2norm_f32_k: KernelHandle,
     gdn_k: KernelHandle,
     gdn_f32_k: KernelHandle,
+    gdn_f32_norm_k: KernelHandle,
+    gdn_f32_conv_norm_k: KernelHandle,
+    gdn_f32_strided_k: KernelHandle,
+    gdn_f32_strided_norm_k: KernelHandle,
     ba_gates_k: KernelHandle,
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,
     residual_add_rms_norm_k: KernelHandle,
+    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    residual_add_rms_norm_gatef32_k: KernelHandle,
     gated_rms_norm_prefill_k: KernelHandle,
     // Kernels — batched verification path (multi-token GEMM)
     w4a16_gemm_k: KernelHandle,
     w4a16_gemm_t_k: KernelHandle, // Transposed B layout [K/2, N] — K_STEP_T=32
     w4a16_gemm_t_k64_k: KernelHandle, // K64 variant: K_STEP_T=64, halves outer loop
     w4a16_gemm_t_m128_k: KernelHandle, // M128 variant: 2 M-chunks per CTA, halves B re-reads
+    w4a16_gemm_t_m128_v2_k: KernelHandle, // M128 8-warp pipelined (fast at small M; the FFN's kernel)
     w4a16_gemv_batch2_k: KernelHandle,
     dense_gemm_k: KernelHandle,
     dense_gemm_pipelined_k: KernelHandle,
@@ -83,11 +91,22 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_split4_k: KernelHandle,
     gdn_prefill_persistent_k: KernelHandle,
     gdn_prefill_persistent_wy4_k: KernelHandle,
+    /// Register-resident token-sequential warm-replay recurrence (H in regs, >=2
+    /// CTA/SM, no barriers). Token-equal to WY4 (cosine 1.0), ~2.9x faster.
+    /// DEFAULT-ON since 2026-07-25 (serve-validated: full MLPerf-edge e2e, wall
+    /// −7.25%, BFCL identical); kill switch `ATLAS_NO_GDN_REGRESIDENT=1`.
+    gdn_prefill_regresident_k: KernelHandle,
     /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
     /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
     gdn_prefill_fla_recompute_wu_k: KernelHandle,
     gdn_prefill_fla_chunk_delta_h_k: KernelHandle,
+    /// Tensor-core / DV-block-split variant of the FLA chunk_delta_h spine
+    /// (`gated_delta_rule_chunk_delta_h_tc_vblock`). Loaded by default but not
+    /// yet wired into the prefill dispatch — the cos-gate validates it in
+    /// isolation first. `allow(dead_code)` until the launch site reads it.
+    #[allow(dead_code)]
+    gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
     gdn_prefill_fla_chunk_fwd_o_k: KernelHandle,
     /// WY32 chunked prefill: processes 32 tokens per WY iteration with H in
     /// shared memory. ~30x faster than per-token for 14k+ sequences.
@@ -110,15 +129,40 @@ pub struct Qwen3SsmLayer {
     // Kernels — fused chunk3 path (3-token verification)
     gdn_chunk3_k: KernelHandle,
     w4a16_gemv_batch3_k: KernelHandle,
+    // NVFP4 batched decode GEMV (multi-seq concurrency + chain verify):
+    // batch4 (M<=4) / batch8 (M<=8, K=5..8 chain verify) / batch16 (M<=16) —
+    // siblings of w8a16_gemv_batch4/16 for the FP4 QKVZ + out_proj, so FP4
+    // decode amortizes the weight read at C=4..16 like FP8.
+    w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
     // Kernels — WY-chunkwise path (2-pass verification)
     gdn_wy2_k: KernelHandle,
     gdn_wy3_k: KernelHandle,
     gdn_wy4_k: KernelHandle,
+    /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
+    /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
+    /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
+    /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
+    gdn_verify_fused_conv_k2_k: KernelHandle,
+    gdn_verify_fused_norm_k2_k: KernelHandle,
+    /// Fused generic-K verify conv1d+L2norm (one launch for all K positions,
+    /// rollback snapshots written inline). Used by the K=17 DFlash verify arm;
+    /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
+    /// NULL handle on targets lacking the .cu → per-token loop unchanged.
+    gdn_verify_fused_conv_kn_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
     /// per-token path.
     gdn_wy17_k: KernelHandle,
+    /// WY-Chunkwise K∈{5..8} GDN verify (chain-verify widths between the
+    /// dedicated wy4 and the DFlash wy17). One K-templated source
+    /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy8 with
+    /// the same pool-layout intermediates contract as wy17. Index = K-5;
+    /// NULL handles on targets lacking the module → sequential fallback.
+    /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
+    gdn_wyn_k: [KernelHandle; 4],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
@@ -135,6 +179,15 @@ pub struct Qwen3SsmLayer {
     // KernelHandle(0) when not linked into the image. Gated ON only when
     // ATLAS_W8A16_PIPELINED=1 (default OFF — production dispatch unchanged).
     w8a16_gemm_pipelined_k: KernelHandle,
+    // M<=4 weight-streaming block-scaled FP8 GEMV. Replaces the M-padded
+    // w8a16_gemm_pipelined for n<=4 batched decode (qkvz + out_proj): pipelined
+    // pads M=4 to a 128-row MMA tile (32× compute over-provision, issue-bound);
+    // this streams the weight once with 4 FP32 accumulators. Bit-identical per
+    // row to w8a16_gemv. KernelHandle(0) when not linked.
+    w8a16_gemv_batch4_k: KernelHandle,
+    // M<=16 sibling of batch4 for high-concurrency decode (n=5..16): same
+    // weight-streaming GEMV, avoids the M-padded MMA at C=8/16.
+    w8a16_gemv_batch16_k: KernelHandle,
     w8a16_gemm_t_k: KernelHandle,
     // W8A8 + FP32 epilogue (vLLM-equivalent) prefill kernels.
     // `per_token_group_quant_fp8` produces FP8 activations + per-token-per-128
@@ -145,6 +198,19 @@ pub struct Qwen3SsmLayer {
     fp8_gemm_t_blockscaled_k: KernelHandle,
 }
 
+impl Qwen3SsmLayer {
+    /// W4A16 batchm-GEMV handle for `m` verify/decode rows: batch4 (m<=4) or
+    /// batch8 (m=5..8, chain verify). 0-handle when absent or out of range —
+    /// callers must check `.0 != 0` and fall back to the tile GEMMs.
+    fn w4a16_batchm_kernel(&self, m: usize) -> KernelHandle {
+        match m {
+            1..=4 => self.w4a16_gemv_batch4_k,
+            5..=8 => self.w4a16_gemv_batch8_k,
+            _ => KernelHandle(0),
+        }
+    }
+}
+
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
 mod init;
@@ -152,7 +218,9 @@ mod ssm_forward;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
+mod trait_decode_batched_conv_gdn_wyn;
 mod trait_decode_multi_seq;
+mod trait_layer;
 mod trait_prefill;
 mod trait_prefill_gdn;
 mod trait_prefill_helper;
@@ -162,241 +230,6 @@ mod trait_prefill_proj;
 mod trait_prefill_recur;
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
-impl TransformerLayer for Qwen3SsmLayer {
-    fn decode(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_inner(
-            hidden,
-            residual,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            ctx,
-            stream,
-        )
-    }
-
-    fn decode_batched(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_batched_inner(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            ctx,
-            stream,
-        )
-    }
-
-    fn decode_multi_seq<'a, 'b: 'a>(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_seqs: usize,
-        states: &'a mut [&'b mut (dyn LayerState + 'static)],
-        kv_cache: &mut PagedKvCache,
-        seq_lens: &[usize],
-        block_tables: &[Vec<u32>],
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.decode_multi_seq_inner(
-            hidden,
-            residual,
-            num_seqs,
-            states,
-            kv_cache,
-            seq_lens,
-            block_tables,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len_start: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        kv_write_start: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_inner(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len_start,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            kv_write_start,
-            ctx,
-            stream,
-        )
-    }
-
-    fn is_ssm_layer(&self) -> bool {
-        self.is_ssm_layer_inner()
-    }
-
-    fn prefill_phase1(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len_start: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
-        kv_write_start: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        token_offset: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase1_inner(
-            hidden,
-            residual,
-            num_tokens,
-            state,
-            kv_cache,
-            seq_len_start,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
-            kv_write_start,
-            gdn_bufs,
-            token_offset,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill_gdn_full(
-        &self,
-        state: &mut dyn LayerState,
-        gdn_bufs: &GdnPrefillBuffers,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_gdn_full_inner(state, gdn_bufs, ctx, stream)
-    }
-
-    fn prefill_gdn_full_batched(
-        &self,
-        h_state_ptrs: DevicePtr,
-        gdn_bufs: &GdnPrefillBuffers,
-        batch_size: u32,
-        chunk_len: u32,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_gdn_full_batched_inner(
-            h_state_ptrs,
-            gdn_bufs,
-            batch_size,
-            chunk_len,
-            ctx,
-            stream,
-        )
-    }
-
-    fn prefill_phase3(
-        &self,
-        hidden: DevicePtr,
-        residual: DevicePtr,
-        num_tokens: usize,
-        gdn_bufs: &GdnPrefillBuffers,
-        token_offset: usize,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        self.prefill_phase3_inner(
-            hidden,
-            residual,
-            num_tokens,
-            gdn_bufs,
-            token_offset,
-            ctx,
-            stream,
-        )
-    }
-
-    fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
-        self.alloc_state_inner(gpu)
-    }
-}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use atlas_core::config::ModelConfig;
-    use spark_runtime::gpu::mock::MockGpuBackend;
-
-    #[test]
-    fn test_ssm_state_allocation_sizes() {
-        let config = ModelConfig::qwen3_next_80b_nvfp4();
-        let nv = config.linear_num_value_heads; // 32
-        let vd = config.linear_value_head_dim; // 128
-        let nk = config.linear_num_key_heads; // 16
-        let kd = config.linear_key_head_dim; // 128
-        let d_conv = config.linear_conv_kernel_dim; // 4
-
-        let h_bytes = nv * vd * kd * 4;
-        assert_eq!(h_bytes, 32 * 128 * 128 * 4); // 2 MB
-
-        // conv_dim = 2*key_dim + value_dim = 2*2048 + 4096 = 8192
-        let conv_dim = nk * kd * 2 + nv * vd;
-        let conv_bytes = conv_dim * d_conv * 4;
-        assert_eq!(conv_bytes, 8192 * 4 * 4); // 128 KB
-
-        // Verify allocations
-        let gpu = MockGpuBackend::new();
-        let h_state = gpu.alloc(h_bytes).unwrap();
-        let conv_state = gpu.alloc(conv_bytes).unwrap();
-        assert!(!h_state.is_null());
-        assert!(!conv_state.is_null());
-    }
-}
+mod tests;

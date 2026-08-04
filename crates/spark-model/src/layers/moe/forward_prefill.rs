@@ -21,10 +21,32 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Native-HIP (gfx1151) has NO ported grouped-GEMM MoE path:
+        // moe_fp8_grouped_gemm is a compile stub (kernels/strix-hip/.../
+        // moe_fp8_grouped_gemm.cu writes nothing) and the grouped prefill
+        // pipeline launches additional kernels that are null on the HIP module
+        // set → cuLaunchKernel hipErrorInvalidHandle at layer 0 for any prefill
+        // chunk >64 tokens. forward_batched is the correct, complete per-token
+        // path (its kernels are all bit-exact-verified on HIP) — route there for
+        // ALL token counts on atlas_hip. SCALE keeps grouped (its symlinked
+        // grouped GEMM is real via PTX-recompile); NVIDIA byte-unchanged.
+        //
+        // EXCEPTION: the FP8 routed grouped GEMM (moe_fp8_grouped_gemm) has now
+        // been ported to HIP WMMA (kernels/strix-hip/common/moe_fp8_grouped_gemm.cu
+        // — weight-stationary per-expert, register-prefetch double-buffered, two-
+        // level FP32 block-scale accumulation matching the GB10/oracle numerics),
+        // so long FP8 prefills (>64 tokens) take the grouped path on atlas_hip too
+        // — amortizing the ~50 GB/layer per-token weight re-streaming of
+        // forward_batched. The BF16-dequant grouped GEMM is NOT ported (its
+        // strix-hip kernel is still absent), so its branch stays HIP-batched.
+        let hip_force_batched = cfg!(atlas_hip);
+        // FP8 grouped path is HIP-ready (kernel ported); do not force-batch it.
+        let hip_force_batched_fp8 = false;
+
         // BF16 experts (FP8-dequant-on-load path): same dispatch shape as
         // FP8 — grouped GEMM for long prefills, fused per-token for short.
         if self.bf16_gate_weight_ptrs.is_some() {
-            if self.moe_bf16_grouped_gemm_k.0 != 0 && num_tokens > 64 {
+            if self.moe_bf16_grouped_gemm_k.0 != 0 && num_tokens > 64 && !hip_force_batched {
                 return self.forward_prefill_bf16(input, num_tokens, ctx, stream);
             }
             return self.forward_batched(input, num_tokens, ctx, stream);
@@ -34,7 +56,7 @@ impl MoeLayer {
         // fall back to per-token fused GEMV for short prefills where
         // the GEMM launch overhead exceeds the bandwidth savings.
         if self.fp8_gate_weight_ptrs.is_some() {
-            if self.moe_fp8_grouped_gemm_k.0 != 0 && num_tokens > 64 {
+            if self.moe_fp8_grouped_gemm_k.0 != 0 && num_tokens > 64 && !hip_force_batched_fp8 {
                 return self.forward_prefill_fp8(input, num_tokens, ctx, stream);
             }
             return self.forward_batched(input, num_tokens, ctx, stream);
@@ -182,12 +204,20 @@ impl MoeLayer {
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
-        if let Some(bias) = self.correction_bias_dev {
-            ops::moe_topk_sigmoid_batched(
+        if let Some(tid2eid) = self.tid2eid_dev {
+            // DeepSeek-V4 hash routing (hash_moe layer): static
+            // `tid2eid[token_id]` selection, sqrtsoftplus-weighted.
+            let token_ids = ctx.token_ids.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (prefill grouped)"
+                )
+            })?;
+            ops::moe_hash_route_batched(
                 ctx.gpu,
-                self.moe_topk_sigmoid_batched_k,
+                self.moe_hash_route_batched_k,
                 gate_logits,
-                bias,
+                tid2eid,
+                token_ids,
                 indices_dev,
                 weights_dev,
                 num_experts,
@@ -197,6 +227,41 @@ impl MoeLayer {
                 n,
                 stream,
             )?;
+        } else if let Some(bias) = self.correction_bias_dev {
+            // DeepSeek-V4 scores experts with sqrtsoftplus (NOT sigmoid); the
+            // bias selects experts, weights gather pre-bias scores. Other
+            // sigmoid+bias models (DeepSeek-V3 / MiniMax-M2) keep sigmoid.
+            if ctx.config.scoring_func == "sqrtsoftplus" {
+                ops::moe_topk_sqrtsoftplus_batched(
+                    ctx.gpu,
+                    self.moe_topk_sqrtsoftplus_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    n,
+                    stream,
+                )?;
+            } else {
+                ops::moe_topk_sigmoid_batched(
+                    ctx.gpu,
+                    self.moe_topk_sigmoid_batched_k,
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    ctx.config.norm_topk_prob,
+                    ctx.config.routed_scaling_factor as f32,
+                    n,
+                    stream,
+                )?;
+            }
         } else {
             ops::moe_topk_softmax_batched(
                 ctx.gpu,
@@ -299,7 +364,7 @@ impl MoeLayer {
         // 8. Blend shared expert: output += sigmoid(dot(input, gate)) * shared
         // Skip when has_shared == false (no shared expert in this model config).
         // EP fix: defer shared expert blend until AFTER all-reduce to avoid doubling.
-        let is_ep_prefill = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep_prefill = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         if has_shared && !is_ep_prefill {
             let shared_down_out = ctx.buffers.attn_output();
             if use_overlap {
@@ -332,7 +397,7 @@ impl MoeLayer {
 
         // EP all-reduce
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             let _t0 = if ctx.profile {
                 ctx.gpu.synchronize(stream)?;

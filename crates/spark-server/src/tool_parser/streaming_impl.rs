@@ -43,7 +43,7 @@ impl StreamingToolDetector {
 
     /// Clear the per-tool-call incremental-streaming bookkeeping (called after
     /// each call closes and on `reset`). Does NOT touch `tools`/`buffer_args`.
-    fn reset_call_state(&mut self) {
+    pub(super) fn reset_call_state(&mut self) {
         self.current_tc_name = None;
         self.current_tc_id = None;
         self.current_tc_emitted = 0;
@@ -283,28 +283,13 @@ impl StreamingToolDetector {
                     outputs.push(DetectorOutput::Content(before));
                 }
                 continue;
-            } else if let Some(func_pos) = self.buffer.find("<function") {
-                // Bare <function> or <function= without <tool_call> wrapper.
-                // Emit content before it, then try to parse the function block.
-                if func_pos > 0 {
-                    let before = self.buffer[..func_pos].to_string();
-                    self.buffer = self.buffer[func_pos..].to_string();
-                    outputs.push(DetectorOutput::Content(before));
-                }
-                // Check if we have a complete bare function block
-                if let Some(end) = bare_function_end(&self.buffer) {
-                    let block = self.buffer[..end].to_string();
-                    self.buffer = self.buffer[end..].to_string();
-                    let (_, calls) = parse_bare_function_calls(&block);
-                    for tc in calls {
-                        let idx = self.call_counter as usize;
-                        self.call_counter += 1;
-                        self.emitted_tool_calls = true;
-                        outputs.push(DetectorOutput::ToolCall(tc, idx));
-                    }
+            } else if self.buffer.contains("<function") {
+                // Bare `<function>` / `<function=` without a `<tool_call>` wrapper.
+                // Body lives in `streaming_emit.rs` (≤500 LoC cap).
+                if self.process_bare_function(&mut outputs) {
                     continue;
                 }
-                break; // Keep buffering until function block is complete
+                break; // Wait for more tokens (closing `</function>` not yet seen)
             } else {
                 let safe = self.safe_emit_len();
                 if safe > 0 {
@@ -344,7 +329,17 @@ impl StreamingToolDetector {
         // one or dispatches the wrong one with empty args. Mirror the
         // in-stream close path: emit ToolCallDelta + ToolCallEnd against
         // the already-streamed header, not a full ToolCall.
-        if was_inside_tag && let Some(tc) = parse_one_call(text.trim(), self.call_counter) {
+        // #192 containment (parity with `parse_tool_calls`): this buffer has NO
+        // `</tool_call>` close, so an unterminated trailing `<parameter=…>`
+        // value is unbounded — cut at the last complete `</parameter>` (else
+        // drop the param section) before salvaging, so drifted tail garbage
+        // is never swallowed into an argument string.
+        if was_inside_tag
+            && let Some(tc) = parse_one_call(
+                contain_unterminated_call_tail(text.trim()),
+                self.call_counter,
+            )
+        {
             let idx = self.call_counter as usize;
             if self.current_tc_name.is_some() {
                 // Live path: if we already streamed fragments, emit only the
@@ -436,6 +431,18 @@ impl StreamingToolDetector {
 
     pub fn has_tool_calls(&self) -> bool {
         self.call_counter > 0
+    }
+
+    /// True while the detector is between a `<tool_call>` opener and its
+    /// matching close — i.e. accumulating a tool-call body. Callers use this
+    /// to suppress content-level scrubbing (e.g. the bare role-literal strip
+    /// in `handle_token`) that would otherwise eat a legitimate name/argument
+    /// fragment. A standalone `tool` BPE token inside the body is the leading
+    /// fragment of a `tool_*`-prefixed NAME (`tool_search`, `tool_call`,
+    /// `tool_describe`) being reassembled across token boundaries — dropping
+    /// it truncates the streamed name by exactly `len("tool")` == 4 chars.
+    pub fn inside_tool_call(&self) -> bool {
+        self.inside_tag
     }
 
     /// Returns safe byte length to emit without splitting a partial tag.

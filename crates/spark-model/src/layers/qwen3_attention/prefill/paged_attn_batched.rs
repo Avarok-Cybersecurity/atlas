@@ -79,7 +79,10 @@ impl Qwen3AttentionLayer {
                 self.attn_layer_idx
             );
         }
-        if seq_len_start == 0 {
+        let allow_first_chunk = std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if seq_len_start == 0 && !allow_first_chunk {
             anyhow::bail!(
                 "prefill_attention_paged_attn_batched: seq_len_start=0 not supported \
                  (batched kernels are paged-only; non-paged BR=32 batched kernel is \
@@ -149,7 +152,7 @@ impl Qwen3AttentionLayer {
                     inv_sqrt_d,
                     fp8_k_scale,
                     fp8_v_scale,
-                    kv_cache.cache_stride() as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
                     stream,
                 )?;
             }
@@ -180,7 +183,7 @@ impl Qwen3AttentionLayer {
                     inv_sqrt_d,
                     fp8_k_scale,
                     fp8_v_scale,
-                    kv_cache.cache_stride() as u64,
+                    kv_cache.block_stride_bytes_for_layer(self.attn_layer_idx) as u64,
                     stream,
                 )?;
             }

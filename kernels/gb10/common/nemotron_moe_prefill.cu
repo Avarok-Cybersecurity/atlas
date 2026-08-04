@@ -68,7 +68,6 @@ extern "C" __global__ void nemotron_moe_topk_sigmoid_batched(
 
     __shared__ float s_sigmoid[MAX_EXPERTS];
     __shared__ float s_selection[MAX_EXPERTS];
-    __shared__ float s_top_vals[MAX_TOP_K];
     __shared__ unsigned int s_top_idxs[MAX_TOP_K];
     __shared__ float s_warp_val[8];
     __shared__ unsigned int s_warp_idx[8];
@@ -125,7 +124,6 @@ extern "C" __global__ void nemotron_moe_topk_sigmoid_batched(
                     best_idx = s_warp_idx[w];
                 }
             }
-            s_top_vals[k] = best_val;
             s_top_idxs[k] = best_idx;
             s_selection[best_idx] = -1e30f; // mask selected
         }

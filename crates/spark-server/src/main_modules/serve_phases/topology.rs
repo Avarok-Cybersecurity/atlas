@@ -2,9 +2,10 @@
 
 //! TP/EP topology resolution + NCCL communicator init.
 
-// `Context` only used by the cuda-feature `init_nccl_comm` to wrap
-// NCCL bootstrap errors; metal builds don't reach that path.
-#[cfg(feature = "cuda")]
+// `Context` only used by the nccl-feature `init_nccl_comm` to wrap
+// NCCL bootstrap errors; cuda-without-nccl and metal builds don't
+// reach that path.
+#[cfg(feature = "nccl")]
 use anyhow::Context;
 use anyhow::Result;
 
@@ -95,10 +96,36 @@ pub(crate) fn resolve_topology(
         }
         config.num_attention_heads /= tp_size;
         config.num_key_value_heads /= tp_size;
+        // GDN HeadParallel: linear-attention (SSM) key/value head counts are
+        // sharded exactly like attention heads — each rank owns a contiguous
+        // head range; the recurrence is head-parallel with one all-reduce after
+        // out_proj. Only relevant for SSM-hybrid models (linear_*_heads > 0);
+        // pure-attention configs leave these at 0 and skip the divide.
+        if config.linear_num_key_heads > 0 || config.linear_num_value_heads > 0 {
+            if !config.linear_num_key_heads.is_multiple_of(tp_size) {
+                anyhow::bail!(
+                    "TP requires linear_num_key_heads ({}) divisible by tp_size ({})",
+                    config.linear_num_key_heads,
+                    tp_size,
+                );
+            }
+            if !config.linear_num_value_heads.is_multiple_of(tp_size) {
+                anyhow::bail!(
+                    "TP requires linear_num_value_heads ({}) divisible by tp_size ({})",
+                    config.linear_num_value_heads,
+                    tp_size,
+                );
+            }
+            config.linear_num_key_heads /= tp_size;
+            config.linear_num_value_heads /= tp_size;
+        }
         tracing::info!(
-            "TP-local head counts: num_attention_heads={}, num_key_value_heads={}",
+            "TP-local head counts: num_attention_heads={}, num_key_value_heads={}, \
+             linear_num_key_heads={}, linear_num_value_heads={}",
             config.num_attention_heads,
             config.num_key_value_heads,
+            config.linear_num_key_heads,
+            config.linear_num_value_heads,
         );
     }
     if world_size > 1 {
@@ -124,22 +151,42 @@ pub(crate) fn resolve_topology(
     })
 }
 
-#[cfg(feature = "cuda")]
+/// `max_batch_tokens` and `hidden_size` size the 2-rank all-reduce receive
+/// buffer. Together they bound the largest payload any caller can hand a
+/// collective: prefill MoE, prefill attention and prefill SSM all reduce a
+/// `[num_tokens, hidden_size]` BF16 tensor, and `num_tokens` is capped by
+/// `max_batch_tokens` (the same bound the `moe_output` arena buffer is sized
+/// on). Deriving the capacity here is what keeps a wider model or a larger
+/// `--max-prefill-tokens` from overrunning a fixed allocation.
+#[cfg(feature = "nccl")]
 pub(crate) fn init_nccl_comm(
     args: &cli::ServeArgs,
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     world_size: usize,
+    max_batch_tokens: usize,
+    hidden_size: usize,
 ) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
     use spark_comm::CommBackend;
     if world_size <= 1 {
         return Ok(None);
     }
+    let recv_capacity = spark_comm::nccl_backend::required_recv_bytes(
+        max_batch_tokens,
+        hidden_size,
+        spark_comm::nccl_backend::ALL_REDUCE_DTYPE_BYTES,
+    )
+    .context("Failed to size the NCCL receive buffer")?;
     tracing::info!(
-        "Initializing NCCL: rank {}/{}, master {}:{}",
+        "Initializing NCCL: rank {}/{}, master {}:{}, recv_buffer {} MiB \
+         (max_batch_tokens={} × hidden_size={} × {} B)",
         args.rank,
         world_size,
         args.master_addr,
-        args.master_port
+        args.master_port,
+        recv_capacity / (1024 * 1024),
+        max_batch_tokens,
+        hidden_size,
+        spark_comm::nccl_backend::ALL_REDUCE_DTYPE_BYTES,
     );
     let cuda_stream = gpu.default_stream();
     let backend = spark_comm::NcclBackend::new(
@@ -148,12 +195,36 @@ pub(crate) fn init_nccl_comm(
         &args.master_addr,
         args.master_port,
         cuda_stream,
+        recv_capacity,
     )
     .context("Failed to initialize NCCL")?;
     tracing::info!("NCCL initialized: rank {}", backend.rank());
     Ok(Some(
         std::sync::Arc::new(backend) as std::sync::Arc<dyn spark_comm::CommBackend>
     ))
+}
+
+/// CUDA-without-NCCL variant (SCALE/AMD gfx1151): the CUDA compute
+/// backend is active but no NCCL library is linked, so multi-GPU
+/// collectives are unavailable. `world_size > 1` is rejected explicitly
+/// so a misconfigured `--rank > 0` invocation fails fast instead of
+/// silently degrading to single-rank.
+#[cfg(all(feature = "cuda", not(feature = "nccl")))]
+pub(crate) fn init_nccl_comm(
+    _args: &cli::ServeArgs,
+    _gpu: &dyn spark_runtime::gpu::GpuBackend,
+    world_size: usize,
+    _max_batch_tokens: usize,
+    _hidden_size: usize,
+) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
+    if world_size > 1 {
+        anyhow::bail!(
+            "multi-rank NCCL is not available in this build (cuda feature \
+             without nccl — SCALE/AMD gfx1151 has no NCCL library); \
+             single-device only"
+        );
+    }
+    Ok(None)
 }
 
 /// Metal-feature variant: NCCL multi-GPU isn't reachable on a single
@@ -166,6 +237,8 @@ pub(crate) fn init_nccl_comm(
     _args: &cli::ServeArgs,
     _gpu: &dyn spark_runtime::gpu::GpuBackend,
     world_size: usize,
+    _max_batch_tokens: usize,
+    _hidden_size: usize,
 ) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
     if world_size > 1 {
         anyhow::bail!(

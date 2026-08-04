@@ -16,14 +16,16 @@
 //!     slower `w8a16_gemm`).
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 
-/// (module, func, loaded). Appended on every `kernel()` lookup.
-static AUDIT: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
+// The audit vector is a field of the single run mailbox,
+// `crate::run_metrics::RunMetrics`. It is per-model in the sharpest way —
+// it lists which of THIS model's registry modules resolved — so without
+// the run-start clear a swap would leave the dashboard's kernel table
+// showing both models' modules with no way to tell them apart.
 
 /// Record one kernel lookup. Cheap; called from `GpuBackend::kernel`.
 pub fn record(module: &str, func: &str, loaded: bool) {
-    if let Ok(mut v) = AUDIT.lock() {
+    if let Ok(mut v) = crate::run_metrics::metrics().kernel_audit.lock() {
         v.push((module.to_string(), func.to_string(), loaded));
     }
 }
@@ -38,13 +40,30 @@ fn ptx_hash(bytes: &[u8]) -> String {
     format!("{:012x}", h & 0xffff_ffff_ffff)
 }
 
+/// Structured resolution rows for observers (e.g. the TUI kernel table):
+/// deduped `(module, func, loaded)`, sorted. `loaded` is true if ANY lookup
+/// of that (module, func) resolved.
+pub fn audit_rows() -> Vec<(String, String, bool)> {
+    let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
+    if let Ok(v) = crate::run_metrics::metrics().kernel_audit.lock() {
+        for (m, f, ok) in v.iter() {
+            let e = resolved.entry((m.clone(), f.clone())).or_insert(false);
+            *e = *e || *ok;
+        }
+    }
+    resolved
+        .into_iter()
+        .map(|((m, f), ok)| (m, f, ok))
+        .collect()
+}
+
 /// Render the embedded kernel set (`embedded` = the binary's `ptx_modules()`,
 /// passed in since spark-runtime doesn't depend on atlas-kernels) plus the
 /// runtime resolution overlay. `set_hash` is `atlas_kernels::KERNEL_SET_HASH`.
-pub fn render_kernel_table(embedded: &[(&str, &str)], set_hash: &str) -> String {
+pub fn render_kernel_table(embedded: &[(&str, &[u8])], set_hash: &str) -> String {
     // Dedup resolution audit: (module, func) → loaded (true if ever true).
     let mut resolved: BTreeMap<(String, String), bool> = BTreeMap::new();
-    if let Ok(v) = AUDIT.lock() {
+    if let Ok(v) = crate::run_metrics::metrics().kernel_audit.lock() {
         for (m, f, ok) in v.iter() {
             let e = resolved.entry((m.clone(), f.clone())).or_insert(false);
             *e = *e || *ok;
@@ -69,10 +88,12 @@ pub fn render_kernel_table(embedded: &[(&str, &str)], set_hash: &str) -> String 
         "MODULE (operation)", "PTX-HASH", "RESOLUTION"
     ));
     out.push_str(&format!("│ {}\n", "─".repeat(74)));
-    let mut sorted: Vec<&(&str, &str)> = embedded.iter().collect();
+    let mut sorted: Vec<&(&str, &[u8])> = embedded.iter().collect();
     sorted.sort_by_key(|(m, _)| *m);
-    for (m, ptx) in sorted {
-        let h = ptx_hash(ptx.as_bytes());
+    for (m, blob) in sorted {
+        // Blob is the raw kernel bytes (PTX text or AMD/Metal binary);
+        // FNV-1a over the bytes directly — matches build.rs's set hash.
+        let h = ptx_hash(blob);
         let res = match mod_resolved.get(m) {
             Some((_req, true)) => "used",
             Some((_req, false)) => "** lookup FAILED **",

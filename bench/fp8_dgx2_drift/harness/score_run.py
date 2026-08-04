@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -232,6 +233,39 @@ def _free_port() -> int:
         s.close()
 
 
+def _warm_target_dir() -> str:
+    """SSOT for the shared, pre-warmed cargo target directory.
+
+    Mirrors warm_cargo_cache.sh's ATLAS_WARM_TARGET_DIR (same env var, same
+    explicit default). When the warm cache has been populated, exporting
+    CARGO_TARGET_DIR to this path makes each per-project `cargo build` reuse
+    the already-compiled dependency rlibs (libc/proc-macro2/hyper/tokio/axum/…)
+    instead of cold-compiling the whole tree — turning a ~150-300s cold build
+    under CPU contention (which blows the timeout on VALID code) into a few-
+    second incremental build of just the project's own crate.
+    """
+    return os.environ.get(
+        "ATLAS_WARM_TARGET_DIR",
+        os.path.join(os.path.expanduser("~"), ".cargo", "atlas-warm-target"),
+    )
+
+
+def _build_timeout_s() -> int:
+    """SSOT for the scorer's `cargo build` timeout.
+
+    Default raised to 600s so a cold build under heavy CPU contention (the
+    realistic worst case when the warm cache is cold or a generation pins an
+    off-version dep) completes rather than being mislabeled as build_ok=false.
+    With the warm target dir the typical build is a few seconds, so the high
+    ceiling only ever bites pathological cold cases. Override via
+    ATLAS_WS_BUILD_TIMEOUT for de-confounding experiments.
+    """
+    try:
+        return int(os.environ.get("ATLAS_WS_BUILD_TIMEOUT", "600"))
+    except ValueError:
+        return 600
+
+
 def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict[str, Any]:
     """Build + run the just-written Axum project and verify /ping → 'pong'.
 
@@ -239,7 +273,9 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
       1. Acquire a fresh ephemeral port (self-isolating — see `_free_port`).
          The passed `port` is advisory only; the OS-assigned port is
          authoritative and recorded in `port_used`.
-      2. Run `cargo build --release` in the target dir (must succeed).
+      2. Run `cargo build --release` in the target dir (must succeed). Builds
+         reuse the shared warm target dir (CARGO_TARGET_DIR) so dependency
+         compilation is incremental — see `_warm_target_dir`.
       3. Spawn `cargo run --release` as background process with
          ATLAS_HARNESS_PORT={port} env. The prompt instructed the model
          to read this env var; if the model misread the instruction the
@@ -275,17 +311,29 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
     port = _free_port()
     out["port_used"] = port
 
+    # Shared warm target dir → incremental dependency builds. Routing
+    # CARGO_TARGET_DIR at the warm dir means build AND run share the same
+    # already-compiled rlibs, so phase 1 (build) is fast and phase 2 (run)
+    # does not re-link from scratch.
+    warm_target = _warm_target_dir()
+    build_timeout = _build_timeout_s()
+    build_env = {
+        **os.environ,
+        "ATLAS_HARNESS_PORT": str(port),
+        "CARGO_TARGET_DIR": warm_target,
+    }
+
     # Phase 1: build
     try:
         build_proc = subprocess.run(
             ["cargo", "build", "--release"],
             cwd=str(target),
             capture_output=True,
-            timeout=180,
-            env={**os.environ, "ATLAS_HARNESS_PORT": str(port)},
+            timeout=build_timeout,
+            env=build_env,
         )
     except subprocess.TimeoutExpired:
-        out["build_error"] = "cargo build timed out (>180s)"
+        out["build_error"] = f"cargo build timed out (>{build_timeout}s)"
         return out
     except Exception as e:
         out["build_error"] = f"cargo build launch error: {e}"
@@ -301,7 +349,12 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
     # bind panic (e.g. EADDRINUSE / "Address already in use") is recorded as a
     # distinct, diagnosable failure instead of being silently swallowed and
     # mislabeled as a generic "didn't respond" timeout.
-    env = {**os.environ, "ATLAS_HARNESS_PORT": str(port), "RUST_LOG": "warn"}
+    env = {
+        **os.environ,
+        "ATLAS_HARNESS_PORT": str(port),
+        "RUST_LOG": "warn",
+        "CARGO_TARGET_DIR": warm_target,
+    }
     server_err = tempfile.NamedTemporaryFile(
         mode="w+", prefix="atlas-ws-stderr-", suffix=".log", delete=False
     )
@@ -378,7 +431,25 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
 
 
 def atlas_log_metrics(log_text: str) -> dict[str, Any]:
-    """Extract atlas-side counters from the captured docker log window."""
+    """Extract atlas-side counters from the captured docker log window.
+
+    `runaway_length_capped_turns` + `max_turn_output_tokens` make the dominant
+    webserver_ok wall-time driver VISIBLE per run: a deep-context FP8
+    degeneration where the model leaks repeated tool-call XML as plain text and
+    runs the final turn to the max_tokens cap (~8200 tokens @ ~31 tok/s ≈ 260s).
+    Surfacing it here means the slow-run cost is attributable to the MODEL floor
+    in the JSON record itself, not buried in the raw docker log — no masking.
+    """
+    # `... Done: <N> tokens (length) ...` is the scheduler's per-turn finish
+    # line; finish_reason "(length)" == hit the max_tokens cap (the runaway).
+    length_capped = log_text.count("(length)")
+    # Largest single-turn token count = the runaway turn. Parse the
+    # authoritative `Done: <N> tokens (<reason>)` finish line — `output_tokens=`
+    # is logged only intermittently and `docker logs --since` can clip it, so
+    # `Done:` is the reliable source for the per-turn maximum.
+    max_out = 0
+    for m in re.finditer(r"Done:\s+(\d+)\s+tokens", log_text):
+        max_out = max(max_out, int(m.group(1)))
     return {
         "ws1_mask_active_fires": log_text.count("ws1/am1 mask active"),
         "b1_drift_gauge_fires": log_text.count("B1 drift gauge"),
@@ -386,6 +457,8 @@ def atlas_log_metrics(log_text: str) -> dict[str, Any]:
         "a2_fuzzy_repair_fires": log_text.count("A2 fuzzy_repair: rescued"),
         "doom_loop_trips": log_text.count("Bug-2 name-run cap tripped"),
         "tool_call_lines": log_text.count("Tool call: "),
+        "runaway_length_capped_turns": length_capped,
+        "max_turn_output_tokens": max_out,
     }
 
 

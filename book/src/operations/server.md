@@ -11,7 +11,7 @@ spark --version
 spark --help
 ```
 
-Every runtime configuration flag has a long-form name. Most are documented inline with `#[arg]` doc-strings in `crates/spark-server/src/cli.rs`.
+Every runtime configuration flag has a long-form name. Most are documented inline with `#[arg]` doc-strings in `crates/spark-server/src/cli/serve_args.rs`.
 
 ## Model selection and I/O
 
@@ -29,7 +29,7 @@ Every runtime configuration flag has a long-form name. Most are documented inlin
 | Flag | Default | Notes |
 |---|---|---|
 | `--gpu-memory-utilization` | `0.90` | Fraction of GPU memory Atlas will claim |
-| `--max-seq-len` | `4096` | Maximum sequence length in tokens; sizes KV pool |
+| `--max-seq-len` | `32768` | Maximum sequence length in tokens; sizes KV pool |
 | `--max-batch-size` | `8` | Max concurrent sequences per decode step |
 | `--max-prefill-tokens` | `8192` | Chunked-prefill budget per iteration; sizes scratch |
 | `--max-num-seqs` | `128` | Maximum queued sequences |
@@ -58,7 +58,7 @@ See [FP8](../deep-dives/fp8.md) and [NVFP4](../deep-dives/nvfp4.md) for the trad
 |---|---|---|
 | `--speculative` | off | Enable MTP — requires MTP weights in checkpoint |
 | `--num-drafts` | `1` | Draft tokens per verify (K = num_drafts + 1); default per-model from `MODEL.toml` |
-| `--mtp-quantization` | `nvfp4` | Must match main-model checkpoint (`nvfp4`, `fp8`, `bf16`) |
+| `--mtp-quantization` | `bf16` | Must match main-model checkpoint (`nvfp4`, `fp8`, `bf16`) |
 | `--mtp-vocab` | `0` | Limit MTP LM head to top-N tokens (0 = full vocab) |
 | `--self-speculative` | off | Layer-skipping drafter (no MTP weights required) |
 | `--ngram-speculative` | off | CPU-side n-gram matching |
@@ -96,8 +96,8 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 |---|---|---|
 | `--disable-thinking` | off | Kill-switch for `<think>` blocks |
 | `--max-thinking-budget` | from `MODEL.toml` | Per-request `<think>` token ceiling |
-| `--tool-call-parser` | auto from `model_type` | `hermes`, `qwen3_coder`, `mistral` |
-| `--tool-max-tokens` | `512` | Soft cap on tool-call arg generation |
+| `--tool-call-parser` | auto from `model_type` | `hermes`, `qwen3_coder`, `qwen3_xml`, `gemma4`, `mistral`, `minimax_xml`, `bare_json` |
+| `--tool-max-tokens` | `8192` | Soft cap on tool-call arg generation |
 
 ## Observability / experimental
 
@@ -106,7 +106,7 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 | `--profile` | off | Per-kernel sync + timing (disables CUDA graphs, +10% overhead) |
 | `--adaptive-sampling` | off | Entropy-gated greedy path |
 | `--default-top-n-sigma` | `1.0` | Default σ for top-n-sigma sampler |
-| `--default-min-p` | `0.0` | Default min-p |
+| `--default-min-p` | `0.08` | Default min-p |
 | `--swap-space-gb` | `3` | Disk-backed KV swap at `/tmp/atlas-swap/` |
 | `--request-timeout` | `300` | Per-request seconds, 0 disables |
 
@@ -119,14 +119,54 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 | `POST /v1/completions` | OpenAI (legacy) | Plain completion |
 | `POST /v1/responses` | OpenAI Responses | Stateful; supports `conversation_id` |
 | `POST /v1/messages` | Anthropic | Full Messages API with streaming |
-| `POST /tokenize`, `/detokenize` | helpers | Tokenizer round-trip; gated under `ATLAS_REQUIRE_AUTH` |
+| `POST /tokenize`, `/detokenize` | helpers | Tokenizer round-trip; gated when `--require-auth` is set |
 | `GET /health` | internal | 200; used by benchmarks |
 
 ## Rate limiting and auth
 
-- `ATLAS_REQUIRE_AUTH=1` — requires an `Authorization: Bearer <key>` header on write endpoints. Accepts any non-empty key in the default build; plug in a real validator by customising the `auth::validator` hook.
-- Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Defaults: 60 requests/min per key with a MAX_KEYS DoS guard.
+- `--require-auth` (with `--auth-token <key>` or `--auth-tokens-file <path>`) — requires an `Authorization: Bearer <key>` header on write endpoints. The presented token must match one of the loaded tokens (constant-time compare); there is no "accept any key" mode.
+- Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `ATLAS_RATE_LIMIT_RPM` (requests/min) and/or `ATLAS_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `ATLAS_RATE_LIMIT_BURST_RPM` / `ATLAS_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
 - Body-size limit env-configurable via `ATLAS_MAX_BODY_BYTES` (default 8 MiB).
+
+## Changing the model without restarting
+
+A running server can replace its model in place. Three routes reach it, and
+they share one code path:
+
+- **The dashboard.** `spark serve` with no MODEL starts the listener and opens
+  the Library, where a model and one of its recipes can be picked. Selecting
+  one loads it and returns to the Main view.
+- **The Library, on a server that is already serving.** Same flow; the running
+  model is released first.
+- **A client request** naming a different model, Ollama-style — off unless
+  `--auto-swap` is passed.
+
+`--no-auto-swap` forbids request-triggered loading outright and **wins over
+`--auto-swap`** regardless of order. For deployments where the served model is
+part of the contract, pass it: no client can then change what the endpoint is
+running, whatever else is on the command line.
+
+Even with `--auto-swap`, a swap needs a request whose `model` resolves to a
+DIFFERENT model with a known recipe. A name that is absent, unrecognised, or
+already live is served by the current model, exactly as before the flag
+existed.
+
+**What a swap preserves.** Stored responses and conversations, rate-limiter
+buckets, the API-key policy and `--dump` all belong to the process, not the
+model, and survive unchanged — including while no model is loaded, when
+`GET /v1/conversations/{id}` still answers rather than reporting the model
+missing.
+
+**What it cannot change.** The listening socket is bound once for the process
+lifetime, so a recipe's `host`/`port` are ignored with a warning and the model
+serves on the address already bound. Hot-swap is single-node: a recipe needing
+more than one rank is refused rather than half-applied.
+
+**While it runs.** In-flight requests finish on the model they started on. New
+requests that need a model get `503 model_not_loaded` — retriable, and the same
+shape `/health` already reports during startup. A load that fails restores the
+previous model, and one this build has no kernels for is refused before
+anything is released.
 
 ## Chat templating
 

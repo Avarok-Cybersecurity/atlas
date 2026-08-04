@@ -11,10 +11,51 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use atlas_core::config::ModelConfig;
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use crate::speculative::DraftProposer;
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
+
+/// Allocate the GDN prefill scratch buffers, hoisted from
+/// `TransformerModel::new` 1:1. Returns
+/// `(qkv, gate_beta, out, z, gdn_buf_len)`. Buffers are only allocated when
+/// GDN linear-attention layers exist (`conv_dim > 0`); Mamba-2 models
+/// (Nemotron, conv_dim=0) get `DevicePtr::NULL`s to avoid `cuMemAlloc(0)`.
+pub(super) fn build_gdn_prefill_buffers(
+    config: &ModelConfig,
+    max_batch_tokens: usize,
+    max_seq_len: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<(DevicePtr, DevicePtr, DevicePtr, DevicePtr, usize)> {
+    let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
+    let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
+    let nv = config.linear_num_value_heads;
+    let conv_dim = key_dim * 2 + value_dim;
+    // GDN buffers only needed when GDN linear attention layers exist
+    // (conv_dim > 0). Mamba-2 models (Nemotron) have conv_dim=0 — skip alloc
+    // to avoid cuMemAlloc(0) error.
+    let gdn_buf_len = max_batch_tokens.min(max_seq_len);
+    let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z) = if conv_dim > 0 {
+        let qkv = gpu.alloc(gdn_buf_len * conv_dim * 2)?;
+        let gb = gpu.alloc(gdn_buf_len * nv * 2 * 4)?;
+        let o = gpu.alloc(gdn_buf_len * value_dim * 2)?;
+        let z = gpu.alloc(gdn_buf_len * value_dim * 2)?;
+        let total_mb =
+            (gdn_buf_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2)) / (1024 * 1024);
+        tracing::info!(
+            "GDN prefill buffers: {total_mb} MB for {gdn_buf_len} tokens (chunked SSM prefill)"
+        );
+        (qkv, gb, o, z)
+    } else {
+        (
+            DevicePtr::NULL,
+            DevicePtr::NULL,
+            DevicePtr::NULL,
+            DevicePtr::NULL,
+        )
+    };
+    Ok((gdn_qkv, gdn_gate_beta, gdn_out, gdn_z, gdn_buf_len))
+}
 
 /// Build the MTP draft proposer when speculative decoding is requested.
 ///
@@ -46,6 +87,7 @@ pub(super) fn build_mtp_proposer(
     mtp_quant: crate::layers::MtpQuantization,
     mtp_vocab_size: u32,
     max_seq_len: usize,
+    levers: &crate::layers::ops::ModelLevers,
 ) -> Option<Arc<dyn DraftProposer>> {
     if !use_speculative {
         if !mtp_weights.is_empty() {
@@ -78,6 +120,7 @@ pub(super) fn build_mtp_proposer(
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            levers,
         )
     };
     if mtp_weights.len() == 1 {
@@ -106,5 +149,26 @@ pub(super) fn build_mtp_proposer(
                 None
             }
         }
+    }
+}
+
+/// Build the optional SSM snapshot spill tier for `TransformerModel::new`,
+/// hoisted 1:1 to keep `impl_a1.rs` under the 500-LoC cap. Returns `None`
+/// (the byte-identical default) unless `ATLAS_SSM_TIER` is set on a recurrent
+/// model; otherwise selects the env-driven backend keyed by the model
+/// fingerprint (so different models sharing one peer can't collide).
+///
+/// `blob_bytes` MUST be `SsmSnapshotPool::spill_blob_bytes()` so the tier's
+/// fixed blob sizing matches the spill/fault-in gathers.
+pub(super) fn build_ssm_tier_store(
+    config: &ModelConfig,
+    blob_bytes: usize,
+    num_ssm_layers: usize,
+) -> Result<Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>> {
+    if super::ssm_tier::ssm_tier_enabled() && num_ssm_layers > 0 {
+        let fp = super::ssm_tier::ModelFingerprint::derive(config, blob_bytes)?;
+        Ok(Some(super::ssm_tier::build_tier_store(fp, blob_bytes)?))
+    } else {
+        Ok(None)
     }
 }

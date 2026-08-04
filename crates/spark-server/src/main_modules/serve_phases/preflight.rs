@@ -62,23 +62,9 @@ pub(crate) fn preflight_reserve(
     } else {
         args.max_seq_len
     };
-    // Mirror of the auto-clamp in resolve_prefill_budget (kv_cache.rs).
-    // See issue #15: when prefix caching + SSM snapshots are both on,
-    // single-chunk prefill produces no reachable intermediate snapshots.
-    let prefill_budget_pre = if !user_set_prefill_pre
-        && args.enable_prefix_caching
-        && args.ssm_checkpoint_interval > 0
-        && args.ssm_cache_slots > 0
-    {
-        let target = args.ssm_checkpoint_interval * args.block_size;
-        if prefill_budget_pre > target && target > 0 {
-            target
-        } else {
-            prefill_budget_pre
-        }
-    } else {
-        prefill_budget_pre
-    };
+    // Issue #15 auto-clamp removed (2026-07-02): snapshot reachability is
+    // handled by the tail-checkpoint split in `prefill_chunk_dispatch`, so
+    // the budget (and this arena-sizing mirror) stays at full chunk size.
     let max_batch_tokens_pre = prefill_budget_pre
         .max(spec_tokens_pre)
         .max(args.max_batch_size);
@@ -91,10 +77,18 @@ pub(crate) fn preflight_reserve(
     .total_bytes();
     // SSM snapshot pool = Marconi prefix-cache region + Phase-C
     // decode-rollback ring. The decode ring is sized per active
-    // sequence (`ROLLBACK_RESTEER_CAP + 1` slots × `max_batch_size`),
-    // and only allocated for SSM models. Mirrors `SsmSnapshotPool::new`.
+    // sequence (`DECODE_ROLLBACK_RING_SLOTS` slots × `max_batch_size`),
+    // and only allocated for SSM models. SSOT: this reservation MUST use
+    // the SAME constant the pool actually allocates with
+    // (`SsmSnapshotPool::new` in `impl_a1.rs` uses
+    // `DECODE_ROLLBACK_RING_SLOTS`). It previously used
+    // `ROLLBACK_RESTEER_CAP + 1` (= 3) while the pool allocated
+    // `DECODE_ROLLBACK_RING_SLOTS` (= 8), under-reserving the SSM-snapshot
+    // GPU budget by `(8 - 3) × max_batch_size × num_ssm_layers ×
+    // (h_bytes + conv_bytes)` — the two constants were decoupled when the
+    // ring was widened past the rollback cap.
     let decode_ring_slots = if config.num_ssm_layers() > 0 {
-        (atlas_kernels::ROLLBACK_RESTEER_CAP as usize) + 1
+        atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
     } else {
         0
     };
@@ -214,12 +208,17 @@ pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,
 ) -> Result<(Box<dyn spark_runtime::gpu::GpuBackend>, usize)> {
-    let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(
+    let backend =
         spark_runtime::cuda_backend::AtlasCudaBackend::new(args.gpu_ordinal, &ptx_set.modules)
-            .context("Failed to initialize CUDA backend")?,
-    );
+            .context("Failed to initialize CUDA backend")?;
+
+    let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(backend);
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
+    // Baseline for self-relative KV budgeting: free memory now (post context +
+    // PTX modules, pre weights) minus free-at-build = this process's own
+    // footprint, co-tenants excluded. See gpu::baseline_free_bytes.
+    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
     tracing::info!(
         "GPU {}: {:.1} GB total, {:.1} GB free",
         args.gpu_ordinal,
@@ -241,6 +240,7 @@ pub(crate) fn init_gpu_backend(
     );
     let total_mem = gpu.total_memory()?;
     let free_mem = gpu.free_memory()?;
+    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
     tracing::info!(
         "Metal device {}: {:.1} GB total, {:.1} GB free",
         args.gpu_ordinal,

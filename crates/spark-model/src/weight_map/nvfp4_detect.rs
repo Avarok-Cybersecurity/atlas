@@ -40,9 +40,13 @@ pub fn detect_nvfp4_variant(
                 return Nvfp4Variant::Fp8Dequanted;
             }
             "compressed-tensors" => {
-                // `format` is the sub-selector here. Treat anything
-                // containing "fp8" as block-scaled FP8, else assume NVFP4.
-                if qc.format.to_ascii_lowercase().contains("fp8") {
+                // `format` is the sub-selector here. Block-scaled FP8 is tagged
+                // either with a literal "fp8" OR with compressed-tensors'
+                // `"float-quantized"` (8-bit float = FP8 E4M3, e.g.
+                // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
+                // "pack-quantized") are NVFP4.
+                let fmt = qc.format.to_ascii_lowercase();
+                if fmt.contains("fp8") || fmt.contains("float-quant") {
                     return Nvfp4Variant::Fp8Dequanted;
                 }
                 return Nvfp4Variant::CompressedTensors;
@@ -111,6 +115,28 @@ pub fn detect_nvfp4_variant(
         let fp8_attn_key = format!("{pfx}.self_attn.q_proj.weight_scale_inv");
         if store.contains(&fp8_attn_key) {
             return Nvfp4Variant::Fp8Dequanted;
+        }
+        // compressed-tensors `float-quantized` FP8 (e.g. Hcompany/Holo-3.1-*-FP8)
+        // ships block-FP8 as an FP8E4M3 `.weight` + 2D `.weight_scale` — NO
+        // `.weight_packed` (that's NVFP4) and NO `.weight_scale_inv` (that's
+        // DeepSeek/Qwen-native FP8). The `.weight_scale` name alias-collides
+        // with compressed-tensors NVFP4, so the `.weight_scale` checks below
+        // would misroute it to an NVFP4 variant. Disambiguate by the
+        // unambiguous FP8E4M3 weight dtype: an FP8E4M3 projection weight is
+        // always block-FP8 (Fp8Dequanted; the FP8→BF16→NVFP4 requant path in
+        // `quantized_from_fp8` reads the 2D `.weight_scale`).
+        for key in [
+            format!("{pfx}.mlp.experts.{local_expert}.gate_proj.weight"),
+            format!("{pfx}.mlp.gate_proj.weight"),
+            format!("{pfx}.self_attn.q_proj.weight"),
+        ] {
+            if store
+                .get(&key)
+                .map(|w| w.dtype == WeightDtype::FP8E4M3)
+                .unwrap_or(false)
+            {
+                return Nvfp4Variant::Fp8Dequanted;
+            }
         }
     }
     // Fallback: scan any tensor name for `.weight_scale_inv` suffix.
@@ -208,9 +234,38 @@ pub(crate) fn quantized_any(
     let has_scale_inv = store.contains(&format!("{prefix}.weight_scale_inv"));
     let has_only_dense =
         !has_packed && !has_scale && !has_scale_inv && store.contains(&format!("{prefix}.weight"));
+
+    // Per-key fallback #2 (unsloth/Qwen3.6-{27B,35B-A3B}-NVFP4, re-quantized
+    // 2026-07-10): mixed-precision checkpoints that are NVFP4 for most of the
+    // net but leave a tail of layers — and, in the MoE, the shared experts —
+    // as FP8 E4M3 with a per-row `weight_scale` ([N,1] BF16). Those keys carry
+    // no NVFP4 metadata at all (no `weight_packed`, no `weight_global_scale`,
+    // no `weight_scale_2`), so the declared NVFP4 variant cannot load them and
+    // the whole model dies on `weight_global_scale not found in store`.
+    // Detect the FP8 layout per key and dequant→runtime-quantize instead.
+    //
+    // The three NVFP4 layouts are all excluded by construction, so this can
+    // never steal a key that IS NVFP4:
+    //   Standard (ModelOpt/nvidia) -> has `weight_scale_2`
+    //   CompressedTensors (Sehyo)  -> has `weight_packed` + `weight_global_scale`
+    //   this FP8 case              -> has neither, and `.weight` is FP8E4M3
+    let has_fp8_dense = !has_packed
+        && !store.contains(&format!("{prefix}.weight_global_scale"))
+        && !store.contains(&format!("{prefix}.weight_scale_2"))
+        && (has_scale || has_scale_inv)
+        && store
+            .get(&format!("{prefix}.weight"))
+            .map(|w| w.dtype == WeightDtype::FP8E4M3)
+            .unwrap_or(false);
+
     let effective_variant = if has_only_dense && !matches!(variant, Nvfp4Variant::Bf16Raw) {
         tracing::debug!("{prefix}: no quantization metadata; falling back to runtime BF16→NVFP4");
         Nvfp4Variant::Bf16Raw
+    } else if has_fp8_dense
+        && !matches!(variant, Nvfp4Variant::Fp8Dequanted | Nvfp4Variant::Bf16Raw)
+    {
+        tracing::debug!("{prefix}: FP8 key in an NVFP4 checkpoint; dequant FP8→BF16→NVFP4");
+        Nvfp4Variant::Fp8Dequanted
     } else {
         variant
     };
@@ -229,13 +284,10 @@ pub(crate) fn quantized_any(
             qctx.stream,
         ),
         Nvfp4Variant::Bf16Raw => {
-            // Raw BF16/FP32 fine-tune: load the dense weight then runtime-quantize.
-            let weight_key = format!("{prefix}.weight");
-            let source = store.get(&weight_key)?;
-            let source_dtype = source.dtype;
-            let source_ptr = source.ptr;
-            let bf16 = dense_auto(store, &weight_key, gpu)?;
-            let result = quantize_to_nvfp4(
+            // Raw BF16/FP16 fine-tune: load the dense weight then runtime-quantize.
+            let w = store.get(&format!("{prefix}.weight"))?;
+            let bf16 = DenseWeight { weight: w.ptr };
+            let q = quantize_to_nvfp4(
                 &bf16,
                 n,
                 k,
@@ -244,11 +296,14 @@ pub(crate) fn quantized_any(
                 qctx.quantize_k,
                 qctx.stream,
             )?;
-            if source_dtype != WeightDtype::BF16 {
-                gpu.free(bf16.weight)?;
-                gpu.free(source_ptr)?;
-            }
-            Ok(result)
+            // Free the BF16 source: the NVFP4 buffer is a fresh allocation, so the
+            // on-disk BF16 weight is now redundant. Without this a 35B BF16 MoE
+            // (Bf16Raw, SEPARATE per-expert layout routed through here by #200's
+            // `quantized_any`) holds BOTH the ~60GB BF16 experts AND the ~22GB
+            // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
+            // `quantized_from_fp8` which frees its BF16 intermediate the same way.
+            gpu.free(w.ptr)?;
+            Ok(q)
         }
     }
 }

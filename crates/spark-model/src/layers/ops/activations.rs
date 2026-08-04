@@ -142,27 +142,6 @@ pub fn residual_add(
         .launch(stream)
 }
 
-/// BF16 → FP32 conversion: `dst[i] = (float)src[i]`.
-///
-/// Kernel: `bf16_to_f32(src, dst, n)`
-/// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
-pub fn bf16_to_f32(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    src: DevicePtr,
-    dst: DevicePtr,
-    num_elements: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(num_elements, 256), 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(src)
-        .arg_ptr(dst)
-        .arg_u32(num_elements)
-        .launch(stream)
-}
-
 /// BF16 scaled accumulate: `output[i] += scale * src[i]`.
 ///
 /// Kernel: `bf16_scaled_add(output, src, scale, n)`

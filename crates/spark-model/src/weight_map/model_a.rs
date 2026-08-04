@@ -115,6 +115,49 @@ pub(crate) fn quantized(
         } else {
             DevicePtr::NULL
         },
+        weight_scale_2_vec: DevicePtr::NULL,
+    })
+}
+
+/// Native MXFP4 routed expert: land the on-disk bytes device-resident
+/// **UNCHANGED** — no dequant, no re-quantize, no dtype coercion (the
+/// transcode-free path, contrast `quantized_from_fp8` / the old E8M0
+/// `dequant→quantize_to_nvfp4` arm that cost TWO lossy 4-bit conversions).
+///
+/// On-disk layout (DeepSeek-V4-Flash ORIGINAL routed format):
+///   - `.weight` = 4-bit E2M1 nibbles, 2 per byte, stored U8/I8, shape `[n, k/2]`
+///   - `.scale`  = F8_E8M0 per-block (biased exponent; scale = `2^(byte-127)`),
+///     `GROUP_SIZE=32`, NO per-tensor global.
+///
+/// The buffer is tagged `WeightQuantFormat::Mxfp4E8m0` at the MoE-layer level
+/// (`MoeWeights::experts_scale_kind`); the E8M0 kernel variants (Phase-K)
+/// consume `weight_scale` as E8M0 bytes and ignore `weight_scale_2`. Asserts
+/// the inferred block size is 32 so a non-MX checkpoint can't slip through.
+pub(crate) fn quantized_mxfp4_e8m0(store: &WeightStore, prefix: &str) -> Result<QuantizedWeight> {
+    let w = store.get(&format!("{prefix}.weight"))?;
+    let n = w.shape[0];
+    let k_packed = w.shape[1];
+    let total_nibbles = n * k_packed * 2;
+    let scale_t = store.get(&format!("{prefix}.scale"))?;
+    let num_groups = scale_t.num_elements();
+    ensure!(
+        num_groups > 0 && total_nibbles.is_multiple_of(num_groups),
+        "{prefix}: MXFP4 weight nibbles {total_nibbles} not divisible by E8M0 scale groups {num_groups}"
+    );
+    let block = total_nibbles / num_groups;
+    ensure!(
+        block == 32,
+        "{prefix}: native MXFP4 expects GROUP_SIZE=32, inferred {block} (scale groups {num_groups}) \
+         — refusing to land a non-MX checkpoint on the transcode-free path"
+    );
+    Ok(QuantizedWeight {
+        weight: ptr(store, &format!("{prefix}.weight"))?,
+        weight_scale: ptr(store, &format!("{prefix}.scale"))?,
+        weight_scale_2: 1.0, // native MXFP4 has no per-tensor global
+        input_scale: DevicePtr::NULL,
+        // native MXFP4 uses the scalar `weight_scale_2` (E8M0 per-group), not
+        // the per-output-row scale2 vector added by #257 → NULL.
+        weight_scale_2_vec: DevicePtr::NULL,
     })
 }
 
@@ -122,6 +165,21 @@ pub(crate) fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
     let w = store.get(name)?;
     Ok(DenseWeight { weight: w.ptr })
 }
+
+// REMOVED: `dense_minus_one` — the offset-from-1 norm loader.
+//
+// It pre-subtracted 1.0 and stored `bf16(w - 1)` so the offset-from-1 `rms_norm`
+// kernel would recover `1 + (w - 1) = w`. That round-trip is only lossless when
+// `w ≈ 1`. DeepSeek-V4 — its ONLY caller — ships HF-vanilla norm weights of
+// ≈ 0.03, so it stored ≈ −0.97 and BF16's rounding error there (~1.9e-3 absolute)
+// became a 1.8–3.4 % RELATIVE error on the weight once 1 was added back
+// (catastrophic cancellation; up to 19 % on `q_norm`, 100 % with sign flips on the
+// compressor norms — measured over all 249 V4 norm tensors, 2026-07-13).
+//
+// V4 now loads its norm weights exactly (`dense_auto`) and dispatches
+// `rms_norm_vanilla`. See `crate::ships_vanilla_norm_weights`. Models whose norm
+// weights are genuinely stored as an offset (Qwen3-Next, init 0) use `dense` and
+// keep the offset kernel — they never needed this function.
 
 /// Load a weight, auto-dequanting FP8 block-scaled to BF16 when needed.
 ///
@@ -154,20 +212,24 @@ pub(crate) fn dense_f32_safe(
 ) -> Result<DenseWeight> {
     let w = store.get(name)?;
     if w.dtype == WeightDtype::FP32 {
-        tracing::info!(
-            "dense_f32_safe: converting {name} from FP32 to BF16 ({:?})",
-            w.shape
-        );
+        // On-device FP32→BF16 truncation — ONE async kernel on the load stream,
+        // no D2H/CPU/H2D round-trip. The old path did copy_d2h→CPU-truncate→
+        // copy_h2d per weight, each with 2 cuStreamSynchronize on the busy load
+        // stream → ~104s across 635 FP32 weights (the dominant cold-load cost).
+        // The kernel reads the high 2 bytes of each f32 → bit-identical to the
+        // prior CPU truncation. Ordered after the weight's upload (same stream),
+        // so no sync needed.
         let n = w.num_elements();
-        let mut f32_buf = vec![0u8; n * 4];
-        gpu.copy_d2h(w.ptr, &mut f32_buf)?;
-        // Truncate f32 → bf16: take upper 16 bits of each f32
-        let bf16_buf: Vec<u8> = f32_buf
-            .chunks_exact(4)
-            .flat_map(|c| [c[2], c[3]]) // upper 2 bytes = BF16
-            .collect();
-        let ptr = gpu.alloc(bf16_buf.len())?;
-        gpu.copy_h2d(&bf16_buf, ptr)?;
+        let ptr = gpu.alloc(n * 2)?;
+        let trunc = gpu.kernel("quantize_nvfp4", "f32_to_bf16_trunc")?;
+        let blocks = (n.div_ceil(256) as u32).max(1);
+        spark_runtime::kernel_args::KernelLaunch::new(gpu, trunc)
+            .grid([blocks, 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(w.ptr)
+            .arg_ptr(ptr)
+            .arg_u32(n as u32)
+            .launch(gpu.default_stream())?;
         Ok(DenseWeight { weight: ptr })
     } else {
         Ok(DenseWeight { weight: w.ptr })
@@ -279,45 +341,4 @@ pub(crate) fn dense_f32_as_bf16(
     let ptr = gpu.alloc(bf16_buf.len())?;
     gpu.copy_h2d(&bf16_buf, ptr)?;
     Ok(DenseWeight { weight: ptr })
-}
-
-/// Dequantize FP8 E4M3 + per-tensor scale → BF16, returning a DenseWeight.
-///
-/// Allocates a new GPU buffer for the result. Use `dequant_fp8_to_bf16_into` to
-/// write into a pre-allocated scratch buffer instead (avoids gpu.free on GB10 UVM).
-pub(crate) fn dequant_fp8_to_bf16(
-    store: &WeightStore,
-    prefix: &str,
-    gpu: &dyn GpuBackend,
-) -> Result<DenseWeight> {
-    let w = store.get(&format!("{prefix}.weight"))?;
-    let n_bytes = w.num_elements();
-    let mut fp8_buf = vec![0u8; n_bytes];
-    gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
-    let scale = scalar_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
-    let bf16_buf = dequant_fp8_bytes_to_bf16(&fp8_buf, scale);
-    let ptr = gpu.alloc(bf16_buf.len())?;
-    gpu.copy_h2d(&bf16_buf, ptr)?;
-    Ok(DenseWeight { weight: ptr })
-}
-
-/// Dequantize FP8 E4M3 → BF16, writing into a pre-allocated destination buffer.
-///
-/// Avoids gpu.alloc/free for the intermediate BF16 data. The caller provides a
-/// reusable scratch buffer that is overwritten each call. Safe to reuse after
-/// `quantize_to_nvfp4` returns (it synchronizes internally).
-pub(crate) fn dequant_fp8_to_bf16_into(
-    store: &WeightStore,
-    prefix: &str,
-    gpu: &dyn GpuBackend,
-    dest: DevicePtr,
-) -> Result<DenseWeight> {
-    let w = store.get(&format!("{prefix}.weight"))?;
-    let n_bytes = w.num_elements();
-    let mut fp8_buf = vec![0u8; n_bytes];
-    gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
-    let scale = scalar_f32(store, &format!("{prefix}.weight_scale"), gpu)?;
-    let bf16_buf = dequant_fp8_bytes_to_bf16(&fp8_buf, scale);
-    gpu.copy_h2d(&bf16_buf, dest)?;
-    Ok(DenseWeight { weight: dest })
 }

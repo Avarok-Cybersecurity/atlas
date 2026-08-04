@@ -10,53 +10,7 @@ use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
 use crate::weight_map::{AttentionWeights, DenseWeight, QuantWeight, QuantizedWeight};
 
-/// MLA (Multi-head Latent Attention) weight components for 2-step decode.
-///
-/// Instead of a single Q GEMV: `input × Q_expanded → Q[n_heads*hd]`,
-/// MLA does: `input × wq_a → latent[q_lora]` → `norm` → `latent × wq_b → Q`.
-/// This preserves the latent normalization that's critical for output quality.
-pub struct MlaWeights {
-    pub wq_a: DenseWeight, // [q_lora, h] — Q down-projection (BF16)
-    pub wq_a_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
-    pub wq_b: DenseWeight, // [n_heads*hd, q_lora] — Q up-projection (BF16)
-    pub wq_b_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
-    pub q_a_norm: DenseWeight, // [q_lora] — RMS norm weight
-    pub wkv_a: DenseWeight, // [kv_lora, h] — KV down-projection (BF16)
-    pub wkv_a_nvfp4: Option<QuantizedWeight>, // NVFP4 for fast decode
-    pub wkv_b: DenseWeight, // [n_kv*(nope+v), kv_lora] — KV up-projection (BF16)
-    pub kv_a_norm: DenseWeight, // [kv_lora] — RMS norm weight
-    pub wkv_a_rope: DenseWeight, // [rope, h] — K RoPE projection (BF16)
-    /// Merged wkv_a + wkv_a_rope for prefill: [kv_lora+rope, h] — single GEMM replaces 2
-    pub wkv_a_merged: DenseWeight,
-    pub wo: DenseWeight, // [h, n_heads*v_dim] — O projection BF16 (for prefill accuracy)
-    pub wo_nvfp4: Option<QuantizedWeight>, // O projection NVFP4 (for fast decode GEMV)
-    /// Absorbed MLA weights for decode (avoid full K/V expansion, preserve precision).
-    /// W_UK_T: [n_heads, nope, kv_lora] — Q_nope absorption: Q_absorbed = Q_nope @ W_UK_T
-    pub w_uk_t: DenseWeight,
-    /// W_UV: [n_heads, kv_lora, v_dim] — V extraction: v_out = attn_latent @ W_UV
-    pub w_uv: DenseWeight,
-    /// Q rope projection: wq_b_rope[nq*rope, q_lora] — Q_rope = wq_b_rope @ Q_latent
-    /// Extracted from wq_b rows [n*hd+nope .. n*hd+nope+rope] for each head.
-    pub wq_b_rope: DenseWeight,
-    /// Fused Q absorption: `W_QK_absorbed[nq*kv_lora, q_lora]` — Q_absorbed = W_QK @ Q_latent
-    /// Precomputed as: `W_QK[n, lkv, l] = sum_p wq_b_nope[n, p, l] * W_UK[n, p, lkv]`
-    /// Enables single GEMV: `Q_absorbed[nq*kv_lora] = W_QK[nq*kv_lora, q_lora] @ Q_latent[q_lora]`
-    pub w_qk_absorbed: DenseWeight,
-    /// Block-diagonal W_UK for prefill batched GEMM: [nq*kv_lora, nq*nope]
-    /// Single GEMM replaces 32*N per-head GEMV calls for Q absorption in prefill.
-    pub w_uk_block_diag: DenseWeight,
-    /// Block-diagonal W_UV for prefill batched GEMM: [nq*v_dim, nq*kv_lora]
-    /// Single GEMM replaces 32*N per-head GEMV calls for V extraction in prefill.
-    pub w_uv_block_diag: DenseWeight,
-    /// Precomputed YaRN inv_freq table [rotary_dim/2] FP32 on GPU.
-    /// NULL = use standard theta computation in the RoPE kernel.
-    pub yarn_inv_freq: spark_runtime::gpu::DevicePtr,
-    pub q_lora_rank: usize,
-    pub kv_lora_rank: usize,
-    pub nope: usize,
-    pub rope: usize,
-    pub v_dim: usize,
-}
+pub use super::types_weights::{HcWeights, MlaWeights};
 
 /// Qwen3-Next full attention layer (12 of 48 layers).
 #[allow(dead_code)]
@@ -66,6 +20,11 @@ pub struct Qwen3AttentionLayer {
     pub(super) post_attn_norm: DenseWeight,
     pub(super) ffn: FfnComponent,
     pub(super) attn_layer_idx: usize,
+    /// Startup-static LoRA adapter overlay for the K/V/O projections (v0;
+    /// q_proj excluded — gated Q+gate interleave). Installed
+    /// post-construction via `set_lora_weights`; `None` = base-only.
+    /// M0: stored only — the compute-path reads land in M1.
+    pub(super) lora: Option<crate::layers::ops::lora_delta::LoraAttnWeights>,
     /// Whether Q projection includes an output gate (Q+Gate interleaved).
     /// When true, q_proj output is 2× q_dim; attn output is gated by sigmoid.
     /// When false (e.g. Qwen3-VL), q_proj output is q_dim; no gating applied.
@@ -127,6 +86,19 @@ pub struct Qwen3AttentionLayer {
     pub(super) o_dense_bf16: Option<DenseWeight>,
     // ── MLA (Multi-head Latent Attention) — 2-step decode ──
     pub(crate) mla: Option<MlaWeights>,
+    // ── Manifold-Constrained Hyper-Connections (mHC) — DeepSeek-V4 ──
+    /// Per-block HC parameters. `Some` only for DeepSeek-V4 (`hc_mult > 0`),
+    /// in which case the attn/ffn residual sites use `hc_pre`/`hc_post`
+    /// against the `hc_streams` buffer instead of the standard residual add.
+    pub(crate) hc: Option<HcWeights>,
+    /// HC `hc_pre` kernel handle (NULL when HC disabled).
+    pub(super) hc_pre_k: KernelHandle,
+    /// HC `hc_post` kernel handle (NULL when HC disabled).
+    pub(super) hc_post_k: KernelHandle,
+    /// HC `hc_expand` kernel handle (NULL when HC disabled).
+    pub(super) hc_expand_k: KernelHandle,
+    /// HC `hc_head` kernel handle (NULL when HC disabled).
+    pub(super) hc_head_k: KernelHandle,
     // ── Transposed weights for prefill GEMM ──
     pub(super) q_nvfp4_t: Option<QuantizedWeight>,
     pub(super) k_nvfp4_t: Option<QuantizedWeight>,
@@ -138,11 +110,25 @@ pub struct Qwen3AttentionLayer {
     pub(super) o_fp8w_t: Option<crate::weight_map::Fp8WeightTransposed>,
     pub(super) w8a16_gemm_t_k: KernelHandle,
     pub(super) w8a16_gemm_t_pipelined_k: KernelHandle,
+    // Fast transposed FP8 prefill GEMM (128x128 / 8-warp / two-level FP32 fold).
+    // Consumes the SAME B_t[K,N] + block_scale_t[K/128,N/128] that
+    // transpose_fp8 / transpose_block_scale already produce. KernelHandle(0) on
+    // miss → fall back to w8a16_gemm_t.
+    pub(super) w8a16_gemm_t_m128_k: KernelHandle,
     // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
     pub(super) per_token_group_quant_fp8_k: KernelHandle,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
     // Kernels — decode (GEMV M=1)
+    /// Offset-from-1 `rms_norm` (`out = x * (1 + w) / rms`). Used ONLY for the
+    /// unweighted normalize (`norm_unit_w()` is zero-filled, so `1 + 0 = 1`).
     pub(super) rms_norm_k: KernelHandle,
+    /// The norm kernel for every weight that comes from the CHECKPOINT.
+    /// Same handle as `rms_norm_k` for offset-from-1 models; `rms_norm_vanilla`
+    /// (`out = x * w / rms`) for models that ship HF-vanilla norm weights.
+    pub(super) rms_norm_w_k: KernelHandle,
+    /// True when `rms_norm_w_k` is the vanilla kernel — i.e. the checkpoint's
+    /// norm weights are loaded exactly, with no `-1` pre-subtraction.
+    pub(super) norm_vanilla: bool,
     pub(super) rms_norm_residual_k: KernelHandle,
     /// Gemma-4 FP32-input rms_norm (absolute formula).
     pub(super) rms_norm_f32_in_k: KernelHandle,
@@ -155,8 +141,15 @@ pub struct Qwen3AttentionLayer {
     pub(super) rope_k: KernelHandle,
     /// MRoPE-interleaved kernel.
     pub(super) rope_mrope_interleaved_k: KernelHandle,
+    /// K-only MRoPE kernel used when Q RoPE is fused into Q deinterleave/norm.
+    pub(super) rope_mrope_interleaved_k_only_k: KernelHandle,
     /// YaRN RoPE kernel using pre-computed inv_freq table (Mistral, etc.)
     pub(super) rope_yarn_k: KernelHandle,
+    /// Interleaved (GPT-J / is_neox_style=False) YaRN RoPE kernel — DeepSeek MLA.
+    pub(super) rope_yarn_interleaved_k: KernelHandle,
+    /// Conjugate (negated-sin) interleaved YaRN RoPE — DeepSeek-V4 attention
+    /// output de-rotation (eq.26).
+    pub(super) rope_yarn_interleaved_inv_k: KernelHandle,
     /// Proportional RoPE kernel (Gemma-4 full-attention layers).
     pub(super) rope_proportional_k: KernelHandle,
     pub(super) reshape_cache_k: KernelHandle,
@@ -187,6 +180,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) paged_decode_512_k: KernelHandle,
     /// MLA absorbed paged decode kernel (HDIM=320).
     pub(super) paged_decode_mla_k: KernelHandle,
+    /// MLA paged decode kernel for DeepSeek-V4-Flash (compressed KV cache: 576 dims)
+    pub(super) mla_paged_decode_k: KernelHandle,
+    /// MLA paged decode kernel for DeepSeek-V4-Flash with FP8 KV cache
+    pub(super) mla_paged_decode_fp8_k: KernelHandle,
     /// MLA batched GEMV for Q absorption and V extraction.
     pub(super) mla_batched_gemv_k: KernelHandle,
     /// MLA fused kernels — decode.
@@ -218,6 +215,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) deinterleave_qg_k: KernelHandle,
     pub(super) w4a16_gemv_qg_k: KernelHandle,
     pub(super) residual_add_rms_norm_k: KernelHandle,
+    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    pub(super) residual_add_rms_norm_gatef32_k: KernelHandle,
     // Kernels — batch2 (K=2 verify)
     pub(super) w4a16_gemv_qg_batch2_k: KernelHandle,
     pub(super) w4a16_gemv_dual_batch2_k: KernelHandle,
@@ -226,19 +225,52 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemv_qg_batch3_k: KernelHandle,
     pub(super) w4a16_gemv_dual_batch3_k: KernelHandle,
     pub(super) w4a16_gemv_batch3_k: KernelHandle,
+    /// M<=4 batched GEMV (K=4 verify q/k/v/o); 0-handle when absent.
+    pub(super) w4a16_gemv_batch4_k: KernelHandle,
+    /// M<=8 batched GEMV (chain-verify K=5..8 q/k/v/o); 0-handle when absent.
+    pub(super) w4a16_gemv_batch8_k: KernelHandle,
     // Kernels — prefill (GEMM M=N + Flash Attention)
     pub(super) w4a16_gemm_k: KernelHandle,
     pub(super) w4a16_gemm_t_k: KernelHandle,
     pub(super) w4a16_gemm_t_k64_k: KernelHandle,
     pub(super) w4a16_gemm_t_m128_k: KernelHandle,
+    /// LOSSLESS BF16-TC variant of t_m128 for QKV/o projection prefill (FP4→BF16
+    /// dequant + BF16 MMA, no FP8 activation crush). Opt-in via ATLAS_BF16_TC_PROJ
+    /// (default off → t_m128 path unchanged). KernelHandle(0) on miss.
+    pub(super) w4a16_gemm_t_m128_bf16_k: KernelHandle,
     /// MiniMax-only shadow kernel.
     pub(super) w4a16_gemm_t_m128_v2_k: KernelHandle,
     /// v3 variant: K_STEP=64.
     pub(super) w4a16_gemm_t_m128_v3_k: KernelHandle,
     pub(super) dense_gemm_k: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM (mma.sync + cp.async, 128×128 tile) —
+    /// ~40× the scalar `dense_gemm_k` on large-M prefill projections, same math
+    /// (cosine 1.0). Used for the BF16-fallback Q/K/V/O projections (Holo's
+    /// native-FP8-dequant-to-BF16 attention path).
+    pub(super) dense_gemm_pipelined_k: KernelHandle,
     pub(super) prefill_attn_k: KernelHandle,
     /// HDIM=512 contiguous prefill for Gemma-4 full-attention layers
     pub(super) prefill_attn_512_k: KernelHandle,
+    /// DeepSeek-V4 CSA compressor: window softmax-gated KV compression.
+    pub(super) csa_compress_k: KernelHandle,
+    /// DeepSeek-V4 CSA prefill attention over [raw | compressed] KV + sink.
+    pub(super) prefill_attn_compressed_k: KernelHandle,
+    /// 4b: # compressed blocks prefill wrote to `mla.compressor.pool` for the
+    /// active sequence (= prefill_len / ratio). Decode's compressed arm attends
+    /// blocks `[0, this)`. AtomicU32 for interior mutability under prefill's
+    /// `&self`; V4 serves max_batch=1 so one counter suffices (inc-3: per-seq
+    /// tracking + decode-time append will grow this each boundary crossing).
+    pub(super) v4_comp_pool_filled: std::sync::atomic::AtomicU32,
+    /// 4b inc-3 decode-append state (V4 serves max_batch=1 → scalar per layer).
+    /// `prev_valid`: the CSA `prev_win` ring holds a real previous decode window
+    /// (false until the first decode append, and reset each prefill) — when false
+    /// the CSA append masks Ca (window-0 semantics). `decode_started`/`first_pos`:
+    /// the absolute position of the first decode token this sequence, used to skip
+    /// any prefill/decode straddle window whose ring slots aren't all decode-written
+    /// (that one block is left as prefill/zero — a documented seam, not corruption).
+    pub(super) v4_comp_prev_valid: std::sync::atomic::AtomicBool,
+    pub(super) v4_decode_started: std::sync::atomic::AtomicBool,
+    pub(super) v4_decode_first_pos: std::sync::atomic::AtomicU32,
     /// HDIM=512 paged prefill (BF16 KV) for Gemma-4 chunked long-context prefill
     pub(super) prefill_attn_paged_512_k: KernelHandle,
     pub(super) prefill_attn_64_k: KernelHandle,
@@ -286,6 +318,7 @@ pub struct Qwen3AttentionLayer {
     // Batched prefill kernels
     pub(super) deinterleave_qg_split_k: KernelHandle,
     pub(super) deinterleave_qg_split_qnorm_k: KernelHandle,
+    pub(super) deinterleave_qg_split_qnorm_mrope_k: KernelHandle,
     pub(super) sigmoid_gate_mul_batched_k: KernelHandle,
     // Pre-dequanted FP8 weights for zero-overhead prefill GEMMs
     pub(super) q_fp8: Option<DevicePtr>,
@@ -299,6 +332,10 @@ pub struct Qwen3AttentionLayer {
     // M128 variants
     pub(super) fp8_gemm_t_m128_k: KernelHandle,
     pub(super) fp8_fp8_gemm_t_m128_k: KernelHandle,
+    // Native FP4 prefill (mxf4nvf4): present only for models whose kernel dir
+    // ships w4a4_gemm_mfast (try_kernel returns 0 elsewhere).
+    pub(super) w4a4_gemm_k: KernelHandle,
+    pub(super) quantize_nvfp4_k: KernelHandle,
     /// Online FP8 KV scale calibration.
     pub(super) fp8_calibration: Option<Fp8KvCalibration>,
 }

@@ -1,0 +1,90 @@
+{
+  "tag": "base_off",
+  "tpot_med_warm": 42.867566291553466,
+  "tpot_med_all": 41.625975805615624,
+  "ttft_med": 384.92560386657715,
+  "combined_sha": "f0fdf42b3ec47266",
+  "runs": [
+    {
+      "ttft": 575.1187801361084,
+      "tpot": 41.625975805615624,
+      "ntok": 316,
+      "sha": "e36660aecfc88d48",
+      "text": "Paged Attention, a technique popularized by the vLLM framework, fundamentally rethinks how Key-Value (KV) caches are managed during autoregressive decoding by borrowing concepts from operating system memory management. Instead of allocating contiguous memory blocks for each sequence, which leads to significant waste due to variable sequence lengths, Paged Attention divides the KV cache into fixed-size physical blocks. These blocks are managed through a logical abstraction known as the **block table**.\n\nDuring the decoding process, each request is assigned a block table, which acts as a mapping between logical block indices (representing the sequence position) and physical block indices (representing actual GPU memory locations). When a new token is generated, the system checks if the current physical block is full. If it is, a new physical block is allocated from a global pool, and the block table is updated to point the next logical index to this new physical location. This indirection allows the system to store KV states for different sequences in non-contiguous memory regions, drastically reducing memory fragmentation and increasing GPU memory utilization.\n\nA critical feature of this architecture is its support for **beam search** via a mechanism similar to **copy-on-write**. In beam search, multiple candidate sequences (beams) may share the same prefix. Paged Attention allows these beams to share the same physical KV blocks for the common prefix. When a beam diverges\u2014meaning it generates a different token than its siblings\u2014the system does not immediately copy the entire history. Instead, it allocates a new physical block for the diverging path and updates that specific beam\u2019s block",
+      "prompt": 0,
+      "rep": 0
+    },
+    {
+      "ttft": 727.7171611785889,
+      "tpot": 42.311719107249424,
+      "ntok": 316,
+      "sha": "70144f8dc67196f8",
+      "text": "Paged Attention, a technique popularized by the vLLM framework, fundamentally rethinks how Key-Value (KV) caches are managed during autoregressive decoding by borrowing concepts from operating system memory management. Instead of allocating contiguous memory blocks for each sequence, which leads to significant waste due to variable sequence lengths, Paged Attention divides the KV cache into fixed-size physical blocks. These blocks are managed through a logical abstraction known as the **block table**.\n\nDuring the decoding process, each request is assigned a block table, which acts as a mapping between logical block indices (representing the sequence position) and physical block indices (representing actual GPU memory locations). When a new token is generated, the system checks if the current physical block is full. If it is, a new physical block is allocated from a global pool, and the block table is updated to point the next logical index to this new physical location. This indirection allows the system to store KV states for different sequences in non-contiguous memory regions, drastically reducing memory fragmentation and increasing GPU memory utilization.\n\nA critical feature of this architecture is its support for **beam search** via a mechanism similar to **copy-on-write**. In beam search, multiple candidate sequences (beams) may share the same prefix. Paged Attention allows these beams to share the same physical KV blocks for the common prefix. When a beam diverges\u2014meaning it generates a different token than its siblings\u2014the system does not immediately copy the entire history. Instead, it marks the shared blocks as read-only for the diverging path. Only when a specific block",
+      "prompt": 0,
+      "rep": 1
+    },
+    {
+      "ttft": 433.5498809814453,
+      "tpot": 44.203805923461914,
+      "ntok": 316,
+      "sha": "70144f8dc67196f8",
+      "text": "Paged Attention, a technique popularized by the vLLM framework, fundamentally rethinks how Key-Value (KV) caches are managed during autoregressive decoding by borrowing concepts from operating system memory management. Instead of allocating contiguous memory blocks for each sequence, which leads to significant waste due to variable sequence lengths, Paged Attention divides the KV cache into fixed-size physical blocks. These blocks are managed through a logical abstraction known as the **block table**.\n\nDuring the decoding process, each request is assigned a block table, which acts as a mapping between logical block indices (representing the sequence position) and physical block indices (representing actual GPU memory locations). When a new token is generated, the system checks if the current physical block is full. If it is, a new physical block is allocated from a global pool, and the block table is updated to point the next logical index to this new physical location. This indirection allows the system to store KV states for different sequences in non-contiguous memory regions, drastically reducing memory fragmentation and increasing GPU memory utilization.\n\nA critical feature of this architecture is its support for **beam search** via a mechanism similar to **copy-on-write**. In beam search, multiple candidate sequences (beams) may share the same prefix. Paged Attention allows these beams to share the same physical KV blocks for the common prefix. When a beam diverges\u2014meaning it generates a different token than its siblings\u2014the system does not immediately copy the entire history. Instead, it marks the shared blocks as read-only for the diverging path. Only when a specific block",
+      "prompt": 0,
+      "rep": 2
+    },
+    {
+      "ttft": 375.87833404541016,
+      "tpot": 37.23666428020165,
+      "ntok": 319,
+      "sha": "fa9cab6c99eceb29",
+      "text": "Speculative decoding is an inference optimization technique designed to accelerate the generation process of large language models (LLMs) by leveraging a smaller, faster \"draft\" model to propose candidate tokens for a larger, more accurate \"target\" model. This approach fundamentally alters the computational dynamics of autoregressive generation, specifically by reducing the number of sequential forward passes required by the target model.\n\nIn standard autoregressive decoding, the target model must generate one token at a time, waiting for the previous token to be processed before moving to the next. This creates a significant bottleneck, as the target model\u2019s forward pass is often the most computationally expensive step. Speculative decoding mitigates this by allowing the draft model to generate a sequence of $k$ candidate tokens in parallel. These candidates are then verified by the target model in a single forward pass. If the target model agrees with the draft\u2019s predictions, all $k$ tokens are accepted, effectively compressing $k$ sequential steps into one. Consequently, the number of target forward passes is reduced by a factor roughly proportional to the acceptance rate, leading to substantial speedups without sacrificing the quality of the output.\n\nThe acceptance rate is the critical metric determining the efficiency of this process. It represents the proportion of draft tokens that the target model validates. A high acceptance rate implies that the draft model is a good proxy for the target, maximizing the reduction in target forward passes. Conversely, a low acceptance rate means the target model frequently rejects the draft\u2019s suggestions, forcing it to re-evaluate tokens individually, which diminishes the performance gains.\n\nCrucially",
+      "prompt": 1,
+      "rep": 0
+    },
+    {
+      "ttft": 545.9306240081787,
+      "tpot": 37.82079804618404,
+      "ntok": 319,
+      "sha": "de183e23c7a9741b",
+      "text": "Speculative decoding is an inference optimization technique designed to accelerate the generation process of large language models (LLMs) by leveraging a smaller, faster \"draft\" model to propose candidate tokens for a larger, more accurate \"target\" model. This approach fundamentally alters the computational dynamics of autoregressive generation, specifically by reducing the number of expensive forward passes required by the target model.\n\nIn standard autoregressive decoding, the target model must perform one forward pass for every single token generated, as each token depends on the previous context. Speculative decoding breaks this strict sequential dependency. The draft model first generates a sequence of $k$ candidate tokens in parallel or with minimal overhead. These candidates are then verified by the target model in a single forward pass. If the target model agrees with the draft's predictions, multiple tokens are accepted simultaneously, effectively amortizing the cost of one target forward pass over several generated tokens. Consequently, the total number of target forward passes is significantly reduced, often approaching a factor of $k$ speedup, provided the draft model is accurate.\n\nThe efficiency of this process is heavily dictated by the acceptance rate, which represents the proportion of draft tokens that the target model validates. A high acceptance rate implies that the draft model closely approximates the target model's probability distribution, leading to maximal speedup. Conversely, a low acceptance rate means the target model frequently rejects draft tokens, forcing the system to fall back to standard sequential generation for those steps, thereby diminishing the performance gains.\n\nCrucially, speculative decoding maintains the exact output distribution of the target model through a mechanism known as rejection",
+      "prompt": 1,
+      "rep": 1
+    },
+    {
+      "ttft": 260.0405216217041,
+      "tpot": 38.64362479755714,
+      "ntok": 319,
+      "sha": "742d63f4d34d424f",
+      "text": "Speculative decoding is an inference optimization technique designed to accelerate the generation process of large language models (LLMs) by leveraging a smaller, faster \"draft\" model to propose candidate tokens for a larger, more accurate \"target\" model. This approach fundamentally alters the computational dynamics of autoregressive generation, specifically by reducing the number of sequential forward passes required by the target model.\n\nIn standard autoregressive decoding, the target model must perform one forward pass for every single token generated, creating a significant bottleneck due to the sequential dependency. Speculative decoding breaks this chain by allowing the draft model to generate a sequence of $k$ tokens in parallel. These candidate tokens are then verified by the target model in a single forward pass. If the target model agrees with the draft's predictions, all $k$ tokens are accepted, effectively compressing $k$ sequential steps into one. Consequently, the number of target forward passes is reduced by a factor roughly proportional to the acceptance rate, leading to substantial speedups.\n\nThe acceptance rate is the critical metric determining the efficiency of this process. It represents the proportion of draft tokens that the target model validates. A high acceptance rate implies that the draft model is a strong proxy for the target, maximizing the reduction in computational overhead. Conversely, a low acceptance rate means the target model frequently rejects the draft's suggestions, forcing the system to fall back to standard sequential generation for those tokens, thereby diminishing the performance gains.\n\nCrucially, speculative decoding preserves the exact probability distribution of the target model through a mechanism known as rejection sampling. When the target model rejects a draft",
+      "prompt": 1,
+      "rep": 2
+    },
+    {
+      "ttft": 384.92560386657715,
+      "tpot": 41.513258897805514,
+      "ntok": 317,
+      "sha": "a46dfeaa70af15ee",
+      "text": "NVFP4, specifically the E2M1 format, represents a significant leap in extreme low-precision computing, designed primarily to accelerate Large Language Model (LLM) inference by reducing memory bandwidth and compute requirements. The end-to-end workflow begins with **packing**, where 32-bit floating-point weights are converted into 4-bit E2M1 representations. Unlike standard FP8, E2M1 uses 2 bits for the exponent and 1 bit for the mantissa, offering a dynamic range of 0 to 15 but with very coarse granularity. To mitigate the severe precision loss inherent in such a low bit-width, the data is organized into small blocks, typically 16 elements per block.\n\nThe core of this quantization scheme lies in the **block scale factors**. For every block of 16 E2M1 values, a single FP8 (or sometimes FP16) scale factor is computed. This scale factor represents the maximum absolute value within that specific block, ensuring that the largest value maps to the maximum representable E2M1 value (15.0). This per-block scaling allows the quantization to adapt locally to the distribution of weights, preserving relative magnitudes within the block even if absolute precision is low. The packed E2M1 data and the corresponding scale factors are stored separately in memory, often in a transposed or interleaved layout to optimize tensor core loading.\n\nDuring the **GEMM epilogue**, the dequantization process occurs on-the-fly. The hardware loads the E2M1 blocks and their",
+      "prompt": 2,
+      "rep": 0
+    },
+    {
+      "ttft": 347.39232063293457,
+      "tpot": 43.42341347585751,
+      "ntok": 317,
+      "sha": "0c1d136cb45ceba6",
+      "text": "NVFP4, specifically the E2M1 format, represents a significant leap in extreme low-precision computing, designed primarily to accelerate Large Language Model (LLM) inference by reducing memory bandwidth and compute requirements. The end-to-end workflow begins with **packing**, where 32-bit floating-point weights are converted into 4-bit E2M1 representations. Unlike standard FP8, E2M1 uses 2 bits for the exponent and 1 bit for the mantissa, offering a dynamic range of 0 to 6 but with very coarse granularity. To mitigate the severe precision loss inherent in such a low bit-width, the data is organized into small blocks, typically 16 elements per block.\n\nThe core of this quantization scheme lies in the **block scale factors**. For every block of 16 E2M1 values, a single FP8 (or sometimes FP16) scale factor is computed. This scale factor represents the maximum absolute value within that specific block, ensuring that the largest value in the block maps to the maximum representable value in E2M1. This per-block scaling allows the quantization to adapt locally to the distribution of weights, preserving relative magnitudes even if absolute precision is low. The packed E2M1 data and the corresponding scale factors are stored separately in memory, with the scales often requiring less frequent access than the weights themselves.\n\nDuring the **GEMM epilogue**, the dequantization process occurs. The hardware or software kernel fetches the E2M1 weights and their associated block scales. The de",
+      "prompt": 2,
+      "rep": 1
+    },
+    {
+      "ttft": 350.05712509155273,
+      "tpot": 43.465767480150056,
+      "ntok": 317,
+      "sha": "0c1d136cb45ceba6",
+      "text": "NVFP4, specifically the E2M1 format, represents a significant leap in extreme low-precision computing, designed primarily to accelerate Large Language Model (LLM) inference by reducing memory bandwidth and compute requirements. The end-to-end workflow begins with **packing**, where 32-bit floating-point weights are converted into 4-bit E2M1 representations. Unlike standard FP8, E2M1 uses 2 bits for the exponent and 1 bit for the mantissa, offering a dynamic range of 0 to 6 but with very coarse granularity. To mitigate the severe precision loss inherent in such a low bit-width, the data is organized into small blocks, typically 16 elements per block.\n\nThe core of this quantization scheme lies in the **block scale factors**. For every block of 16 E2M1 values, a single FP8 (or sometimes FP16) scale factor is computed. This scale factor represents the maximum absolute value within that specific block, ensuring that the largest value in the block maps to the maximum representable value in E2M1. This per-block scaling allows the quantization to adapt locally to the distribution of weights, preserving relative magnitudes even if absolute precision is low. The packed E2M1 data and the corresponding scale factors are stored separately in memory, with the scales often requiring less frequent access than the weights themselves.\n\nDuring the **GEMM epilogue**, the dequantization process occurs. The hardware or software kernel fetches the E2M1 weights and their associated block scales. The de",
+      "prompt": 2,
+      "rep": 2
+    }
+  ]
+}

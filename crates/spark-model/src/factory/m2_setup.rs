@@ -15,7 +15,18 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     gpu: &dyn GpuBackend,
     layers: &mut [Box<dyn TransformerLayer>],
 ) -> Result<()> {
-    if config.model_type != "minimax_m2" && config.model_type != "step3p7" {
+    // ARM-2 Phase-K: deepseek_v4 native-MXFP4 routed experts REQUIRE the
+    // transposed prefill tables (gate_ptrs_t/up_ptrs_t/down_ptrs_t) to reach the
+    // validated E8M0 fused GEMM path (moe_w4a16_fused_gate_up_t_k64_e8m0). Without
+    // them, run_routed_grouped_gemm falls to the non-transposed NVFP4 fallback,
+    // which reads the E8M0 [N,K/32] scales as NVFP4 [N,K/16] → OOB. Unified layout
+    // (frees originals between phases) is the fit for V4's tight EP=2 budget;
+    // requires ATLAS_UNIFIED_MOE_LAYOUT=1, same as minimax_m2/step3p7. Additive —
+    // minimax_m2/step3p7 dispatch is byte-identical (they still match earlier).
+    if config.model_type != "minimax_m2"
+        && config.model_type != "step3p7"
+        && config.model_type != "deepseek_v4"
+    {
         return Ok(());
     }
     let unified_layout = std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")

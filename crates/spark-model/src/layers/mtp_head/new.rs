@@ -21,6 +21,9 @@ impl MtpHead {
         quant: MtpQuantization,
         mtp_vocab_size: u32,
         max_seq_len: usize,
+        // This model's levers — the drafter-prefill policy decides whether the
+        // dedicated prefill scratch is allocated at all.
+        levers: &crate::layers::ops::ModelLevers,
     ) -> Result<Self> {
         let stream = gpu.default_stream();
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
@@ -286,6 +289,34 @@ impl MtpHead {
             lm = (effective_vocab * h / 2) as f64 / (1024.0 * 1024.0),
         );
 
+        // Dedicated batched-prefill scratch (~50 MB at h=5120/nq=32/hd=256,
+        // PREFILL_CHUNK=512 rows). Dedicated rather than aliased onto the
+        // shared arena so the pass has zero aliasing hazards; allocated only
+        // when a consumer exists.
+        // The catch-up feed (ATLAS_MTP_CATCHUP) runs through the same batched
+        // row writer as the drafter prefill and needs the same scratch.
+        let prefill_scratch = if super::mtp_drafter_prefill_enabled(levers)
+            || crate::speculative::mtp_catchup_enabled()
+        {
+            let c = super::prefill::PREFILL_CHUNK;
+            let bf16 = 2usize;
+            Some(super::MtpPrefillScratch {
+                embed: gpu.alloc(c * h * bf16)?,
+                normed_embed: gpu.alloc(c * h * bf16)?,
+                normed_hidden: gpu.alloc(c * h * bf16)?,
+                concat: gpu.alloc(c * 2 * h * bf16)?,
+                fc_out: gpu.alloc(c * h * bf16)?,
+                normed2: gpu.alloc(c * h * bf16)?,
+                k_out: gpu.alloc(c * nkv * hd * bf16)?,
+                v_out: gpu.alloc(c * nkv * hd * bf16)?,
+                q_scratch: gpu.alloc(c * nq * hd * bf16)?,
+                pos_dev: gpu.alloc(c * 4)?,
+                slot_dev: gpu.alloc(c * 8)?,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,
             pre_fc_norm_hidden: weights.pre_fc_norm_hidden,
@@ -335,6 +366,7 @@ impl MtpHead {
             argmax_k: gpu.kernel("argmax", "argmax_bf16")?,
             embed_from_argmax_k: gpu.kernel("embed_from_argmax", "embed_from_argmax")?,
             draft_token_id_dev: gpu.alloc(4)?,
+            last_conf_bits: std::sync::atomic::AtomicU32::new(1.0f32.to_bits()),
             dense_gemv_k,
             dense_gemv_fp8w_k,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv").ok(),
@@ -342,6 +374,10 @@ impl MtpHead {
             moe_topk_k,
             moe_silu_mul_k,
             moe_weighted_sum_blend_k,
+            // Batched BF16 GEMM for drafter prefill; 0-handle when the
+            // target's kernel set lacks it (prefill then no-ops).
+            dense_gemm_k: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16"),
+            prefill_scratch,
         })
     }
 }

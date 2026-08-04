@@ -10,31 +10,39 @@
 //! - `NoPrefixCaching`: no-ops (zero overhead when disabled)
 //! - `RadixTree` (see `crate::radix_tree`): full radix tree with LRU eviction
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
-// ── Global prefix cache counters (one RadixTree per server) ──
-
-static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
-static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-static CACHE_HIT_TOKENS: AtomicU64 = AtomicU64::new(0);
+// The three counters that lived here are fields of the single run mailbox,
+// `crate::run_metrics::RunMetrics` — see that module for why one static and
+// not none, and why it is cleared at run start.
 
 pub fn record_cache_hit(matched_tokens: usize) {
-    CACHE_HITS.fetch_add(1, Ordering::Relaxed);
-    CACHE_HIT_TOKENS.fetch_add(matched_tokens as u64, Ordering::Relaxed);
+    let m = crate::run_metrics::metrics();
+    m.cache_hits.fetch_add(1, Ordering::Relaxed);
+    m.cache_hit_tokens
+        .fetch_add(matched_tokens as u64, Ordering::Relaxed);
 }
 
 pub fn record_cache_miss() {
-    CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+    crate::run_metrics::metrics()
+        .cache_misses
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn cache_hit_count() -> u64 {
-    CACHE_HITS.load(Ordering::Relaxed)
+    crate::run_metrics::metrics()
+        .cache_hits
+        .load(Ordering::Relaxed)
 }
 pub fn cache_miss_count() -> u64 {
-    CACHE_MISSES.load(Ordering::Relaxed)
+    crate::run_metrics::metrics()
+        .cache_misses
+        .load(Ordering::Relaxed)
 }
 pub fn cache_hit_tokens_total() -> u64 {
-    CACHE_HIT_TOKENS.load(Ordering::Relaxed)
+    crate::run_metrics::metrics()
+        .cache_hit_tokens
+        .load(Ordering::Relaxed)
 }
 
 /// Result of evicting LRU cached blocks (Phase 6.1.e).
@@ -79,6 +87,20 @@ pub struct PrefixMatch {
     /// checkpoints it may be less — the caller must recompute SSM state for
     /// tokens between `ssm_snapshot_tokens` and `matched_tokens`.
     pub ssm_snapshot_tokens: usize,
+    /// Phase 1b spill tier: when the deepest anchor for this prefix is SPILLED
+    /// (not resident in HBM), `ssm_snapshot` is `None` and this holds the tier
+    /// key (prefix hash). The caller faults the bytes into a fresh snapshot slot
+    /// (`SsmSnapshotPool::fault_in_slot`), `promote_snapshot`s the entry, then
+    /// restores. `None` whenever nothing is tiered (i.e. `ATLAS_SSM_TIER` off) —
+    /// so this field is inert on the default path.
+    pub ssm_snapshot_tier_key: Option<u64>,
+    /// Token depth covered by `ssm_snapshot_tier_key` (analogue of
+    /// `ssm_snapshot_tokens` for a tiered anchor).
+    pub ssm_snapshot_tier_tokens: usize,
+    /// Whether the matched SSM snapshot is a TAIL (bleeds past the exact
+    /// prefix). The restore site session-gates only tails; exact and
+    /// is_tail_sibling snapshots are content-addressed (safe cross-session).
+    pub ssm_snapshot_is_tail: bool,
 }
 
 impl PrefixMatch {
@@ -90,6 +112,9 @@ impl PrefixMatch {
             matched_tokens: 0,
             ssm_snapshot: None,
             ssm_snapshot_tokens: 0,
+            ssm_snapshot_tier_key: None,
+            ssm_snapshot_tier_tokens: 0,
+            ssm_snapshot_is_tail: false,
         }
     }
 
@@ -122,7 +147,26 @@ pub trait PrefixCache: Send + Sync {
     /// Increments ref_count on matched nodes so they survive eviction
     /// while the sequence is active. `session_hash` is used for SSM
     /// snapshot isolation (0 = legacy/no session tracking).
-    fn lookup(&self, tokens: &[u32], block_size: usize, session_hash: u64) -> PrefixMatch;
+    ///
+    /// Task #24: `adapter_id` keys the KV/prefix + SSM-snapshot cache so a
+    /// request reuses ONLY blocks computed under the same adapter. `0` = base /
+    /// no adapter, which keys byte-identically to the pre-LoRA token-only cache.
+    fn lookup(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> PrefixMatch;
+
+    /// Read-only longest-prefix probe: number of tokens (block-aligned)
+    /// `lookup` would match, WITHOUT taking refs, touching LRU state, or
+    /// counting a hit/miss. Used by the prefill tail-checkpoint split to
+    /// detect conversation reuse before deciding to pay the extra pass.
+    /// Task #24: keyed by `adapter_id` so a cross-adapter peek reports a miss.
+    fn peek_matched_tokens(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) -> usize {
+        0
+    }
 
     /// Insert a completed prefill's blocks into the cache.
     ///
@@ -158,6 +202,7 @@ pub trait PrefixCache: Send + Sync {
         disk_block_ids: &[u32],
         block_size: usize,
         matched_tokens: usize,
+        adapter_id: u64,
     ) -> Vec<u32>;
 
     /// Insert blocks with an SSM state snapshot registered in the snapshot index.
@@ -180,6 +225,7 @@ pub trait PrefixCache: Send + Sync {
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
+        adapter_id: u64,
     ) -> (Option<usize>, Vec<u32>);
 
     /// Insert an SSM snapshot at an intermediate token boundary.
@@ -199,13 +245,38 @@ pub trait PrefixCache: Send + Sync {
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
+        adapter_id: u64,
+    ) -> Option<usize>;
+
+    /// Register the per-session TAIL snapshot in the index WITHOUT touching the
+    /// radix tree (the final chunk's `insert` covers those blocks). Supersedes
+    /// this session's previous tail; returns displaced snapshot ids to free.
+    fn insert_tail_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Vec<usize>;
+
+    /// Register the tail's EARLY sibling (`tb - bs`) in the index. Must be
+    /// called after `insert_tail_snapshot` in the same finalize (the tail
+    /// insert sweeps the session's previous tail + sibling). Returns a
+    /// displaced snapshot id to free, if the prefix was already registered.
+    fn insert_tail_sibling_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
     ) -> Option<usize>;
 
     /// Release ref_counts on blocks that were acquired via `lookup`.
     ///
     /// Called when a sequence finishes. Decrements ref_count on cache
     /// nodes matching the token prefix, making them eligible for eviction.
-    fn release(&self, tokens: &[u32], block_size: usize);
+    /// Task #24: `adapter_id` must match the one used at `lookup`/`insert`.
+    fn release(&self, tokens: &[u32], block_size: usize, adapter_id: u64);
 
     /// Evict up to `num_blocks` cached blocks, returning their physical
     /// indices and parallel disk-block IDs (Phase 6.1.e).
@@ -220,6 +291,23 @@ pub trait PrefixCache: Send + Sync {
     /// Evict the least-recently-used SSM snapshot from the snapshot index.
     /// Returns the snapshot ID so the caller can free it in `SsmSnapshotPool`.
     fn evict_snapshot_lru(&self) -> Option<usize>;
+
+    /// Phase 1b spill tier: pick a spill victim (same policy as
+    /// `evict_snapshot_lru`, HBM-resident only), **keep** its index entry
+    /// (findable so a warm turn faults it back), and return `(freed_slot, key)`
+    /// so the caller moves its bytes to the tier and reuses the slot. `None`
+    /// when nothing resident remains. Default: `None` (caches without a tier).
+    fn evict_snapshot_to_tier(&self) -> Option<(usize, u64)> {
+        None
+    }
+
+    /// Phase 1b spill tier: after the caller faulted a spilled snapshot's bytes
+    /// into `new_slot`, re-home its index entry to HBM. Returns `false` if the
+    /// key is unknown. Default: `false`.
+    fn promote_snapshot(&self, key: u64, new_slot: usize) -> bool {
+        let _ = (key, new_slot);
+        false
+    }
 
     /// Number of SSM snapshots currently stored in the snapshot index.
     fn snapshot_count(&self) -> usize;
@@ -236,7 +324,13 @@ impl PrefixCache for NoPrefixCaching {
         false
     }
 
-    fn lookup(&self, _tokens: &[u32], _block_size: usize, _session_hash: u64) -> PrefixMatch {
+    fn lookup(
+        &self,
+        _tokens: &[u32],
+        _block_size: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> PrefixMatch {
         PrefixMatch::empty()
     }
 
@@ -247,6 +341,7 @@ impl PrefixCache for NoPrefixCaching {
         _disk_block_ids: &[u32],
         _block_size: usize,
         _matched_tokens: usize,
+        _adapter_id: u64,
     ) -> Vec<u32> {
         Vec::new()
     }
@@ -260,6 +355,7 @@ impl PrefixCache for NoPrefixCaching {
         _snapshot_id: usize,
         _session_hash: u64,
         _matched_tokens: usize,
+        _adapter_id: u64,
     ) -> (Option<usize>, Vec<u32>) {
         (None, Vec::new())
     }
@@ -273,11 +369,32 @@ impl PrefixCache for NoPrefixCaching {
         _snapshot_id: usize,
         _session_hash: u64,
         _matched_tokens: usize,
+        _adapter_id: u64,
     ) -> Option<usize> {
         None
     }
 
-    fn release(&self, _tokens: &[u32], _block_size: usize) {}
+    fn insert_tail_snapshot(
+        &self,
+        _tokens: &[u32],
+        _snapshot_id: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> Vec<usize> {
+        Vec::new()
+    }
+
+    fn insert_tail_sibling_snapshot(
+        &self,
+        _tokens: &[u32],
+        _snapshot_id: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn release(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) {}
 
     fn evict(&self, _num_blocks: usize) -> EvictedBlocks {
         EvictedBlocks::default()
@@ -315,13 +432,13 @@ mod tests {
         let block_table = vec![0, 1];
         let disk_block_ids: Vec<u32> = vec![];
 
-        let m = cache.lookup(&tokens, 4, 0);
+        let m = cache.lookup(&tokens, 4, 0, 0);
         assert!(m.is_empty());
 
         // These should not panic
-        let new_acq = cache.insert(&tokens, &block_table, &disk_block_ids, 4, 0);
+        let new_acq = cache.insert(&tokens, &block_table, &disk_block_ids, 4, 0, 0);
         assert!(new_acq.is_empty());
-        cache.release(&tokens, 4);
+        cache.release(&tokens, 4, 0);
 
         let evicted = cache.evict(10);
         assert!(evicted.is_empty());

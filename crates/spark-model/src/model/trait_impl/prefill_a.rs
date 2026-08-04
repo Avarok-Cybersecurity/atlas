@@ -34,34 +34,9 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-impl TransformerModel {
-    pub(super) fn prepare_vision_embed_dispatch(
-        &self,
-        images: &[(Vec<f32>, usize, usize)],
-    ) -> Result<()> {
-        let ve = match &self.vision_encoder {
-            Some(ve) => ve,
-            None => return Ok(()),
-        };
-        let stream = self.gpu.default_stream();
-        let mut total_patches = 0usize;
-        let mut post_merge_grids: Vec<(usize, usize)> = Vec::with_capacity(images.len());
-        let sms = ve.spatial_merge_size.max(1);
-        for (pixels, grid_h, grid_w) in images {
-            let p = ve.forward(pixels, *grid_h, *grid_w, self.gpu.as_ref(), stream)?;
-            total_patches += p;
-            // Record post-merge dimensions for downstream MRoPE position
-            // computation. The ViT folds `sms × sms` pre-merge patches into
-            // a single output embedding, so the effective spatial grid
-            // shrinks by that factor in each axis.
-            post_merge_grids.push((grid_h / sms, grid_w / sms));
-        }
-        *self.vision_embed_patches.lock() = total_patches;
-        *self.vision_image_grids.lock() = post_merge_grids;
-        tracing::info!("Vision encoder: {} patches encoded", total_patches);
-        Ok(())
-    }
+mod vision;
 
+impl TransformerModel {
     pub(super) fn prefill_dispatch(
         &self,
         tokens: &[u32],
@@ -106,7 +81,8 @@ impl TransformerModel {
         let prefix_match = if self.tokens_have_vision_pad(tokens) {
             spark_runtime::prefix_cache::PrefixMatch::empty()
         } else {
-            self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+            self.prefix_cache
+                .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
         };
         let mut kv_write_start = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = prefix_match.matched_tokens;
@@ -151,14 +127,19 @@ impl TransformerModel {
             self.prefix_cache.as_ref(),
             self.gpu.as_ref(),
             stream,
+            self.levers.kv_poison,
         )?;
 
         // ── Marconi: try to restore SSM state and skip cached prefix ──
         // With intermediate checkpoints, ssm_snapshot_tokens may be less than
         // matched_tokens. Use ssm_snapshot_tokens as the skip point.
         // Session isolation: only restore snapshots belonging to this session.
-        let marconi_skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
-            let snap_tok = prefix_match.ssm_snapshot_tokens;
+        // Phase 1b spill-tier fault-in (#6): fold a resident hit with a
+        // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
+        let (eff_snapshot, eff_snapshot_tokens) =
+            self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+        let marconi_skip = if let Some(snap_id) = eff_snapshot {
+            let snap_tok = eff_snapshot_tokens;
             if snap_tok > 0
                 && kv_write_start <= n
                 && self
@@ -189,9 +170,19 @@ impl TransformerModel {
                         snap_id,
                     );
                 }
-                // When all tokens matched (exact prompt), the snapshot covers
-                // everything — skip the entire prompt, process only the last token.
-                kv_write_start = if kv_write_start >= n { n } else { snap_tok };
+                // All tokens matched AND the snapshot covers the full match →
+                // skip the whole prompt (process only the last token). But an
+                // *intermediate* checkpoint at full match (snap_tok < n — e.g. a
+                // faulted-in anchor whose leaf was evicted) restored state at
+                // `snap_tok`, not `n`; skipping to `n` would desync SSM state
+                // from KV/positions → garbage. Then skip only to `snap_tok` so
+                // the suffix recomputes SSM over [snap_tok, n). (Mirrors the
+                // prefill_b/prefill_c warm-hit fix.)
+                kv_write_start = if kv_write_start >= n && snap_tok >= kv_write_start {
+                    n
+                } else {
+                    snap_tok
+                };
                 true
             } else {
                 if kv_write_start > 0 {
@@ -256,6 +247,11 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
+            // Also stage token IDs into the STABLE token_ids buffer (scratch is
+            // reused for MoE routing during the layer loop). DeepSeek-V4 hash-MoE
+            // layers read `tid2eid[token_id]` per token, in this same order.
+            self.gpu
+                .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
             ops::batched_embed(
                 self.gpu.as_ref(),
                 self.batched_embed_kernel,
@@ -343,6 +339,24 @@ impl TransformerModel {
             devs
         };
 
+        // ── M2 request-scoped LoRA routing (prefill). Every one of the
+        // `proc_count` prompt tokens carries THIS request's adapter — the
+        // headline fix (prefill previously always applied the global active
+        // adapter, contaminating a routed request's prompt KV). A dedicated
+        // arena buffer (`lora_seq_slot`, sized max_batch_tokens) holds the
+        // m-element slot array; the packed meta gap is unsafe here because
+        // positions span `proc_count*4` bytes from meta_base+0. Prefill is
+        // eager (graph_capture:false) + this H2D precedes the layer loop, so
+        // it rides the existing metadata phasing. `DevicePtr(0)` (no pool) →
+        // the K/V/O apply sites take the byte-identical installed-pair path.
+        // `seq.adapter_slot == -1` (no `adapter` field) resolves to active.
+        let seq_slot = self.upload_seq_slot_uniform(
+            seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
+
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -352,12 +366,17 @@ impl TransformerModel {
             block_table: block_table_dev,
             max_blocks_per_seq: seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot,
         };
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(attn_metadata),
             profile: self.profile,
             comm: self.comm_ref(),
@@ -365,6 +384,12 @@ impl TransformerModel {
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
+            // Hash-MoE: token IDs for the `proc_count` tokens processed this
+            // pass, in MoE-loop order (uploaded above to the stable buffer).
+            token_ids: Some(self.buffers.token_ids()),
+            // #30: request slot pairs (None unless routing to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
+            midchunk_capture: None,
         };
 
         // ── 4. Forward through all layers ──
@@ -412,12 +437,13 @@ impl TransformerModel {
                 stream,
             )?;
 
-            // MLA diagnostic: dump per-layer hidden state norm (once per session)
-            static DIAG_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
+            // MLA diagnostic: dump per-layer hidden state norm (once per model).
+            // Per-model latch (see `ModelStats::dumped`) rather than a static: an
+            // operator who sets the flag and then swaps models must still get the
+            // dump, instead of it being swallowed by the previous model's shot.
             if self.profile
                 && self.config.model_type == "mistral"
-                && !DIAG_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                && self.stats.dumped.keyed("mla_prefill_norms")
             {
                 self.gpu.synchronize(stream)?;
                 // Read last token's hidden state (what goes to LM head)
@@ -434,9 +460,7 @@ impl TransformerModel {
                         .collect();
                     let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
                     tracing::info!("LAYER_NORM L{i}: hidden_norm={norm:.4}");
-                    if i == self.layers.len() - 1 {
-                        DIAG_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    if i == self.layers.len() - 1 {}
                 }
             }
 
@@ -459,6 +483,10 @@ impl TransformerModel {
                 }
             }
         }
+
+        // ATLAS_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
+        // hiddens for the whole-prompt drafter prefill. No-op when disabled.
+        self.try_mtp_prefill_capture(seq_len_start, proc_count, stream)?;
 
         // ── 5. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);

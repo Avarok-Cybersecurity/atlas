@@ -10,6 +10,13 @@ active_parameters = "12B"
 model_type = "nemotron_h"
 hidden_size = 4096
 
+# Puzzle 75B-A9B: same Super backbone dims (H=4096, LatentMoE, Mamba-2) with
+# heterogeneous per-block MoE intermediate/top-k. Reuses Super PTX; MoE dims
+# are runtime parameters from config.block_configs.
+[[model_types]]
+model_type = "nemotron_h_puzzle"
+hidden_size = 4096
+
 # Nemotron-H Super uses ChatML + LatentMoE. No official sampling recommendations.
 # 2026-05-24 empirical band-aid. NVIDIA's temp=1.0 across-the-board
 # recipe risked max_tokens wandering on agentic clients (lesson from

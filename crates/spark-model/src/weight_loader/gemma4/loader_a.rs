@@ -349,6 +349,10 @@ pub(super) fn load_layers_impl(
             gate_proj,
             up_proj,
             down_proj,
+            // Gemma-4 uses the bf16_weights prefill path; no transposed NVFP4 copies.
+            gate_proj_t: None,
+            up_proj_t: None,
+            down_proj_t: None,
         };
         let bf16_mlp_weights = build_bf16_mlp(store, &lp, bf16_mlp, config, gpu, h)?;
         gpu.synchronize(stream)?;

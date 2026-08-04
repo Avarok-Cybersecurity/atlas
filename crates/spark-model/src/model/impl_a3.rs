@@ -32,26 +32,9 @@ impl TransformerModel {
         let h = self.config.hidden_size;
         let row_bytes = h * 2; // BF16 embedding row
         let src = self.embed_tokens.weight.offset(token as usize * row_bytes);
-        if self.bf16_to_f32_kernel.0 != 0 {
-            // FP32 residual: embed BF16 to scratch, convert to FP32 output.
-            // The scratch buffer is norm_output which is BF16 regardless of
-            // residual dtype — use the BF16 scaler explicitly.
-            let scratch = self.buffers.norm_output();
-            self.gpu.copy_d2d_async(src, scratch, row_bytes, stream)?;
-            self.scale_embeddings_bf16(scratch, 1, stream)?;
-            crate::layers::ops::bf16_to_f32(
-                self.gpu.as_ref(),
-                self.bf16_to_f32_kernel,
-                scratch,
-                output,
-                h as u32,
-                stream,
-            )
-        } else {
-            self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
-            // Scale embeddings (Gemma-4: sqrt(hidden_size))
-            self.scale_embeddings(output, 1, stream)
-        }
+        self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
+        // Scale embeddings (Gemma-4: sqrt(hidden_size))
+        self.scale_embeddings(output, 1, stream)
     }
 
     /// Scale in-place embeddings by config.embed_scale. The residual stream
@@ -90,27 +73,46 @@ impl TransformerModel {
         &self,
         hidden: DevicePtr,
         num_tokens: u32,
+        logits_dst: DevicePtr,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
-        let logits = self.buffers.logits();
+        // Caller picks the destination so co-dispatched prefill streams can each
+        // write their own logits row (was a single shared buffer = cross-stream
+        // aliasing: all streams' first token collapsed to one). Verify/decode
+        // callers pass `self.buffers.logits()` (base) — unchanged behaviour.
+        let logits = logits_dst;
         if let Some(ref fp8) = self.lm_head_fp8 {
-            // FP8 E4M3 LM head. `w8a16_gemv` is M=1 only (no batch2/GEMM
-            // variant), so loop one GEMV per token. hidden is BF16 [K,H]
-            // (stride h*2 bytes); logits is BF16 [K,V] (stride v*2 bytes).
+            // FP8 E4M3 LM head. The dual-GEMV (batch=2) reads the FP8 weight
+            // once for both K=2 verify tokens — bit-identical to two M=1 GEMVs
+            // but halves the full-vocab weight bandwidth. Falls back to the
+            // per-token loop for K!=2 or when the kernel is absent.
             let bf16 = 2usize;
-            for i in 0..num_tokens as usize {
-                ops::dense_gemv_fp8w(
+            if num_tokens == 2 && self.dense_gemv_fp8w_batch2_kernel.0 != 0 {
+                ops::dense_gemv_fp8w_batch2(
                     self.gpu.as_ref(),
-                    self.dense_gemv_fp8w_kernel,
-                    hidden.offset(i * h as usize * bf16),
+                    self.dense_gemv_fp8w_batch2_kernel,
+                    hidden,
                     fp8,
-                    logits.offset(i * v as usize * bf16),
+                    logits,
                     v,
                     h,
                     stream,
                 )?;
+            } else {
+                for i in 0..num_tokens as usize {
+                    ops::dense_gemv_fp8w(
+                        self.gpu.as_ref(),
+                        self.dense_gemv_fp8w_kernel,
+                        hidden.offset(i * h as usize * bf16),
+                        fp8,
+                        logits.offset(i * v as usize * bf16),
+                        v,
+                        h,
+                        stream,
+                    )?;
+                }
             }
         } else if num_tokens == 2 {
             // Double-GEMV: reads weights once, computes 2 outputs.
@@ -153,6 +155,41 @@ impl TransformerModel {
                     stream,
                 )?;
             }
+        } else if (3..=8).contains(&num_tokens)
+            && {
+                if num_tokens <= 4 {
+                    self.w4a16_gemv_batch4_kernel.0 != 0
+                } else {
+                    self.w4a16_gemv_batch8_kernel.0 != 0
+                }
+            }
+            && let Some(ref nvfp4) = self.lm_head_nvfp4
+        {
+            // K=3..8 verify lm_head: one weight read for all rows via the
+            // batched GEMV (batch4 M<=4, batch8 M=5..8 chain verify). nsys
+            // (2026-07-18, drafts=3 serve): the base M64-tile `w4a16_gemm`
+            // below cost 19.3 ms/verify-step on the [248320, 5120] NVFP4
+            // lm_head at M=4 — 94% of the M-tile is padding, ~33 GB/s
+            // effective. The batch GEMV streams the same 636 MB once at
+            // near-peak (~2.5 ms), the single largest slice of the K=4
+            // verify-vs-K=2 cost gap; batch8 extends that to the K=5..8
+            // chain-verify rows (batchm_bench).
+            let kh = if num_tokens <= 4 {
+                self.w4a16_gemv_batch4_kernel
+            } else {
+                self.w4a16_gemv_batch8_kernel
+            };
+            ops::w4a16_gemv_batchm(
+                self.gpu.as_ref(),
+                kh,
+                hidden,
+                nvfp4,
+                logits,
+                num_tokens,
+                v,
+                h,
+                stream,
+            )?;
         } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             ops::w4a16_gemm(
                 self.gpu.as_ref(),

@@ -37,11 +37,8 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        let fp32 = if self.config.use_fp32_residual {
-            4usize
-        } else {
-            2usize
-        };
+        // BF16 residual is the shipping config (2 bytes/element).
+        let elem_bytes = 2usize;
 
         // ── 1. Embed chunk tokens → [chunk_len, H] contiguous at hidden_dst ──
         // Upload token IDs to device and do a single batched embed kernel launch
@@ -54,6 +51,11 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch(); // temporary, overwritten by MoE later
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
+            // Also stage this chunk's token IDs into the STABLE token_ids buffer
+            // (scratch is reused by MoE routing). DeepSeek-V4 hash-MoE reads
+            // `tid2eid[token_id]` per token in this same chunk order.
+            self.gpu
+                .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
             ops::batched_embed(
                 self.gpu.as_ref(),
                 self.batched_embed_kernel,
@@ -123,11 +125,16 @@ impl TransformerModel {
                     .map(|v| v.image_pad_token_id)
                     .filter(|v| *v != 0)
                     .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
-                let mut img_idx = 0usize; // index into buf_out rows
+                // Co-dispatch: this request's slice starts at vision_row_base
+                // in the shared packed buf_out (0 for the legacy single encode).
+                let row_base = *self.vision_row_base.lock();
+                let mut img_idx = 0usize; // pad-token count within the chunk
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == pad_id {
-                        let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
-                        let dst = hidden_dst.offset(i * h * fp32);
+                        let src = ve
+                            .buf_out
+                            .offset((row_base + img_idx) * ve.out_hidden_size * 2);
+                        let dst = hidden_dst.offset(i * h * elem_bytes);
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
                         img_idx += 1;

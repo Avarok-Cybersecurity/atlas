@@ -32,6 +32,7 @@ mrope_interleaved = true
 mrope_section = [11, 11, 10]
 
 mtp_layers = 0
+vision = true
 
 # Effective context for agentic tasks. Mirrors Qwen3.5-27B's empirical bound
 # (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).
@@ -66,14 +67,22 @@ effective_context = 24576
 # without the language-mixing/wandering side-effects of Qwen's
 # presence_penalty=1.5 (validated on Qwen3.6-35B-A3B opencode session
 # 2026-05-24). Top_p/top_k tracked from official model card.
+# 2026-07-04: rep_penalty 1.1->1.0 + dry_multiplier 0.5->0.0 in ALL presets,
+# syncing to the Qwen3.6-35B-A3B fix (2026-06-03, "rep_penalty is the
+# code-corruptor"; vLLM serves penalty-free greedy). The 27B was the
+# un-synced outlier: its tool-path 1.1/0.5 corrupted grammar-constrained
+# tool-call args even at temp 0 (penalties are applied before the grammar
+# mask, so they shift the argmax among legal JSON tokens — and tool-call
+# JSON legitimately repeats " { , and key names), regressing BFCL ST-995
+# non_live ~85->~76 vs the penalty-free 89.04 config.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.thinking_coding]
 temperature = 0.6
@@ -81,8 +90,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.non_thinking]
 temperature = 0.7
@@ -90,8 +99,8 @@ top_p = 0.8
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [sampling.tools]
 temperature = 0.6
@@ -99,8 +108,8 @@ top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
 frequency_penalty = 0.0
-repetition_penalty = 1.1
-dry_multiplier = 0.5
+repetition_penalty = 1.0
+dry_multiplier = 0.0
 
 [behavior]
 # Content-loop watchdog enabled: dense Qwen3.6-27B has a known
@@ -119,7 +128,25 @@ thinking_default = true
 thinking_in_tools = true
 # 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
 max_thinking_budget = 2048
-default_num_drafts = 1
+# 2026-07-24 chain-widening sweep: 1 → 3 (K=2 → K=4). The K=4 verify FFN on the
+# 16 full-attention layers was falling through to the MMQ prefill GEMM (no n==4
+# arm in multi_seq/ffn.rs) — the reason every earlier K>2 sweep regressed. With
+# that arm added, the agentic ladder measures TPOT 38.49 (K=3) → 31.69 (K=4),
+# and the full MLCommons e2e at K=4 gives wall 4104s / TPOT 32.60ms / BFCL 87.44
+# / IoU 0.6231 (vs 4551.9s / 38.18ms at the old default). K=5 wins wall/tps by
+# ~1.5-2.5% on the subset but has no full-e2e accuracy validation; revisit with
+# its own e2e before moving further.
+default_num_drafts = 3
+# FP8 KV cache (enabled 2026-07-19): lever #2 — cp.async pipelining in
+# inferspark_prefill_paged_fp8.cu hides KV-load latency behind QK^T compute.
+# The old sync fp8->bf16 dequant path was 10.2% SLOWER than BF16 KV (435.8
+# vs 480.2 tok/s @32k c=1 cold prefill). With cp.async pipelining (matching
+# the BF16 kernel's 2-stage pattern), the FP8 kernel's load latency is now
+# hidden, so FP8 KV is expected to be FASTER than BF16 KV (smaller DV75
+# bandwidth, same compute epic). Resolution rule 3 in
+# serve_phases/kv_cache.rs is now a no-op since the MODEL.toml default
+# already matches the CLI default `--kv-cache-dtype fp8`.
+default_kv_dtype = "fp8"
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to

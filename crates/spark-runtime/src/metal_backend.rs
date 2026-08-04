@@ -90,6 +90,7 @@ type PipelineKey = (String, String);
 // ── MetalGpuBackend struct + state ───────────────────────────────────────
 
 pub struct MetalGpuBackend {
+    op_cache: crate::op_cache::OpCache,
     device: ObjDevice,
     /// Side table mapping a buffer's base gpuAddress to the owning
     /// `MTLBuffer`. BTreeMap so we can find the buffer containing an
@@ -165,6 +166,7 @@ impl MetalGpuBackend {
         );
 
         Ok(Self {
+            op_cache: crate::op_cache::OpCache::new(),
             device,
             allocations: Arc::new(Mutex::new(BTreeMap::new())),
             streams: Arc::new(Mutex::new(streams)),
@@ -248,6 +250,10 @@ impl MetalGpuBackend {
 // ── GpuBackend impl ──────────────────────────────────────────────────────
 
 impl GpuBackend for MetalGpuBackend {
+    fn op_cache(&self) -> &crate::op_cache::OpCache {
+        &self.op_cache
+    }
+
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
         // StorageModeShared is the UMA-friendly mode: `contents()`
         // returns a CPU-mappable pointer that aliases GPU memory.

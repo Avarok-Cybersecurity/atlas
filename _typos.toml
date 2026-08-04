@@ -25,6 +25,19 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# `nd` — the num-drafts speculative-decode notation (`nd=2`, `nd=3`) used
+# throughout the MTP verify code and docs. Not a typo of "and".
+nd = "nd"
+# `deint` — short form of "deinterleaved" used as the Q|K|V|Z input
+# pointer name in the fused K=2 GDN verify kernel/ops. Not a typo.
+deint = "deint"
+# `ue` — the NVFP4/MX scale-factor formats `ue4m3`/`ue8m0` (cutlass
+# `float_ue4m3_t`, helpers like `mt_float_to_ue4m3`) split on the digit, so
+# the checker reads the leading `ue` as a typo for "use"/"due". Not a typo.
+ue = "ue"
+# "subtiles" = sub-tiles: WMMA n-sub-tile partitioning in the strix-hip
+# MoE/dense GEMM kernels (PM4_SUBTILES_PER_WARP). Not a typo of "subtitles".
+subtiles = "subtiles"
 # CUDA device-attribute constant token. Not a typo of `OPTION`.
 OPTIN = "OPTIN"
 # `image_grid_thw` is the HuggingFace tensor name for vision-input
@@ -41,6 +54,11 @@ wht = "wht"
 # `wkv_a_ba`). Domain abbreviation, not the English preposition.
 BA = "BA"
 ba = "ba"
+# `HSA` / `hsa` — AMD ROCm Heterogeneous System Architecture runtime
+# (`libhsa-runtime64`, `hsa_queue_create`, `rocr::HSA`). Appears throughout
+# the SCALE/HIP Strix-Halo porting docs. Not a typo of `HAS`/`has`.
+HSA = "HSA"
+hsa = "hsa"
 # Output-tokens loop variable in Python benchmark scripts (`for ot in ...`).
 ot = "ot"
 # Steps-per-second shorthand in concurrency benchmark output.
@@ -65,12 +83,27 @@ RECAL = "RECAL"
 # `unparseable` — valid English spelling variant used in the tool-call parser
 # (the typos default prefers `unparsable`). Keep the existing spelling.
 unparseable = "unparseable"
+# `paramete` / `parame` etc. — deliberate close-tag ladder prefixes of
+# "</parameter>" asserted verbatim in the tool-grammar EBNF tests
+# (param_key_constraint.rs: `"</paramete" [^r]`). Not typos of "parameter".
+paramete = "paramete"
+parame = "parame"
+paramet = "paramet"
+para = "para"
+param = "param"
+# `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
+# (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
+# least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.
+sxl = "sxl"
 
 [default.extend-identifiers]
 # Pattern compounds the checker doesn't handle via the default list.
 wht_bf16 = "wht_bf16"
 wht_dim = "wht_dim"
 wht_stride = "wht_stride"
+# CUTLASS FP8 unsigned-E4M3 scale-factor type (float_ue4m3_t) — "ue" is not a typo.
+float_ue4m3_t = "float_ue4m3_t"
+ue4m3 = "ue4m3"
 
 [files]
 extend-exclude = [
@@ -82,4 +115,15 @@ extend-exclude = [
     # Local dev/benchmark scripts (not shipped); abbreviated local var names
     # like `ND` (numdrift path) read as typos but aren't user-facing.
     "bench/",
+    # FlashInfer GDN AOT bridge — vendored export patch + C++/CUDA harness
+    # (`dout` = gradient-w.r.t.-output, standard kernel naming). Third-party
+    # derived material, like `vendor/`.
+    "3rdparty_patches/",
+    # Vendored llama.cpp/ggml CUDA MMQ sources (MIT). Upstream identifiers
+    # (`n_leafs`, `GGML_OP_CPY`, `ggml_arange`, ...) read as typos but are
+    # canonical; we don't ship typo fixes upstream from here, like `vendor/`.
+    "kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/",
+    # Campaign raw artifacts: verbatim model output (logit dumps whose top-k
+    # entries include subword fragments like ` summar`, ` repet`). Data, not prose.
+    "docs/campaigns/*/raw/",
 ]

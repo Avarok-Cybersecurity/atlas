@@ -1,6 +1,6 @@
 [package]
 name = "spark-model"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas Spark model — Qwen3 forward pass orchestration"
@@ -36,6 +36,7 @@ gpu-examples = []
 [dependencies]
 atlas-core = { workspace = true }
 atlas-kernels = { workspace = true }
+atlas-tier = { workspace = true }
 # `default-features = false` so the metal feature can opt out of
 # spark-runtime's `cuda` default — otherwise the dep line silently
 # re-enables cudarc on every build.
@@ -58,7 +59,7 @@ parking_lot = { workspace = true }
 # below so default Linux builds don't pull these in.
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 memmap2 = { version = "0.9", optional = true }
-safetensors = { version = "0.7", optional = true }
+safetensors = { version = "0.8", optional = true }
 
 # End-to-end Qwen3.5-4B-MLX-8bit decode driver. Loads weights via
 # `MlxInt8Weight`, kernel handles via `Qwen35Kernels::resolve`, and
@@ -82,6 +83,16 @@ workspace = true
 
 # GPU kernel microtest examples — gated on the non-default `gpu-examples`
 # feature so no-GPU CI skips building them (they link CUDA driver symbols).
+# NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
+# `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
+[[example]]
+name = "gdn_cdh_vblock_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gemv_fp4_vs_fp8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 [[example]]
 name = "w8a16_microtest"
 required-features = ["cuda", "gpu-examples"]
@@ -99,15 +110,91 @@ name = "dense_gemm_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "lora_apply_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8gemm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "inferspark_attn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "inferspark_attn_fp8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_shared_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_silu_down_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w8a16_gemv_batch4_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_blend_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "moe_topk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_split4_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_wy_verify_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_wyn_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_verify_fused_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_strided_norm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_conv_kn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_m17_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "batchm_bench"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_parity_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "rope_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "kernel_probe"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
-name = "gdn_fla_e2e_gateb"
+name = "gdn_chunk_delta_h_gateb"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
-name = "gdn_chunk_delta_h_gateb"
+name = "gdn_chunk_shapetest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
@@ -116,4 +203,8 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "gdn_batched_repro"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w4a16_bf16_microtest"
 required-features = ["cuda", "gpu-examples"]

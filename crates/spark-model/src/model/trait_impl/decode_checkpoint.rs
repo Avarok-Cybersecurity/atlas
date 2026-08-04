@@ -96,10 +96,12 @@ impl TransformerModel {
         ) {
             Ok(Some(id)) => id,
             Ok(None) => {
-                if self
-                    .ssm_snapshots
-                    .reclaim_from_cache(self.prefix_cache.as_ref(), &mut kv)
-                {
+                if self.ssm_snapshots.reclaim_from_cache(
+                    self.prefix_cache.as_ref(),
+                    &mut kv,
+                    self.ssm_tier_store.as_deref(),
+                    self.gpu.as_ref(),
+                ) {
                     match self.ssm_snapshots.save(
                         seq.slot_idx,
                         seq.session_hash,
@@ -119,6 +121,10 @@ impl TransformerModel {
                 return;
             }
         };
+        // Order any later warm restore (prefill stream) after this save's D2D.
+        if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+            tracing::warn!("decode Marconi checkpoint: record snapshot event: {e}");
+        }
         drop(kv);
         // #155 MTP×cache root cause: the live state just saved (post
         // sync_secondary, post-commit) is canonical at exactly
@@ -148,6 +154,7 @@ impl TransformerModel {
             snap_id,
             seq.session_hash,
             snap_tokens,
+            seq.adapter_id,
         );
         if let Some(old) = displaced {
             self.ssm_snapshots.free(old);
@@ -199,10 +206,12 @@ impl TransformerModel {
         ) {
             Ok(Some(id)) => Some(id),
             Ok(None) => {
-                if self
-                    .ssm_snapshots
-                    .reclaim_from_cache(self.prefix_cache.as_ref(), &mut self.kv_cache.lock())
-                {
+                if self.ssm_snapshots.reclaim_from_cache(
+                    self.prefix_cache.as_ref(),
+                    &mut self.kv_cache.lock(),
+                    self.ssm_tier_store.as_deref(),
+                    self.gpu.as_ref(),
+                ) {
                     let retry = self.ssm_snapshots.save(
                         seq.slot_idx,
                         seq.session_hash,
@@ -221,6 +230,10 @@ impl TransformerModel {
             }
         };
         if let Some(id) = saved {
+            // Order any later warm restore (prefill stream) after this save.
+            if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+                tracing::warn!("finish-leaf snapshot: record snapshot event: {e}");
+            }
             tracing::info!(
                 "Saved finish-leaf SSM snapshot {} for {} tokens",
                 id,

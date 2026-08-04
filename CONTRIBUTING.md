@@ -70,8 +70,18 @@ cargo bench -p atlas-spark-bench
 
 CI enforces (all GPU-free): `fmt`, `clippy`, `cargo test --workspace`
 (unit tests + non-`#[ignore]` integration tests), license-headers,
-typo check, `cargo-deny`, file-size cap. PRs fail without an authoring
-maintainer needing GPU access — the kernel work happens locally.
+typo check, `cargo-deny`, file-size cap (≤500 LoC per `crates/**/*.rs`).
+PRs fail without an authoring maintainer needing GPU access — the kernel
+work happens locally.
+
+**CI-green is not the same as shippable.** The GPU-free CI proves the code
+compiles and is hygienic; it does *not* boot a model. An image is only
+"verified" once it passes the **serve matrix** (`tests/run_all_models.py` +
+the coherence gate). Deploying on GB10? Read
+[`docs/GB10_DEPLOYMENT_GUIDE.md`](docs/GB10_DEPLOYMENT_GUIDE.md) for the model
+compatibility matrix, quant selection, and known-issue workarounds. Cutting an
+image? The build → verify → publish pipeline is the `atlas-release` skill
+(`.claude/skills/atlas-release/`).
 
 ### Code Formatting
 

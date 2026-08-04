@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Scheduler: batched concurrent decode on a single GPU thread.
-//!
 //! Architecture:
 //! - Receiver thread: blocks on request channel, pushes to pending queue,
 //!   signals condvar (instantaneous wake, zero polling).
@@ -13,27 +12,40 @@
 //! When busy: drains pending queue (mutex lock) after each decode step.
 
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
+mod adaptive_spec;
+mod beam_prefill;
 mod confidence;
 mod decode_logits_content;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
 mod emit_step;
+mod fast_greedy;
 mod helpers;
 mod lifecycle;
 mod logit_dump;
 mod logit_processors;
 mod logprobs;
 mod mod_helpers;
+pub use mod_helpers::capture_runtime_handle;
+pub mod dumps;
+pub mod levers;
+pub mod limits;
+mod mtp_gate;
 mod mtp_step;
+pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
 mod prefill_a_step;
+mod prefill_a_step_params;
 mod prefill_b_step;
 mod repetition;
 mod rollback;
 mod sample_step;
+pub mod sched_ctx;
+pub mod snapshot;
+pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
 mod types;
@@ -42,23 +54,19 @@ mod verify_k2_step;
 mod verify_k3_step;
 mod verify_k4_step;
 mod verify_pipeline_helper;
+pub mod vocab_masks;
 
+use beam_prefill::resolve_beam_hyp;
 use confidence::*;
 use decode_logits_content::*;
 use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
-pub use helpers::disable_watchdogs;
-pub use helpers::set_boundary_token_mask;
-pub use helpers::set_enable_loop_watchdog;
-pub use helpers::set_im_start_hard_stop;
-pub use helpers::set_mid_word_token_mask;
-pub use helpers::set_numeric_token_mask;
-pub use helpers::set_tool_response_hard_stop;
+pub use helpers::WatchdogParams;
+pub(crate) use helpers::parse_disable_watchdogs;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
-pub use helpers::{WatchdogParams, set_watchdog_params};
 use lifecycle::*;
 use logprobs::*;
 use mod_helpers::*;
@@ -93,7 +101,6 @@ use spark_runtime::sampler::{
     SamplingParams, apply_penalties_and_bias, sample_with_params, sample_with_params_history,
 };
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -102,14 +109,71 @@ use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
 
+/// A runtime LoRA adapter control command, applied by the scheduler at a
+/// QUIESCENT point (no in-flight decode) so it never races a graph replay or a
+/// live delta read.
+pub enum LoraCommand {
+    /// Rotate the globally-active adapter to a RESIDENT slot by NAME.
+    Rotate(String),
+    /// Dynamically LOAD the adapter at `dir` into pool `slot` (pool-size-1
+    /// per-request weight change) and make it that slot's resident adapter.
+    LoadIntoSlot {
+        name: String,
+        dir: std::path::PathBuf,
+        slot: usize,
+    },
+    /// Task #27: demand-driven RDMA PROMOTE of a stageable-but-not-resident
+    /// adapter from the peer into a cache pool slot (victim chosen on the model
+    /// thread), then make it active. The chosen slot + any evicted name flow
+    /// back through the ack. `peft` supplies the r/alpha the peer manifest lacks.
+    Promote {
+        peer_addr: String,
+        adapter_id: String,
+        name: String,
+        peft: atlas_core::config::PeftAdapterConfig,
+    },
+    /// No-RDMA sibling of [`Self::Promote`]: demand-driven DISK promote of a
+    /// stageable-but-not-resident adapter loaded from `dir` into a cache pool
+    /// slot (victim chosen on the model thread), then made active. The chosen
+    /// slot + any evicted name flow back through the ack. No `peft`: the disk
+    /// swap re-parses the dir's `adapter_config.json`.
+    PromoteDisk {
+        name: String,
+        dir: std::path::PathBuf,
+    },
+}
+
+/// Successful result of a [`LoraCommand`] applied at quiescence. Rotate/Load
+/// return [`LoraAck::Done`]; a Promote returns the resolved cache slot (which the
+/// HTTP miss path uses as the request's `adapter_slot`) and any evicted adapter
+/// name (so the caller drops its stale name->slot overlay entry).
+#[derive(Debug, Clone)]
+pub enum LoraAck {
+    Done,
+    Promoted {
+        slot: usize,
+        evicted: Option<String>,
+    },
+}
+
+/// A LoRA control command plus the oneshot ack the HTTP handler awaits
+/// (`Ok(ack)` on success, `Err(reason)` on unknown adapter / rotation not armed /
+/// load failure / pool full).
+pub type LoraRotation = (
+    LoraCommand,
+    tokio::sync::oneshot::Sender<Result<LoraAck, String>>,
+);
+
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    model: Box<dyn Model>,
+    mut model: Box<dyn Model>,
     request_rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
+    rotation_rx: tokio::sync::mpsc::Receiver<LoraRotation>,
     eos_tokens: Vec<u32>,
     max_batch_size: usize,
     use_speculative: bool,
+    dflash_verify_raw_argmax: bool,
     num_drafts: usize,
     policy: Box<dyn SchedulingPolicy>,
     max_prefill_tokens: usize,
@@ -128,7 +192,25 @@ pub fn run(
     adaptive_sampling: bool,
     mut session_manager: crate::session_manager::SessionSsmManager,
     spontaneous_think_budget: u32,
+    // Per-token masks for THIS model's vocabulary. Carried rather than read
+    // from a process-wide static: they are indexed by token id and are
+    // meaningless against a different tokenizer.
+    vocab_masks: crate::scheduler::vocab_masks::VocabMasks,
+    // This model's hard stops: two tokenizer-resolved token ids and the
+    // served-context ceiling. Carried for the same reason as `vocab_masks`.
+    limits: crate::scheduler::limits::SchedLimits,
+    // This model's MODEL.toml `[behavior]` watchdog tunables.
+    watchdog: crate::scheduler::helpers::WatchdogParams,
+    // Shared with the dashboard, which toggles the loop watchdog mid-run.
+    levers: std::sync::Arc<crate::scheduler::levers::SchedLevers>,
+    // Shared with the dashboard, which polls it for the queue/KV display.
+    snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
 ) {
+    // Everything this run needs that is derived from the model rather than the
+    // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
+    // once here and read through `sched` from every step function.
+    let sched =
+        crate::scheduler::sched_ctx::SchedCtx::new(vocab_masks, levers, snapshot, limits, watchdog);
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");
@@ -139,6 +221,22 @@ pub fn run(
         0
     };
     let chunked = max_prefill_tokens > 0;
+    // Throughput-aware MTP gate: when MTP is requested, measure the verify-step
+    // cost multiplier over the first decode steps of the first lone-sequence
+    // session and auto-disable MTP if it is provably net-negative. Only armed
+    // for the pure-MTP path (not ngram/self/dflash, which have their own
+    // economics and proposers).
+    let mut mtp_gate = if use_mtp && !sched.levers.mtp_gate_force {
+        Some(mtp_gate::MtpGate::new(num_drafts))
+    } else {
+        if use_mtp && sched.levers.mtp_gate_force {
+            tracing::warn!(
+                "ATLAS_MTP_GATE_FORCE=1: MTP throughput gate DISARMED (diagnostic; \
+                 verify runs even where the gate would measure it net-negative)"
+            );
+        }
+        None
+    };
     let mut ngram_proposer = if use_ngram_speculative {
         Some(NgramProposer::new(4)) // 4-gram context
     } else {
@@ -153,10 +251,23 @@ pub fn run(
         if chunked { max_prefill_tokens } else { 0 },
     );
 
+    // Holo "always-on fused mixed step" gate (default OFF). When OFF the
+    // scheduler behaves EXACTLY as today (binary should_prefill, no slice
+    // budget). When ON, an active decode + an in-progress prefill always
+    // takes a fused mixed step sized by the policy's prefill_slice_budget
+    // so decode never starves during a prefill burst. Read once at startup.
+    let always_mixed = std::env::var("ATLAS_HOLO_ALWAYS_MIXED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if always_mixed {
+        tracing::info!("ATLAS_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
+    }
+
     let pending = Arc::new((
         Mutex::new(PendingQueue {
             requests: Vec::new(),
             closed: false,
+            rotations: Vec::new(),
         }),
         Condvar::new(),
     ));
@@ -173,6 +284,18 @@ pub fn run(
         p.1.notify_one();
     });
 
+    // Rotation receiver thread: LoRA adapter-rotation control requests land in
+    // `pending.rotations` (never the sequence queue) and wake the scheduler via
+    // the SAME condvar. The scheduler applies them at a quiescent point.
+    let pr = Arc::clone(&pending);
+    std::thread::spawn(move || {
+        let mut rx = rotation_rx;
+        while let Some(rot) = rx.blocking_recv() {
+            pr.0.lock().rotations.push(rot);
+            pr.1.notify_one();
+        }
+    });
+
     // Dedicated CUDA stream + event for prefill compute-copy overlap.
     let prefill_stream = model
         .create_stream()
@@ -186,9 +309,16 @@ pub fn run(
     let mut swapped: Vec<SwappedSeq> = Vec::new();
     let mut spill_manager: Option<KvSpillManager> = if swap_space_gb > 0 {
         let max_bytes = swap_space_gb as u64 * 1024 * 1024 * 1024;
-        match KvSpillManager::new(PathBuf::from("/tmp/atlas-swap"), max_bytes) {
+        // Per-PROCESS directory. `KvSpillManager::new` wipes stale `swap_*` files
+        // on construction, which is correct for a restart and correct across a
+        // hot-swap (the old scheduler is joined before the new one is built, so
+        // they never overlap) — but a SHARED path means two `spark serve`
+        // processes on one box wipe each other's live spill files. That is a
+        // pre-existing hazard this work surfaced rather than introduced.
+        let spill_dir = std::env::temp_dir().join(format!("atlas-swap-{}", std::process::id()));
+        match KvSpillManager::new(spill_dir.clone(), max_bytes) {
             Ok(mgr) => {
-                tracing::info!("Swap space: {swap_space_gb} GB at /tmp/atlas-swap/");
+                tracing::info!("Swap space: {swap_space_gb} GB at {}", spill_dir.display());
                 Some(mgr)
             }
             Err(e) => {
@@ -202,10 +332,97 @@ pub fn run(
 
     install_high_speed_swap(&*model, high_speed_swap_cfg);
 
+    let mut snapshot_steps: u64 = 0;
     loop {
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+
+        // ── Publish the observability snapshot (one uncontended lock + a
+        // ~72-byte memcpy per tick; see scheduler/snapshot.rs). ──
+        snapshot_steps += 1;
+        {
+            let (mtp_mode, delivered_tps) = match mtp_gate.as_ref() {
+                Some(g) => g.observe(),
+                None => (snapshot::MtpModeSnap::Off, 0.0),
+            };
+            sched.snapshot.publish(snapshot::SchedulerSnapshot {
+                active_seqs: active.len() as u32,
+                prefilling_seqs: prefilling.len() as u32,
+                swapped_seqs: swapped.len() as u32,
+                pending_len: new_reqs.len() as u32,
+                kv_blocks_free: model.num_free_blocks() as u32,
+                kv_blocks_total: model.num_total_blocks() as u32,
+                ssm_slots_used: session_manager.session_count() as u32,
+                ssm_slots_total: session_manager.total_slots() as u32,
+                mtp_mode,
+                delivered_tps,
+                steps_total: snapshot_steps,
+                published_at: std::time::Instant::now(),
+            });
+        }
+
+        // ── Apply queued LoRA adapter rotations at a QUIESCENT point ──
+        // Only when nothing is in flight (no active decode, no in-progress
+        // prefill, no just-drained request, AND no sequence spilled to disk) so
+        // the re-point/promote never races a live delta read or a graph replay.
+        // `swapped` MUST be empty too: a spilled sequence has RELEASED its adapter
+        // ref (#25), so without this gate a Promote/swap could evict/re-stage the
+        // slot its KV was computed under and corrupt it on resume (#27 FINDING 1 /
+        // #31). Otherwise the commands stay queued and retry once the batch drains.
+        if active.is_empty() && prefilling.is_empty() && new_reqs.is_empty() && swapped.is_empty() {
+            let rotations = std::mem::take(&mut pending.0.lock().rotations);
+            for (cmd, ack) in rotations {
+                let res = match cmd {
+                    LoraCommand::Rotate(name) => {
+                        let r = model
+                            .set_active_lora(&name)
+                            .map(|()| LoraAck::Done)
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA rotation to '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::LoadIntoSlot { name, dir, slot } => {
+                        let r = model
+                            .swap_lora_from_disk(&dir, &name, slot)
+                            .map(|()| LoraAck::Done)
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA disk swap '{name}' -> slot {slot} failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::Promote {
+                        peer_addr,
+                        adapter_id,
+                        name,
+                        peft,
+                    } => {
+                        let r = model
+                            .promote_lora_from_peer(&peer_addr, &adapter_id, &name, peft)
+                            .map(|(slot, evicted)| LoraAck::Promoted { slot, evicted })
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA promote '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                    LoraCommand::PromoteDisk { name, dir } => {
+                        let r = model
+                            .promote_lora_from_disk(&dir, &name)
+                            .map(|(slot, evicted)| LoraAck::Promoted { slot, evicted })
+                            .map_err(|e| format!("{e:#}"));
+                        if let Err(ref e) = r {
+                            tracing::warn!("LoRA disk-promote '{name}' failed: {e}");
+                        }
+                        r
+                    }
+                };
+                let _ = ack.send(res);
+            }
+        }
         if new_reqs.is_empty() && active.is_empty() && prefilling.is_empty() {
             // Receiver thread was closed (shutdown).
             let pending_closed = pending.0.lock().closed;
@@ -251,8 +468,10 @@ pub fn run(
         // ── Start new requests ──
         start_new_requests(
             &*model,
+            &sched,
             new_reqs,
             chunked,
+            always_mixed,
             max_prefill_tokens,
             max_batch_tokens,
             &eos_tokens,
@@ -275,6 +494,8 @@ pub fn run(
             &mut active,
             &mut prefilling,
             max_prefill_tokens,
+            max_batch_tokens,
+            always_mixed,
             prefill_stream,
             prefill_event,
             use_mtp,
@@ -286,6 +507,7 @@ pub fn run(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
+            &sched,
         );
 
         if active.is_empty() {
@@ -309,28 +531,160 @@ pub fn run(
             // this context the MTP/spec verify path emits unmasked
             // GPU-argmax tokens (Phase C-2 root cause, 2026-05-24).
             let verify_ctx = crate::scheduler::logit_processors::LogitsContext {
+                watchdog: sched.watchdog,
+                scratch: &sched.scratch,
+                dumps: &sched.dumps,
+                stats: sched.stats.clone(),
                 think_end_token,
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                boundary_mask: sched.masks.boundary.clone(),
+                mid_word_mask: sched.masks.mid_word.clone(),
+                sampling: sched.levers.sampling(),
+                timing: sched.timing.clone(),
             };
+            // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
+            // keep the first N post-`</think>` tokens on plain serial decode.
+            // The T=0 verify-vs-decode low-margin flips measured 2026-07-07
+            // concentrate in the answer's opening tokens; serial-decoding that
+            // window sidesteps them while leaving the high-accept answer body
+            // speculated. N=0 preserves exact prior behavior.
+            let dflash_resume_guard = sched.levers.dflash_resume_guard;
+            // ATLAS_DFLASH_SPEC_THINK=1: speculate INSIDE think blocks (vLLM
+            // semantics — reference measures 45% draft acceptance on thinking,
+            // 2026-07-07 calibration). Bypasses the think-gate AND the resume
+            // guard: output is coherent but not byte-lossless vs no-spec (the
+            // batch-K numerics floor can flip a low-margin token mid-think),
+            // and thinking-budget forced-end is not enforced on the raw-argmax
+            // verify path. Throughput mode; leave OFF for byte-proof runs.
+            let dflash_spec_think = sched.levers.dflash_spec_think;
             if use_ngram_speculative && active.len() == 1 && active[0].grammar_state.is_none() {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {
-                    step_ngram(&*model, &mut active, proposer, &verify_ctx);
+                    step_ngram(&*model, &mut active, &sched, proposer, &verify_ctx);
                 }
             } else if use_self_speculative && active.len() == 1 && active[0].grammar_state.is_none()
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
-                step_self_spec(&*model, &mut active, num_drafts, &verify_ctx);
+                step_self_spec(&*model, &mut active, &sched, num_drafts, &verify_ctx);
             } else if use_mtp
                 && active.len() == 1
-                && !active[0].inside_thinking
+                && (
+                    // SPEC_THINK: speculate everywhere EXCEPT the first
+                    // `dflash_resume_guard` generated tokens — every observed
+                    // T=0 flip (2026-07-07/08) fires within ~7 tokens of spec
+                    // ENTRY (sequence start or post-think resume); serial-
+                    // decoding the entry window dodges the divergence while
+                    // leaving the body speculated.
+                    (dflash_spec_think
+                        && active[0].output_tokens.len() as u32 >= dflash_resume_guard)
+                        || (!active[0].inside_thinking
+                            && active[0].post_think_emitted >= dflash_resume_guard)
+                )
                 && !active[0].suppress_tool_call
                 && !active[0].disable_mtp
             {
-                // MTP speculative decode: beneficial at all context lengths.
-                step_mtp(&*model, &mut active, num_drafts, &verify_ctx);
+                // Throughput-arbitrated MTP gate: EVERY single-sequence step
+                // is timed and reported, and the gate picks whichever mode
+                // (MTP verify vs plain decode) DELIVERS more tokens/sec —
+                // with hysteresis, dwell, and periodic probing of the other
+                // mode. Both step types emit real, correct tokens, so
+                // arbitration never wastes work. See mtp_gate module docs for
+                // why component-time economics were replaced (webserver_ok
+                // A/B 2026-07-20: always-on Σ1028s/10-10 vs timing-gated
+                // Σ1846s/9-10).
+                if let Some(gate) = mtp_gate.as_mut() {
+                    gate.maybe_remeasure(active[0].seq.seq_len);
+                    gate.note_depth(active[0].seq.seq_len);
+                    match gate.next_step() {
+                        mtp_gate::GateStep::MeasureDecode => {
+                            let t0 = std::time::Instant::now();
+                            step_decode_only(
+                                &*model,
+                                &mut active,
+                                think_end_token,
+                                think_start_token,
+                                code_fence_token,
+                                tool_call_start_token,
+                                tool_call_end_token,
+                                adaptive_sampling,
+                                &sched,
+                            );
+                            gate.record_decode(t0.elapsed());
+                            // ATLAS_MTP_CATCHUP: ring the serially decoded
+                            // token's hidden so the next MTP re-probe can
+                            // batch-feed the drafter over the serial gap
+                            // (no-op when the feature is off).
+                            //
+                            // LABEL CONVENTION (off-by-one fixed 2026-07-21).
+                            // The reader feeds drafter pair key `k` from ring
+                            // label `k + 1`, because pair key k is
+                            // `(embed(t_{k+1}), hidden_k)` — so label n must
+                            // hold `hidden_{n-1}`, the hidden that PREDICTED
+                            // token n. `step_decode_only` forwards
+                            // `last_token` at the OLD `seq_len` and only then
+                            // pushes that input token and increments
+                            // (`decode_a2.rs` / `decode_b.rs`: `tokens.push`
+                            // + `seq_len += 1`). So the hidden now in row 0 is
+                            // `hidden_{seq_len - 1}` and its label is
+                            // `seq_len`, not `seq_len - 1`.
+                            //
+                            // This previously wrote `seq_len - 1`, which handed
+                            // every serially-fed pair key the hidden of the
+                            // NEXT position. It is the same quantity the K=3
+                            // re-feed labels `base + t + 1` for verify row t at
+                            // position `base + t` — that convention is verified
+                            // by dumped hidden fingerprints (93/93 cross-step,
+                            // see `speculative::mtp_refeed_accepted_enabled`),
+                            // so the serial hook was the side that disagreed.
+                            if let Err(e) = model.save_hidden_for_catchup(0, active[0].seq.seq_len)
+                            {
+                                tracing::warn!("save_hidden_for_catchup: {e:#}");
+                            }
+                        }
+                        mtp_gate::GateStep::MeasureVerify => {
+                            // A bootstrap-only step (no pending drafts) emits
+                            // 1 token and proposes; its cost is charged to the
+                            // MTP mode — proposing IS part of what MTP costs.
+                            let seq_len_before = active[0].seq.seq_len;
+                            let t0 = std::time::Instant::now();
+                            step_mtp(
+                                &*model,
+                                &mut active,
+                                &sched,
+                                num_drafts,
+                                &verify_ctx,
+                                dflash_verify_raw_argmax,
+                            );
+                            let emitted = active[0].seq.seq_len.saturating_sub(seq_len_before);
+                            gate.record_verify_step(t0.elapsed(), emitted);
+                        }
+                    }
+                    // One-time transition work when the gate switches to
+                    // Serial: drop pending drafts and order the draft-head
+                    // state resync before the next plain decode reads it.
+                    // Serial->Mtp needs nothing (the next MTP step
+                    // bootstraps from empty pending_drafts).
+                    if gate.take_fresh_decision() == Some(mtp_gate::GateDecision::DisableMtp) {
+                        for a in active.iter_mut() {
+                            a.pending_drafts.clear();
+                        }
+                        if let Err(e) = model.sync_secondary() {
+                            tracing::error!("mtp-gate→decode sync_secondary: {e:#}");
+                        }
+                    }
+                } else {
+                    // Gate bypassed (ATLAS_MTP_GATE_FORCE=1): plain MTP.
+                    step_mtp(
+                        &*model,
+                        &mut active,
+                        &sched,
+                        num_drafts,
+                        &verify_ctx,
+                        dflash_verify_raw_argmax,
+                    );
+                }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
                 if use_mtp {
@@ -354,6 +708,7 @@ pub fn run(
                     tool_call_start_token,
                     tool_call_end_token,
                     adaptive_sampling,
+                    &sched,
                 );
             }
         }
@@ -416,5 +771,23 @@ pub fn run(
     }
     // Shutdown applies to every slot the worker has; seq_id is ignored.
     let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
+
+    // Release the model's device memory HERE, in order and able to report a
+    // failure, before the `Box` drops.
+    //
+    // This is the point the whole `ModelResource`/`Teardown` mechanism was
+    // built for, and until now nothing called it: `Model::teardown` had no
+    // caller anywhere in production, so the ordered release was dead code and
+    // every allocation fell through to the backend's `Drop` sweep — thousands
+    // of them per swap (3370, then 3973, on two successful swaps). The sweep is
+    // the intended BACKSTOP for what no owner claims, not the mechanism. `Drop`
+    // is neither ordered nor able to fail, which is precisely why `Teardown`
+    // exists.
+    //
+    // Every sequence above has been freed and no request can arrive, so this is
+    // the quiescent point frees require on GB10.
+    if let Err(e) = model.teardown() {
+        tracing::error!("model teardown reported a failure: {e:#}");
+    }
     tracing::info!("Scheduler stopped");
 }

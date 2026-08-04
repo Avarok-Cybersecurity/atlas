@@ -27,6 +27,8 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+mod state_io;
+
 impl TransformerModel {
     pub(super) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
         let bs = self.kv_cache.lock().block_size();
@@ -37,7 +39,6 @@ impl TransformerModel {
             // Only generated tokens past `prompt_len` are "newly seq-owned"
             // at this point — pass prompt_len as matched_tokens so insert
             // skips re-bumping the prompt portion.
-            //
             // Phase 6.3 sliding-window: when HSS has slid older blocks out,
             // `block_table` no longer parallels `tokens` from index 0 — the
             // physical IDs at the front of block_table now hold WRITES for
@@ -49,8 +50,8 @@ impl TransformerModel {
             // Skip when the prefix cache is a no-op (`--enable-prefix-caching`
             // off): the manual inc_ref below would never get a paired dec_ref
             // from cache eviction, leaking the seq's blocks every request.
-            // Also skip when HSS sliding has occurred (front of block_table no
-            // longer parallels tokens) and on vision prompts.
+            // Also skip on HSS-slid (front of block_table no longer parallels
+            // tokens) and vision prompts — both handled by the guard below.
             if self.prefix_cache.is_active()
                 && !self.tokens_have_vision_pad(&seq.tokens)
                 && seq.hss_window_start() == 0
@@ -69,6 +70,7 @@ impl TransformerModel {
                         snap_id,
                         seq.session_hash,
                         seq.prompt_len,
+                        seq.adapter_id,
                     );
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
@@ -81,6 +83,7 @@ impl TransformerModel {
                         &seq.disk_block_ids,
                         bs,
                         seq.prompt_len,
+                        seq.adapter_id,
                     )
                 };
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
@@ -128,10 +131,24 @@ impl TransformerModel {
             self.ssm_pool.release_slot(slot);
         }
 
+        // Task #25: release this sequence's LoRA slot ref (the single terminal
+        // chokepoint every stamped seq routes through — normal stop/EOS/length,
+        // error/abort, prefill-error frees, and swap-out spill). Guarded by the
+        // RESOLVED `acquired_adapter_slot` (`-1` = never acquired: the non-
+        // scheduler alloc paths and the base no-LoRA path skip this) and zeroed
+        // so it fires exactly once per acquire, idempotent against a double free.
+        if seq.acquired_adapter_slot >= 0 {
+            self.release_adapter_slot(seq.acquired_adapter_slot);
+            seq.acquired_adapter_slot = -1;
+        }
+
         // Release prefix cache refs before freeing blocks.
         // (i.e., blocks not shared with the prefix cache).
-        self.prefix_cache
-            .release(&seq.tokens, self.kv_cache.lock().block_size());
+        self.prefix_cache.release(
+            &seq.tokens,
+            self.kv_cache.lock().block_size(),
+            seq.adapter_id,
+        );
         if !seq.block_table.is_empty() {
             self.kv_cache.lock().free_blocks(&seq.block_table);
             seq.block_table.clear();
@@ -212,12 +229,66 @@ impl TransformerModel {
                 );
             }
         }
+        // verify_kgamma_graph + fused_graph are keyed by (slot, K). They now
+        // capture the LoRA bgmv-vs-installed-pair branch and read the per-seq
+        // seq_slot buffer, so a freed slot's entries MUST be destroyed — else a
+        // reused slot replays a stale adapter index (multi-adapter + DFlash
+        // spec-decode output corruption). Drop every K for this slot.
+        for graph_map in [&self.verify_kgamma_graph, &self.fused_graph] {
+            let mut cache = graph_map.lock();
+            let keys: Vec<(usize, usize)> = cache
+                .keys()
+                .filter(|k| k.0 == seq.slot_idx)
+                .copied()
+                .collect();
+            for k in keys {
+                if let Some(graph) = cache.remove(&k)
+                    && let Err(e) = self.gpu.destroy_graph(graph)
+                {
+                    tracing::error!(
+                        "free_sequence: destroy_graph(kgamma/fused[{},{}]): {e:#}",
+                        k.0,
+                        k.1
+                    );
+                }
+            }
+        }
 
-        // Free MTP proposer state (KV cache blocks).
+        // ATLAS_MTP_CARRY_DRAFTER: hand this turn's drafter KV to the model's
+        // single carry slot BEFORE `free_state`, so the next turn of the same
+        // session can adopt it instead of starting blind. `take_drafter_kv`
+        // empties the proposer state, so the `free_state` below then releases
+        // nothing — the blocks are owned by the carry slot XOR by a live
+        // sequence, never both.
+        if crate::model::mtp_carry::mtp_carry_drafter_enabled(&self.levers)
+            && let Some(ref proposer) = self.proposer
+            && let Some(ref mut pstate) = seq.proposer_state
+            && let Some((blocks, rows, last_pair_key)) = proposer.take_drafter_kv(pstate.as_mut())
+        {
+            let entry = crate::model::mtp_carry::CarriedDrafter {
+                block_table: blocks,
+                rows,
+                last_pair_key,
+                tokens: seq.tokens.clone(),
+            };
+            let previous = self.mtp_carry.lock().replace(entry);
+            if let Some(old) = previous {
+                proposer.free_drafter_kv(&old.block_table);
+            }
+            if crate::model::mtp_carry::mtp_carry_debug() {
+                tracing::info!(
+                    "MTP_CARRY store: rows={rows} last_pair_key={last_pair_key:?} \
+                     seq_tokens={}",
+                    seq.tokens.len(),
+                );
+            }
+        }
+
+        // Free proposer state (KV cache blocks + per-seq device buffers).
         if let Some(ref proposer) = self.proposer
             && let Some(ref mut pstate) = seq.proposer_state
         {
-            proposer.free_state(pstate.as_mut())?;
+            proposer.free_state(self.gpu.as_ref(), pstate.as_mut())?;
         }
 
         self.free_chunked_prefill_meta(seq)?;
@@ -317,6 +388,15 @@ impl TransformerModel {
         // re-point the guard at the new slot it now owns. This preserves the
         // exactly-once invariant: old_slot is pushed here (once) and new_slot
         // will be pushed by whichever path later frees THIS sequence (once).
+        // Claim the NEW slot EXCLUSIVELY (bug-2 fix): if the migration target
+        // is on the free list (a slot freed by a retiring sequence in the
+        // two-phase retire compaction), remove it so it is never simultaneously
+        // owned (by this guard) and free. Without this, a later release of this
+        // slot double-pushes it and `claim_slot` hands the same slot to two
+        // sequences → shared GDN state → cross-stream content bleed. A no-op
+        // for the ownership-TRANSFER caller (lifecycle swap-out), where the
+        // target is owned by the retiring victim and not on the free list.
+        self.ssm_pool.claim_specific(new_slot);
         if let Some(g) = seq.ssm_slot.as_mut() {
             // Guard owned `old_slot`; drop that ownership before releasing.
             let owned = g.take();
@@ -335,118 +415,11 @@ impl TransformerModel {
         Ok(())
     }
 
-    pub(super) fn save_sequence_state_dispatch(
-        &self,
-        seq: &SequenceState,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<()> {
-        let gpu = self.gpu.as_ref();
-
-        // Phase 1: Copy all KV block data from GPU to host buffers under the lock.
-        let kv_buffers = {
-            let kv = self.kv_cache.lock();
-            let mut bufs = Vec::with_capacity(seq.block_table.len() * kv.num_layers());
-            for &block_idx in &seq.block_table {
-                for layer_idx in 0..kv.num_layers() {
-                    bufs.push(kv.read_block(layer_idx, block_idx, gpu)?);
-                }
-            }
-            bufs
-        }; // Lock released here.
-
-        // Phase 2: Write KV data to disk (no lock held).
-        for (k_data, v_data) in &kv_buffers {
-            writer.write_all(k_data)?;
-            writer.write_all(v_data)?;
-        }
-
-        // Phase 3: Copy SSM states from GPU to host, then write to disk.
-        for (i, layer_state) in seq.layer_states.iter().enumerate() {
-            if self.config.layer_type(i) == LayerType::LinearAttention {
-                let ssm = layer_state
-                    .as_any()
-                    .downcast_ref::<SsmLayerState>()
-                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
-
-                let mut h_buf = vec![0u8; self.ssm_pool.h_bytes];
-                let mut c_buf = vec![0u8; self.ssm_pool.conv_bytes];
-                gpu.copy_d2h(ssm.h_state, &mut h_buf)?;
-                gpu.copy_d2h(ssm.conv_state, &mut c_buf)?;
-                writer.write_all(&h_buf)?;
-                writer.write_all(&c_buf)?;
-            }
-        }
-
-        writer.flush()?;
-        Ok(())
-    }
-
-    pub(super) fn restore_sequence_state_dispatch(
-        &self,
-        seq: &mut SequenceState,
-        num_blocks: usize,
-        reader: &mut dyn std::io::Read,
-    ) -> Result<()> {
-        let gpu = self.gpu.as_ref();
-
-        // Phase 1: Read all KV block data from disk into host buffers.
-        let (num_layers, layer_strides) = {
-            let kv = self.kv_cache.lock();
-            let n = kv.num_layers();
-            let strides: Vec<usize> = (0..n).map(|i| kv.block_stride_bytes_for_layer(i)).collect();
-            (n, strides)
-        };
-
-        let mut kv_buffers = Vec::with_capacity(num_blocks * num_layers);
-        for _ in 0..num_blocks {
-            for layer_idx in 0..num_layers {
-                let stride = layer_strides[layer_idx];
-                let mut k_data = vec![0u8; stride];
-                let mut v_data = vec![0u8; stride];
-                reader.read_exact(&mut k_data)?;
-                reader.read_exact(&mut v_data)?;
-                kv_buffers.push((k_data, v_data));
-            }
-        }
-
-        // Phase 2: Allocate blocks and write data under the lock.
-        {
-            let mut kv = self.kv_cache.lock();
-            let mut new_block_table = Vec::with_capacity(num_blocks);
-            let mut buf_idx = 0;
-            for _ in 0..num_blocks {
-                let block_idx = kv.alloc_block()?;
-                for layer_idx in 0..num_layers {
-                    let (ref k_data, ref v_data) = kv_buffers[buf_idx];
-                    kv.write_block(layer_idx, block_idx, k_data, v_data, gpu)?;
-                    buf_idx += 1;
-                }
-                new_block_table.push(block_idx);
-            }
-            seq.block_table = new_block_table;
-        } // Lock released here.
-
-        // Phase 3: Read SSM state data from disk and upload to GPU.
-        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
-            if self.config.layer_type(i) == LayerType::LinearAttention {
-                let ssm = layer_state
-                    .as_any_mut()
-                    .downcast_mut::<SsmLayerState>()
-                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
-
-                let mut h_buf = vec![0u8; self.ssm_pool.h_bytes];
-                let mut c_buf = vec![0u8; self.ssm_pool.conv_bytes];
-                reader.read_exact(&mut h_buf)?;
-                reader.read_exact(&mut c_buf)?;
-                gpu.copy_h2d(&h_buf, ssm.h_state)?;
-                gpu.copy_h2d(&c_buf, ssm.conv_state)?;
-            }
-        }
-
-        Ok(())
-    }
-
     pub(super) fn num_free_blocks_dispatch(&self) -> usize {
         self.kv_cache.lock().num_free_blocks()
+    }
+
+    pub(super) fn num_total_blocks_dispatch(&self) -> usize {
+        self.kv_cache.lock().num_blocks()
     }
 }

@@ -1,3 +1,10 @@
 *.webm filter=lfs diff=lfs merge=lfs -text
 *.mp4 filter=lfs diff=lfs merge=lfs -text
 *.mov filter=lfs diff=lfs merge=lfs -text
+
+# Append-style files that every feature PR touches (changelog entry, model-support
+# row). Without this, each merge to main conflicts the other open PRs on these files.
+# `merge=union` keeps both sides' added lines instead of emitting a conflict.
+# (Union may duplicate a line if two PRs edit the exact same one — harmless, de-dup at release.)
+CHANGELOG.md merge=union
+README.md merge=union

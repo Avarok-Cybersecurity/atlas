@@ -4,6 +4,13 @@
 
 use super::*;
 
+mod batched;
+
+// The `OnceLock<bool>` static that lived here is now a field on
+// `layers::ops::ModelLevers` — resolved when the model is built and carried
+// on `ForwardContext`, because a static outlives the model whose flags it
+// encodes.
+
 impl Qwen3SsmLayer {
     pub(super) fn prefill_gdn_full_inner(
         &self,
@@ -43,14 +50,131 @@ impl Qwen3SsmLayer {
         // WY32 persistent: processes 32 tokens per WY iteration with H in
         // shared memory (~84KB). ~30× faster than per-token for 14k+ sequences.
         // Falls through to WY4 or sub-chunked persistent for shorter sequences.
-        tracing::info!(
+        tracing::debug!(
             "GDN prefill: total={total} wy32_k={} wy4_k={} persistent_k={} split4_k={}",
             self.gdn_prefill_wy32_k.0 != 0,
             self.gdn_prefill_persistent_wy4_k.0 != 0,
             self.gdn_prefill_persistent_k.0 != 0,
             self.gdn_prefill_split4_k.0 != 0
         );
-        if self.gdn_prefill_wy32_k.0 != 0 && total > 32 {
+        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
+        // kernel exceeds RDNA3.5's hard 64KB LDS cap — WY32 ~84KB, WY4 =69688,
+        // persistent =67584 (cuFuncSetAttribute(MAX_DYNAMIC_SHARED) →
+        // CUDA_ERROR_INVALID_VALUE). Only split4 keeps the kd*vd H-state in
+        // global memory (~2KB smem) and handles arbitrary length, so route
+        // there for all sizes. Correctness-equivalent, lower throughput; the
+        // smem-H fast paths are a Blackwell-only optimization. NVIDIA (cfg
+        // unset) takes the full ladder below unchanged.
+        if cfg!(atlas_scale) {
+            return ops::gdn_prefill_split4(
+                ctx.gpu,
+                self.gdn_prefill_split4_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_bufs.output,
+                1,
+                total,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                gb_stride,
+                stream,
+            );
+        }
+        // FLA chunked GDN (recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o) —
+        // the same baked-default path single-stream prefill uses
+        // (trait_prefill_recur.rs). Its grid [num_chunks, nv, batch] yields
+        // num_chunks×nv blocks vs wy32's flat ~nv(32), so it fills GB10's 48 SMs
+        // far better. The batched/co-dispatch per-request loop calls THIS fn, and
+        // nsys showed it GDN-bound at ~45% of batched-prefill GPU time on the
+        // occupancy-starved wy64 — routing per-request GDN through FLA is the
+        // batching lever. Skipped on exact-replay (FLA's 64-tok regrouping drifts
+        // vs a snapshot-anchored pass) and non-128-dim heads.
+        // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
+        // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. Single-stream only;
+        // takes Atlas's native packed-QKV + interleaved gate/beta directly (see
+        // ops::gdn_flashinfer). FLA path below is the fallback when the flag/lib is absent.
+        if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashinfer::available() {
+            let scale = 1.0f32 / (kd as f32).sqrt();
+            return ops::gdn_flashinfer::flashinfer_gdn_prefill(
+                ctx.gpu,
+                gdn_bufs.qkv,
+                gdn_bufs.gate_beta,
+                gdn_bufs.output,
+                ssm_state.h_state,
+                scale,
+                total,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                gb_stride,
+                1,
+                stream,
+            );
+        }
+
+        let fla_scratch = ctx.buffers.gdn_fla_scratch();
+        if !ctx.gdn_exact_replay
+            && kd == 128
+            && vd == 128
+            && fla_scratch.0 != 0
+            && self.gdn_prefill_fla_recompute_wu_k.0 != 0
+            && self.gdn_prefill_fla_chunk_delta_h_k.0 != 0
+            && self.gdn_prefill_fla_chunk_fwd_o_k.0 != 0
+        {
+            let num_chunks = total.div_ceil(64);
+            let nt = num_chunks as usize;
+            let w_out = fla_scratch;
+            let u_out = w_out.offset(nt * nv * 64 * kd * bf16);
+            let s_out = u_out.offset(nt * nv * 64 * vd * bf16);
+            let uc_out = s_out.offset(nt * nv * kd * vd * bf16);
+            let gc_out = uc_out.offset(nt * nv * 64 * vd * bf16);
+            return ops::gdn_prefill_fla(
+                ctx.gpu,
+                self.gdn_prefill_fla_recompute_wu_k,
+                self.gdn_prefill_fla_chunk_delta_h_k,
+                self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
+                self.gdn_prefill_fla_chunk_fwd_o_k,
+                ssm_state.h_state,
+                q_ptr,
+                k_ptr,
+                v_ptr,
+                gate_ptr,
+                beta_ptr,
+                gdn_bufs.output,
+                w_out,
+                u_out,
+                s_out,
+                uc_out,
+                gc_out,
+                1,
+                total,
+                num_chunks,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                conv_dim as u32,
+                conv_dim as u32,
+                gb_stride,
+                false, // single-stream: contiguous h_state (not a pointer table)
+                spark_runtime::gpu::DevicePtr::NULL, // cu_seqlens (unused)
+                spark_runtime::gpu::DevicePtr::NULL, // cu_chunks (unused)
+                false, // not varlen
+                ctx.profile,
+                stream,
+            );
+        }
+        if self.gdn_prefill_wy32_k.0 != 0 && total > 32 && !cfg!(atlas_scale) {
             // #110: dynamic smem must cover the FULL kernel layout (H + smem_k +
             // smem_q + smem_warp[4] + smem_kd[C*C] + smem_g[C] + smem_bt[C], C=32).
             // The old `+256` slack under-counted the smem_warp(16)+smem_g(128)+
@@ -141,7 +265,7 @@ impl Qwen3SsmLayer {
                 }
                 offset += chunk;
             }
-        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 {
+        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 && !cfg!(atlas_scale) {
             let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,
@@ -209,157 +333,6 @@ impl Qwen3SsmLayer {
                 gb_stride,
                 stream,
             )?;
-        }
-
-        Ok(())
-    }
-
-    /// Q12 Path B: batched GDN recurrence — mirrors prefill_gdn_full_inner
-    /// dispatch ladder but routes to the `*_batched` kernel variants and
-    /// passes `h_state_ptrs` (device array of N pointers) instead of a
-    /// single h_state device pointer.
-    ///
-    /// Constraint: scheduler-enforced same-chunk-len across all N streams.
-    /// `gdn_bufs.qkv` / `gate_beta` / `output` are stacked
-    /// `[batch_size, chunk_len, *]` contiguous in memory. Each batch
-    /// element's QKV starts at `b * chunk_len * conv_dim` (BF16).
-    ///
-    /// Validation status: kernels unvalidated against hardware.
-    pub(super) fn prefill_gdn_full_batched_inner(
-        &self,
-        h_state_ptrs: spark_runtime::gpu::DevicePtr,
-        gdn_bufs: &GdnPrefillBuffers,
-        batch_size: u32,
-        chunk_len: u32,
-        ctx: &ForwardContext,
-        stream: u64,
-    ) -> Result<()> {
-        let nk = ctx.config.linear_num_key_heads;
-        let kd = ctx.config.linear_key_head_dim;
-        let nv = ctx.config.linear_num_value_heads;
-        let vd = ctx.config.linear_value_head_dim;
-        let key_dim = nk * kd;
-        let value_dim = nv * vd;
-        let conv_dim = key_dim * 2 + value_dim;
-        let bf16 = 2usize;
-        let fp32 = 4usize;
-
-        let q_ptr = gdn_bufs.qkv;
-        let k_ptr = gdn_bufs.qkv.offset(key_dim * bf16);
-        let v_ptr = gdn_bufs.qkv.offset(key_dim * 2 * bf16);
-        let gate_ptr = gdn_bufs.gate_beta;
-        let beta_ptr = gdn_bufs.gate_beta.offset(nv * fp32);
-        let gb_stride = (nv * 2) as u32;
-
-        // Mirror the single-stream dispatch ladder. Total tokens per stream
-        // is `chunk_len`; the kernel internally processes `batch_size` such
-        // streams (grid dim Y).
-        if self.gdn_prefill_wy32_batched_k.0 != 0 && chunk_len > 32 {
-            // #110: dynamic smem must cover the FULL kernel layout (H + smem_k +
-            // smem_q + smem_warp[4] + smem_kd[C*C] + smem_g[C] + smem_bt[C], C=32).
-            // The old `+256` slack under-counted the smem_warp(16)+smem_g(128)+
-            // smem_bt(128)=272 trailer by 16 B, so the kernel's smem_bt tail wrote
-            // past the requested allocation → CUDA illegal access under live
-            // occupancy (compute-sanitizer: Invalid __shared__ write at +0xce0).
-            let smem =
-                (kd * vd * 4 + 32 * kd * 2 + 32 * kd * 2 + 32 * 32 * 4 + (4 + 32 + 32) * 4) as u32;
-            ops::gdn_prefill_persistent_smem_batched(
-                ctx.gpu,
-                self.gdn_prefill_wy32_batched_k,
-                h_state_ptrs,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_bufs.output,
-                batch_size,
-                chunk_len,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                smem,
-                stream,
-            )?;
-        } else if self.gdn_prefill_persistent_wy4_batched_k.0 != 0 {
-            let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
-            ops::gdn_prefill_persistent_smem_batched(
-                ctx.gpu,
-                self.gdn_prefill_persistent_wy4_batched_k,
-                h_state_ptrs,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_bufs.output,
-                batch_size,
-                chunk_len,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                smem,
-                stream,
-            )?;
-        } else if (256..=4096).contains(&chunk_len) && self.gdn_prefill_persistent_batched_k.0 != 0
-        {
-            ops::gdn_prefill_persistent_batched(
-                ctx.gpu,
-                self.gdn_prefill_persistent_batched_k,
-                h_state_ptrs,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_bufs.output,
-                batch_size,
-                chunk_len,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
-        } else if self.gdn_prefill_split4_batched_k.0 != 0 {
-            ops::gdn_prefill_split4_batched(
-                ctx.gpu,
-                self.gdn_prefill_split4_batched_k,
-                h_state_ptrs,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_bufs.output,
-                batch_size,
-                chunk_len,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                gb_stride,
-                stream,
-            )?;
-        } else {
-            anyhow::bail!(
-                "Qwen3SsmLayer::prefill_gdn_full_batched_inner: no batched GDN \
-                 kernel handle is loaded for this target — caller should fall \
-                 back to per-stream prefill_gdn_full."
-            );
         }
 
         Ok(())

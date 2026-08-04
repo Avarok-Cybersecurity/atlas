@@ -92,6 +92,7 @@ impl DraftProposer for MultiModuleMtpHead {
                 block_table: Vec::new(),
                 seq_len: 0,
                 last_num_drafted: 0,
+                last_pair_key: None,
             })
             .collect();
         Ok(Box::new(MultiModuleMtpState {
@@ -213,7 +214,7 @@ impl DraftProposer for MultiModuleMtpHead {
         Ok(())
     }
 
-    fn free_state(&self, state: &mut dyn ProposerState) -> Result<()> {
+    fn free_state(&self, _gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
         let mm_state = state
             .as_any_mut()
             .downcast_mut::<MultiModuleMtpState>()
@@ -251,6 +252,7 @@ mod tests {
                     block_table: Vec::new(),
                     seq_len: 0,
                     last_num_drafted: 0,
+                    last_pair_key: None,
                 })
                 .collect(),
             last_num_drafted: 0,

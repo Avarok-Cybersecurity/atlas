@@ -14,12 +14,81 @@ use crate::grammar::{GrammarEngine, GrammarError};
 use xgrammar::CompiledGrammar;
 
 /// Global counter for unique tool call IDs across all requests.
+/// STATIC, DELIBERATELY — process lifecycle. It generates the `call_*` ids
+/// Atlas hands to clients, and uniqueness must hold across EVERY call the
+/// process emits: an agent holds tool-call ids across turns, and a model
+/// swap mid-session must not restart the sequence and collide with an id the
+/// client is still tracking. It is an id source, not a measurement.
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate a globally unique tool call ID.
 fn next_tool_call_id() -> String {
     let id = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("call_{id:016x}")
+}
+
+/// Characters accepted in model-emitted tool names before normalization.
+///
+/// OpenAI function names themselves are intentionally narrow, but models often
+/// leak a routing namespace into the emitted call name (for example
+/// `google:google_search{...}` or `<function=browser:search>`). Accept the
+/// namespace separator at the parser boundary, then normalize before returning
+/// the OpenAI-compatible `function.name` to the client.
+fn is_tool_name_or_namespace_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':')
+}
+
+fn is_tool_name_component(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// Guard for candidate names scanned with `is_tool_name_or_namespace_char`:
+/// after `normalize_tool_name`, a real tool name never retains a `:`.
+/// A surviving colon means the "namespace" had an empty tail — prose like
+/// `json:{"a":1}` or `tool_call:{"name":...}` scanning as the phantom names
+/// `json:` / `tool_call:` — so the candidate is NOT a tool call and the
+/// caller must leave the original text untouched for later passes.
+fn is_normalized_tool_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(':')
+}
+
+/// Normalize a model-emitted function name to the client-visible tool name.
+///
+/// This keeps existing parser salvage behaviour (`Bash=Bash` -> `Bash`,
+/// `name="Write"` -> `Write`) and adds namespace stripping for colon-prefixed
+/// names (`namespace:tool` -> `tool`). Dot characters are preserved because
+/// some callers use them in actual tool names; only `:` is treated as the
+/// namespace delimiter.
+fn normalize_tool_name(raw: &str) -> String {
+    let mut name = raw.trim().trim_matches('"').trim_matches('\'').to_string();
+
+    if name.starts_with("name=") || name.starts_with("name =") {
+        name = name
+            .trim_start_matches("name")
+            .trim_start_matches('=')
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+    }
+
+    if let Some(eq_pos) = name.find('=') {
+        name = name[..eq_pos].trim().to_string();
+    }
+
+    if let Some(colon) = name.rfind(':') {
+        let head = &name[..colon];
+        let tail = &name[colon + 1..];
+        let head_is_namespace =
+            !head.is_empty() && head.chars().all(is_tool_name_or_namespace_char);
+        if head_is_namespace && is_tool_name_component(tail) {
+            name = tail.to_string();
+        }
+    }
+
+    name
 }
 
 // ── Request types (from OpenAI-compatible clients) ──
@@ -182,12 +251,23 @@ impl LeakMarkers {
     };
 }
 
+pub use prompt_levers::PromptLevers;
+
 pub trait ToolCallParser: Send + Sync {
     /// Parser name for logging (e.g. "hermes", "qwen3_coder").
     fn name(&self) -> &str;
 
     /// Generate the system prompt that teaches the model how to make tool calls.
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String;
+    ///
+    /// `levers` carries the model's `[behavior]` prompt-rendering decisions
+    /// (currently TSCG). Passed in rather than read from a global so a
+    /// parser renders under the levers of the model it was loaded for.
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &PromptLevers,
+    ) -> String;
 
     /// Format assistant tool_calls as text for multi-turn chat template injection.
     fn format_tool_calls(&self, calls: &[IncomingToolCall]) -> String;
@@ -377,6 +457,7 @@ mod parse_single_b;
 mod parse_tools_tag;
 mod pipeline;
 mod pipeline_helpers;
+mod prompt_levers;
 mod qwen3_coder;
 mod qwen3_xml;
 mod streaming;

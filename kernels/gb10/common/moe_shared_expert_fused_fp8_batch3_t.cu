@@ -8,6 +8,23 @@
 #define BLOCK_SIZE 32
 #define FP8_BLOCK 128
 
+// NVFP4 per-block FP8-E4M3 scale decode. SCALE/gfx1151 `(float)__nv_fp8_e4m3`
+// is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
+// software scl_fp8 there; NVIDIA path is the verbatim cast.
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
+    if (e == 0u)               v = (float)m * 0.001953125f;
+    else if (e == 15u && m == 7u) v = 0.0f;
+    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20));
+    return s ? -v : v;
+}
+#else
+__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+    __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
+}
+#endif
+
 extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3_t(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ gate_weight_t_ptrs,
@@ -80,8 +97,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_batch3_t(
         #pragma unroll 8
         for (unsigned int k = k_start; k < k_end; k++) {
             unsigned char w_byte = B_weight[(unsigned long long)k * N + n];
-            __nv_fp8_e4m3 fp8w; *(unsigned char*)&fp8w = w_byte;
-            acc += (float)fp8w * sc * __bfloat162float(A_token[k]);
+            acc += atlas_dec_e4m3(w_byte) * sc * __bfloat162float(A_token[k]);
         }
     }
     C[c_offset + n] = __float2bfloat16(acc);
@@ -157,8 +173,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_batch3_t(
         #pragma unroll 8
         for (unsigned int k = k_start; k < k_end; k++) {
             unsigned char w_byte = B_weight[(unsigned long long)k * N + n];
-            __nv_fp8_e4m3 fp8w; *(unsigned char*)&fp8w = w_byte;
-            acc += (float)fp8w * sc * s_act[k];
+            acc += atlas_dec_e4m3(w_byte) * sc * s_act[k];
         }
     }
     if (is_shared) {

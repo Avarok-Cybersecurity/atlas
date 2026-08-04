@@ -88,6 +88,151 @@ pub fn conv1d_update_l2norm(
         .launch(stream)
 }
 
+/// STAGE 1 fused K=2 MTP-verify conv1d+L2norm: both draft positions in one
+/// launch, with the position-0 conv-state snapshot written inline (replaces
+/// the per-token `conv1d_update_l2norm` ×2 + intervening `copy_d2d`).
+///
+/// Bit-identical to the per-token path (proven by gdn_verify_fused_microtest,
+/// cos == 1.0). `conv_state` is left holding the committed (post position-1)
+/// window; `conv_state_inter` holds the position-0 rollback snapshot.
+///
+/// Kernel: `gdn_verify_fused_conv_k2(conv_state, new_input, weight, output,
+///          conv_state_inter, dim, d_conv, qk_channels, head_dim,
+///          input_stride, output_stride, l2_eps)`
+/// Grid: (ceil(dim/256), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_conv_k2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    new_input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    conv_state_inter: DevicePtr,
+    d_inner: u32,
+    d_conv: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    input_stride: u32,
+    output_stride: u32,
+    l2_eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(new_input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_ptr(conv_state_inter)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .arg_f32(l2_eps)
+        .launch(stream)
+}
+
+/// Fused generic-K DFlash-verify conv1d+L2norm: ALL K draft positions in one
+/// launch, with every per-token conv-state rollback snapshot written inline
+/// to a strided intermediates array (replaces the per-token
+/// `conv1d_update_l2norm` ×K + `copy_d2d` ×K sequence — 34 serialized ops at
+/// K=17). `conv_state` is left holding the committed (post final-position)
+/// window, which the kernel also duplicates as snapshot K-1, so the caller
+/// issues NO copies.
+///
+/// Same numerics as the per-token path (identical accumulation order under
+/// --fmad=false; the K=2 twin is proven bit-identical by
+/// gdn_verify_fused_microtest).
+///
+/// Kernel: `gdn_verify_fused_conv_kn(conv_state, new_input, weight, output,
+///          conv_state_inter, num_tokens, dim, d_conv, qk_channels, head_dim,
+///          input_stride, output_stride, inter_stride, l2_eps)`
+/// Grid: (ceil(dim/256), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_conv_kn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    new_input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    conv_state_inter: DevicePtr,
+    num_tokens: u32,
+    d_inner: u32,
+    d_conv: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    input_stride: u32,
+    output_stride: u32,
+    inter_stride: u32,
+    l2_eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(new_input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_ptr(conv_state_inter)
+        .arg_u32(num_tokens)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .arg_u32(inter_stride)
+        .arg_f32(l2_eps)
+        .launch(stream)
+}
+
+/// STAGE 1 fused K=2 MTP-verify gated-RMS-norm: both draft positions in one
+/// launch (replaces the per-token `gated_rms_norm` ×2). The Z gate is read
+/// from the deinterleaved [Q|K|V|Z] buffer at `z_offset` per position.
+///
+/// Bit-identical to the per-token path (proven by gdn_verify_fused_microtest,
+/// cos == 1.0).
+///
+/// Kernel: `gdn_verify_fused_norm_k2(gdn_out, deint, weight, output,
+///          hidden_size, eps, deint_stride, z_offset, out_stride)`
+/// Grid: (num_v_heads, 2, 1)  Block: (hidden_size, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_norm_k2(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gdn_out: DevicePtr,
+    deint: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    num_v_heads: u32,
+    hidden_size: u32,
+    eps: f32,
+    deint_stride: u32,
+    z_offset: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, 2, 1])
+        .block([hidden_size, 1, 1])
+        .arg_ptr(gdn_out)
+        .arg_ptr(deint)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(hidden_size)
+        .arg_f32(eps)
+        .arg_u32(deint_stride)
+        .arg_u32(z_offset)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
 /// Multi-token conv1d sliding window update + SiLU for prefill.
 ///
 /// Processes `seq_len` tokens sequentially per channel in registers.
@@ -217,11 +362,18 @@ pub fn mamba2_ssm_prefill_persistent(
     y_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    // H_smem + smem_x + smem_warp
-    let smem = head_dim * state_size * 4 + head_dim * 4 + 4 * head_dim * 4;
+    // Dynamic shared memory, must match the kernel's layout:
+    //   sH     : head_dim * (state_size + 1)  (+1 pad avoids smem bank conflicts)
+    //   smem_x : head_dim
+    //   smem_B : state_size   (dt*B for the current token)
+    //   smem_C : state_size
+    // Must match the kernel layout: sH + sX + sB + sC.
+    let smem = head_dim * (state_size + 1) * 4 + head_dim * 4 + state_size * 4 + state_size * 4;
+    // SUB=4 threads cooperate per head_dim row (must match the kernel's `SUB`).
+    const SUB: u32 = 4;
     KernelLaunch::new(gpu, kernel)
         .grid([num_heads, batch_size, 1])
-        .block([state_size, 1, 1])
+        .block([head_dim * SUB, 1, 1])
         .shared_mem(smem)
         .arg_ptr(h_state)
         .arg_ptr(x)
@@ -246,3 +398,9 @@ pub fn mamba2_ssm_prefill_persistent(
         .arg_u32(y_stride)
         .launch(stream)
 }
+
+// ── Mamba-2 SSD chunked prefill scan ──────────────────────────────────────────
+//
+// Replaces the token-sequential recurrence with the chunked (state-space duality)
+// formulation: the scan becomes tensor-core matmuls with only ceil(T/64) sequential
+// links instead of T. See kernels/gb10/common/mamba2_ssd_chunk.cu.

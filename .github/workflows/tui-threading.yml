@@ -1,0 +1,62 @@
+name: TUI threading contract
+
+# The dashboard's render loop runs on its own OS thread and must never poll a
+# future. Its only interaction with async work is `try_recv` on a channel.
+#
+# That rule was previously stated in prose in two module docs — and they
+# contradicted each other: `recipe/fetch.rs` said "no spawn_blocking, no
+# block_on, no future in this file", while `tui/chat.rs` and
+# `atlas-plugin/src/executor.rs` legitimately DO spawn tokio tasks and hand
+# results back over a std channel. Prose that disagrees with itself is not a
+# contract. This is the version a machine can check.
+#
+# What is forbidden is not async — it is BLOCKING THE RENDER THREAD ON IT.
+# `block_on` and `block_in_place` are the two ways to do that by accident.
+
+# Least privilege: this job only reads the checkout to grep it. Without an
+# explicit block the GITHUB_TOKEN inherits the repository default, which
+# CodeQL flags (actions/missing-workflow-permissions) — and it was right to,
+# since nothing here writes anything. Matches ci.yml.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'crates/spark-server/src/tui/**'
+      - 'crates/spark-server/src/recipe/**'
+      - '.github/workflows/tui-threading.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/spark-server/src/tui/**'
+      - 'crates/spark-server/src/recipe/**'
+
+jobs:
+  no-blocking-on-the-render-thread:
+    runs-on: ubuntu-latest
+    name: No block_on under tui/ or recipe/
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the render thread never blocks on a future
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `-w` so `block_on` does not match a comment mentioning `try_block_on`
+          # and so on; comments explaining the rule are allowed to name it, so
+          # only real call syntax counts.
+          if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
+                      crates/spark-server/src/tui/ \
+                      crates/spark-server/src/recipe/ 2>/dev/null); then
+            echo "::error::The TUI render thread must never poll a future."
+            echo "$hits"
+            echo
+            echo "The render loop's only interaction with async work is try_recv"
+            echo "on a channel (see tui/chat.rs and tui/bench_preflight.rs for"
+            echo "the sanctioned shape: spawn on the runtime, answer over an"
+            echo "mpsc the tick drains). Blocking the render thread on a future"
+            echo "freezes the dashboard and, because the TUI is the server's"
+            echo "foreground, hides the server with it."
+            exit 1
+          fi
+          echo "OK: no block_on/block_in_place under tui/ or recipe/"

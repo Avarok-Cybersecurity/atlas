@@ -76,6 +76,7 @@ impl TransformerModel {
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
+                seq.adapter_id,
             );
             super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }
@@ -106,10 +107,12 @@ impl TransformerModel {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     // Pool exhausted — evict LRU entries to reclaim a slot
-                    if self
-                        .ssm_snapshots
-                        .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
-                    {
+                    if self.ssm_snapshots.reclaim_from_cache(
+                        self.prefix_cache.as_ref(),
+                        kv_cache,
+                        self.ssm_tier_store.as_deref(),
+                        self.gpu.as_ref(),
+                    ) {
                         self.ssm_snapshots
                             .save(
                                 seq.slot_idx,
@@ -127,6 +130,11 @@ impl TransformerModel {
                 Err(_) => None,
             };
             if let Some(snap_id) = snap_result {
+                // Order any later warm restore after this save's D2D (the
+                // restore may run on a different stream under concurrency).
+                if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+                    tracing::warn!("prefill snapshot save: record snapshot event: {e}");
+                }
                 if self.tokens_have_vision_pad(tokens) {
                     // Vision prefill: snapshot is image-tainted and the
                     // token stream collides across distinct images, so do
@@ -141,6 +149,7 @@ impl TransformerModel {
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
+                        seq.adapter_id,
                     );
                     super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                     if let Some(old) = displaced {
@@ -154,6 +163,7 @@ impl TransformerModel {
                     &seq.disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens,
+                    seq.adapter_id,
                 );
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
@@ -164,6 +174,7 @@ impl TransformerModel {
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
+                seq.adapter_id,
             );
             super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }
@@ -192,10 +203,12 @@ impl TransformerModel {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     tracing::debug!("Snapshot pool full, reclaiming...");
-                    if self
-                        .ssm_snapshots
-                        .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
-                    {
+                    if self.ssm_snapshots.reclaim_from_cache(
+                        self.prefix_cache.as_ref(),
+                        kv_cache,
+                        self.ssm_tier_store.as_deref(),
+                        self.gpu.as_ref(),
+                    ) {
                         self.ssm_snapshots
                             .save(
                                 seq.slot_idx,
@@ -217,6 +230,11 @@ impl TransformerModel {
                 }
             };
             if let Some(snap_id) = snap_result {
+                // Order any later warm restore after this save's D2D (the
+                // restore may run on a different stream under concurrency).
+                if let Err(e) = self.record_snapshot_save_dispatch(stream) {
+                    tracing::warn!("prefill snapshot save [twophase]: record snapshot event: {e}");
+                }
                 if self.tokens_have_vision_pad(tokens) {
                     // Vision prefill: the SSM snapshot is image-tainted and
                     // the token stream collides across distinct images (the
@@ -242,6 +260,7 @@ impl TransformerModel {
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
+                        seq.adapter_id,
                     );
                     super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                     if let Some(old) = displaced {
@@ -255,6 +274,7 @@ impl TransformerModel {
                     &seq.disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens,
+                    seq.adapter_id,
                 );
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
@@ -265,6 +285,7 @@ impl TransformerModel {
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
+                seq.adapter_id,
             );
             super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }

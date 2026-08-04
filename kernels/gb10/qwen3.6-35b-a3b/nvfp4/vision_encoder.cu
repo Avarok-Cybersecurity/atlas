@@ -62,6 +62,22 @@ void vision_gemm_bias_nn(
     C[row * N + col] = f32_to_bf16(acc);
 }
 
+// ── Row-broadcast bias add: C[m,n] += bias[n] (in-place) ──
+// Used to fuse the bias for the tensor-core GEMM path (dense_gemm_bf16_pipelined,
+// ~40× the naive vision_gemm_bias) which has no built-in bias epilogue. The ViT
+// GEMMs (QKV/proj/fc1/fc2 × 27 blocks + merger + patch_embed) dominate image
+// prefill (~5s/image on the scalar kernel); pipelined-GEMM + this add is the fix.
+extern "C" __global__ void vision_add_bias(
+    __nv_bfloat16* __restrict__ C,         // [M, N] in-place
+    const __nv_bfloat16* __restrict__ bias,// [N]
+    unsigned int M, unsigned int N
+) {
+    unsigned long long idx = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (unsigned long long)M * N) return;
+    unsigned int col = (unsigned int)(idx % N);
+    C[idx] = f32_to_bf16(bf16_to_f32(C[idx]) + bf16_to_f32(bias[col]));
+}
+
 // ── LayerNorm: x = (x - mean) / sqrt(var + eps) * w + b ──
 // One block per row.  Block: (min(D, 1024), 1, 1)
 extern "C" __global__
@@ -254,6 +270,139 @@ void vision_attention_rope(
         }
         O[qi * H * D + h * D + d] = f32_to_bf16(out);
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GEMM-based ViT SDPA (fast replacement for vision_attention_rope).
+// Pipeline per image: vit_rope_deinterleave → [per head: dense_gemm_bf16_f32out
+// QKᵀ → vit_softmax_rows → dense_gemm_bf16_pipelined P·V → vit_scatter_head].
+// Semantics IDENTICAL to vision_attention_rope: interleaved QKV strides,
+// rotate-half 2D RoPE on Q,K only, scale=rsqrt(D), non-causal max-subtracted
+// softmax. The two GEMMs run on BF16 tensor cores; rope/softmax/scatter are
+// memory-bound element passes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// (A) Deinterleave QKV[seq,3*H*D] → head-contiguous rotated Qr,Kr [H,seq,D] and
+//     TRANSPOSED Vt [H,D,seq]. V is pre-transposed so GEMM2 (which computes
+//     A·Bᵀ) yields P·V. One thread per (token,head,d) element.
+//     grid = ( ceil(seq*D/256), H, 1 ), block = (256,1,1)
+extern "C" __global__
+void vit_rope_deinterleave(
+    const __nv_bfloat16* __restrict__ QKV,      // [seq, 3*H*D] interleaved
+    __nv_bfloat16* __restrict__ Qr,             // [H, seq, D]
+    __nv_bfloat16* __restrict__ Kr,             // [H, seq, D]
+    __nv_bfloat16* __restrict__ Vt,             // [H, D, seq]  (transposed!)
+    const __nv_bfloat16* __restrict__ rope_cos, // [seq, D]
+    const __nv_bfloat16* __restrict__ rope_sin, // [seq, D]
+    unsigned int seq, unsigned int H, unsigned int D)
+{
+    unsigned int h   = blockIdx.y;
+    unsigned int lin = blockIdx.x * blockDim.x + threadIdx.x; // tok*D + d
+    if (h >= H || lin >= seq * D) return;
+    unsigned int tok = lin / D;
+    unsigned int d   = lin % D;
+    unsigned int half_D = D / 2;
+
+    unsigned int stride_qkv = 3u * H * D;
+    const __nv_bfloat16* Q_row = QKV + (size_t)tok * stride_qkv + 0u * H * D + h * D;
+    const __nv_bfloat16* K_row = QKV + (size_t)tok * stride_qkv + 1u * H * D + h * D;
+    const __nv_bfloat16* V_row = QKV + (size_t)tok * stride_qkv + 2u * H * D + h * D;
+
+    float cos_v = bf16_to_f32(rope_cos[(size_t)tok * D + d]);
+    float sin_v = bf16_to_f32(rope_sin[(size_t)tok * D + d]);
+
+    // Q rotate-half (matches the legacy kernel's formula exactly)
+    float qv    = bf16_to_f32(Q_row[d]);
+    float qpart = (d < half_D) ? bf16_to_f32(Q_row[d + half_D])
+                               : bf16_to_f32(Q_row[d - half_D]);
+    float qrot  = (d < half_D) ? -qpart : qpart;
+    float q_r   = qv * cos_v + qrot * sin_v;
+
+    // K rotate-half
+    float kv    = bf16_to_f32(K_row[d]);
+    float kpart = (d < half_D) ? bf16_to_f32(K_row[d + half_D])
+                               : bf16_to_f32(K_row[d - half_D]);
+    float krot  = (d < half_D) ? -kpart : kpart;
+    float k_r   = kv * cos_v + krot * sin_v;
+
+    // V un-rotated
+    float v_v   = bf16_to_f32(V_row[d]);
+
+    size_t hc = (size_t)h * seq * D + (size_t)tok * D + d;   // Qr/Kr [H,seq,D]
+    Qr[hc] = f32_to_bf16(q_r);
+    Kr[hc] = f32_to_bf16(k_r);
+    // Vt [H,D,seq]: index h*D*seq + d*seq + tok  (d,tok swapped = transpose)
+    Vt[(size_t)h * D * seq + (size_t)d * seq + (size_t)tok] = f32_to_bf16(v_v);
+}
+
+// (B) Row softmax over raw scores S[seq,seq] (f32) → probs P[seq,seq] (bf16).
+//     scale = rsqrtf(D) folded in here (GEMM1 produced raw Q·Kᵀ). Parallel
+//     block-per-row, 3-pass (max / sumexp / normalize). Replaces the legacy
+//     single-thread softmax.
+//     grid = (seq,1,1), block = (256,1,1)
+extern "C" __global__
+void vit_softmax_rows(
+    const float* __restrict__ S,        // [seq, seq] f32 raw scores
+    __nv_bfloat16* __restrict__ P,      // [seq, seq] bf16 probs
+    unsigned int seq, unsigned int D)
+{
+    unsigned int row = blockIdx.x;
+    if (row >= seq) return;
+    const float* srow = S + (size_t)row * seq;
+    __nv_bfloat16* prow = P + (size_t)row * seq;
+    float scale = rsqrtf((float)D);
+
+    __shared__ float red[256 / 32];     // one slot per warp
+    unsigned int tid  = threadIdx.x;
+    unsigned int lane = tid & 31u, warp = tid >> 5;
+
+    // pass 1: row max
+    float m = -1e30f;
+    for (unsigned int j = tid; j < seq; j += blockDim.x)
+        m = fmaxf(m, srow[j] * scale);
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_down_sync(0xffffffff, m, o));
+    if (lane == 0) red[warp] = m;
+    __syncthreads();
+    if (tid == 0) {
+        float mm = -1e30f;
+        for (unsigned int w = 0; w < blockDim.x / 32; ++w) mm = fmaxf(mm, red[w]);
+        red[0] = mm;
+    }
+    __syncthreads();
+    float row_max = red[0];
+
+    // pass 2: sum exp
+    float s = 0.0f;
+    for (unsigned int j = tid; j < seq; j += blockDim.x)
+        s += expf(srow[j] * scale - row_max);
+    for (int o = 16; o > 0; o >>= 1) s += __shfl_down_sync(0xffffffff, s, o);
+    if (lane == 0) red[warp] = s;
+    __syncthreads();
+    if (tid == 0) {
+        float ss = 0.0f;
+        for (unsigned int w = 0; w < blockDim.x / 32; ++w) ss += red[w];
+        red[0] = (ss > 0.0f) ? (1.0f / ss) : 0.0f;
+    }
+    __syncthreads();
+    float inv_sum = red[0];
+
+    // pass 3: normalize + store bf16
+    for (unsigned int j = tid; j < seq; j += blockDim.x)
+        prow[j] = f32_to_bf16(expf(srow[j] * scale - row_max) * inv_sum);
+}
+
+// (C) Scatter contiguous Oh[seq,D] → interleaved O[seq, dst_stride] head slot.
+//     grid = ( ceil(seq*D/256), 1, 1 ), block = (256,1,1)
+extern "C" __global__
+void vit_scatter_head(
+    const __nv_bfloat16* __restrict__ Oh,  // [seq, D] contiguous
+    __nv_bfloat16* __restrict__ O,          // [seq, dst_stride], head-slot base
+    unsigned int seq, unsigned int D, unsigned int dst_stride)
+{
+    unsigned int lin = blockIdx.x * blockDim.x + threadIdx.x;
+    if (lin >= seq * D) return;
+    unsigned int tok = lin / D, d = lin % D;
+    O[(size_t)tok * dst_stride + d] = Oh[(size_t)tok * D + d];
 }
 
 // ── Spatial merge: reshape [P, D] → [P/S², S²*D] in-place ──

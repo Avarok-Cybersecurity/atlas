@@ -1,0 +1,45 @@
+recipe_version: "2"
+model: Qwen/Qwen3.6-35B-A3B-FP8
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-35B-A3B (qwen3_5_moe) native FP8 on Atlas, served with an NVFP4
+    lm-head — the LOWER-VRAM, near-neutral-wall sibling of the bf16 flagship.
+    Identical to qwen3.6-35b-a3b-fp8-bf16head-atlas except the 248K-vocab logit
+    projection is packed to NVFP4 (4-bit), roughly quartering the single largest
+    per-token weight read.
+
+    Measured 2026-06-07 (opencode webserver_ok, N=10, same flags as bf16):
+      nvfp4 lm-head : ws_ok 10/10  followed_dirs 10/10  Σwall 1380s / mean 138s,
+                      min 79 / max 220, zero 360s cap-riders.
+    Quality is indistinguishable from bf16 (both 10/10 on outcome AND process
+    fidelity); total wall is within ~4% of bf16 (1380 vs 1331s) with a smaller
+    weight footprint. WARNING: lowering lm-head precision is model-specific — it
+    is SAFE on this checkpoint (verified) but can be catastrophic on others
+    (argmax flips compound over long structured generation). Always re-gate with
+    a long-generation harness before shipping nvfp4 lm-head on a new model.
+  maintainer: avarok
+  category: agent
+  model_params: 35B
+  model_dtype: fp8
+  quantization: fp8
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 32768
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.90
+  scheduling_policy: slai
+  speculative: true
+  mtp_quantization: bf16
+  enable_prefix_caching: true
+  # NVFP4 lm-head: 4-bit-packed 248K-vocab projection, in-register E2M1-LUT
+  # dequant. ~1/4 the bf16 head's per-token read. Verified 10/10 on this model;
+  # quality-gate per-model before reuse (see metadata warning).
+  lm_head_dtype: nvfp4
+  kv_high_precision_layers: auto

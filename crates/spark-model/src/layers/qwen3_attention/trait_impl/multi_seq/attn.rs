@@ -178,6 +178,7 @@ impl Qwen3AttentionLayer {
             inv_sqrt_d,
             nq * hd,
             fwd.buffers.splitk_workspace(),
+            fwd.levers.max_decode_seqs,
             stream,
         )?;
         if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {
@@ -231,25 +232,20 @@ impl Qwen3AttentionLayer {
         let o_out = fwd.buffers.moe_output();
         if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
             // ATLAS_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
-            // Per-token dense_gemv — mirrors the single-seq decode path
-            // (attention_forward_oproj.rs). Without this branch the multi-seq
-            // path falls through to the NVFP4 `w4a16_gemv_batch{2,3}` branch
-            // using the stale FP8/NVFP4 `self.attn.o_proj`, reading mismatched
-            // weight bytes → CUDA_ERROR_ILLEGAL_ADDRESS in batched decode.
-            for i in 0..n {
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                let o_out_i = o_out.offset(i * h * bf16);
-                ops::dense_gemv(
-                    fwd.gpu,
-                    self.dense_gemv_k,
-                    attn_out_i,
-                    o_bf16,
-                    o_out_i,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
-            }
+            // attn_out is contiguous [n, q_dim] and o_out is [n, h], so a single
+            // batched GEMM reads the BF16 o_proj weight ONCE for all n sequences
+            // instead of once per sequence (per-seq dense_gemv re-read it N×).
+            ops::dense_gemm(
+                fwd.gpu,
+                self.dense_gemm_k,
+                attn_out,
+                o_bf16,
+                o_out,
+                n as u32,
+                h as u32,
+                nq * hd,
+                stream,
+            )?;
         } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
             // FP8 native: per-token w8a16_gemv for O projection.
             for i in 0..n {
@@ -289,6 +285,23 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
+        } else if !self.attn.o_proj.is_null() {
+            // WIDE-VERIFY BATCHED O-PROJ (DFlash γ=16, n>3). One GEMM reads
+            // the o_proj weight ONCE for all n rows instead of the per-row
+            // GEMV loop below. attn_out is contiguous [n, q_dim]; o_out is
+            // contiguous [n, h]; both already laid out for a single M=n GEMM
+            // (no scatter). Uses the pipelined m128_v2 kernel when the
+            // transposed weight is present (base M64 GEMM is the slow path).
+            self.wide_verify_gemm(
+                c,
+                attn_out,
+                &self.attn.o_proj,
+                self.o_nvfp4_t.as_ref(),
+                o_out,
+                n as u32,
+                h as u32,
+                nq * hd,
+            )?;
         } else {
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
@@ -304,6 +317,29 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
+        }
+
+        // ── Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
+        // contiguous [n, q_dim]); base_out = o_out (contiguous [n, h]) folded in
+        // place — matches the single-seq apply_lora_delta on o after o_proj.
+        // No-op unless a routing table is installed AND seq_slot is non-null.
+        if let Some(ref lw) = self.lora
+            && c.seq_slot.0 != 0
+            && let Some(ref route) = lw.o_route
+        {
+            ops::lora_delta::apply_lora_bgmv(
+                fwd.gpu,
+                &lw.kernels,
+                route,
+                attn_out,
+                o_out,
+                c.seq_slot,
+                n as u32,
+                q_dim,    // x row stride (elements): attn_out is [n, q_dim]
+                h as u32, // out row stride (elements): o_out is [n, h] contiguous
+                fwd.buffers.lora_xa(),
+                stream,
+            )?;
         }
         Ok(o_out)
     }

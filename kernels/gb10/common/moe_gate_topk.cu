@@ -26,6 +26,23 @@ __device__ __constant__ float E2M1_LUT_GATE[16] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
+// NVFP4 per-block FP8-E4M3 scale decode. SCALE/gfx1151 `(float)__nv_fp8_e4m3`
+// is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
+// software scl_fp8 there; NVIDIA path is the verbatim cast.
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
+    if (e == 0u)               v = (float)m * 0.001953125f;
+    else if (e == 15u && m == 7u) v = 0.0f;
+    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20));
+    return s ? -v : v;
+}
+#else
+__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+    __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
+}
+#endif
+
 extern "C" __global__ void moe_gate_topk_fused(
     const __nv_bfloat16* __restrict__ A,         // [K] input activation
     const unsigned char* __restrict__ B_packed,   // [num_experts, K/2] NVFP4 gate weight
@@ -75,8 +92,7 @@ extern "C" __global__ void moe_gate_topk_fused(
             unsigned int packed4 = *(const unsigned int*)(B_packed + (unsigned long long)tid * half_K + k8 * 4);
             unsigned int sg = (k8 * 8) / GROUP_SIZE;
             unsigned char sb = B_scale[(unsigned long long)tid * num_groups + sg];
-            __nv_fp8_e4m3 fp8; *(unsigned char*)&fp8 = sb;
-            float sc = (float)fp8 * scale2;
+            float sc = atlas_dec_e4m3(sb) * scale2;
 
             #pragma unroll
             for (int b = 0; b < 4; b++) {

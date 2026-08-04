@@ -174,7 +174,27 @@ impl SsmStatePool {
     }
 
     pub(super) fn release_slot(&self, idx: usize) {
-        self.free_slots.lock().push(idx);
+        let mut free = self.free_slots.lock();
+        debug_assert!(
+            !free.contains(&idx),
+            "release_slot: slot {idx} already free (double-release hands it to two seqs)"
+        );
+        free.push(idx);
+    }
+
+    /// Remove a SPECIFIC slot from the free list if present, returning whether
+    /// it was. Used by `compact_sequence` to claim a known-free migration
+    /// target EXCLUSIVELY, so a slot is never simultaneously owned and free —
+    /// the bug-2 invariant (an owned-and-free slot gets handed to two sequences
+    /// by `claim_slot`, sharing GDN state → cross-stream corruption).
+    pub(super) fn claim_specific(&self, slot: usize) -> bool {
+        let mut free = self.free_slots.lock();
+        if let Some(pos) = free.iter().position(|&s| s == slot) {
+            free.swap_remove(pos);
+            true
+        } else {
+            false
+        }
     }
 
     /// Reserved pool slot used by `decode_batch` / `mixed_forward` padding.
@@ -442,6 +462,40 @@ impl Drop for SlotGuard {
             // free list so the pool cannot leak itself into exhaustion.
             tracing::debug!("SlotGuard::drop releasing un-freed SSM slot {idx}");
             self.pool.release_slot(idx);
+        }
+    }
+}
+
+/// Release every per-layer state pool.
+///
+/// The intermediate and checkpoint pools are only allocated when MTP is on, so
+/// the vectors are empty otherwise — draining handles both without a branch.
+impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
+    fn label(&self) -> &'static str {
+        "ssm state pool"
+    }
+
+    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        for pool in [
+            &mut self.h_state_pools,
+            &mut self.conv_state_pools,
+            &mut self.h_intermediate_pools,
+            &mut self.conv_intermediate_pools,
+            &mut self.h_checkpoint_pools,
+            &mut self.conv_checkpoint_pools,
+        ] {
+            for ptr in pool.drain(..) {
+                if let Err(e) = gpu.free(ptr)
+                    && first_error.is_none()
+                {
+                    first_error = Some(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 }

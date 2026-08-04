@@ -13,6 +13,7 @@ fn dims() -> ModelDims {
         num_kv_heads: 8,
         head_dim: 128,
         block_size: 16,
+        model_fp: None,
     }
 }
 

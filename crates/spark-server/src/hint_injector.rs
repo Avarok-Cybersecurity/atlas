@@ -195,6 +195,30 @@ impl HintInjector for NotInstalledHint {
 /// Always runs last as a fallback.
 pub struct GenericErrorHint;
 
+/// P0-4 (2026-07-09): structured client errors like opencode's
+/// `BadResource: FileSystem.readFile (...)` matched NO hint pattern, so
+/// `consecutive_tool_errors` reset to 0 on every retry and the escalating
+/// `<CRITICAL>` rescue never fired across 6 identical failures. Recognize a
+/// PascalCase/ALLCAPS error-code prefix followed by `:` (BadResource:,
+/// NotFound:, EISDIR:), excluding single-hump prose words (Note:, Warning:
+/// has its own patterns).
+fn pascal_error_prefix(text: &str) -> bool {
+    let t = text.trim_start();
+    let Some(first) = t.split(':').next() else {
+        return false;
+    };
+    // split(':') guarantees the byte after `first` is `:` when first < t.
+    if first.len() < 4
+        || first.len() >= t.len()
+        || !first.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    let caps = first.chars().filter(|c| c.is_ascii_uppercase()).count();
+    let has_lower = first.chars().any(|c| c.is_ascii_lowercase());
+    (has_lower && caps >= 2) || (!has_lower && caps == first.chars().count())
+}
+
 impl HintInjector for GenericErrorHint {
     fn is_relevant(&self, ctx: &HintContext) -> bool {
         ctx.text.starts_with("Error")
@@ -203,6 +227,8 @@ impl HintInjector for GenericErrorHint {
             || ctx.text.contains("error:")
             || ctx.text.contains("failed")
             || ctx.text.contains("Permission denied")
+            || ctx.text.starts_with("BadResource")
+            || pascal_error_prefix(ctx.text)
     }
 
     fn hint(&self, ctx: &HintContext) -> String {
@@ -280,12 +306,6 @@ pub fn looks_like_error(text: &str) -> bool {
 // made many tool calls with NO productive file output yet, redirecting it to
 // write + verify. Env-gated (PCND): ATLAS_BASH_WANDER_WATCHDOG=1.
 
-/// One-time read of the watchdog flag.
-fn bash_wander_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("ATLAS_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"))
-}
-
 /// Classify a tool call as PRODUCTIVE (produces/verifies a deliverable) vs
 /// exploratory. `write`/`edit`/`create` tools are productive; a `bash` call is
 /// productive only when its command writes a file or builds/runs
@@ -331,8 +351,16 @@ pub fn tool_call_is_productive(name: &str, args: &serde_json::Value) -> bool {
 /// response when the agent appears to be wandering: ≥ `MIN_CALLS` tool calls
 /// with zero productive (file-writing/building) calls so far. Escalates with
 /// call count. `None` when disabled, below threshold, or progress was made.
-pub fn bash_wander_hint(total_tool_calls: usize, productive_calls: usize) -> Option<String> {
-    if !bash_wander_enabled() {
+///
+/// `enabled` is `ChatLevers::bash_wander`, passed in rather than read from a
+/// `OnceLock` here: the watchdog is a property of the deployment being
+/// steered, and the caller already holds the server's levers.
+pub fn bash_wander_hint(
+    total_tool_calls: usize,
+    productive_calls: usize,
+    enabled: bool,
+) -> Option<String> {
+    if !enabled {
         return None;
     }
     bash_wander_hint_inner(total_tool_calls, productive_calls)
@@ -366,119 +394,5 @@ fn bash_wander_hint_inner(total_tool_calls: usize, productive_calls: usize) -> O
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_eisdir_detection() {
-        let mut text = "Error: EISDIR: illegal operation on a directory, read".to_string();
-        inject_hints(&mut text, 1);
-        assert!(text.contains("file_path is a directory"));
-    }
-
-    #[test]
-    fn test_eisdir_escalation() {
-        let mut text = "Error: EISDIR: illegal operation on a directory, read".to_string();
-        inject_hints(&mut text, 3);
-        assert!(text.contains("<CRITICAL>"));
-        assert!(text.contains("STOP using the Write tool"));
-    }
-
-    #[test]
-    fn test_enoent_detection() {
-        let mut text = "Error: ENOENT: no such file or directory".to_string();
-        inject_hints(&mut text, 1);
-        assert!(text.contains("mkdir -p"));
-    }
-
-    #[test]
-    fn test_generic_fallback() {
-        let mut text = "Error: something went wrong".to_string();
-        inject_hints(&mut text, 1);
-        assert!(text.contains("Bash as a fallback"));
-    }
-
-    #[test]
-    fn test_no_hint_on_success() {
-        let mut text = "File written successfully".to_string();
-        let original = text.clone();
-        inject_hints(&mut text, 0);
-        assert_eq!(text, original);
-    }
-
-    #[test]
-    fn test_specific_wins_over_generic() {
-        let mut text = "Error: EISDIR: illegal operation on a directory".to_string();
-        inject_hints(&mut text, 1);
-        assert!(text.contains("file_path is a directory"));
-        assert!(!text.contains("Tool call failed"));
-    }
-
-    #[test]
-    fn test_read_error() {
-        let mut text =
-            "Error: ENOENT: no such file or directory, open './test/foo.txt'".to_string();
-        inject_hints(&mut text, 1);
-        assert!(text.contains("Verify the path"));
-    }
-
-    #[test]
-    fn test_task_delegation() {
-        let mut text = "Error: Unknown agent type:  is not a valid agent type".to_string();
-        inject_hints(&mut text, 2);
-        assert!(text.contains("STOP using the Task tool"));
-    }
-
-    #[test]
-    fn test_edit_mismatch() {
-        let mut text = "Error: old_string not found in file".to_string();
-        inject_hints(&mut text, 1);
-        assert!(text.contains("Read the file first"));
-    }
-
-    #[test]
-    fn bw1_classify_productive_vs_explore() {
-        use serde_json::json;
-        // write/edit tools → productive
-        assert!(tool_call_is_productive(
-            "write",
-            &json!({"filePath":"src/main.rs","content":"fn main(){}"})
-        ));
-        assert!(tool_call_is_productive("Edit", &json!({})));
-        // bash that writes/builds/runs → productive
-        assert!(tool_call_is_productive(
-            "bash",
-            &json!({"command":"cargo run --release"})
-        ));
-        assert!(tool_call_is_productive(
-            "bash",
-            &json!({"command":"cat > src/main.rs << 'EOF'"})
-        ));
-        // bash exploration → NOT productive
-        assert!(!tool_call_is_productive(
-            "bash",
-            &json!({"command":"ls -la /tmp"})
-        ));
-        assert!(!tool_call_is_productive(
-            "bash",
-            &json!({"command":"cat Cargo.toml"})
-        ));
-        // read/glob → NOT productive
-        assert!(!tool_call_is_productive("read", &json!({"filePath":"x"})));
-        assert!(!tool_call_is_productive("glob", &json!({"pattern":"**/*"})));
-    }
-
-    #[test]
-    fn bw1_hint_threshold_and_escalation() {
-        // Below threshold or any productive call → no hint.
-        assert!(bash_wander_hint_inner(4, 0).is_none());
-        assert!(bash_wander_hint_inner(20, 1).is_none());
-        // At/over threshold with zero productive → standard nudge.
-        let h = bash_wander_hint_inner(5, 0).expect("should fire");
-        assert!(h.contains("PROGRESS WATCHDOG"));
-        assert!(h.contains("write"));
-        // High count → critical escalation.
-        let c = bash_wander_hint_inner(10, 0).expect("should fire");
-        assert!(c.contains("CRITICAL"));
-    }
-}
+#[path = "hint_injector_tests.rs"]
+mod hint_injector_tests;

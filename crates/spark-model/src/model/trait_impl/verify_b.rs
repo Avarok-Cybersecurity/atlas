@@ -48,11 +48,14 @@ impl TransformerModel {
         let fp32 = 2usize;
         let k = 2usize;
 
-        // F62 (2026-04-27): SpecMamba dual-buffer pre-verify copy.
-        // Copy canonical SSM state (h_state_checkpoint) → scratch (h_state)
-        // BEFORE the kernel runs. The kernel mutates the scratch; the
-        // canonical is preserved across verify until commit.
-        self.pre_verify_copy_async(seq)?;
+        // Item #2 (STree-style in-place K=2 verify): `h_state` IS canonical
+        // — the verify kernel reads/writes it directly and the commit
+        // (`commit_accepted_prefix`) rewinds it in place on reject. There is
+        // no scratch/canonical split to seed, so the legacy SpecMamba
+        // dual-buffer pre-verify copy (~60 MB h_state + conv D2D per K=2
+        // step) is gone. The CUDA-graph capture below is unaffected: the
+        // captured nodes take the same `h_state` pointer, which never moves.
+        // (K=3/K=4/DFlash verify share the same in-place convention.)
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -77,6 +80,7 @@ impl TransformerModel {
                 self.prefix_cache.as_ref(),
                 self.gpu.as_ref(),
                 stream,
+                self.levers.kv_poison,
             )?;
         }
 
@@ -137,6 +141,19 @@ impl TransformerModel {
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
 
+        // Request-scoped LoRA routing (graphed verify). One sequence → one
+        // adapter for all K tokens: a [K]-all-equal buffer at the free +128 gap
+        // (multi-seq layout slot@+256/seq_len@+512/bt@+768, so +128+K*4 ≤ +256
+        // needs K ≤ 32). Uploaded pre-`begin_capture` (same phasing as
+        // positions), so the captured verify graph reads a stable address whose
+        // contents refresh each step. The non-HSS `decode_multi_seq` routes off
+        // this [K] buffer; the HSS `decode_batched` single-token loop reads
+        // index 0 (correct for the uniform buffer). `DevicePtr(0)` (no pool) →
+        // installed-pair fallback.
+        debug_assert!(k <= 32, "verify seq_slot +128 gap holds K ≤ 32");
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, k, meta_base.offset(128), stream)?;
+
         let metadata = AttnMetadataDev {
             positions: meta_base,
             positions_h: meta_base,
@@ -146,6 +163,7 @@ impl TransformerModel {
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
             num_seqs: k as u32,
+            seq_slot,
         };
 
         // CUDA graphs cannot capture NCCL all-reduce (disabled for EP).
@@ -169,23 +187,50 @@ impl TransformerModel {
             tracing::info!("FP8 calibration frozen — re-enabling CUDA graphs (MTP verify)");
         }
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
+        // ATLAS_K2_DIAG=1 arms per-stage synchronize checkpoints inside
+        // forward_k2 to localize any illegal access on the batch2 verify path.
+        // Those host syncs are illegal under CUDA-graph capture
+        // (STREAM_CAPTURE_UNSUPPORTED, status 900), so the diagnostic must run
+        // the verify eagerly. Zero production impact — only when K2_DIAG is set
+        // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
+        let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
+        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             // Phase 6.2.c — see decode() for rationale: HSS path's host I/O is
             // illegal under CUDA graph capture.
-            && !hss_engaged;
+            && !hss_engaged
+            && !k2_diag_eager
+            && !lora_eager;
+
+        // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
+        // id via the static tid2eid table, so the verify forward needs the 2
+        // verify tokens in the stable `token_ids` device buffer. Uploaded
+        // pre-graph (host→device is illegal under CUDA-graph capture); the graph
+        // then reads the stable device buffer. Mirrors `decode()`'s token_ids.
+        let tid_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        self.gpu
+            .copy_h2d_async(&tid_bytes, self.buffers.token_ids(), stream)?;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
+            token_ids: Some(self.buffers.token_ids()),
+            routed_lora_layers: None, // #30: decode/verify never routes prefill.
+            midchunk_capture: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──
@@ -309,7 +354,7 @@ impl TransformerModel {
             )?;
 
             // LM head for 2 tokens (GEMM: weights loaded once)
-            self.lm_head_batched(normed, k as u32, stream)?;
+            self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
             // Argmax inside graph (fixed scratch addresses — graph-safe)
             let vocab = self.config.vocab_size;

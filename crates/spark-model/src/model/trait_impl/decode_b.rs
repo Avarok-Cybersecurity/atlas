@@ -31,6 +31,8 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+mod build_states;
+
 impl TransformerModel {
     pub(super) fn mixed_forward_dispatch(
         &self,
@@ -47,11 +49,7 @@ impl TransformerModel {
         let n_prefill = prefill_chunk_len;
 
         // Padded decode count for batched decode kernel compatibility
-        let padded_n_guard = [2usize, 4, 8]
-            .iter()
-            .copied()
-            .find(|&s| s >= n_decode)
-            .unwrap_or(n_decode);
+        let padded_n_guard = crate::traits::padded_batch_n(n_decode);
 
         // Guard: fall back to default (sequential) for EP, oversized, no decode,
         // or MLA. MLA models route the decode portion through `decode_batch`,
@@ -104,12 +102,8 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        // Pad decode count to nearest [2, 4, 8] for batched decode kernel compat
-        let padded_n = [2usize, 4, 8]
-            .iter()
-            .copied()
-            .find(|&s| s >= n_decode)
-            .unwrap_or(n_decode);
+        // Pad decode count to the SSOT ladder (traits::padded_batch_n) for batched kernel compat
+        let padded_n = crate::traits::padded_batch_n(n_decode);
 
         // ── 1. Embed all tokens contiguously ──
 
@@ -162,6 +156,7 @@ impl TransformerModel {
                 self.prefix_cache.as_ref(),
                 self.gpu.as_ref(),
                 stream,
+                self.levers.kv_poison,
             )?;
         }
 
@@ -175,6 +170,7 @@ impl TransformerModel {
             self.prefix_cache.as_ref(),
             self.gpu.as_ref(),
             stream,
+            self.levers.kv_poison,
         )?;
 
         // ── 3. Upload decode metadata ──
@@ -336,6 +332,18 @@ impl TransformerModel {
             (DevicePtr::NULL, DevicePtr::NULL)
         };
 
+        // Request-scoped LoRA routing for the fused (SLAI) prefill portion. The
+        // decode portion already routes via `upload_batch_metadata_at` (its own
+        // +128 gap); the prefilling sequence uses the dedicated `lora_seq_slot`
+        // arena buffer (`proc_count` uniform slots), so the two never collide.
+        // Without this, a prefilling request co-scheduled with decodes would
+        // still contaminate its prompt KV with the global active adapter.
+        let prefill_seq_slot = self.upload_seq_slot_uniform(
+            prefill_seq.adapter_slot,
+            proc_count,
+            self.buffers.lora_seq_slot(),
+            stream,
+        )?;
         let prefill_metadata = AttnMetadataDev {
             positions: prefill_meta_base,
             positions_h: prefill_meta_base,
@@ -345,57 +353,12 @@ impl TransformerModel {
             block_table: prefill_bt_dev,
             max_blocks_per_seq: prefill_seq.block_table.len() as u32,
             num_seqs: 1,
+            seq_slot: prefill_seq_slot,
         };
 
         // ── 5. Build decode layer states ──
-        let seq_lens: Vec<usize> = (0..padded_n)
-            .map(|i| {
-                if i < n_decode {
-                    decode_seqs[i].seq_len
-                } else {
-                    0
-                }
-            })
-            .collect();
-        let block_tables: Vec<Vec<u32>> = (0..padded_n)
-            .map(|i| {
-                if i < n_decode {
-                    decode_seqs[i].block_table.clone()
-                } else {
-                    vec![self.dummy_kv_block]
-                }
-            })
-            .collect();
-
-        let mut all_layer_states: Vec<Vec<Box<dyn LayerState>>> = decode_seqs
-            .iter_mut()
-            .map(|s| std::mem::take(&mut s.layer_states))
-            .collect();
-
-        // Build dummy layer_states for padding positions. Use the
-        // dedicated `dummy_slot()` (see SsmStatePool) so pad SSM kernel
-        // writes can never collide with another claimed sequence.
-        let dummy_ssm_slot = self.ssm_pool.dummy_slot();
-        for _pad_pos in n_decode..padded_n {
-            let mut dummy: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
-            let mut ssm_idx = 0usize;
-            for (li, layer) in self.layers.iter().enumerate() {
-                if self.config.layer_type(li) == LayerType::LinearAttention {
-                    dummy.push(Box::new(SsmLayerState {
-                        h_state: self.ssm_pool.h_state(ssm_idx, dummy_ssm_slot),
-                        conv_state: self.ssm_pool.conv_state(ssm_idx, dummy_ssm_slot),
-                        h_state_checkpoint: None,
-                        conv_state_checkpoint: None,
-                        h_state_intermediates: Vec::new(),
-                        conv_state_intermediates: Vec::new(),
-                    }));
-                    ssm_idx += 1;
-                } else {
-                    dummy.push(layer.alloc_state(self.gpu.as_ref())?);
-                }
-            }
-            all_layer_states.push(dummy);
-        }
+        let (seq_lens, block_tables, mut all_layer_states) =
+            self.mixed_build_decode_layer_states(decode_seqs, padded_n, n_decode)?;
 
         // ── 6. Fused layer loop ──
         //
@@ -407,22 +370,39 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(decode_metadata),
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
             gdn_exact_replay: false,
+            token_ids: None,
+            // #30: decode never routes prefill — installed-pair/bgmv path only.
+            routed_lora_layers: None,
+            midchunk_capture: None,
         };
 
         let prefill_ctx = ForwardContext {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(prefill_metadata),
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
             gdn_exact_replay: false,
+            token_ids: None,
+            // #30: the fused (SLAI) prefill portion routes by the prefilling
+            // seq's slot (None unless it routes to a non-active slot).
+            routed_lora_layers: self.routed_slot_layers(prefill_seq.adapter_slot),
+            midchunk_capture: None,
         };
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -456,6 +436,21 @@ impl TransformerModel {
                 stream,
             )?;
         }
+
+        // ── Step 0 (spec blocker B1): per-chunk SSM state normalize ──
+        //
+        // Normalize the prefill seq's h_state on the SAME `stream`
+        // (= default_stream, reassigned near the top of this fn) that the
+        // GDN recurrence just wrote it on — in-order, no event, no race.
+        // This MUST cover EVERY mixed chunk INCLUDING the last: mixed_forward
+        // runs the GDN write on default_stream, so the terminal normalize
+        // also belongs here. Leaving the is_last normalize in run_standard.rs
+        // on prefill_stream (as the original Step 0 did) does NOT order these
+        // default_stream writes → the final chunk reads a stale state →
+        // nondeterministic corruption (the residual B1 race that failed
+        // token-for-token validation, 0/12). The standard prefill_chunk path
+        // keeps its own same-stream (prefill_stream) every-chunk normalize.
+        self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
 
         // Restore decode layer_states to sequences
         for (seq, ls) in decode_seqs

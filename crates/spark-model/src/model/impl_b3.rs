@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
@@ -43,13 +43,13 @@ impl TransformerModel {
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: emit the full token sequence
         // ONCE so a Python reference can run the SAME tokens through HF
         // transformers and dump matching hidden-state captures.
-        static TOKENS_DUMPED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !TOKENS_DUMPED.load(std::sync::atomic::Ordering::Relaxed)
-            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
+        // Per-model latch: a static would let the previous model swallow this
+        // one's dump. Env first, so a disabled dump never burns the shot.
+        if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
+            .ok()
+            .as_deref()
+            == Some("1")
+            && self.stats.dumped.keyed("dump:dflash_tokens")
         {
             let tokens_json = serde_json::json!({
                 "prompt_len": position - seq.tokens.len() + seq.tokens.len(),
@@ -71,7 +71,6 @@ impl TransformerModel {
                     seq.prompt_len,
                 );
             }
-            TOKENS_DUMPED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let stream = self.gpu.default_stream();
         let draft_embed_target = None;
@@ -82,17 +81,151 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: None,
             profile: false,
             comm: None,
             graph_capture: false,
             gdn_exact_replay: false,
+            token_ids: None,
+            routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
+            midchunk_capture: None,
         };
+        // Give the drafter its prompt context on the first propose of this
+        // sequence: whole-prompt prefill on a COLD turn, carried rows + a
+        // short append on a WARM one. See `ensure_drafter_context`.
+        self.ensure_drafter_context(proposer, seq, &ctx, stream);
         let prop_state = seq
             .proposer_state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No proposer state for sequence"))?;
-        proposer.propose(
+        // ATLAS_MTP_CATCHUP: before proposing, feed pairs the drafter missed
+        // during a serial-decode stretch. Coordinates (measured 2026-07-20 on
+        // the 27B rig): at propose entry `position == seq.tokens.len()` and
+        // the imminent forward_one writes the pair for sequence key
+        // `position - 1`; pair key k = (embed(tokens[k+1]), hidden_k), RoPE
+        // k+1. The serial-decode ring stores, under label n, the hidden of
+        // the step that COMMITTED token n — i.e. hidden_{n-1} — so pair key k
+        // reads ring label k+1. Drafter KV slots are compacted (append-only)
+        // while RoPE stays sequence-space, so RoPE gaps are already the norm:
+        // partial feeds (clipped to ring coverage) are safe, and wrong feeds
+        // cannot corrupt output (verify rejects bad drafts).
+        if crate::speculative::mtp_catchup_enabled() && !self.mtp_catchup_ring.is_null() {
+            let rows = proposer.drafter_rows(prop_state.as_mut());
+            let last_key = proposer.last_pair_key(prop_state.as_mut());
+            let (start, count) = *self.mtp_catchup_meta.lock();
+            // ATLAS_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
+            // this propose is ABOUT to write is `position - 1`, and it reads
+            // its hidden from `mtp_hidden_save`; under the label convention
+            // that same hidden is ring label `position`. So
+            // `fp(ring[position % rows]) == fp(mtp_hidden_save)` iff the
+            // ring's write-side slot arithmetic, the D2D plumbing and the
+            // read-side slot arithmetic all agree. It does NOT prove the
+            // label convention itself (see `mtp_refeed_shift`).
+            if crate::speculative::mtp_refeed_debug() {
+                let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
+                let h = self.config.hidden_size;
+                let fp_save = crate::speculative::hidden_fingerprint(
+                    self.gpu.as_ref(),
+                    self.mtp_hidden_save,
+                    h,
+                );
+                let fp_ring = crate::speculative::hidden_fingerprint(
+                    self.gpu.as_ref(),
+                    self.mtp_catchup_ring.offset((position % ring_rows) * h * 2),
+                    h,
+                );
+                let covered = count > 0 && position >= start && position < start + count;
+                tracing::info!(
+                    "REFEED_DBG propose position={position} rows={rows} \
+                     last_key={last_key:?} ring=[{start},+{count}) \
+                     fp_save={fp_save:016x} fp_ring[{position}]={fp_ring:016x} \
+                     covered={covered} roundtrip_ok={}",
+                    covered && fp_save == fp_ring,
+                );
+            }
+            if let Some(last) = last_key
+                && rows > 0
+                && count > 0
+            {
+                // Missing pair keys: (last .. position-1); the propose itself
+                // covers position-1. Clip to ring coverage [start, start+count)
+                // in label space (label = key + 1).
+                let mut k0 = (last + 1).max(start.saturating_sub(1));
+                let k1 = (position.saturating_sub(2)).min((start + count).saturating_sub(2));
+                let want = (position.saturating_sub(1)).saturating_sub(last + 1);
+                if k0 <= k1 && want > 0 {
+                    let ring_rows = super::types::MTP_CATCHUP_RING_ROWS;
+                    let h = self.config.hidden_size;
+                    let bf16 = 2usize;
+                    let fed_from = k0;
+                    while k0 <= k1 {
+                        // Ring-contiguous segment: labels k0+1 .. until wrap.
+                        let slot = (k0 + 1) % ring_rows;
+                        let seg_last = k1.min(k0 + (ring_rows - slot) - 1);
+                        let n_rows = seg_last - k0 + 1;
+                        // Row r feeds pair key k0+r = embed(tokens[k0+r+1]):
+                        // the impl reads prompt_tokens[r+1], so pass the
+                        // window starting at index k0 (n_rows + 1 tokens).
+                        let toks = &seq.tokens[k0..=seg_last + 1];
+                        let hid = self.mtp_catchup_ring.offset(slot * h * bf16);
+                        if crate::speculative::mtp_refeed_debug() {
+                            for r in 0..n_rows {
+                                let fp = crate::speculative::hidden_fingerprint(
+                                    self.gpu.as_ref(),
+                                    hid.offset(r * h * bf16),
+                                    h,
+                                );
+                                tracing::info!(
+                                    "REFEED_DBG feed key={} label={} tok={} rope={} fp={fp:016x}",
+                                    k0 + r,
+                                    k0 + r + 1,
+                                    toks[r + 1],
+                                    k0 + r + 1,
+                                );
+                            }
+                        }
+                        let row_base = proposer.drafter_rows(prop_state.as_mut());
+                        match proposer.catchup_drafter(
+                            toks,
+                            hid,
+                            row_base,
+                            k0 + 1,
+                            prop_state.as_mut(),
+                            &ctx,
+                            stream,
+                        ) {
+                            Ok(w) if w == n_rows => k0 = seg_last + 1,
+                            Ok(w) => {
+                                tracing::debug!(
+                                    "MTP catch-up: short feed ({w}/{n_rows} rows) — degrading"
+                                );
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::debug!("MTP catch-up: feed failed ({e:#}) — degrading");
+                                break;
+                            }
+                        }
+                    }
+                    if k0 > k1 {
+                        tracing::debug!(
+                            "MTP catch-up: fed pair keys {fed_from}..={k1} \
+                             (missed {want}, position {position})"
+                        );
+                    }
+                } else if want > 0 {
+                    tracing::debug!(
+                        "MTP catch-up: gap of {want} pairs outside ring coverage \
+                         (last_key={last} position={position} ring=[{start},+{count}))"
+                    );
+                }
+            }
+        }
+        let drafts = proposer.propose(
             token,
             self.mtp_hidden_save,
             position,
@@ -103,7 +236,28 @@ impl TransformerModel {
             draft_embed_target,
             grammar_bitmask,
             self.dflash_hidden_save,
-        )
+        )?;
+        // Confidence clamp (ATLAS_MTP_DRAFT_CONF, staged off by default):
+        // when the drafter's chain confidence is below tau, discard the
+        // drafts — the next step decodes serially instead of paying a
+        // verify that would most likely reject (break-even acceptance at
+        // K=1 on the 35B MoE is ~0.66). The drafter KV rows written by
+        // this propose MUST be trimmed exactly as a full rejection would
+        // (after_verify(0)), or the drafter desyncs from the target.
+        let tau = crate::speculative::draft_conf_tau();
+        if tau > 0.0
+            && !drafts.is_empty()
+            && let Some(conf) = proposer.last_confidence()
+            && conf < tau
+        {
+            tracing::debug!(
+                "MTP draft skipped: chain confidence {conf:.3} < tau {tau:.3}                  (pos {position}, {} drafts trimmed)",
+                drafts.len(),
+            );
+            proposer.after_verify(0, prop_state.as_mut(), stream)?;
+            return Ok(Vec::new());
+        }
+        Ok(drafts)
     }
 
     /// Borrow the GPU backend for post-construction wiring (e.g. installing
@@ -111,6 +265,13 @@ impl TransformerModel {
     /// same GPU the target uses).
     pub fn gpu_backend(&self) -> &dyn GpuBackend {
         self.gpu.as_ref()
+    }
+
+    /// Borrow the model config for post-construction wiring (e.g. building the
+    /// DeepSeek-V4 MTP proposer, which needs `hidden_size` / `kv_lora_rank` /
+    /// `qk_rope_head_dim` to size its private MLA KV cache).
+    pub fn config_ref(&self) -> &ModelConfig {
+        &self.config
     }
 
     /// Install a DFlash drafter as the active proposer, replacing whatever
@@ -222,6 +383,11 @@ impl TransformerModel {
         {
             let new_len = (chunk_start + proc_count).min(dstate.max_ctx_len);
             dstate.ctx_len = new_len;
+            // Phase I (v2): seed per-slot fixed positions for the prompt
+            // captures. Prefill slot i holds prompt position i, so the
+            // fixed rope position is simply its index. Keep parallel to
+            // ctx_len. Re-seed idempotently across prefill chunks.
+            dstate.ctx_positions = (0..new_len).map(|i| i as i32).collect();
         }
         Ok(())
     }
@@ -270,6 +436,65 @@ impl TransformerModel {
         let src = self.buffers.hidden_states().offset(token_idx * h * bf16);
         let dst_slot = dst.offset(slot * h * bf16);
         self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
+        Ok(())
+    }
+
+    /// Capture `hidden_states[token_idx]` for every DFlash capture layer into
+    /// `dflash_hidden_save`. Called from `verify_dflash_step` after the Phase 3
+    /// D2H sync, so `token_idx` is the confirmed bonus position. Runs outside
+    /// the CUDA graph so the correct accept-prefix position can be used.
+    pub(super) fn save_dflash_hidden_dispatch(&self, token_idx: usize, stream: u64) -> Result<()> {
+        for &layer_idx in &self.dflash_capture_layers {
+            self.try_dflash_capture(layer_idx, token_idx, stream)?;
+        }
+        Ok(())
+    }
+
+    /// K=gamma EAGLE capture: copy the per-layer hidden of ALL `k` verify rows into
+    /// the row-major `dflash_hidden_save` ([row0 | row1 | ... ], each row =
+    /// n_capture * hidden_size * bf16). Called once per capture layer inside the
+    /// verify graph (k is fixed per captured graph). After verify, the scheduler
+    /// appends rows 0..=num_accepted to ctx so every committed position gets its
+    /// target hidden (fixes the ctx-undercount) and the bonus generator (row
+    /// num_accepted) is the freshest slot (EAGLE). No-op unless DFlash is on,
+    /// this layer is a capture layer, and rank 0.
+    pub(super) fn try_dflash_capture_all(
+        &self,
+        layer_idx: usize,
+        k: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let dst = match self.dflash_hidden_save {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        if let Some(ref c) = self.comm
+            && c.rank() != 0
+        {
+            return Ok(());
+        }
+        let slot = match self
+            .dflash_capture_layers
+            .iter()
+            .position(|&l| l == layer_idx)
+        {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
+        let kmax = self.dflash_hidden_save_rows;
+        debug_assert!(
+            k <= kmax,
+            "try_dflash_capture_all: k={k} exceeds dflash_hidden_save_rows={kmax}"
+        );
+        let k_capped = k.min(kmax);
+        for t in 0..k_capped {
+            let src = self.buffers.hidden_states().offset(t * h * bf16);
+            let dst_slot = dst.offset(t * ctx_slot_bytes + slot * h * bf16);
+            self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
+        }
         Ok(())
     }
 }

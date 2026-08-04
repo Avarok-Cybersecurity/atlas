@@ -8,6 +8,31 @@
 
 use anyhow::Result;
 use std::fmt;
+use std::sync::atomic::Ordering;
+// The free-memory baseline is a field of the single run mailbox,
+// `crate::run_metrics::RunMetrics`: it is read by the dashboard and by KV
+// sizing from threads with no carrier, and it is cleared at run start so a
+// second model measures against its own baseline rather than the first
+// model's pre-load free memory.
+
+/// Record the free-memory baseline at GPU-context init. Call once, early,
+/// before weight loading. Idempotent-last-write; intended to be set exactly once.
+pub fn set_baseline_free_bytes(bytes: usize) {
+    crate::run_metrics::metrics()
+        .baseline_free_bytes
+        .store(bytes, Ordering::Relaxed);
+}
+
+/// The free-memory baseline captured at context init, or `None` if never set.
+pub fn baseline_free_bytes() -> Option<usize> {
+    match crate::run_metrics::metrics()
+        .baseline_free_bytes
+        .load(Ordering::Relaxed)
+    {
+        0 => None,
+        v => Some(v),
+    }
+}
 
 /// Opaque device pointer wrapping a CUDA CUdeviceptr (u64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +93,21 @@ pub trait GpuBackend: Send + Sync {
 
     /// Free device memory.
     fn free(&self, ptr: DevicePtr) -> Result<()>;
+
+    /// Free every allocation this backend made that nobody released, and
+    /// report how many there were.
+    ///
+    /// The teardown backstop. Enumerating owners does not scale: the loaders
+    /// fuse weights into fresh allocations owned by layer structs, which no
+    /// pool releases — measured at 15.3 GB per cycle on a 27B, linear over six
+    /// cycles. A backend is created per model, so its outstanding set IS that
+    /// model's leak.
+    ///
+    /// Default `0`: a backend that does not track allocations has nothing to
+    /// sweep, which is honest for the mock and for Metal.
+    fn sweep_unreleased(&self) -> usize {
+        0
+    }
 
     /// Copy from host to device.
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()>;
@@ -145,6 +185,15 @@ pub trait GpuBackend: Send + Sync {
         self.launch(func, grid, block, shared_mem, stream, &mut params)
     }
 
+    /// Whether `stream` is inside an active CUDA-graph capture. Telemetry
+    /// taps MUST check this before any sync/D2H on a potentially-captured
+    /// stream — those calls invalidate the capture (CUDA 901) and wedge the
+    /// serve. Default `false` (backends without capture, or without a query
+    /// API, never capture through this trait's eager paths).
+    fn stream_is_capturing(&self, _stream: u64) -> bool {
+        false
+    }
+
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
 
@@ -153,6 +202,30 @@ pub trait GpuBackend: Send + Sync {
 
     /// Look up a kernel function by module and function name.
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
+
+    /// This backend's memoized kernel handles and scratch allocations.
+    ///
+    /// Required rather than defaulted: an op that memoizes a `KernelHandle`
+    /// or a `DevicePtr` anywhere else is caching something that belongs to
+    /// this backend's model, and a default would let a new backend forget.
+    fn op_cache(&self) -> &crate::op_cache::OpCache;
+
+    /// Synchronise the stream after every kernel launch, so an asynchronous
+    /// illegal-address fault is reported at the kernel that caused it rather
+    /// than at a later sync. Resolved once when the backend is built; read on
+    /// the launch path, which is why it is not a per-launch `getenv`.
+    fn debug_sync_kernels(&self) -> bool {
+        false
+    }
+
+    /// This backend's model-scoped kernel modules, for the few callers that
+    /// need the registry itself rather than a kernel handle — resolving a
+    /// `__device__` symbol, for instance. `None` on backends that have no such
+    /// concept, which is why it is an accessor rather than a downcast.
+    #[cfg(feature = "cuda")]
+    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+        None
+    }
 
     /// Async host-to-device copy (no stream synchronization).
     ///
@@ -173,6 +246,33 @@ pub trait GpuBackend: Send + Sync {
         _stream: u64,
     ) -> Result<()> {
         self.copy_d2d(src, dst, bytes)
+    }
+
+    /// Strided device-to-device 2D (pitched) copy: `height` rows of
+    /// `width_bytes`, source rows spaced by `src_pitch`, dest rows by
+    /// `dst_pitch`. Default = per-row `copy_d2d_async` loop; the CUDA backend
+    /// overrides with ONE `cudaMemcpy2DAsync` (replaces the per-token Z-copy
+    /// loop = up to num_tokens×num_ssm_layers launches/forward).
+    #[allow(clippy::too_many_arguments)]
+    fn copy_d2d_2d_async(
+        &self,
+        src: DevicePtr,
+        src_pitch: usize,
+        dst: DevicePtr,
+        dst_pitch: usize,
+        width_bytes: usize,
+        height: usize,
+        stream: u64,
+    ) -> Result<()> {
+        for r in 0..height {
+            self.copy_d2d_async(
+                src.offset(r * src_pitch),
+                dst.offset(r * dst_pitch),
+                width_bytes,
+                stream,
+            )?;
+        }
+        Ok(())
     }
 
     /// Begin capturing CUDA operations on `stream` into a graph.
@@ -239,6 +339,17 @@ pub trait GpuBackend: Send + Sync {
         Ok(())
     }
 
+    /// Block the calling host thread until all work already
+    /// recorded against the event — e.g. an async D2H copy issued on the
+    /// graph stream followed by `record_event`, then `event_synchronize`
+    /// right before the host dereferences the destination pinned buffer.
+    /// Cheaper than `synchronize(stream)` when the stream has work beyond
+    /// the event you care about: this only waits for the recorded point,
+    /// not for everything subsequently enqueued.
+    fn event_synchronize(&self, _event: u64) -> Result<()> {
+        Ok(())
+    }
+
     /// Destroy an event.
     fn destroy_event(&self, _event: u64) -> Result<()> {
         Ok(())
@@ -282,188 +393,7 @@ impl fmt::Display for DevicePtr {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-pub mod mock {
-    //! Mock GPU backend for unit tests (no GPU required).
-
-    use super::*;
-    use parking_lot::Mutex;
-    use std::collections::HashMap;
-
-    #[derive(Debug)]
-    pub struct MockAlloc {
-        pub bytes: usize,
-        pub data: Vec<u8>,
-    }
-
-    /// Records kernel launches and memory operations for test assertions.
-    pub struct MockGpuBackend {
-        allocs: Mutex<HashMap<u64, MockAlloc>>,
-        next_ptr: Mutex<u64>,
-        launches: Mutex<Vec<MockLaunch>>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct MockLaunch {
-        pub func: u64,
-        pub grid: [u32; 3],
-        pub block: [u32; 3],
-    }
-
-    impl Default for MockGpuBackend {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl MockGpuBackend {
-        pub fn new() -> Self {
-            Self {
-                allocs: Mutex::new(HashMap::new()),
-                next_ptr: Mutex::new(0x1000_0000),
-                launches: Mutex::new(Vec::new()),
-            }
-        }
-
-        pub fn alloc_count(&self) -> usize {
-            self.allocs.lock().len()
-        }
-
-        pub fn launch_count(&self) -> usize {
-            self.launches.lock().len()
-        }
-
-        pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
-            self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
-        }
-    }
-
-    /// Find the allocation containing `ptr` (supports offset pointers).
-    fn find_alloc(allocs: &HashMap<u64, MockAlloc>, ptr: DevicePtr) -> Option<(usize, &MockAlloc)> {
-        for (&base, alloc) in allocs.iter() {
-            if ptr.0 >= base && ptr.0 < base + alloc.bytes as u64 {
-                return Some(((ptr.0 - base) as usize, alloc));
-            }
-        }
-        None
-    }
-
-    /// Mutable version of find_alloc.
-    fn find_alloc_mut(
-        allocs: &mut HashMap<u64, MockAlloc>,
-        ptr: DevicePtr,
-    ) -> Option<(usize, &mut MockAlloc)> {
-        for (&base, alloc) in allocs.iter_mut() {
-            if ptr.0 >= base && ptr.0 < base + alloc.bytes as u64 {
-                return Some(((ptr.0 - base) as usize, alloc));
-            }
-        }
-        None
-    }
-
-    impl GpuBackend for MockGpuBackend {
-        fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
-            let mut next = self.next_ptr.lock();
-            let ptr = *next;
-            *next += bytes as u64;
-            // Align to 256 bytes
-            *next = (*next + 255) & !255;
-            self.allocs.lock().insert(
-                ptr,
-                MockAlloc {
-                    bytes,
-                    data: vec![0u8; bytes],
-                },
-            );
-            Ok(DevicePtr(ptr))
-        }
-
-        fn alloc_managed(&self, bytes: usize) -> Result<DevicePtr> {
-            self.alloc(bytes) // Mock: same as regular alloc
-        }
-
-        fn free(&self, ptr: DevicePtr) -> Result<()> {
-            self.allocs.lock().remove(&ptr.0);
-            Ok(())
-        }
-
-        fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
-            let mut allocs = self.allocs.lock();
-            // Support offset pointers: find the allocation containing dst
-            let (offset, alloc) = find_alloc_mut(&mut allocs, dst)
-                .ok_or_else(|| anyhow::anyhow!("copy_h2d: ptr {dst} not allocated"))?;
-            alloc.data[offset..offset + src.len()].copy_from_slice(src);
-            Ok(())
-        }
-
-        fn copy_d2h(&self, src: DevicePtr, dst: &mut [u8]) -> Result<()> {
-            let allocs = self.allocs.lock();
-            // Support offset pointers: find the allocation containing src
-            let (offset, alloc) = find_alloc(&allocs, src)
-                .ok_or_else(|| anyhow::anyhow!("copy_d2h: ptr {src} not allocated"))?;
-            dst.copy_from_slice(&alloc.data[offset..offset + dst.len()]);
-            Ok(())
-        }
-
-        fn copy_d2d(&self, _src: DevicePtr, _dst: DevicePtr, _bytes: usize) -> Result<()> {
-            Ok(())
-        }
-
-        fn launch(
-            &self,
-            func: KernelHandle,
-            grid: [u32; 3],
-            block: [u32; 3],
-            _shared_mem: u32,
-            _stream: u64,
-            _params: &mut [*mut std::ffi::c_void],
-        ) -> Result<()> {
-            self.launches.lock().push(MockLaunch {
-                func: func.0,
-                grid,
-                block,
-            });
-            Ok(())
-        }
-
-        fn synchronize(&self, _stream: u64) -> Result<()> {
-            Ok(())
-        }
-
-        fn default_stream(&self) -> u64 {
-            0
-        }
-
-        fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
-            Ok(KernelHandle(0xDEAD))
-        }
-
-        fn memset(&self, ptr: DevicePtr, value: u8, bytes: usize) -> Result<()> {
-            let mut allocs = self.allocs.lock();
-            let (offset, alloc) = find_alloc_mut(&mut allocs, ptr)
-                .ok_or_else(|| anyhow::anyhow!("memset: ptr {ptr} not allocated"))?;
-            alloc.data[offset..offset + bytes].fill(value);
-            Ok(())
-        }
-
-        fn memset_async(
-            &self,
-            ptr: DevicePtr,
-            value: u8,
-            bytes: usize,
-            _stream: u64,
-        ) -> Result<()> {
-            self.memset(ptr, value, bytes)
-        }
-
-        fn total_memory(&self) -> Result<usize> {
-            Ok(128 * 1024 * 1024 * 1024) // 128 GB
-        }
-
-        fn free_memory(&self) -> Result<usize> {
-            Ok(120 * 1024 * 1024 * 1024) // 120 GB
-        }
-    }
-}
+pub mod mock;
 
 #[cfg(test)]
 mod tests {

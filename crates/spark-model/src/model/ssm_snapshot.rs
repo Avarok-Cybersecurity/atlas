@@ -358,10 +358,74 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
-    /// Return a snapshot slot to the free list.
+    /// Return a snapshot slot to the free list. Clears the slot's session
+    /// tag: a freed slot carries no restorable state, so leaving the tag
+    /// would make [`Self::session_has_history`] report phantom history.
     pub(super) fn free(&self, snap_slot: usize) {
         self.slot_has_hidden.lock().remove(&snap_slot);
+        self.session_tags.lock().remove(&snap_slot);
         self.free_slots.lock().push(snap_slot);
+    }
+
+    /// Whether any LIVE snapshot slot is tagged with `session_hash` — i.e.
+    /// this session has produced at least one snapshot before (a prior turn
+    /// finished, or a prior tail was captured). Used by the mid-chunk tail
+    /// capture to skip sessions on first sight: `session_hash` is a hash of
+    /// the first ≤1024 prompt tokens, so single-turn traffic gets a unique
+    /// hash per request and can never reuse a captured tail, while
+    /// multi-turn agents (stable long system prompt) match from their
+    /// second request onward — exactly when tail reuse begins.
+    pub(crate) fn session_has_history(&self, session_hash: u64) -> bool {
+        session_hash != 0
+            && self
+                .session_tags
+                .lock()
+                .values()
+                .any(|&s| s == session_hash)
+    }
+
+    /// Reserve a Marconi snapshot slot for an in-pass MID-CHUNK tail capture.
+    /// Pops a free slot, tags it with `session_hash`, and clears any stale
+    /// last-token-hidden marker (a tail snapshot is never a leaf). Returns
+    /// `None` when the pool is exhausted; the caller may `reclaim_from_cache`
+    /// and retry, or skip capture. Mirrors the bookkeeping `save` performs so
+    /// `restore` and session isolation behave identically for this slot.
+    pub(crate) fn reserve_tail_slot(&self, session_hash: u64) -> Option<usize> {
+        if !self.is_enabled() {
+            return None;
+        }
+        let snap_slot = self.free_slots.lock().pop()?;
+        self.slot_has_hidden.lock().remove(&snap_slot);
+        if session_hash != 0 {
+            self.session_tags.lock().insert(snap_slot, session_hash);
+        }
+        Some(snap_slot)
+    }
+
+    /// Per-SSM-layer h_state snapshot destination for `snap_slot`
+    /// (byte offset into the layer's slot region already applied).
+    pub(crate) fn tail_h_dst(&self, ssm_layer: usize, snap_slot: usize) -> DevicePtr {
+        self.h_snapshots[ssm_layer].offset(snap_slot * self.h_bytes)
+    }
+
+    /// Per-SSM-layer conv_state snapshot destination for `snap_slot`.
+    pub(crate) fn tail_conv_dst(&self, ssm_layer: usize, snap_slot: usize) -> DevicePtr {
+        self.conv_snapshots[ssm_layer].offset(snap_slot * self.conv_bytes)
+    }
+
+    /// Bytes per layer of a snapshot's h_state.
+    pub(crate) fn h_bytes(&self) -> usize {
+        self.h_bytes
+    }
+
+    /// Bytes per layer of a snapshot's conv_state.
+    pub(crate) fn conv_bytes(&self) -> usize {
+        self.conv_bytes
+    }
+
+    /// Number of SSM layers (== length of the per-layer dst vectors).
+    pub(crate) fn num_ssm_layers(&self) -> usize {
+        self.num_ssm_layers
     }
 
     /// Stash the last-token post-final-norm hidden (`hidden_bytes`, BF16)
@@ -416,19 +480,8 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
-    /// Try to reclaim a snapshot slot by evicting the LRU snapshot from the
-    /// prefix cache's snapshot index. Snapshots are decoupled from tree nodes,
-    /// so this directly frees a snapshot without needing to evict KV blocks.
-    pub(super) fn reclaim_from_cache(
-        &self,
-        prefix_cache: &dyn spark_runtime::prefix_cache::PrefixCache,
-        _kv_cache: &mut PagedKvCache,
-    ) -> bool {
-        if let Some(snap) = prefix_cache.evict_snapshot_lru() {
-            self.free(snap);
-            true
-        } else {
-            false
-        }
-    }
+    // `reclaim_from_cache` (spill-or-drop) and the Phase-1 spill/fault-in
+    // primitives live in the sibling `ssm_snapshot_spill` module to keep this
+    // file under the 500-LoC cap. They are a second `impl SsmSnapshotPool`
+    // block over the same fields.
 }

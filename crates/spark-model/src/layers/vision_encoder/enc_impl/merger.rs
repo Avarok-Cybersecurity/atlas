@@ -65,17 +65,17 @@ impl VisionEncoder {
             .arg_u32(ms)
             .launch(stream)?;
         // fc1 GEMM → buf_merge_fc1
-        KernelLaunch::new(gpu, self.k_gemm)
-            .grid([div_ceil(merged_in, 32), div_ceil(merged_p, 32), 1])
-            .block([32, 32, 1])
-            .arg_ptr(self.buf_merge_in)
-            .arg_ptr(m.fc1_w)
-            .arg_ptr(m.fc1_b)
-            .arg_ptr(self.buf_merge_fc1)
-            .arg_u32(merged_p)
-            .arg_u32(merged_in)
-            .arg_u32(merged_in)
-            .launch(stream)?;
+        self.vit_gemm_bias(
+            gpu,
+            self.buf_merge_in,
+            m.fc1_w,
+            m.fc1_b,
+            self.buf_merge_fc1,
+            merged_p,
+            merged_in,
+            merged_in,
+            stream,
+        )?;
         // GELU in-place
         KernelLaunch::new(gpu, self.k_gelu)
             .grid([div_ceil(merged_p * merged_in, 256), 1, 1])
@@ -84,16 +84,16 @@ impl VisionEncoder {
             .arg_u32(merged_p * merged_in)
             .launch(stream)?;
         // fc2 GEMM → out_slice
-        KernelLaunch::new(gpu, self.k_gemm)
-            .grid([div_ceil(out_h_size, 32), div_ceil(merged_p, 32), 1])
-            .block([32, 32, 1])
-            .arg_ptr(self.buf_merge_fc1)
-            .arg_ptr(m.fc2_w)
-            .arg_ptr(m.fc2_b)
-            .arg_ptr(out_slice)
-            .arg_u32(merged_p)
-            .arg_u32(out_h_size)
-            .arg_u32(merged_in)
-            .launch(stream)
+        self.vit_gemm_bias(
+            gpu,
+            self.buf_merge_fc1,
+            m.fc2_w,
+            m.fc2_b,
+            out_slice,
+            merged_p,
+            out_h_size,
+            merged_in,
+            stream,
+        )
     }
 }

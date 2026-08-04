@@ -100,6 +100,7 @@ impl Qwen3AttentionLayer {
             post_attn_norm,
             ffn,
             attn_layer_idx,
+            lora: None,
             gated,
             mrope_interleaved,
             kv_dtype,
@@ -133,6 +134,16 @@ impl Qwen3AttentionLayer {
             o_weight: None,
             o_dense_bf16: None,
             mla: None,
+            // ── DeepSeek-V4 Manifold-Constrained Hyper-Connections (mHC) ──
+            // `hc` stays None for non-V4 models; the V4 loader attaches real
+            // HcWeights after this constructor. Kernel handles are lazy (null
+            // when the hyper_connection module is absent), so non-V4 models
+            // still start cleanly.
+            hc: None,
+            hc_pre_k: super::super::try_kernel(gpu, "hyper_connection", "hc_pre"),
+            hc_post_k: super::super::try_kernel(gpu, "hyper_connection", "hc_post"),
+            hc_expand_k: super::super::try_kernel(gpu, "hyper_connection", "hc_expand"),
+            hc_head_k: super::super::try_kernel(gpu, "hyper_connection", "hc_head"),
             q_nvfp4_t: None,
             k_nvfp4_t: None,
             v_nvfp4_t: None,
@@ -147,6 +158,11 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_t",
                 "w8a16_gemm_t_pipelined",
             ),
+            w8a16_gemm_t_m128_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemm_t_m128",
+                "w8a16_gemm_t_m128",
+            ),
             per_token_group_quant_fp8_k: super::super::try_kernel(
                 gpu,
                 "per_token_group_quant_fp8",
@@ -158,6 +174,12 @@ impl Qwen3AttentionLayer {
                 "fp8_gemm_t_blockscaled",
             ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
+            rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
+                gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
+            } else {
+                gpu.kernel("norm", "rms_norm")?
+            },
+            norm_vanilla: crate::ships_vanilla_norm_weights(config),
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
@@ -175,7 +197,23 @@ impl Qwen3AttentionLayer {
                 "rope_mrope_interleaved",
                 "rope_forward_mrope_interleaved",
             ),
+            rope_mrope_interleaved_k_only_k: super::super::try_kernel(
+                gpu,
+                "rope_mrope_interleaved",
+                "rope_forward_mrope_interleaved_k_only",
+            ),
             rope_yarn_k: super::super::try_kernel(gpu, "rope", "rope_forward_yarn"),
+            // Interleaved (GPT-J / is_neox_style=False) YaRN RoPE — DeepSeek-V4 MLA.
+            rope_yarn_interleaved_k: super::super::try_kernel(
+                gpu,
+                "rope",
+                "rope_forward_yarn_interleaved",
+            ),
+            rope_yarn_interleaved_inv_k: super::super::try_kernel(
+                gpu,
+                "rope",
+                "rope_forward_yarn_interleaved_inv",
+            ),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
             fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(
@@ -238,6 +276,17 @@ impl Qwen3AttentionLayer {
                 gpu,
                 "paged_decode_mla",
                 "paged_decode_attn",
+            ),
+            // DeepSeek-V4-Flash MLA paged decode (compressed 576-dim KV cache).
+            mla_paged_decode_k: super::super::try_kernel(
+                gpu,
+                "mla_paged_decode",
+                "mla_paged_decode_nvfp4",
+            ),
+            mla_paged_decode_fp8_k: super::super::try_kernel(
+                gpu,
+                "mla_paged_decode_fp8",
+                "mla_paged_decode_fp8",
             ),
             mla_batched_gemv_k: super::super::try_kernel(gpu, "mla_absorbed", "mla_batched_gemv"),
             mla_q_rope_scatter_k: super::super::try_kernel(
@@ -349,16 +398,28 @@ impl Qwen3AttentionLayer {
             deinterleave_qg_k: gpu.kernel("ssm_preprocess", "deinterleave_qg")?,
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
             residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
+            residual_add_rms_norm_gatef32_k: crate::layers::try_kernel(
+                gpu,
+                "norm",
+                "residual_add_rms_norm_gatef32",
+            ),
             w4a16_gemv_qg_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch2")?,
             w4a16_gemv_dual_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch2")?,
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_qg_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg_batch3")?,
             w4a16_gemv_dual_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
+            w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,
             w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
             w4a16_gemm_t_m128_k: gpu.kernel("w4a16", "w4a16_gemm_t_m128")?,
+            w4a16_gemm_t_m128_bf16_k: super::super::try_kernel(
+                gpu,
+                "w4a16",
+                "w4a16_gemm_t_m128_bf16",
+            ),
             w4a16_gemm_t_m128_v2_k: super::super::try_kernel(
                 gpu,
                 "w4a16_v2",
@@ -370,12 +431,28 @@ impl Qwen3AttentionLayer {
                 "w4a16_gemm_t_m128_v3",
             ),
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            dense_gemm_pipelined_k: super::super::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
             prefill_attn_512_k: super::super::try_kernel(
                 gpu,
                 "inferspark_prefill_512",
                 "inferspark_prefill_512",
             ),
+            // DeepSeek-V4 sparse-attention compressor + compressed-KV prefill.
+            csa_compress_k: super::super::try_kernel(gpu, "csa_compress", "csa_compress"),
+            prefill_attn_compressed_k: super::super::try_kernel(
+                gpu,
+                "prefill_attn_compressed",
+                "prefill_attn_compressed",
+            ),
+            v4_comp_pool_filled: std::sync::atomic::AtomicU32::new(0),
+            v4_comp_prev_valid: std::sync::atomic::AtomicBool::new(false),
+            v4_decode_started: std::sync::atomic::AtomicBool::new(false),
+            v4_decode_first_pos: std::sync::atomic::AtomicU32::new(0),
             prefill_attn_paged_512_k: super::super::try_kernel(
                 gpu,
                 "inferspark_prefill_paged_512",
@@ -508,6 +585,11 @@ impl Qwen3AttentionLayer {
             deinterleave_qg_split_k: gpu.kernel("ssm_preprocess", "deinterleave_qg_split")?,
             deinterleave_qg_split_qnorm_k: gpu
                 .kernel("ssm_preprocess", "deinterleave_qg_split_qnorm")?,
+            deinterleave_qg_split_qnorm_mrope_k: super::super::try_kernel(
+                gpu,
+                "ssm_preprocess",
+                "deinterleave_qg_split_qnorm_mrope",
+            ),
             sigmoid_gate_mul_batched_k: gpu.kernel("residual_add", "sigmoid_gate_mul_batched")?,
             q_fp8: None,
             k_fp8: None,
@@ -518,6 +600,12 @@ impl Qwen3AttentionLayer {
             fp8_fp8_gemm_k: gpu.kernel("w4a16", "fp8_fp8_gemm_t")?,
             fp8_gemm_t_m128_k: gpu.kernel("w4a16", "fp8_gemm_t_m128")?,
             fp8_fp8_gemm_t_m128_k: gpu.kernel("w4a16", "fp8_fp8_gemm_t_m128")?,
+            w4a4_gemm_k: crate::layers::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
+            quantize_nvfp4_k: crate::layers::try_kernel(
+                gpu,
+                "quantize_nvfp4",
+                "quantize_bf16_to_nvfp4",
+            ),
             fp8_calibration: if fp8_calibration_tokens > 0
                 && !matches!(
                     kv_dtype,

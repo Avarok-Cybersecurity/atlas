@@ -21,6 +21,7 @@ pub(super) fn run_standard_chunk_loop(
     idx: usize,
     active: &mut Vec<ActiveSeq>,
     max_prefill_tokens: usize,
+    slice_budget: usize,
     prefill_stream: u64,
     prefill_event: u64,
     use_mtp: bool,
@@ -32,6 +33,7 @@ pub(super) fn run_standard_chunk_loop(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     completed_indices: &mut Vec<(usize, Option<u32>)>,
     did_mixed_step: &mut bool,
 ) {
@@ -39,7 +41,7 @@ pub(super) fn run_standard_chunk_loop(
     // enough K² stats to finalize scales. The driver itself is idempotent
     // (no-op after activation), so calling on every chunk is cheap.
     // Group size = 128 = Qwen3 head_dim (the only currently-supported shape).
-    super::poll_innerq();
+    super::poll_innerq(model);
     // Single chunk per call — the outer scheduler loop re-enters this
     // function on the very next iteration to advance the next stream
     // or the next chunk. This yield keeps fairness across pending
@@ -57,7 +59,33 @@ pub(super) fn run_standard_chunk_loop(
     } else {
         max_prefill_tokens
     };
-    let mut chunk_len = remaining.min(effective_max);
+    // Step 2 (spec): cap the chunk to the policy's prefill slice budget so a
+    // fused mixed step stays under the TBT target. With ATLAS_HOLO_ALWAYS_MIXED
+    // OFF the caller passes slice_budget == max_prefill_tokens, so this `.min`
+    // is a no-op and the chunk cap is unchanged (byte-identical resting path).
+    // MLA keeps its forced full-remaining chunk (correctness gate above) — the
+    // slice budget never applies there.
+    let cap = if model.is_mla() {
+        effective_max
+    } else {
+        effective_max.min(slice_budget)
+    };
+    let mut chunk_len = remaining.min(cap);
+    // Land a chunk boundary on `ssm_tail_boundary` so the SSM snapshot saved
+    // there is exactly what the NEXT turn's block-floored `matched_tokens`
+    // looks up — otherwise the warm restore falls back to the coarse
+    // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
+    // Suppressed when mid-chunk capture is ON (it captures in-pass, no clamp
+    // needed) and when the abandoned ATLAS_SSM_TAIL_CKPT is OFF (default).
+    if spark_runtime::ssm_tail_ckpt_enabled()
+        && !spark_runtime::ssm_tail_midchunk_enabled()
+        && let Some(bs) = model.kv_block_size()
+        && let Some(tb) = spark_runtime::ssm_tail_boundary(p.prompt_tokens.len(), bs)
+        && p.chunk_offset < tb
+        && p.chunk_offset + chunk_len > tb
+    {
+        chunk_len = tb - p.chunk_offset;
+    }
     let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
     // Align intermediate chunks to GDN WY4 boundary (4 tokens).
     if !is_last && chunk_len >= 4 {
@@ -72,14 +100,40 @@ pub(super) fn run_standard_chunk_loop(
     let no_mix_bisect = std::env::var("ATLAS_BISECT_NO_MIX")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    let can_mix = !no_mix_bisect
-        && !active.is_empty()
-        && !model.is_ep()
-        && !use_mtp
-        && !use_self_speculative
-        && !use_ngram_speculative;
+    // The spec gate here used to be the process-GLOBAL flags (`!use_mtp && ...`),
+    // which meant a `--speculative` serve could NEVER fuse prefill with decode —
+    // at any concurrency. But speculative execution is per-STEP: the scheduler
+    // only runs a spec step when `active.len() == 1` (mod.rs:511/516/520);
+    // at C>=2 every sequence is on plain batched decode anyway, so fusing is
+    // exactly as safe as it is for a non-speculative serve. The correct
+    // predicate is "a spec step would run this tick", i.e. the same
+    // `single_active_with_spec` shape phase_continue_prefills.rs computes.
+    //
+    // Without this, one 8K prefill chunk froze every active decoder for the
+    // whole chunk (mixed_forward never fired in any --speculative production
+    // config) — the single largest scheduler-level concurrency gap found by
+    // the 2026-07-25 architecture map.
+    let any_spec = use_mtp || use_self_speculative || use_ngram_speculative;
+    let spec_step_this_tick = active.len() == 1 && any_spec;
+    let can_mix = !no_mix_bisect && !active.is_empty() && !model.is_ep() && !spec_step_this_tick;
 
     if can_mix {
+        // Entering the mixed step under a speculative serve at C>=2: mirror the
+        // decode-only arm's MTP->decode transition (mod.rs:636-647) EXACTLY.
+        // A sequence that ran solo MTP just before a second request arrived
+        // still carries `pending_drafts` and an in-flight async live-state
+        // restore on the secondary stream; decoding it here without the clear
+        // + sync would later verify STALE drafts against desynced SSM state
+        // when concurrency drops back to 1.
+        if any_spec {
+            let had_drafts = active.iter().any(|a| !a.pending_drafts.is_empty());
+            for a in active.iter_mut() {
+                a.pending_drafts.clear();
+            }
+            if had_drafts && let Err(e) = model.sync_secondary() {
+                tracing::error!("mtp->mixed sync_secondary: {e:#}");
+            }
+        }
         let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
         let mut decode_refs: Vec<&mut SequenceState> =
             active.iter_mut().map(|a| &mut a.seq).collect();
@@ -106,21 +160,29 @@ pub(super) fn run_standard_chunk_loop(
 
                 // Process prefill logits (if last chunk).
                 if is_last {
-                    if let Err(e) = model.normalize_ssm_states(&p.seq, prefill_stream) {
-                        tracing::warn!("SSM state normalization failed: {e:#}");
-                    }
+                    // NOTE: the SSM-state normalize for the mixed path is done
+                    // INSIDE mixed_forward on default_stream (the stream the GDN
+                    // recurrence wrote h_state on) — for EVERY chunk including
+                    // this last one. Normalizing here on prefill_stream raced
+                    // those writes (the B1 failure, 0/12 token-for-token), so it
+                    // is gone. Do NOT re-add it.
                     let _ = model.record_event(prefill_event, prefill_stream);
                     let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                     // #131: grammar-constrain the FIRST token (and advance the
                     // matcher); no-op without a grammar.
+                    // P1-4 (2026-07-09): thread the resolved `min_p` —
+                    // previously a hardcoded 0.0 inside the sampler.
+                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         result.prefill_logits,
                         p.temperature,
                         p.top_k,
                         p.top_p,
+                        p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        &sched.levers.sampling(),
                     ) {
                         Ok(first) => {
                             tracing::info!("Mixed prefill first token: {first}");
@@ -147,6 +209,7 @@ pub(super) fn run_standard_chunk_loop(
                     tool_call_start_token,
                     tool_call_end_token,
                     adaptive_sampling,
+                    sched,
                 );
                 *did_mixed_step = true;
             }
@@ -198,14 +261,19 @@ pub(super) fn run_standard_chunk_loop(
                 let _ = model.stream_wait_event(model.default_stream(), prefill_event);
                 // #131: grammar-constrain the FIRST token (and advance the
                 // matcher); no-op without a grammar.
+                // P1-4 (2026-07-09): thread the resolved `min_p` —
+                // previously a hardcoded 0.0 inside the sampler.
+                // Kill-switch: ATLAS_NO_MTP_MINP=1.
                 match sample_first_token(
                     model,
                     logits,
                     p.temperature,
                     p.top_k,
                     p.top_p,
+                    p.min_p,
                     &p.eos_tokens,
                     p.grammar_state.as_mut(),
+                    &sched.levers.sampling(),
                 ) {
                     Ok(first) => {
                         tracing::info!("Prefill first token: {first}");

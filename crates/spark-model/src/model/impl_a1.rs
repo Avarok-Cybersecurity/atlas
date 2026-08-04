@@ -61,9 +61,14 @@ impl TransformerModel {
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {
-        let rms_norm_kernel = gpu.kernel("norm", "rms_norm")?;
-        // Residual stream is always BF16 — no BF16→FP32 conversion needed.
-        let bf16_to_f32_kernel = KernelHandle(0);
+        // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
+        // checkpoint tensor). Models that ship HF-vanilla norm weights load it
+        // exactly and must use the vanilla kernel.
+        let rms_norm_kernel = if crate::ships_vanilla_norm_weights(&config) {
+            gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
+        } else {
+            gpu.kernel("norm", "rms_norm")?
+        };
         let dense_gemv_kernel = gpu.kernel("gemv", "dense_gemv_bf16")?;
         // FP32-output dense GEMV — the FP32 logits path required an FP32
         // residual stream, which no longer exists, so this stays
@@ -73,23 +78,40 @@ impl TransformerModel {
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
         let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
+        // 0-handle on targets that predate it; dispatch falls back).
+        let w4a16_gemv_batch4_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch4");
+        // M<=8 batched GEMV for the K=5..8 chain-verify lm_head (same
+        // try_kernel contract: 0-handle → dispatch falls back to the GEMM).
+        let w4a16_gemv_batch8_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "w4a16_gemv", "w4a16_gemv_batch8");
         // FP8 E4M3 LUT GEMV for the `--lm-head-dtype fp8` head. Loaded
         // unconditionally (a handle is cheap); only invoked when `lm_head_fp8`
         // is set, so the NVFP4/BF16 paths never touch it.
         let dense_gemv_fp8w_kernel = gpu.kernel("gemv_fp8w", "dense_gemv_fp8w")?;
+        // FP8 dual-GEMV (batch=2): present on images that ship the kernel;
+        // try_kernel keeps the handle 0 on older sets so dispatch falls back
+        // to the per-token loop.
+        let dense_gemv_fp8w_batch2_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemv_fp8w_batch2",
+            "dense_gemv_fp8w_batch2",
+        );
         let dense_gemm_kernel = gpu.kernel("gemm", "dense_gemm_bf16")?;
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_logits_kernel = gpu.kernel("argmax", "argmax_fp32")?;
         let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
-        let profile = std::env::var("ATLAS_PROFILE").is_ok();
+        let profile = config.profile;
         let profile_first = std::env::var("ATLAS_PROFILE_FIRST").is_ok();
 
         // Pin the split-K attention split count to the configured max batch so
         // a sequence's attention reduction is invariant to how many other
         // sequences are co-batched (concurrent-decode determinism — see
         // tasks/determinism_investigation.md).
-        crate::layers::qwen3_attention::set_max_decode_seqs(max_batch_size as u32);
+        let mut levers = ops::ModelLevers::from_env();
+        levers.max_decode_seqs = (max_batch_size as u32).max(1);
 
         tracing::info!(
             "TransformerModel: {} layers, vocab={}, hidden={}{}{}",
@@ -141,6 +163,11 @@ impl TransformerModel {
             gpu.as_ref(),
         )?);
 
+        // Fail fast if an SSM tier was requested (`ATLAS_SSM_TIER`) on a model
+        // with no recurrent state — a tier request there was previously a
+        // silent no-op. No-op when the tier is unset (default path).
+        super::ssm_tier::ensure_ssm_tier_capability(&config)?;
+
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized
         // for SSM models — `num_ssm_layers == 0` makes both regions
@@ -167,6 +194,13 @@ impl TransformerModel {
             // without re-running the last token through the SSM layers.
             config.hidden_size * 2,
             gpu.as_ref(),
+        )?;
+        // Optional SSM snapshot spill tier. `None` (default) keeps the reclaim
+        // drop path byte-identical; blob sizing tracks the pool's spill layout.
+        let ssm_tier_store = super::impl_a1_init::build_ssm_tier_store(
+            &config,
+            ssm_snapshots.spill_blob_bytes(),
+            ssm_pool.num_ssm_layers,
         )?;
         if ssm_checkpoint_interval > 0 && ssm_cache_slots > 0 {
             tracing::info!(
@@ -201,6 +235,7 @@ impl TransformerModel {
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            &levers,
         );
 
         if self_speculative {
@@ -215,17 +250,74 @@ impl TransformerModel {
 
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
+        // Catch-up ring: 512 rows covers the gate's serial re-probe interval
+        // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
+        // when the staged feature is enabled.
+        let mtp_catchup_ring = if crate::speculative::mtp_catchup_enabled() {
+            gpu.alloc(super::types::MTP_CATCHUP_RING_ROWS * config.hidden_size * 2)?
+        } else {
+            DevicePtr::NULL
+        };
+
+        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
+        // feature (see `crate::model::drafter_context`); NULL here disables
+        // prefill AND carry, since the carry path reads this buffer.
+        //
+        // Three conditions, all necessary: MTP must be active, the feature must
+        // not be killed, and the head must be a precision the batched prefill
+        // can actually run at — an NVFP4/FP8 MTP head would allocate this and
+        // never write it.
+        let mtp_prefill_hidden = if has_mtp
+            && mtp_quant.supports_drafter_prefill()
+            && crate::layers::mtp_drafter_prefill_enabled(&levers)
+        {
+            let bytes = max_seq_len * config.hidden_size * 2;
+            tracing::info!(
+                "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
+                 ({} x {} BF16)",
+                bytes as f64 / 1e6,
+                max_seq_len,
+                config.hidden_size,
+            );
+            gpu.alloc(bytes)?
+        } else {
+            if has_mtp
+                && !mtp_quant.supports_drafter_prefill()
+                && crate::layers::mtp_drafter_prefill_enabled(&levers)
+            {
+                tracing::info!(
+                    "MTP drafter context: INACTIVE — the batched drafter prefill \
+                     needs a BF16 MTP head (--mtp-quantization bf16); this head is \
+                     {mtp_quant:?}. No prompt-hidden capture allocated.",
+                );
+            }
+            DevicePtr::NULL
+        };
 
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
         // Size: N_capture × hidden_size × bf16 (typically 5 × 2048 × 2 = 20 KB).
         let dflash_capture_layers: Vec<usize> = config.dflash_capture_layers.clone();
+        // Row capacity of the K-row capture buffer. KMAX = dflash_kgamma (=17 >=
+        // max verify K = gamma) so the K=gamma EAGLE path can capture every verify row;
+        // pre-fix paths use only rows 0-1. Stored on the model as the single
+        // source of truth so `try_dflash_capture_all` can bound its writes.
+        let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
+            0
+        } else {
+            dflash_kgamma.max(2)
+        };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
         } else {
             let n = dflash_capture_layers.len();
-            Some(gpu.alloc(n * config.hidden_size * 2)?)
+            // Row-major K-row buffer: [row0 | row1 | ... | row_{KMAX-1}], each row =
+            // n_capture * hidden_size * bf16. Rows 0/1 keep their legacy offsets
+            // (0 and ctx_slot_bytes) so all K=2 readers (propose row 0,
+            // dflash_accept_append row 1) are unaffected.
+            Some(gpu.alloc(dflash_hidden_save_rows * n * config.hidden_size * 2)?)
         };
 
         // EP command buffer for token broadcast (4 bytes, u32)
@@ -234,8 +326,21 @@ impl TransformerModel {
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
+        // Event ordering SSM-snapshot saves (default stream) before a warm
+        // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
+        let snapshot_event = gpu.create_event()?;
 
-        // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
+        // EP/TP: register the all-reduce target buffers with NCCL (caches the
+        // IB/RoCE memory registration, enabling zero-copy user-buffer
+        // collectives) and provide the bf16_add kernel for the 2-rank
+        // send/recv fast path.
+        //   - moe_output: EP MoE reduce + ALL GDN HeadParallel SSM out_proj
+        //     reduces (decode `ssm_forward`, batched decode, multi-seq
+        //     batched, prefill, prefill phase-3 all write out_proj into
+        //     `buffers.moe_output()`).
+        //   - norm_output: attention o_proj decode output
+        //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
+        //     reduced per attention layer under TP.
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -244,6 +349,12 @@ impl TransformerModel {
             match comm.register_buffer(moe_ptr, moe_bytes) {
                 Ok(_) => tracing::info!("Registered moe_output ({moe_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister moe_output failed (non-fatal): {e}"),
+            }
+            let norm_ptr = buffers.norm_output().0;
+            let norm_bytes = buffers.sizes().norm_output;
+            match comm.register_buffer(norm_ptr, norm_bytes) {
+                Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
@@ -371,33 +482,13 @@ impl TransformerModel {
         // NOT max_seq_len. For prompts longer than this, prefill_twophase falls back
         // to standard chunked prefill which carries h_state/conv_state between chunks.
         // The GDN recurrence is sequential anyway, so chunking is mathematically identical.
-        let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
-        let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
-        let nv = config.linear_num_value_heads;
-        let conv_dim = key_dim * 2 + value_dim;
-        // GDN buffers only needed when GDN linear attention layers exist
-        // (conv_dim > 0). Mamba-2 models (Nemotron) have conv_dim=0 — skip alloc
-        // to avoid cuMemAlloc(0) error.
-        let gdn_buf_len = max_batch_tokens.min(max_seq_len);
-        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z) = if conv_dim > 0 {
-            let qkv = gpu.alloc(gdn_buf_len * conv_dim * 2)?;
-            let gb = gpu.alloc(gdn_buf_len * nv * 2 * 4)?;
-            let o = gpu.alloc(gdn_buf_len * value_dim * 2)?;
-            let z = gpu.alloc(gdn_buf_len * value_dim * 2)?;
-            let total_mb =
-                (gdn_buf_len * (conv_dim * 2 + nv * 2 * 4 + value_dim * 2 * 2)) / (1024 * 1024);
-            tracing::info!(
-                "GDN prefill buffers: {total_mb} MB for {gdn_buf_len} tokens (chunked SSM prefill)"
-            );
-            (qkv, gb, o, z)
-        } else {
-            (
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-                DevicePtr::NULL,
-            )
-        };
+        let (gdn_qkv, gdn_gate_beta, gdn_out, gdn_z, gdn_buf_len) =
+            super::impl_a1_init::build_gdn_prefill_buffers(
+                &config,
+                max_batch_tokens,
+                max_seq_len,
+                gpu.as_ref(),
+            )?;
 
         // FP8 calibration only runs when the cache is actually FP8 — the
         // observe() call in decode.rs sits inside the FP8 cache branch. For
@@ -406,7 +497,25 @@ impl TransformerModel {
         let has_fp8_calibration = config.fp8_kv_calibration_tokens > 0
             && kv_cache.dtype() == spark_runtime::kv_cache::KvCacheDtype::Fp8;
         Ok(Self {
+            // Installed by the factory after construction: the layers read
+            // from the store during `new`, so it cannot be moved in here.
+            weight_store: None,
             config,
+            dispatch: crate::layers::ops::GemmDispatch::from_env(),
+            derived: crate::layers::ops::DerivedWeights::new(),
+            levers,
+            stats: ops::ModelStats::new(),
+            #[cfg(feature = "cuda")]
+            innerq: gpu.kernel_registry().and_then(|reg| {
+                let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;
+                match driver.start() {
+                    Ok(()) => Some(driver),
+                    Err(e) => {
+                        tracing::warn!("InnerQ calibration disabled: start() failed: {e:#}");
+                        None
+                    }
+                }
+            }),
             embed_tokens,
             final_norm,
             lm_head_weight,
@@ -414,17 +523,21 @@ impl TransformerModel {
             lm_head_fp8,
             layers,
             buffers,
+            lora: None,
+            lora_rotatable: false,
             kv_cache: Mutex::new(kv_cache),
             gpu,
             rms_norm_kernel,
-            bf16_to_f32_kernel,
             dense_gemv_kernel,
             dense_gemv_fp32out_kernel,
             w4a16_gemv_kernel,
             w4a16_gemv_logits_kernel,
             w4a16_gemm_kernel,
             w4a16_gemv_batch2_kernel,
+            w4a16_gemv_batch4_kernel,
+            w4a16_gemv_batch8_kernel,
             dense_gemv_fp8w_kernel,
+            dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             argmax_kernel,
             argmax_logits_kernel,
@@ -448,21 +561,36 @@ impl TransformerModel {
             ),
             ssm_pool,
             ssm_snapshots,
+            ssm_tier_store,
             max_blocks_per_seq,
             dummy_kv_block,
             profile,
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
             mtp_hidden_save,
+            mtp_catchup_ring,
+            mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
+            mtp_prefill_hidden,
+            mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
+                0
+            } else {
+                max_seq_len
+            },
+            mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
+            mtp_carry: parking_lot::Mutex::new(None),
+            mtp_store_range: parking_lot::Mutex::new((0, 0)),
             dflash_hidden_save,
+            dflash_hidden_save_rows,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
+            fused_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
             secondary_stream,
             secondary_event,
+            snapshot_event,
             comm,
             ep_cmd_buf,
             ep_protocol_v2: matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2")),
@@ -471,6 +599,9 @@ impl TransformerModel {
             vision_encoder,
             vision_embed_patches: Mutex::new(0),
             vision_image_grids: Mutex::new(Vec::new()),
+            vision_row_base: Mutex::new(0),
+            vision_grid_base: Mutex::new(0),
+            vision_owned_images: Mutex::new(0),
             pinned_staging,
             ssm_checkpoint_interval,
             ssm_state_norm_kernel: ssm_norm_k,

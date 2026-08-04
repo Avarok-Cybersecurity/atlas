@@ -12,7 +12,7 @@ use std::os::fd::RawFd;
 
 use super::{ReadRequest, StorageBackend};
 use crate::cuda_min::{CudaEvent, PinnedBuffer, copy_h_to_d_async, stream_sync};
-use crate::group::GroupKey;
+use crate::group::{GroupKey, GroupLayout};
 use crate::layout::Layout;
 
 pub struct IoUringBackend {
@@ -204,6 +204,10 @@ impl StorageBackend for IoUringBackend {
             );
         }
         Ok(())
+    }
+
+    fn group_layout(&self) -> GroupLayout {
+        self.layout.spec
     }
 }
 

@@ -71,6 +71,56 @@ pub(crate) fn normalize_param_name(tools: &[ToolDefinition], call_name: &str, ke
         .unwrap_or_else(|| key.to_string())
 }
 
+/// Echo-attractor salvage (2026-07-09): at long context the model can emit
+/// the XML wire format shifted by one structural token —
+/// `<parameter=parameter>filePath>\n/tmp/x</parameter>` or
+/// `<parameter=write>content>…</parameter>` — so the REAL key lands as the
+/// leading `IDENT>` of the value while the key slot holds an echoed
+/// structural word (`parameter`, the function name, …). The grammar's
+/// key-slot masking makes this shape sticky once entered (`=` is masked, so
+/// the echo closes early), and the real path/content are fully present in
+/// the value. Recover them: when `key` is NOT a schema property and the
+/// value begins with `PROP>` for a schema property `PROP`, re-split into
+/// `(PROP, rest)`.
+///
+/// SSOT — used by both the buffered pipeline (`backfill_required_params`
+/// step 2.5) and live argument streaming (`streaming_emit::coerce_kv`), the
+/// same dual-wiring as [`normalize_param_name`]. Deliberately conservative:
+/// never fires when the emitted key is itself a schema property (a legit
+/// value could start with `IDENT>`), and requires the exact `PROP>` prefix.
+pub(crate) fn salvage_echoed_param(
+    tools: &[ToolDefinition],
+    call_name: &str,
+    key: &str,
+    value: &str,
+) -> Option<(String, String)> {
+    let props = tools
+        .iter()
+        .find(|t| t.function.name == call_name)?
+        .function
+        .parameters
+        .as_ref()?
+        .get("properties")?
+        .as_object()?;
+    if props.is_empty() || props.contains_key(key) {
+        return None;
+    }
+    // Longest property first so e.g. `filePath>` wins over a hypothetical
+    // `file>` prefix.
+    let mut names: Vec<&String> = props.keys().collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    for prop in names {
+        if let Some(rest) = value
+            .strip_prefix(prop.as_str())
+            .and_then(|r| r.strip_prefix('>'))
+        {
+            // Both parse paths `.trim()` parameter values; stay consistent.
+            return Some((prop.clone(), rest.trim().to_string()));
+        }
+    }
+    None
+}
+
 /// Extract agent-type names from a delegation tool's prose description.
 ///
 /// Matches lines shaped like `- <name>: …` — the convention both opencode
@@ -203,6 +253,37 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
             }
         }
 
+        // 2.5. Echo-attractor salvage: re-split `{"parameter": "filePath>…"}`
+        // shapes where the real key leaked into the value (see
+        // `salvage_echoed_param`). Runs BEFORE the missing-required backfill
+        // so the recovered key satisfies `required` instead of being
+        // synthesized as "" (which clients reject with errors the degraded
+        // model then retries verbatim — the 42.5k opencode doom loop).
+        if properties.is_some() {
+            let salvageable: Vec<(String, String, String)> = args
+                .iter()
+                .filter_map(|(k, v)| {
+                    let s = v.as_str()?;
+                    salvage_echoed_param(tools, &call.function.name, k, s)
+                        .map(|(real_key, real_val)| (k.clone(), real_key, real_val))
+                })
+                .collect();
+            for (echoed_key, real_key, real_val) in salvageable {
+                let target_empty = matches!(
+                    args.get(&real_key),
+                    None | Some(serde_json::Value::String(_))
+                ) && args
+                    .get(&real_key)
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s.trim().is_empty());
+                if target_empty {
+                    args.remove(&echoed_key);
+                    args.insert(real_key, serde_json::Value::String(real_val));
+                    changed = true;
+                }
+            }
+        }
+
         // 3. Backfill missing required string parameters.
         for key in &required {
             if !args.contains_key(*key) {
@@ -231,7 +312,11 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
                     "description" => {
                         if let Some(serde_json::Value::String(cmd)) = args.get("command") {
                             if cmd.len() > 50 {
-                                format!("Run: {}...", &cmd[..47])
+                                // Truncate on a char boundary — `cmd` is raw
+                                // model output and a byte slice at [..47] would
+                                // panic if a multibyte char straddles byte 47.
+                                let head: String = cmd.chars().take(47).collect();
+                                format!("Run: {head}...")
                             } else {
                                 format!("Run: {cmd}")
                             }
@@ -434,29 +519,78 @@ pub fn validate_tool_calls(
             );
             call.function.name = best;
         }
-        match validate_single_tool_call(call, tools) {
+        match assess_tool_call(call, tools) {
             Ok(()) => valid.push(call.clone()),
-            Err(msg) => errors.push(msg),
+            // Recoverable (missing required param): attach the call as the
+            // model produced it — the client's schema check gives the model
+            // actionable feedback. Dropping it here returned EMPTY responses
+            // (2026-07-03 ST-995 collapse, 160/995 empties).
+            Err(ToolCallIssue::MissingParam(msg)) => {
+                valid.push(call.clone());
+                errors.push(msg);
+            }
+            // EmptyRequired keeps the F78 blocking disposition (call becomes
+            // a no-op so the response falls through to text); Hard is never
+            // attached (phantom name, unparseable args, command-as-path).
+            Err(issue) => errors.push(issue.into_message()),
         }
     }
 
     ValidatedToolCalls { valid, errors }
 }
 
-/// Validate a single tool call. Returns `Ok(())` if valid,
-/// `Err(error_message)` with a clear, actionable error if invalid.
+/// Typed validation outcome. Severity decides delivery, not logging:
+/// the 2026-07-03 ST-995 collapse (55.78 vs 89.04) traced to blocking-mode
+/// dropping EVERY call with a validation error — a call missing one trailing
+/// required param became an EMPTY response (160/995 samples). Recoverable
+/// issues must ship the call as the model produced it; the client's own
+/// schema check gives the model actionable feedback.
+#[derive(Debug)]
+pub enum ToolCallIssue {
+    /// Required parameter absent. Attach the call anyway (both paths).
+    MissingParam(String),
+    /// Required string present but empty (F78 path tools, shell tools).
+    /// Streaming passes these through (2026-05-25 disposition); blocking
+    /// keeps the F78 no-op-to-text behavior.
+    EmptyRequired(String),
+    /// Unrecoverable: phantom tool name, unparseable args JSON, path-shaped
+    /// command injection. Never attached.
+    Hard(String),
+}
+
+impl ToolCallIssue {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::MissingParam(m) | Self::EmptyRequired(m) | Self::Hard(m) => m,
+        }
+    }
+    pub fn into_message(self) -> String {
+        match self {
+            Self::MissingParam(m) | Self::EmptyRequired(m) | Self::Hard(m) => m,
+        }
+    }
+}
+
+/// Compatibility wrapper over [`assess_tool_call`] for callers/tests that
+/// only care about pass/fail.
 pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(), String> {
+    assess_tool_call(call, tools).map_err(ToolCallIssue::into_message)
+}
+
+/// Validate a single tool call. Returns `Ok(())` if valid, or a
+/// [`ToolCallIssue`] whose severity the caller maps to delivery behavior.
+pub fn assess_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(), ToolCallIssue> {
     let name = &call.function.name;
 
     // 1. Check tool name exists
     let tool_def = tools.iter().find(|t| t.function.name == *name);
     if tool_def.is_none() {
         let available: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
-        return Err(format!(
+        return Err(ToolCallIssue::Hard(format!(
             "Error: Unknown tool '{}'. Available tools: {}",
             name,
             available.join(", ")
-        ));
+        )));
     }
     let tool_def = tool_def.unwrap();
 
@@ -465,11 +599,14 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
         match serde_json::from_str(&call.function.arguments) {
             Ok(a) => a,
             Err(_) => {
-                return Err(format!(
-                    "Error: {} arguments must be valid JSON. Got: {}",
-                    name,
-                    &call.function.arguments[..call.function.arguments.len().min(100)]
-                ));
+                // Truncate on a char boundary — `arguments` is raw model
+                // output (the hermes path stores it as a verbatim string), so
+                // a byte slice at [..100] would panic if a multibyte char
+                // straddles byte 100.
+                let preview: String = call.function.arguments.chars().take(100).collect();
+                return Err(ToolCallIssue::Hard(format!(
+                    "Error: {name} arguments must be valid JSON. Got: {preview}"
+                )));
             }
         };
 
@@ -485,10 +622,10 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
 
         for key in &required {
             if args.get(*key).is_none() {
-                return Err(format!(
+                return Err(ToolCallIssue::MissingParam(format!(
                     "Error: {} requires parameter '{}' but it was not provided.",
                     name, key
-                ));
+                )));
             }
         }
     }
@@ -545,11 +682,11 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
                             shape.join(", ")
                         );
                     }
-                    return Err(format!(
+                    return Err(ToolCallIssue::EmptyRequired(format!(
                         "Error: {name} requires a non-empty '{key}'. \
                              Got empty string — provide an absolute path \
                              like '/tmp/calc-test75/Cargo.toml'."
-                    ));
+                    )));
                 }
                 // Long-context FP8 drift mode: model occasionally emits
                 // the value with XML-attribute-style framing — e.g.
@@ -575,11 +712,11 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
                 ];
                 let looks_like_command = trimmed.contains(SHELL_META);
                 if looks_like_command || trimmed.len() < 3 {
-                    return Err(format!(
+                    return Err(ToolCallIssue::Hard(format!(
                         "Error: {name} '{key}' must be a filesystem path (absolute or relative \
                          to the working directory), at least 3 chars, with no shell \
                          metacharacters or whitespace. Got {path:?}."
-                    ));
+                    )));
                 }
             }
         }
@@ -605,11 +742,11 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
             if let Some(serde_json::Value::String(cmd)) = args.get(*key)
                 && (cmd.trim().is_empty() || cmd.trim().len() < 2)
             {
-                return Err(format!(
+                return Err(ToolCallIssue::EmptyRequired(format!(
                     "Error: {name} requires a non-empty '{key}'. \
                          Got empty string — provide the shell command \
                          to execute, e.g. 'ls /tmp'."
-                ));
+                )));
             }
         }
     }
@@ -617,12 +754,12 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
         for key in PATH_KEYS {
             if let Some(serde_json::Value::String(path)) = args.get(*key) {
                 if path.ends_with('/') {
-                    return Err(format!(
+                    return Err(ToolCallIssue::Hard(format!(
                         "Error: {} file_path must be a FILE, not a directory. Got '{}'. Use e.g. '{}/index.ts'",
                         name,
                         path,
                         path.trim_end_matches('/')
-                    ));
+                    )));
                 }
                 // Check if it looks like just a directory name (no extension, no dots, no uppercase)
                 // Allow extensionless files like LICENSE, Makefile, Dockerfile, Cargo.lock etc.
@@ -633,10 +770,10 @@ pub fn validate_single_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> R
                         .chars()
                         .all(|c| c.is_lowercase() || c == '-' || c == '_')
                 {
-                    return Err(format!(
+                    return Err(ToolCallIssue::Hard(format!(
                         "Error: {} file_path '{}' looks like a directory. Add a filename, e.g. '{}/index.ts'",
                         name, path, path
-                    ));
+                    )));
                 }
             }
         }

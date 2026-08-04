@@ -74,6 +74,99 @@ extern "C" __global__ void dense_gemm_bf16(
     }
 }
 
+// FP32-output twin of dense_gemm_bf16: identical math, but writes the FP32
+// accumulator directly instead of rounding to BF16. Used by the
+// ATLAS_FP32_GATE routing path for the MoE router GEMM so the gate logits
+// keep full precision into top-K (a BF16 store would round two near-tied
+// experts to the same value and flip routing). Inputs stay BF16.
+//
+// Grid: (ceil(N/TILE_N), ceil(M/TILE_M))
+// Block: (TILE_N, TILE_M)
+extern "C" __global__ void dense_gemm_bf16_f32out(
+    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major (read transposed)
+    float* __restrict__ C,                 // [M, N] row-major, FP32
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    unsigned int row = blockIdx.y * TILE_M + threadIdx.y;
+    unsigned int col = blockIdx.x * TILE_N + threadIdx.x;
+
+    __shared__ __nv_bfloat16 smem_A[TILE_M][TILE_K];
+    __shared__ __nv_bfloat16 smem_B[TILE_K][TILE_N];
+
+    float acc = 0.0f;
+
+    for (unsigned int k_base = 0; k_base < K; k_base += TILE_K) {
+        if (row < M && (k_base + threadIdx.x) < K) {
+            smem_A[threadIdx.y][threadIdx.x] = A[row * K + k_base + threadIdx.x];
+        } else {
+            smem_A[threadIdx.y][threadIdx.x] = __float2bfloat16(0.0f);
+        }
+        if ((k_base + threadIdx.y) < K && col < N) {
+            smem_B[threadIdx.y][threadIdx.x] = B[(unsigned long long)col * K + (k_base + threadIdx.y)];
+        } else {
+            smem_B[threadIdx.y][threadIdx.x] = __float2bfloat16(0.0f);
+        }
+        __syncthreads();
+        for (unsigned int kk = 0; kk < TILE_K; kk++) {
+            acc += __bfloat162float(smem_A[threadIdx.y][kk])
+                 * __bfloat162float(smem_B[kk][threadIdx.x]);
+        }
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
+}
+
+// FP32-input, FP32-output variant: A is FP32 activations (the FP32 router_in from
+// residual_add_rms_norm_gatef32), B is BF16 weights (the router gate), C is FP32.
+// The ATLAS_FP32_ROUTING gate GEMM: full-precision activation × bf16 gate weight
+// → unrounded gate logits, so top-K selection no longer flips on a bf16 store.
+//
+// Grid: (ceil(N/TILE_N), ceil(M/TILE_M))   Block: (TILE_N, TILE_M)
+extern "C" __global__ void dense_gemm_f32in_f32out(
+    const float* __restrict__ A,          // [M, K] row-major, FP32
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major (read transposed), BF16
+    float* __restrict__ C,                 // [M, N] row-major, FP32
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    unsigned int row = blockIdx.y * TILE_M + threadIdx.y;
+    unsigned int col = blockIdx.x * TILE_N + threadIdx.x;
+
+    __shared__ float smem_A[TILE_M][TILE_K];
+    __shared__ __nv_bfloat16 smem_B[TILE_K][TILE_N];
+
+    float acc = 0.0f;
+
+    for (unsigned int k_base = 0; k_base < K; k_base += TILE_K) {
+        if (row < M && (k_base + threadIdx.x) < K) {
+            smem_A[threadIdx.y][threadIdx.x] = A[row * K + k_base + threadIdx.x];
+        } else {
+            smem_A[threadIdx.y][threadIdx.x] = 0.0f;
+        }
+        if ((k_base + threadIdx.y) < K && col < N) {
+            smem_B[threadIdx.y][threadIdx.x] = B[(unsigned long long)col * K + (k_base + threadIdx.y)];
+        } else {
+            smem_B[threadIdx.y][threadIdx.x] = __float2bfloat16(0.0f);
+        }
+        __syncthreads();
+        for (unsigned int kk = 0; kk < TILE_K; kk++) {
+            acc += smem_A[threadIdx.y][kk] * __bfloat162float(smem_B[kk][threadIdx.x]);
+        }
+        __syncthreads();
+    }
+
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Fix-E: tensor-core pipelined BF16 dense GEMM (dense_gemm_bf16_pipelined).
 //
@@ -278,6 +371,16 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
     // Issue cp.async loads for K-step `step` into double-buffer `stage`. The
     // copies are contiguous along K (the contiguous global axis for both A
     // [M,K] and B [N,K]). Bounds / K-tail fall back to a masked scalar copy.
+    //
+    // The 16-B cp.async.cg requires a 16-B-aligned SOURCE address. The chunk
+    // K-offset `gc`/`gk` is always a multiple of 8 (→ 16 B), but the per-row
+    // base `gr*K`/`gn*K` is only 16-B-aligned when K is a multiple of 8. When
+    // K%8 != 0 (e.g. the ViT attention GEMM2, where K=seq=#patches can be an
+    // odd multiple of 4), odd rows start misaligned → CUDA_ERROR_MISALIGNED_
+    // ADDRESS (716). Gate the fast path on K alignment; unaligned K routes the
+    // whole tile through the scalar fallback (uniform branch, no divergence;
+    // only hit by unaligned-K callers, which are rare + small).
+    const bool k_vec_aligned = (K & 7u) == 0u;
     auto prefetch = [&](unsigned int step, unsigned int stage) {
         unsigned int k_base = step * DM_K_STEP;
 
@@ -289,7 +392,7 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
             unsigned int gr = cta_m + row;
             unsigned int gc = k_base + col;
             __nv_bfloat16* dst = &smem_A[stage][row][col];
-            if (gr < M && gc + 8 <= K) {
+            if (gr < M && gc + 8 <= K && k_vec_aligned) {
                 dm_cp_async_cg_16(dst, &A[(unsigned long long)gr * K + gc]);
             } else {
                 #pragma unroll
@@ -310,7 +413,7 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
             unsigned int gn = cta_n + nrow;
             unsigned int gk = k_base + kcol;
             __nv_bfloat16* dst = &smem_B[stage][nrow][kcol];
-            if (gn < N && gk + 8 <= K) {
+            if (gn < N && gk + 8 <= K && k_vec_aligned) {
                 dm_cp_async_cg_16(dst, &B[(unsigned long long)gn * K + gk]);
             } else {
                 #pragma unroll

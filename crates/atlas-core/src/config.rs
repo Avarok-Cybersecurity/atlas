@@ -175,6 +175,15 @@ pub struct ModelConfig {
     /// instead of full `[hidden_size]`. Absent for Nano 30B.
     #[serde(default)]
     pub moe_latent_size: usize,
+    /// Per-layer MoE intermediate sizes (Nemotron-H Puzzle heterogeneous channel
+    /// pruning). Length == `num_hidden_layers`; 0 for non-MoE layers. Empty =
+    /// fall back to scalar `moe_intermediate_size` for every MoE layer.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub moe_intermediate_sizes: Vec<usize>,
+    /// Per-layer top-K expert counts (Puzzle). Same layout as
+    /// `moe_intermediate_sizes`. Empty = use scalar `num_experts_per_tok`.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub num_experts_per_toks: Vec<usize>,
 
     // ── MLA (Multi-head Latent Attention) — Mistral Small 4 / DeepSeek-V2+ ──
     /// KV latent dimension for compressed cache. 0 = standard attention (no MLA).
@@ -198,6 +207,49 @@ pub struct ModelConfig {
     /// Value dimension per head (may differ from head_dim in MLA).
     #[serde(default)]
     pub v_head_dim: usize,
+
+    // ── DeepSeek-V4 low-rank / grouped output projection + mHC ──
+    /// Output projection latent dimension for low-rank O projection.
+    /// DeepSeek-V4 uses `o_lora_rank` to compress the output projection.
+    /// 0 = standard O (no low-rank compression).
+    #[serde(default)]
+    pub o_lora_rank: usize,
+    /// Number of block-diagonal groups for the grouped O projection (wo_a).
+    /// DeepSeek-V4-Flash splits the n_heads*head_dim attention output into
+    /// `o_groups` independent groups, each projected to `o_lora_rank` before the
+    /// follow-up wo_b mixes the `o_groups*o_lora_rank` vector back to hidden_size.
+    /// 0 = ungrouped (dense O).
+    #[serde(default)]
+    pub o_groups: usize,
+    /// YaRN attention-temperature `mscale` (`rope_scaling.mscale`). HF default
+    /// is 1.0 when absent. DeepSeek folds `_mscale` into the rope cos/sin.
+    #[serde(default)]
+    pub yarn_mscale: f32,
+    /// YaRN attention-temperature `mscale_all_dim` (`rope_scaling.mscale_all_dim`).
+    /// HF default is 0.0 when absent. Used in the `_mscale` ratio that scales
+    /// the rope cos/sin (and, when non-zero, the softmax scale).
+    #[serde(default)]
+    pub yarn_mscale_all_dim: f32,
+    /// Number of hyper-connection residual streams per block (`hc_mult`).
+    /// 0 = disabled (every model except DeepSeek-V4). DeepSeek-V4 uses 4.
+    #[serde(default)]
+    pub hc_mult: usize,
+    /// Number of Sinkhorn normalization iterations for the HC mixing matrix
+    /// (`hc_sinkhorn_iters`). DeepSeek-V4 default is 20.
+    #[serde(default)]
+    pub hc_sinkhorn_iters: usize,
+    /// Numerical-stability epsilon for HC sigmoid/softmax/Sinkhorn (`hc_eps`).
+    /// DeepSeek-V4 default is 1e-6.
+    #[serde(default)]
+    pub hc_eps: f32,
+    /// Per-layer compression ratios for hybrid attention (CSA/HCA).
+    /// 0 = full attention, >0 = compressed attention with that ratio.
+    /// Length equals num_hidden_layers. Empty = all layers full attention.
+    #[serde(default)]
+    pub compress_ratios: Vec<usize>,
+    /// Number of hash-based attention layers (DeepSeek-V4 HCA). 0 = none.
+    #[serde(default)]
+    pub num_hash_layers: usize,
 
     // ── YaRN RoPE scaling (Mistral Small 4) ──
     /// YaRN scaling factor (`yarn.factor`). 0.0 = YaRN disabled, use plain RoPE.
@@ -262,6 +314,18 @@ pub struct ModelConfig {
     // ── Weight key prefix (set by parser for conditional generation models) ──
     #[serde(skip)]
     pub weight_prefix: String,
+
+    /// `--profile`: skip CUDA graphs, sync and time each layer.
+    ///
+    /// Carried here rather than through `ATLAS_PROFILE`, which `serve.rs` used
+    /// to `set_var` at runtime under a `// SAFETY: called before any threads
+    /// are spawned` comment that was **already false** — the tokio pool, the
+    /// startup blocking thread, the signal listener, the TUI thread and the
+    /// OOM watchdog all exist by then, and a concurrent `getenv` during
+    /// `setenv` is UB. A field on the config the model already receives has
+    /// none of that hazard.
+    #[serde(skip)]
+    pub profile: bool,
 
     // ── Expert Parallelism (set at runtime, not from config.json) ──
     #[serde(skip)]
@@ -329,11 +393,6 @@ pub struct ModelConfig {
     /// present for byte-exact rope dim.
     #[serde(default)]
     pub rotary_dim: usize,
-    /// FP32 residual accumulation (Step 3.7). When true, residual
-    /// add/sub kernels operate in FP32 instead of BF16 to preserve
-    /// precision across 81 layers.
-    #[serde(skip)]
-    pub use_fp32_residual: bool,
 
     /// Target-model layer indices to capture intermediate hidden states from
     /// for DFlash speculative decoding. Sourced from the drafter's
@@ -344,6 +403,14 @@ pub struct ModelConfig {
     /// is what the drafter's `fc` projection expects.
     #[serde(default)]
     pub dflash_capture_layers: Vec<usize>,
+
+    /// LoRA adapter rank ceiling (`--max-lora-rank`). `0` = LoRA disabled.
+    /// Set programmatically before model build (never parsed from the HF
+    /// `config.json`); the only consumer is `BufferSizes`, which sizes the
+    /// adapter delta scratch from it. `adapter_*` naming avoids the MLA
+    /// `*lora_rank` collision (`config.rs:182-207`).
+    #[serde(default)]
+    pub adapter_max_rank: usize,
 }
 
 /// Advertised weight-quantization layout, as declared in the HF
@@ -446,10 +513,13 @@ mod parsers;
 mod tests;
 
 pub use dispatch::parse_config;
-pub(crate) use parsers::{
-    parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
+pub use parsers::{
+    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, parse_mistral_params,
+    parse_peft_adapter_config, parse_quantization_config,
 };
-pub use parsers::{parse_mistral_params, parse_quantization_config};
+pub(crate) use parsers::{
+    parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
+};
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
     if config.quantization_config.is_none() {

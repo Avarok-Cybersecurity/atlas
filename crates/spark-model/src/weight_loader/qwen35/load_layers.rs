@@ -8,17 +8,38 @@ use anyhow::Result;
 use atlas_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
-use spark_runtime::weights::WeightStore;
+use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::super::{ModelWeightLoader, QuantFormat, WeightFormat};
 use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_fp8_block_scaled};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Nvfp4Variant, QuantizedWeight, dense, detect_nvfp4_variant,
+    AttentionWeights, DenseWeight, Nvfp4Variant, QuantizedWeight, dense_auto, detect_nvfp4_variant,
     load_fp8_block_scaled_as_fp8weight, load_kv_scales, load_moe_qwen35,
     load_moe_qwen35_fp8_experts, quantize_to_nvfp4,
 };
+
+/// True when a projection ships as native block-scaled FP8 on disk: an
+/// `FP8E4M3 .weight` plus a 2D block scale. The scale tensor name varies by
+/// producer — DeepSeek/Qwen-native FP8 uses `.weight_scale_inv`, while
+/// compressed-tensors `float-quantized` (e.g. Hcompany/Holo-3.1-*-FP8) uses a
+/// 2D `.weight_scale`; both are accepted (`load_fp8_block_scaled_as_fp8weight`
+/// resolves either). A *scalar* `.weight_scale` (ModelOpt per-tensor FP8) is
+/// NOT native-block here → returns false so those route through the
+/// per-tensor dense/NVFP4 path instead of the native-FP8 fast arm.
+fn proj_is_native_fp8(store: &WeightStore, prefix: &str) -> bool {
+    let is_fp8_weight = store
+        .get(&format!("{prefix}.weight"))
+        .map(|w| w.dtype == WeightDtype::FP8E4M3)
+        .unwrap_or(false);
+    let has_block_scale = store.contains(&format!("{prefix}.weight_scale_inv"))
+        || store
+            .get(&format!("{prefix}.weight_scale"))
+            .map(|s| s.shape.len() == 2)
+            .unwrap_or(false);
+    is_fp8_weight && has_block_scale
+}
 
 pub(super) fn load_layers(
     loader: &dyn ModelWeightLoader,
@@ -74,12 +95,37 @@ pub(super) fn load_layers(
     // Resolve runtime quantization format from the detected on-disk
     // variant. This determines which kernels are used for
     // decode/prefill/verify.
+    let modelopt_mixed_precision = is_holo_modelopt_mixed_precision(config);
     let quant_format = if variant == Nvfp4Variant::Fp8Dequanted {
         QuantFormat::Fp8
     } else {
         QuantFormat::Nvfp4
     };
     let native_fp8 = quant_format == QuantFormat::Fp8;
+    // FAST_MOE=full (transposed prefill tables + the CUTLASS grouped NVFP4 MoE)
+    // applies to any Holo-family (holo3_1_moe) NVFP4 MoE — both modelopt
+    // MIXED_PRECISION (Holo-3.1) and uniform NVFP4 (e.g. compressed-tensors,
+    // Ornith-35B). The transpose/grouped path operates on the loaded NVFP4 experts
+    // regardless of source quant format; the mixed-precision-specific handling
+    // (fp8 experts, native-modelopt SSM/attn) stays gated on
+    // `modelopt_mixed_precision` and simply doesn't fire for the uniform case.
+    let holo_nvfp4_moe = config.model_type == "holo3_1_moe" && quant_format == QuantFormat::Nvfp4;
+    let low_memory_modelopt_moe = (modelopt_mixed_precision || holo_nvfp4_moe)
+        && std::env::var("ATLAS_HOLO_LOW_MEMORY_MOE").ok().as_deref() == Some("1");
+    let holo_fast_moe_mode = if low_memory_modelopt_moe {
+        holo_fast_moe_mode()
+    } else {
+        None
+    };
+    let holo_fast_moe_spec = if low_memory_modelopt_moe {
+        std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS").ok()
+    } else {
+        None
+    };
+    let native_modelopt_ssm = modelopt_mixed_precision
+        && std::env::var("ATLAS_HOLO_NATIVE_FP8_SSM").ok().as_deref() == Some("1");
+    let native_modelopt_attn = modelopt_mixed_precision
+        && std::env::var("ATLAS_HOLO_NATIVE_FP8_ATTN").ok().as_deref() == Some("1");
     tracing::info!(
         "Weight format: {:?}, NVFP4 variant: {:?}, quant_format: {:?}",
         weight_format,
@@ -111,11 +157,34 @@ pub(super) fn load_layers(
         }
         skip
     };
+    if low_memory_modelopt_moe {
+        if let (Some(mode), Some(spec)) = (holo_fast_moe_mode, holo_fast_moe_spec.as_deref()) {
+            tracing::info!(
+                "ATLAS_HOLO_LOW_MEMORY_MOE=1: enabling Holo ModelOpt MoE {:?} prefill copies for layers {spec}",
+                mode,
+            );
+        } else {
+            tracing::info!(
+                "ATLAS_HOLO_LOW_MEMORY_MOE=1: skipping Holo ModelOpt MoE transpose/predequant prefill copies"
+            );
+        }
+    }
+    if native_modelopt_ssm {
+        tracing::info!(
+            "ATLAS_HOLO_NATIVE_FP8_SSM=1: routing Holo ModelOpt SSM projections through native FP8"
+        );
+    }
+    if native_modelopt_attn {
+        tracing::info!(
+            "ATLAS_HOLO_NATIVE_FP8_ATTN=1: routing Holo ModelOpt attention projections through native FP8"
+        );
+    }
 
     for (i, lt) in layer_types.iter().enumerate() {
         let lp = config.layer_prefix(i);
-        let input_norm = dense(store, &format!("{lp}.input_layernorm.weight"))?;
-        let post_attn_norm = dense(store, &format!("{lp}.post_attention_layernorm.weight"))?;
+        let input_norm = dense_auto(store, &format!("{lp}.input_layernorm.weight"), gpu)?;
+        let post_attn_norm =
+            dense_auto(store, &format!("{lp}.post_attention_layernorm.weight"), gpu)?;
 
         // When native_fp8, skip NVFP4 routed experts — FP8 fused batch1/2/3
         // kernels handle all MoE dispatch including MTP verify.
@@ -126,11 +195,42 @@ pub(super) fn load_layers(
         // bug (L0 moe_out 3.3x too large vs HF). Keeps NVFP4 experts loaded
         // AND skips set_fp8_experts so forward dispatch falls through to the
         // NVFP4 path.
-        let force_nvfp4_moe = std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
-        let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe;
+        // ATLAS_FORCE_NVFP4_ALL (lever-b, gfx1151 coherence): route an FP8
+        // checkpoint fully through the NVFP4 path — attention + MoE (+ SSM where
+        // wired) requant FP8→BF16→NVFP4 at load and run on real RDNA3.5 4-bit
+        // WMMA (the path the dense 27B is coherent on), sidestepping the HIP
+        // FP8 bf16-emulation divergence. Implies force_nvfp4_moe. Default off →
+        // FP8 paths byte-unchanged. `variant` is already Fp8Dequanted for an FP8
+        // checkpoint, so the NVFP4 attention branch requants from FP8 directly.
+        let force_nvfp4_all = std::env::var("ATLAS_FORCE_NVFP4_ALL").ok().as_deref() == Some("1");
+        // FP4 dense PROJECTIONS only: route the SSM (in_proj_qkvz + out_proj) and
+        // full-attention (q/k/v/o) projection DECODE through w4a16_gemv (NVFP4,
+        // 0.5 byte/weight) instead of w8a16_gemv (FP8, 1 byte/weight), while the
+        // MoE experts stay on their native-FP8 fast path. Deliberately NOT folded
+        // into force_nvfp4_moe → skip_nvfp4_experts stays true. For the Holo
+        // modelopt MIXED_PRECISION checkpoint this drops the modelopt SSM arm
+        // (L685) and native-FP8 attn arm so both fall through to the NVFP4
+        // builders. (decode ~1.8x cheaper on these GEMVs — DRAM-bound, GB10 13.2.)
+        let fp4_proj_decode =
+            std::env::var("ATLAS_HOLO_FP4_PROJ_DECODE").ok().as_deref() == Some("1");
+        let force_nvfp4_moe =
+            force_nvfp4_all || std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
+        // Hybrid FP8 checkpoints (lovedheart AgentWorld-35B-FP8) ship routed
+        // experts in a FUSED layout (`experts.gate_up_proj`/`down_proj`), which
+        // the native-FP8 per-expert loader can't address — it Errs and the MoE
+        // is left with NULL routed experts (gibberish output). `load_moe_qwen35`
+        // handles the fused layout (BF16 and FP8) by dequant→NVFP4, so route
+        // fused checkpoints through the NVFP4 expert path (as ATLAS_FORCE_NVFP4_MOE
+        // does) rather than the native-FP8 per-expert path.
+        let fused_experts = store.contains(&format!("{lp}.mlp.experts.gate_up_proj"));
+        let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe && !fused_experts;
         if skip_nvfp4_experts {
             tracing::info!(
                 "FP8: skipping NVFP4 routed experts (FP8 fused MoE batch1/2/3 handles all dispatch)"
+            );
+        } else if native_fp8 && fused_experts {
+            tracing::info!(
+                "FP8: routed experts use FUSED layout — loading via NVFP4 expert path (dequant→NVFP4)"
             );
         } else if native_fp8 && force_nvfp4_moe {
             tracing::warn!(
@@ -188,14 +288,65 @@ pub(super) fn load_layers(
         // capture-layer indices are already offset-adjusted in factory.rs
         // before being placed on `config.dflash_capture_layers`.
         moe_layer.is_dflash_capture_layer = config.dflash_capture_layers.contains(&i);
+        // FP4 prefill MoE (ATLAS_HOLO_MOE_GATEUP_FP4 / _DOWN_FP4) consumes the
+        // SHARED FAST_MOE=full [K/2,N] tables (gate_ptrs_t/up_ptrs_t/down_ptrs_t)
+        // built by transpose_for_prefill below — NO separate [N,K/2] re-pack, NO
+        // extra MoE memory. The rewritten FP4 kernels load those tables coalesced
+        // K-major and re-gather N-major on-chip (FP4_TRANSPOSE). It therefore only
+        // engages under ATLAS_HOLO_FAST_MOE_MODE=full; with the shared tables
+        // absent the dispatch falls back to FP8. Warn once if the flags are set
+        // without the tables so the opt-in isn't silently ignored.
+        if i == 0 && (holo_moe_gateup_fp4() || holo_moe_down_fp4()) && holo_fast_moe_mode.is_none()
+        {
+            tracing::warn!(
+                "ATLAS_HOLO_MOE_GATEUP_FP4/_DOWN_FP4 set but ATLAS_HOLO_FAST_MOE_MODE \
+                 is not full: the FP4 MoE prefill path needs the shared [K/2,N] tables \
+                 and will be IGNORED (FP8 fused path used instead)."
+            );
+        }
         // With native FP8, the FP8 fused MoE kernel handles both prefill and decode.
         // Skip transposition and predequant (saves ~30 GB + CPU time for 122B EP=2).
         // ATLAS_FORCE_NVFP4_MOE=1 inverts: do the prep so NVFP4 path is usable.
-        if (!native_fp8 || force_nvfp4_moe) && !skip_moe_transpose {
-            moe_layer.transpose_for_prefill(gpu, config)?;
+        let fast_holo_moe_layer = low_memory_modelopt_moe
+            && holo_fast_moe_mode.is_some()
+            && holo_fast_moe_layer_selected(i);
+        let skip_moe_prefill_copies = low_memory_modelopt_moe && !fast_holo_moe_layer;
+        if fast_holo_moe_layer {
+            tracing::info!(
+                "Layer {i}: selected for Holo ModelOpt {:?} MoE prefill copies",
+                holo_fast_moe_mode.expect("checked is_some"),
+            );
         }
-        if !native_fp8 || force_nvfp4_moe {
+        if (!native_fp8 || force_nvfp4_moe)
+            && (!skip_moe_transpose || fast_holo_moe_layer)
+            && !skip_moe_prefill_copies
+        {
+            match holo_fast_moe_mode {
+                Some(HoloFastMoeMode::GateUp) if fast_holo_moe_layer => {
+                    moe_layer.transpose_gate_up_for_prefill(gpu, config)?;
+                }
+                Some(HoloFastMoeMode::Unified) if fast_holo_moe_layer => {
+                    moe_layer.transpose_for_prefill_unified(gpu, config)?;
+                }
+                _ => {
+                    moe_layer.transpose_for_prefill(gpu, config)?;
+                }
+            }
+        }
+        if (!native_fp8 || force_nvfp4_moe) && !skip_moe_prefill_copies {
             moe_layer.predequant_for_prefill(gpu, config, stream)?;
+        }
+        // CUTLASS grouped NVFP4 gate_up (ATLAS_HOLO_MOE_GROUPED_CUTLASS): swizzle
+        // the per-expert [K/16,N] weight scales into the CUTLASS SFB atom once at
+        // load (the grouped kernel pairs them with gate_ptrs [N,K/2] + real scale2).
+        // Needs the shared gate_ptrs_t/up_ptrs_t scales (FAST_MOE=full).
+        if fast_holo_moe_layer
+            && std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
+                .ok()
+                .as_deref()
+                == Some("1")
+        {
+            moe_layer.build_cutlass_grouped_sfb(gpu, config, stream)?;
         }
 
         // ATLAS_FP8_DEQUANT_MOE_TO_BF16: dequant FP8 experts to BF16 at load,
@@ -320,75 +471,105 @@ pub(super) fn load_layers(
             }
         }
 
-        // Native FP8 MoE: load FP8 expert weights for decode
-        if native_fp8
-            && !force_nvfp4_moe
-            && !dequant_moe_to_bf16
-            && let Ok(fp8_experts) =
-                load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config)
-        {
-            let sp = format!("{lp}.mlp.shared_expert");
-            use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
-            use spark_runtime::gpu::DevicePtr;
-            let null_fw = FW {
-                weight: DevicePtr::NULL,
-                row_scale: DevicePtr::NULL,
-                n: 0,
-                k: 0,
-                // Placeholder for absent shared-expert tensor: the
-                // calling site checks `weight == NULL` before
-                // launching any kernel, so the tag is conventional.
-                // Match the block-scaled FP8 loader the other arms
-                // use so the format is consistent.
-                scale_format: crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
-            };
-            let sh_gate =
-                load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
-            let sh_up = load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
-            let sh_down =
-                load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
-            if sh_gate.is_err() || sh_up.is_err() || sh_down.is_err() {
-                tracing::warn!(
-                    "Layer {i}: shared expert FP8 load failed (gate={}, up={}, down={})",
-                    sh_gate.is_ok(),
-                    sh_up.is_ok(),
-                    sh_down.is_ok(),
-                );
-            }
-            let shared_fp8 = FEW {
-                gate_proj: sh_gate.unwrap_or(null_fw),
-                up_proj: sh_up.unwrap_or(null_fw),
-                down_proj: sh_down.unwrap_or(null_fw),
-            };
-            if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
-                tracing::error!("Layer {i}: failed to build FP8 expert pointer tables: {e:#}");
-                tracing::warn!("Layer {i}: falling back to NVFP4-only decode for MoE experts");
-            } else {
-                tracing::info!("Layer {i}: MoE experts loaded as native FP8");
+        // Native FP8 MoE: load FP8 expert weights for decode. Skipped for fused
+        // layouts (handled above via the NVFP4 expert path). NOTE: a failure
+        // here is logged loudly — previously the load Err was swallowed by an
+        // `if let Ok(...)` guard, leaving routed experts NULL and the model
+        // emitting gibberish with no error (root cause of the AgentWorld-FP8
+        // incoherence before the fused-layout fix).
+        if native_fp8 && !force_nvfp4_moe && !dequant_moe_to_bf16 && !fused_experts {
+            let fp8_experts =
+                match load_moe_qwen35_fp8_experts(store, &lp, config.num_experts, gpu, config) {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        tracing::error!(
+                            "Layer {i}: native-FP8 expert load failed: {e:#} — routed experts \
+                             would be NULL (incoherent output). MoE left on its fallback path."
+                        );
+                        None
+                    }
+                };
+            if let Some(fp8_experts) = fp8_experts {
+                let sp = format!("{lp}.mlp.shared_expert");
+                use crate::weight_map::{Fp8ExpertWeight as FEW, Fp8Weight as FW};
+                use spark_runtime::gpu::DevicePtr;
+                let null_fw = FW {
+                    weight: DevicePtr::NULL,
+                    row_scale: DevicePtr::NULL,
+                    n: 0,
+                    k: 0,
+                    // Placeholder for absent shared-expert tensor: the
+                    // calling site checks `weight == NULL` before
+                    // launching any kernel, so the tag is conventional.
+                    // Match the block-scaled FP8 loader the other arms
+                    // use so the format is consistent.
+                    scale_format: crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
+                };
+                let sh_gate =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.gate_proj"), gpu);
+                let sh_up =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.up_proj"), gpu);
+                let sh_down =
+                    load_fp8_block_scaled_as_fp8weight(store, &format!("{sp}.down_proj"), gpu);
+                if sh_gate.is_err() || sh_up.is_err() || sh_down.is_err() {
+                    tracing::warn!(
+                        "Layer {i}: shared expert FP8 load failed (gate={}, up={}, down={})",
+                        sh_gate.is_ok(),
+                        sh_up.is_ok(),
+                        sh_down.is_ok(),
+                    );
+                }
+                let shared_fp8 = FEW {
+                    gate_proj: sh_gate.unwrap_or(null_fw),
+                    up_proj: sh_up.unwrap_or(null_fw),
+                    down_proj: sh_down.unwrap_or(null_fw),
+                };
+                if let Err(e) = moe_layer.set_fp8_experts(&fp8_experts, shared_fp8, gpu) {
+                    tracing::error!("Layer {i}: failed to build FP8 expert pointer tables: {e:#}");
+                    tracing::warn!("Layer {i}: falling back to NVFP4-only decode for MoE experts");
+                } else {
+                    tracing::info!("Layer {i}: MoE experts loaded as native FP8");
+                }
             }
         }
 
         let ffn = FfnComponent::Moe(moe_layer);
 
         match lt {
-            LayerType::FullAttention if native_fp8 && dequant_attn_to_bf16 => {
+            LayerType::FullAttention
+                if (native_fp8
+                    && dequant_attn_to_bf16
+                    && !(force_nvfp4_all || fp4_proj_decode)
+                    && proj_is_native_fp8(store, &format!("{lp}.self_attn.q_proj")))
+                    || (modelopt_mixed_precision && !native_modelopt_attn && !fp4_proj_decode) =>
+            {
                 // ── BF16-dequant attention (diagnostic, TP=1) ──
                 // Dequant FP8 Q/K/V/O → BF16 on GPU, store as dense weights,
                 // and leave q/k/v/o quant-weights None so both prefill and
                 // decode fall through to the dense GEMM/GEMV paths.
-                use crate::weight_map::dequant_fp8_blockscaled_to_bf16;
                 if config.tp_world_size.max(1) != 1 {
                     anyhow::bail!(
-                        "ATLAS_FP8_DEQUANT_ATTN_TO_BF16 supports TP=1 only (got tp={})",
+                        "BF16-dequant attention supports TP=1 only (got tp={})",
                         config.tp_world_size,
                     );
                 }
                 let p = format!("{lp}.self_attn");
                 tracing::info!("Layer {i}: dequanting attention Q/K/V/O FP8→BF16 (dense)");
-                let q_bf16 = dequant_fp8_blockscaled_to_bf16(store, &format!("{p}.q_proj"), gpu)?;
-                let k_bf16 = dequant_fp8_blockscaled_to_bf16(store, &format!("{p}.k_proj"), gpu)?;
-                let v_bf16 = dequant_fp8_blockscaled_to_bf16(store, &format!("{p}.v_proj"), gpu)?;
-                let o_bf16 = dequant_fp8_blockscaled_to_bf16(store, &format!("{p}.o_proj"), gpu)?;
+                let load_fp8_dense = |name: &str| -> Result<DenseWeight> {
+                    if modelopt_mixed_precision {
+                        dense_auto(store, &format!("{p}.{name}.weight"), gpu)
+                    } else {
+                        crate::weight_map::dequant_fp8_blockscaled_to_bf16(
+                            store,
+                            &format!("{p}.{name}"),
+                            gpu,
+                        )
+                    }
+                };
+                let q_bf16 = load_fp8_dense("q_proj")?;
+                let k_bf16 = load_fp8_dense("k_proj")?;
+                let v_bf16 = load_fp8_dense("v_proj")?;
+                let o_bf16 = load_fp8_dense("o_proj")?;
 
                 let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
                 let dummy_qw = QuantizedWeight::null();
@@ -397,8 +578,8 @@ pub(super) fn load_layers(
                     k_proj: k_bf16,
                     v_proj: v_bf16,
                     o_proj: dummy_qw,
-                    q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
-                    k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                    q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
+                    k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
                     q_norm_full: None,
                     k_norm_full: None,
                     k_scale,
@@ -425,7 +606,12 @@ pub(super) fn load_layers(
                 layers.push(Box::new(layer));
                 attn_idx += 1;
             }
-            LayerType::FullAttention if native_fp8 => {
+            LayerType::FullAttention
+                if ((native_fp8
+                    && proj_is_native_fp8(store, &format!("{lp}.self_attn.q_proj")))
+                    || native_modelopt_attn)
+                    && !(force_nvfp4_all || fp4_proj_decode) =>
+            {
                 // ── Native FP8 path: FP8 for both decode AND prefill ──
                 // NO NVFP4 dequant — saves ~30 GB peak memory on 122B EP=2.
                 // Decode uses w8a16_gemv, prefill uses w8a16_gemm (both with
@@ -472,8 +658,8 @@ pub(super) fn load_layers(
                     k_proj: dummy,
                     v_proj: dummy,
                     o_proj: dummy_qw,
-                    q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
-                    k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                    q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
+                    k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
                     q_norm_full: None,
                     k_norm_full: None,
                     k_scale,
@@ -563,8 +749,29 @@ pub(super) fn load_layers(
             // All non-FP8 variants (NVFP4 native, BF16, etc.) take the
             // existing NVFP4-quantized decode path.
             LayerType::LinearAttention => {
+                // Native-FP8 SSM decode is valid only when in_proj_qkv actually
+                // ships as block-scaled FP8 (FP8E4M3 + `weight_scale_inv`).
+                // Hybrid checkpoints (lovedheart AgentWorld-35B-FP8) keep the SSM
+                // in BF16 even when globally FP8 → route those to the NVFP4
+                // builder, which dequants per-tensor via `dense_auto` then
+                // runtime-quantizes. True-FP8 checkpoints (397B, Qwen3.6-FP8)
+                // keep the fast native-FP8 arm unchanged.
+                let ssm_native_fp8 =
+                    proj_is_native_fp8(store, &format!("{lp}.linear_attn.in_proj_qkv"));
+                // A BF16 SSM inside a globally-FP8 checkpoint must NOT take the
+                // Fp8Dequanted single-scale FP8 *prefill* bypass (it assumes the
+                // SSM shipped as native FP8) — that corrupts prefill on a
+                // BF16-sourced SSM. Hand the NVFP4 builder `Bf16Raw` so it uses
+                // the plain BF16→NVFP4 path (identical to how the NVFP4 checkpoint
+                // loads its SSM). Genuine FP8 SSMs keep `variant` unchanged.
+                let ssm_variant =
+                    if matches!(variant, Nvfp4Variant::Fp8Dequanted) && !ssm_native_fp8 {
+                        Nvfp4Variant::Bf16Raw
+                    } else {
+                        variant
+                    };
                 let layer = match variant {
-                    Nvfp4Variant::Fp8Dequanted => linear_attn_arms::build_linear_attention_fp8(
+                    _ if native_modelopt_ssm => linear_attn_arms::build_linear_attention_fp8(
                         i,
                         store,
                         &lp,
@@ -577,11 +784,47 @@ pub(super) fn load_layers(
                         post_attn_norm,
                         ffn,
                     )?,
+                    // fp4_proj_decode drops Holo's modelopt SSM out of the BF16-
+                    // dense + FP8-overlay build so it falls through to the NVFP4
+                    // builder below → in_proj_qkvz/out_proj decode on w4a16_gemv.
+                    _ if modelopt_mixed_precision && !fp4_proj_decode => {
+                        linear_attn_arms::build_linear_attention_dense_bf16(
+                            i,
+                            store,
+                            &lp,
+                            gpu,
+                            variant,
+                            config,
+                            h,
+                            input_norm,
+                            post_attn_norm,
+                            ffn,
+                        )?
+                    }
+                    // force_nvfp4_all routes the FP8 SSM through the NVFP4 builder
+                    // (Fp8Dequanted requant) instead of the native-FP8 build.
+                    Nvfp4Variant::Fp8Dequanted
+                        if !(force_nvfp4_all || fp4_proj_decode) && ssm_native_fp8 =>
+                    {
+                        linear_attn_arms::build_linear_attention_fp8(
+                            i,
+                            store,
+                            &lp,
+                            gpu,
+                            variant,
+                            config,
+                            h,
+                            stream,
+                            input_norm,
+                            post_attn_norm,
+                            ffn,
+                        )?
+                    }
                     _ => linear_attn_arms::build_linear_attention_nvfp4(
                         store,
                         &lp,
                         gpu,
-                        variant,
+                        ssm_variant,
                         config,
                         h,
                         absmax_k,
@@ -603,6 +846,7 @@ pub(super) fn load_layers(
         if (i + 1) % 10 == 0 || i < 5 {
             let free_gb = gpu.free_memory()? as f64 / (1024.0 * 1024.0 * 1024.0);
             tracing::info!("Loaded layers 0..{} — {free_gb:.1} GB free", i + 1);
+            spark_runtime::progress::layer(i + 1, config.num_hidden_layers);
         }
     }
 
@@ -621,10 +865,12 @@ pub(super) fn load_layers(
 /// list of singletons and inclusive ranges, e.g. `"31-39"` or `"31,35,39"`.
 /// Unset → every layer selected (legacy all-layers behaviour). Parsed once.
 fn layer_dequant_selected(layer: usize) -> bool {
-    use std::sync::OnceLock;
-    // None  = env unset → all layers; Some(ranges) = explicit selection.
-    static SPEC: OnceLock<Option<Vec<(usize, usize)>>> = OnceLock::new();
-    let spec = SPEC.get_or_init(|| {
+    // Parsed per call rather than memoized in a `OnceLock`. This runs a few
+    // dozen times during a weight load that takes minutes, so the cache bought
+    // nothing measurable and cost the ability to load a second model under a
+    // different selection.
+    // None = env unset → all layers; Some(ranges) = explicit selection.
+    let spec: Option<Vec<(usize, usize)>> = (|| -> Option<Vec<(usize, usize)>> {
         let s = std::env::var("ATLAS_FP8_DEQUANT_LAYERS").ok()?;
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         for part in s.split(',') {
@@ -641,9 +887,106 @@ fn layer_dequant_selected(layer: usize) -> bool {
             }
         }
         Some(ranges)
-    });
+    })();
     match spec {
         None => true,
         Some(ranges) => ranges.iter().any(|&(a, b)| layer >= a && layer <= b),
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HoloFastMoeMode {
+    GateUp,
+    Full,
+    Unified,
+}
+
+/// `ATLAS_HOLO_MOE_GATEUP_FP4=1` opts in to the FP4 (NVFP4 block-scaled)
+/// grouped gate_up prefill path. OnceLock-cached, default OFF => the existing
+/// FP8 fused gate_up kernel runs unchanged (bit-identical).
+fn holo_moe_gateup_fp4() -> bool {
+    // Load-time: the weight loader runs before any `TransformerModel` exists to
+    // carry the levers, so this resolves at the point of use rather than in a
+    // static. The interpretation stays SSOT in `ModelLevers`.
+    crate::layers::ops::ModelLevers::from_env().holo_moe_gateup_fp4
+}
+
+/// `ATLAS_HOLO_MOE_DOWN_FP4=1` opts in to the FP4 (NVFP4 block-scaled) down
+/// prefill path. OnceLock-cached, default OFF => the existing FP8/w4a16 down
+/// path runs unchanged (bit-identical). Independent of the gate_up flag.
+fn holo_moe_down_fp4() -> bool {
+    // Load-time: the weight loader runs before any `TransformerModel` exists to
+    // carry the levers, so this resolves at the point of use rather than in a
+    // static. The interpretation stays SSOT in `ModelLevers`.
+    crate::layers::ops::ModelLevers::from_env().holo_moe_down_fp4
+}
+
+fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
+    // Resolved per call, for the same reason as `layer_dequant_selected`:
+    // load-time work, and a memoized answer pins the first model's MoE mode
+    // onto every model loaded after it.
+    (|| -> Option<HoloFastMoeMode> {
+        let Ok(mode) = std::env::var("ATLAS_HOLO_FAST_MOE_MODE") else {
+            return None;
+        };
+        match mode.trim() {
+            "gate_up" | "gate-up" => Some(HoloFastMoeMode::GateUp),
+            "full" => Some(HoloFastMoeMode::Full),
+            "unified" => {
+                let unified_layout = std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if unified_layout {
+                    Some(HoloFastMoeMode::Unified)
+                } else {
+                    tracing::warn!(
+                        "Ignoring ATLAS_HOLO_FAST_MOE_MODE=unified; set ATLAS_UNIFIED_MOE_LAYOUT=1 so decode uses transposed experts"
+                    );
+                    None
+                }
+            }
+            other => {
+                tracing::warn!(
+                    "Ignoring ATLAS_HOLO_FAST_MOE_MODE={other:?}; expected gate_up, full, or unified"
+                );
+                None
+            }
+        }
+    })()
+}
+
+fn holo_fast_moe_layer_selected(layer: usize) -> bool {
+    // Per call — see `layer_dequant_selected`.
+    let ranges = {
+        let Ok(spec) = std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS") else {
+            return false;
+        };
+        parse_layer_ranges(&spec)
+    };
+    ranges.iter().any(|&(a, b)| layer >= a && layer <= b)
+}
+
+fn parse_layer_ranges(spec: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((a, b)) = part.split_once('-') {
+            if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
+                ranges.push((a.min(b), a.max(b)));
+            }
+        } else if let Ok(a) = part.parse::<usize>() {
+            ranges.push((a, a));
+        }
+    }
+    ranges
+}
+
+fn is_holo_modelopt_mixed_precision(config: &ModelConfig) -> bool {
+    config.model_type == "holo3_1_moe"
+        && config.quantization_config.as_ref().is_some_and(|qc| {
+            qc.quant_method == "modelopt" && qc.quant_algo.eq_ignore_ascii_case("MIXED_PRECISION")
+        })
 }

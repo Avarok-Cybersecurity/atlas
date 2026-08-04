@@ -144,6 +144,29 @@ fn sanitize_recursive(
         }
     }
 
+    // ── Python-style type aliases (BFCL / agent-authored schemas) ──
+    // "dict"/"float"/"tuple"… are not JSON Schema; xgrammar treats such a
+    // schema as unconstrained, which silently stops enforcing `required`.
+    // 2026-07-03 ST-995 collapse (55.78 vs 89.04): BFCL sends parameters as
+    // {"type":"dict",…} → grammar let generation close `arguments` before
+    // the trailing required params → server validation dropped the call.
+    // Normalize so the grammar enforces the same contract the validator
+    // checks.
+    if let Some(t) = result.get("type").and_then(|t| t.as_str()) {
+        let mapped = match t {
+            "dict" => Some("object"),
+            "tuple" | "list" => Some("array"),
+            "float" | "double" => Some("number"),
+            "int" | "long" => Some("integer"),
+            "bool" => Some("boolean"),
+            "str" => Some("string"),
+            _ => None,
+        };
+        if let Some(m) = mapped {
+            result.insert("type".to_string(), serde_json::Value::String(m.into()));
+        }
+    }
+
     // ── Empty enum ──
     if let Some(arr) = result.get("enum").and_then(|v| v.as_array())
         && arr.is_empty()

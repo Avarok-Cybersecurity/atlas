@@ -15,8 +15,8 @@ use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, Qwen3AttentionLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_quantized_nvfp4};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Nvfp4Variant, dense, dense_auto, load_kv_scales,
-    quantize_to_nvfp4, quantized_auto,
+    AttentionWeights, DenseWeight, Nvfp4Variant, dense_auto, load_kv_scales, quantize_to_nvfp4,
+    quantized_auto,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -50,7 +50,28 @@ pub(super) fn build_full_attention_nvfp4(
                               full_k: usize,
                               kind: TpShardKind|
              -> Result<crate::weight_map::QuantizedWeight> {
-                let src = quantized_auto(store, &format!("{p}.{name}"), gpu, variant)?;
+                let prefix = format!("{p}.{name}");
+                // Mixed-precision compressed-tensors checkpoints (lovedheart
+                // AgentWorld-35B-NVFP4) NVFP4-pack the MoE experts but keep
+                // attention q/k/v/o as block-scaled FP8 (`.weight` FP8E4M3 + 2D
+                // `.weight_scale`, no `.weight_packed`). When the pack metadata
+                // is absent, dequant per-tensor and runtime-quantize to NVFP4
+                // (mirrors the Standard arm) instead of failing on the missing
+                // `weight_packed`.
+                let src = if store.contains(&format!("{prefix}.weight_packed")) {
+                    quantized_auto(store, &prefix, gpu, variant)?
+                } else {
+                    let dense_bf16 = dense_auto(store, &format!("{prefix}.weight"), gpu)?;
+                    quantize_to_nvfp4(
+                        &dense_bf16,
+                        full_n,
+                        full_k,
+                        gpu,
+                        absmax_k,
+                        quantize_k,
+                        stream,
+                    )?
+                };
                 if tp_size == 1 {
                     return Ok(src);
                 }
@@ -71,8 +92,8 @@ pub(super) fn build_full_attention_nvfp4(
                 k_proj: dummy,
                 v_proj: dummy,
                 o_proj: o,
-                q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
-                k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
+                k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
                 q_norm_full: None,
                 k_norm_full: None,
                 k_scale,
@@ -148,8 +169,8 @@ pub(super) fn build_full_attention_nvfp4(
                 k_proj: k_dense,
                 v_proj: v_dense,
                 o_proj: o_nvfp4,
-                q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
-                k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                q_norm: dense_auto(store, &format!("{p}.q_norm.weight"), gpu)?,
+                k_norm: dense_auto(store, &format!("{p}.k_norm.weight"), gpu)?,
                 q_norm_full: None,
                 k_norm_full: None,
                 k_scale,

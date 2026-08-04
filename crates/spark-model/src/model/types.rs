@@ -28,8 +28,34 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, MtpWeights, QuantizedWeight
 /// Adding a new model only requires implementing [`TransformerLayer`]
 /// for each layer type — the model loop stays unchanged.
 #[allow(dead_code)]
+/// Rows in the drafter catch-up hidden ring (see `mtp_catchup_ring`):
+/// 512 covers the gate's 256-token serial re-probe interval with 2x margin.
+pub(super) const MTP_CATCHUP_RING_ROWS: usize = 512;
+
 pub struct TransformerModel {
     pub(super) config: ModelConfig,
+    /// Which GEMM implementation each projection takes, resolved from the
+    /// environment when this model was built. Owned here and borrowed by every
+    /// `ForwardContext` this model creates, so the choice cannot outlive the
+    /// model — the property nine `OnceLock` statics could not have.
+    pub(super) dispatch: crate::layers::ops::GemmDispatch,
+    /// Weight re-encodings derived on demand and memoized for this model.
+    /// Dropped with the model, so no entry can outlive the allocation it
+    /// describes.
+    pub(super) derived: crate::layers::ops::DerivedWeights,
+    /// The weight ledger this model was built from.
+    ///
+    /// Held for TEARDOWN, not for lookup: the layers already copied the
+    /// pointers they need out of it during construction. It is the only
+    /// structure that knows every weight allocation, and it used to be dropped
+    /// at the end of `startup()` — leaving that memory live with nothing able
+    /// to free it. `None` once released.
+    pub(super) weight_store: Option<spark_runtime::weights::WeightStore>,
+    /// Non-GEMM kernel-path levers, resolved at model construction.
+    pub(super) levers: crate::layers::ops::ModelLevers,
+    /// Diagnostic counters and one-shot dump latches for this model. Sibling
+    /// to `levers`: what the kernels did, rather than what they do.
+    pub(super) stats: crate::layers::ops::ModelStats,
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
@@ -41,10 +67,27 @@ pub struct TransformerModel {
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
+    /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
+    /// tables). `None` = no adapter. Installed post-construction via
+    /// `set_lora_weights`, which also copies the per-layer pairs into the
+    /// layer structs; kept here as the owner of the pool/tables and for
+    /// status introspection.
+    pub(super) lora: Option<crate::lora::LoraWeights>,
+    /// True when runtime adapter rotation is ARMED: `ATLAS_LORA_ROTATE=1`, or
+    /// `$ATLAS_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
+    /// capture) so a `set_active_lora` re-point is immediately live
+    /// (eager-on-rotate). `false` (single startup adapter, no rotation env)
+    /// keeps the decode-graph path byte-identical to today.
+    pub(super) lora_rotatable: bool,
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
+    /// TQ+ InnerQ calibration driver, when `TURBO_INNERQ` is set. Owned here
+    /// rather than parked in a static: it writes `__device__` globals in THIS
+    /// model's modules, so it must not outlive the model. Reached from the
+    /// scheduler through `Model::poll_innerq`.
+    #[cfg(feature = "cuda")]
+    pub(super) innerq: Option<crate::layers::qwen3_attention::InnerQDriver>,
     pub(super) rms_norm_kernel: KernelHandle,
-    pub(super) bf16_to_f32_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
     /// FP32-output variant of dense_gemv_bf16. Used by the LM head when
     /// `use_fp32_logits` is true, so the FP32 accumulator is preserved across
@@ -57,10 +100,22 @@ pub struct TransformerModel {
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
+    /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
+    /// read for all rows; nsys 2026-07-18: the M64-tile `w4a16_gemm` at M=4
+    /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
+    /// 0-handle when the target lacks the kernel (dispatch falls back).
+    pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
+    /// M<=8 batched GEMV for the K=5..8 chain-verify lm_head (batch8 —
+    /// removes the M>4 tile-GEMM cliff). 0-handle when absent.
+    pub(super) w4a16_gemv_batch8_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.
     pub(super) dense_gemv_fp8w_kernel: KernelHandle,
+    /// FP8-weight dual-GEMV (batch=2): reads the FP8 weight once for both K=2
+    /// verify tokens. Bit-identical to two `dense_gemv_fp8w` calls; halves the
+    /// FP8 weight bandwidth for the lm_head on the MTP verify path.
+    pub(super) dense_gemv_fp8w_batch2_kernel: KernelHandle,
     pub(super) dense_gemm_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
     pub(super) argmax_logits_kernel: KernelHandle, // FP32 argmax for logits
@@ -86,6 +141,12 @@ pub struct TransformerModel {
     pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
+    /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
+    /// keeps the drop-only reclaim path byte-identical; `Some` moves an evicted
+    /// snapshot's bytes to the tier (keeping its index entry findable) so a warm
+    /// turn faults it back instead of recomputing. Threaded into
+    /// [`SsmSnapshotPool::reclaim_from_cache`] at every reclaim call site.
+    pub(super) ssm_tier_store: Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>,
     /// Fixed max blocks per sequence (max_seq_len / block_size + 1).
     /// Used as constant stride in attention metadata for CUDA graph compatibility.
     pub(super) max_blocks_per_seq: u32,
@@ -107,6 +168,43 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
+    /// during serial-decode stretches (BF16 rows, slot = position % ring
+    /// len). Feeds the drafter catch-up on the next propose. NULL when the
+    /// feature is off or no proposer exists.
+    pub(super) mtp_catchup_ring: DevicePtr,
+    /// (first_position, count) of the contiguous position range currently
+    /// resident in the ring; a non-contiguous capture resets the range.
+    pub(super) mtp_catchup_meta: parking_lot::Mutex<(usize, usize)>,
+    /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
+    /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
+    /// h=5120). NULL unless the env is set AND an MTP proposer is built.
+    /// Filled contiguously by the prefill chunk epilogues; consumed once by
+    /// the drafter-prefill pass on the first propose() of a sequence.
+    pub(super) mtp_prefill_hidden: DevicePtr,
+    /// Row capacity of `mtp_prefill_hidden` (== max_seq_len at alloc; 0 when
+    /// the feature is off). SSOT for the capture bounds check.
+    pub(super) mtp_prefill_capacity: usize,
+    /// Rows of `mtp_prefill_hidden` captured contiguously from position 0 for
+    /// the CURRENT sequence. Reset to 0 on `alloc_sequence`; a chunk whose
+    /// start does not extend the contiguous range (prefix-cache reuse, warm
+    /// restore) leaves it stale-short, which safely disables drafter-prefill
+    /// for that sequence (coverage check at the propose site).
+    pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
+    /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
+    /// next turn of the same session can adopt it instead of rebuilding
+    /// (1136 ms at 12k rows) or — as today — silently going without. Single
+    /// slot: MTP is gated `active.len() == 1` on every spec path, and one slot
+    /// makes block ownership unambiguous (blocks are owned here XOR by a live
+    /// sequence). `None` when the feature is off or nothing has been carried.
+    pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
+    /// Absolute position interval `[lo, hi)` of `mtp_prefill_hidden` rows
+    /// written by the CURRENT sequence's prefill chunks. Reset per
+    /// `alloc_sequence`, so a warm-turn append can only ever read hiddens this
+    /// turn computed — which is why the carry path cannot inherit another
+    /// sequence's hiddens the way the legacy `mtp_prefill_capture_len` path
+    /// can. Only maintained when ATLAS_MTP_CARRY_DRAFTER is on.
+    pub(super) mtp_store_range: parking_lot::Mutex<(usize, usize)>,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices
@@ -117,6 +215,10 @@ pub struct TransformerModel {
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
+    /// Row capacity of `dflash_hidden_save` (the K-row EAGLE capture buffer).
+    /// `try_dflash_capture_all` must never write past this many rows. Single
+    /// source of truth for the buffer's KMAX; 0 when DFlash is disabled.
+    pub(super) dflash_hidden_save_rows: usize,
     /// Cached CUDA graphs for K=2 verification, **keyed by `seq.slot_idx`**.
     /// Same rationale as `decode_graph`: the captured graph has SSM
     /// h_state/conv_state pointers baked in as kernel arguments, so replay for
@@ -132,12 +234,28 @@ pub struct TransformerModel {
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
     pub(super) verify_kgamma_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
+    /// Cached CUDA graphs for the DFlash decode+verify fused pass, keyed by
+    /// `(seq.slot_idx, M)` where M = tokens.len() = 1 + num_drafts.
+    /// Replaces the separate `decode_graph` (M=1) + `verify{k}_graph` (M=k)
+    /// on the DFlash path with a single M-row weight sweep.
+    pub(super) fused_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
     /// Prefix cache for KV block reuse across requests.
     pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     /// Secondary CUDA stream for pipelining checkpoint D2D with MTP propose.
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).
     pub(super) secondary_event: u64,
+    /// CUDA event ordering SSM-snapshot SAVES (on the default stream) before a
+    /// later warm Marconi RESTORE (on the prefill stream). Marconi saves
+    /// (`decode_marconi_checkpoint`, `finish_leaf_snapshot`, prefill-time
+    /// `prefill_save_snapshot`) record this event after their D2D copies; a
+    /// warm restore in `prefill_b_prefix_lookup` waits on it before reading the
+    /// snapshot region. Without this cross-stream edge, under concurrent
+    /// batched traffic the restore (prefill stream) can read a snapshot slot
+    /// whose save D2D (default stream) has not yet completed — restoring stale
+    /// / torn SSM recurrent state and diverging the warm decode from the cold
+    /// reference (the prefix-cache × hybrid-SSM warm-restore corruption).
+    pub(super) snapshot_event: u64,
     /// Communication backend for expert parallelism (EP) all-reduce.
     /// None for single-GPU (no distributed communication needed).
     pub(super) comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
@@ -164,6 +282,15 @@ pub struct TransformerModel {
     /// assign correct (h, w) spatial position IDs to each image patch
     /// token. Empty when no images are pending.
     pub(super) vision_image_grids: Mutex<Vec<(usize, usize)>>,
+    /// Co-dispatched batched-ViT slice base for the NEXT prefill_chunk. When a
+    /// tick batches >=2 image requests into one buf_out, each request's chunk-0
+    /// splice/MRoPE must read its OWN slice: `vision_row_base` = first buf_out
+    /// row, `vision_grid_base` = first vision_image_grids index, and
+    /// `vision_owned_images` bounds the grid scan. All 0 ⇒ legacy (read from
+    /// row 0 / grid 0). Set right before prefill_chunk, reset to 0 right after.
+    pub(super) vision_row_base: Mutex<usize>,
+    pub(super) vision_grid_base: Mutex<usize>,
+    pub(super) vision_owned_images: Mutex<usize>,
     /// Page-locked host staging for batched metadata H2D transfers.
     /// Allocated once at init via cuMemAllocHost, freed in Drop.
     ///
@@ -249,3 +376,75 @@ pub(crate) struct PinnedMetaStaging {
 unsafe impl Send for TransformerModel {}
 // SAFETY: Model methods are only called from the scheduler thread. No concurrent &self access.
 unsafe impl Sync for TransformerModel {}
+
+/// Release every pool this model owns, newest first.
+///
+/// Construction order is buffers → kv cache → ssm pools → derived, so release
+/// runs the reverse. `Teardown` is used rather than a hand-rolled sequence
+/// because it attempts every resource even after one fails: a half-torn-down
+/// GPU is worse than a reported error.
+///
+/// NOT released here: the weights. `build_model` takes `store: &WeightStore`
+/// and the layers only copy pointers out of it, so this model does not own
+/// them — the host that retained the store releases it after this returns.
+impl TransformerModel {
+    /// Hand the model the ledger of its own weights, for teardown.
+    pub fn adopt_weight_store(&mut self, store: spark_runtime::weights::WeightStore) {
+        self.weight_store = Some(store);
+    }
+
+    pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
+        use atlas_core::scope::ModelResource;
+
+        let gpu: &dyn GpuBackend = self.gpu.as_ref();
+        let mut first_error: Option<anyhow::Error> = None;
+        let mut attempt = |label: &'static str, r: anyhow::Result<()>| {
+            if let Err(e) = r
+                && first_error.is_none()
+            {
+                first_error = Some(e.context(label));
+            }
+        };
+
+        attempt("derived weights", self.derived.release(gpu));
+        attempt("ssm snapshots", self.ssm_snapshots.release(gpu));
+        // The pool is Arc'd because slots are handed out to sequences. A live
+        // clone here means something still holds a slot, which is a drain bug,
+        // not a teardown one — so it is reported rather than forced.
+        match std::sync::Arc::get_mut(&mut self.ssm_pool) {
+            Some(pool) => attempt("ssm state pool", pool.release(gpu)),
+            None => attempt(
+                "ssm state pool",
+                Err(anyhow::anyhow!(
+                    "{} handle(s) still hold the SSM pool — a sequence was not \
+                     released before teardown",
+                    std::sync::Arc::strong_count(&self.ssm_pool) - 1
+                )),
+            ),
+        }
+        attempt("kv cache", self.kv_cache.lock().release(gpu));
+        attempt("buffer arena", self.buffers.release(gpu));
+        // Weights LAST: the layers hold pointers into them, so they must not be
+        // freed until everything that reads them is gone.
+        if let Some(mut store) = self.weight_store.take() {
+            attempt("weight store", store.release(gpu));
+        }
+        // LAST: whatever the owners above did not cover. Chiefly the loaders'
+        // fused weights, which live in layer structs and belong to no pool.
+        // Every pointer freed above has already left the ledger, so this
+        // cannot double-free — it only ever sees what was missed.
+        let swept = gpu.sweep_unreleased();
+        if swept > 0 {
+            tracing::warn!(
+                "teardown swept {swept} allocation(s) that no ModelResource \
+                 released — they are reclaimed, but each one is memory whose \
+                 owner is unaccounted for"
+            );
+        }
+
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}

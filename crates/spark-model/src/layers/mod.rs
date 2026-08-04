@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
@@ -14,12 +15,13 @@ pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
 
-pub use dense_ffn::{DenseFfnLayer, FfnActivation};
+pub use deepseek_v4_mtp::{DeepseekV4MtpHead, DeepseekV4MtpProposerState};
+pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization,
 };
 pub use moe::MoeLayer;
-pub use mtp_head::{MtpHead, MtpQuantization};
+pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
 pub use nemotron_moe::NemotronMoeLayer;
 pub use qwen3_attention::Qwen3AttentionLayer;
@@ -61,6 +63,23 @@ impl FfnComponent {
         matches!(self, Self::None)
     }
 
+    /// True for a plain dense (SwiGLU) FFN. Wide-batch verify paths gate their
+    /// `forward_prefill` fast path on this: batching reads dense weights once
+    /// (big win at N=17), but on a 256-expert MoE the grouped-GEMM is a net
+    /// loss at small batch (per-expert M~1 + sort/permute overhead), so MoE
+    /// keeps its per-token loop.
+    pub fn is_dense(&self) -> bool {
+        matches!(self, Self::Dense(_))
+    }
+
+    /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
+    pub fn fp32_routing_active(&self) -> bool {
+        match self {
+            Self::Moe(m) => m.fp32_routing_active(),
+            _ => false,
+        }
+    }
+
     pub fn forward(
         &self,
         input: DevicePtr,
@@ -90,6 +109,33 @@ impl FfnComponent {
         }
     }
 
+    /// Whether the K=m (m<=8) batched-GEMV verify FFN is available (dense
+    /// only — MoE / missing batch4/batch8 kernel / non-NVFP4 weights →
+    /// false). Lets callers gate branch entry BEFORE computing the pre-FFN
+    /// norm, so there is no half-done fallthrough to `forward_prefill`.
+    pub fn can_forward_km(&self, m: u32) -> bool {
+        matches!(self, Self::Dense(d) if d.can_forward_km(m))
+    }
+
+    /// K=m (m=4..8) verify FFN via batched GEMV (dense only). Returns
+    /// `false` when the path is unavailable (MoE / missing batchm kernel /
+    /// non-NVFP4 weights) so the caller can fall back to `forward_prefill`.
+    pub fn try_forward_km(
+        &self,
+        input: DevicePtr,
+        m: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        match self {
+            Self::Dense(d) if d.can_forward_km(m) => {
+                d.forward_km(input, m, ctx, stream)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub fn forward_prefill(
         &self,
         input: DevicePtr,
@@ -116,6 +162,40 @@ impl FfnComponent {
     ) -> Result<()> {
         match self {
             Self::Moe(m) => m.forward_batched(input, num_tokens, ctx, stream),
+            Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
+            Self::None => {
+                let _ = (input, num_tokens);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn forward_token_major_decode(
+        &self,
+        input: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        match self {
+            Self::Moe(m) => m.forward_token_major_decode(input, num_tokens, ctx, stream),
+            Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
+            Self::None => {
+                let _ = (input, num_tokens);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn forward_atomic_c4_decode(
+        &self,
+        input: DevicePtr,
+        num_tokens: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        match self {
+            Self::Moe(m) => m.forward_atomic_c4_decode(input, num_tokens, ctx, stream),
             Self::Dense(d) => d.forward_batched(input, num_tokens, ctx, stream),
             Self::None => {
                 let _ = (input, num_tokens);

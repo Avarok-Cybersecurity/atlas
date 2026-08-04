@@ -60,6 +60,22 @@ pub(super) fn install_high_speed_swap(
     }
 }
 
+/// Co-dispatch admission window: `Some(duration)` when `ATLAS_PREFILL_CODISPATCH=1`,
+/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` (default 5).
+fn codispatch_window() -> Option<std::time::Duration> {
+    let on = std::env::var("ATLAS_PREFILL_CODISPATCH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !on {
+        return None;
+    }
+    let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10);
+    Some(std::time::Duration::from_millis(ms))
+}
+
 /// Drain pending request queue and policy-select prefills to start.
 pub(super) fn drain_pending_requests(
     pending: &Arc<(Mutex<PendingQueue>, Condvar)>,
@@ -71,12 +87,52 @@ pub(super) fn drain_pending_requests(
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
     if active.is_empty() && prefilling.is_empty() {
-        // Block until signalled (no busy-wait, no polling).
-        while g.requests.is_empty() && !g.closed {
+        // Block until signalled (no busy-wait, no polling). Also wake on a
+        // pending rotation: a quiescence-applied LoraCommand (Rotate / Promote /
+        // PromoteDisk) is pushed onto `g.rotations` by the rotation forwarder and
+        // notified on this same Condvar. Without `rotations.is_empty()` in the
+        // predicate the notify would wake us but the loop would immediately
+        // re-sleep (requests still empty), starving the quiescence-apply block —
+        // an idle-scheduler deadlock for demand-driven promotion.
+        while g.requests.is_empty() && g.rotations.is_empty() && !g.closed {
             cv.wait(&mut g);
         }
         if g.closed && g.requests.is_empty() {
             return Vec::new();
+        }
+        // Rotation-only wakeup: we exited the wait with no requests but a pending
+        // rotation. Return an empty batch so the caller reaches the
+        // quiescence-apply block (active/prefilling/new_reqs/swapped all empty)
+        // and drains `g.rotations` at true quiescence. Do NOT fall into the
+        // co-dispatch window with zero requests.
+        if g.requests.is_empty() {
+            return Vec::new();
+        }
+        // Co-dispatch micro-batch window (ATLAS_PREFILL_CODISPATCH=1): when idle,
+        // gather a whole concurrent BURST into one forward (batched via
+        // run_batched_prefill_step) rather than stopping at the 2nd request — a
+        // 4-request burst used to split into 2+2 because the loop exited at len==2.
+        // Keep collecting up to `max_batch_size`, bounded by `window`, and dispatch
+        // EARLY once the burst settles (>=2 gathered and no new arrival within
+        // SETTLE) so latency stays low. A lone request pays at most `window` TTFT.
+        if g.requests.len() < max_batch_size
+            && let Some(window) = codispatch_window()
+        {
+            const SETTLE: std::time::Duration = std::time::Duration::from_millis(2);
+            let deadline = std::time::Instant::now() + window;
+            while g.requests.len() < max_batch_size && !g.closed {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let wait = (deadline - now).min(SETTLE);
+                let res = cv.wait_for(&mut g, wait);
+                // Timed out with no new arrival in SETTLE → burst drained; dispatch
+                // what we have (if it's batchable). Otherwise keep gathering.
+                if res.timed_out() && g.requests.len() >= 2 {
+                    break;
+                }
+            }
         }
     }
 
@@ -144,26 +200,215 @@ pub(super) fn drain_pending_requests(
 /// in place across the swap_remove, and the per-slot CUDA graph cache
 /// stays warm because the seq never moved.
 pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<ActiveSeq>) {
-    let skip_compaction = model.ep_protocol_v2();
-    let mut i = 0;
-    while i < active.len() {
-        if active[i].finished {
-            let mut a = active.swap_remove(i);
-            if !skip_compaction && i < active.len() && active[i].seq.slot_idx != i {
-                // Compact the swapped-in sequence to reuse the retired
-                // seq's slot. Mark the retired seq's slot as reused so
-                // free_sequence doesn't double-release it.
-                if let Err(e) = model.compact_sequence(&mut active[i].seq, i) {
-                    tracing::error!("compact_sequence: {e:#}");
-                }
-                // Disown the retired seq's slot (now owned by the swapped-in
-                // seq's guard): sets the reuse sentinel AND neutralizes the
-                // RAII guard so `free_sequence`/Drop won't double-release it.
-                model.detach_slot_for_reuse(&mut a.seq);
+    if model.ep_protocol_v2() {
+        // v2 EP: slots are pre-allocated and kept in place (see doc above);
+        // just drop finished seqs, no compaction.
+        let mut i = 0;
+        while i < active.len() {
+            if active[i].finished {
+                let mut a = active.swap_remove(i);
+                finish_sequence(model, &mut a);
+            } else {
+                i += 1;
             }
-            finish_sequence(model, &mut a);
-        } else {
-            i += 1;
         }
+        return;
+    }
+
+    // ── Two-phase retirement (bug-2 fix) ──
+    // The old per-removal "compact swapped-in seq to position i + detach the
+    // retired seq" ASSUMED the active vec was contiguous (slot_idx == position).
+    // When co-dispatch admission left it non-contiguous, that compacted a
+    // survivor onto a slot still owned by another live seq (double-own) while
+    // leaking the retired seq's real slot — two co-dispatched seqs then shared
+    // one SSM slot → shared GDN h_state → cross-stream content bleed. The fix
+    // is order-independent and exclusivity-safe:
+    //   Phase 1: drop every finished seq, releasing ITS OWN slot to the pool.
+    //   Phase 2: compact survivors into contiguous slots [0..n), each migration
+    //            target CLAIMED exclusively from the free list (compact_sequence
+    //            → claim_specific). No two live seqs can ever share a slot.
+
+    // Phase 1.
+    let mut survivors: Vec<ActiveSeq> = Vec::with_capacity(active.len());
+    for mut a in active.drain(..) {
+        if a.finished {
+            finish_sequence(model, &mut a); // RAII guard releases a's own slot
+        } else {
+            survivors.push(a);
+        }
+    }
+
+    // Phase 2: compact survivors back into contiguous slots [0..n).
+    compact_survivors_into_range(model, &mut survivors);
+    *active = survivors;
+}
+
+/// Compact live sequences into contiguous SSM slots `[0..n)` (n = the slice
+/// length), claiming each migration target exclusively from the free list so
+/// no two live sequences can ever share a slot.
+///
+/// This is the exclusivity-safe core shared by `retire_finished_sequences`
+/// (Phase 2) and `swap_out_sequence`: every sequence whose `slot_idx` is out
+/// of the `[0..n)` range is migrated onto a free slot in that range (a slot
+/// not held by any surviving sequence — i.e. one freed by a just-retired /
+/// swapped-out sequence, or never occupied). There are exactly as many free
+/// targets as out-of-range survivors, so each lands on a unique slot.
+///
+/// PRECONDITION: any slot being vacated (a retired/swapped-out sequence's
+/// slot) must already be released to the pool before this runs, so it is
+/// available as a target. Never call this under `ep_protocol_v2()` — v2
+/// keeps slots pinned in place (see `retire_finished_sequences`).
+pub(super) fn compact_survivors_into_range(model: &dyn Model, survivors: &mut [ActiveSeq]) {
+    let n = survivors.len();
+    let occupied: std::collections::HashSet<usize> =
+        survivors.iter().map(|a| a.seq.slot_idx).collect();
+    let mut free_targets: Vec<usize> = (0..n).filter(|s| !occupied.contains(s)).collect();
+    for a in survivors.iter_mut() {
+        if a.seq.slot_idx >= n {
+            match free_targets.pop() {
+                Some(target) => {
+                    if let Err(e) = model.compact_sequence(&mut a.seq, target) {
+                        tracing::error!("compact_sequence: {e:#}");
+                    }
+                }
+                None => tracing::error!(
+                    "compact_survivors_into_range: no free target for out-of-range \
+                     slot {} (n={n})",
+                    a.seq.slot_idx
+                ),
+            }
+        }
+    }
+}
+
+/// Deadline for a scheduler-thread send into a FULL stream channel.
+///
+/// Default 5000 ms; override `ATLAS_STREAM_SEND_DEADLINE_MS` (strict integer).
+/// Rationale for a default at all (PCND): the pre-existing behaviour was an
+/// UNBOUNDED `blocking_send`, i.e. an implicit deadline of infinity — the most
+/// dangerous possible default. 5 s is >5000x the per-token cadence and only
+/// triggers after the 1024-deep channel is ALSO full, so a consumer that hits
+/// it has been unresponsive for thousands of events.
+fn stream_send_deadline() -> std::time::Duration {
+    // STATIC, DELIBERATELY — transport configuration. This bounds how long a
+    // send to a CLIENT's stream channel may block; it is a property of the
+    // HTTP transport, not of the model behind it, and the two send helpers
+    // that read it are called from every emit site with no scheduler context
+    // in hand. Reaching one would mean threading a carrier through the whole
+    // emit path to configure a socket timeout.
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    std::time::Duration::from_millis(*MS.get_or_init(|| {
+        std::env::var("ATLAS_STREAM_SEND_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000)
+    }))
+}
+
+/// Bounded send from the scheduler/GPU thread into a per-request stream
+/// channel — the SSOT replacing every direct `blocking_send` in the scheduler.
+///
+/// Why this exists: `emit_token` and its siblings run ON the scheduler thread,
+/// which also drives every GPU step. The old backpressure arm fell back to an
+/// unbounded `tx.blocking_send`, so ONE stalled SSE consumer (channel full =
+/// 1024 undelivered events) froze the entire engine — all concurrent
+/// sequences, prefill and decode alike — for as long as that client stayed
+/// wedged. At C=1 that stalls one user's own request; at C=16 it is a
+/// denial-of-service pivot. There were TWELVE direct `blocking_send` call
+/// sites scattered across the scheduler, so the bound lives here once.
+///
+/// Semantics: identical to the old path until the deadline — try, then poll
+/// the full channel at 1 ms — after which the send is abandoned and `false` is
+/// returned, which every caller already treats exactly like the
+/// receiver-dropped case (finish/cancel that sequence). A consumer that is
+/// both 1024 events behind AND unresponsive for the whole deadline is
+/// indistinguishable from a dead one; delivering its backlog later cannot
+/// matter.
+pub(super) fn bounded_stream_send(
+    tx: &tokio::sync::mpsc::Sender<crate::api::inference_types::StreamEvent>,
+    event: crate::api::inference_types::StreamEvent,
+    what: &str,
+) -> bool {
+    use tokio::sync::mpsc::error::TrySendError;
+    let mut event = match tx.try_send(event) {
+        Ok(()) => return true,
+        Err(TrySendError::Closed(_)) => {
+            tracing::debug!("stream receiver dropped ({what})");
+            return false;
+        }
+        Err(TrySendError::Full(ev)) => ev,
+    };
+    let deadline = std::time::Instant::now() + stream_send_deadline();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        match tx.try_send(event) {
+            Ok(()) => return true,
+            Err(TrySendError::Closed(_)) => {
+                tracing::debug!("stream receiver dropped during backpressure ({what})");
+                return false;
+            }
+            Err(TrySendError::Full(ev)) => {
+                if std::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        "stream consumer stalled past {:?} with a full channel — abandoning ({what})",
+                        stream_send_deadline()
+                    );
+                    return false;
+                }
+                event = ev;
+            }
+        }
+    }
+}
+
+/// Tokio runtime handle captured at serve startup (async context), used by
+/// [`spawn_terminal_send`] from the scheduler OS thread — where
+/// `Handle::try_current()` would fail because the thread is not a runtime
+/// worker. Unset (tests, exotic embeddings) falls back to the bounded
+/// synchronous send.
+static RUNTIME_HANDLE: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Capture the current tokio runtime handle. Call from async context BEFORE
+/// spawning the scheduler thread. Idempotent.
+pub fn capture_runtime_handle() {
+    let _ = RUNTIME_HANDLE.set(tokio::runtime::Handle::current());
+}
+
+/// Fire-and-forget send for a TERMINAL stream event (Done / Error) — the last
+/// event a sequence's channel will ever carry.
+///
+/// Terminal frames are the only events that may be detached from the scheduler
+/// thread without an ordering hazard: every earlier token was already QUEUED
+/// (its send returned true before this is called) and nothing follows, so the
+/// FIFO channel delivers the spawned send after the full backlog regardless of
+/// when the task runs. Mid-stream events must NOT go through here — a spawned
+/// first-token send still waiting for capacity would race the next step's
+/// `try_send` of token #2 and deliver out of order.
+///
+/// The spawned task still applies [`stream_send_deadline`] via
+/// `tokio::time::timeout` so a wedged consumer cannot leak the task forever;
+/// on timeout the frame is dropped, which for a consumer that is 1024 events
+/// behind and unresponsive is indistinguishable from the receiver-drop case.
+/// Without a captured runtime handle this degrades to the synchronous bounded
+/// send.
+pub(super) fn spawn_terminal_send(
+    tx: &tokio::sync::mpsc::Sender<crate::api::inference_types::StreamEvent>,
+    event: crate::api::inference_types::StreamEvent,
+    what: &'static str,
+) {
+    if let Some(h) = RUNTIME_HANDLE.get() {
+        let tx = tx.clone();
+        let deadline = stream_send_deadline();
+        h.spawn(async move {
+            match tokio::time::timeout(deadline, tx.send(event)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => tracing::debug!("terminal send: receiver dropped ({what})"),
+                Err(_) => tracing::warn!(
+                    "terminal send: consumer stalled past {deadline:?}, frame dropped ({what})"
+                ),
+            }
+        });
+    } else if !bounded_stream_send(tx, event, what) {
+        tracing::debug!("terminal send failed synchronously ({what})");
     }
 }

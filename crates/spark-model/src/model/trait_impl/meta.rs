@@ -37,6 +37,23 @@ impl TransformerModel {
         // only models would need a different orchestrator. We expose dims
         // unconditionally and let the scheduler decide whether to install,
         // gated by the user's --high-speed-swap CLI choice.
+        //
+        // KV paging identity (ATLAS_KV_PAGING): the SAME config-derived
+        // fingerprint the SSM tier uses (quant identity + geometry + the
+        // ATLAS_MODEL_ID salt), via the KV convention (blob_bytes = 0).
+        // Underivable ⇒ None with a loud warn; the flag-ON connect then fails
+        // fast with an actionable error unless ATLAS_KV_PAGING_NS is set. Every
+        // other path ignores the field (default-off ⇒ unread).
+        let model_fp = match crate::model::ssm_tier::ModelFingerprint::derive_kv(&self.config) {
+            Ok(fp) => Some(fp.nonzero()),
+            Err(e) => {
+                tracing::warn!(
+                    "KV paging fingerprint underivable ({e:#}); ATLAS_KV_PAGING=1 \
+                     will fail fast unless ATLAS_KV_PAGING_NS is set"
+                );
+                None
+            }
+        };
         Some(spark_storage::ModelDims {
             num_layers: self.config.num_hidden_layers as u32,
             max_blocks_per_layer: self.max_blocks_per_seq,
@@ -44,6 +61,7 @@ impl TransformerModel {
             num_kv_heads: self.config.num_key_value_heads as u16,
             head_dim: self.config.head_dim as u16,
             block_size: self.kv_cache.lock().block_size() as u16,
+            model_fp,
         })
     }
 
@@ -108,6 +126,19 @@ impl TransformerModel {
         // Ensure zero completes before any prefill kernels touch this slot.
         self.gpu.synchronize(stream)?;
         let has_mtp = self.proposer.is_some() || self.self_speculative;
+
+        // ATLAS_MTP_DRAFTER_PREFILL: a fresh sequence invalidates the
+        // whole-prompt hidden capture — without this, a warm-restored prefill
+        // (no chunks computed) would pair the NEW prompt's tokens with the
+        // PREVIOUS sequence's captured hiddens in the drafter prefill.
+        self.mtp_prefill_capture_len
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        // ATLAS_MTP_CARRY_DRAFTER: the position-indexed hidden interval is
+        // per-sequence by construction. Resetting it here is what makes the
+        // carry path immune to the latent cross-sequence stale-hidden bug that
+        // the legacy `captured >= prompt_len` guard still has: a warm-turn
+        // append can only ever read rows THIS sequence's prefill wrote.
+        *self.mtp_store_range.lock() = (0, 0);
 
         // Build layer states: SSM layers point into the pool (fixed addresses),
         // attention layers use their own alloc_state (EmptyLayerState).
@@ -174,6 +205,14 @@ impl TransformerModel {
         // every sequence's first decode step.
         let num_attn_layers = self.config.num_attention_layers();
         Ok(SequenceState {
+            adapter_id: 0,
+            adapter_slot: -1,          // default: defer to installed active adapter
+            acquired_adapter_slot: -1, // Task #25: no ref held until prefill acquires
+            src_lang_id: 0,            // NLLB-only per-request lang (0 = deployment default)
+            tgt_lang_id: 0,
+            num_beams: 1,
+            length_penalty: 1.0,
+            early_stopping: false,
             tokens: Vec::new(),
             block_table: Vec::new(),
             seq_len: 0,
@@ -189,6 +228,8 @@ impl TransformerModel {
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
             prompt_len: 0,
+            collect_prompt_logprobs: None,
+            prompt_logprobs: Vec::new(),
             disk_block_ids: Vec::new(),
             disk_last_offloaded_per_layer: vec![0; num_attn_layers],
         })

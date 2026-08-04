@@ -16,6 +16,23 @@ __device__ __constant__ float E2M1_LUT_BATCH3_T[16] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
+// NVFP4 per-block FP8-E4M3 scale decode. SCALE/gfx1151 `(float)__nv_fp8_e4m3`
+// is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
+// software scl_fp8 there; NVIDIA path is the verbatim cast.
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+    unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
+    if (e == 0u)               v = (float)m * 0.001953125f;
+    else if (e == 15u && m == 7u) v = 0.0f;
+    else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20));
+    return s ? -v : v;
+}
+#else
+__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+    __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
+}
+#endif
+
 extern "C" __global__ void moe_expert_gate_up_shared_batch3_t(
     const __nv_bfloat16* __restrict__ A,
     const unsigned long long* __restrict__ gate_packed_t_ptrs,
@@ -108,8 +125,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_batch3_t(
     float acc = 0.0f;
     for (unsigned int sg = 0; sg < num_groups; sg++) {
         unsigned char sb = B_scale[(unsigned long long)sg * N + n];
-        __nv_fp8_e4m3 fp8_s; *(unsigned char*)&fp8_s = sb;
-        float sc = (float)fp8_s * s2;
+        float sc = atlas_dec_e4m3(sb) * s2;
         const unsigned int kh_base = sg * 8;
         #pragma unroll
         for (unsigned int kh_off = 0; kh_off < 8; kh_off++) {
@@ -204,8 +220,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch3_t(
     float acc = 0.0f;
     for (unsigned int sg = 0; sg < num_groups; sg++) {
         unsigned char sb = B_scale[(unsigned long long)sg * N + n];
-        __nv_fp8_e4m3 fp8_s; *(unsigned char*)&fp8_s = sb;
-        float sc = (float)fp8_s * s2;
+        float sc = atlas_dec_e4m3(sb) * s2;
         const unsigned int kh_base = sg * 8;
         #pragma unroll
         for (unsigned int kh_off = 0; kh_off < 8; kh_off++) {

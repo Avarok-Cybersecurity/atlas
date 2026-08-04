@@ -208,7 +208,7 @@ fn qwen3_xml_has_grammar() {
 fn qwen3_xml_system_prompt_contains_markers() {
     let tools: Vec<ToolDefinition> = vec![];
     let tc = ToolChoice::Mode("auto".to_string());
-    let prompt = Qwen3XmlParser.system_prompt(&tools, &tc);
+    let prompt = Qwen3XmlParser.system_prompt(&tools, &tc, &crate::tool_parser::PromptLevers::OFF);
     assert!(prompt.contains("<tool_call>"), "missing <tool_call>");
     assert!(prompt.contains("<function="), "missing <function=");
     assert!(prompt.contains("<parameter="), "missing <parameter=");
@@ -367,4 +367,34 @@ fn repair_empty_key_skips_when_multiple_required_missing() {
         args["allowedPrompts"][0].get("tool").is_none(),
         "must NOT repair when >1 required prop is missing (ambiguous)"
     );
+}
+
+#[test]
+fn repair_empty_key_in_stringified_nested_array() {
+    // The qwen3_coder XML format serializes a nested-array parameter as JSON
+    // *text* inside <parameter=…>, so `allowedPrompts` arrives as a STRING, not
+    // an array. The first empty-key repair pass runs before string→array
+    // coercion and can't descend into the opaque string; the second pass (after
+    // coercion materializes the array) must catch it. Regression for the
+    // ordering fix (2026-06-17).
+    let tools = vec![exitplanmode_tool()];
+    let stringified = serde_json::json!({
+        "plan": "build",
+        "allowedPrompts": r#"[{"":"Bash","prompt":"run cargo"}]"#
+    })
+    .to_string();
+    let mut calls = vec![make_call("ExitPlanMode", &stringified)];
+    coerce_all(&mut calls, &tools);
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert!(
+        args["allowedPrompts"].is_array(),
+        "stringified array must be coerced to a real array"
+    );
+    let item = &args["allowedPrompts"][0];
+    assert_eq!(
+        item["tool"], "Bash",
+        "empty key repaired to `tool` post-coercion"
+    );
+    assert_eq!(item["prompt"], "run cargo");
+    assert!(item.get("").is_none(), "empty key must be removed");
 }

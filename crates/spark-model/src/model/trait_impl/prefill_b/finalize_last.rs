@@ -36,6 +36,7 @@ impl TransformerModel {
             chunk_len,
             proc_count,
             0,
+            0,
             stream,
         )
     }
@@ -53,6 +54,7 @@ impl TransformerModel {
         chunk_len: usize,
         proc_count: usize,
         hidden_stream_offset_tokens: usize,
+        logits_row: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size;
@@ -141,9 +143,7 @@ impl TransformerModel {
         )?;
 
         // Diagnostic: post-norm hidden state
-        if (chunk_start + chunk_len) > 16384
-            || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
-        {
+        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let (vals, norm) = self.readback_bf16(normed, h.min(16))?;
             tracing::warn!(
@@ -201,7 +201,19 @@ impl TransformerModel {
         }
 
         // ── 7. LM head on last token → logits ──
-        self.lm_head(normed, stream)?;
+        // Co-dispatched streams must each write their OWN logits row, else all
+        // streams' first token collapses to one shared buffer (cross-request
+        // contamination). Row 0 (single-stream + batched stream 0) keeps the
+        // byte-identical `lm_head` GEMV path; rows >0 write to their own offset.
+        let logits_ptr = if logits_row == 0 {
+            self.lm_head(normed, stream)?;
+            self.decode_logits_ptr()
+        } else {
+            let v = self.config.vocab_size;
+            let dst = self.buffers.logits().offset(logits_row * v * 2);
+            self.lm_head_batched(normed, 1, dst, stream)?;
+            dst
+        };
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
         if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
@@ -228,9 +240,7 @@ impl TransformerModel {
         }
 
         // Diagnostic: logits stats
-        if (chunk_start + chunk_len) > 16384
-            || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
-        {
+        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let logits_ptr = self.buffers.logits();
             let n_logits = self.config.vocab_size;
@@ -314,6 +324,7 @@ impl TransformerModel {
                     cache_disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens.min(cache_tokens_len),
+                    seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
@@ -336,10 +347,12 @@ impl TransformerModel {
                 Ok(Some(id)) => Some(id),
                 Ok(None) => {
                     tracing::debug!("Snapshot pool full, reclaiming...");
-                    if self
-                        .ssm_snapshots
-                        .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
-                    {
+                    if self.ssm_snapshots.reclaim_from_cache(
+                        self.prefix_cache.as_ref(),
+                        kv_cache,
+                        self.ssm_tier_store.as_deref(),
+                        self.gpu.as_ref(),
+                    ) {
                         self.ssm_snapshots
                             .save(
                                 seq.slot_idx,
@@ -385,6 +398,7 @@ impl TransformerModel {
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
+                        seq.adapter_id,
                     );
                     super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                     if let Some(old) = displaced {
@@ -398,6 +412,7 @@ impl TransformerModel {
                     &seq.disk_block_ids,
                     bs,
                     seq.cached_prefix_tokens,
+                    seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
@@ -408,6 +423,7 @@ impl TransformerModel {
                 &seq.disk_block_ids,
                 bs,
                 seq.cached_prefix_tokens,
+                seq.adapter_id,
             );
             super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         }
@@ -415,6 +431,6 @@ impl TransformerModel {
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.
         self.update_dflash_ctx_len_after_prefill(seq, chunk_start, chunk_len)?;
 
-        Ok(self.decode_logits_ptr())
+        Ok(logits_ptr)
     }
 }

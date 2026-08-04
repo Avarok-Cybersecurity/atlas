@@ -99,3 +99,48 @@ fn backfill_subagent_type_prefers_general_purpose_variant() {
     let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
     assert_eq!(args["subagent_type"], "general-purpose");
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Phantom namespaced-name guard (PR #171 follow-up). The bare-identifier
+// scanners admit `:` so `ns:tool{...}` parses, but prose like `json:{...}`
+// used to become a phantom call literally named `json:` because
+// `normalize_tool_name` only strips a namespace with a non-empty tail.
+// Names that keep a `:` after normalization must be rejected WITHOUT
+// consuming the text, so later fallbacks (or content) still see it.
+// ────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn phantom_json_colon_prose_is_not_a_tool_call() {
+    let input = r#"Here is the payload as json:{"a":1}"#;
+    let (content, calls) = parse_tool_calls(input);
+    assert!(
+        calls.is_empty(),
+        "prose `json:{{...}}` must not become a phantom call — got {calls:#?}"
+    );
+    let content = content.expect("original text must be preserved as content");
+    assert!(
+        content.contains(r#"json:{"a":1}"#),
+        "content must keep the unconsumed text, got: {content}"
+    );
+}
+
+#[test]
+fn namespaced_bare_identifier_still_parses_as_tool() {
+    let input = r#"ns:tool{"query":"rust"}"#;
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "tool");
+}
+
+#[test]
+fn tool_call_colon_prefix_falls_through_to_embedded_json_name() {
+    // The `tool_call:` prefix must NOT be scanned as a call named
+    // `tool_call:` — the rejected candidate falls through to the JSON
+    // fallback, which extracts the embedded `"name"` correctly.
+    let input = r#"tool_call:{"name":"get_weather","arguments":{"city":"Paris"}}"#;
+    let (_, calls) = parse_tool_calls(input);
+    assert_eq!(calls.len(), 1, "expected one call — got {calls:#?}");
+    assert_eq!(calls[0].function.name, "get_weather");
+    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+    assert_eq!(args["city"], "Paris");
+}

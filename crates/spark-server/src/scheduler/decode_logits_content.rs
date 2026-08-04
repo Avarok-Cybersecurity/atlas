@@ -63,7 +63,11 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
 /// `model` is needed by the Phase-C boundary rollback so it can restore
 /// SSM recurrent state on hybrid models (see
 /// [`super::rollback::rollback_to_boundary`]).
-pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
+pub fn handle_content_token(
+    a: &mut ActiveSeq,
+    model: &dyn Model,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+) {
     a.consume_generation_budget();
     a.content_started = true;
     a.content_tokens = a.content_tokens.saturating_add(1);
@@ -75,13 +79,13 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
     // ever capped (plain chat attaches no grammar). Default 100_000
     // (`MAX_POST_THINK_CONTENT_TOKENS`) = no-op; Qwen3.6-35B-A3B-FP8 sets
     // 1536 in MODEL.toml.
-    if !crate::scheduler::helpers::disable_watchdogs()
+    if !sched.levers.disable_watchdogs
         && a.grammar_state.is_some()
-        && a.content_tokens > watchdog_params().max_post_think_content_tokens
+        && a.content_tokens > sched.watchdog.max_post_think_content_tokens
     {
         tracing::warn!(
             content_tokens = a.content_tokens,
-            max = watchdog_params().max_post_think_content_tokens,
+            max = sched.watchdog.max_post_think_content_tokens,
             "post-think content cap exceeded in non-MTP decode path; ending response (tool-active request would otherwise burn to max_tokens)"
         );
         a.finished = true;
@@ -120,13 +124,13 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
     // real-loop case is still caught one tick AFTER the model exits
     // the tool body: its emission outside the body forms a tight
     // period-N tail that the outside-body watchdog will detect.
-    if !crate::scheduler::helpers::disable_watchdogs()
-        && enable_loop_watchdog()
+    if !sched.levers.disable_watchdogs
+        && sched.levers.loop_watchdog()
         && !a.inside_tool_body
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
         && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
-            || numeric_token_mask().as_deref().is_some_and(|m| {
+            || sched.masks.numeric.as_deref().is_some_and(|m| {
                 detect_content_token_loop_normalized_with(
                     &a.output_tokens,
                     m,
@@ -147,7 +151,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
         // = CONTENT_LOOP_PERIOD_MAX so the rollback always escapes
         // the detected period. Falls back to the legacy hard stop
         // when disabled / capped / no boundary found.
-        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model) {
+        match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, sched) {
             RollbackOutcome::RolledBack { dropped } => {
                 tracing::warn!(
                     content_tokens = a.content_tokens,
@@ -189,9 +193,9 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
     // the prior gate then went inert and the prose budget never fired,
     // letting a disengaged tool turn wander to `max_tokens`.
     // `tool_request` is set at prefill and survives disengage.
-    if !crate::scheduler::helpers::disable_watchdogs() && !a.inside_tool_body && a.tool_request {
+    if !sched.levers.disable_watchdogs && !a.inside_tool_body && a.tool_request {
         a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
-        let max_prose = watchdog_params().max_inter_tool_prose;
+        let max_prose = sched.watchdog.max_inter_tool_prose;
         if a.prose_tokens_since_last_tool > max_prose {
             // Phase-C: roll back to the last boundary and
             // re-steer so the model can re-attempt the tool
@@ -201,7 +205,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
             // constrained tool-call decoder stays valid.
             // `min_keep` = CONTENT_LOOP_PERIOD_MAX drops a full
             // run-on sentence of stalled prose.
-            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model) {
+            match rollback_to_boundary(a, CONTENT_LOOP_PERIOD_MAX, model, sched) {
                 RollbackOutcome::RolledBack { dropped } => {
                     tracing::warn!(
                         max = max_prose,

@@ -16,7 +16,7 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 #[allow(clippy::too_many_arguments, dead_code)]
-pub(super) struct DecodeMlaArgs {
+pub(in crate::layers::qwen3_attention) struct DecodeMlaArgs {
     pub normed: DevicePtr,
     pub q_out: DevicePtr,
     pub k_out: DevicePtr,
@@ -28,6 +28,11 @@ pub(super) struct DecodeMlaArgs {
     pub eps: f32,
     pub bs: usize,
     pub stream: u64,
+    /// 4b inc-3: absolute position of this decode token (= seq_len − 1), host-side.
+    /// `Some` only on the standard single-sequence decode path (drives the
+    /// compressed-pool append); `None` on the batched / MTP-verify path, where
+    /// append is skipped (frozen inc-2 pool) to avoid a shared per-layer counter.
+    pub pos: Option<u32>,
 }
 
 impl Qwen3AttentionLayer {
@@ -51,6 +56,7 @@ impl Qwen3AttentionLayer {
             eps,
             bs,
             stream,
+            pos: _,
         } = *args;
         let mla = self
             .mla
@@ -110,7 +116,7 @@ impl Qwen3AttentionLayer {
         prof!("q_norm", {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 q_latent,
                 &mla.q_a_norm,
                 q_latent,
@@ -256,7 +262,7 @@ impl Qwen3AttentionLayer {
             }
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 kv_latent,
                 &mla.kv_a_norm,
                 kv_latent,

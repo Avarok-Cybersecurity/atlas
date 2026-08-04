@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -11,12 +12,12 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::chat_stream::chat_completions_stream;
+use super::chat_stream::run_chat_stream;
 use super::responses_stream::responses_endpoint_stream;
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
 };
-use super::stored::extract_assistant_incoming_message;
+use super::stored::assistant_incoming_from_ir;
 use crate::AppState;
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
@@ -128,8 +129,19 @@ pub async fn metrics_handler() -> impl IntoResponse {
 }
 
 /// GET /health — readiness probe (503 while model is loading).
-pub async fn health(State(state): State<Arc<AppState>>) -> Response {
-    if state.model_ready.load(std::sync::atomic::Ordering::Relaxed) {
+pub async fn health(
+    State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
+) -> Response {
+    // Takes the HOST, not the model: reporting "no model" is the whole point of
+    // this endpoint, so requiring one would make it unanswerable in exactly the
+    // state it exists to describe.
+    // A published model IS a ready one: the scheduler is running before the
+    // state is published, and the listener does not bind until after. A second
+    // readiness flag alongside it was a duplicate source of truth, and a stale
+    // one — the swap published a new model while the router still held the
+    // ORIGINAL flag, so /health reported "loading" forever after the first
+    // swap.
+    if let Some(state) = host.current() {
         Json(serde_json::json!({"status": "ready", "model": &state.model_name})).into_response()
     } else {
         (
@@ -147,7 +159,7 @@ pub async fn health_live() -> &'static str {
 
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.
 pub async fn tokenize(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<crate::openai::TokenizeRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -208,7 +220,7 @@ pub struct DetokenizeRequest {
 
 /// POST /detokenize — decode token IDs back to text.
 pub async fn detokenize(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<DetokenizeRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {

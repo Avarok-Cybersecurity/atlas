@@ -36,10 +36,11 @@ pub(super) fn run_batched_mixed_step(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     did_mixed_step: &mut bool,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
-    super::poll_innerq();
+    super::poll_innerq(model);
     let n_prefill = prefilling.len();
     let n_decode = active.len();
 
@@ -55,6 +56,19 @@ pub(super) fn run_batched_mixed_step(
             max_prefill_tokens
         };
         let mut chunk_len = remaining.min(effective_max);
+        // Land a chunk boundary on `ssm_tail_boundary` so the SSM snapshot saved
+        // there is exactly what the NEXT turn's block-floored `matched_tokens`
+        // looks up — otherwise the warm restore falls back to the coarse
+        // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
+        if spark_runtime::ssm_tail_ckpt_enabled()
+            && !spark_runtime::ssm_tail_midchunk_enabled()
+            && let Some(bs) = model.kv_block_size()
+            && let Some(tb) = spark_runtime::ssm_tail_boundary(p.prompt_tokens.len(), bs)
+            && p.chunk_offset < tb
+            && p.chunk_offset + chunk_len > tb
+        {
+            chunk_len = tb - p.chunk_offset;
+        }
         let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
         if !is_last && chunk_len >= 4 {
             chunk_len = (chunk_len / 4) * 4;
@@ -125,14 +139,18 @@ pub(super) fn run_batched_mixed_step(
         }
         // #131: grammar-constrain the FIRST token (and advance the matcher);
         // no-op without a grammar.
+        // P1-4 (2026-07-09): thread the resolved `min_p` — previously a
+        // hardcoded 0.0 inside the sampler. Kill-switch: ATLAS_NO_MTP_MINP=1.
         match sample_first_token(
             model,
             logits,
             p.temperature,
             p.top_k,
             p.top_p,
+            p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            &sched.levers.sampling(),
         ) {
             Ok(first) => {
                 tracing::info!(
@@ -163,6 +181,7 @@ pub(super) fn run_batched_mixed_step(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
+            sched,
         );
     }
     *did_mixed_step = true;

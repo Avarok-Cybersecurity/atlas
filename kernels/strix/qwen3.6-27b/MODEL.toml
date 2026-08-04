@@ -1,0 +1,157 @@
+[model]
+name = "qwen3.6-27b"
+hf_id = "Qwen/Qwen3.6-27B"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
+
+# Architecture mirrors the existing Qwen3.5-27B (hybrid GDN + full-attention,
+# 4:1 pattern). Diff vs Qwen3.5-27B: vocab 152K → 248K, MRoPE-interleaved
+# enabled by default in the upstream config (Qwen3.5-27B picked up MRoPE only
+# in Kbenkhaled's NVFP4 re-upload; Qwen3.6-27B has it natively).
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+# MRoPE (multi-modal rotary position embedding). Same configuration as
+# Qwen3.6-35B-A3B's full-attention layers — interleaved 3-axis rope. Text-only
+# serving keeps H/W position IDs at zero.
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+# Checkpoint Qwen/Qwen3.6-27B-FP8 ships a native MTP head
+# (config.json: mtp_num_hidden_layers = 1, mtp.* tensors present). The
+# qwen35 loader auto-detects mtp.fc.weight and loads the MoE-routed MTP
+# head; was previously stalled at 0 (stale value, MTP silently disabled).
+mtp_layers = 1
+
+# Effective context for agentic tasks. Mirrors Qwen3.5-27B's empirical bound
+# (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).
+effective_context = 24576
+
+# Recommended sampling defaults (carried over from Qwen3.5 family).
+#
+# Anti-repetition stack derived from commit 6c69d3f (which LIVE-BISECTED
+# the OpenWebUI "3D chess game" degeneration: thinking-mode
+# presence_penalty=0.0 — copied from the official Qwen3.6-27B card —
+# drops the model into an announce/restart + verbatim-CSS loop on hard
+# code-gen; QwenLM/Qwen3.6 #88/#115/#145).
+#
+# presence_penalty RETUNED 1.5 → 1.0 (2026-05-17, this branch). 6c69d3f
+# used 1.5 on `thinking_coding` WITH XTC and code-routing; THIS branch's
+# build_sampling routes enable_thinking → `thinking_text` (no
+# thinking_coding selection) and has NO XTC port, and Open WebUI sends
+# no sampling params so requests run at the preset default temp=0.6
+# (stochastic, NOT greedy). Swept presence_penalty ∈ {0.3,0.5,0.8,1.0,
+# 1.5} live at temp=0.6 on the chess prompt: 1.5 → premature EOS (574
+# tok, 0 THREE. calls — the flat per-seen-token penalty boosts EOS once
+# common code tokens are exhausted); 0.3 → complete but 3× wasteful
+# announce/restart rewrites; 1.0 → single coherent complete impl
+# (</script></body></html>, 17 THREE. calls, finish=stop, no loop). 1.0
+# is the balance point between premature-termination and restart-spam
+# at temp=0.6. DRY (multi-token phrase) + LZ (n-gram) carry the
+# precision loop-breaking that presence (single-token) can't; the
+# digit-normalized content-loop watchdog is the hard-stop safety net.
+# tools stays 0.0 (grammar-constrained).
+# 2026-05-24: empirical band-aid pattern (same as Qwen3.6-35B-A3B).
+# temp=0.6 thinking, rep_pen=1.1 + dry_mult=0.5 to break agentic loops
+# without the language-mixing/wandering side-effects of Qwen's
+# presence_penalty=1.5 (validated on Qwen3.6-35B-A3B opencode session
+# 2026-05-24). Top_p/top_k tracked from official model card.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.5
+
+[behavior]
+# Content-loop watchdog enabled: dense Qwen3.6-27B has a known
+# prose-attractor failure mode (2026-04-26 field reports) and the
+# 2026-05-05 chess-game stress sweep confirmed it loops on long-code
+# prompts (CSS block repetition at 13.3 t/s for ~3990 tokens). MoE
+# A3B/A10B variants in the family don't need it.
+enable_loop_watchdog = true
+# Thinking defaults OFF on this SCALE/gfx1151 FP8 target (real file, not
+# the GB10 symlink other kernels/strix entries use): the dense
+# Qwen3.6-27B-FP8 weights exhibit a post-</think> content-collapse on
+# gfx1151 — reasoning_content is coherent, but the transition out of
+# thinking emits a premature stop + chat-template artefacts. The
+# proven-coherent strix-hip-real target leaves thinking_default unset
+# (=false) for the same reason. Clients still get coherent answers; an
+# explicit per-request enable_thinking=true still wins. GB10 untouched.
+thinking_in_tools = false
+max_thinking_budget = 512
+default_num_drafts = 1
+
+# Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
+# Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to
+# `qwen3_6_moe` when MRoPE-interleaved is detected — same path Qwen3.5-27B
+# already uses for the Kbenkhaled NVFP4 re-upload. The factory routes through
+# the existing `Qwen35WeightLoader`; no new loader is needed because the
+# weight key naming is unchanged from Qwen3.5.
+[[model_types]]
+model_type = "qwen3_5"
+hidden_size = 5120
+
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 5120
+
+# DFlash block-diffusion speculative decoding pairing.
+# Drafter (`z-lab/Qwen3.6-27B-DFlash`) is a separate 8-layer Qwen3-arch
+# transformer that emits γ=16 tokens per step via bidirectional in-block
+# attention. The 27B target's hidden_size (5120) determines the drafter's
+# `fc` projection input dimension (5 * 5120 = 25600) — different from the
+# 35B-A3B target's drafter (5 * 2048 = 10240) but the drafter checkpoint
+# itself is the right shape per its own config.json.
+[dflash]
+draft_model = "z-lab/Qwen3.6-27B-DFlash"
+gamma = 16
+window_size = 4096
+mask_token_id = 248070
+# Verified 2026-05-03 against z-lab/Qwen3.6-27B-DFlash/config.json.
+# `dflash_loader::parse_dflash_config` reads these from the drafter's
+# config.json at runtime; this MODEL.toml field is the fallback default.
+target_layer_ids = [1, 16, 31, 46, 61]

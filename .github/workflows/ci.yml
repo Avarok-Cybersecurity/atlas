@@ -4,6 +4,17 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  # Reusable: release.yml gates its (expensive) build matrix on CI passing, so
+  # a fmt or clippy failure costs one cheap runner instead of eight toolchain
+  # installs. Defined once here; release.yml calls it rather than copying it.
+  workflow_call:
+
+# Least privilege: CI only reads the repo. Without an explicit block the
+# GITHUB_TOKEN inherits the repository default, which can be write — flagged by
+# CodeQL (code-scanning/32) once this workflow gained the release-matrix job.
+# The reusable workflows it calls inherit this and declare the same.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,7 +35,7 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -34,7 +45,7 @@ jobs:
     name: cargo clippy --tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install vendor/xgrammar-rs build deps
         run: |
           sudo apt-get update
@@ -55,7 +66,7 @@ jobs:
     name: SPDX license headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: apache/skywalking-eyes/header@v0.8.0
         with:
           config: .licenserc.yaml
@@ -65,14 +76,14 @@ jobs:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: crate-ci/typos@master
 
   test:
     name: cargo test --workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install vendor/xgrammar-rs build deps
         run: |
           sudo apt-get update
@@ -114,6 +125,7 @@ jobs:
           int cuStreamBeginCapture(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamBeginCapture_v2(void *a, int b) { (void)a; (void)b; return 100; }
           int cuStreamEndCapture(void *a, void **b) { (void)a; (void)b; return 100; }
+          int cuStreamIsCapturing(void *a, unsigned int *b) { (void)a; (void)b; return 100; }
           int cuStreamWaitEvent(void *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
           /* Modules + launch */
           int cuModuleLoadData(void **a, const void *b) { (void)a; (void)b; return 100; }
@@ -149,6 +161,7 @@ jobs:
           int cuMemAllocHost(void **a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemAllocHost_v2(void **a, unsigned long b) { (void)a; (void)b; return 100; }
           int cuMemFreeHost(void *a) { (void)a; return 100; }
+          int cuMemHostGetDevicePointer_v2(unsigned long long *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
           /* Memcpy / memset */
           int cuMemcpyHtoD(unsigned long long a, const void *b, unsigned long c) {
               (void)a; (void)b; (void)c; return 100;
@@ -241,6 +254,40 @@ jobs:
           EOF
           cc -shared -fPIC -nostdlib -o /tmp/libnccl.so /tmp/libnccl_stub.c
           sudo install -m 0644 /tmp/libnccl.so /usr/lib/x86_64-linux-gnu/libnccl.so
+      - name: Generate libcublasLt.so + libcudart.so stubs for no-GPU linking
+        # The Holo-3.1/Ornith enablement added cublaslt.rs (ATLAS_CUBLAS_GEMM
+        # FFI) and a cudaMemcpy2DAsync path; build.rs emits -lcublasLt/-lcudart
+        # even under ATLAS_SKIP_BUILD. Stub both (every symbol returns 1 so a
+        # real invocation fails-fast; GPU paths are #[ignore]-gated) purely to
+        # satisfy the linker — same treatment as libcuda/libnccl above.
+        run: |
+          set -euo pipefail
+          cat > /tmp/libcublaslt_stub.c <<'EOF'
+          int cublasLtCreate(void){return 1;}
+          int cublasLtDestroy(void){return 1;}
+          int cublasLtMatmul(void){return 1;}
+          int cublasLtMatmulAlgoGetHeuristic(void){return 1;}
+          int cublasLtMatmulDescCreate(void){return 1;}
+          int cublasLtMatmulDescDestroy(void){return 1;}
+          int cublasLtMatmulDescSetAttribute(void){return 1;}
+          int cublasLtMatmulPreferenceCreate(void){return 1;}
+          int cublasLtMatmulPreferenceDestroy(void){return 1;}
+          int cublasLtMatmulPreferenceSetAttribute(void){return 1;}
+          int cublasLtMatrixLayoutCreate(void){return 1;}
+          int cublasLtMatrixLayoutDestroy(void){return 1;}
+          EOF
+          cc -shared -fPIC -nostdlib -o /tmp/libcublasLt.so /tmp/libcublaslt_stub.c
+          sudo install -m 0644 /tmp/libcublasLt.so /usr/lib/x86_64-linux-gnu/libcublasLt.so
+          cat > /tmp/libcudart_stub.c <<'EOF'
+          int cudaMalloc(void){return 1;}
+          int cudaFree(void){return 1;}
+          int cudaMemcpy(void){return 1;}
+          int cudaMemcpy2DAsync(void){return 1;}
+          int cudaDeviceSynchronize(void){return 1;}
+          int cudaHostAlloc(void){return 1;}
+          EOF
+          cc -shared -fPIC -nostdlib -o /tmp/libcudart.so /tmp/libcudart_stub.c
+          sudo install -m 0644 /tmp/libcudart.so /usr/lib/x86_64-linux-gnu/libcudart.so
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is
@@ -254,7 +301,7 @@ jobs:
     name: cargo test --features metal (macOS aarch64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Apple Silicon path: no CUDA toolchain, no nvcc. The `metal`
@@ -301,3 +348,18 @@ jobs:
 
   # cargo-deny runs in security.yml with path filters on Cargo.toml / Cargo.lock /
   # deny.toml plus a weekly cron. Not duplicated here.
+
+  # The release build matrix runs only after every gate above is green, in
+  # this same CI run — so a PR's checks table shows base CI then the matrix,
+  # and CI is never executed twice for one commit. Guarded to pull_request:
+  # release.yml calls this workflow for its own gate, and must not trigger a
+  # second matrix build there.
+  release-matrix:
+    name: release matrix
+    if: github.event_name == 'pull_request'
+    needs: [fmt, clippy, license-headers, typos, test, test-macos-metal]
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: 0.0.0-pr${{ github.event.number }}
+      pr_mode: true
+      retention_days: 1

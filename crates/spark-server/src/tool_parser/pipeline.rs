@@ -220,9 +220,15 @@ impl ToolCallPass for BareMistralNamePass {
         let name_part = trimmed[..brace_pos].trim();
         let json_part = &trimmed[brace_pos..];
         if name_part.is_empty()
-            || !name_part.chars().all(|c| c.is_alphanumeric() || c == '_')
+            || !name_part.chars().all(is_tool_name_or_namespace_char)
             || !json_part.ends_with('}')
         {
+            return;
+        }
+        let func_name = normalize_tool_name(name_part);
+        // Phantom `json:` / `tool_call:` prose keeps its colon through
+        // normalization — no-op so later passes see the original text.
+        if !is_normalized_tool_name(&func_name) {
             return;
         }
         let Ok(args_obj) = serde_json::from_str::<serde_json::Value>(json_part) else {
@@ -235,7 +241,7 @@ impl ToolCallPass for BareMistralNamePass {
             id: next_tool_call_id(),
             call_type: "function".to_string(),
             function: FunctionCall {
-                name: name_part.to_string(),
+                name: func_name,
                 arguments: json_part.to_string(),
             },
         });
@@ -278,11 +284,7 @@ impl ToolCallPass for ParamAsFunctionSalvagePass {
             return;
         };
         let name = after_eq[..close_gt].trim().to_string();
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
+        if name.is_empty() || !name.chars().all(is_tool_name_or_namespace_char) {
             return;
         }
         // Rewrite only the FIRST `<parameter=NAME>`. Subsequent
@@ -290,7 +292,11 @@ impl ToolCallPass for ParamAsFunctionSalvagePass {
         let before = &text[..first_param];
         let tail = &text[first_param..];
         let from = format!("<parameter={name}>");
-        let to = format!("<function={name}>");
+        let func_name = normalize_tool_name(&name);
+        if !is_normalized_tool_name(&func_name) {
+            return;
+        }
+        let to = format!("<function={func_name}>");
         let fixed_tail = tail.replacen(&from, &to, 1);
         let reconstructed = format!("{before}{fixed_tail}");
         let func_start = match reconstructed.find("<function=") {

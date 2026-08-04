@@ -18,9 +18,20 @@ pub(super) struct StreamState {
     /// Token IDs accumulated since the last reset (cleared at the
     /// `</think>` boundary so post-thinking content decodes cleanly).
     pub(super) all_toks: Vec<u32>,
-    /// Byte offset into the thinking-phase decoded text already
-    /// emitted as `reasoning_chunk` deltas.
+    /// Byte offset into the decoded text (`content_decoded`) already
+    /// emitted as `reasoning_chunk` / content deltas.
     pub(super) emitted: usize,
+    /// Cumulative STABLE decoded text of `all_toks` for the current phase,
+    /// byte-identical to `decode(all_toks)` with any trailing incomplete
+    /// multibyte token trimmed. Grown incrementally (see `detok_incremental`)
+    /// so streaming a response is O(n) rather than re-decoding the whole
+    /// history every token (O(n²)). Reset alongside `all_toks`/`emitted`.
+    pub(super) content_decoded: String,
+    /// vLLM-style incremental-detokenizer offsets into `all_toks`: the decode
+    /// window is `all_toks[prefix_offset..]`, with `[prefix_offset..read_offset]`
+    /// the already-emitted prefix used for left context.
+    pub(super) detok_prefix_offset: usize,
+    pub(super) detok_read_offset: usize,
     /// Lazy streaming-decoder over the content phase (post-thinking).
     pub(super) content_decoder: Option<crate::tokenizer::StreamingDecoder<'static>>,
     /// Buffer used for stop-string matching across delta boundaries.
@@ -110,6 +121,12 @@ pub(super) struct StreamState {
     /// "response was forcibly truncated" and gives every agent a
     /// clean hook to break its outer retry loop.
     pub(super) tool_loop_capped: bool,
+    /// Scheduler-side guard that force-finished the sequence (from
+    /// `StreamEvent::Done.guard_stop`, e.g. "fuzzy_repetition") — surfaced
+    /// in the synthesized --dump body only.
+    pub(super) guard_stop: Option<&'static str>,
+    /// P0-3: one corrective empty-required-args content chunk per response.
+    pub(super) corrective_hint_sent: bool,
     /// Cooperative cancellation flag shared with the scheduler. Flipped
     /// true on any forced-stop condition (`tool_loop_capped`, loop-
     /// watchdog fire, …); the scheduler reads it in
@@ -135,10 +152,10 @@ pub(super) struct StreamState {
     /// `true` when the request did not enable thinking.
     pub(super) thinking_done: bool,
     /// Dead after the tool-call retry stack was removed (`tool_retry_enabled`
-    /// is now constant `false`, so chunks are always streamed in real time
+    /// is now constant `false`, so deltas are always streamed in real time
     /// and this map stays empty). Retained so the buffering helpers in
     /// `tool_handlers.rs` still type-check.
-    pub(super) buffered_tool_chunks: std::collections::HashMap<usize, Vec<String>>,
+    pub(super) buffered_tool_chunks: std::collections::HashMap<usize, Vec<crate::ir::StreamDelta>>,
     /// Dead after the tool-call retry stack was removed; never set now that
     /// `tool_retry_enabled` is constant `false`.
     pub(super) pending_retry: Option<PendingRetry>,
@@ -169,6 +186,9 @@ impl StreamState {
         Self {
             all_toks: Vec::new(),
             emitted: 0,
+            content_decoded: String::new(),
+            detok_prefix_offset: 0,
+            detok_read_offset: 0,
             content_decoder: None,
             accumulated_content: String::new(),
             stop_string_emitted_len: 0,
@@ -192,6 +212,8 @@ impl StreamState {
             tool_calls_emitted_count: 0,
             name_run: None,
             tool_loop_capped: false,
+            guard_stop: None,
+            corrective_hint_sent: false,
             cancel_flag,
             reasoning_xml_scan_buf: String::new(),
             reasoning_xml_leak_detected: false,

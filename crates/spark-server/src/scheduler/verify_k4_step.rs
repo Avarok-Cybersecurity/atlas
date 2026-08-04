@@ -4,38 +4,9 @@
 
 use super::*;
 
-// Periodic accept-distribution summary (P4, 2026-05-24). Mirrors K=3.
-const K4_SUMMARY_PERIOD: u64 = 100;
-static K4_ACCEPT_3: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K4_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[inline]
-fn k4_record_outcome(num_accepted: usize, seq_len: usize) {
-    let counter = match num_accepted {
-        3 => &K4_ACCEPT_3,
-        2 => &K4_ACCEPT_2,
-        1 => &K4_ACCEPT_1,
-        _ => &K4_ACCEPT_0,
-    };
-    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let total = K4_ACCEPT_3.load(std::sync::atomic::Ordering::Relaxed)
-        + K4_ACCEPT_2.load(std::sync::atomic::Ordering::Relaxed)
-        + K4_ACCEPT_1.load(std::sync::atomic::Ordering::Relaxed)
-        + K4_ACCEPT_0.load(std::sync::atomic::Ordering::Relaxed);
-    if total >= K4_SUMMARY_PERIOD {
-        let a3 = K4_ACCEPT_3.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a2 = K4_ACCEPT_2.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a1 = K4_ACCEPT_1.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a0 = K4_ACCEPT_0.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let total = (a3 + a2 + a1 + a0).max(1);
-        let mean = (3 * a3 + 2 * a2 + a1) as f64 / total as f64;
-        tracing::info!(
-            "K4 summary: {a3} accept-3 / {a2} accept-2 / {a1} accept-1 / {a0} reject in last {total} steps (mean accepted={mean:.2}) seq_len={seq_len}"
-        );
-    }
-}
+#[path = "verify_k4_step/stats.rs"]
+mod stats;
+use stats::{k4_record_outcome, k4_record_positional};
 
 /// K=4 verify: [last_token, draft1, draft2, draft3] → [v0, v1, v2, v3].
 /// Four outcomes: accept 0, 1, 2, or 3 drafts.
@@ -45,15 +16,35 @@ fn k4_record_outcome(num_accepted: usize, seq_len: usize) {
 pub fn step_verify_k4(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
+    dflash_verify_raw_argmax: bool,
 ) {
+    // `ATLAS_MTP_TIMING=1` summary for the K=4 path.
+    //
+    // The per-phase `record()` calls already fire for K=4 because the picks
+    // route through `verify_pipeline_helper`, but NOTHING called `step_done`
+    // here — that lived only in `verify_k2_step`. So with `--num-drafts 3`
+    // (K=4, the shipped config) the accumulators filled and the summary was
+    // never emitted: a probe that generated ~1800 tokens produced zero timing
+    // lines. This closes that hole.
+    //
+    // A Drop guard rather than hand-placed calls: this function has four accept
+    // branches and several early error returns, so an explicit call per tail
+    // would be one refactor away from silently drifting out of date again.
+    let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, a.seq.seq_len);
+
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         a.finished = true;
         return;
     }
+
+    // Captured before the verify/emit paths advance seq_len (shadow top-k
+    // join key; see SHADOW_TGT below).
+    let shadow_base = a.seq.seq_len;
 
     let tokens_k4 = [a.last_token, drafts[0], drafts[1], drafts[2]];
 
@@ -72,30 +63,55 @@ pub fn step_verify_k4(
     }
 
     let t_verify = Instant::now();
-    let result = match model.decode_verify_graphed_k4(&tokens_k4, &mut a.seq, 0) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("decode_verify_graphed_k4: {e:#}");
-            a.finished = true;
-            return;
+    // Fused single-sweep path: DFlash only AND single-rank only. Under EP
+    // (multi-rank) the worker ranks dispatch `decode_verify_graphed_k4` on the
+    // broadcast cmd above, so the master MUST run the same method to stay in
+    // NCCL lockstep — the fused forward is not EP-coherent. The MTP path
+    // (non-raw-argmax) also stays on the legacy graphed verify unchanged.
+    let result_vec: Vec<u32> = if dflash_verify_raw_argmax && !model.is_ep() {
+        // Fused path: single M=4 forward, DFlash hidden captured at row 0.
+        match model.decode_and_verify_fused(&tokens_k4, &mut a.seq, 0) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("decode_and_verify_fused (k4): {e:#}");
+                a.finished = true;
+                return;
+            }
+        }
+    } else {
+        match model.decode_verify_graphed_k4(&tokens_k4, &mut a.seq, 0) {
+            Ok(r) => r.to_vec(),
+            Err(e) => {
+                tracing::error!("decode_verify_graphed_k4: {e:#}");
+                a.finished = true;
+                return;
+            }
         }
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
-    let [v0_argmax, v1_argmax, v2_argmax, v3_argmax] = result;
+    let (v0_argmax, v1_argmax, v2_argmax, v3_argmax) =
+        (result_vec[0], result_vec[1], result_vec[2], result_vec[3]);
 
-    // Phase C-2 (2026-05-24): pre-sample pipeline per verify
-    // position. See K=2 docstring + `verify_pipeline_helper`.
-    let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &[v0_argmax, v1_argmax, v2_argmax, v3_argmax],
-        a,
-        verify_ctx,
-    );
-    let v0 = processed.first().copied().unwrap_or(v0_argmax);
-    let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
-    let v2 = processed.get(2).copied().unwrap_or(v2_argmax);
-    let v3 = processed.get(3).copied().unwrap_or(v3_argmax);
+    let (v0, v1, v2, v3) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
+        // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD)
+        // basis so verifier/drafter judge identically. No rep_pen/DRY here.
+        (v0_argmax, v1_argmax, v2_argmax, v3_argmax)
+    } else {
+        // MTP path: full pre-sample pipeline (rep_pen + DRY) unchanged.
+        let processed = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &[v0_argmax, v1_argmax, v2_argmax, v3_argmax],
+            a,
+            verify_ctx,
+        );
+        (
+            processed.first().copied().unwrap_or(v0_argmax),
+            processed.get(1).copied().unwrap_or(v1_argmax),
+            processed.get(2).copied().unwrap_or(v2_argmax),
+            processed.get(3).copied().unwrap_or(v3_argmax),
+        )
+    };
 
     let num_accepted = if drafts[0] != v0 {
         0
@@ -106,6 +122,45 @@ pub fn step_verify_k4(
     } else {
         3
     };
+
+    // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
+    // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
+    if sched.levers.shadow_topk > 0 {
+        tracing::info!(
+            "SHADOW_TGT base={shadow_base} v=[{v0},{v1},{v2},{v3}] drafts=[{},{},{}]",
+            drafts[0],
+            drafts[1],
+            drafts[2],
+        );
+    }
+
+    // Unconditional per-position draft match — scored BEFORE the accept chain
+    // short-circuits, so positions 2 and 3 are measured on every step.
+    k4_record_positional(
+        sched,
+        drafts[0] == v0,
+        drafts[1] == v1,
+        drafts[2] == v2,
+        a.seq.seq_len,
+    );
+
+    // ATLAS_MTP_REFEED_ACCEPTED: same contract as `verify_k3_step` — ring the
+    // TARGET's true hidden for verify rows 0..=num_accepted under labels
+    // L+1..=L+num_accepted+1 (L = the pre-verify seq_len = seq_len - 4 here).
+    // `after_verify`'s extra trim (`mtp_rows_to_trim`) is K-agnostic, so this
+    // MUST exist on every width the scheduler can dispatch, or at nd=3 the
+    // drafter would lose the accepted rows with nothing rebuilding them.
+    if spark_model::speculative::mtp_refeed_accepted_enabled() {
+        let base = a.seq.seq_len.saturating_sub(4);
+        let shift = spark_model::speculative::mtp_refeed_shift();
+        for t in 0..=num_accepted {
+            let label = ((base + t + 1) as isize + shift).max(0) as usize;
+            if let Err(e) = model.save_hidden_for_catchup(t, label) {
+                tracing::debug!("save_hidden_for_catchup(K=4, t={t}): {e:#} — degrading");
+                break;
+            }
+        }
+    }
 
     // Extract logprobs from verify logits buffer (K=4 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
@@ -137,24 +192,28 @@ pub fn step_verify_k4(
     );
 
     if num_accepted == 3 {
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
         if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
+            emit_token(a, drafts[1], verify_lps.get(1).cloned(), sched);
         }
         if !a.finished {
-            emit_token(a, drafts[2], verify_lps.get(2).cloned());
+            emit_token(a, drafts[2], verify_lps.get(2).cloned(), sched);
         }
         if !a.finished {
-            emit_token(a, v3, verify_lps.get(3).cloned());
+            emit_token(a, v3, verify_lps.get(3).cloned(), sched);
         }
         if a.finished {
             return;
         }
         a.last_token = v3;
 
-        // F62/F63 (2026-04-27): SpecMamba commit. K=4 full accept.
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 4, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-4): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Full accept
+        // (num_accepted=k=4): the verify kernel already wrote the canonical
+        // h_state, so the commit is a no-op.
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 4, 4) {
+            // SSM state is no longer trustworthy — terminate, do not continue.
+            tracing::error!("commit_accepted_prefix (K=4 accept-4): {e:#}");
+            a.finished = true;
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(3, 0) {
@@ -185,25 +244,27 @@ pub fn step_verify_k4(
             "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(3, a.seq.seq_len);
+        k4_record_outcome(sched, 3, a.seq.seq_len);
     } else if num_accepted == 2 {
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 2, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62/F63 (2026-04-27): K=4 partial accept (3 of 4).
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 3, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-3): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
+        // (num_accepted=3 < k=4): rewind live h_state to intermediate[2]
+        // (state after the third accepted token).
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-3): {e:#}");
             a.finished = true;
             return;
         }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
         if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
+            emit_token(a, drafts[1], verify_lps.get(1).cloned(), sched);
         }
         if !a.finished {
-            emit_token(a, v2, verify_lps.get(2).cloned());
+            emit_token(a, v2, verify_lps.get(2).cloned(), sched);
         }
         if a.finished {
             return;
@@ -234,7 +295,7 @@ pub fn step_verify_k4(
             "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(2, a.seq.seq_len);
+        k4_record_outcome(sched, 2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -242,15 +303,16 @@ pub fn step_verify_k4(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62/F63 (2026-04-27): K=4 partial accept (2 of 4).
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 2, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-2): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
+        // (num_accepted=2 < k=4): rewind live h_state to intermediate[1].
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-2): {e:#}");
             a.finished = true;
             return;
         }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
         if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned());
+            emit_token(a, v1, verify_lps.get(1).cloned(), sched);
         }
         if a.finished {
             return;
@@ -281,7 +343,7 @@ pub fn step_verify_k4(
             "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(1, a.seq.seq_len);
+        k4_record_outcome(sched, 1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 3;
         a.seq.tokens.pop();
@@ -290,13 +352,15 @@ pub fn step_verify_k4(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        // F62/F63 (2026-04-27): K=4 partial accept (1 of 4).
-        if let Err(e) = model.commit_verify_state_async(&mut a.seq, 1, 4) {
-            tracing::error!("commit_verify_state_async (K=4 accept-1): {e:#}");
+        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
+        // (num_accepted=1 < k=4): rewind live h_state to intermediate[0]
+        // (state after the always-accepted bonus token).
+        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 4) {
+            tracing::error!("commit_accepted_prefix (K=4 accept-1): {e:#}");
             a.finished = true;
             return;
         }
-        emit_token(a, v0, verify_lps.first().cloned());
+        emit_token(a, v0, verify_lps.first().cloned(), sched);
         if a.finished {
             return;
         }
@@ -326,6 +390,6 @@ pub fn step_verify_k4(
             "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k4_record_outcome(0, a.seq.seq_len);
+        k4_record_outcome(sched, 0, a.seq.seq_len);
     }
 }

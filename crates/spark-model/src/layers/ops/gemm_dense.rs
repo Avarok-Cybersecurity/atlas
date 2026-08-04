@@ -273,6 +273,14 @@ pub fn w4a16_gemm_n128_m128_v2(
 ///
 /// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
 /// SMEM: ~29.8 KB → 3 blocks/SM (vs 5 for m64 at ~19.6 KB).
+///
+/// GRID CONTRACT — N is the FAST axis (blockIdx.x = N-block, blockIdx.y = M-block).
+/// Every `w4a16_gemm_t_m128` kernel across all model dirs reads it this way. This
+/// launcher is SHARED (qwen3_attention, dense_ffn, qwen3_ssm, nemotron_*), so the
+/// axes must NOT be swapped here to suit one model: doing so silently mis-maps every
+/// CTA for the other 18 kernels and produces garbage output with no error. If a model
+/// wants the m-fast (L2-friendly) order, add a SEPARATELY NAMED kernel + launcher
+/// (see `w4a4_gemm_mfast` / `fp8_gemm_t_m128_mfast`) rather than mutating this one.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_gemm_n128_m128(
     gpu: &dyn GpuBackend,
@@ -299,18 +307,22 @@ pub fn w4a16_gemm_n128_m128(
         .launch(stream)
 }
 
-/// Pre-dequanted FP8 GEMM (prefill): C = A @ B_fp8.
+/// W4A16 GEMM — LOSSLESS BF16 prefill variant of `w4a16_gemm_n128_m128`.
 ///
-/// A: [M, K] BF16, B_fp8: [N, K] FP8 E4M3 (pre-dequanted from NVFP4), C: [M, N] BF16.
-/// Eliminates runtime NVFP4→FP8 dequant — only LOAD + FP8 MMA per K step.
+/// Identical launch config (grid/block/SMEM, M_TILE2=128) and weight layout
+/// (transposed NVFP4) to `w4a16_gemm_n128_m128`, but launches the
+/// `w4a16_gemm_t_m128_bf16` kernel: FP4→BF16 dequant + BF16 m16n8k16 MMA
+/// (FP32 accum), i.e. the base `w4a16_gemm` math at the fast 128x128 tiling.
+/// Unlike the default `t_m128` (which crushes weights+acts to FP8 E4M3 on
+/// NVIDIA), this preserves prefill outputs bit-for-bit vs the base kernel.
 ///
-/// Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128, 1, 1)
+/// Grid: (ceil(N/128), ceil(M/128), 1)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
-pub fn fp8_gemm_n128(
+pub fn w4a16_gemm_n128_m128_bf16(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     input: DevicePtr,
-    b_fp8: DevicePtr,
+    weight: &QuantizedWeight,
     output: DevicePtr,
     m: u32,
     n: u32,
@@ -318,64 +330,15 @@ pub fn fp8_gemm_n128(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 128), div_ceil(m, 64), 1])
+        .grid([div_ceil(n, 128), div_ceil(m, 128), 1])
         .block([128, 1, 1])
         .arg_ptr(input)
-        .arg_ptr(b_fp8)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_f32(weight.weight_scale_2)
         .arg_ptr(output)
         .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
-        .launch(stream)
-}
-
-/// Pre-dequant NVFP4 → FP8 E4M3.  One-time conversion at model load.
-///
-/// Reads B_packed[N, K/2] + B_scale[N, K/GROUP_SIZE] + scale2 → B_fp8[N, K].
-///
-/// Grid: (ceil(N*K/2 / 256), 1, 1)  Block: (256, 1, 1)
-#[allow(clippy::too_many_arguments)]
-pub fn predequant_nvfp4_to_fp8(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    b_packed: DevicePtr,
-    b_scale: DevicePtr,
-    scale2: f32,
-    b_fp8: DevicePtr,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> Result<()> {
-    let total = n * k / 2;
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(total, 256), 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(b_packed)
-        .arg_ptr(b_scale)
-        .arg_f32(scale2)
-        .arg_ptr(b_fp8)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)
-}
-
-/// Convert BF16 activations to FP8 E4M3 for FP8×FP8 GEMM.
-///
-/// Grid: (ceil(total_elements/2 / 256), 1, 1)  Block: (256, 1, 1)
-pub fn bf16_to_fp8(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    src: DevicePtr,
-    dst: DevicePtr,
-    total_elements: u32,
-    stream: u64,
-) -> Result<()> {
-    let threads_needed = total_elements / 2;
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(threads_needed, 256), 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(src)
-        .arg_ptr(dst)
-        .arg_u32(total_elements)
         .launch(stream)
 }

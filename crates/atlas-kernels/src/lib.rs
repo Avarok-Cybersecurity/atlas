@@ -276,6 +276,10 @@ pub const ROLLBACK_RESTEER_CAP: u32 = 2;
 /// models ignore this (their ring is 0; they roll back to any boundary).
 pub const DECODE_ROLLBACK_RING_SLOTS: usize = 8;
 
+/// Domain salt folded into every decode cold-tier key so a decode-ring blob can
+/// never collide with a Marconi prefix-hash key on a shared store/peer.
+pub const DECODE_DOMAIN: u64 = 0xD3C0_DE12_A5B6_C7D8;
+
 impl Default for ModelBehavior {
     fn default() -> Self {
         Self {
@@ -334,10 +338,15 @@ pub struct DflashConfig {
     pub target_layer_ids: &'static [usize],
 }
 
-/// PTX modules hyperoptimized for a specific (H, M_q) target.
+/// Kernel modules hyperoptimized for a specific (H, M_q) target.
+///
+/// Each blob is the compiled kernel for one module, emitted uniformly as
+/// `&'static [u8]` by build.rs (`include_bytes!`). NVIDIA PTX is ASCII
+/// text but valid as bytes; SCALE/AMD and Metal produce binary objects.
+/// The runtime registry sniffs text-vs-binary per blob at load time.
 pub struct TargetPtxSet {
     pub target: KernelTarget,
-    pub modules: Vec<(&'static str, &'static str)>,
+    pub modules: Vec<(&'static str, &'static [u8])>,
     pub sampling: SamplingPresets,
     pub behavior: ModelBehavior,
     pub model_type_matches: Vec<ModelTypeMatch>,
@@ -396,11 +405,16 @@ mod tests {
 
     #[test]
     fn all_ptx_modules_non_empty() {
-        for (name, ptx) in ptx_modules() {
+        for (name, blob) in ptx_modules() {
             assert!(
-                !ptx.is_empty(),
+                !blob.is_empty(),
                 "PTX module '{name}' is empty — nvcc compilation may have failed"
             );
+            // Blobs are `&[u8]` (uniform across backends). For the NVIDIA
+            // build under test the bytes are ASCII PTX, so decode and check
+            // the `.version` directive; on a non-text backend this lossily
+            // decodes to "" and the assert would (correctly) not apply.
+            let ptx = std::str::from_utf8(blob).unwrap_or("");
             assert!(
                 ptx.contains(".version"),
                 "PTX module '{name}' doesn't contain .version directive"

@@ -4,6 +4,24 @@ use axum::response::sse::Event;
 
 use super::helpers::*;
 
+/// A typed Anthropic SSE event (event name + JSON data). Testable, unlike
+/// axum's opaque `Event`; converted to an axum event at the handler edge
+/// by [`Self::to_axum_event`].
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SseEvent {
+    pub(super) event: String,
+    pub(super) data: serde_json::Value,
+}
+
+impl SseEvent {
+    /// Convert a reference to self to an axum SSE event for the wire.
+    pub(super) fn to_axum_event(&self) -> Event {
+        Event::default()
+            .event(&self.event)
+            .data(serde_json::to_string(&self.data).unwrap_or_default())
+    }
+}
+
 /// Open-block tracker for the streaming translator's state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpenBlock {
@@ -46,6 +64,8 @@ pub(super) enum OpenBlock {
 pub struct AnthropicTranslator {
     model: String,
     msg_started: bool,
+    /// Anthropic wire message id (`msg_<uuid>`), minted at construction
+    /// — the delta stream is wire-id-free.
     msg_id: String,
     block_idx: u32,
     open_block: OpenBlock,
@@ -57,6 +77,7 @@ pub struct AnthropicTranslator {
     tool_started: std::collections::HashMap<usize, ()>,
     completion_tokens: usize,
     prompt_tokens: usize,
+    cached_prompt_tokens: usize,
     finished: bool,
 }
 
@@ -65,19 +86,37 @@ impl AnthropicTranslator {
         Self {
             model,
             msg_started: false,
-            msg_id: String::new(),
+            msg_id: format!("msg_{}", crate::ids::uuid_v4()),
             block_idx: 0,
             open_block: OpenBlock::None,
             tool_started: std::collections::HashMap::new(),
             completion_tokens: 0,
             prompt_tokens: 0,
+            cached_prompt_tokens: 0,
             finished: false,
         }
     }
 
-    fn make_event(ev_type: &str, data: serde_json::Value) -> Event {
-        let json_str = serde_json::to_string(&data).unwrap_or_default();
-        Event::default().event(ev_type).data(json_str)
+    /// Final `message_delta.usage`. Carries `input_tokens` (and cache
+    /// hits) as well as `output_tokens`: the upstream usage arrives on
+    /// the LAST chunk, after `message_start` already went out with
+    /// `input_tokens: 0` — without patching it here, streaming clients
+    /// billed every request at zero input tokens. Anthropic's
+    /// MessageDeltaUsage carries all three fields (2025-05 API), and
+    /// clients merge message_delta.usage over message_start's.
+    fn final_usage(&self) -> serde_json::Value {
+        serde_json::json!({
+            "input_tokens": self.prompt_tokens,
+            "cache_read_input_tokens": self.cached_prompt_tokens,
+            "output_tokens": self.completion_tokens,
+        })
+    }
+
+    fn make_event(ev_type: &str, data: serde_json::Value) -> SseEvent {
+        SseEvent {
+            event: ev_type.to_string(),
+            data,
+        }
     }
 
     /// Close the currently open block (if any) and increment the
@@ -93,7 +132,7 @@ impl AnthropicTranslator {
     /// a new index — Claude Code interprets each duplicate as a
     /// separate tool execution. Root-caused 2026-04-26 (8-agent
     /// sweep, F3).
-    pub(super) fn close_open_block(&mut self) -> Option<Event> {
+    pub(super) fn close_open_block(&mut self) -> Option<SseEvent> {
         match self.open_block {
             OpenBlock::None => None,
             OpenBlock::Text | OpenBlock::Thinking => {
@@ -124,15 +163,11 @@ impl AnthropicTranslator {
         }
     }
 
-    pub(super) fn ensure_message_start(&mut self, out: &mut Vec<Event>) {
+    pub(super) fn ensure_message_start(&mut self, out: &mut Vec<SseEvent>) {
         if self.msg_started {
             return;
         }
-        let id = if self.msg_id.is_empty() {
-            "msg_unknown".to_string()
-        } else {
-            format!("msg_{}", self.msg_id.trim_start_matches("chatcmpl-"))
-        };
+        let id = self.msg_id.clone();
         out.push(Self::make_event(
             "message_start",
             serde_json::json!({
@@ -155,106 +190,40 @@ impl AnthropicTranslator {
         self.msg_started = true;
     }
 
-    /// Process one OpenAI chat-completion chunk JSON value, push
-    /// resulting Anthropic events into `out`.
-    pub(super) fn process_openai_chunk(&mut self, val: &serde_json::Value, out: &mut Vec<Event>) {
-        // Pick up the chat-completion id on the first chunk that
-        // carries it (typically the role chunk).
-        if self.msg_id.is_empty()
-            && let Some(s) = val.get("id").and_then(|v| v.as_str())
-        {
-            self.msg_id = s.to_string();
-        }
-
-        let choice = match val.get("choices").and_then(|c| c.get(0)) {
-            Some(c) => c,
-            None => {
-                // Some OpenAI chunks (the separate-usage chunk) carry
-                // no `choices`. Pick up usage if present.
-                if let Some(u) = val.get("usage") {
-                    if let Some(p) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                        self.prompt_tokens = p as usize;
+    /// Process one neutral streaming delta, pushing the resulting
+    /// Anthropic events into `out`. The block state machine is the same
+    /// one that used to reverse-engineer OpenAI chunk JSON — the inputs
+    /// are just typed now.
+    pub(super) fn on_delta(&mut self, d: &crate::ir::StreamDelta, out: &mut Vec<SseEvent>) {
+        use crate::ir::StreamDelta;
+        match d {
+            StreamDelta::Reasoning { text, .. } if !text.is_empty() => {
+                self.ensure_message_start(out);
+                if !matches!(self.open_block, OpenBlock::Thinking) {
+                    if let Some(stop) = self.close_open_block() {
+                        out.push(stop);
                     }
-                    if let Some(c) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
-                        self.completion_tokens = c as usize;
-                    }
-                }
-                return;
-            }
-        };
-
-        let delta = choice.get("delta");
-
-        // Capture `usage` whenever it appears (the final chunk
-        // typically carries it).
-        if let Some(u) = val.get("usage") {
-            if let Some(p) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                self.prompt_tokens = p as usize;
-            }
-            if let Some(c) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
-                self.completion_tokens = c as usize;
-            }
-        }
-
-        // Lazy message_start. We delay it until we have something
-        // meaningful (the role chunk) so the emitted `prompt_tokens`
-        // reflect the chat-completion's reported input usage if the
-        // first chunk happens to carry it. Most servers send role +
-        // usage in the first / penultimate chunks respectively.
-        let has_delta_signal = delta
-            .and_then(|d| d.as_object())
-            .map(|o| {
-                o.contains_key("role")
-                    || o.contains_key("content")
-                    || o.contains_key("tool_calls")
-                    || o.contains_key("reasoning_content")
-            })
-            .unwrap_or(false);
-        if has_delta_signal {
-            self.ensure_message_start(out);
-        }
-
-        // Reasoning / thinking delta — Atlas emits these as
-        // `delta.reasoning_content` chunks during the model's
-        // thinking phase. Anthropic's streaming spec wraps thinking
-        // in its own content block (`content_block.type="thinking"`)
-        // with `delta.type="thinking_delta"`. Without this mapping
-        // Claude Code shows "Brewed for Ns" with no visible progress
-        // for the entire thinking phase, and users cancel thinking
-        // the server has stalled (2026-04-25 incident).
-        if let Some(d) = delta
-            && let Some(text) = d.get("reasoning_content").and_then(|v| v.as_str())
-            && !text.is_empty()
-        {
-            if !matches!(self.open_block, OpenBlock::Thinking) {
-                if let Some(stop) = self.close_open_block() {
-                    out.push(stop);
+                    out.push(Self::make_event(
+                        "content_block_start",
+                        serde_json::json!({
+                            "type": "content_block_start",
+                            "index": self.block_idx,
+                            "content_block": {"type": "thinking", "thinking": ""},
+                        }),
+                    ));
+                    self.open_block = OpenBlock::Thinking;
                 }
                 out.push(Self::make_event(
-                    "content_block_start",
+                    "content_block_delta",
                     serde_json::json!({
-                        "type": "content_block_start",
+                        "type": "content_block_delta",
                         "index": self.block_idx,
-                        "content_block": {"type": "thinking", "thinking": ""},
+                        "delta": {"type": "thinking_delta", "thinking": text},
                     }),
                 ));
-                self.open_block = OpenBlock::Thinking;
             }
-            out.push(Self::make_event(
-                "content_block_delta",
-                serde_json::json!({
-                    "type": "content_block_delta",
-                    "index": self.block_idx,
-                    "delta": {"type": "thinking_delta", "thinking": text},
-                }),
-            ));
-        }
-
-        // Text content delta.
-        if let Some(d) = delta {
-            if let Some(text) = d.get("content").and_then(|v| v.as_str())
-                && !text.is_empty()
-            {
+            StreamDelta::Content { text, .. } if !text.is_empty() => {
+                self.ensure_message_start(out);
                 if !matches!(self.open_block, OpenBlock::Text) {
                     if let Some(stop) = self.close_open_block() {
                         out.push(stop);
@@ -278,136 +247,108 @@ impl AnthropicTranslator {
                     }),
                 ));
             }
-
-            // Tool-call deltas. OpenAI emits these as an array; each
-            // entry has `index` (which OpenAI tool-call slot it
-            // refers to) plus optionally `id`, `function.name`,
-            // `function.arguments` (a string fragment).
-            if let Some(tcs) = d.get("tool_calls").and_then(|v| v.as_array()) {
-                for tc in tcs {
-                    let oa_idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let id = tc
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let function = tc.get("function");
-                    let name = function
-                        .and_then(|f| f.get("name"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let arguments_fragment = function
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-
-                    let need_start = !self.tool_started.contains_key(&oa_idx);
-                    if need_start {
-                        // Only open a new block once we have at least
-                        // a name (the model's first emit per tool
-                        // typically carries `id`+`name` together).
-                        if name.is_empty() {
-                            // Skip this fragment — wait for the start
-                            // chunk to land. Subsequent argument
-                            // fragments stay queued.
-                            continue;
-                        }
-                        if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == oa_idx) {
-                            if let Some(stop) = self.close_open_block() {
-                                out.push(stop);
-                            }
-                            out.push(Self::make_event(
-                                "content_block_start",
-                                serde_json::json!({
-                                    "type": "content_block_start",
-                                    "index": self.block_idx,
-                                    "content_block": {
-                                        "type": "tool_use",
-                                        "id": id,
-                                        "name": name,
-                                        "input": {},
-                                    },
-                                }),
-                            ));
-                            self.open_block = OpenBlock::ToolUse(oa_idx);
-                            self.tool_started.insert(oa_idx, ());
-                        }
-                    } else if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == oa_idx) {
-                        // Should be unreachable now that
-                        // `close_open_block` clears `tool_started`
-                        // for `ToolUse` (F3, 2026-04-26): if the
-                        // block were closed, `need_start` would be
-                        // true and we'd have taken the branch above.
-                        // The only way to reach here is the upstream
-                        // OpenAI stream interleaving args for tool
-                        // index `oa_idx` while a *different* tool
-                        // block is open without the prior block ever
-                        // being closed — protocol-level upstream
-                        // bug, not something we can synthesise a
-                        // safe fix for. Drop the late fragment with
-                        // a warning rather than emit a duplicate
-                        // `tool_use` block (which Claude Code would
-                        // execute twice).
-                        tracing::warn!(
-                            target: "anthropic_translator",
-                            oa_idx,
-                            current_block = ?self.open_block,
-                            arg_fragment_len = arguments_fragment.len(),
-                            "dropping interleaved tool-call argument fragment for already-open different tool block"
-                        );
-                        continue;
+            StreamDelta::ToolCallStart { index, id, name } => {
+                self.ensure_message_start(out);
+                // The delta stream guarantees the name on the start event
+                // (the old chunk protocol could stream pre-name argument
+                // fragments, which had to be dropped).
+                let need_start = !self.tool_started.contains_key(index);
+                if need_start
+                    && !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == *index)
+                {
+                    if let Some(stop) = self.close_open_block() {
+                        out.push(stop);
                     }
-
-                    if !arguments_fragment.is_empty() {
-                        out.push(Self::make_event(
-                            "content_block_delta",
-                            serde_json::json!({
-                                "type": "content_block_delta",
-                                "index": self.block_idx,
-                                "delta": {
-                                    "type": "input_json_delta",
-                                    "partial_json": arguments_fragment,
-                                },
-                            }),
-                        ));
-                    }
+                    out.push(Self::make_event(
+                        "content_block_start",
+                        serde_json::json!({
+                            "type": "content_block_start",
+                            "index": self.block_idx,
+                            "content_block": {
+                                "type": "tool_use",
+                                "id": id,
+                                "name": name,
+                                "input": {},
+                            },
+                        }),
+                    ));
+                    self.open_block = OpenBlock::ToolUse(*index);
+                    self.tool_started.insert(*index, ());
                 }
             }
-        }
-
-        // Finish reason: close the current block (if any) and emit
-        // message_delta + message_stop. The OpenAI stream may follow
-        // up with a [DONE] sentinel after this; we ignore it.
-        if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str())
-            && !self.finished
-        {
-            self.ensure_message_start(out);
-            if let Some(stop) = self.close_open_block() {
-                out.push(stop);
+            StreamDelta::ToolCallArgs {
+                index, fragment, ..
+            } => {
+                if fragment.is_empty() {
+                    return;
+                }
+                self.ensure_message_start(out);
+                if !matches!(self.open_block, OpenBlock::ToolUse(idx) if idx == *index) {
+                    // Argument fragment for a tool block that is not the
+                    // open one — upstream protocol violation. Drop with a
+                    // warning rather than emit a duplicate tool_use block
+                    // (which Claude Code would execute twice).
+                    tracing::warn!(
+                        target: "anthropic_translator",
+                        oa_idx = index,
+                        current_block = ?self.open_block,
+                        arg_fragment_len = fragment.len(),
+                        "dropping tool-call argument fragment for non-open tool block"
+                    );
+                    return;
+                }
+                out.push(Self::make_event(
+                    "content_block_delta",
+                    serde_json::json!({
+                        "type": "content_block_delta",
+                        "index": self.block_idx,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": fragment,
+                        },
+                    }),
+                ));
             }
-            out.push(Self::make_event(
-                "message_delta",
-                serde_json::json!({
-                    "type": "message_delta",
-                    "delta": {
-                        "stop_reason": convert_stop_reason(fr),
-                        "stop_sequence": serde_json::Value::Null,
-                    },
-                    "usage": {"output_tokens": self.completion_tokens},
-                }),
-            ));
-            out.push(Self::make_event(
-                "message_stop",
-                serde_json::json!({"type": "message_stop"}),
-            ));
-            self.finished = true;
+            StreamDelta::Finish { reason, usage, .. } => {
+                if self.finished {
+                    return;
+                }
+                self.prompt_tokens = usage.prompt_tokens;
+                self.completion_tokens = usage.completion_tokens;
+                self.cached_prompt_tokens = usage.cached_prompt_tokens;
+                self.ensure_message_start(out);
+                if let Some(stop) = self.close_open_block() {
+                    out.push(stop);
+                }
+                out.push(Self::make_event(
+                    "message_delta",
+                    serde_json::json!({
+                        "type": "message_delta",
+                        "delta": {
+                            "stop_reason": convert_stop_reason(reason.as_wire()),
+                            "stop_sequence": serde_json::Value::Null,
+                        },
+                        "usage": self.final_usage(),
+                    }),
+                ));
+                out.push(Self::make_event(
+                    "message_stop",
+                    serde_json::json!({"type": "message_stop"}),
+                ));
+                self.finished = true;
+            }
+            // Refusals have no Anthropic streaming representation (the
+            // old translator ignored `delta.refusal` too); errors abort
+            // upstream and carry no renderable event here.
+            StreamDelta::Refusal { .. } | StreamDelta::Error { .. } => {}
+            // Empty text/reasoning fragments.
+            StreamDelta::Content { .. } | StreamDelta::Reasoning { .. } => {}
         }
     }
 
     /// Stream ended without an explicit `finish_reason`. Best-effort
     /// flush so the client sees a coherent end of message.
-    pub(super) fn finalize(&mut self, out: &mut Vec<Event>) {
+    pub(super) fn finalize(&mut self, out: &mut Vec<SseEvent>) {
         if self.finished {
             return;
         }
@@ -423,7 +364,7 @@ impl AnthropicTranslator {
                     "stop_reason": "end_turn",
                     "stop_sequence": serde_json::Value::Null,
                 },
-                "usage": {"output_tokens": self.completion_tokens},
+                "usage": self.final_usage(),
             }),
         ));
         out.push(Self::make_event(

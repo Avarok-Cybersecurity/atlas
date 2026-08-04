@@ -6,23 +6,23 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use axum::Router;
 use axum::routing::{get, post};
 
 use crate::anthropic;
 use crate::api;
-use crate::main_modules::AppState;
 use crate::main_modules::middleware::{
     openai_observability_middleware, rate_limit_middleware, require_auth_middleware,
 };
 
 pub(crate) async fn build_and_serve(
-    state: Arc<AppState>,
-    model_ready: Arc<std::sync::atomic::AtomicBool>,
+    host: Arc<crate::main_modules::model_host::ModelHost>,
     bind: &str,
     port: u16,
 ) -> Result<()> {
+    spark_runtime::progress::phase(10, "router");
+    host.set_bound(bind.to_string(), port);
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([
@@ -72,6 +72,8 @@ pub(crate) async fn build_and_serve(
         )
         .route("/v1/messages", post(anthropic::messages))
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
+        .route("/v1/lora/active", post(api::set_active_lora))
+        .route("/v1/lora/load", post(api::load_lora_into_slot))
         .route("/v1/models", get(api::list_models))
         .route("/v1/models/{*model_id}", get(api::get_model))
         .route("/v1/embeddings", post(api::embeddings_stub))
@@ -116,21 +118,26 @@ pub(crate) async fn build_and_serve(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),
         ))
+        // The HOST, not a bound AppState. Binding one here is what deadlocked
+        // the first live swap: the clone kept `request_tx` open, the scheduler
+        // never drained, and the join never returned.
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            host.clone(),
             rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            host.clone(),
             require_auth_middleware,
         ))
         .layer(axum::middleware::from_fn(openai_observability_middleware))
+        .layer(axum::middleware::from_fn(
+            crate::main_modules::byte_count::byte_count_middleware,
+        ))
         .layer(cors)
         .layer(catch_panic)
-        .with_state(state);
+        .with_state(host.clone());
 
     // Model loaded, scheduler running — mark as ready.
-    model_ready.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let addr = format!("{bind}:{port}");
     if bind == "0.0.0.0" {
@@ -151,16 +158,108 @@ pub(crate) async fn build_and_serve(
              --auth-tokens-file for non-trusted networks."
         );
     }
+    // BIND FIRST, then say so. Announcing the address and marking the phase
+    // before the bind meant a port conflict — the most common startup failure,
+    // and likelier now that a previous server may still hold the socket —
+    // printed "Listening on 127.0.0.1:8888" immediately above "Address already
+    // in use", with the dashboard's checklist showing that phase complete.
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
     tracing::info!("Listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    // `into_make_service_with_connect_info` exposes the socket peer addr
-    // to extractors — needed by `rate_limit_middleware` when the caller
-    // didn't send X-Forwarded-For.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    spark_runtime::progress::phase(11, "listening");
+    spark_runtime::progress::ready(port);
+    serve_with_header_timeout(listener, app).await
+}
 
-    Ok(())
+/// Serve `app` with a hyper connection-layer **header-read timeout** so a
+/// slowloris client (one that opens a connection and dribbles request headers
+/// forever) cannot pin an accept slot indefinitely.
+///
+/// `axum::serve` uses hyper's defaults, which impose NO timeout on the
+/// header-read phase (the per-request scheduler `timeout_at` only engages
+/// AFTER the request is fully parsed and admitted, so it does not protect this
+/// phase). A blanket `tower_http::TimeoutLayer` is the wrong tool — it would
+/// also abort legitimate long generations. So we drop to hyper's
+/// `hyper_util::server::conn::auto::Builder` and set `header_read_timeout`
+/// directly. `into_make_service_with_connect_info` is preserved (per-connection
+/// `make_service.call(peer)`), so `ConnectInfo<SocketAddr>` — which
+/// `rate_limit_middleware` reads — keeps working.
+async fn serve_with_header_timeout(
+    listener: tokio::net::TcpListener,
+    app: Router,
+) -> anyhow::Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+    use hyper_util::server::conn::auto::Builder;
+    use tower::{Service, ServiceExt};
+
+    /// Slow-header cutoff. Matches hyper's own historical default; long enough
+    /// for any legitimate client to finish sending headers, short enough that a
+    /// trickle connection is reaped quickly.
+    const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+    // Startup is over: shutdown now means "stop accepting and drain in-flight
+    // requests", so main's startup escape must no longer short-circuit it.
+    crate::tui::shutdown::disarm_startup_escape();
+
+    loop {
+        let accepted = tokio::select! {
+            conn = listener.accept() => conn,
+            _ = crate::tui::shutdown::wait() => {
+                // Clean shutdown: stop accepting, give in-flight requests a
+                // bounded grace to finish, then return so `serve()` unwinds
+                // normally (Drop impls: terminal restore, tee flush).
+                crate::tui::shutdown::drain_in_flight(std::time::Duration::from_secs(15)).await;
+                crate::tui::init::flush_tee();
+                tracing::info!("Shutdown complete");
+                return Ok(());
+            }
+        };
+        let (socket, peer_addr) = match accepted {
+            Ok(conn) => conn,
+            Err(e) => {
+                // Transient accept errors (fd exhaustion, RST races) must not
+                // kill the server — log and keep accepting.
+                tracing::warn!("accept error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+        };
+
+        // Build the per-connection tower service, wiring the peer address into
+        // `ConnectInfo`. `IntoMakeServiceWithConnectInfo` is always ready and
+        // infallible.
+        let tower_service = match make_service.call(peer_addr).await {
+            Ok(svc) => svc,
+            Err(infallible) => match infallible {},
+        };
+
+        tokio::spawn(async move {
+            let socket = TokioIo::new(socket);
+            let hyper_service = hyper::service::service_fn(
+                move |request: hyper::Request<hyper::body::Incoming>| {
+                    tower_service.clone().oneshot(request)
+                },
+            );
+
+            let mut builder = Builder::new(TokioExecutor::new());
+            // A timer must be installed for the header-read timeout to fire.
+            builder
+                .http1()
+                .timer(TokioTimer::new())
+                .header_read_timeout(HEADER_READ_TIMEOUT);
+            builder.http2().timer(TokioTimer::new());
+
+            if let Err(err) = builder
+                .serve_connection_with_upgrades(socket, hyper_service)
+                .await
+            {
+                // Client-side disconnects / slow-header timeouts are expected
+                // and noisy — keep them at debug.
+                tracing::debug!("connection closed: {err}");
+            }
+        });
+    }
 }

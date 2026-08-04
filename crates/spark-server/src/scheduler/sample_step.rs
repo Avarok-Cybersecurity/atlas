@@ -28,6 +28,75 @@ impl PositionKind {
     }
 }
 
+/// #192: penalty history for the CURRENT tool-call segment — the token
+/// history slice that repetition / presence / frequency / LZ / DRY penalties
+/// see, cut to AFTER the last completed `</tool_call>`.
+///
+/// With parallel tool calls the full-generation history compounds the
+/// repetition penalty on the SECOND call's structural scaffold: the divide is
+/// per OCCURRENCE (`logit /= rep_penalty` once per history hit, so 1.1^k), and
+/// by call 2 the exact scaffold tokens from call 1 (`\n`=198, `</`=510,
+/// `>`=29, `<tool_call>`) are crushed and lose to space-prefixed BPE variants
+/// (` </`=672, ` >`=835) — breaking the close literal and garbling the call
+/// (live 2026-07-02, hermes on Qwen3.6-27B: call 2 = `Berlin </ parameter >`
+/// drift, and the penalized inter-call `<tool_call>`/`\n` suppressed the
+/// third call outright). Scoping the history to the current segment gives
+/// every call the same penalty landscape the FIRST call had — the one the
+/// presets were tuned on — while keeping the intra-call anti-attractor role
+/// (A1) fully intact. Whole-block call repetition is still bounded by the
+/// post-completion open cap and the loop watchdogs.
+///
+/// No completed call in the history (single-call turns, plain chat,
+/// `tool_call_end_token=None`) => the full history, byte-identical to the
+/// previous behavior.
+pub(super) fn penalty_history_scope(
+    output_tokens: &[u32],
+    tool_call_end_token: Option<u32>,
+) -> &[u32] {
+    match tool_call_end_token.and_then(|t| output_tokens.iter().rposition(|&x| x == t)) {
+        Some(p) => &output_tokens[p + 1..],
+        None => output_tokens,
+    }
+}
+
+/// #192: drop the standing `<tool_call>` OPENER nudge while INSIDE a tool
+/// body. `sampling_setup` arms a +3.0 exponential-decay bias on the opener
+/// for tools-active requests to encourage a call to START; inside a body it
+/// is pure distortion — observed live (2026-07-02, hermes): at a borderline
+/// mid-value position it flipped the argmax to a spurious re-open
+/// (`... </ parameter > \n<tool_call> ...`), garbling the second parallel
+/// call. Negative (anti-repeat, -5/-10) opener values still apply everywhere.
+/// Pure over the bias vec so it is unit-testable without an `ActiveSeq`.
+pub(super) fn strip_in_tool_opener_bias(
+    logit_bias: &mut Vec<(u32, f32)>,
+    in_tool: bool,
+    opener: Option<u32>,
+) {
+    if !in_tool {
+        return;
+    }
+    let Some(tc_open) = opener else {
+        return;
+    };
+    logit_bias.retain(|&(id, delta)| id != tc_open || delta <= 0.0);
+}
+
+/// P1-4 (2026-07-09): the min_p actually handed to the sampler at the sites
+/// that previously passed hardcoded `0.0` literals — the caller's resolved
+/// value (request value, already floored by MODEL.toml `min_p_floor` in
+/// `sampling_setup`), or `0.0` under the kill-switch.
+///
+/// Those literals bypassed the exact FP8/NVFP4 argmax-flip safety net the
+/// floor exists for. Threading the resolved value is the SSOT wiring fix and
+/// is on by default; `ATLAS_NO_MTP_MINP=1` restores the literals. The switch
+/// is `SchedLevers::mtp_minp`, read off the run's levers rather than a static.
+pub(super) fn effective_min_p(
+    min_p: f32,
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
+) -> f32 {
+    if levers.mtp_minp { min_p } else { 0.0 }
+}
+
 /// Build the penalty/bias-carrying [`SamplingParams`] for one sequence —
 /// the SINGLE source of truth for the repetition / presence / frequency /
 /// LZ / DRY penalty gates + the A4 floor shared by the non-MTP decode path
@@ -64,6 +133,10 @@ pub(super) fn penalty_params_for(
     );
     let in_tool = a.inside_tool_body && !a.inside_thinking;
     let mut logit_bias = base_logit_bias;
+
+    // #192: the `<tool_call>` opener nudge must not act INSIDE a tool body
+    // (spurious mid-value re-open — see `strip_in_tool_opener_bias`).
+    strip_in_tool_opener_bias(&mut logit_bias, in_tool, a.tool_call_start_token);
 
     // A4 (2026-05-26) POST_THINK_MIN_REASONING floor — moved here from the
     // inline `process_seq_logits` block (STEP 3). Suppress the `</think>`
@@ -132,6 +205,13 @@ pub(super) fn penalty_params_for(
 /// position, returning the temperature-sampled tokens.
 ///
 /// Falls back to `argmax_tokens` if the D2H copy fails.
+///
+/// P1-3 (2026-07-09): SUPERSEDED (still dead code). This standalone helper
+/// sampled the RAW verify logits, so a resurrected call here would bypass
+/// the grammar bitmask + pipeline masks. Its sampling logic now lives
+/// INSIDE the pipeline path (`verify_pipeline_helper::verify_pick_with_pipeline`,
+/// step 4a) where it runs over the already-masked-and-penalised logits —
+/// the pick is grammar-legal by construction. Kept for reference only.
 #[allow(dead_code)]
 pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f32) -> Vec<u32> {
     if temperature == 0.0 {
@@ -175,16 +255,26 @@ pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f3
         .collect()
 }
 
-/// Sample one token from device logits, applying temperature/top-k/top-p if non-greedy.
+/// Sample one token from device logits, applying temperature/top-k/top-p/min-p if non-greedy.
 ///
 /// `suppress_ids`: token IDs to mask to -inf before sampling (e.g. EOS on first token).
+///
+/// P1-4 (2026-07-09): `min_p` is the sequence's RESOLVED min_p (request
+/// value with the MODEL.toml `min_p_floor` already applied by
+/// `sampling_setup`). This site previously hardcoded `min_p: 0.0` in its
+/// internal `SamplingParams`, so the only stochastic first-token sample
+/// under MTP bypassed the FP8 argmax-flip safety net the floor documents
+/// (min_p_floor = 0.05 on this model family). Kill-switch:
+/// `ATLAS_NO_MTP_MINP=1` restores the old 0.0 literal via [`effective_min_p`].
 pub fn sample_token(
     model: &dyn Model,
     logits: DevicePtr,
     temperature: f32,
     top_k: u32,
     top_p: f32,
+    min_p: f32,
     suppress_ids: &[u32],
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     if temperature == 0.0 && suppress_ids.is_empty() {
         return model.argmax_on_device(logits, 0);
@@ -239,7 +329,8 @@ pub fn sample_token(
             top_k,
             top_p,
             top_n_sigma: 0.0,
-            min_p: 0.0,
+            // P1-4 (2026-07-09): caller's resolved min_p, not a 0.0 literal.
+            min_p: effective_min_p(min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             presence_penalty: 0.0,
@@ -281,6 +372,7 @@ pub fn sample_token_with_grammar(
     mut grammar_state: Option<&mut GrammarState>,
     penalties: &SamplingParams,
     history: &[u32],
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     // ── FAST PATH (#3, 2026-06-02): on-GPU greedy pick under grammar ──
     // The MTP bootstrap sample (~1 token/step) otherwise D2Hs + dequants the
@@ -290,29 +382,45 @@ pub fn sample_token_with_grammar(
     // allowed (global max ∩ allowed-set = the max). Emit it directly; fall back
     // to the host path below only when the argmax is grammar-disallowed.
     // Mirrors the verify-path fast path. Kill-switch ATLAS_DISABLE_FAST_GREEDY=1.
-    if crate::scheduler::verify_pipeline_helper::fast_greedy_grammar_enabled()
+    //
+    // #237 (fix 4a): penalty-neutrality relaxed to the SSOT `fast_greedy`
+    // gate shared with the verify helper — reduce-only penalties cannot flip
+    // an argmax that is not in the scoped `history` and has a positive raw
+    // logit (proof in `fast_greedy` module docs). `history` here is already
+    // the scoped span the slow path feeds to `apply_penalties_and_bias`.
+    if levers.fast_greedy_grammar
         && suppress_ids.is_empty()
-        && (temperature == 0.0 || crate::scheduler::decode_logits_seq::force_temp_zero_enabled())
-        && penalties.repetition_penalty == 1.0
-        && penalties.presence_penalty == 0.0
-        && penalties.frequency_penalty == 0.0
-        && penalties.lz_penalty == 0.0
-        && penalties.dry_multiplier == 0.0
+        && (temperature == 0.0 || levers.force_temp_zero)
     {
-        let top1 = model.argmax_on_device(logits, 0)?;
-        let allowed = match grammar_state.as_mut() {
-            Some(gs) => {
-                if gs.is_terminated() {
-                    true
-                } else {
-                    gs.fill_bitmask();
-                    gs.is_token_allowed(top1)
+        let gate = crate::scheduler::fast_greedy::classify_penalties(penalties);
+        if gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
+            let top1 = model.argmax_on_device(logits, 0)?;
+            let immune = gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
+                || crate::scheduler::fast_greedy::argmax_immune(top1, history, || {
+                    crate::scheduler::fast_greedy::logit_is_positive(
+                        model,
+                        logits,
+                        0,
+                        model.vocab_size(),
+                        top1,
+                    )
+                });
+            if immune {
+                let allowed = match grammar_state.as_mut() {
+                    Some(gs) => {
+                        if gs.is_terminated() {
+                            true
+                        } else {
+                            gs.fill_bitmask();
+                            gs.is_token_allowed(top1)
+                        }
+                    }
+                    None => true,
+                };
+                if allowed {
+                    return Ok(top1);
                 }
             }
-            None => true,
-        };
-        if allowed {
-            return Ok(top1);
         }
     }
 
@@ -360,7 +468,15 @@ pub fn sample_token_with_grammar(
             top_k,
             top_p,
             top_n_sigma: 0.0,
-            min_p: 0.0,
+            // P1-4 (2026-07-09): thread the sequence's resolved min_p from
+            // the SSOT `penalties` struct (built by `penalty_params_for`,
+            // which copies `a.min_p` — request value + MODEL.toml
+            // `min_p_floor` applied in `sampling_setup`). This was a
+            // hardcoded 0.0, so the MTP BOOTSTRAP token — one of only two
+            // stochastic sample points under MTP — bypassed the FP8
+            // argmax-flip safety net the floor documents. Kill-switch:
+            // ATLAS_NO_MTP_MINP=1 restores the 0.0 literal.
+            min_p: effective_min_p(penalties.min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             presence_penalty: 0.0,
@@ -400,24 +516,46 @@ pub fn sample_token_with_grammar(
 ///
 /// Penalties are neutral here (empty history on the first token makes every
 /// penalty a no-op), matching the existing non-grammar first-token contract.
+///
+/// P1-4 (2026-07-09): `min_p` is the sequence's RESOLVED min_p (request
+/// value with the MODEL.toml `min_p_floor` already applied by
+/// `sampling_setup`), threaded from the prefill call sites that previously
+/// let a hardcoded 0.0 reach the sampler. The first token is the other of
+/// the only two stochastic sample points under MTP (with the bootstrap),
+/// so the unfloored min_p let the FP8/NVFP4 degenerate logit tail be
+/// sampled exactly where the floor was designed to block it. Kill-switch:
+/// `ATLAS_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
 pub fn sample_first_token(
     model: &dyn Model,
     logits: DevicePtr,
     temperature: f32,
     top_k: u32,
     top_p: f32,
+    min_p: f32,
     suppress_ids: &[u32],
     grammar_state: Option<&mut GrammarState>,
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     let Some(gs) = grammar_state else {
-        return sample_token(model, logits, temperature, top_k, top_p, suppress_ids);
+        return sample_token(
+            model,
+            logits,
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            suppress_ids,
+            levers,
+        );
     };
     let neutral = SamplingParams {
         temperature,
         top_k,
         top_p,
         top_n_sigma: 0.0,
-        min_p: 0.0,
+        // P1-4 (2026-07-09): resolved min_p, consumed via `penalties.min_p`
+        // inside `sample_token_with_grammar` (kill-switch applied there).
+        min_p,
         logit_bias: Vec::new(),
         repetition_penalty: 1.0,
         presence_penalty: 0.0,
@@ -442,6 +580,7 @@ pub fn sample_first_token(
         Some(gs),
         &neutral,
         &[],
+        levers,
     )?;
     // Advance the matcher past the first token (the emit_step accept_token
     // only runs for tokens 2..N). A grammar-disallowed first token here would
@@ -449,4 +588,127 @@ pub fn sample_first_token(
     // emit_step disengage path handles any later desync gracefully.
     gs.accept_token(tok);
     Ok(tok)
+}
+
+#[cfg(test)]
+mod penalty_scope_tests {
+    //! #192: the per-tool-call-segment penalty history scope and the in-tool
+    //! opener-bias strip — the two levers that stop Atlas's own sampling
+    //! machinery from garbling the SECOND parallel tool call (live 2026-07-02,
+    //! hermes on Qwen3.6-27B-NVFP4: call 2 scaffold flipped to space-prefixed
+    //! BPE variants `Berlin </ parameter >` + a spurious mid-value
+    //! `<tool_call>` re-open; the third call was penalty-suppressed outright).
+    use super::{penalty_history_scope, strip_in_tool_opener_bias};
+
+    const CLOSE: u32 = 248059; // </tool_call>
+
+    #[test]
+    fn scope_without_completed_call_is_full_history() {
+        let toks = vec![1, 2, 3, 4];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &toks[..]);
+        // No configured end token (legacy/none) — also full history.
+        assert_eq!(penalty_history_scope(&toks, None), &toks[..]);
+    }
+
+    #[test]
+    fn scope_cuts_after_last_completed_call() {
+        //             call 1                 sep  call 2 (open)
+        let toks = vec![10, 11, 12, CLOSE, 198, 20, 21];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &[198, 20, 21]);
+        // Two completed calls — only the segment after the LAST close counts.
+        let toks = vec![10, CLOSE, 198, 20, CLOSE, 30];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &[30]);
+        // Close is the final token — the next position starts a fresh segment.
+        let toks = vec![10, 11, CLOSE];
+        assert_eq!(penalty_history_scope(&toks, Some(CLOSE)), &[] as &[u32]);
+    }
+
+    /// The live failure mechanism, demonstrated at the sampler level: the
+    /// repetition penalty divides PER OCCURRENCE, so a structural token used
+    /// k times across previous calls is at 1/1.1^k by the next call — enough
+    /// to lose to an unpenalized space-prefixed variant. The scoped history
+    /// restores the first-call landscape.
+    #[test]
+    fn scoped_history_prevents_cross_call_penalty_compounding() {
+        use crate::scheduler::{SamplingParams, apply_penalties_and_bias};
+        const NL: u32 = 198; // '\n' — exact scaffold token
+        const NL_VARIANT: u32 = 695; // ' \n' — space-prefixed BPE variant
+
+        let params = SamplingParams {
+            temperature: 0.0,
+            top_k: 0,
+            top_p: 1.0,
+            top_n_sigma: 0.0,
+            min_p: 0.0,
+            logit_bias: Vec::new(),
+            // MODEL.toml [sampling.tools] default for Qwen3.6-27B.
+            repetition_penalty: 1.1,
+            repetition_penalty_window: 0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            lz_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            dry_sequence_breakers: Vec::new(),
+            max_tokens: 0,
+            stop_token_ids: Vec::new(),
+            seed: None,
+        };
+
+        // Call 1 used '\n' six times; the variant never appeared. The model
+        // slightly prefers the exact token (as at T=0 on the real scaffold).
+        let full_history: Vec<u32> = vec![NL; 6]
+            .into_iter()
+            .chain([10, 11, CLOSE, NL]) // close + separator newline
+            .collect();
+
+        let mut logits = vec![0.0f32; 1000];
+        logits[NL as usize] = 10.0;
+        logits[NL_VARIANT as usize] = 8.5;
+        apply_penalties_and_bias(&mut logits, &params, &full_history);
+        assert!(
+            logits[NL_VARIANT as usize] > logits[NL as usize],
+            "unscoped: 1.1^7 compounding must flip the scaffold token (the bug): {} vs {}",
+            logits[NL as usize],
+            logits[NL_VARIANT as usize],
+        );
+
+        let mut logits = vec![0.0f32; 1000];
+        logits[NL as usize] = 10.0;
+        logits[NL_VARIANT as usize] = 8.5;
+        let scoped = penalty_history_scope(&full_history, Some(CLOSE));
+        assert_eq!(scoped, &[NL], "segment = separator newline only");
+        apply_penalties_and_bias(&mut logits, &params, scoped);
+        assert!(
+            logits[NL as usize] > logits[NL_VARIANT as usize],
+            "scoped: one occurrence must NOT flip the scaffold token: {} vs {}",
+            logits[NL as usize],
+            logits[NL_VARIANT as usize],
+        );
+    }
+
+    #[test]
+    fn opener_bias_stripped_only_inside_tool_body() {
+        const OPEN: u32 = 248058; // <tool_call>
+        // Inside a body: the +3.0 nudge goes, negative anti-repeat stays,
+        // unrelated entries stay.
+        let mut bias = vec![(OPEN, 3.0f32), (42, -8.0f32)];
+        strip_in_tool_opener_bias(&mut bias, true, Some(OPEN));
+        assert_eq!(bias, vec![(42, -8.0f32)]);
+
+        let mut bias = vec![(OPEN, -5.0f32)];
+        strip_in_tool_opener_bias(&mut bias, true, Some(OPEN));
+        assert_eq!(bias, vec![(OPEN, -5.0f32)], "anti-repeat bias survives");
+
+        // Outside a body: untouched.
+        let mut bias = vec![(OPEN, 3.0f32)];
+        strip_in_tool_opener_bias(&mut bias, false, Some(OPEN));
+        assert_eq!(bias, vec![(OPEN, 3.0f32)]);
+
+        // No opener token configured: untouched.
+        let mut bias = vec![(OPEN, 3.0f32)];
+        strip_in_tool_opener_bias(&mut bias, true, None);
+        assert_eq!(bias, vec![(OPEN, 3.0f32)]);
+    }
 }

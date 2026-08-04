@@ -43,7 +43,12 @@ fn setup_model(
 )> {
     let config_path = model_dir.join("config.json");
     let config_json = std::fs::read_to_string(&config_path)?;
-    let config: atlas_core::config::ModelConfig = serde_json::from_str(&config_json)?;
+    // `parse_config`, not raw serde: a multimodal checkpoint nests the LLM
+    // fields under `text_config` (the 27B NVFP4 does), and a bare
+    // `from_str::<ModelConfig>` fails on it with "missing field hidden_size".
+    // This is the same parser the server uses, so the test cannot diverge from
+    // what production accepts.
+    let mut config = atlas_core::config::parse_config(&config_json)?;
     tracing::info!(
         "Config: {} layers, vocab={}, hidden={}",
         config.num_hidden_layers,
@@ -96,9 +101,14 @@ fn setup_model(
 
     let prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache> =
         Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
+    // A nested checkpoint stores `model.language_model.layers.0.…`; without
+    // this the build fails after a full weight load with "Weight
+    // 'model.layers.0.input_layernorm.weight' not found in store". Production
+    // does the same thing at serve.rs:290 — same function, not a copy.
+    spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);
     let model = spark_model::factory::build_model(
         config.clone(),
-        &store,
+        store,
         gpu,
         4,          // max_batch_tokens: up to 3 spec-decode verification tokens
         block_size, // kv_block_size = 16
@@ -119,6 +129,9 @@ fn setup_model(
         0,                  // ssm_checkpoint_interval
         None,               // hss_cache_blocks_per_seq
         None,               // dflash_args (no speculative-decoding pairing)
+        None,               // lora_args (no LoRA adapter)
+        None,               // nllb_lang (not an NLLB translation model)
+        None,               // nllb_lora_dir
     )?;
 
     Ok((model, config))
@@ -505,5 +518,224 @@ fn speculative_decode_coherence() -> Result<()> {
     );
 
     tracing::info!("Speculative decode coherence test PASSED");
+    Ok(())
+}
+
+/// Legacy /v1/completions echo+logprobs: prompt-token logprob collection
+/// during chunked prefill (the loglikelihood-scoring core).
+///
+/// Verifies, on a real model:
+/// 1. entries == prompt_len - 1 (position i scores tokens[i+1]; the
+///    final position — scoring the first GENERATED token — is excluded);
+/// 2. every logprob is finite and <= 0 (valid log-probability);
+/// 3. token_id fields equal the actual next prompt tokens;
+/// 4. top-k alternatives are sorted descending and contain the scored
+///    token's logprob consistently (the target's logprob can never
+///    exceed the top-1 alternative);
+/// 5. a control sequence WITHOUT the flag collects nothing (zero-cost
+///    default path untouched).
+#[test]
+#[ignore] // Requires GPU + model weights (ATLAS_INTEGRATION_MODEL_DIR)
+fn prompt_logprobs_collection_during_prefill() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init()
+        .ok();
+    let model_dir_buf = model_dir_path();
+    if !model_dir_buf.exists() {
+        eprintln!(
+            "SKIP: model directory not found: {}\n      \
+             Set ATLAS_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
+            model_dir_buf.display()
+        );
+        return Ok(());
+    }
+    let model_dir: &Path = model_dir_buf.as_path();
+    let (model, config) = setup_model(model_dir)?;
+    use spark_server::tokenizer::ChatTokenizer;
+    let tokenizer = ChatTokenizer::from_model_dir(
+        model_dir,
+        config.eos_token_id,
+        false,
+        &config.model_type,
+        None,
+    )?;
+
+    let prompt = "The capital of France is Paris. The capital of Germany is";
+    let prompt_tokens = tokenizer.encode(prompt)?;
+    let n = prompt_tokens.len();
+    assert!(n >= 4, "prompt too short to exercise scoring");
+
+    // Collecting sequence: k=2 alternatives.
+    let mut seq = model.alloc_sequence()?;
+    seq.collect_prompt_logprobs = Some(2);
+    let _ = model.prefill_chunk(&prompt_tokens, &mut seq, 0, n, true, 0)?;
+
+    assert_eq!(
+        seq.prompt_logprobs.len(),
+        n - 1,
+        "one entry per prompt position scoring the NEXT prompt token"
+    );
+    for (i, lp) in seq.prompt_logprobs.iter().enumerate() {
+        assert_eq!(lp.token_id, prompt_tokens[i + 1], "target at position {i}");
+        assert!(lp.logprob.is_finite(), "logprob finite at {i}");
+        assert!(lp.logprob <= 0.0, "logprob <= 0 at {i}: {}", lp.logprob);
+        assert_eq!(lp.top.len(), 2, "top-k size at {i}");
+        assert!(lp.top[0].1 >= lp.top[1].1, "top sorted desc at {i}");
+        assert!(
+            lp.logprob <= lp.top[0].1 + 1e-4,
+            "target logprob cannot exceed top-1 at {i}"
+        );
+    }
+    // The high-certainty continuation ("... Germany is" scored against
+    // the actual next token) sanity: total loglikelihood is negative
+    // and not astronomically so on a coherent prompt.
+    let total: f32 = seq.prompt_logprobs.iter().map(|l| l.logprob).sum();
+    assert!(total < 0.0 && total > -200.0, "plausible total ll: {total}");
+    model.free_sequence(&mut seq)?;
+
+    // Control: default path collects nothing.
+    let mut seq2 = model.alloc_sequence()?;
+    let _ = model.prefill_chunk(&prompt_tokens, &mut seq2, 0, n, true, 0)?;
+    assert!(
+        seq2.prompt_logprobs.is_empty(),
+        "no collection without the flag"
+    );
+    model.free_sequence(&mut seq2)?;
+    Ok(())
+}
+
+/// Free device memory according to the SYSTEM, not to Atlas.
+///
+/// Deliberately external: a leak test that asks the allocator under test how
+/// much it thinks it freed would pass on a bug in that very accounting. The
+/// backend is also gone by the time this is called — it dies with the model.
+///
+/// Two sources, because the answer depends on the hardware:
+///
+/// * **Discrete GPU** — `nvidia-smi --query-gpu=memory.free`.
+/// * **GB10 and other unified-memory parts** — nvidia-smi reports `[N/A]` for
+///   every memory field, because there is no separate VRAM pool to report: the
+///   GPU allocates out of host RAM. `MemAvailable` is the pool. Verified on
+///   dgx3, where `memory.free`, `memory.used` and `memory.total` are all
+///   `[N/A]` while /proc/meminfo shows ~102 GB available.
+///
+/// Getting this wrong would have made the gate unrunnable on the primary
+/// target while still passing on a discrete card.
+fn free_device_memory_bytes() -> Result<usize> {
+    if let Ok(out) = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .output()
+        && out.status.success()
+        && let Some(mib) = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .and_then(|l| l.trim().parse::<usize>().ok())
+    {
+        return Ok(mib * 1024 * 1024);
+    }
+    // Unified memory: the GPU pool is host RAM.
+    let meminfo = std::fs::read_to_string("/proc/meminfo")?;
+    let kb: usize = meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("no MemAvailable in /proc/meminfo"))?;
+    Ok(kb * 1024)
+}
+
+/// **The teardown gate.** Does releasing a model actually give the VRAM back?
+///
+/// This is the measurement the whole in-process hot-swap design rests on. Every
+/// `ModelResource` impl is compile-checked and mock-tested, but a mock cannot
+/// answer the only question that matters: whether a real load followed by a
+/// real `teardown()` returns free memory to where it started.
+///
+/// Three cycles, not one. A single load/release pair passes even when a
+/// per-cycle leak exists — the leak has to accumulate before it is visible
+/// against allocator noise, and a per-cycle leak is exactly what a forgotten
+/// resource produces.
+///
+/// Run it deliberately:
+/// ```text
+/// ATLAS_INTEGRATION_MODEL_DIR=<snapshot> \
+///   cargo test -p spark-server --test integration teardown_returns -- --ignored --nocapture
+/// ```
+/// Before trusting any self-relative number, check nothing else is on the GPU:
+/// `nvidia-smi --query-compute-apps=pid,used_memory --format=csv`.
+#[test]
+#[ignore] // Requires GPU + model weights
+fn teardown_returns_the_vram_it_took() -> Result<()> {
+    let model_dir = model_dir_path();
+    if !model_dir.exists() {
+        eprintln!("skipping: {} does not exist", model_dir.display());
+        return Ok(());
+    }
+
+    // Overridable: three cycles show a trend, six distinguish a LEAK (which
+    // keeps consuming until it OOMs) from driver RETENTION (which plateaus
+    // because the freed pages are reused even though `MemAvailable` does not
+    // show them coming back).
+    let cycles: usize = std::env::var("ATLAS_TEARDOWN_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+
+    let mut readings: Vec<usize> = Vec::new();
+    for cycle in 1..=cycles {
+        let (mut model, _config) = setup_model(&model_dir)?;
+        // First cycle's post-load reading is not a baseline: the context and
+        // modules are created lazily on the first load and legitimately persist.
+        model.teardown()?;
+        drop(model);
+
+        let free = free_device_memory_bytes()?;
+        eprintln!(
+            "cycle {cycle}/{cycles}: {:.2} GB free after teardown",
+            free as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        readings.push(free);
+    }
+
+    let gb = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+    eprintln!(
+        "readings (GB): {:?}",
+        readings
+            .iter()
+            .map(|b| (gb(*b) * 100.0).round() / 100.0)
+            .collect::<Vec<_>>()
+    );
+
+    // A LEAK consumes the same amount every cycle. RETENTION plateaus: the
+    // driver keeps the pages but reuses them, so later cycles stop costing.
+    // Comparing the LAST step against the FIRST is what separates the two, and
+    // it is the only comparison that does — an absolute return-to-baseline
+    // check cannot, because neither case returns to baseline.
+    let first_step = readings
+        .first()
+        .zip(readings.get(1))
+        .map(|(a, b)| a.saturating_sub(*b))
+        .unwrap_or(0);
+    let last_step = readings
+        .iter()
+        .rev()
+        .nth(1)
+        .zip(readings.last())
+        .map(|(a, b)| a.saturating_sub(*b))
+        .unwrap_or(0);
+    eprintln!(
+        "first step {:.2} GB, last step {:.2} GB",
+        gb(first_step),
+        gb(last_step)
+    );
+    assert!(
+        last_step * 2 <= first_step.max(1),
+        "memory use is not plateauing: the last cycle still cost {:.2} GB \
+         against the first cycle's {:.2} GB. That is a per-cycle LEAK — a \
+         device-memory owner is not registered for teardown.",
+        gb(last_step),
+        gb(first_step)
+    );
     Ok(())
 }

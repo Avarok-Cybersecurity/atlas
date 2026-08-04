@@ -8,9 +8,13 @@ members = [
     "crates/atlas-embed",
     "crates/atlas-reduce",
     "crates/atlas-kernels",
+    "crates/atlas-plugin",
+    "crates/atlas-tier",
+    "crates/atlas-rdma",
     "crates/spark-runtime",
     "crates/spark-comm",
     "crates/spark-model",
+    "crates/spark-nllb",
     "crates/spark-server",
     "crates/atlas-spark-bench",
     "crates/cufile-sys",
@@ -18,8 +22,16 @@ members = [
     "crates/xgrammar",
 ]
 
+# AMD/SCALE + native-HIP: the vendored cudarc 0.19.2 is byte-identical to
+# crates.io except its driver `Lib` loader resolves CUDA-driver symbols that
+# don't exist on SCALE/gfx1151 (e.g. cuArrayGetMemoryRequirements) to a
+# `__atlas_missing_cuda_sym` stub instead of panicking at init. On NVIDIA all
+# symbols resolve normally, so the patch is a no-op there (same version).
+[patch.crates-io]
+cudarc = { path = "vendor/cudarc" }
+
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -32,8 +44,20 @@ keywords = ["llm", "inference", "cuda", "blackwell", "gpu"]
 categories = ["science", "command-line-utilities"]
 
 [workspace.dependencies]
-# CUDA FFI
-cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-version-from-build-system"] }
+# CUDA FFI.
+# Atlas only ever touches the `driver` + `nvrtc` backends (the vendored crate
+# also keeps `runtime` available for completeness). default-features=false drops
+# cudarc's default cublas/cublaslt/curand/runtime/etc. so the never-compiled
+# backends carry no weight; their generated `sys/mod.rs` FFI bindings have been
+# removed from `vendor/cudarc` entirely. `fallback-dynamic-loading` is required:
+# cudarc's build.rs derives the `dynamic-loading` cfg from it.
+cudarc = { version = "0.19", default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "fallback-dynamic-loading",
+    "cuda-version-from-build-system",
+] }
 
 # Serialization (HF config.json)
 serde = { version = "1", features = ["derive"] }
@@ -59,12 +83,9 @@ parking_lot = "0.12"
 # right backend feature explicitly (cuda or metal). Without this, every
 # member would silently pull in cudarc via atlas-core's `cuda` default.
 atlas-core = { path = "crates/atlas-core", default-features = false }
-atlas-quant = { path = "crates/atlas-quant" }
-atlas-norm = { path = "crates/atlas-norm" }
-atlas-activation = { path = "crates/atlas-activation" }
-atlas-embed = { path = "crates/atlas-embed" }
-atlas-reduce = { path = "crates/atlas-reduce" }
 atlas-kernels = { path = "crates/atlas-kernels" }
+atlas-tier = { path = "crates/atlas-tier" }
+atlas-rdma = { path = "crates/atlas-rdma" }
 
 # W7: the `[patch.crates-io] xgrammar-rs` entry was removed — Atlas now
 # depends on the pure-Rust `crates/xgrammar` crate directly (no FFI,

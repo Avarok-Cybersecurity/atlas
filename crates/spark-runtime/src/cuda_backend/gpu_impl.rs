@@ -33,16 +33,15 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
-use atlas_core::registry::{AtlasRegistry, RawCudaFunc, cuda_error_text};
+use atlas_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
     AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch, cuMemAlloc_v2,
+    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
     cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async,
-    cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
-    cuStreamWaitEvent,
+    cuMemcpyDtoDAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
+    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
@@ -61,6 +60,7 @@ impl GpuBackend for AtlasCudaBackend {
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
         }
+        self.record_alloc(DevicePtr(dptr));
         Ok(DevicePtr(dptr))
     }
 
@@ -74,6 +74,7 @@ impl GpuBackend for AtlasCudaBackend {
                  Check system swap space: swapon --show"
             );
         }
+        self.record_alloc(DevicePtr(dptr));
         Ok(DevicePtr(dptr))
     }
 
@@ -81,93 +82,42 @@ impl GpuBackend for AtlasCudaBackend {
         if ptr.is_null() {
             return Ok(());
         }
+        // Off the ledger BEFORE the free: an entry that survives a successful
+        // free would be double-freed at teardown.
+        self.forget_alloc(ptr);
         let status = unsafe { cuMemFree_v2(ptr.0) };
-        if status != 0 {
+        // A context that is already being destroyed reports every free as
+        // failing, and at process exit that is the normal case, not an error:
+        // the driver has reclaimed the allocation by definition. Two other
+        // free paths in this crate already consult `is_teardown_noop`; this one
+        // did not, so wiring `Model::teardown` into shutdown turned a benign
+        // status 4 into `ERROR model teardown reported a failure` on every
+        // clean exit — the exact species of false alarm this work set out to
+        // remove.
+        if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
     }
 
+    fn sweep_unreleased(&self) -> usize {
+        AtlasCudaBackend::sweep_unreleased(self)
+    }
+
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(
-                dst.0,
-                src.as_ptr() as *const c_void,
-                src.len(),
-                self.default_stream,
-            )
-        };
-        if status != 0 {
-            bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
-        }
-        // Synchronize to ensure the copy completes before host buffer is freed.
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after H2D failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_h2d_impl(self, src, dst)
     }
 
     fn copy_d2h(&self, src: DevicePtr, dst: &mut [u8]) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(
-                dst.as_mut_ptr() as *mut c_void,
-                src.0,
-                dst.len(),
-                self.default_stream,
-            )
-        };
-        if status != 0 {
-            bail!("cuMemcpyDtoHAsync_v2 failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2H failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2h_impl(self, src, dst)
     }
 
     fn copy_d2h_on_stream(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
-        // Enqueue the copy on the caller's stream so CUDA orders it after
-        // any prior kernel launches on the same stream. Without this, the
-        // copy may run on the default stream concurrently with kernels on
-        // `stream` and read torn bytes (HSS Turbo8 race, 2026-04-28).
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
-        };
-        if status != 0 {
-            bail!("cuMemcpyDtoHAsync_v2 (on_stream) failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2H on_stream failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
     }
 
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
-        let status = unsafe { cuMemcpyDtoDAsync_v2(dst.0, src.0, bytes, self.default_stream) };
-        if status != 0 {
-            bail!("cuMemcpyDtoDAsync_v2 failed: status {status}");
-        }
-        // Synchronize to ensure copy completes before kernels on other streams read it.
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2D failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
 
     fn launch(
@@ -185,11 +135,30 @@ impl GpuBackend for AtlasCudaBackend {
             block_dim: (block[0], block[1], block[2]),
             shared_mem_bytes: shared_mem,
         };
-        let registry = AtlasRegistry::get();
+        let registry = self.registry();
         unsafe {
             registry
                 .launch_on_stream(raw_func, cfg, stream, params)
                 .map_err(|e| anyhow::anyhow!("Kernel launch failed: {e}"))
+        }
+    }
+
+    fn stream_is_capturing(&self, stream: u64) -> bool {
+        // SCALE's libcuda does not export cuStreamIsCapturing; report
+        // not-capturing there (gfx1151 telemetry taps then sample eagerly —
+        // acceptable for a default-off measurement knob).
+        #[cfg(atlas_scale)]
+        {
+            let _ = stream;
+            false
+        }
+        #[cfg(not(atlas_scale))]
+        {
+            let mut status: u32 = 0;
+            // CU_STREAM_CAPTURE_STATUS_NONE = 0; treat query failure as
+            // capturing (conservative: the tap skips its sample).
+            let rc = unsafe { super::cuStreamIsCapturing(stream, &mut status) };
+            rc != 0 || status != 0
         }
     }
 
@@ -205,11 +174,23 @@ impl GpuBackend for AtlasCudaBackend {
         self.default_stream
     }
 
+    fn op_cache(&self) -> &crate::op_cache::OpCache {
+        &self.op_cache
+    }
+
+    fn debug_sync_kernels(&self) -> bool {
+        AtlasCudaBackend::debug_sync_kernels(self)
+    }
+
+    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+        Some(self.registry().clone())
+    }
+
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
-        let registry = AtlasRegistry::get();
+        let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true);
@@ -248,6 +229,50 @@ impl GpuBackend for AtlasCudaBackend {
         Ok(())
     }
 
+    fn copy_d2d_2d_async(
+        &self,
+        src: DevicePtr,
+        src_pitch: usize,
+        dst: DevicePtr,
+        dst_pitch: usize,
+        width_bytes: usize,
+        height: usize,
+        stream: u64,
+    ) -> Result<()> {
+        // One pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's stream,
+        // replacing a per-row copy_d2d_async loop. cudart is linked (cutlass/
+        // flashinfer use the runtime API); a CUstream handle is a valid
+        // cudaStream_t.
+        unsafe extern "C" {
+            fn cudaMemcpy2DAsync(
+                dst: *mut c_void,
+                dpitch: usize,
+                src: *const c_void,
+                spitch: usize,
+                width: usize,
+                height: usize,
+                kind: i32,
+                stream: u64,
+            ) -> i32;
+        }
+        let status = unsafe {
+            cudaMemcpy2DAsync(
+                dst.0 as *mut c_void,
+                dst_pitch,
+                src.0 as *const c_void,
+                src_pitch,
+                width_bytes,
+                height,
+                3,
+                stream,
+            )
+        };
+        if status != 0 {
+            bail!("cudaMemcpy2DAsync failed: status {status}");
+        }
+        Ok(())
+    }
+
     fn begin_capture(&self, stream: u64) -> Result<()> {
         // CU_STREAM_CAPTURE_MODE_RELAXED = 2
         // Relaxed mode allows NCCL's internal streams to operate during
@@ -265,12 +290,17 @@ impl GpuBackend for AtlasCudaBackend {
         if status != 0 {
             bail!("cuStreamEndCapture failed: status {status}");
         }
-        // Instantiate the graph into an executable
+        // Instantiate the graph into an executable. NVIDIA's libcuda exports
+        // `cuGraphInstantiateWithFlags`; SCALE (gfx1151) exposes the
+        // ABI-identical `cuGraphInstantiate` — see cuda_backend.rs.
         let mut graph_exec: u64 = 0;
-        let status = unsafe { cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
+        #[cfg(not(atlas_scale))]
+        let status = unsafe { super::cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
+        #[cfg(atlas_scale)]
+        let status = unsafe { super::cuGraphInstantiate(&mut graph_exec, graph, 0) };
         if status != 0 {
             unsafe { cuGraphDestroy(graph) };
-            bail!("cuGraphInstantiateWithFlags failed: status {status}");
+            bail!("cuGraphInstantiate failed: status {status}");
         }
         // The graph template is no longer needed after instantiation
         unsafe { cuGraphDestroy(graph) };
@@ -384,6 +414,18 @@ impl GpuBackend for AtlasCudaBackend {
         Ok(())
     }
 
+    fn event_synchronize(&self, event: u64) -> Result<()> {
+        // Block calling thread until all work recorded against `event`
+        // (on whatever stream `record_event` targeted) has completed.
+        // Used in Phase E.2: drafter D2H copy is recorded against this
+        // event, host blocks here just before reading the pinned buffer.
+        let status = unsafe { cuEventSynchronize(event) };
+        if status != 0 {
+            bail!("cuEventSynchronize failed: status {status}");
+        }
+        Ok(())
+    }
+
     fn destroy_event(&self, event: u64) -> Result<()> {
         if event != 0 {
             let status = unsafe { cuEventDestroy_v2(event) };
@@ -406,8 +448,15 @@ impl GpuBackend for AtlasCudaBackend {
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
         if !ptr.is_null() {
             let status = unsafe { cuMemFreeHost(ptr as *mut c_void) };
-            if status != 0 {
-                bail!("cuMemFreeHost failed: status {status}");
+            // The driver tears the primary context down in its own atexit
+            // handler, which can run before ours. Pinned host memory allocated
+            // against a context that no longer exists was already reclaimed
+            // with it — reporting that as a failure is noise at every exit.
+            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+                bail!(
+                    "cuMemFreeHost failed: {}",
+                    atlas_core::registry::cuda_error_text(status)
+                );
             }
         }
         Ok(())

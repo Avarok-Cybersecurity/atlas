@@ -25,8 +25,66 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
-        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
-        if force_w8a8
+        let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
+        // Native FP4 o_proj: quantize attn_out to NVFP4 and consume o_proj in
+        // its original NVFP4 form. OPT-IN ONLY -- see the QKV path's comment.
+        let w4a4 = n >= 256
+            && self.w4a4_gemm_k.0 != 0
+            && self.quantize_nvfp4_k.0 != 0
+            && ctx.buffers.fp8_act_bytes() >= (n as usize) * (nq as usize) * (hd as usize)
+            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+        if w4a4 {
+            let kd = nq * hd;
+            let a4 = ctx.buffers.fp8_act();
+            let a4_sf = a4.offset((n as usize) * (kd as usize) / 2);
+            ops::quantize_bf16_to_nvfp4(
+                ctx.gpu,
+                self.quantize_nvfp4_k,
+                attn_out,
+                a4,
+                a4_sf,
+                n,
+                kd,
+                stream,
+            )?;
+            ops::w4a4_gemm_mfast(
+                ctx.gpu,
+                self.w4a4_gemm_k,
+                a4,
+                a4_sf,
+                &self.attn.o_proj,
+                o_out,
+                n,
+                h,
+                kd,
+                stream,
+            )?;
+        } else if ctx.dispatch.cutlass_nvfp4_attn_o
+            && let Some(ref nvfp4_t) = self.o_nvfp4_t
+        {
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "attn_o", n, h, nq * hd);
+            ops::cutlass_nvfp4_proj(ctx, attn_out, nvfp4_t, o_out, n, h, nq * hd, stream)?;
+        } else if ctx.dispatch.cutlass_nvfp4_attn_o
+            && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
+        {
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "attn_o", n, h, nq * hd);
+            ops::cutlass_nvfp4_proj_from_fp8(ctx, attn_out, fp8w, o_out, n, h, nq * hd, stream)?;
+        } else if ctx.dispatch.cublas_gemm
+            && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
+        {
+            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
+            ops::cublas_bf16_proj(
+                ctx.gpu,
+                ctx.derived,
+                attn_out,
+                fp8w,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
+        } else if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
             && self.per_token_group_quant_fp8_k.0 != 0
             && self.fp8_gemm_t_blockscaled_k.0 != 0
@@ -38,10 +96,12 @@ impl Qwen3AttentionLayer {
             let m = n as usize;
             let k_dim = (nq * hd) as usize; // inner contract dim — input width of o_proj
             let n_out = h as usize; // output width of o_proj
-            let a_fp8_bytes = m * k_dim;
-            let a_scale_bytes = m * (k_dim / 128) * 4;
-            let a_fp8_buf = ctx.gpu.alloc(a_fp8_bytes)?;
-            let a_scale_buf = ctx.gpu.alloc(a_scale_bytes)?;
+            // Persistent arena scratch (no per-projection alloc/sync/free): the
+            // quant→GEMM→next-layer chain is same-stream ordered, so the buffer
+            // is safely reused without a host sync.
+            let a_fp8_buf = ctx.buffers.fp8_act();
+            let a_scale_buf = ctx.buffers.fp8_act_scale();
+            debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -65,15 +125,31 @@ impl Qwen3AttentionLayer {
                 k_dim as u32,
                 stream,
             )?;
-            ctx.gpu.synchronize(stream)?;
-            ctx.gpu.free(a_fp8_buf)?;
-            ctx.gpu.free(a_scale_buf)?;
-        } else if let Some(ref fp8t) = self.o_fp8w_t {
-            // o_proj always via the byte-identical ~4.2× faster pipelined
-            // transposed tensor-core kernel.
+        } else if let Some(ref fp8t) = self.o_fp8w_t
+            && self.w8a16_gemm_t_pipelined_k.0 != 0
+        {
+            // o_proj via the byte-identical ~4.2x faster pipelined transposed
+            // tensor-core kernel where available (NVIDIA). gfx1151/HIP has no
+            // cp.async -> pipelined absent -> non-pipelined w8a16_gemm_t below.
             ops::w8a16_gemm_t_pipelined(
                 ctx.gpu,
                 self.w8a16_gemm_t_pipelined_k,
+                attn_out,
+                fp8t.weight_t,
+                fp8t.scale_t,
+                o_out,
+                n,
+                h,
+                nq * hd,
+                stream,
+            )?;
+        } else if let Some(ref fp8t) = self.o_fp8w_t
+            && self.w8a16_gemm_t_k.0 != 0
+        {
+            // cp.async-free fallback (gfx1151/HIP): non-pipelined transposed W8A16.
+            ops::w8a16_gemm_t(
+                ctx.gpu,
+                self.w8a16_gemm_t_k,
                 attn_out,
                 fp8t.weight_t,
                 fp8t.scale_t,
@@ -129,6 +205,7 @@ impl Qwen3AttentionLayer {
             if n > 128 {
                 self.w4a16_gemm_m128_dispatch(
                     ctx.gpu,
+                    ctx.dispatch,
                     attn_out,
                     nvfp4_t,
                     o_out,
@@ -153,17 +230,32 @@ impl Qwen3AttentionLayer {
         } else if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
             // BF16 dense fallback (Gemma-4 dense per Nvidia ModelOpt's
             // ignore list — all self_attn projections must stay BF16).
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                attn_out,
-                o_bf16,
-                o_out,
-                n,
-                h,
-                nq * hd,
-                stream,
-            )?;
+            // Tensor-core pipelined GEMM (~40× scalar on large-M prefill).
+            if self.dense_gemm_pipelined_k.0 != 0 {
+                ops::dense_gemm_bf16_pipelined(
+                    ctx.gpu,
+                    self.dense_gemm_pipelined_k,
+                    attn_out,
+                    o_bf16,
+                    o_out,
+                    n,
+                    h,
+                    nq * hd,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    attn_out,
+                    o_bf16,
+                    o_out,
+                    n,
+                    h,
+                    nq * hd,
+                    stream,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -176,6 +268,74 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
+        }
+        // ── LoRA delta on o_proj: o_out[n,h] += scale·(attn_out[n,nq*hd]@Aᵀ)@Bᵀ.
+        // attn_out is the exact o_proj input (post-attention), matching HF.
+        // Before the op_dump so dumps show the adapted output.
+        if let Some(ref lw) = self.lora
+            && let Some(ref pair) = lw.o
+        {
+            debug_assert_eq!(pair.k_in, nq * hd);
+            debug_assert_eq!(pair.n_out, h);
+            // #30 routed-prefill precision (see paged_qkv.rs): a routed (non-active)
+            // prefill selects the REQUEST slot's O pair and folds it through the SAME
+            // dense `apply_lora_delta` (dense_gemm_tc) the active adapter uses. Indexed
+            // by `lw.layer_idx` (GLOBAL layer index, not attn_layer_idx). MUST win over
+            // the bgmv branch (a routed prefill satisfies both). `None` → bgmv/installed.
+            let routed_pair = ctx.routed_lora_layers.and_then(|ls| {
+                crate::lora::select_routed_pair(ls, lw.layer_idx, crate::lora::LoraModule::OProj)
+            });
+            // Request-scoped routing (see paged_qkv.rs). attn_out is contiguous
+            // [n, nq*hd] and o_out is contiguous [n, h], so the routed bgmv is
+            // byte-identical to `n` single-row `apply_lora_delta`. No pool / no
+            // route → installed-active-pair path (pre-M2 behaviour).
+            let seq_slot = ctx
+                .attn_metadata
+                .map(|m| m.seq_slot)
+                .unwrap_or(DevicePtr(0));
+            if let Some(routed_pair) = routed_pair {
+                debug_assert_eq!(routed_pair.k_in, nq * hd);
+                debug_assert_eq!(routed_pair.n_out, h);
+                ops::lora_delta::apply_lora_delta(
+                    ctx.gpu,
+                    &lw.kernels,
+                    routed_pair,
+                    attn_out,
+                    o_out,
+                    n,
+                    ctx.buffers.lora_xa(),
+                    ctx.buffers.lora_delta(),
+                    stream,
+                )?;
+            } else if seq_slot.0 != 0
+                && let Some(ref route) = lw.o_route
+            {
+                ops::lora_delta::apply_lora_bgmv(
+                    ctx.gpu,
+                    &lw.kernels,
+                    route,
+                    attn_out,
+                    o_out,
+                    seq_slot,
+                    n,
+                    pair.k_in,
+                    pair.n_out,
+                    ctx.buffers.lora_xa(),
+                    stream,
+                )?;
+            } else {
+                ops::lora_delta::apply_lora_delta(
+                    ctx.gpu,
+                    &lw.kernels,
+                    pair,
+                    attn_out,
+                    o_out,
+                    n,
+                    ctx.buffers.lora_xa(),
+                    ctx.buffers.lora_delta(),
+                    stream,
+                )?;
+            }
         }
         // ATLAS_OP_DUMP hook: post-O-projection — this is the FULL attention
         // block output (Q*K^T*V * O_proj). Compares 1:1 against the HF

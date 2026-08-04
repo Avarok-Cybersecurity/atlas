@@ -5,6 +5,19 @@
 use super::*;
 
 impl MoeLayer {
+    /// True when the ATLAS_FP32_ROUTING path is active: the SSM-side MoE-input
+    /// norm should emit an FP32 `router_in` (residual_add_rms_norm_gatef32) which
+    /// the gate GEMM then consumes at full precision. Requires the f32 kernels to
+    /// be present and the softmax-routed dense-gate config (NVFP4 gate / sigmoid+bias
+    /// stay BF16). Default off → BF16 routing unchanged.
+    pub fn fp32_routing_active(&self) -> bool {
+        self.gate_nvfp4.is_none()
+            && self.correction_bias_dev.is_none()
+            && self.dense_gemm_f32in.0 != 0
+            && self.moe_topk_f32.0 != 0
+            && std::env::var("ATLAS_FP32_ROUTING").as_deref() == Ok("1")
+    }
+
     /// Forward pass: gate → top-K routing → batched expert FFN → blend.
     ///
     /// All expert dispatch stays on device — zero D2H synchronization.
@@ -36,9 +49,7 @@ impl MoeLayer {
                 == Some("1")
         {
             // One-time per-process log so we can verify the env-gated route is hit.
-            static LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if ctx.stats.once("log:moe_route") {
                 tracing::info!(
                     "FRANKENSTEIN: routing DFlash capture-layer MoE decode through forward_prefill(M=1) (one-time log)"
                 );
@@ -111,19 +122,21 @@ impl MoeLayer {
             })?;
 
             prof!("topk", {
-                if let Some(bias) = self.correction_bias_dev {
-                    // DeepSeek-V3 / MiniMax-M2 sigmoid + correction bias:
-                    //   scores   = sigmoid(gate_logits)
-                    //   indices  = topk(scores + bias)
-                    //   weights  = scores[indices] / sum(scores[indices])
-                    // Kernel does all three steps; norm_topk_prob toggles
-                    // the final divide. scaling_factor comes from the model
-                    // config (e.g., Step 3.7 = 3.0, MiniMax M2 = 1.0).
-                    ops::moe_topk_sigmoid(
+                if let Some(tid2eid) = self.tid2eid_dev {
+                    // DeepSeek-V4 hash routing (hash_moe layer): expert SELECTION
+                    // is the static `tid2eid[token_id]` table; the learned gate
+                    // still supplies the sqrtsoftplus scores that weight them.
+                    let token_ids = ctx.token_ids.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (decode)"
+                        )
+                    })?;
+                    ops::moe_hash_route(
                         ctx.gpu,
-                        self.moe_topk_sigmoid_k,
+                        self.moe_hash_route_k,
                         gate_logits,
-                        bias,
+                        tid2eid,
+                        token_ids, // decode: single token at offset 0
                         indices_dev,
                         weights_dev,
                         num_experts,
@@ -132,6 +145,47 @@ impl MoeLayer {
                         ctx.config.routed_scaling_factor as f32,
                         stream,
                     )
+                } else if let Some(bias) = self.correction_bias_dev {
+                    if ctx.config.scoring_func == "sqrtsoftplus" {
+                        // DeepSeek-V4 sqrtsoftplus + correction bias:
+                        //   scores   = sqrtsoftplus(gate_logits)
+                        //   indices  = topk(scores + bias)
+                        //   weights  = scores[indices] / sum(scores[indices])
+                        ops::moe_topk_sqrtsoftplus(
+                            ctx.gpu,
+                            self.moe_topk_sqrtsoftplus_k,
+                            gate_logits,
+                            bias,
+                            indices_dev,
+                            weights_dev,
+                            num_experts,
+                            top_k,
+                            ctx.config.norm_topk_prob,
+                            ctx.config.routed_scaling_factor as f32,
+                            stream,
+                        )
+                    } else {
+                        // DeepSeek-V3 / MiniMax-M2 sigmoid + correction bias:
+                        //   scores   = sigmoid(gate_logits)
+                        //   indices  = topk(scores + bias)
+                        //   weights  = scores[indices] / sum(scores[indices])
+                        // Kernel does all three steps; norm_topk_prob toggles
+                        // the final divide. scaling_factor comes from the model
+                        // config (e.g., Step 3.7 = 3.0, MiniMax M2 = 1.0).
+                        ops::moe_topk_sigmoid(
+                            ctx.gpu,
+                            self.moe_topk_sigmoid_k,
+                            gate_logits,
+                            bias,
+                            indices_dev,
+                            weights_dev,
+                            num_experts,
+                            top_k,
+                            ctx.config.norm_topk_prob,
+                            ctx.config.routed_scaling_factor as f32,
+                            stream,
+                        )
+                    }
                 } else {
                     ops::moe_topk_softmax(
                         ctx.gpu,
@@ -457,7 +511,7 @@ impl MoeLayer {
         // times. Solution: pass NULL shared_out for EP, all-reduce the routed sum,
         // then add shared_out once after all-reduce.
         let output = ctx.buffers.moe_output();
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         let shared_for_blend = if is_ep && !shared_out.is_null() {
             // EP: exclude shared expert from blend (will add after all-reduce).
             // Zero a temp buffer to pass as shared_out (kernel reads it even with NULL gate).
@@ -488,7 +542,7 @@ impl MoeLayer {
         // Each rank only computed its local experts (remote → zero), so
         // SUM gives the correct global result.
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, h as usize * 2)?;

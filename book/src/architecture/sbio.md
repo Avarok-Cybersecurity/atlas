@@ -100,7 +100,7 @@ Every collective op is a no-op. The single-GPU serving path holds a `Box<dyn Com
 
 The SBIO pattern makes the following blocks fully testable on CI without any GPU:
 
-- **Scheduler** (`spark-server/src/scheduler.rs`): SLAI deadline logic, chunked-prefill budget enforcement, KV page allocation and eviction. Tested with a `MockGpuBackend` standing in for the KV cache.
+- **Scheduler** (`spark-server/src/scheduler/`): SLAI deadline logic, chunked-prefill budget enforcement, KV page allocation and eviction. Tested with a `MockGpuBackend` standing in for the KV cache.
 - **Engine** (`spark-model/src/engine.rs`): layer ordering, speculative-decode verify + accept logic, sampler integration. The layer trait objects hold mock kernel handles.
 - **Tool parsers** (`spark-server/src/tool_parser.rs`): Hermes, Qwen3-coder, Mistral formats. Input is a plain string of model output; tested with fixtures.
 - **Rate limiter** (`spark-server/src/rate_limiter.rs`): token-bucket arithmetic. Pure CPU.
