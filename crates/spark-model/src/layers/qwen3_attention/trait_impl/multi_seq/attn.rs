@@ -31,6 +31,9 @@ impl Qwen3AttentionLayer {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
             let pos_i = meta.positions.offset(i * 4); // u32 per position
+            // KV-shared band (Gemma-4 E2B): rotate Q only (nkv=0) — the
+            // producer rotated the aliased pool's K already.
+            let rope_nkv = if self.kv_shared { 0 } else { nkv };
             ops::rope(
                 fwd.gpu,
                 self.rope_k,
@@ -39,7 +42,7 @@ impl Qwen3AttentionLayer {
                 pos_i,
                 1,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 self.rotary_dim_override
                     .unwrap_or(fwd.config.rotary_dim() as u32),
@@ -72,6 +75,11 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
         let kv_stride = nkv * hd;
+        // KV-shared band (Gemma-4 E2B): NEVER write this layer's k/v — the
+        // producer wrote each token's k/v into the aliased pool.
+        if self.kv_shared {
+            return Ok(());
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);

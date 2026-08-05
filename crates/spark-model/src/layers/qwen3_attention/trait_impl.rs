@@ -84,6 +84,10 @@ impl TransformerLayer for Qwen3AttentionLayer {
         Some(self)
     }
 
+    fn set_ple_base(&self, base: DevicePtr) {
+        self.set_ple_slice(base);
+    }
+
     fn decode(
         &self,
         hidden: DevicePtr,

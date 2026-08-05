@@ -95,6 +95,13 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
+        // KV-shared band (Gemma-4 E2B): skip the K and V projections — the
+        // producer layer's K/V (aliased pool) is what attention reads, and
+        // this layer's own k/v weights differ. Q is computed above.
+        if self.kv_shared {
+            return Ok(());
+        }
+
         let k_contiguous = ctx.buffers.ssm_qkvz();
         self.prefill_one_proj(
             Proj::K,

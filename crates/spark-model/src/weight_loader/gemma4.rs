@@ -28,7 +28,7 @@ mod loader_a;
 mod loader_b;
 mod loader_c;
 
-pub use loader_c::Gemma4PleTables;
+pub use loader_c::{Gemma4PerLayerPleWeights, Gemma4PleTables};
 
 pub struct Gemma4WeightLoader;
 

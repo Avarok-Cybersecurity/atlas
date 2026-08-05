@@ -43,7 +43,7 @@ impl TransformerModel {
         // `lm_head_nvfp4`. Drafts are always verified by the main BF16 head,
         // so this approximate head never affects an accepted token.
         mtp_lm_head_nvfp4: Option<QuantizedWeight>,
-        layers: Vec<Box<dyn TransformerLayer>>,
+        mut layers: Vec<Box<dyn TransformerLayer>>,
         buffers: BufferArena,
         kv_cache: PagedKvCache,
         mtp_weights: Vec<MtpWeights>,
@@ -481,6 +481,19 @@ impl TransformerModel {
             DevicePtr::NULL
         };
 
+        // ── Gemma-4 E2B per-layer-embedding (PLE): scratch + layer install ──
+        // Three row-major [max_batch_tokens, num_layers*256] BF16 buffers +
+        // the per-layer PLE weights / KV-shared flag install walk. All no-ops
+        // when PLE is disabled (non-E2B). Body in `impl_ple.rs`.
+        let (ple_combined, ple_combined_b, ple_identity, ple_scratch_tokens, ple_residual_add_k) =
+            super::impl_ple::allocate_ple_scratch(
+                &mut layers,
+                ple_tables.as_ref(),
+                &config,
+                buffers.max_batch_tokens(),
+                gpu.as_ref(),
+            )?;
+
         // GDN prefill buffers: sized for max_batch_tokens (the prefill chunk size),
         // NOT max_seq_len. For prompts longer than this, prefill_twophase falls back
         // to standard chunked prefill which carries h_state/conv_state between chunks.
@@ -620,6 +633,11 @@ impl TransformerModel {
             use_fp32_logits,
             logits_fp32_buf,
             embed_scale_kernel,
+            ple_combined,
+            ple_combined_b,
+            ple_identity,
+            ple_scratch_tokens,
+            ple_residual_add_k,
         })
     }
 }

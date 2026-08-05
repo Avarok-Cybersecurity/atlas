@@ -4,6 +4,7 @@ extra_nvcc_flags = ["--fmad=false"]
 # File stem -> module name overrides.
 # Any .cu file not listed here uses its file stem as the module name.
 [modules]
+gemma4_ple = "gemma4_ple"
 e2m1_branchless = "e2m1"
 moe_permute = "moe"
 dense_gemm_bf16 = "gemm"

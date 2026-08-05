@@ -138,6 +138,35 @@ impl Qwen3AttentionLayer {
         self.layer_scalar = Some(scalar);
     }
 
+    /// Install the per-layer PLE weights (Gemma-4 E2B). The forward block
+    /// runs right before `layer_scalar` (see `ple.rs`).
+    pub fn set_ple(&mut self, ple: crate::layers::gemma4_ple::Gemma4LayerPle) {
+        self.ple = Some(ple);
+    }
+
+    /// Mark this layer as part of the KV-shared band (Gemma-4 E2B): the
+    /// forward skips k/v projection + cache write; attention reads the
+    /// aliased producer pool.
+    pub fn set_kv_shared(&mut self, shared: bool) {
+        self.kv_shared = shared;
+    }
+
+    /// Arm this layer's PLE slice for the current pass. `DevicePtr` is the
+    /// base of the model-level combined `[S, num_layers*256]` buffer; the
+    /// layer derives its own column from `attn_layer_idx`. Stored in an
+    /// atomic so the model loop can set it per-pass on `&self`. NULL
+    /// disables the PLE block for the pass.
+    pub(crate) fn set_ple_slice(&self, ptr: spark_runtime::gpu::DevicePtr) {
+        use std::sync::atomic::Ordering;
+        self.ple_slice.store(ptr.0, Ordering::Relaxed);
+    }
+
+    /// The combined-buffer base armed for the current pass (0 = none).
+    pub(crate) fn ple_slice_ptr(&self) -> spark_runtime::gpu::DevicePtr {
+        use std::sync::atomic::Ordering;
+        spark_runtime::gpu::DevicePtr(self.ple_slice.load(Ordering::Relaxed))
+    }
+
     /// Set secondary MoE FFN (Gemma-4 26B dual-FFN: dense + MoE per
     /// layer).
     pub fn set_moe_ffn(

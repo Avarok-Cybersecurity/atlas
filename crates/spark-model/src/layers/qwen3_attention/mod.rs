@@ -23,6 +23,7 @@ mod init;
 mod init_kernel_dispatch;
 mod kernel_requirements;
 mod op_dump;
+mod ple;
 // `innerq_driver` calls the CUDA Driver API directly via `atlas_core::registry`,
 // which is itself gated on the `cuda` feature. Mirror that gate here so the
 // metal-only build of spark-model (`--no-default-features --features metal`)

@@ -65,7 +65,11 @@ impl Qwen3AttentionLayer {
                 let v_out_i = k_out_i.offset((nkv * hd) as usize * bf16);
 
                 self.ms_qkv_seq_q(fwd, normed_i, q_out_i, q_proj_dim, q_dim, nq, hd, h, stream)?;
-                self.ms_qkv_seq_kv(fwd, normed_i, k_out_i, v_out_i, nkv, hd, h, stream)?;
+                // KV-shared band (Gemma-4 E2B): skip the K/V projections —
+                // attention reads the (aliased) producer pool.
+                if !self.kv_shared {
+                    self.ms_qkv_seq_kv(fwd, normed_i, k_out_i, v_out_i, nkv, hd, h, stream)?;
+                }
             }
         }
 
@@ -223,7 +227,8 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
-            if !self.attn.k_norm.weight.is_null() {
+            // KV-shared band (Gemma-4 E2B): no K of our own to norm.
+            if !self.kv_shared && !self.attn.k_norm.weight.is_null() {
                 ops::rms_norm(
                     fwd.gpu,
                     self.rms_norm_w_k,

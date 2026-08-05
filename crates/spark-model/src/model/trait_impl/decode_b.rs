@@ -142,6 +142,38 @@ impl TransformerModel {
             self.scale_embeddings(prefill_hidden, n_prefill, stream)?;
         }
 
+        // ── 1d. Gemma-4 E2B per-layer-embedding (PLE): stage both token
+        // ranges into the STABLE token_ids buffer (decode tokens at
+        // [0..n_decode), prefill chunk tokens at [padded_n..)) and compute
+        // the combined per-layer vectors for each side. The decode side uses
+        // `ple_combined`, the prefill side `ple_combined_b` — both resident
+        // because the fused layer loop alternates decode/prefill per layer.
+        // No-op for non-E2B models.
+        if self.ple_tables.is_some() {
+            let token_ids = self.buffers.token_ids();
+            let decode_ids: &[u8] = unsafe {
+                std::slice::from_raw_parts(decode_tokens.as_ptr() as *const u8, n_decode * 4)
+            };
+            self.gpu.copy_h2d_async(decode_ids, token_ids, stream)?;
+            let prefill_ids: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    prefill_tokens[prefill_chunk_start..prefill_chunk_start + n_prefill].as_ptr()
+                        as *const u8,
+                    n_prefill * 4,
+                )
+            };
+            self.gpu
+                .copy_h2d_async(prefill_ids, token_ids.offset(padded_n * 4), stream)?;
+            self.compute_ple(token_ids, hidden, n_decode, self.ple_combined, stream)?;
+            self.compute_ple(
+                token_ids.offset(padded_n * 4),
+                prefill_hidden,
+                n_prefill,
+                self.ple_combined_b,
+                stream,
+            )?;
+        }
+
         // ── 2. Lock KV cache once for both decode and prefill ──
         let mut kv_cache = self.kv_cache.lock();
         let bs = kv_cache.block_size();
@@ -379,7 +411,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: false,
             gdn_exact_replay: false,
-            token_ids: None,
+            token_ids: Some(self.buffers.token_ids()),
             // #30: decode never routes prefill — installed-pair/bgmv path only.
             routed_lora_layers: None,
             midchunk_capture: None,
@@ -398,7 +430,9 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: false,
             gdn_exact_replay: false,
-            token_ids: None,
+            // Prefill chunk token IDs live at token_ids[padded_n..] (staged
+            // in Phase 1d) — hash-MoE + PLE read this range.
+            token_ids: Some(self.buffers.token_ids().offset(padded_n * 4)),
             // #30: the fused (SLAI) prefill portion routes by the prefilling
             // seq's slot (None unless it routes to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(prefill_seq.adapter_slot),
@@ -407,6 +441,10 @@ impl TransformerModel {
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             // 6a. Decode: N sequences × 1 token each on hidden[0..padded_n*H)
+            // Gemma-4 E2B PLE: arm the decode side's combined vectors.
+            if self.ple_tables.is_some() {
+                self.ple_arm_layers(self.ple_combined);
+            }
             let mut layer_state_refs = extract_layer_refs(&mut all_layer_states, layer_idx);
             layer.decode_multi_seq(
                 hidden,
@@ -421,6 +459,10 @@ impl TransformerModel {
             )?;
 
             // 6b. Prefill: 1 sequence × M tokens on hidden[padded_n*H..]
+            // Gemma-4 E2B PLE: arm the prefill side's combined vectors.
+            if self.ple_tables.is_some() {
+                self.ple_arm_layers(self.ple_combined_b);
+            }
             layer.prefill(
                 prefill_hidden,
                 prefill_residual,

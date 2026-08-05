@@ -138,7 +138,29 @@ impl Qwen3AttentionLayer {
                  got seq_len_start=0. Caller must fall back to per-stream for this chunk."
             );
         }
-        let attn_out = if seq_len_start == 0 && !allow_batched_first_chunk {
+        let attn_out = if self.kv_shared {
+            // KV-shared band (Gemma-4 E2B): this layer never computes its own
+            // k/v and never writes the cache — the producer layer already
+            // wrote the chunk's k/v into the (aliased) producer pool. The
+            // chunk-0 flash path reads CONTIGUOUS k/v which is never
+            // produced here, so ALWAYS route through the paged path, whose
+            // attention kernel reads k/v from `kv_cache.{k,v}_pool_ptr`
+            // (routed to the producer pool). `prefill_attention_paged`
+            // skips the k/v projections + cache write when `kv_shared`.
+            self.prefill_attention_paged(
+                normed,
+                num_tokens,
+                seq_len_start,
+                kv_cache,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                batched_meta,
+                kv_write_start,
+                ctx,
+                stream,
+            )?
+        } else if seq_len_start == 0 && !allow_batched_first_chunk {
             // Chunk 0 (or non-chunked): Flash Attention on contiguous Q/K/V.
             self.prefill_attention_with_cache_skip(
                 normed,
@@ -440,6 +462,13 @@ impl Qwen3AttentionLayer {
                 stream,
             )
             .map_err(|e| anyhow::anyhow!("residual_add failed: n={num_tokens} h={h}: {e}"))?;
+        }
+
+        // Gemma-4 E2B per-layer-embedding (PLE): runs immediately BEFORE
+        // layer_scalar at the end of the layer (no-op unless this layer has
+        // PLE weights AND the model armed a combined buffer this pass).
+        if self.ple.is_some() {
+            self.gemma4_ple_forward(ctx, hidden, num_tokens, stream)?;
         }
 
         // Gemma-4: hidden *= layer_scalar at end of layer (applied to ALL tokens)

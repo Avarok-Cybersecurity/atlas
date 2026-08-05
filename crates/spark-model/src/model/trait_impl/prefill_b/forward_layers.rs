@@ -151,6 +151,12 @@ impl TransformerModel {
             None
         };
         let mut layer_times: Vec<u128> = Vec::new();
+        // Gemma-4 E2B per-layer-embedding (PLE): arm every layer's PLE slice
+        // from the combined buffer the dispatcher computed for this chunk's
+        // processed tokens (Phase 3c). No-op for non-E2B.
+        if self.ple_tables.is_some() {
+            self.ple_arm_layers(self.ple_combined);
+        }
         for (i, layer) in self.layers.iter().enumerate() {
             let lt0 = if profile_now {
                 self.gpu.synchronize(stream)?;

@@ -227,7 +227,11 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         }
-        if let Some(ref k_norm_full) = self.attn.k_norm_full {
+        if self.kv_shared {
+            // KV-shared band (Gemma-4 E2B): K is never computed, so its norm
+            // and V's norm are skipped too (the paged attention below reads
+            // the producer's already-normed K/V from the aliased pool).
+        } else if let Some(ref k_norm_full) = self.attn.k_norm_full {
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_w_k,
@@ -260,8 +264,10 @@ impl Qwen3AttentionLayer {
         // layers, v_contiguous holds V_proj output. Either way normalize
         // with pure RMSNorm via the ones-buffer (Gemma-4's absolute-
         // formula rms_norm kernel: `x * rms * 1.0 = x * rms`). V does NOT
-        // receive RoPE.
-        if let Some(v_norm_w) = self.v_norm_weight.as_ref() {
+        // receive RoPE. Skipped on KV-shared layers (no V here).
+        if let Some(v_norm_w) = self.v_norm_weight.as_ref()
+            && !self.kv_shared
+        {
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_w_k,
@@ -309,6 +315,9 @@ impl Qwen3AttentionLayer {
             .map(|m| m.slot_stacked)
             .or(meta_for_single.map(|m| m.slot))
             .unwrap();
+        // KV-shared band (Gemma-4 E2B): only Q is rotated (no K produced
+        // here — the producer rotated the pool's K already).
+        let rope_nkv = if self.kv_shared { 0 } else { nkv };
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
         } else if let Some(ref mla) = self.mla {
@@ -322,7 +331,7 @@ impl Qwen3AttentionLayer {
                     bmeta_positions,
                     n,
                     nq,
-                    nkv,
+                    rope_nkv,
                     hd,
                     ctx.config.rotary_dim() as u32,
                     mla.yarn_inv_freq,
@@ -338,7 +347,7 @@ impl Qwen3AttentionLayer {
                     bmeta_positions,
                     n,
                     nq,
-                    nkv,
+                    rope_nkv,
                     hd,
                     self.rotary_dim_override
                         .unwrap_or(ctx.config.rotary_dim() as u32),
@@ -359,7 +368,7 @@ impl Qwen3AttentionLayer {
                 bmeta_positions,
                 n,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 rope_angles,
                 self.rope_theta_override
@@ -377,7 +386,7 @@ impl Qwen3AttentionLayer {
                 bmeta_positions_w,
                 n,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 self.rotary_dim_override
                     .unwrap_or(ctx.config.rotary_dim() as u32),
@@ -394,7 +403,7 @@ impl Qwen3AttentionLayer {
                 bmeta_positions,
                 n,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 self.rotary_dim_override
                     .unwrap_or(ctx.config.rotary_dim() as u32),
@@ -419,7 +428,12 @@ impl Qwen3AttentionLayer {
         // floor region — section 8's paged attention reads the original
         // cached K/V at those positions, which is exactly what we want.
         let wf = kv_write_floor.min(num_tokens);
-        if self.mla.is_none() && wf < num_tokens {
+        // KV-shared band (Gemma-4 E2B): NEVER write this layer's k/v to the
+        // cache — the producer already wrote the chunk's k/v into the aliased
+        // pool, and this layer's own k/v weights differ.
+        if self.kv_shared {
+            // no-op: skip the cache write entirely.
+        } else if self.mla.is_none() && wf < num_tokens {
             self.write_kv_cache(
                 ctx.gpu,
                 k_contiguous.offset(wf * kv_dim * bf16),

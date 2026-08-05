@@ -31,7 +31,7 @@ pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
-pub use gemma4::{Gemma4PleTables, Gemma4WeightLoader};
+pub use gemma4::{Gemma4PerLayerPleWeights, Gemma4PleTables, Gemma4WeightLoader};
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
 pub use nllb::NllbWeightLoader;
