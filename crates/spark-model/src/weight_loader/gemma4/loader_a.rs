@@ -318,10 +318,15 @@ pub(super) fn load_layers_impl(
         // to NVFP4 otherwise (matches the o_proj BF16 pattern). NVFP4
         // weights are kept loaded as a fallback / for non-MLP code that
         // still uses them.
+        // E2B double-wide MLP (use_double_wide_mlp): the KV-shared band
+        // (i >= num_hidden_layers - num_kv_shared_layers) projects to
+        // 2*intermediate_size; other layers (and all non-E2B variants) use
+        // config.intermediate_size. See loader_c::layer_intermediate_size.
+        let inter = super::loader_c::layer_intermediate_size(config, i);
         let gate_proj = quantized_any(
             store,
             &format!("{lp}.mlp.gate_proj"),
-            config.intermediate_size,
+            inter,
             h,
             gpu,
             variant,
@@ -330,7 +335,7 @@ pub(super) fn load_layers_impl(
         let up_proj = quantized_any(
             store,
             &format!("{lp}.mlp.up_proj"),
-            config.intermediate_size,
+            inter,
             h,
             gpu,
             variant,
@@ -340,7 +345,7 @@ pub(super) fn load_layers_impl(
             store,
             &format!("{lp}.mlp.down_proj"),
             h,
-            config.intermediate_size,
+            inter,
             gpu,
             variant,
             qctx,
@@ -354,7 +359,7 @@ pub(super) fn load_layers_impl(
             up_proj_t: None,
             down_proj_t: None,
         };
-        let bf16_mlp_weights = build_bf16_mlp(store, &lp, bf16_mlp, config, gpu, h)?;
+        let bf16_mlp_weights = build_bf16_mlp(store, &lp, bf16_mlp, inter, gpu, h)?;
         gpu.synchronize(stream)?;
         tracing::info!(
             "L{i}: FFN weights loaded (bf16_mlp={bf16_mlp}), building DenseFfnLayer (GELU)..."

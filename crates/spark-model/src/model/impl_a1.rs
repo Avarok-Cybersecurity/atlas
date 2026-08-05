@@ -60,6 +60,9 @@ impl TransformerModel {
         vision_encoder: Option<crate::layers::VisionEncoder>,
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
+        // Gemma-4 E2B per-layer-embedding (PLE) tables — `None` for all
+        // non-E2B models (default loader impl). Loading-only for now.
+        ple_tables: Option<crate::weight_loader::Gemma4PleTables>,
     ) -> Result<Self> {
         // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
         // checkpoint tensor). Models that ship HF-vanilla norm weights load it
@@ -521,6 +524,7 @@ impl TransformerModel {
             lm_head_weight,
             lm_head_nvfp4,
             lm_head_fp8,
+            ple_tables,
             layers,
             buffers,
             lora: None,

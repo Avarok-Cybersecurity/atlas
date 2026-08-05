@@ -59,6 +59,10 @@ pub struct TransformerModel {
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
+    /// Gemma-4 E2B per-layer-embedding (PLE) tables. `None` for every
+    /// non-E2B model. Loaded by W1.2.2-4; the forward pass consumes them
+    /// in a later wave.
+    pub(super) ple_tables: Option<crate::weight_loader::Gemma4PleTables>,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
     /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
     /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive

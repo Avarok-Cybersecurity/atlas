@@ -168,6 +168,10 @@ pub fn build_model(
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
     let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
+    // Gemma-4 E2B per-layer-embedding (PLE) tables — `None` for every
+    // non-E2B model (default trait impl). Loading-only; the forward pass
+    // consumes them in a later wave.
+    let ple_tables = loader.load_ple_tables(&store, &config, gpu.as_ref())?;
 
     // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
     // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path and keep it
@@ -571,6 +575,7 @@ pub fn build_model(
         vision_encoder,
         ssm_cache_slots,
         ssm_checkpoint_interval,
+        ple_tables,
     )?;
 
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──

@@ -26,6 +26,9 @@ use crate::weight_map::{DenseWeight, MtpWeights};
 
 mod loader_a;
 mod loader_b;
+mod loader_c;
+
+pub use loader_c::Gemma4PleTables;
 
 pub struct Gemma4WeightLoader;
 
@@ -95,5 +98,14 @@ impl ModelWeightLoader for Gemma4WeightLoader {
 
     fn kv_layer_dims(&self, config: &ModelConfig) -> Vec<(usize, usize)> {
         loader_b::kv_layer_dims_impl(config)
+    }
+
+    fn load_ple_tables(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<Gemma4PleTables>> {
+        loader_c::load_ple_tables_impl(store, config, gpu)
     }
 }
