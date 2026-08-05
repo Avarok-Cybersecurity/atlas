@@ -37,6 +37,7 @@ ARG CUTLASS_DSL_VER
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
       curl ca-certificates build-essential pkg-config git cmake libclang-dev \
+      libibverbs-dev librdmacm-dev libnccl2 libnccl-dev \
       python3 python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
