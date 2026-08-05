@@ -86,7 +86,7 @@ ENV ATLAS_TARGET_QUANT=*
 # Native FP4 GEMM + cuBLASLt BF16 prefill projections on by default (matches prod).
 ENV ATLAS_CUTLASS_NVFP4_GEMM=1
 
-RUN cargo build --release -p spark-server
+RUN CUDARC_CUDA_VERSION=13000 cargo build --release -p spark-server
 
 # Re-link the GDN AOT shared lib from committed artifacts (gdn_holo_0.o is the
 # AOT-exported bf16 kernel; gdn_transpose.o is the k<->v state transpose). No
