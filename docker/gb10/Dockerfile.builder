@@ -62,9 +62,7 @@ RUN git clone --filter=blob:none https://github.com/flashinfer-ai/flashinfer.git
 # CuTe-DSL runtime for the GDN AOT kernel (provides libcute_dsl_runtime.so).
 # Discover its location and expose it on the linker/loader path.
 RUN pip3 install --no-cache-dir --break-system-packages "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VER}" && \
-    CUTE_RT=$(python3 -c "import importlib.util,os,glob; \
-      base=os.path.dirname(importlib.util.find_spec('cutlass').origin); \
-      print(next(iter(glob.glob(base+'/**/libcute_dsl_runtime.so', recursive=True)), ''))") && \
+    CUTE_RT=$(find /usr/local/lib /usr/lib -name libcute_dsl_runtime.so 2>/dev/null | head -1) && \
     test -n "$CUTE_RT" && ln -sf "$CUTE_RT" /usr/local/lib/libcute_dsl_runtime.so && \
     echo "cute runtime: $CUTE_RT"
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/compat:${LD_LIBRARY_PATH}
