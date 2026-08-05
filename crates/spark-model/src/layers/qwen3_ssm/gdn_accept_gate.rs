@@ -81,7 +81,89 @@ pub fn note_verify_accept(num_accepted: usize) {
 
 /// Whether the fused general-K (wyk) path is currently favored. Consulted by
 /// the GDN dispatch each verify step; starts disengaged (sequential) until
-/// the accept history warms past `ENGAGE_AT` (~6-8 steps on code content).
+/// the accept history warms past `ENGAGE_AT` (order 10-30 steps depending on
+/// content; measured ~33 from cold on real code workloads).
 pub fn wide_fused_favored() -> bool {
     ENGAGED.load(Ordering::Relaxed)
+}
+
+/// Test-only: reset the process-global gate state to cold-start.
+#[cfg(test)]
+fn reset_for_test() {
+    EWMA_BITS.store(0f32.to_bits(), Ordering::Relaxed);
+    ENGAGED.store(false, Ordering::Relaxed);
+    STEPS_SINCE_SWITCH.store(u32::MAX, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One sequential lifecycle test rather than parallel #[test] fns: the
+    /// gate state is process-global, and cargo's threaded test runner would
+    /// race independent tests through it.
+    #[test]
+    fn gate_lifecycle() {
+        reset_for_test();
+
+        // Cold start: disengaged before any history.
+        assert!(
+            !wide_fused_favored(),
+            "gate must start on the sequential path"
+        );
+
+        // Prose regime: accept ~2 settles the EWMA near 2, never engages.
+        for _ in 0..200 {
+            note_verify_accept(2);
+        }
+        assert!(
+            !wide_fused_favored(),
+            "sustained low accept must never engage the fused path"
+        );
+
+        // Code regime: sustained accept 6 must engage, and not instantly —
+        // the EWMA (alpha 1/16) needs >10 steps to cross ENGAGE_AT from ~2.
+        reset_for_test();
+        let mut engaged_at = None;
+        for step in 1..=100 {
+            note_verify_accept(6);
+            if wide_fused_favored() {
+                engaged_at = Some(step);
+                break;
+            }
+        }
+        let engaged_at = engaged_at.expect("sustained accept 6 must engage");
+        assert!(
+            (10..=40).contains(&engaged_at),
+            "engage should take an EWMA-warmup, not fire on single steps (got step {engaged_at})"
+        );
+
+        // Release: sustained accept 0 must release, but the EWMA crossing
+        // RELEASE_AT (~8 steps from 6.0) is NOT sufficient — the 16-step
+        // dwell must also elapse since the engage transition.
+        let mut released_at = None;
+        for step in 1..=100 {
+            note_verify_accept(0);
+            if !wide_fused_favored() {
+                released_at = Some(step);
+                break;
+            }
+        }
+        let released_at = released_at.expect("sustained accept 0 must release");
+        assert!(
+            released_at >= MIN_DWELL_STEPS as usize,
+            "release fired at step {released_at}, inside the {MIN_DWELL_STEPS}-step dwell"
+        );
+
+        // Hysteresis: accept riding between RELEASE_AT and ENGAGE_AT must not
+        // flap the gate — 3 is inside the dead band from either side.
+        reset_for_test();
+        for _ in 0..200 {
+            note_verify_accept(3);
+        }
+        assert!(
+            !wide_fused_favored(),
+            "in-band accept must not engage from the disengaged side"
+        );
+    }
 }

@@ -319,8 +319,7 @@ pub struct TransformerModel {
     /// and wyk_gate keys the GDN dispatch state (same rationale as
     /// `verify_kgamma_graph`). Replaces the separate `decode_graph` (M=1) +
     /// `verify{k}_graph` (M=k) on the DFlash path with a single M-row sweep.
-    pub(super) fused_graph:
-        Mutex<std::collections::HashMap<(usize, usize, bool), GraphHandle>>,
+    pub(super) fused_graph: Mutex<std::collections::HashMap<(usize, usize, bool), GraphHandle>>,
     /// Prefix cache for KV block reuse across requests.
     pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     /// Secondary CUDA stream for pipelining checkpoint D2D with MTP propose.
