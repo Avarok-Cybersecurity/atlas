@@ -68,6 +68,11 @@ def main() -> None:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     torch.set_grad_enabled(False)
+    # GB10 ARM: triton's JIT can't link libcuda.so.1 from /lib/aarch64-linux-gnu.
+    # Force the non-triton math attention backend for a pure reference dump.
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
 
     from transformers import AutoModelForMultimodalLM, AutoTokenizer
 
@@ -78,7 +83,7 @@ def main() -> None:
     )
     model.eval()
 
-    lm = model.language_model  # Gemma4TextModel
+    lm = model.model.language_model  # Gemma4ForConditionalGeneration -> Gemma4Model -> text
     text_cfg = lm.config
     n_layers = text_cfg.num_hidden_layers
     hidden = text_cfg.hidden_size
