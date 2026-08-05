@@ -19,6 +19,19 @@ pub enum LayerType {
     Moe,
 }
 
+/// Per-layer attention kind in Gemma-4 E2B (parsed from `layer_types`).
+///
+/// Kept distinct from [`LayerType`]: every Gemma-4 layer is an attention
+/// layer, so `layer_types` stays all-[`LayerType::FullAttention`] and the
+/// SSM/hybrid layer-counting paths never engage. `attention_types` is the
+/// source of truth for sliding-vs-full at load/runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    Sliding,
+    Full,
+}
+
 /// Model configuration parsed from HuggingFace config.json.
 ///
 /// Single source of truth for model dimensions. All kernel launch
@@ -358,6 +371,42 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub embed_scale: f32,
 
+    // ── Gemma-4 E2B (text_config + vision_config + audio_config) ──
+    /// Number of KV layers shared across the whole network
+    /// (`num_kv_shared_layers`). 0 = no shared KV layers (all other Gemma-4
+    /// variants).
+    #[serde(skip)]
+    pub num_kv_shared_layers: usize,
+    /// Hidden size per layer input (per-layer embeddings, PLE). 0 = PLE
+    /// disabled.
+    #[serde(skip)]
+    pub hidden_size_per_layer_input: usize,
+    /// Vocab size per layer input. 0 = fall back to `vocab_size`.
+    #[serde(skip)]
+    pub vocab_size_per_layer_input: usize,
+    /// Double-wide MLP (`use_double_wide_mlp`): the FFN projects to
+    /// `2 * intermediate_size` before gating down.
+    #[serde(skip)]
+    pub use_double_wide_mlp: bool,
+    /// Full-attention layer head dim (`global_head_dim`). 0 = fall back to
+    /// `head_dim`.
+    #[serde(skip)]
+    pub global_head_dim: usize,
+    /// Per-layer attention kind (Sliding/Full), parsed from the E2B
+    /// `layer_types` array. Empty for 26B/31B (`attention_pattern` style).
+    /// Source of truth for sliding-vs-full at load/runtime; `layer_types`
+    /// itself stays all-`FullAttention` so the SSM/hybrid paths never engage.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub attention_types: Vec<AttentionKind>,
+    /// Vision encoder config for Gemma-4 E2B (`vision_config`). None for
+    /// text-only 26B/31B variants.
+    #[serde(skip)]
+    pub gemma_vision: Option<GemmaVisionConfig>,
+    /// Audio encoder config for Gemma-4 E2B (`audio_config`). None for
+    /// text-only 26B/31B variants.
+    #[serde(skip)]
+    pub gemma_audio: Option<GemmaAudioConfig>,
+
     // ── MiniMax M2 specific ──
     /// MoE routing activation. "" = default softmax. "sigmoid" = DeepSeek-V3
     /// / MiniMax-M2 style: raw gate logits pass through sigmoid to produce
@@ -477,6 +526,60 @@ pub struct VisionConfig {
     /// into the text embedding stream. Qwen3-VL uses 151655; Qwen3.6 uses
     /// 248056. When 0 the runtime falls back to the legacy Qwen3-VL value.
     pub image_pad_token_id: u32,
+}
+
+/// Vision encoder configuration for Gemma-4 E2B (`vision_config`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GemmaVisionConfig {
+    /// ViT hidden dimension.
+    pub hidden_size: usize,
+    /// ViT MLP intermediate size.
+    pub intermediate_size: usize,
+    /// Number of ViT transformer blocks.
+    pub num_hidden_layers: usize,
+    /// Number of attention heads.
+    pub num_attention_heads: usize,
+    /// Attention head dimension.
+    pub head_dim: usize,
+    /// Spatial patch size in pixels.
+    pub patch_size: usize,
+    /// Patch pooling kernel size.
+    pub pooling_kernel_size: usize,
+    /// Positional embedding table size.
+    pub position_embedding_size: usize,
+    /// Clip linear projections (use_clipped_linears).
+    pub use_clipped_linears: bool,
+    /// Top-level `image_token_id` that splices vision embeddings into text.
+    pub image_token_id: u32,
+}
+
+/// Audio encoder configuration for Gemma-4 E2B (`audio_config`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GemmaAudioConfig {
+    /// Audio encoder hidden dimension.
+    pub hidden_size: usize,
+    /// Number of audio transformer blocks.
+    pub num_hidden_layers: usize,
+    /// Number of attention heads.
+    pub num_attention_heads: usize,
+    /// Subsampling conv channel counts, outermost to innermost.
+    pub subsampling_conv_channels: Vec<usize>,
+    /// Subsampling conv kernel size.
+    pub conv_kernel_size: usize,
+    /// Attention chunk size.
+    pub attention_chunk_size: usize,
+    /// Left context of the chunked attention window.
+    pub attention_context_left: usize,
+    /// Right context of the chunked attention window.
+    pub attention_context_right: usize,
+    /// Output projection dimension (into text hidden_size).
+    pub output_proj_dims: usize,
+    /// Residual blend weight of the audio branch.
+    pub residual_weight: f64,
+    /// Clip linear projections (use_clipped_linears).
+    pub use_clipped_linears: bool,
+    /// Top-level `audio_token_id` that splices audio embeddings into text.
+    pub audio_token_id: u32,
 }
 
 impl VisionConfig {
