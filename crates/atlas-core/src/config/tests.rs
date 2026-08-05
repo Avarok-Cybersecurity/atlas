@@ -677,6 +677,97 @@ fn test_parse_gemma4_e2b_config() {
     assert_eq!(audio.audio_token_id, 258881);
 }
 
+/// W1.4 Gemma-4 E2B cross-layer KV sharing: `kv_pool_map` routes each
+/// shared layer (15-34) to the last same-kind non-shared layer — sliding
+/// → 13, full → 14. Layers 0-14 own their physical pool.
+#[test]
+fn test_kv_pool_map_e2b() {
+    let json = r#"{
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 20,
+            "layer_types": [
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+            ]
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_kv_shared_layers, 20);
+
+    let map = cfg.kv_pool_map();
+    // 15 physical pools: layers 0-14 own their pool.
+    assert_eq!(map.len(), 35);
+    for (i, &pool) in map.iter().enumerate().take(15) {
+        assert_eq!(pool, i, "layer {i} owns its pool");
+    }
+    // Shared band: sliding layers route to producer 13, full layers to 14.
+    for (i, &pool) in map.iter().enumerate().skip(15) {
+        let expected = if i % 5 == 4 { 14 } else { 13 };
+        assert_eq!(pool, expected, "shared layer {i}");
+    }
+    assert_eq!(map[15], 13);
+    assert_eq!(map[18], 13);
+    assert_eq!(map[19], 14);
+    assert_eq!(map[20], 13);
+    assert_eq!(map[23], 13);
+    assert_eq!(map[24], 14);
+    assert_eq!(map[34], 14);
+}
+
+/// W1.4: `kv_pool_map` stays empty when sharing is off — identity behavior
+/// for every non-E2B model. Empty both when `num_kv_shared_layers` is 0 and
+/// when `attention_types` is missing (no layer-kind source of truth).
+#[test]
+fn test_kv_pool_map_empty_when_no_sharing() {
+    // num_kv_shared_layers defaults to 0 → no sharing.
+    let json = r#"{
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_kv_shared_layers, 0);
+    assert!(cfg.attention_types.is_empty());
+    assert!(cfg.kv_pool_map().is_empty());
+
+    // num_kv_shared_layers > 0 but no layer_types → attention_types empty →
+    // cannot pick a producer → no sharing (empty map, identity).
+    let json = r#"{
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 20
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_kv_shared_layers, 20);
+    assert!(cfg.attention_types.is_empty());
+    assert!(cfg.kv_pool_map().is_empty());
+}
+
 #[test]
 fn test_parse_deepseek_v4_config() {
     let json = r#"{

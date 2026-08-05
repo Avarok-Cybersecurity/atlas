@@ -16,6 +16,7 @@ fn test_config() -> KvCacheConfig {
         dtype: KvCacheDtype::Fp8,
         layer_dtypes: vec![],
         layer_dims: vec![],
+        layer_to_pool: vec![],
         cache_blocks_per_seq: None,
     }
 }
@@ -316,6 +317,7 @@ fn test_mixed_dtype_pool_allocation() {
         dtype: KvCacheDtype::Fp8,
         layer_dtypes,
         layer_dims: vec![],
+        layer_to_pool: vec![],
         cache_blocks_per_seq: None,
     };
     let cache = PagedKvCache::new(cfg, 4, &gpu).unwrap();

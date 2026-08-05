@@ -204,17 +204,17 @@ impl PagedKvCache {
         self.free_blocks.len()
     }
 
-    /// Get K cache pointer for a layer and block.
+    /// Get K cache pointer for a layer and block (routes via `pool_for_layer`).
     pub fn k_cache_ptr(&self, layer_idx: usize, block_idx: u32) -> DevicePtr {
-        let layer = &self.layers[layer_idx];
+        let layer = &self.layers[self.config.pool_for_layer(layer_idx)];
         layer
             .k_pool
             .offset(block_idx as usize * layer.k_block_stride)
     }
 
-    /// Get V cache pointer for a layer and block.
+    /// Get V cache pointer for a layer and block (routes via `pool_for_layer`).
     pub fn v_cache_ptr(&self, layer_idx: usize, block_idx: u32) -> DevicePtr {
-        let layer = &self.layers[layer_idx];
+        let layer = &self.layers[self.config.pool_for_layer(layer_idx)];
         layer
             .v_pool
             .offset(block_idx as usize * layer.v_block_stride)
@@ -316,7 +316,7 @@ impl PagedKvCache {
         tag: &str,
     ) {
         gpu.synchronize(stream).ok();
-        let layer = &self.layers[layer_idx];
+        let layer = &self.layers[self.config.pool_for_layer(layer_idx)];
         if layer.dtype != super::KvCacheDtype::Bf16 {
             return;
         }
@@ -345,12 +345,12 @@ impl PagedKvCache {
 
     /// Get the full K cache pool pointer for a layer (for paged decode kernel).
     pub fn k_pool_ptr(&self, layer_idx: usize) -> DevicePtr {
-        self.layers[layer_idx].k_pool
+        self.layers[self.config.pool_for_layer(layer_idx)].k_pool
     }
 
     /// Get the full V cache pool pointer for a layer.
     pub fn v_pool_ptr(&self, layer_idx: usize) -> DevicePtr {
-        self.layers[layer_idx].v_pool
+        self.layers[self.config.pool_for_layer(layer_idx)].v_pool
     }
 
     /// Cache stride in elements (for FP8/BF16 kernels that need explicit stride).
@@ -369,19 +369,19 @@ impl PagedKvCache {
     /// For asymmetric dtypes returns the K-side stride; use
     /// `v_block_stride_bytes_for_layer` for the V-side stride explicitly.
     pub fn block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
-        self.layers[layer_idx].k_block_stride
+        self.layers[self.config.pool_for_layer(layer_idx)].k_block_stride
     }
 
     /// K-side block stride in bytes for a specific attention layer.
     /// Same as `block_stride_bytes_for_layer`; named for clarity in asym call sites.
     pub fn k_block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
-        self.layers[layer_idx].k_block_stride
+        self.layers[self.config.pool_for_layer(layer_idx)].k_block_stride
     }
 
     /// V-side block stride in bytes for a specific attention layer.
     /// Differs from K-side only for asymmetric KV cache dtypes.
     pub fn v_block_stride_bytes_for_layer(&self, layer_idx: usize) -> usize {
-        self.layers[layer_idx].v_block_stride
+        self.layers[self.config.pool_for_layer(layer_idx)].v_block_stride
     }
 
     /// NVFP4 data section size in bytes per block (uniform).
@@ -420,9 +420,10 @@ impl PagedKvCache {
         &self.config
     }
 
-    /// Effective KV cache dtype for a specific attention layer.
+    /// Effective KV cache dtype for a specific attention layer (routes via
+    /// `pool_for_layer`: shared layers report the producer's dtype).
     pub fn dtype_for_layer(&self, layer_idx: usize) -> KvCacheDtype {
-        self.layers[layer_idx].dtype
+        self.layers[self.config.pool_for_layer(layer_idx)].dtype
     }
 
     pub fn block_size(&self) -> usize {
@@ -452,8 +453,9 @@ impl PagedKvCache {
         block_idx: u32,
         gpu: &dyn GpuBackend,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let k_stride = self.layers[layer_idx].k_block_stride;
-        let v_stride = self.layers[layer_idx].v_block_stride;
+        let pool = self.config.pool_for_layer(layer_idx);
+        let k_stride = self.layers[pool].k_block_stride;
+        let v_stride = self.layers[pool].v_block_stride;
         let k_ptr = self.k_cache_ptr(layer_idx, block_idx);
         let v_ptr = self.v_cache_ptr(layer_idx, block_idx);
 

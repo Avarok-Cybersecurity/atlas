@@ -310,10 +310,20 @@ pub fn build_model(
         block_size: kv_block_size,
         num_kv_heads: kv_num_heads,
         head_dim: kv_head_dim,
-        num_layers: config.num_attention_layers(),
+        // Cross-layer KV sharing (Gemma-4 E2B, W1.4): the KV cache holds only
+        // the physical pool count (num_hidden_layers - num_kv_shared_layers,
+        // e.g. 15 for E2B) — shared layers reuse their producer's pool via
+        // `layer_to_pool`. All other models keep the logical attention-layer
+        // count with an empty (identity) map — byte-identical behavior.
+        num_layers: if config.num_kv_shared_layers > 0 {
+            config.num_hidden_layers - config.num_kv_shared_layers
+        } else {
+            config.num_attention_layers()
+        },
         dtype: kv_dtype,
         layer_dtypes: layer_dtypes.clone(),
         layer_dims: config.kv_layer_dims.clone(),
+        layer_to_pool: config.kv_pool_map(),
         cache_blocks_per_seq: hss_cache_blocks_per_seq,
     };
 
