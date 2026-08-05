@@ -392,6 +392,12 @@ pub struct ModelConfig {
     /// `head_dim`.
     #[serde(skip)]
     pub global_head_dim: usize,
+    /// Raw text_config `head_dim` — the sliding/base head dim, BEFORE the
+    /// max-for-buffer-sizing override that folds `global_head_dim` into
+    /// `head_dim`. 0 = fall back to `head_dim`. Used for per-layer KV dims
+    /// when `attention_types` is non-empty (E2B).
+    #[serde(skip)]
+    pub base_head_dim: usize,
     /// Per-layer attention kind (Sliding/Full), parsed from the E2B
     /// `layer_types` array. Empty for 26B/31B (`attention_pattern` style).
     /// Source of truth for sliding-vs-full at load/runtime; `layer_types`

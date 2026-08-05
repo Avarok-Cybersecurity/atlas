@@ -108,6 +108,7 @@ impl ModelConfig {
             vocab_size_per_layer_input: 0,
             use_double_wide_mlp: false,
             global_head_dim: 0,
+            base_head_dim: 0,
             attention_types: Vec::new(),
             gemma_vision: None,
             gemma_audio: None,

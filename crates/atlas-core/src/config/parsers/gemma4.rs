@@ -141,6 +141,10 @@ pub(crate) fn parse_gemma4_params(raw: &serde_json::Value) -> Result<ModelConfig
     } else {
         head_dim
     }; // 512 for buffers
+    // Raw text_config head_dim (sliding/base dim) BEFORE the max-for-buffers
+    // override above. Used for per-layer KV dims when attention_types is
+    // non-empty (E2B). Records 256 for 26B/31B too — harmless, unused there.
+    config.base_head_dim = head_dim;
     config.global_head_dim = global_head_dim;
     config.partial_rotary_factor = partial_rotary_factor;
     config.layer_types = layer_types;

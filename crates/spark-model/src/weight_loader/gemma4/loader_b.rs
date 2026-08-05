@@ -86,11 +86,16 @@ pub(super) fn make_v_norm_ones_bf16(gpu: &dyn GpuBackend, head_dim: usize) -> Re
 }
 
 /// Optional BF16 dequant of MLP gate/up/down (Gemma-4 dense, NVFP4 on disk).
+///
+/// `inter` is the per-layer MLP intermediate size — E2B's double-wide
+/// KV-shared band passes `2 * config.intermediate_size` (see
+/// `loader_c::layer_intermediate_size`); all other layers pass
+/// `config.intermediate_size`, keeping 26B/31B byte-identical.
 pub(super) fn build_bf16_mlp(
     store: &WeightStore,
     lp: &str,
     bf16_mlp: bool,
-    config: &ModelConfig,
+    inter: usize,
     gpu: &dyn GpuBackend,
     h: usize,
 ) -> Result<Option<(DenseWeight, DenseWeight, DenseWeight)>> {
@@ -99,27 +104,9 @@ pub(super) fn build_bf16_mlp(
         return Ok(None);
     }
     use crate::weight_map::dequant_nvfp4_to_bf16;
-    let gate_bf16 = dequant_nvfp4_to_bf16(
-        store,
-        &format!("{lp}.mlp.gate_proj"),
-        config.intermediate_size,
-        h,
-        gpu,
-    )?;
-    let up_bf16 = dequant_nvfp4_to_bf16(
-        store,
-        &format!("{lp}.mlp.up_proj"),
-        config.intermediate_size,
-        h,
-        gpu,
-    )?;
-    let down_bf16 = dequant_nvfp4_to_bf16(
-        store,
-        &format!("{lp}.mlp.down_proj"),
-        h,
-        config.intermediate_size,
-        gpu,
-    )?;
+    let gate_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.gate_proj"), inter, h, gpu)?;
+    let up_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.up_proj"), inter, h, gpu)?;
+    let down_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.down_proj"), h, inter, gpu)?;
     Ok(Some((gate_bf16, up_bf16, down_bf16)))
 }
 
@@ -166,7 +153,23 @@ pub(super) fn load_mtp_weights_impl(
 }
 
 pub(super) fn kv_layer_dims_impl(config: &ModelConfig) -> Vec<(usize, usize)> {
-    // Gemma-4 has a 5:1 sliding→full pattern:
+    // E2B (`attention_types` non-empty): geometry comes from the config.
+    // 1 KV head everywhere; hd = global_head_dim for full layers, else the
+    // raw base head dim (NOT config.head_dim, which is the max-for-buffers).
+    if !config.attention_types.is_empty() {
+        let mut dims = Vec::with_capacity(config.num_hidden_layers);
+        for i in 0..config.num_hidden_layers {
+            let is_full = config.attention_types[i] == atlas_core::config::AttentionKind::Full;
+            let hd = if is_full {
+                config.global_head_dim
+            } else {
+                config.base_head_dim
+            };
+            dims.push((config.num_key_value_heads, hd));
+        }
+        return dims;
+    }
+    // 26B/31B (no `attention_types`): legacy 5:1 sliding→full pattern.
     //   Sliding:  nkv=num_kv_heads (16), hd=256
     //   Full:     nkv=num_global_kv_heads (4), hd=global_head_dim (512)
     // Layer i is full when (i+1) % 6 == 0, else sliding.
@@ -183,4 +186,91 @@ pub(super) fn kv_layer_dims_impl(config: &ModelConfig) -> Vec<(usize, usize)> {
         }
     }
     dims
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kv_layer_dims_impl;
+    use atlas_core::config::parse_config;
+
+    /// Gemma-4 E2B: 35 layers, 1 KV head everywhere, head_dim 256 sliding /
+    /// 512 full at {4,9,14,19,24,29,34} — dims must come from the config.
+    #[test]
+    fn kv_layer_dims_e2b_is_config_driven() {
+        let json = r#"{
+            "model_type": "gemma4",
+            "text_config": {
+                "hidden_size": 1536,
+                "num_hidden_layers": 35,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 1,
+                "head_dim": 256,
+                "global_head_dim": 512,
+                "sliding_window": 512,
+                "vocab_size": 262144,
+                "intermediate_size": 6144,
+                "max_position_embeddings": 131072,
+                "rms_norm_eps": 1e-6,
+                "layer_types": [
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                    "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+                ],
+                "rope_parameters": {
+                    "full_attention": { "partial_rotary_factor": 0.25, "rope_theta": 1000000.0 },
+                    "sliding_attention": { "rope_theta": 10000.0 }
+                }
+            }
+        }"#;
+        let cfg = parse_config(json).unwrap();
+        assert_eq!(cfg.attention_types.len(), 35);
+        let dims = kv_layer_dims_impl(&cfg);
+        assert_eq!(dims.len(), 35);
+        let full_indices = [4, 9, 14, 19, 24, 29, 34];
+        for (i, (nkv, hd)) in dims.iter().enumerate() {
+            let expected = if full_indices.contains(&i) {
+                (1, 512)
+            } else {
+                (1, 256)
+            };
+            assert_eq!((*nkv, *hd), expected, "layer {i}");
+        }
+    }
+
+    /// Gemma-4 31B (no `layer_types`) must keep the legacy 5:1 sliding→full
+    /// pattern byte-for-byte (regression guard).
+    #[test]
+    fn kv_layer_dims_31b_keeps_legacy_5_to_1() {
+        let json = r#"{
+            "model_type": "gemma4",
+            "text_config": {
+                "hidden_size": 5376,
+                "num_hidden_layers": 12,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 16,
+                "head_dim": 256,
+                "intermediate_size": 21504,
+                "vocab_size": 262144,
+                "sliding_window": 1024,
+                "rms_norm_eps": 1e-6,
+                "max_position_embeddings": 262144
+            }
+        }"#;
+        let cfg = parse_config(json).unwrap();
+        assert!(cfg.attention_types.is_empty());
+        let dims = kv_layer_dims_impl(&cfg);
+        assert_eq!(dims.len(), 12);
+        for (i, (nkv, hd)) in dims.iter().enumerate() {
+            let expected = if (i + 1) % 6 == 0 {
+                (4, 512)
+            } else {
+                (16, 256)
+            };
+            assert_eq!((*nkv, *hd), expected, "layer {i}");
+        }
+    }
 }
