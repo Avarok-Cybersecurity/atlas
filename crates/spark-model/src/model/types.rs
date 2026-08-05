@@ -306,14 +306,21 @@ pub struct TransformerModel {
     /// NULL without an MTP proposer (path self-gates).
     pub(super) verify_wy_tables: DevicePtr,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
-    /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
-    /// per (slot, K) — different γ values coexist via the K dimension.
-    pub(super) verify_kgamma_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
+    /// `(seq.slot_idx, K, wyk_gate)`. K is `tokens.len()` (γ+1 typically);
+    /// different γ values coexist via the K dimension. The wyk accept-gate
+    /// state must key the graph because the GDN fused-vs-sequential dispatch
+    /// freezes at capture: without it, a graph captured in one gate state
+    /// replays that path forever (including fused into low-accept content).
+    /// Both variants coexist; replay always matches the live gate decision.
+    pub(super) verify_kgamma_graph:
+        Mutex<std::collections::HashMap<(usize, usize, bool), GraphHandle>>,
     /// Cached CUDA graphs for the DFlash decode+verify fused pass, keyed by
-    /// `(seq.slot_idx, M)` where M = tokens.len() = 1 + num_drafts.
-    /// Replaces the separate `decode_graph` (M=1) + `verify{k}_graph` (M=k)
-    /// on the DFlash path with a single M-row weight sweep.
-    pub(super) fused_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
+    /// `(seq.slot_idx, M, wyk_gate)` where M = tokens.len() = 1 + num_drafts
+    /// and wyk_gate keys the GDN dispatch state (same rationale as
+    /// `verify_kgamma_graph`). Replaces the separate `decode_graph` (M=1) +
+    /// `verify{k}_graph` (M=k) on the DFlash path with a single M-row sweep.
+    pub(super) fused_graph:
+        Mutex<std::collections::HashMap<(usize, usize, bool), GraphHandle>>,
     /// Prefix cache for KV block reuse across requests.
     pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     /// Secondary CUDA stream for pipelining checkpoint D2D with MTP propose.

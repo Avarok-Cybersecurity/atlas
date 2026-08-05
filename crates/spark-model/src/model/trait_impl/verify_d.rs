@@ -212,7 +212,15 @@ impl TransformerModel {
             None
         };
 
-        let cache_key = (seq.slot_idx, k);
+        // The wyk gate state joins the key: the GDN dispatch branch freezes at
+        // capture, so replay must select the graph matching the LIVE gate
+        // decision (a stale-path replay would run fused into low-accept
+        // content, or lock wyk out for the slot's lifetime).
+        let cache_key = (
+            seq.slot_idx,
+            k,
+            crate::layers::qwen3_ssm::gdn_accept_gate::wide_fused_favored(),
+        );
         let cached_for_slot = graph_cache
             .as_ref()
             .and_then(|c| c.get(&cache_key).copied());

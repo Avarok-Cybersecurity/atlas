@@ -257,14 +257,15 @@ impl TransformerModel {
                 );
             }
         }
-        // verify_kgamma_graph + fused_graph are keyed by (slot, K). They now
-        // capture the LoRA bgmv-vs-installed-pair branch and read the per-seq
-        // seq_slot buffer, so a freed slot's entries MUST be destroyed — else a
-        // reused slot replays a stale adapter index (multi-adapter + DFlash
-        // spec-decode output corruption). Drop every K for this slot.
+        // verify_kgamma_graph + fused_graph are keyed by (slot, K, wyk_gate).
+        // They capture the LoRA bgmv-vs-installed-pair branch and read the
+        // per-seq seq_slot buffer, so a freed slot's entries MUST be destroyed
+        // — else a reused slot replays a stale adapter index (multi-adapter +
+        // DFlash spec-decode output corruption). Drop every (K, gate) for this
+        // slot.
         for graph_map in [&self.verify_kgamma_graph, &self.fused_graph] {
             let mut cache = graph_map.lock();
-            let keys: Vec<(usize, usize)> = cache
+            let keys: Vec<(usize, usize, bool)> = cache
                 .keys()
                 .filter(|k| k.0 == seq.slot_idx)
                 .copied()

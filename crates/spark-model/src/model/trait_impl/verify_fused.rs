@@ -229,7 +229,14 @@ impl TransformerModel {
 
         // ── Phase 2: CUDA graph capture / replay ──
 
-        let cache_key = (seq.slot_idx, m);
+        // wyk gate state keys the graph — same rationale as verify_d.rs: the
+        // GDN dispatch branch freezes at capture, replay must match the live
+        // gate decision.
+        let cache_key = (
+            seq.slot_idx,
+            m,
+            crate::layers::qwen3_ssm::gdn_accept_gate::wide_fused_favored(),
+        );
         let mut graph_cache = if use_graphs {
             Some(self.fused_graph.lock())
         } else {
