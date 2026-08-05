@@ -341,7 +341,7 @@ impl Qwen3SsmLayer {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
 
-        // ── GENERAL-K FUSED PATH (2026-07-30, ATLAS_GDN_WYK=1) ──
+        // ── GENERAL-K FUSED PATH (2026-07-30, accept-gated) ──
         // Atlas shipped fused GDN verify kernels for K ∈ {2,3,4,17} only; every
         // other K fell to the sequential per-token loop (~34 launches/layer ×
         // 30 SSM layers), which is the reason intermediate γ was unaffordable
@@ -354,18 +354,18 @@ impl Qwen3SsmLayer {
         // ORACLE: at K=4 / K=17 it must reproduce wy4 / wy17 accept exactly —
         // the kernels are the same body with K templated, so a mismatch is a
         // port bug, not a numerics tradeoff.
-        // Default OFF ⇒ byte-identical dispatch when unset.
+        //
+        // No env switch: the path is selected by the accept-EWMA gate
+        // (gdn_accept_gate.rs). Fused wins at mid/high accept and loses to the
+        // sequential loop on low-accept content, so the engine follows the
+        // measured crossover instead of a static default.
         {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let on = *ON.get_or_init(|| {
-                std::env::var("ATLAS_GDN_WYK").ok().as_deref() == Some("1")
-            });
             let wyk = self
                 .gdn_wyk_k
                 .get(num_tokens)
                 .copied()
                 .unwrap_or(spark_runtime::gpu::KernelHandle(0));
-            if on && num_tokens >= 4 && wyk.0 != 0 {
+            if num_tokens >= 4 && wyk.0 != 0 && super::gdn_accept_gate::wide_fused_favored() {
                 static FIRED: std::sync::Once = std::sync::Once::new();
                 FIRED.call_once(|| {
                     tracing::info!("GDN WYK: general-K fused verify FIRED (K={num_tokens})");

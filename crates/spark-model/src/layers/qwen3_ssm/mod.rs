@@ -432,6 +432,8 @@ fn ssm_m128_min_m() -> Option<u32> {
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
+pub mod gdn_accept_gate;
+
 mod debug;
 pub mod gdn_flags;
 mod init;

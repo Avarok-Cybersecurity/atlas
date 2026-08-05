@@ -110,6 +110,11 @@ pub fn step_verify_dflash(
     // accept window; may suspend this seq's speculation (see adaptive_spec).
     crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
 
+    // Feed the accept-EWMA gate that selects the fused general-K GDN verify
+    // path (wyk) vs the sequential loop for the NEXT steps — the dispatch
+    // reads it before each step's own accept exists, so it is predictive.
+    spark_model::layers::qwen3_ssm::gdn_accept_gate::note_verify_accept(num_accepted);
+
     // Roll back the over-extended `seq_len` and `seq.tokens`. The verify
     // advanced both by `tokens.len() = γ+1` (all γ drafts + the prefix
     // bonus slot). We keep the original prefix + `num_accepted` drafts +
