@@ -164,3 +164,68 @@ fn required_gates_are_registered_benchmarks() {
         );
     }
 }
+
+/// A two-sided bound is a RANGE, and an equal pair is an EXACT pin.
+///
+/// ★ Regression: only the one-sided arms existed, so `{"min": 995, "max": 995}`
+/// fell through to "malformed bound". Fail-closed, so nothing scored leniently
+/// — but the gate then failed every run and blamed the baseline's syntax
+/// instead of the measurement, which makes an exact pin unusable. The BFCL draw
+/// size is pinned exactly this way.
+#[test]
+fn an_exact_pin_passes_only_on_the_pinned_value() {
+    use crate::gate::{Bound, Comparison, compare};
+
+    let pin = Bound {
+        min: Some(1004.0),
+        max: Some(1004.0),
+        noise: None,
+    };
+    assert!(matches!(compare("samples", 1004.0, &pin), Comparison::Pass));
+
+    // The exact failure this pin exists to catch: the echolp draw silently
+    // becoming 972 because a subset floor defaulted to 0.
+    let Comparison::Fail(msg) = compare("samples", 972.0, &pin) else {
+        panic!("a draw of 972 against a pin of 1004 must FAIL, not pass or skip");
+    };
+    assert!(msg.contains("972") && msg.contains("1004"), "{msg}");
+    assert!(
+        !msg.contains("malformed"),
+        "must blame the measurement, not the baseline's syntax: {msg}"
+    );
+}
+
+#[test]
+fn a_two_sided_range_accepts_its_interior_and_rejects_outside() {
+    use crate::gate::{Bound, Comparison, compare};
+
+    let range = Bound {
+        min: Some(10.0),
+        max: Some(20.0),
+        noise: None,
+    };
+    for v in [10.0, 15.0, 20.0] {
+        assert!(
+            matches!(compare("m", v, &range), Comparison::Pass),
+            "{v} is inside [10, 20]"
+        );
+    }
+    for v in [9.0, 21.0] {
+        assert!(
+            matches!(compare("m", v, &range), Comparison::Fail(_)),
+            "{v} is outside [10, 20]"
+        );
+    }
+}
+
+#[test]
+fn a_bound_with_no_side_at_all_is_still_reported() {
+    use crate::gate::{Bound, Comparison, compare};
+
+    let empty = Bound {
+        min: None,
+        max: None,
+        noise: None,
+    };
+    assert!(matches!(compare("m", 1.0, &empty), Comparison::Skip(_)));
+}

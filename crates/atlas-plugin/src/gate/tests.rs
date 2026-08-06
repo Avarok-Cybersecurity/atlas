@@ -252,12 +252,23 @@ fn compare_enforces_min_max_and_noise() {
         Comparison::Fail(_)
     ));
 
-    let malformed = Bound {
+    // A two-sided bound is a RANGE, not a malformed entry. It used to be
+    // rejected, which made an exact pin unusable: Skip is counted as a problem,
+    // so such a bound failed every run and blamed the baseline's syntax rather
+    // than the measurement. Nothing could have depended on the old behaviour
+    // for that reason. The BFCL draw size is pinned this way — see
+    // `an_exact_pin_passes_only_on_the_pinned_value` in coverage_tests.
+    let range = Bound {
         min: Some(1.0),
         max: Some(2.0),
         ..Bound::default()
     };
-    assert!(matches!(compare("x", 1.5, &malformed), Comparison::Skip(_)));
+    assert!(matches!(compare("x", 1.5, &range), Comparison::Pass));
+    assert!(matches!(compare("x", 2.5, &range), Comparison::Fail(_)));
+
+    // A bound with NO side is the genuinely malformed case.
+    let no_side = Bound::default();
+    assert!(matches!(compare("x", 1.5, &no_side), Comparison::Skip(_)));
 }
 
 #[test]

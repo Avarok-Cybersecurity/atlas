@@ -29,7 +29,24 @@ pub fn compare(name: &str, value: f64, bound: &super::record::Bound) -> Comparis
         (None, Some(max)) => Comparison::Fail(format!(
             "{name} {value:.2} is above the ceiling {max:.2} (noise {noise:.2})"
         )),
-        _ => Comparison::Skip(format!("{name} has a malformed bound")),
+        // BOTH bounds: a range, or — when they are equal — an EXACT pin.
+        //
+        // ★ This arm was missing, and a two-sided bound fell through to
+        // "malformed". That is fail-closed, so nothing was scored leniently,
+        // but it made an exact pin unusable: the gate failed every time and
+        // blamed the baseline's syntax rather than the measurement. The BFCL
+        // draw size is pinned this way (n=995 / n=1004), because a draw that
+        // silently changes size produces a plausible score against thresholds
+        // that no longer apply.
+        (Some(min), Some(max)) if value + noise >= min && value - noise <= max => Comparison::Pass,
+        (Some(min), Some(max)) if (min - max).abs() < f64::EPSILON => Comparison::Fail(format!(
+            "{name} is {value:.0}, but this gate is pinned to exactly {min:.0} — \
+             the run measured something other than what the baseline describes"
+        )),
+        (Some(min), Some(max)) => Comparison::Fail(format!(
+            "{name} {value:.2} is outside [{min:.2}, {max:.2}] (noise {noise:.2})"
+        )),
+        (None, None) => Comparison::Skip(format!("{name} has no bound")),
     }
 }
 
