@@ -232,7 +232,34 @@ async fn run(args: RunArgs) -> Result<i32> {
             &crate::tui::shutdown::requested,
         )
     })
-    .await??;
+    .await;
+
+    // Tear the self-started server down before propagating a failure.
+    //
+    // ★ This used to be `.await??`, which returns early — so a benchmark that
+    // ERRORED skipped teardown entirely and left the model resident on the GPU.
+    // The process happens to exit soon after today, which is what hid it, but
+    // "the OS cleans up" is not a teardown: it depends on the caller exiting,
+    // and `--no-fail-on-verdict` and any future in-process caller break that
+    // assumption. A failed run must not leave a 100 GB model loaded.
+    //
+    // Success still writes the gate record FIRST and tears down second (see
+    // below); only the failure paths shut down here.
+    let outcome = match outcome {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            if let Some(s) = served {
+                s.shutdown().await;
+            }
+            return Err(e);
+        }
+        Err(join) => {
+            if let Some(s) = served {
+                s.shutdown().await;
+            }
+            return Err(join.into());
+        }
+    };
 
     if args.pull_request_gate {
         // Order is load-bearing. `write_gate_record` fetches the hardware
