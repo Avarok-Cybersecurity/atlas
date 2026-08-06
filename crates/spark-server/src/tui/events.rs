@@ -250,6 +250,30 @@ enum MouseOutcome {
     CopySelection,
 }
 
+/// What a clicked sidebar row draws.
+enum SidebarRow {
+    /// Index into [`Section::ALL`].
+    Section(usize),
+    /// Subsection of the ACTIVE section, the only one drawing any.
+    Sub(usize),
+}
+
+/// Map a visual sidebar row back to what is drawn on it.
+///
+/// The active section's subsection rows are inserted UNDERNEATH it, so they
+/// shift every row below them — and they belong to the section above, not to
+/// the section index they happen to sit at. Only the shift was handled, and
+/// only for the rows below: a click on Main ▸ Overview selected Stats.
+fn sidebar_row(active_idx: usize, subs: usize, visual: usize) -> SidebarRow {
+    if visual <= active_idx {
+        SidebarRow::Section(visual)
+    } else if visual <= active_idx + subs {
+        SidebarRow::Sub(visual - active_idx - 1)
+    } else {
+        SidebarRow::Section(visual - subs)
+    }
+}
+
 fn on_mouse(
     app: &mut App,
     m: crossterm::event::MouseEvent,
@@ -263,22 +287,24 @@ fn on_mouse(
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if m.column < sidebar_w && m.row >= header_h {
-                // Sidebar rows include expanded subsection lines; map the
-                // clicked visual row back to a section index conservatively
-                // (subsections only render under the active section).
-                let mut visual = (m.row - header_h) as usize;
+                let visual = (m.row - header_h) as usize;
                 let active_idx = Section::ALL
                     .iter()
                     .position(|s| *s == app.section)
                     .unwrap_or(0);
                 // `Section::subs` is the SSOT for what the sidebar draws and
                 // what ⇥ stops on; deriving the mouse offset from anything else
-                // is how a sixth section silently breaks clicking.
-                let subs = app.section.subs().len();
-                if visual > active_idx + subs {
-                    visual -= subs;
+                // is how a sixth section silently breaks clicking. A narrow
+                // sidebar draws the icons only, so it offsets nothing.
+                let subs = if sidebar_w >= 18 {
+                    app.section.subs().len()
+                } else {
+                    0
+                };
+                match sidebar_row(active_idx, subs, visual) {
+                    SidebarRow::Section(i) => app.sidebar_click(i),
+                    SidebarRow::Sub(i) => app.sidebar_sub_click(i),
                 }
-                app.sidebar_click(visual);
                 // A sidebar click is navigation, not the start of a drag.
                 app.selection = None;
             } else {
@@ -306,7 +332,7 @@ fn on_mouse(
         }
         // Scrolling moves the content out from under the highlight, so the
         // same argument as a keystroke applies: the cells it covers no longer
-        // hold the text that was chosen.
+        // hold the text that was chosen. (Mouse tests live in `events_tests`.)
         MouseEventKind::ScrollUp => {
             app.selection = None;
             app.scroll(-3);
@@ -319,3 +345,7 @@ fn on_mouse(
     }
     MouseOutcome::None
 }
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod tests;

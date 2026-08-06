@@ -83,3 +83,7 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app_library_tests.rs"]
+mod tests;

@@ -8,7 +8,27 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::app::{App, Focus, Section, TermSub, edit_line};
+use super::app::{App, Focus, Section, TermSub};
+
+/// Minimal single-line editor for the two filter boxes.
+///
+/// Lives here rather than in `app.rs` because this file is the one that decides
+/// which buffer owns a keystroke, and this is what those buffers are edited
+/// with — the split is by concern, not only by the 500-LoC cap.
+pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
+    match key.code {
+        KeyCode::Esc => {
+            buf.clear();
+            *editing = false;
+        }
+        KeyCode::Enter => *editing = false,
+        KeyCode::Backspace => {
+            buf.pop();
+        }
+        KeyCode::Char(c) => buf.push(c),
+        _ => {}
+    }
+}
 
 impl App {
     pub(super) fn on_input_key(&mut self, key: KeyEvent) {
@@ -102,3 +122,7 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app_input_tests.rs"]
+mod tests;

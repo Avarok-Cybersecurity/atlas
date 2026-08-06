@@ -240,3 +240,9 @@ mod tests {
         assert_eq!(complete("hello"), None); // not a slash command
     }
 }
+
+// The dispatch cases live in their own mount; the completion case above stays
+// beside the function it describes.
+#[cfg(test)]
+#[path = "commands_tests.rs"]
+mod line_tests;

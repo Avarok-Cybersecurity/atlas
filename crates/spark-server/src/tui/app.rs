@@ -390,25 +390,26 @@ impl App {
         let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
         let up = matches!(key.code, KeyCode::Up | KeyCode::Char('k'));
         match self.section {
+            // Both panes move through `scroll`, the same entry point the wheel
+            // uses. A second copy of "what scrolling means here" is how the
+            // keyboard came to have no ceiling while the wheel had one: `k`
+            // past the oldest line blanked the pane, and coming back cost as
+            // many presses as had been spent going up.
             Section::Main => match self.main_sub {
                 MainSub::Overview => {
                     if up {
-                        let cur = self.log_scroll.unwrap_or(0);
-                        self.log_scroll = Some(cur + 1);
+                        self.scroll(-1);
                     } else if down {
-                        match self.log_scroll {
-                            Some(1) | None => self.log_scroll = None,
-                            Some(n) => self.log_scroll = Some(n - 1),
-                        }
+                        self.scroll(1);
                     } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
                         self.log_scroll = None;
                     }
                 }
                 MainSub::Kernels => {
                     if down {
-                        self.kernel_scroll = self.kernel_scroll.saturating_add(1);
+                        self.scroll(1);
                     } else if up {
-                        self.kernel_scroll = self.kernel_scroll.saturating_sub(1);
+                        self.scroll(-1);
                     } else if matches!(key.code, KeyCode::Char('g')) {
                         self.kernel_scroll = 0;
                     }
@@ -466,21 +467,15 @@ impl App {
             self.jump(*s);
         }
     }
-}
 
-/// Minimal single-line editor for the two filter boxes.
-pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
-    match key.code {
-        KeyCode::Esc => {
-            buf.clear();
-            *editing = false;
+    /// Click on one of the ACTIVE section's subsection rows — the only ones the
+    /// sidebar draws. Selects it outright rather than cycling, because a click
+    /// names the row it landed on.
+    pub fn sidebar_sub_click(&mut self, sub: usize) {
+        if sub < self.section.subs().len() {
+            self.set_sub(self.section, sub);
+            self.focus = Focus::Content;
         }
-        KeyCode::Enter => *editing = false,
-        KeyCode::Backspace => {
-            buf.pop();
-        }
-        KeyCode::Char(c) => buf.push(c),
-        _ => {}
     }
 }
 
@@ -488,3 +483,8 @@ pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
 #[cfg(test)]
 #[path = "app_tests.rs"]
 mod tests;
+
+// The key-by-key drive of the global bindings, same reason.
+#[cfg(test)]
+#[path = "app_keys_tests.rs"]
+mod key_tests;
