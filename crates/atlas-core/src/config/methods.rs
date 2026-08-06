@@ -358,4 +358,35 @@ impl ModelConfig {
             .filter(|t| **t == LayerType::Moe)
             .count()
     }
+
+    /// Whether the radix prefix cache captures every state needed to resume
+    /// this model exactly. DeepSeek V4 compression also carries a prompt-built
+    /// pool and ring that are not represented by KV blocks today.
+    pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
+        self.model_type != "deepseek_v4" || self.compress_ratios.iter().all(|&ratio| ratio == 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelConfig;
+
+    #[test]
+    fn compressed_deepseek_v4_requires_auxiliary_prefix_state() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.model_type = "deepseek_v4".to_string();
+        config.compress_ratios = vec![0, 4, 128];
+
+        assert!(!config.kv_only_prefix_cache_is_safe());
+    }
+
+    #[test]
+    fn kv_complete_models_can_use_the_prefix_cache() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert!(config.kv_only_prefix_cache_is_safe());
+
+        config.model_type = "deepseek_v4".to_string();
+        config.compress_ratios = vec![0; 3];
+        assert!(config.kv_only_prefix_cache_is_safe());
+    }
 }
