@@ -716,8 +716,8 @@ pub fn transpose_fp8(
 
 /// Widen an FP8 block-scale tensor to FP32 on the GPU.
 ///
-/// `src` is `[total]` BF16 (`in_is_fp32 == false`) or FP32 (`in_is_fp32 ==
-/// true`); `dst` is `[total]` FP32. Lossless BF16→FP32 widen / straight copy.
+/// `src` is `[total]` BF16 (0), FP32 (1), or F8_E8M0 (2); `dst` is `[total]`
+/// FP32. E8M0 uses the exact `exp << 23` power-of-two representation.
 /// Run once at load so downstream FP8 block-scale kernels read `const float*`.
 /// Grid: (ceil(total/256), 1, 1)  Block: (256, 1, 1)
 pub fn widen_block_scale_f32(
@@ -726,7 +726,7 @@ pub fn widen_block_scale_f32(
     src: DevicePtr,
     dst: DevicePtr,
     total: u32,
-    in_is_fp32: bool,
+    input_dtype: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -735,7 +735,7 @@ pub fn widen_block_scale_f32(
         .arg_ptr(src)
         .arg_ptr(dst)
         .arg_u32(total)
-        .arg_u32(in_is_fp32 as u32)
+        .arg_u32(input_dtype)
         .launch(stream)
 }
 
