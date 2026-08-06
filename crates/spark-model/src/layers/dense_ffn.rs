@@ -228,6 +228,15 @@ pub struct DenseFfnLayer {
     /// it is unaffected). M0: stored only — compute reads land in M1.
     #[allow(dead_code)]
     lora: Option<ops::lora_delta::LoraFfnWeights>,
+    /// Per-layer MLP intermediate size (rows of gate/up, cols of down).
+    /// 0 = use `config.intermediate_size`. Set to `2 * intermediate_size`
+    /// for the Gemma-4-E2B double-wide KV-shared band (the last
+    /// `num_kv_shared_layers` layers), where the loader builds gate/up/down
+    /// with `layer_intermediate_size`. Without this override the forward
+    /// GEMMs read only the first `intermediate_size` rows of the wider
+    /// weights → truncated FFN → wrong output on the band (the L15+ E2B
+    /// divergence). All other layers/models keep the 0 default.
+    intermediate_size: u32,
 }
 
 impl DenseFfnLayer {
@@ -331,6 +340,7 @@ impl DenseFfnLayer {
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
             lora: None,
+            intermediate_size: 0,
         };
         Ok(layer)
     }
@@ -594,6 +604,26 @@ impl DenseFfnLayer {
         });
     }
 
+    /// Set the per-layer MLP intermediate size (rows of gate/up, cols of
+    /// down). Gemma-4-E2B's double-wide KV-shared band passes
+    /// `2 * intermediate_size` (see `loader_c::layer_intermediate_size`);
+    /// all other layers/models keep the 0 default → `config.intermediate_size`.
+    pub fn set_intermediate_size(&mut self, inter: u32) {
+        self.intermediate_size = inter;
+    }
+
+    /// Effective MLP intermediate size: the per-layer override when set,
+    /// else the config-wide value. Every forward path must use this instead
+    /// of `ctx.config.intermediate_size` so the E2B double-wide band GEMMs
+    /// read the full `[2*inter, h]` weights.
+    fn inter(&self, ctx: &ForwardContext) -> u32 {
+        if self.intermediate_size > 0 {
+            self.intermediate_size
+        } else {
+            ctx.config.intermediate_size as u32
+        }
+    }
+
     /// Ensure the int8 W4A8 copy of one NVFP4 projection weight exists, building
     /// it once via `requant_w_nvfp4_int8` and caching it in `cell`. Reads the
     /// NON-transposed NVFP4 layout (`weight` = packed E2M1 `[N, K/2]`,
@@ -687,7 +717,7 @@ impl DenseFfnLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = ctx.config.hidden_size as u32;
-        let inter = ctx.config.intermediate_size as u32;
+        let inter = self.inter(ctx);
 
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
@@ -1045,7 +1075,7 @@ impl DenseFfnLayer {
     /// 3 launches: dual batch2 (gate+up) + silu_mul + batch2 (down).
     pub fn forward_k2(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
-        let inter = ctx.config.intermediate_size as u32;
+        let inter = self.inter(ctx);
 
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
@@ -1091,7 +1121,7 @@ impl DenseFfnLayer {
     /// 3 launches: dual batch3 (gate+up) + silu_mul + batch3 (down).
     pub fn forward_k3(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
-        let inter = ctx.config.intermediate_size as u32;
+        let inter = self.inter(ctx);
 
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
@@ -1168,7 +1198,7 @@ impl DenseFfnLayer {
         stream: u64,
     ) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
-        let inter = ctx.config.intermediate_size as u32;
+        let inter = self.inter(ctx);
         let kh = self.batchm_kernel(m);
 
         let gate_out = ctx.buffers.expert_gate_out();
@@ -1318,7 +1348,7 @@ impl DenseFfnLayer {
         stream: u64,
     ) -> Result<()> {
         let h = ctx.config.hidden_size as u32;
-        let inter = ctx.config.intermediate_size as u32;
+        let inter = self.inter(ctx);
         let m = num_tokens as u32;
 
         let gate_out = ctx.buffers.expert_gate_out();

@@ -85,7 +85,17 @@ pub(super) fn make_v_norm_ones_bf16(gpu: &dyn GpuBackend, head_dim: usize) -> Re
     Ok(DenseWeight { weight: ptr })
 }
 
-/// Optional BF16 dequant of MLP gate/up/down (Gemma-4 dense, NVFP4 on disk).
+/// Optional BF16 MLP gate/up/down — the precision path for Gemma-4 dense.
+///
+/// Two on-disk forms are handled:
+///   * NVFP4 on disk (26B/31B): dequant to BF16 dense buffers.
+///   * Native BF16 on disk (E2B, `Bf16Raw`): copy the store tensors to
+///     fresh allocations, because `quantized_any`'s Bf16Raw branch frees
+///     the store source after requantizing to NVFP4. The caller must
+///     invoke this BEFORE the MLP `quantized_any` block.
+///
+/// When installed via `set_bf16_weights`, the DenseFfnLayer dispatch
+/// prefers the BF16 dense GEMM/GEMV kernels over the NVFP4 w4a16 path.
 ///
 /// `inter` is the per-layer MLP intermediate size — E2B's double-wide
 /// KV-shared band passes `2 * config.intermediate_size` (see
@@ -99,15 +109,34 @@ pub(super) fn build_bf16_mlp(
     gpu: &dyn GpuBackend,
     h: usize,
 ) -> Result<Option<(DenseWeight, DenseWeight, DenseWeight)>> {
-    let mlp_is_nvfp4 = store.contains(&format!("{lp}.mlp.gate_proj.weight_scale"));
-    if !(bf16_mlp && mlp_is_nvfp4) {
+    if !bf16_mlp {
         return Ok(None);
     }
-    use crate::weight_map::dequant_nvfp4_to_bf16;
-    let gate_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.gate_proj"), inter, h, gpu)?;
-    let up_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.up_proj"), inter, h, gpu)?;
-    let down_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.down_proj"), h, inter, gpu)?;
-    Ok(Some((gate_bf16, up_bf16, down_bf16)))
+    let mlp_is_nvfp4 = store.contains(&format!("{lp}.mlp.gate_proj.weight_scale"));
+    if mlp_is_nvfp4 {
+        use crate::weight_map::dequant_nvfp4_to_bf16;
+        let gate_bf16 =
+            dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.gate_proj"), inter, h, gpu)?;
+        let up_bf16 = dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.up_proj"), inter, h, gpu)?;
+        let down_bf16 =
+            dequant_nvfp4_to_bf16(store, &format!("{lp}.mlp.down_proj"), h, inter, gpu)?;
+        Ok(Some((gate_bf16, up_bf16, down_bf16)))
+    } else {
+        // Native BF16 on disk (E2B): copy to fresh buffers so the copies
+        // survive `quantized_any`'s Bf16Raw free of the store source.
+        let copy = |name: &str, n: usize, k: usize| -> Result<DenseWeight> {
+            let t = store.get(name)?;
+            let bytes = n * k * 2;
+            let ptr = gpu.alloc(bytes)?;
+            gpu.copy_d2d(t.ptr, ptr, bytes)?;
+            Ok(DenseWeight { weight: ptr })
+        };
+        Ok(Some((
+            copy(&format!("{lp}.mlp.gate_proj.weight"), inter, h)?,
+            copy(&format!("{lp}.mlp.up_proj.weight"), inter, h)?,
+            copy(&format!("{lp}.mlp.down_proj.weight"), h, inter)?,
+        )))
+    }
 }
 
 pub(super) fn load_embedding_impl(
