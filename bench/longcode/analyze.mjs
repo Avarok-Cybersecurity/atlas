@@ -65,7 +65,7 @@ function extractJs(text) {
     const out = [];
     // Closed <script>…</script> bodies (skip external src=).
     for (const s of block.matchAll(
-      /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
+      /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi
     )) {
       if (!/\bsrc\s*=/.test(s[1])) out.push(s[2]);
     }

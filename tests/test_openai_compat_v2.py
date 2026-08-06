@@ -303,7 +303,13 @@ try:
     ann = getattr(msg, "annotations", None)
     if ann is not None and any("url_citation" in str(a) for a in ann):
         record("bare URL extracted as annotation", PASS, f"n={len(ann)}")
-    elif "https://example.com" in content:
+    # Substring containment would also match a URL that merely CONTAINS the
+    # host in its path or query (e.g. evil.test/?u=https://example.com), so
+    # this checks the parsed netloc instead.
+    elif any(
+        urlparse(tok).netloc == "example.com"
+        for tok in re.findall(r"https?://\S+", content)
+    ):
         record(
             "bare URL extracted as annotation",
             FAIL,

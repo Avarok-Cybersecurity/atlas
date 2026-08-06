@@ -1,5 +1,9 @@
 name: Security Audit
 
+# Read-only by default; jobs needing more grant it themselves.
+permissions:
+  contents: read
+
 on:
   # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
   # were throttled to aid recovery, so pushes stopped creating runs at all --
