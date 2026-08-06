@@ -1,5 +1,12 @@
 name: "CLA Assistant"
 
+# Keyed on the PR: `issue_comment` and `pull_request_target` both fire for the
+# same pull request but carry different `github.ref` shapes, so grouping on the
+# ref alone would let the two trigger types queue against each other.
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   issue_comment:
     types: [created]

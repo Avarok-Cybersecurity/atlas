@@ -20,6 +20,12 @@ name: TUI threading contract
 permissions:
   contents: read
 
+# Only the newest commit on a ref is worth checking; superseded runs otherwise
+# sit in the queue holding runner slots that the newest commit is waiting for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   pull_request:
     paths:
