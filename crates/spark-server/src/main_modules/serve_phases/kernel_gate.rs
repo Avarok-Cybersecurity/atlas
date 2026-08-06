@@ -115,7 +115,7 @@ fn check_and_exit(
             )
         );
     }
-    let code = n.min(MAX_EXIT_CODE);
+    let code = exit_code_for(n);
     if code != n {
         // Unmissable, on both streams: `$?` is about to under-report.
         let msg = format!("{n} unresolved kernels (exit code clamped to {MAX_EXIT_CODE})");
@@ -128,6 +128,17 @@ fn check_and_exit(
     // `exit` runs no destructors, so flush what a pipe would otherwise lose.
     let _ = std::io::stdout().flush();
     std::process::exit(code as i32);
+}
+
+/// The process status for `n` unresolved kernels.
+///
+/// The contract is "the exit code IS the count", so this is identity up to the
+/// 8-bit POSIX ceiling. The clamp exists because 256 would be reported as 0 —
+/// a catastrophically broken model reading as a clean pass. Clamping to 255
+/// keeps a broken target non-zero, and the caller announces whenever the clamp
+/// bit so `$?` is never silently wrong.
+fn exit_code_for(n: usize) -> usize {
+    n.min(MAX_EXIT_CODE)
 }
 
 /// One compact JSON object summarising the check. `ok` is the exit-code twin.
@@ -165,4 +176,30 @@ fn check_json(
         }
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_EXIT_CODE, exit_code_for};
+
+    #[test]
+    fn the_exit_code_is_the_unresolved_count() {
+        // The stated contract: `$?` equals the number of unresolved kernels.
+        for n in [0usize, 1, 2, 15, 42, 254, 255] {
+            assert_eq!(exit_code_for(n), n, "exit code must equal the count");
+        }
+    }
+
+    #[test]
+    fn a_count_of_256_does_not_report_as_a_clean_pass() {
+        // ★ The reason the clamp exists. POSIX statuses are 8 bits, so an
+        // unclamped 256 arrives as 0 — the most broken possible target reading
+        // as "every lookup resolved". Anything at or above the ceiling must
+        // stay non-zero.
+        assert_eq!(exit_code_for(256), MAX_EXIT_CODE);
+        assert_eq!(exit_code_for(1000), MAX_EXIT_CODE);
+        for n in [256usize, 512, 4096] {
+            assert_ne!(exit_code_for(n) % 256, 0, "{n} must not read as success");
+        }
+    }
 }
