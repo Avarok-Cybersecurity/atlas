@@ -239,86 +239,83 @@ fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
             )
         })
         .unwrap_or_default();
-    let mut y = inner.y;
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            format!(" active {active} · prefill {prefill} · swapped {swapped} · queue {queue} "),
-            theme::text(),
-        )])),
-        Rect {
+    // Every row below is placed by hand rather than by a `Layout`, so every
+    // row has to be checked against the pane it is meant to be inside: a
+    // `Rect` one line past the bottom is not clipped by ratatui, it panics —
+    // and this pane is six rows tall on a terminal that is only eight, so the
+    // dashboard (and with it the server's foreground) went down on a resize.
+    let row = |y: u16| -> Option<Rect> {
+        (y < inner.bottom()).then_some(Rect {
             y,
             height: 1,
             ..inner
-        },
-    );
+        })
+    };
+    let mut y = inner.y;
+    if let Some(r) = row(y) {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                format!(
+                    " active {active} · prefill {prefill} · swapped {swapped} · queue {queue} "
+                ),
+                theme::text(),
+            )])),
+            r,
+        );
+    }
     y += 1;
     let qh = s.queue_history.as_u64();
-    if !qh.is_empty() {
+    if !qh.is_empty()
+        && let Some(r) = row(y)
+    {
         f.render_widget(
             Sparkline::default().data(&qh).style(theme::brand_cyan()),
             Rect {
-                y,
-                height: 1,
                 x: inner.x + 1,
                 width: inner.width.saturating_sub(2),
+                ..r
             },
         );
     }
     y += 2;
     if let Some(x) = s.sched {
         let used = (x.kv_blocks_total - x.kv_blocks_free) as f64;
-        line_gauge(
-            f,
-            Rect {
-                y,
-                height: 1,
-                ..inner
-            },
-            " KV",
-            used,
-            x.kv_blocks_total as f64,
-            true,
-        );
+        if let Some(r) = row(y) {
+            line_gauge(f, r, " KV", used, x.kv_blocks_total as f64, true);
+        }
         y += 1;
-        line_gauge(
-            f,
-            Rect {
-                y,
-                height: 1,
-                ..inner
-            },
-            " SSM",
-            x.ssm_slots_used as f64,
-            x.ssm_slots_total as f64,
-            false,
-        );
+        if let Some(r) = row(y) {
+            line_gauge(
+                f,
+                r,
+                " SSM",
+                x.ssm_slots_used as f64,
+                x.ssm_slots_total as f64,
+                false,
+            );
+        }
         y += 1;
     }
-    line_gauge(
-        f,
-        Rect {
-            y,
-            height: 1,
-            ..inner
-        },
-        " GPU",
-        s.atlas_used_gb,
-        s.gpu_total_gb.max(0.001),
-        true,
-    );
-    y += 1;
-    line_gauge(
-        f,
-        Rect {
-            y,
-            height: 1,
-            ..inner
-        },
-        " RAM",
-        (s.host_total_gb - s.host_avail_gb).max(0.0),
-        s.host_total_gb.max(0.001),
-        false,
-    );
+    if let Some(r) = row(y) {
+        line_gauge(
+            f,
+            r,
+            " GPU",
+            s.atlas_used_gb,
+            s.gpu_total_gb.max(0.001),
+            true,
+        );
+    }
+    if let Some(r) = row(y + 1) {
+        line_gauge(
+            f,
+            r,
+            " RAM",
+            (s.host_total_gb - s.host_avail_gb).max(0.0),
+            s.host_total_gb.max(0.001),
+            false,
+        );
+    }
 }
 
 fn draw_spec_cache(f: &mut Frame, app: &App, area: Rect) {
@@ -398,3 +395,7 @@ fn human_bytes(rate: f64) -> String {
         format!("{rate:.0}B")
     }
 }
+
+#[cfg(test)]
+#[path = "stats_tab_tests.rs"]
+mod tests;

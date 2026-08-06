@@ -118,3 +118,71 @@ fn the_header_mini_strip_does_not_claim_a_kv_dtype_with_no_model() {
         "a loaded model has a KV dtype: {line}"
     );
 }
+
+/// What the header actually PUTS on the frame, as opposed to what its two pure
+/// functions return.
+mod rendered {
+    use crate::tui::render::harness::{has, screen};
+
+    /// The header owns the top of the frame and nothing else: three rows on a
+    /// tall terminal, one on a short one.
+    fn head(rows: &[String], tall: bool) -> Vec<String> {
+        rows[..if tall { 3 } else { 1 }].to_vec()
+    }
+
+    #[test]
+    fn a_tall_terminal_gets_the_wordmark_and_the_mini_strip() {
+        let a = crate::tui::render::tests::app();
+        let rows = screen(&a, 160, 48);
+        let head = head(&rows, true);
+        assert!(has(&head, "A T L A S"), "{head:#?}");
+        assert!(has(&head, "I N F E R E N C E"), "{head:#?}");
+        assert!(has(&head, "SERVING") || has(&head, "LOADING"), "{head:#?}");
+        assert!(has(&head, "up 00:"), "the uptime clock:\n{head:#?}");
+        assert!(
+            has(&head, "kv "),
+            "and the strip that says what is running:\n{head:#?}"
+        );
+    }
+
+    #[test]
+    fn a_short_terminal_gets_one_row_and_drops_the_strip_rather_than_the_status() {
+        // 28 rows is the switch. Below it the header is a single line, so the
+        // mini-strip has nowhere to go — but the pill must survive, since it
+        // is the only thing that answers "is this serving".
+        let a = crate::tui::render::tests::app();
+        let rows = screen(&a, 160, 27);
+        let head = head(&rows, false);
+        assert!(has(&head, "Atlas"), "{head:#?}");
+        assert!(!has(&head, "A T L A S"), "{head:#?}");
+        assert!(has(&head, "SERVING") || has(&head, "LOADING"), "{head:#?}");
+        assert!(has(&head, "up 00:"));
+    }
+
+    #[test]
+    fn the_pill_and_the_strip_agree_about_whether_a_model_is_loaded() {
+        // Both read `awaiting_model`; the whole point of the field is that
+        // they cannot disagree mid-swap.
+        let mut a = crate::tui::render::tests::app();
+        a.awaiting_model = true;
+        a.progress.ready = true;
+        let head = head(&screen(&a, 160, 48), true);
+        assert!(has(&head, "NO MODEL"), "{head:#?}");
+        assert!(has(&head, "press 4 for Library"), "{head:#?}");
+        assert!(
+            !has(&head, "kv "),
+            "no dtype for a process that loaded nothing:\n{head:#?}"
+        );
+    }
+
+    #[test]
+    fn the_header_draws_at_widths_too_narrow_for_anything_it_wants_to_say() {
+        for (w, h) in [(1u16, 1u16), (8, 30), (20, 48), (40, 28)] {
+            assert_eq!(
+                screen(&crate::tui::render::tests::app(), w, h).len(),
+                h as usize,
+                "{w}x{h}"
+            );
+        }
+    }
+}

@@ -184,3 +184,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         in_inner,
     );
 }
+
+#[cfg(test)]
+#[path = "terminal_tab_tests.rs"]
+mod tests;

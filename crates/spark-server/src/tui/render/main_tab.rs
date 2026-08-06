@@ -497,4 +497,4 @@ impl Wrapped for Paragraph<'_> {
 
 #[cfg(test)]
 #[path = "main_tab_tests.rs"]
-mod wrap_tests;
+mod tests;

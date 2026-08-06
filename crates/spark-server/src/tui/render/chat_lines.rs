@@ -291,3 +291,7 @@ pub(super) fn message_lines(
 #[cfg(test)]
 #[path = "chat_lines_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "chat_wide_tests.rs"]
+mod wide_tests;

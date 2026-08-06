@@ -212,3 +212,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     ]));
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
+
+#[cfg(test)]
+#[path = "network_tab_tests.rs"]
+mod tests;
