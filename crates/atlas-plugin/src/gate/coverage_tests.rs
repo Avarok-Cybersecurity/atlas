@@ -229,3 +229,80 @@ fn a_bound_with_no_side_at_all_is_still_reported() {
     };
     assert!(matches!(compare("m", 1.0, &empty), Comparison::Skip(_)));
 }
+
+/// The baselines COMMITTED IN THIS REPO must be loadable and checkable.
+///
+/// ★ Every other gate test builds a synthetic baseline in a scratch repo, so
+/// nothing here ever read the real `.benchmarks/*/BASELINE.json`. A malformed
+/// one was therefore discovered at GATE time — potentially after a 3.5-hour
+/// BFCL run — rather than in a 30 ms unit test.
+///
+/// The `compare` assertion is the load-bearing one and is not hypothetical: a
+/// two-sided `{"min": 1004, "max": 1004}` draw pin was briefly unsupported and
+/// fell through to `Skip("malformed bound")`, which `check_record` counts as a
+/// problem. The gate would have failed every run while blaming the baseline's
+/// syntax instead of reporting the measurement. A bound the comparator cannot
+/// act on is not a threshold.
+#[test]
+fn every_committed_baseline_parses_resolves_and_is_checkable() {
+    use crate::gate::{Comparison, compare, read_baseline};
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root is two levels above the crate")
+        .to_path_buf();
+
+    for id in REQUIRED_GATES {
+        let path = baseline_path(&root, id);
+        assert!(path.is_file(), "{id}: {} is missing", path.display());
+
+        let baseline = read_baseline(&root, id)
+            .unwrap_or_else(|e| panic!("{id}: committed baseline does not load: {e:#}"));
+        assert_eq!(baseline.schema, 2, "{id}: unexpected schema version");
+        assert!(!baseline.hardware.is_empty(), "{id}: no hardware entries");
+
+        for (hw, entry) in &baseline.hardware {
+            // The fallback must name a model that actually has thresholds,
+            // otherwise a run that does not request one resolves to nothing.
+            assert!(
+                entry.models.contains_key(&entry.default),
+                "{id}/{hw}: default {:?} has no entry in models",
+                entry.default
+            );
+            // Resolving the default is what a gate run does first.
+            let (model, mb) = baseline
+                .resolve(hw, None)
+                .unwrap_or_else(|e| panic!("{id}/{hw}: default does not resolve: {e:#}"));
+            assert_eq!(&model, &entry.default);
+
+            for (model, mb) in entry.models.iter().chain(std::iter::once((&model, mb))) {
+                // The recipe binding is the ONLY machine-readable link from a
+                // benchmark to the serve config its thresholds were measured
+                // under; without it a self-start has nothing to launch.
+                let recipe = mb.recipe.as_deref().unwrap_or_default();
+                assert!(
+                    recipe.contains('/'),
+                    "{id}/{hw}/{model}: recipe {recipe:?} is not <family>/<stem>"
+                );
+                assert!(!mb.metrics.is_empty(), "{id}/{hw}/{model}: no thresholds");
+
+                for (name, bound) in &mb.metrics {
+                    assert!(
+                        bound.min.is_some() || bound.max.is_some(),
+                        "{id}/{hw}/{model}/{name}: bound has neither min nor max"
+                    );
+                    // Probe both far sides: whatever the shape, the comparator
+                    // must reach a verdict rather than abstain.
+                    for probe in [-1e9, 0.0, 1e9] {
+                        assert!(
+                            !matches!(compare(name, probe, bound), Comparison::Skip(_)),
+                            "{id}/{hw}/{model}/{name}: compare abstains on {probe} — \
+                             a bound the comparator cannot act on is not a threshold"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
