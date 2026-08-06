@@ -215,11 +215,24 @@ impl ChatState {
         self.cancel = Some(cancel_tx);
         self.streaming = true;
         let thinking = self.think_req;
-        // History (excluding the empty model placeholder) for multi-turn.
-        let messages: Vec<(String, String)> = self
-            .transcript
+        // History for multi-turn, excluding the empty model placeholder that
+        // `send` just pushed.
+        //
+        // ★ Filter by POSITION, not by property. The placeholder is always the
+        // LAST element; an EARLIER model turn can legitimately be empty — every
+        // cancelled reply is one, and so is the documented `response_format` +
+        // thinking case. Dropping those left two consecutive `user` messages on
+        // the wire, which some chat templates reject outright. Keeping the
+        // empty assistant turn preserves the alternation the templates need,
+        // and it is truthful: the model really did answer nothing.
+        let history = match self.transcript.last() {
+            Some(m) if m.role == Role::Model && m.text.is_empty() => {
+                &self.transcript[..self.transcript.len() - 1]
+            }
+            _ => &self.transcript[..],
+        };
+        let messages: Vec<(String, String)> = history
             .iter()
-            .filter(|m| !(m.role == Role::Model && m.text.is_empty()))
             .map(|m| {
                 (
                     match m.role {
@@ -360,3 +373,11 @@ impl ChatState {
 #[cfg(test)]
 #[path = "chat_tests.rs"]
 mod pump_tests;
+
+#[cfg(test)]
+#[path = "chat_more_tests.rs"]
+mod turn_tests;
+
+#[cfg(test)]
+#[path = "chat_history_tests.rs"]
+mod chat_history_tests;

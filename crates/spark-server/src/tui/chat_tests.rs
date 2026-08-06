@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 
 use super::*;
 
-fn streaming_state() -> (ChatState, Sender<ChatDelta>) {
+pub(super) fn streaming_state() -> (ChatState, Sender<ChatDelta>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut s = ChatState::default();
     s.transcript
@@ -18,11 +18,11 @@ fn streaming_state() -> (ChatState, Sender<ChatDelta>) {
     (s, tx)
 }
 
-fn key(c: char) -> KeyEvent {
+pub(super) fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
-fn chord(c: char, m: KeyModifiers) -> KeyEvent {
+pub(super) fn chord(c: char, m: KeyModifiers) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), m)
 }
 

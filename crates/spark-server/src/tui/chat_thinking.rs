@@ -180,6 +180,10 @@ pub fn dur(secs: f64) -> String {
 }
 
 #[cfg(test)]
+#[path = "chat_thinking_more_tests.rs"]
+mod chip_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

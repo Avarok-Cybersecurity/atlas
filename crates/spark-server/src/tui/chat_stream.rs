@@ -224,6 +224,17 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// The loopback HTTP server the client tests run against. `pub(super)` so the
+/// reducer's tests in `chat_more_tests` share this one definition rather than
+/// growing a second, kinder fake of their own.
+#[cfg(test)]
+#[path = "chat_fake_server.rs"]
+pub(super) mod fake;
+
+#[cfg(test)]
+#[path = "chat_stream_tests.rs"]
+mod stream_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
