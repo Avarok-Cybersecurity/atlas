@@ -26,24 +26,24 @@ use crate::weight_map::{DenseWeight, dense};
 
 /// The three per-layer PLE weights attached to each E2B layer.
 pub struct Gemma4PerLayerPleWeights {
-    /// `layers.{i}.per_layer_input_gate.weight` — [256, hidden_size] Linear (no bias).
+    /// `layers.{i}.per_layer_input_gate.weight` — `[256, hidden_size]` Linear (no bias).
     pub input_gate: DenseWeight,
-    /// `layers.{i}.per_layer_projection.weight` — [hidden_size, 256] Linear (no bias).
+    /// `layers.{i}.per_layer_projection.weight` — `[hidden_size, 256]` Linear (no bias).
     pub projection: DenseWeight,
-    /// `layers.{i}.post_per_layer_input_norm.weight` — [hidden_size] RMSNorm.
+    /// `layers.{i}.post_per_layer_input_norm.weight` — `[hidden_size]` RMSNorm.
     pub post_norm: DenseWeight,
 }
 
 /// All model-level + per-layer PLE tables for a Gemma-4 E2B checkpoint.
 pub struct Gemma4PleTables {
     /// One BF16 slice per layer of `embed_tokens_per_layer.weight`.
-    /// Slice `i` = columns `[i*256, (i+1)*256)` of the full [vocab, 8960]
+    /// Slice `i` = columns `[i*256, (i+1)*256)` of the full `[vocab, 8960]`
     /// table, stored as a base-pointer offset (`weight.offset(i*256*2)`)
-    /// so each entry reads as a standalone [vocab, 256] table.
+    /// so each entry reads as a standalone `[vocab, 256]` table.
     pub embed_tokens_per_layer: Vec<DenseWeight>,
-    /// `per_layer_model_projection.weight` — [8960, hidden_size] context projection.
+    /// `per_layer_model_projection.weight` — `[8960, hidden_size]` context projection.
     pub per_layer_model_projection: DenseWeight,
-    /// `per_layer_projection_norm.weight` — [256] RMSNorm over the per-layer vector.
+    /// `per_layer_projection_norm.weight` — `[256]` RMSNorm over the per-layer vector.
     pub per_layer_projection_norm: DenseWeight,
     /// Per-layer (all `num_hidden_layers`) input-gate / projection / norm.
     pub per_layer: Vec<Gemma4PerLayerPleWeights>,

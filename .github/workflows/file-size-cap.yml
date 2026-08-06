@@ -298,6 +298,18 @@ jobs:
             "crates/spark-model/src/layers/ops/gemm_dense.rs"
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
             "crates/spark-model/src/model/trait_impl/mod.rs"
+            # ── #406 (gemma-4-E2B text-core parity) carry-overs ──
+            # 512/526/535 LoC — E2B/KV-shared decode-path files, plus the
+            # 501 LoC paged-QKV file below. Grew with the KV-shared PLE
+            # forward + decode path changes. Each is a single impl block /
+            # launch-order-critical sequence read top-to-bottom (same
+            # rationale as the qwen3_attention compute-heavy entries above).
+            # Clean splits (sub-module extraction into siblings) tracked as
+            # follow-up per the #90/#229 carry-over precedent.
+            "crates/spark-model/src/model/trait_impl/decode_a.rs"
+            "crates/spark-model/src/model/trait_impl/decode_a2.rs"
+            "crates/spark-model/src/model/trait_impl/decode_b.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged_qkv.rs"
           )
 
           violations=0

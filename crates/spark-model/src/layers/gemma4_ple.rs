@@ -35,11 +35,11 @@ use crate::weight_map::DenseWeight;
 /// The three per-layer PLE weights attached to each E2B layer.
 #[derive(Clone)]
 pub struct Gemma4LayerPle {
-    /// `layers.{i}.per_layer_input_gate.weight` — [256, hidden_size] Linear (no bias).
+    /// `layers.{i}.per_layer_input_gate.weight` — `[256, hidden_size]` Linear (no bias).
     pub input_gate: DenseWeight,
-    /// `layers.{i}.per_layer_projection.weight` — [hidden_size, 256] Linear (no bias).
+    /// `layers.{i}.per_layer_projection.weight` — `[hidden_size, 256]` Linear (no bias).
     pub projection: DenseWeight,
-    /// `layers.{i}.post_per_layer_input_norm.weight` — [hidden_size] RMSNorm.
+    /// `layers.{i}.post_per_layer_input_norm.weight` — `[hidden_size]` RMSNorm.
     pub post_norm: DenseWeight,
 }
 
