@@ -31,6 +31,15 @@ pub struct GateRecord {
     /// The exact CLI invocation, reconstructed from the recorded inputs, so
     /// the run can be reproduced without interpretation.
     pub command: Vec<String>,
+    /// The recipe that served this run, when the gate provisioned its own
+    /// server (`<family>/<stem>`). `None` means an endpoint the operator was
+    /// already running.
+    ///
+    /// This is the honest half of `command` for a self-provisioned run: the
+    /// URL such a run used names an ephemeral port that no longer exists, so
+    /// what actually determined the config is the recipe, not the flags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_by: Option<String>,
     pub atlas_version: String,
     /// The box that served the model during the run.
     pub hardware: Hardware,
@@ -199,7 +208,18 @@ impl GateRecord {
     /// Build a gate record from what a finished run leaves behind. The
     /// hardware fingerprint comes from the serving endpoint's `/hardware` —
     /// the box that did the inference, not the box running this CLI.
-    pub fn from_run(record: &RunRecord, hardware: Hardware, git_sha: String) -> Result<Self> {
+    /// `served_by` names the recipe when the gate provisioned its own server.
+    /// It changes the reconstructed command, because the two modes are
+    /// reproduced differently: a self-provisioned run is replayed by asking for
+    /// the same benchmark again (the recipe re-derives the endpoint), whereas
+    /// naming its `--url` would point at an ephemeral port that no longer
+    /// exists and a `--model` nobody typed.
+    pub fn from_run(
+        record: &RunRecord,
+        hardware: Hardware,
+        git_sha: String,
+        served_by: Option<String>,
+    ) -> Result<Self> {
         if git_sha.is_empty() {
             bail!("a gate record needs the commit sha it was measured from");
         }
@@ -208,11 +228,13 @@ impl GateRecord {
             bail!("the run never reached a terminal frame — nothing to gate");
         }
         let mut params = Vec::new();
-        if !record.target_url.is_empty() {
-            params.push(("--url".to_string(), record.target_url.clone()));
-        }
-        if !record.target_model.is_empty() {
-            params.push(("--model".to_string(), record.target_model.clone()));
+        if served_by.is_none() {
+            if !record.target_url.is_empty() {
+                params.push(("--url".to_string(), record.target_url.clone()));
+            }
+            if !record.target_model.is_empty() {
+                params.push(("--model".to_string(), record.target_model.clone()));
+            }
         }
         for (k, v) in &record.params {
             params.push(("--param".to_string(), format!("{k}={v}")));
@@ -253,6 +275,7 @@ impl GateRecord {
             target_model: record.target_model.clone(),
             params: record.params.clone(),
             command,
+            served_by,
             atlas_version: record.atlas_version.clone(),
             hardware,
             metrics: frame.metrics.clone(),

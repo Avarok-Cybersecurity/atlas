@@ -107,3 +107,7 @@ pub fn git_sha(root: &Path) -> Result<String> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "coverage_tests.rs"]
+mod coverage_tests;

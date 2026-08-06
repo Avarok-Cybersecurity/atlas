@@ -55,7 +55,7 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
 }
 
 /// The repo root this checkout lives in — where `.benchmarks/` sits.
-fn repo_root() -> Result<std::path::PathBuf> {
+pub(super) fn repo_root() -> Result<std::path::PathBuf> {
     let out = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .stdin(std::process::Stdio::null())
@@ -117,12 +117,17 @@ fn gate_check_cmd() -> Result<i32> {
 /// the model. A write failure aborts the command with a clear error: the
 /// point of the flag is the record, so a run that did not produce one must
 /// not report success.
-async fn write_gate_record(record: &atlas_plugin::RunRecord, url: &str, model: &str) -> Result<()> {
+async fn write_gate_record(
+    record: &atlas_plugin::RunRecord,
+    url: &str,
+    model: &str,
+    recipe: Option<String>,
+) -> Result<()> {
     let root = repo_root()?;
     let sha = gate::git_sha(&root)?;
     let target = TargetEndpoint::new(url, model);
     let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
-    let gate_record = gate::GateRecord::from_run(record, hardware, sha)?;
+    let gate_record = gate::GateRecord::from_run(record, hardware, sha, recipe)?;
     let path = gate::write_record(&root, &gate_record)?;
     eprintln!("gate record written as {}", path.display());
     Ok(())
@@ -169,12 +174,25 @@ async fn run(args: RunArgs) -> Result<i32> {
         .collect::<Vec<_>>();
     let values = ParamValues::from_overrides(&specs, pairs)?;
 
+    // With --pull-request-gate the suite provisions its own server from the
+    // benchmark's recipe, so the record describes a config nobody typed. Without
+    // it, --url/--model drive an existing endpoint exactly as before.
+    let served = if args.pull_request_gate {
+        Some(super::bench_selfstart::serve_for(&args.id, args.hardware.as_deref()).await?)
+    } else {
+        None
+    };
+    let target = match &served {
+        Some(s) => s.target.clone(),
+        None => TargetEndpoint::new(&args.url, args.model.as_deref().unwrap_or_default()),
+    };
+
     let store = store()?;
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
     let request = RunRequest {
         descriptor,
         values,
-        target: TargetEndpoint::new(&args.url, &args.model),
+        target: target.clone(),
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
@@ -217,7 +235,21 @@ async fn run(args: RunArgs) -> Result<i32> {
     .await??;
 
     if args.pull_request_gate {
-        write_gate_record(&outcome.record, &args.url, &args.model).await?;
+        // Order is load-bearing. `write_gate_record` fetches the hardware
+        // fingerprint FROM the endpoint, and that fetch degrades to
+        // `Hardware::unknown()` on every failure path without returning an
+        // error — so tearing the server down first would commit a record that
+        // names no box and still exit 0. Write first, tear down second, and
+        // tear down even when the write fails.
+        let recipe = served.as_ref().map(|s| s.recipe_id.clone());
+        let written =
+            write_gate_record(&outcome.record, &target.base_url, &target.model, recipe).await;
+        if let Some(s) = served {
+            s.shutdown().await;
+        }
+        written?;
+    } else if let Some(s) = served {
+        s.shutdown().await;
     }
 
     match args.format {

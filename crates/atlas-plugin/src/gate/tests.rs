@@ -8,15 +8,15 @@ use crate::history::{RunRecord, RunSource};
 use crate::result::{BenchmarkResult, RunStatus, Verdict};
 use std::collections::BTreeMap;
 
-const MODEL: &str = "Qwen/Qwen3.6-35B-A3B-FP8";
+pub(super) const MODEL: &str = "Qwen/Qwen3.6-35B-A3B-FP8";
 /// The box class the fixtures report, and the key their baselines are under.
-const TEST_HW: &str = "gb10";
+pub(super) const TEST_HW: &str = "gb10";
 
 /// A realistic fingerprint, so the tests exercise the real `gate_key()`
 /// derivation rather than the degenerate "unknown" path — which has its own
 /// test below, because an unknown box must FAIL to resolve rather than
 /// quietly borrow some other box's thresholds.
-fn hw() -> Hardware {
+pub(super) fn hw() -> Hardware {
     Hardware {
         gpu: "NVIDIA GB10".to_string(),
         driver: "580.126.09".to_string(),
@@ -24,9 +24,9 @@ fn hw() -> Hardware {
         source: "nvidia-smi".to_string(),
     }
 }
-const SHA: &str = "b72dad1893";
+pub(super) const SHA: &str = "b72dad1893";
 
-mod tempdir {
+pub(super) mod tempdir {
     use std::path::{Path, PathBuf};
     pub struct Dir(PathBuf);
     impl Dir {
@@ -51,13 +51,17 @@ mod tempdir {
     }
 }
 
-fn frame(status: RunStatus, metrics: BTreeMap<String, f64>, verdict: Verdict) -> BenchmarkResult {
+pub(super) fn frame(
+    status: RunStatus,
+    metrics: BTreeMap<String, f64>,
+    verdict: Verdict,
+) -> BenchmarkResult {
     let mut f = BenchmarkResult::completed("done", std::time::Duration::ZERO);
     f.status = status;
     f.with_metrics(metrics).with_verdict(verdict)
 }
 
-fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> RunRecord {
+pub(super) fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> RunRecord {
     let mut params = BTreeMap::new();
     params.insert("repeats".to_string(), "12".to_string());
     RunRecord {
@@ -75,7 +79,7 @@ fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> RunRecord {
     }
 }
 
-fn bfcl_baseline() -> GateBaseline {
+pub(super) fn bfcl_baseline() -> GateBaseline {
     let mut metrics = BTreeMap::new();
     metrics.insert(
         "overall_accuracy".to_string(),
@@ -93,7 +97,7 @@ fn bfcl_baseline() -> GateBaseline {
 /// record under test — `TEST_HW` below is the fingerprint the fixtures carry,
 /// so a mismatch here shows up as an unresolved baseline rather than a silent
 /// pass.
-fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> GateBaseline {
+pub(super) fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> GateBaseline {
     let mut models = BTreeMap::new();
     models.insert(
         model.to_string(),
@@ -139,19 +143,24 @@ fn the_record_path_is_date_and_sha_and_replaces_a_same_day_rerun() {
 #[test]
 fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
-    assert!(GateRecord::from_run(&record, hw(), String::new()).is_err());
+    assert!(GateRecord::from_run(&record, hw(), String::new(), None).is_err());
 
     let mut running = record.clone();
     running.frame.status = RunStatus::Running;
-    assert!(GateRecord::from_run(&running, hw(), SHA.into()).is_err());
+    assert!(GateRecord::from_run(&running, hw(), SHA.into(), None).is_err());
 }
 
 #[test]
 fn from_run_reconstructs_the_exact_cli_command() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate =
-        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        None,
+    )
+    .unwrap();
     let joined = gate.command.join(" ");
     assert!(
         joined.starts_with("spark benchmark run bfcl-subset"),
@@ -168,10 +177,39 @@ fn from_run_reconstructs_the_exact_cli_command() {
 }
 
 #[test]
+fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
+    // The gate served this itself on an ephemeral port. Naming that port would
+    // give a command that drives nothing (or, worse, whatever else is on 8888
+    // later), and a --model the caller never chose. What actually determined
+    // the config is the recipe, so that is what the record carries — and the
+    // command replays by asking for the same benchmark again.
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".to_string(), 87.74);
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
+    )
+    .unwrap();
+    let joined = gate.command.join(" ");
+    assert!(!joined.contains("--url"), "no dead endpoint: {joined}");
+    assert!(!joined.contains("--model"), "the recipe chose it: {joined}");
+    assert!(joined.ends_with("--pull-request-gate"), "{joined}");
+    assert_eq!(
+        gate.served_by.as_deref(),
+        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth")
+    );
+    // The model is still recorded on its own field — the run must always be
+    // able to say what it measured, however the endpoint was obtained.
+    assert_eq!(gate.target_model, MODEL);
+}
+
+#[test]
 fn the_agentic_bench_needs_yes_in_its_command() {
     let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(&record, hw(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), None).unwrap();
     assert!(gate.command.contains(&"--yes".to_string()));
 }
 
@@ -185,7 +223,7 @@ fn a_failed_frame_is_recorded_but_never_passes() {
         ),
         ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
     };
-    let gate = GateRecord::from_run(&record, hw(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), None).unwrap();
     assert!(gate.frame_status_failed());
     assert!(!gate.verdict_passes());
 }
@@ -228,6 +266,7 @@ fn check_record_refuses_a_cross_checkpoint_comparison() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        None,
     )
     .unwrap();
     // The baseline knows only another checkpoint, so the record's model does
@@ -255,6 +294,7 @@ fn check_record_refuses_a_cross_hardware_comparison() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        None,
     )
     .unwrap();
     gate.hardware = Hardware {
@@ -275,6 +315,7 @@ fn an_unknown_fingerprint_never_silently_matches() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        None,
     )
     .unwrap();
     gate.hardware = Hardware::unknown();
@@ -287,8 +328,13 @@ fn an_unknown_fingerprint_never_silently_matches() {
 fn check_record_scores_every_bound_and_missing_metric() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate =
-        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        None,
+    )
+    .unwrap();
     let mut metrics = BTreeMap::new();
     metrics.insert(
         "overall_accuracy".to_string(),
@@ -320,8 +366,13 @@ fn write_and_read_round_trip_through_the_repo_layout() {
     let dir = tempdir::Dir::new();
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate =
-        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        None,
+    )
+    .unwrap();
     let path = write_record(dir.path(), &gate).unwrap();
     assert!(path.starts_with(dir.path().join(".benchmarks")));
     let back = read_record(&path).unwrap();
@@ -329,11 +380,11 @@ fn write_and_read_round_trip_through_the_repo_layout() {
     assert_eq!(back.metrics["overall_accuracy"], 87.74);
 }
 
-fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) {
+pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let record = run_record(metrics, Verdict::pass("ok"));
-    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string()).unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string(), None).unwrap();
     gate.benchmark_id = id.to_string();
     gate.verdict = Some(verdict.to_string());
     gate.recorded_at = secs;
@@ -372,155 +423,5 @@ fn check_gates_reports_each_required_bench() {
     match &gates["agentic-webserver"] {
         GateStatus::Fail(reasons) => assert!(reasons.iter().any(|r| r.contains("not PASS"))),
         other => panic!("wanted Fail, got {other:?}"),
-    }
-}
-
-/// A scratch git repo, so the ancestry + invalidation rules can be tested
-/// against real commits rather than mocked shas.
-mod scratch_repo {
-    use std::path::Path;
-    use std::process::Command;
-
-    fn git(root: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "t@t")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "t@t")
-            .output()
-            .expect("git runs");
-        assert!(out.status.success(), "git {args:?}: {:?}", out);
-    }
-
-    pub fn init(root: &Path) {
-        git(root, &["init", "-q"]);
-        std::fs::write(root.join("README.md"), "first").unwrap();
-        git(root, &["add", "."]);
-        git(root, &["commit", "-q", "-m", "first"]);
-    }
-
-    pub fn head(root: &Path) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(["rev-parse", "--short=10", "HEAD"])
-            .output()
-            .expect("git runs");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    pub fn commit(root: &Path, file: &str, contents: &str, message: &str) {
-        let path = root.join(file);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(&path, contents).unwrap();
-        git(root, &["add", "."]);
-        git(root, &["commit", "-q", "-m", message]);
-    }
-}
-
-#[test]
-fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
-    let dir = tempdir::Dir::new();
-    let root = dir.path();
-    scratch_repo::init(root);
-    let sha_a = scratch_repo::head(root);
-
-    for id in REQUIRED_GATES {
-        std::fs::create_dir_all(gate_dir(root, id)).unwrap();
-        std::fs::write(
-            baseline_path(root, id),
-            serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-        )
-        .unwrap();
-    }
-    for id in REQUIRED_GATES {
-        plant(root, id, &sha_a, 1_785_891_382, "PASS");
-    }
-
-    // A docs-only commit afterwards: every record still covers head.
-    scratch_repo::commit(root, "docs/notes.md", "hello", "docs only");
-    let sha_b = scratch_repo::head(root);
-    assert!(
-        record_covers(root, &sha_b, &sha_a),
-        "docs-only diff is inert"
-    );
-    let gates = check_gates(root, &sha_b);
-    for id in REQUIRED_GATES {
-        assert!(
-            matches!(gates[id], GateStatus::Pass),
-            "{id}: {:?}",
-            gates[id]
-        );
-    }
-
-    // A change under crates/ invalidates every earlier record.
-    scratch_repo::commit(root, "crates/x.rs", "// code", "touch a crate");
-    let sha_c = scratch_repo::head(root);
-    assert!(
-        !record_covers(root, &sha_c, &sha_a),
-        "crates/ diff invalidates"
-    );
-    let gates = check_gates(root, &sha_c);
-    for id in REQUIRED_GATES {
-        assert!(
-            matches!(&gates[id], GateStatus::Missing(m) if m.contains(&sha_a)),
-            "{id}: {:?}",
-            gates[id]
-        );
-    }
-}
-
-#[test]
-fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
-    let dir = tempdir::Dir::new();
-    let root = dir.path();
-    std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
-    let mut metrics = BTreeMap::new();
-    metrics.insert("overall_accuracy".to_string(), 90.0);
-    let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
-    record.frame = frame(RunStatus::Failed, metrics, Verdict::fail("scoring crashed"));
-    let mut gate = GateRecord::from_run(&record, hw(), SHA.into()).unwrap();
-    gate.recorded_at = 1_785_891_382;
-    write_record(root, &gate).unwrap();
-
-    let gates = check_gates(root, SHA);
-    match &gates["bfcl-subset"] {
-        GateStatus::Fail(reasons) => assert!(reasons.iter().any(|r| r.contains("failed"))),
-        other => panic!("wanted Fail, got {other:?}"),
-    }
-}
-
-#[test]
-fn the_summary_names_the_model_the_numbers_and_the_verdict() {
-    let mut metrics = BTreeMap::new();
-    metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate =
-        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
-    assert!(gate.summary.contains(MODEL), "{}", gate.summary);
-    assert!(
-        gate.summary.contains("overall_accuracy=87.74"),
-        "{}",
-        gate.summary
-    );
-    assert!(gate.summary.contains("Pass"), "{}", gate.summary);
-}
-
-#[test]
-fn required_gates_are_registered_benchmarks() {
-    for id in REQUIRED_GATES {
-        assert!(
-            crate::registry::find(id).is_some(),
-            "{id} is not registered"
-        );
     }
 }
