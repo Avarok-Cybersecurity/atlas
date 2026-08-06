@@ -217,4 +217,31 @@ mod tests {
         assert_eq!(split.required[0].module, "gdn");
         assert_eq!(split.expected.len(), 1);
     }
+    /// The remediation sentence is a SPECIFIED requirement, quoted verbatim.
+    ///
+    /// ★ The existing tests check that the flag name appears and that the
+    /// GitHub line appears once — both of which survive a reword. The exact
+    /// wording was asked for, so it is pinned here as one normalised string.
+    /// Whitespace is collapsed because the source wraps the sentence across
+    /// lines for readability; that is formatting, not content.
+    #[test]
+    fn the_remediation_wording_is_the_one_that_was_asked_for() {
+        let split = FailureSplit {
+            required: vec![row("gdn", "gdn_decode_multi_seq")],
+            expected: vec![],
+        };
+        let deny = unresolved_report(&split, &[], "qwen3.6-27b", "sm_121", "nvfp4", false);
+        let flat = deny.split_whitespace().collect::<Vec<_>>().join(" ");
+        let required = "If you wish to allow this model to be served, you can pass \
+                        --dangerously-allow-unresolved-kernel-lookups. But note that \
+                        performance may be seriously degraded. We recommend you open a \
+                        GitHub issue and/or open a PR to solve this issue.";
+        let required = required.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(&required),
+            "the remediation sentence has drifted from the specified wording.\n\
+             wanted: {required}\n\
+             got:    {flat}"
+        );
+    }
 }
