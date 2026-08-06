@@ -84,6 +84,7 @@ fn a_server_under_load_reports_its_measurements_in_the_tiles() {
     a.stats.gen_tps = 12.55;
     a.stats.ttft_p50_ms = Some(412.0);
     a.stats.ttft_p90_ms = Some(2985.0);
+    a.stats.gpu_known = true;
     a.stats.atlas_used_gb = 57.25;
     a.stats.gpu_free_gb = 62.4;
     a.stats.bytes_in_rate = 2048.0;
@@ -110,6 +111,7 @@ fn the_sequences_pane_shows_the_scheduler_only_once_one_has_published() {
     );
 
     a.stats.sched = Some(sched());
+    a.stats.gpu_known = true;
     a.stats.gpu_total_gb = 119.7;
     a.stats.atlas_used_gb = 57.2;
     a.stats.host_total_gb = 119.7;
@@ -207,6 +209,7 @@ mod gauges {
     #[test]
     fn an_unknown_total_reads_empty_not_full() {
         let mut a = stats_app();
+        a.stats.gpu_known = true;
         a.stats.gpu_total_gb = 0.0;
         a.stats.atlas_used_gb = 0.0;
         a.stats.host_total_gb = 0.0;
@@ -217,10 +220,40 @@ mod gauges {
     #[test]
     fn a_gauge_pushed_past_its_total_clamps_instead_of_overflowing() {
         let mut a = stats_app();
+        a.stats.gpu_known = true;
         a.stats.gpu_total_gb = 100.0;
         a.stats.atlas_used_gb = 250.0;
         let rows = screen(&a, 160, 48);
         assert_eq!(rows.len(), 48);
         assert!(has(&rows, "250/100"), "the numbers stay honest:\n{rows:#?}");
     }
+}
+
+/// ★ An absent GPU must read as UNAVAILABLE, not as a measurement of zero.
+///
+/// With no device or no NVML the three figures stay at their 0.0 default, and
+/// the tile used to render `atlas 0.0 GB · free 0.0` with a 0 % gauge. That is
+/// a claim about the hardware, not an absence of one — and this same file
+/// already gets it right for TTFT, which renders `—`.
+#[test]
+fn a_box_with_no_gpu_reading_shows_a_dash_not_zero() {
+    let mut a = crate::tui::render::tests::app();
+    a.section = crate::tui::app::Section::Stats;
+    a.stats.gpu_known = false;
+    let rows = screen(&a, 120, 40);
+    assert!(
+        !has(&rows, "atlas 0.0 GB"),
+        "a zero must never be presented as a GPU measurement:\n{rows:#?}"
+    );
+
+    // And the real reading still renders when the device DID answer.
+    a.stats.gpu_known = true;
+    a.stats.atlas_used_gb = 12.5;
+    a.stats.gpu_free_gb = 100.0;
+    a.stats.gpu_total_gb = 112.5;
+    let rows = screen(&a, 120, 40);
+    assert!(
+        has(&rows, "atlas 12.5 GB"),
+        "a real reading must still be shown:\n{rows:#?}"
+    );
 }

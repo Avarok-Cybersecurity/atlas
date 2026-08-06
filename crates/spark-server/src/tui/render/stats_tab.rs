@@ -112,13 +112,18 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("  p90 {}", fmt_ms(s.ttft_p90_ms)), theme::text2()),
     ]);
     tile(f, tiles[2], "TTFT", ttft, None);
-    let gpu = Line::from(vec![
-        Span::styled(
-            format!(" atlas {:.1} GB", s.atlas_used_gb),
-            theme::text().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  free {:.1}", s.gpu_free_gb), theme::text2()),
-    ]);
+    // `—`, not 0.0, when the device never answered.
+    let gpu = if s.gpu_known {
+        Line::from(vec![
+            Span::styled(
+                format!(" atlas {:.1} GB", s.atlas_used_gb),
+                theme::text().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  free {:.1}", s.gpu_free_gb), theme::text2()),
+        ])
+    } else {
+        Line::from(Span::styled(" —", theme::dim()))
+    };
     tile(f, tiles[3], "GPU", gpu, None);
 }
 
@@ -297,14 +302,22 @@ fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
         y += 1;
     }
     if let Some(r) = row(y) {
-        line_gauge(
-            f,
-            r,
-            " GPU",
-            s.atlas_used_gb,
-            s.gpu_total_gb.max(0.001),
-            true,
-        );
+        if s.gpu_known {
+            line_gauge(
+                f,
+                r,
+                " GPU",
+                s.atlas_used_gb,
+                s.gpu_total_gb.max(0.001),
+                true,
+            );
+        } else {
+            // A 0 % bar reads as "empty", which is a claim. Say nothing instead.
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(Span::styled(" GPU  —", theme::dim())),
+                r,
+            );
+        }
     }
     if let Some(r) = row(y + 1) {
         line_gauge(
