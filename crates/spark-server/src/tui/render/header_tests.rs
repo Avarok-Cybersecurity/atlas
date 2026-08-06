@@ -138,7 +138,7 @@ mod rendered {
         assert!(has(&head, "A T L A S"), "{head:#?}");
         assert!(has(&head, "I N F E R E N C E"), "{head:#?}");
         assert!(has(&head, "SERVING") || has(&head, "LOADING"), "{head:#?}");
-        assert!(has(&head, "up 00:"), "the uptime clock:\n{head:#?}");
+        assert!(has(&head, "up 0:00:"), "the uptime clock:\n{head:#?}");
         assert!(
             has(&head, "kv "),
             "and the strip that says what is running:\n{head:#?}"
@@ -156,7 +156,7 @@ mod rendered {
         assert!(has(&head, "Atlas"), "{head:#?}");
         assert!(!has(&head, "A T L A S"), "{head:#?}");
         assert!(has(&head, "SERVING") || has(&head, "LOADING"), "{head:#?}");
-        assert!(has(&head, "up 00:"));
+        assert!(has(&head, "up 0:00:"));
     }
 
     #[test]
@@ -184,5 +184,33 @@ mod rendered {
                 "{w}x{h}"
             );
         }
+    }
+}
+
+/// ★ Uptime must not wrap. It used to be `{:02}:{:02}` over `up / 60 % 100` —
+/// minutes MOD 100, no hours — so a server up 100 minutes read `up 00:xx` and
+/// counted again. This dashboard is meant to sit up for days.
+#[test]
+fn uptime_keeps_counting_past_an_hour_a_day_and_a_hundred_minutes() {
+    use super::fmt_uptime;
+
+    assert_eq!(fmt_uptime(0), "up 0:00:00");
+    assert_eq!(fmt_uptime(59), "up 0:00:59");
+    assert_eq!(fmt_uptime(60), "up 0:01:00");
+    // The exact value the old formatter wrapped on.
+    assert_eq!(fmt_uptime(100 * 60), "up 1:40:00", "100 minutes is 1h40m");
+    assert_eq!(fmt_uptime(3_600), "up 1:00:00");
+    assert_eq!(fmt_uptime(86_399), "up 23:59:59");
+    assert_eq!(fmt_uptime(86_400), "up 1d 00:00");
+    assert_eq!(fmt_uptime(3 * 86_400 + 4 * 3_600 + 12 * 60), "up 3d 04:12");
+
+    // The property that actually matters: the rendered string never repeats as
+    // time advances, which is what a modulus silently breaks.
+    let mut seen = std::collections::HashSet::new();
+    for m in 0..(48 * 60) {
+        assert!(
+            seen.insert(fmt_uptime(m * 60)),
+            "minute {m} rendered a string already used earlier"
+        );
     }
 }

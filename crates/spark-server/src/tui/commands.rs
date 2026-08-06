@@ -44,7 +44,7 @@ pub fn execute(line: &str, app: &mut App) {
     if !line.starts_with('/') {
         app.ops
             .output
-            .push("(bare text goes to the Chat tab — press 5 twice)".into());
+            .push("(bare text goes to the Chat tab — press 6 twice)".into());
         return;
     }
     let mut parts = line.splitn(2, ' ');

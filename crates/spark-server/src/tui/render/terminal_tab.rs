@@ -40,7 +40,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         tab("Ops", app.term_sub == TermSub::Ops),
         Span::styled("─", theme::dim()),
         tab("Chat", app.term_sub == TermSub::Chat),
-        Span::styled("   (5 toggles)", theme::dim()),
+        Span::styled("   (6 toggles)", theme::dim()),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }

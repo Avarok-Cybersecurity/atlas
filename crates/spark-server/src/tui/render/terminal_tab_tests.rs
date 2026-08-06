@@ -22,7 +22,7 @@ fn the_tab_strip_marks_which_of_the_two_panes_is_showing() {
     let ops = screen(&term(TermSub::Ops), 120, 40);
     assert!(has(&ops, "Ops"), "{ops:#?}");
     assert!(has(&ops, "Chat"));
-    assert!(has(&ops, "(5 toggles)"), "and says how to swap them");
+    assert!(has(&ops, "(6 toggles)"), "and says how to swap them");
     assert!(has(&ops, "OPS ─ 0 lines"), "Ops is the pane on screen");
 
     let chat = screen(&term(TermSub::Chat), 120, 40);

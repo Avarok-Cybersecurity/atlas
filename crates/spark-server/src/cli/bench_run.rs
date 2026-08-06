@@ -122,9 +122,49 @@ async fn write_gate_record(
     url: &str,
     model: &str,
     recipe: Option<String>,
+    sha_at_start: String,
 ) -> Result<()> {
+    // ★ An INCOMPLETE run must not become a gate record.
+    //
+    // A cancelled or failed run still produces a RunRecord -- it just has no
+    // measurements in it. Committing that gives the branch a file that looks
+    // like evidence and contains none; `check_record` then reports every
+    // threshold as "missing from the record", blaming the baseline rather than
+    // the run that never finished. Observed for real: a BFCL run killed at
+    // 972/1004 left a committed record whose metrics were `{}`.
+    if record.frame.status != atlas_plugin::RunStatus::Completed {
+        bail!(
+            "the run ended as {:?}, not Completed -- no gate record was written. \
+             A record is evidence that a benchmark RAN; an interrupted one is not.",
+            record.frame.status
+        );
+    }
+    if record.frame.metrics.is_empty() {
+        bail!(
+            "the run produced no metrics -- no gate record was written. Every \
+             threshold would read as \"missing from the record\", which blames the \
+             baseline for a run that measured nothing."
+        );
+    }
     let root = repo_root()?;
-    let sha = gate::git_sha(&root)?;
+    // ★ The sha is the one captured BEFORE the run, not the one HEAD happens to
+    // point at now. A record exists to say "these numbers came from this
+    // commit", and `bfcl-subset` takes ~3.5 hours: reading HEAD at write time
+    // stamps whatever was committed while the benchmark was running. Observed
+    // in practice -- a 4-hour run recorded a sha that was 14 commits newer than
+    // the binary that produced it.
+    let sha = sha_at_start;
+    if let Ok(now) = gate::git_sha(&root)
+        && now != sha
+    {
+        // Not fatal: the measurement is real and belongs to `sha`. But the
+        // tree moved underneath it, so whoever reads this record needs to know
+        // the working copy is no longer what was measured.
+        eprintln!(
+            "gate: HEAD moved during the run ({sha} -> {now}); the record is \
+             stamped {sha}, the commit that was actually measured"
+        );
+    }
     let target = TargetEndpoint::new(url, model);
     let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
     let gate_record = gate::GateRecord::from_run(record, hardware, sha, recipe)?;
@@ -177,6 +217,13 @@ async fn run(args: RunArgs) -> Result<i32> {
     // With --pull-request-gate the suite provisions its own server from the
     // benchmark's recipe, so the record describes a config nobody typed. Without
     // it, --url/--model drive an existing endpoint exactly as before.
+    // Captured BEFORE the run so a multi-hour benchmark records the commit it
+    // actually measured rather than whatever lands on HEAD meanwhile.
+    let sha_at_start = if args.pull_request_gate {
+        Some(gate::git_sha(&repo_root()?)?)
+    } else {
+        None
+    };
     let served = if args.pull_request_gate {
         Some(super::bench_selfstart::serve_for(&args.id, args.hardware.as_deref()).await?)
     } else {
@@ -269,8 +316,14 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
-        let written =
-            write_gate_record(&outcome.record, &target.base_url, &target.model, recipe).await;
+        let written = write_gate_record(
+            &outcome.record,
+            &target.base_url,
+            &target.model,
+            recipe,
+            sha_at_start.clone().unwrap_or_default(),
+        )
+        .await;
         if let Some(s) = served {
             s.shutdown().await;
         }
