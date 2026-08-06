@@ -102,7 +102,12 @@ pub(super) const KEYS: [(&str, &str); 18] = [
     ("T / Alt+T", "Chat: reasoning collapsed / expanded / hidden"),
     ("Esc", "back / cancel"),
     ("Ctrl+C", "clean shutdown (drain + exit)"),
-    ("q", "quit TUI"),
+    // ★ NOT "quit TUI". `q` sets should_quit, and the loop then calls
+    // shutdown::request -- it DRAINS AND STOPS THE SERVER, exactly like
+    // Ctrl+C. Describing that as closing a window invites a stray keypress to
+    // end a four-hour benchmark. The honest label is the whole fix here; a
+    // confirmation prompt while a run is in flight is tracked separately.
+    ("q", "shut down the server (drain + exit)"),
     ("?", "this help"),
 ];
 

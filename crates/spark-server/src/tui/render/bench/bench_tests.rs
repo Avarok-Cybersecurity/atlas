@@ -317,3 +317,38 @@ fn every_benchmarks_pane_survives_narrow_and_short_terminals() {
         }
     }
 }
+
+/// ★ The Suite list must scroll the selection into view.
+///
+/// It rendered from index 0 unconditionally. Each entry occupies four rows, so
+/// an 80x24 terminal showed about four of the seven benchmarks and `j` past
+/// them moved a cursor nobody could see — the detail pane changing was the only
+/// feedback. Both sibling lists (bench/history.rs, library/list.rs) already
+/// computed an offset.
+#[test]
+fn the_suite_list_scrolls_the_selection_into_view() {
+    let all = atlas_plugin::registry::all();
+    assert!(
+        all.len() > 4,
+        "only meaningful once the suite outgrows one 80x24 screen"
+    );
+    let last = all.len() - 1;
+
+    // 80x24 is the classic terminal size, and the one the bug was found on.
+    let mut a = bench_app();
+    a.bench.view = View::List;
+    a.bench.selected = last;
+    let rows = screen(&a, 80, 24);
+    assert!(
+        has(&rows, all[last].name),
+        "the selected benchmark must be on screen:\n{rows:#?}"
+    );
+
+    // And selecting the top scrolls back, rather than leaving the list parked.
+    a.bench.selected = 0;
+    let rows = screen(&a, 80, 24);
+    assert!(
+        has(&rows, all[0].name),
+        "selecting the first entry must scroll back to it:\n{rows:#?}"
+    );
+}
