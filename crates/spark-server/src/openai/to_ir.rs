@@ -73,6 +73,7 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
     /// request for encode-time echoes.
     fn from(req: ChatCompletionRequest) -> Self {
         let thinking = req.client_thinking_directive();
+        let reasoning_effort = req.client_reasoning_effort();
         let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
         // Logit bias: OpenAI's string-keyed map → typed pairs. Keys that
         // don't parse as token ids are dropped (historical behavior).
@@ -115,6 +116,7 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
             n: req.n,
             response_format,
             thinking,
+            reasoning_effort,
             repetition_detection: req.repetition_detection,
             adapter: req.adapter,
             src_lang: req.src_lang,

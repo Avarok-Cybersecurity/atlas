@@ -287,6 +287,23 @@ pub struct ChatTemplateKwargs {
 const DEFAULT_THINKING_BUDGET: u32 = 256;
 
 impl ChatCompletionRequest {
+    fn requested_reasoning_effort(&self) -> Option<&str> {
+        self.reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort.as_deref())
+            .or(self.reasoning_effort.as_deref())
+    }
+
+    pub fn client_reasoning_effort(&self) -> Option<crate::ir::ReasoningEffort> {
+        match self.requested_reasoning_effort()? {
+            "none" => None,
+            "minimal" | "low" | "medium" => Some(crate::ir::ReasoningEffort::Low),
+            "high" => Some(crate::ir::ReasoningEffort::High),
+            "xhigh" | "max" => Some(crate::ir::ReasoningEffort::Max),
+            _ => None,
+        }
+    }
+
     /// Resolve the client's thinking intent from all supported
     /// request-body formats into the neutral [`ThinkingDirective`].
     /// This is the OpenAI-edge half of thinking resolution; the model
@@ -298,7 +315,7 @@ impl ChatCompletionRequest {
     /// Request-body priority (highest to lowest):
     /// 1. `thinking.budget_tokens` (Anthropic) — explicit budget
     /// 2. `thinking_token_budget` (vLLM PR) — explicit budget
-    /// 3. `reasoning.effort` (OpenAI) — mapped to budget
+    /// 3. `reasoning.effort` / `reasoning_effort` (OpenAI) — mapped to budget
     /// 4. `chat_template_kwargs` (vLLM stable) — enable/disable + optional budget
     /// 5. `enable_thinking` (Atlas legacy) — boolean
     ///
@@ -337,11 +354,9 @@ impl ChatCompletionRequest {
             };
         }
 
-        // 3. OpenAI: reasoning.effort
-        if let Some(ref rc) = self.reasoning
-            && let Some(ref effort) = rc.effort
-        {
-            let budget = match effort.as_str() {
+        // 3. OpenAI: nested reasoning.effort wins over the top-level shorthand.
+        if let Some(effort) = self.requested_reasoning_effort() {
+            let budget = match effort {
                 "none" => 0,
                 "minimal" => 64,
                 "low" => 128,

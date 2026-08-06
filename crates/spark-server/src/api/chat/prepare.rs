@@ -64,15 +64,17 @@ pub(crate) fn prepare_chat_prompt(
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
         let tool_prompt = parser.system_prompt(&req.tools, tool_choice, &state.chat.prompt);
-        if let Some(first) = req
-            .messages
-            .first_mut()
-            .filter(|m| m.role == crate::ir::Role::System)
-        {
-            first.prepend_text(&format!("{tool_prompt}\n\n"));
-        } else {
-            req.messages
-                .insert(0, crate::ir::Message::synthetic_system(tool_prompt));
+        if !tool_prompt.is_empty() {
+            if let Some(first) = req
+                .messages
+                .first_mut()
+                .filter(|m| m.role == crate::ir::Role::System)
+            {
+                first.prepend_text(&format!("{tool_prompt}\n\n"));
+            } else {
+                req.messages
+                    .insert(0, crate::ir::Message::synthetic_system(tool_prompt));
+            }
         }
     }
 
@@ -104,6 +106,7 @@ pub(crate) fn prepare_chat_prompt(
         &req.messages,
         tools_active,
         &state.chat,
+        state.tokenizer.uses_deepseek_v4_encoding(),
     )?;
     let us_msg_entry = _t_phase.elapsed().as_micros();
 
@@ -136,6 +139,7 @@ pub(crate) fn prepare_chat_prompt(
         &image_pad_counts,
         enable_thinking,
         thinking_budget,
+        req.reasoning_effort,
         tools_active,
     )?;
     if state.chat.phase_timing {

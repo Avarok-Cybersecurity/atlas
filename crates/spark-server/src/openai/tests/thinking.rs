@@ -94,6 +94,34 @@ fn reasoning_effort_channel() {
 }
 
 #[test]
+fn top_level_reasoning_effort_channel_and_nested_priority() {
+    let mut top_level = base_body();
+    top_level["reasoning_effort"] = serde_json::json!("max");
+    let req = chat_req(top_level);
+    assert_eq!(
+        req.client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(1024) }
+    );
+    assert_eq!(
+        req.client_reasoning_effort(),
+        Some(crate::ir::ReasoningEffort::Max)
+    );
+
+    let mut both = base_body();
+    both["reasoning_effort"] = serde_json::json!("max");
+    both["reasoning"] = serde_json::json!({"effort": "high"});
+    let req = chat_req(both);
+    assert_eq!(
+        req.client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(512) }
+    );
+    assert_eq!(
+        req.client_reasoning_effort(),
+        Some(crate::ir::ReasoningEffort::High)
+    );
+}
+
+#[test]
 fn chat_template_kwargs_channel() {
     // Struct still parses as a request-body wire field.
     let kw: ChatTemplateKwargs =
