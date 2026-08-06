@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "benchmark_id": "ttft-warm-gate",
-  "benchmark_name": "Warm TTFT Regression Gate",
-  "git_sha": "e3882522b4",
-  "recorded_at": 1786039506,
+  "benchmark_id": "ttft-cold-gate",
+  "benchmark_name": "Cold TTFT Regression Gate",
+  "git_sha": "07450282ba",
+  "recorded_at": 1786040277,
   "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "params": {
     "median_limit_pct": "3",
@@ -17,7 +17,7 @@
     "spark",
     "benchmark",
     "run",
-    "ttft-warm-gate",
+    "ttft-cold-gate",
     "--param",
     "median_limit_pct=3",
     "--param",
@@ -37,15 +37,15 @@
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.126.09",
-    "sm_clock_mhz": 2431.0,
+    "sm_clock_mhz": 2476.0,
     "source": "nvidia-smi"
   },
   "metrics": {
-    "median_ms": 1558.170333,
-    "p90_ms": 4485.870296
+    "median_ms": 1640.773985,
+    "p90_ms": 4474.072196
   },
   "frame_status": "Completed",
   "verdict": "PASS",
-  "verdict_reason": "median -0.8% (limit +3.0%) · p90 +0.0% (limit +5.0%)",
-  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=1558.17, p90_ms=4485.87 · Pass: median -0.8% (limit +3.0%) · p90 +0.0% (limit +5.0%)"
+  "verdict_reason": "median +0.1% (limit +3.0%) · p90 -0.4% (limit +5.0%)",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=1640.77, p90_ms=4474.07 · Pass: median +0.1% (limit +3.0%) · p90 -0.4% (limit +5.0%)"
 }
