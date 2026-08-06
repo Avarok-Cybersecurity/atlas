@@ -1,6 +1,6 @@
 # HANDOFF — `w55-squash` / PR #388
 
-**As of 2026-08-03.** Written so another agent can pick this up cold. Read §1 and §7 first.
+**As of 2026-08-06.** Written so another agent can pick this up cold. Read §1 and §7 first.
 
 ### Provenance
 
@@ -13,6 +13,85 @@
 The transcript is the only complete record of the reasoning behind §7 — the summaries here are compressed. Memory index: `/workspace/.claude/projects/-workspace/memory/MEMORY.md`.
 
 Campaign state (in-repo, survives the session): `docs/campaigns/gb10-concurrency-2026-07/STATE.md`.
+
+---
+
+## 0. 2026-08-06 SESSION — what changed, and what is owed
+
+**Read this before §1; the sections below predate it.**
+
+### Pipeline state
+
+CI has **never been confirmed green**: GitHub Actions has been in a **critical
+incident since 15:22 UTC 2026-08-06** (`major_outage`) — jobs queue for hours
+without starting, and the cancel/force-cancel APIs return 502. Every local
+equivalent of every CI job passes at `2ed73e4e`:
+
+| check | result |
+|---|---|
+| `cargo test --workspace` | **3,400 passing** |
+| `cargo clippy --workspace --tests` | 0 errors |
+| fmt · typos · LoC cap · kernel-shadow · block_on · rustdoc · cargo-deny | all clean |
+
+Two workflows gained `concurrency: cancel-in-progress` (`tui-threading`, `cla`);
+`release-build.yml` deliberately has none — it is a `workflow_call` invoked by
+`ci.yml`, so cancelling the caller already cancels it, and a release build must
+not be interruptible mid-tag.
+
+### Gate records (`spark benchmark --pull-request-gate-check`)
+
+3 of 5 pass at the frozen commit `2ed73e4ef9`:
+
+| gate | result |
+|---|---|
+| `agentic-webserver` | PASS — 10/10 ws_ok · 10/10 fd · Σwall 489 s ≤ 1300 |
+| `ttft-warm-gate` | PASS — median −0.2 %, p90 +0.2 % |
+| `ttft-cold-gate` | PASS — median +0.3 %, p90 +0.5 % |
+| `bfcl-subset-echolp` | ran clean earlier at **85.76 / 86.00, n=1004**; re-running at the frozen sha |
+| `bfcl-subset` | **BLOCKED** — needs `qwen3.6/qwen3.6-27b-nvfp4-unsloth` PRed to `atlas-recipes`; fails loudly (exit 1) meanwhile |
+
+★ **Freeze code before a gate sweep.** `record_covers` invalidates on ANY
+`crates/` change, including TUI edits that cannot affect a server benchmark.
+
+★ **Timing legs need a quiet box.** The same agentic tier measured **605 s under
+compile load vs 489 s idle** — 24 %. Temp-0 accuracy legs (BFCL) are immune.
+
+### Fifteen defects found and fixed this session
+
+All found by RUNNING things, not reading them. The recurring shapes are worth
+internalising: *the value that reads correct is not the value that runs*, and
+*a guard that abstains never fires*.
+
+1. Reasoning deltas not counted as tokens — TTFT measured time-to-end-of-thinking; on the gate's own recipe every sample logged "no token was emitted" while reporting success
+2. TTFT baseline keyed on full URL — a self-started gate binds an ephemeral port, so the guard abstained *every* run
+3. Coherence probe called a healthy thinking model a broken checkpoint
+4. **BFCL drew n=972, not the pinned 1004** — `configure()` rebuilds the DrawSpec from PARAMETER DEFAULTS, and the floor default was written a second time
+5. Frame log lines were dropped by the CLI, so the guard for #4 printed into nowhere
+6. Two-sided `Bound` treated as malformed — the draw pin would have failed every run, blaming the baseline's syntax
+7. A failing benchmark skipped teardown, leaving ~100 GB resident
+8. Gate record named a commit **14 commits newer** than the binary
+9. A **cancelled** run wrote a record with `metrics: {}`
+10. `draw_sequences` **panics** at 20×8 — takes the server's foreground with it
+11. `draw_header` **panics** at 200×3
+12. `wrap()` silently clipped unbreakable tokens (URLs, snapshot paths)
+13. Chat history filtered by property not position → two consecutive `user` messages on the wire
+14. Keyboard scrolling unclamped → blanked the pane; the wheel twin had been fixed
+15. Sidebar subsection clicks selected the wrong section
+
+### Owed
+
+- **PR `qwen3.6-27b-nvfp4-unsloth` to `atlas-recipes`** (branch `feat/qwen3.6-27b-nvfp4-unsloth`) — unblocks `bfcl-subset`. Outward action, needs owner sign-off.
+- **Remaining UX findings** (audit in the transcript): GPU renders a fabricated `0.0 GB` when NVML is absent; `{:?}` Debug reaches the screen twice; no ETA on downloads or benchmark runs; `NO_COLOR` unhonoured; three different byte units under one roof; `q` still needs a confirmation while a run is in flight, and `/detach` is missing from the key map.
+- **One Lighthouse pass on dez.rs** — no Chromium on the build box, so its a11y/contrast claims are computed and reviewed, not machine-audited.
+- **`.webmanifest` missing from avarok2's global `/etc/nginx/mime.types`** — patched for dez.rs only; every other PWA on that host has the same latent bug.
+- **`oxidize.rs` has no A record** — pre-existing, unrelated, but it is a live site unreachable by name.
+
+### New this session
+
+- **`dez/`** — SvelteKit static PWA, live at **https://dez.rs** with a Let's Encrypt cert, `service-worker.js`/`manifest.webmanifest` at `no-cache`, hashed assets immutable, zero third-party requests.
+- **Coverage** — `.github/workflows/coverage.yml` + `codecov.yml` + `scripts/coverage.sh`. Measured baseline **33.73 % lines**. Statuses informational on purpose, with the tightening condition written down.
+- **~480 TUI tests** across chat, render, input, library and benchmarks.
+
 
 ---
 
