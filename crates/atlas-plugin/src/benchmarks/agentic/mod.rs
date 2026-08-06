@@ -15,6 +15,31 @@
 //! scoring is a port of `score_run.py`.
 //!
 //! It executes model-authored shell; see [`agent`] for the containment.
+//!
+//! ## Canonical serve recipe (Gate A)
+//!
+//! The recorded 10/10 Gate A history (321ws Σ951s, 307A Σ978s, fixA Σ1158s)
+//! was measured against THIS serve configuration. A Gate A run is only
+//! comparable to that band when served exactly like this (no docker wrapper —
+//! run the binary directly):
+//!
+//! ```sh
+//! spark serve Qwen/Qwen3.6-35B-A3B-FP8 \
+//!   --max-seq-len 32768 --max-batch-size 2 --gpu-memory-utilization 0.70 \
+//!   --kv-cache-dtype bf16 --lm-head-dtype bf16 --scheduling-policy slai \
+//!   --speculative --num-drafts 1 --mtp-quantization bf16 \
+//!   --enable-prefix-caching --ssm-cache-slots 256 --ssm-checkpoint-interval 16 \
+//!   --kv-high-precision-layers auto --port 8888
+//! ```
+//!
+//! Two pins that must not drift:
+//!
+//! * **`--lm-head-dtype bf16` is mandatory.** fp8 and nvfp4 lm-heads pass
+//!   short-prompt coherence but degenerate over this harness's long structured
+//!   trajectories (low-margin argmax flips compound turn over turn).
+//! * **Thinking stays ON** — no `--disable-thinking`. The historical band was
+//!   recorded with thinking enabled; disabling it is the TTFT/BFCL-leg recipe
+//!   (their probes count only content tokens), not Gate A's.
 
 pub mod agent;
 pub mod score;
@@ -50,32 +75,8 @@ tear down the server by killing whatever is listening on its port rather than gu
 name, always wrapped in a short timeout so it can never stall your shell, for example `timeout 5 \
 fuser -k ${ATLAS_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`.";
 
-const SUMMARY: &str = "N agentic runs: build a working Axum server, then verify it";
-pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
-
-pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "agentic-webserver",
-    name: "Agentic Webserver Test",
-    summary: SUMMARY,
-    detail: "Runs the flagship agentic task N times: the model writes a Rust Axum ping/pong \
-             server, tests it, runs it and tears it down, using bash/write_file/read_file tools \
-             in a fresh sandbox. Each run is scored on OUTCOME (the scorer builds it and gets a \
-             'pong') and on PROCESS (did the agent do all six things the prompt asked?), plus \
-             wall time. RUNS MODEL-AUTHORED SHELL inside the sandbox directory.",
-    duration_hint: "~5 min per iteration",
-    updated: "2026-07-31",
-    needs_confirmation: true,
-    // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1300 s) were
-    // measured on the 35B MoE flagship and mean nothing against another
-    // checkpoint. FP8 and NVFP4 are both the same family and both valid.
-    intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-35b-a3b"],
-        note: "Gate A is defined on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or NVFP4). \
-               The dense 27B is a different gate (C2/D) with different thresholds, so a \
-               run here would produce numbers that compare to nothing.",
-    }),
-    ctor: || Box::new(AgenticWebserver::default()),
-};
+mod descriptors;
+pub use descriptors::{DESCRIPTOR, METADATA};
 
 #[derive(Default)]
 struct IterationRow {
@@ -238,6 +239,24 @@ impl AgenticWebserver {
                 },
             ),
         ]
+    }
+
+    /// Raw gate numbers for `--pull-request-gate` (same source the summary
+    /// tiles and the verdict read from — the three cannot disagree).
+    fn metrics(&self) -> std::collections::BTreeMap<String, f64> {
+        let n = self.rows.len();
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("iterations".to_string(), n as f64);
+        m.insert(
+            "webserver_ok".to_string(),
+            self.rows.iter().filter(|r| r.webserver_ok).count() as f64,
+        );
+        m.insert(
+            "followed_directions".to_string(),
+            self.rows.iter().filter(|r| r.directions.overall()).count() as f64,
+        );
+        m.insert("sum_wall_s".to_string(), self.total_wall());
+        m
     }
 
     fn verdict(&self) -> Verdict {
@@ -422,6 +441,7 @@ impl Benchmark for AgenticWebserver {
             .with_progress(total, total)
             .with_summary(self.summary())
             .with_table(self.table())
+            .with_metrics(self.metrics())
             .with_verdict(self.verdict()));
         }
 

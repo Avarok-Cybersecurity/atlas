@@ -17,7 +17,7 @@ PY
 sudo docker rm -f "$CN" >/dev/null 2>&1; sleep 3
 sudo docker run -d --name "$CN" --network host --gpus all --ipc=host \
   -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
   -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "$BIN:/usr/local/bin/spark:ro" \

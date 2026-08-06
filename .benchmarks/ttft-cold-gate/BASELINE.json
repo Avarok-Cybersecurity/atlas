@@ -1,0 +1,8 @@
+{
+  "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "note": "Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve recipe) × the gate limits: median 1677.93 ms × +3% and p90 4580.73 ms × +5%. TTFT is box-local by nature — a different box must re-record this baseline, not reuse it.",
+  "metrics": {
+    "median_ms": { "max": 1728.27 },
+    "p90_ms": { "max": 4809.76 }
+  }
+}

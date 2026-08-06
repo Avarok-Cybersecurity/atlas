@@ -359,7 +359,7 @@ impl BenchState {
                     } else {
                         self.status = frame.phase.clone();
                     }
-                    self.frame = Some(frame);
+                    self.frame = Some(*frame);
                 }
             }
         }

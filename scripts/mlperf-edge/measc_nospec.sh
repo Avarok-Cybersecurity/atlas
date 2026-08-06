@@ -12,7 +12,7 @@ OUTDIR=/workspace/.wt-decode-fold/measc
 mkdir -p "$OUTDIR"
 BASE_ENV=(
   -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1
+  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
   -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1
 )
 COMMON="--host 0.0.0.0 --port $PORT --model-name qwen --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 --mtp-quantization bf16 --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking"

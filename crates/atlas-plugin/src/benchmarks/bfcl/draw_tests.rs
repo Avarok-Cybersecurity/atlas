@@ -40,6 +40,41 @@ fn the_golden_draw_is_exactly_995() {
     );
 }
 
+/// The echolp draw has to produce n = 1004 from the same totals, or the 35B
+/// gate's baseline (84.66 / 83.32, measured on that draw) does not describe it.
+///
+/// A draw we did not reproduce is exactly as dangerous as scoring one draw
+/// against another's threshold: it yields a plausible number that means nothing.
+#[test]
+fn the_echolp_draw_is_exactly_1004() {
+    let p = plan(&DrawSpec::echolp(), &real_totals());
+    assert_eq!(
+        total(&p),
+        1004,
+        "echolp draw must be n=1004 or its baseline does not apply: {p:?}"
+    );
+}
+
+/// The two draws must differ in COMPOSITION, not merely in size — that
+/// difference is why each needs its own baseline.
+#[test]
+fn golden_and_echolp_are_different_draws() {
+    let g: BTreeMap<String, usize> = plan(&DrawSpec::golden(), &real_totals())
+        .into_iter()
+        .collect();
+    let e: BTreeMap<String, usize> = plan(&DrawSpec::echolp(), &real_totals())
+        .into_iter()
+        .collect();
+    assert_ne!(g, e, "the draws must not collapse onto each other");
+    // live is weighted 23% vs 10%, so echolp takes strictly more live_multiple.
+    assert!(
+        e["live_multiple"] > g["live_multiple"],
+        "echolp must weight `live` more heavily: {} vs {}",
+        e["live_multiple"],
+        g["live_multiple"]
+    );
+}
+
 #[test]
 fn the_golden_per_subset_counts_match_the_reference_rule() {
     let p: BTreeMap<String, usize> = plan(&DrawSpec::golden(), &real_totals())

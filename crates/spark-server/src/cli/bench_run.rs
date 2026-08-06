@@ -6,11 +6,11 @@
 //! a model and never touches the GPU. Everything below is a thin shell around
 //! `atlas_plugin::headless`, which the dashboard shares.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use atlas_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
 use atlas_plugin::{
-    ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, history,
-    registry,
+    ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, gate,
+    history, registry,
 };
 
 use super::bench_args::{BenchmarkArgs, BenchmarkCommand, HistoryArgs, OutputFormat, RunArgs};
@@ -28,7 +28,15 @@ pub fn find(id: &str) -> Result<&'static BenchmarkDescriptor> {
 }
 
 pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
-    match args.command {
+    if args.pull_request_gate_check {
+        let code = gate_check_cmd()?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    let command = args.command.expect("clap enforces a subcommand here");
+    match command {
         BenchmarkCommand::List(a) => match a.id {
             Some(id) => bench_print::print_schema(&id, a.format),
             None => bench_print::print_suite(a.format),
@@ -44,6 +52,80 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The repo root this checkout lives in — where `.benchmarks/` sits.
+fn repo_root() -> Result<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git rev-parse")?;
+    if !out.status.success() {
+        bail!("not inside a git checkout — the gate records live in the repo's .benchmarks/");
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        bail!("git rev-parse --show-toplevel printed nothing");
+    }
+    Ok(std::path::PathBuf::from(path))
+}
+
+/// `--pull-request-gate-check`: does THIS commit have a passing record for
+/// every required gate? Prints a line per bench and exits 1 until they all
+/// pass. Pure filesystem reads — fast enough to run on every PR in CI.
+fn gate_check_cmd() -> Result<i32> {
+    let root = repo_root()?;
+    let sha = gate::git_sha(&root)?;
+    let gates = gate::check_gates(&root, &sha);
+    println!("gate check for {sha} ({})", root.display());
+    let mut open = Vec::new();
+    for id in gate::REQUIRED_GATES {
+        let status = &gates[id];
+        match status {
+            gate::GateStatus::Pass => println!("  PASS  {id}"),
+            gate::GateStatus::Fail(reasons) => {
+                println!("  FAIL  {id}");
+                for reason in reasons {
+                    println!("        - {reason}");
+                }
+                open.push(id);
+            }
+            gate::GateStatus::Missing(reason) => {
+                println!("  NONE  {id} — {reason}");
+                open.push(id);
+            }
+        }
+    }
+    if open.is_empty() {
+        println!("all {} required gates pass", gate::REQUIRED_GATES.len());
+        Ok(0)
+    } else {
+        println!(
+            "{} bench(es) still need a passing gate record: {}",
+            open.len(),
+            open.join(", ")
+        );
+        Ok(1)
+    }
+}
+
+/// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
+///
+/// The hardware fingerprint is fetched from the endpoint that did the work —
+/// not probed locally — so the record describes the box that actually served
+/// the model. A write failure aborts the command with a clear error: the
+/// point of the flag is the record, so a run that did not produce one must
+/// not report success.
+async fn write_gate_record(record: &atlas_plugin::RunRecord, url: &str, model: &str) -> Result<()> {
+    let root = repo_root()?;
+    let sha = gate::git_sha(&root)?;
+    let target = TargetEndpoint::new(url, model);
+    let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
+    let gate_record = gate::GateRecord::from_run(record, hardware, sha)?;
+    let path = gate::write_record(&root, &gate_record)?;
+    eprintln!("gate record written as {}", path.display());
+    Ok(())
 }
 
 fn store() -> Result<ArtifactStore> {
@@ -133,6 +215,10 @@ async fn run(args: RunArgs) -> Result<i32> {
         )
     })
     .await??;
+
+    if args.pull_request_gate {
+        write_gate_record(&outcome.record, &args.url, &args.model).await?;
+    }
 
     match args.format {
         OutputFormat::Json => bench_print::print_record(&outcome.record, OutputFormat::Json)?,

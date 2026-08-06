@@ -33,7 +33,7 @@ serve() { # $1 = leg, $2 = extra -e args
   sudo docker rm -f atlas-prgate >/dev/null 2>&1; sleep 3
   # shellcheck disable=SC2086
   sudo docker run -d --name atlas-prgate --network host --ipc host --gpus all \
-    -e ATLAS_SSM_TAIL_PROTECT=1 $2 \
+    $2 \
     -v /workspace/.cache/huggingface:/root/.cache/huggingface \
     -v "$BIN:/usr/local/bin/spark:ro" \
     atlas-gb10:followups serve "$MODEL" --host 0.0.0.0 --port $PORT \

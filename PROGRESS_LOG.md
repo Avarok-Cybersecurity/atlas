@@ -289,6 +289,11 @@ the batched-verify path it optimises is the one we measured falling back to
 
 ### 5.3 `ATLAS_SSM_TAIL_PROTECT=1` is inert in this config
 
+(2026-08-05: the variable was renamed to the opt-out
+`ATLAS_DISABLE_SSM_TAIL_PROTECT` — default ON — and dropped from every launch
+script, since §5.3 itself proved it guards an empty set in this config. The
+finding below stands as written for the old name.)
+
 `radix_tree/snapshot.rs` says so in-code: the lease only shields `is_tail`
 entries, whose sole production writer is reachable only when
 `ATLAS_SSM_TAIL_MIDCHUNK != 0` — and the golden set pins `MIDCHUNK=0`. The
@@ -1065,8 +1070,9 @@ Ordered by what I would pick up first.
    demote the per-step `ERROR` to a once-per-sequence `debug`.
 4. **§5.6 — warn at startup when `ssm_checkpoint_interval * block_size <
    ATLAS_SSM_SPILL_MIN_TOKENS`**, i.e. when the config can never spill.
-5. **§5.3 — `ATLAS_SSM_TAIL_PROTECT=1` is inert** under `TAIL_MIDCHUNK=0`. Either
-   drop it from the golden set or make it warn.
+5. **§5.3 — `ATLAS_SSM_TAIL_PROTECT=1` is inert** under `TAIL_MIDCHUNK=0`. DONE
+   (2026-08-05): dropped from every launch script and renamed to the opt-out
+   `ATLAS_DISABLE_SSM_TAIL_PROTECT` (default ON, `=1` disables).
 6. SSM tier reaping is still unexercised (§5.5). `bench/ssm_faultin.py` is the
    probe; it needs a SMALL resident pool (`--ssm-cache-slots 1..2`) so 2-3
    requests force eviction, NOT the 48-request/21 GB shape I first built.

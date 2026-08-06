@@ -33,46 +33,8 @@ use crate::result::{
     BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
 };
 
-const WARM_SUMMARY: &str = "Cached-prefix TTFT vs the stored same-box baseline";
-const COLD_SUMMARY: &str = "Uncached prefill TTFT vs the stored same-box baseline";
-pub const WARM_METADATA: PluginMetadata = PluginMetadata::atlas(WARM_SUMMARY);
-pub const COLD_METADATA: PluginMetadata = PluginMetadata::atlas(COLD_SUMMARY);
-
-pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "ttft-warm-gate",
-    name: "Warm TTFT Regression Gate",
-    summary: WARM_SUMMARY,
-    detail: "Measures time-to-first-token on the WARM path: each sample repeats a bit-identical \
-             prompt so the prefix cache hits. Gates at median ≤3% and p90 ≤5% against a baseline \
-             recorded on this box — the guard that catches an optimization silently falling back \
-             to a slow path while the correctness gates stay green.",
-    duration_hint: "~3–6 min",
-    updated: "2026-07-31",
-    needs_confirmation: false,
-    // A TTFT gate compares against a baseline recorded on the SAME box and
-    // model, which it stores itself — so it is meaningful for any checkpoint
-    // and constrains none.
-    intended_for: None,
-    ctor: || Box::new(TtftGate::new(Mode::Warm)),
-};
-
-pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "ttft-cold-gate",
-    name: "Cold TTFT Regression Gate",
-    summary: COLD_SUMMARY,
-    detail: "Measures time-to-first-token with the prefix cache guaranteed to MISS: every sample \
-             carries a unique prefix_tag, so each request pays a full prefill. This is the prefill path \
-             on its own, with the cache's contribution removed — the warm gate cannot see a \
-             prefill regression that caching is hiding.",
-    duration_hint: "~3–6 min",
-    updated: "2026-07-31",
-    needs_confirmation: false,
-    // A TTFT gate compares against a baseline recorded on the SAME box and
-    // model, which it stores itself — so it is meaningful for any checkpoint
-    // and constrains none.
-    intended_for: None,
-    ctor: || Box::new(TtftGate::new(Mode::Cold)),
-};
+mod descriptors;
+pub use descriptors::{COLD_DESCRIPTOR, COLD_METADATA, WARM_DESCRIPTOR, WARM_METADATA};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -444,21 +406,21 @@ impl Benchmark for TtftGate {
             }
             let p = stats::Percentiles::of(&samples);
             let (verdict, summary) = self.verdict(p.p50, p.p90);
+            let mut metrics = BTreeMap::new();
+            if let Some(v) = p.p50 {
+                metrics.insert("median_ms".to_string(), v);
+            }
+            if let Some(v) = p.p90 {
+                metrics.insert("p90_ms".to_string(), v);
+            }
             if self.update_baseline {
-                let mut metrics = BTreeMap::new();
-                if let Some(v) = p.p50 {
-                    metrics.insert("median_ms".to_string(), v);
-                }
-                if let Some(v) = p.p90 {
-                    metrics.insert("p90_ms".to_string(), v);
-                }
                 let target = handle.target();
                 baseline::save(
                     handle.artifacts(),
                     self.mode.descriptor().id,
                     &target.base_url,
                     &target.model,
-                    metrics,
+                    metrics.clone(),
                 )
                 .context("recording baseline")?;
             }
@@ -469,6 +431,7 @@ impl Benchmark for TtftGate {
             .with_progress(total, total)
             .with_summary(summary)
             .with_table(self.table())
+            .with_metrics(metrics)
             .with_verdict(verdict));
         }
 

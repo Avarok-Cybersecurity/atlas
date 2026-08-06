@@ -1,0 +1,267 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The committed shape of one gate run, and how it is written and read.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+
+use super::gate_dir;
+use crate::hardware::Hardware;
+use crate::history::RunRecord;
+use crate::result::{RunStatus, VerdictKind};
+
+/// One run record, as committed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GateRecord {
+    pub schema: u32,
+    pub benchmark_id: String,
+    pub benchmark_name: String,
+    /// Commit the measured binary was built from. A record that cannot name
+    /// its commit cannot be traced, so the writer refuses one without it.
+    pub git_sha: String,
+    pub recorded_at: u64,
+    pub target_model: String,
+    /// Every parameter of the run, defaults included — the exact inputs of
+    /// the command below.
+    pub params: BTreeMap<String, String>,
+    /// The exact CLI invocation, reconstructed from the recorded inputs, so
+    /// the run can be reproduced without interpretation.
+    pub command: Vec<String>,
+    pub atlas_version: String,
+    /// The box that served the model during the run.
+    pub hardware: Hardware,
+    /// Raw headline numbers, keyed by stable metric name.
+    pub metrics: BTreeMap<String, f64>,
+    /// The run's terminal status. A `Failed` frame never passes the gate,
+    /// whatever its numbers look like.
+    pub frame_status: RunStatus,
+    /// PASS / FAIL / info, and the reason the verdict carries.
+    pub verdict: Option<String>,
+    pub verdict_reason: String,
+    /// One line a future reader scans before the numbers: what was measured,
+    /// what it hit, and anything the verdict or log makes noteworthy.
+    pub summary: String,
+}
+
+/// Comparison against one metric's threshold. `min` fails below (scores),
+/// `max` fails above (latencies, wall time) — the two are mutually exclusive
+/// per metric.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Bound {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Points of slack the gate allows beyond the bound — measurement noise,
+    /// e.g. MTP's sub-noise BFCL dips. Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noise: Option<f64>,
+}
+
+/// The thresholds a benchmark's gate records must meet, committed as
+/// `.benchmarks/<id>/BASELINE.json` beside the records themselves.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GateBaseline {
+    /// The checkpoint the thresholds were measured on. A record against a
+    /// different model is a configuration error the check refuses to score,
+    /// rather than a silently wrong comparison.
+    pub model: String,
+    /// Why these are the thresholds — the source run the numbers come from.
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub metrics: BTreeMap<String, Bound>,
+}
+
+/// `YYYY-MM-DD` (UTC) from unix seconds, hand-rolled to keep the crate
+/// dependency-free. The epoch day is shifted to the March-based civil
+/// calendar, where the leap day is last, before the division.
+pub fn date_of(unix_secs: u64) -> String {
+    let days = (unix_secs / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The filename for a run: `YYYY-MM-DD-<sha>.json`. A second run of the same
+/// commit on the same UTC day replaces the first — the record is the branch's
+/// current word on that bench, not an accumulating log of attempts.
+pub fn record_path(root: &Path, benchmark_id: &str, unix_secs: u64, sha: &str) -> PathBuf {
+    gate_dir(root, benchmark_id).join(format!("{}-{sha}.json", date_of(unix_secs)))
+}
+
+/// Write one gate record. Returns the path; the parent directory is created,
+/// but never committed on the writer's behalf — that stays the caller's
+/// explicit act.
+pub fn write_record(root: &Path, record: &GateRecord) -> Result<PathBuf> {
+    let path = record_path(
+        root,
+        &record.benchmark_id,
+        record.recorded_at,
+        &record.git_sha,
+    );
+    std::fs::create_dir_all(path.parent().expect("record path has a parent")).with_context(
+        || {
+            format!(
+                "creating {}",
+                gate_dir(root, &record.benchmark_id).display()
+            )
+        },
+    )?;
+    let json = serde_json::to_string_pretty(record).context("serializing the gate record")?;
+    std::fs::write(&path, json + "\n").with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Read one committed record.
+pub fn read_record(path: &Path) -> Result<GateRecord> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Read one committed baseline.
+pub fn read_baseline(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
+    let path = super::baseline_path(root, benchmark_id);
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+impl GateRecord {
+    /// Build a gate record from what a finished run leaves behind. The
+    /// hardware fingerprint comes from the serving endpoint's `/hardware` —
+    /// the box that did the inference, not the box running this CLI.
+    pub fn from_run(record: &RunRecord, hardware: Hardware, git_sha: String) -> Result<Self> {
+        if git_sha.is_empty() {
+            bail!("a gate record needs the commit sha it was measured from");
+        }
+        let frame = &record.frame;
+        if frame.status == RunStatus::Running {
+            bail!("the run never reached a terminal frame — nothing to gate");
+        }
+        let mut params = Vec::new();
+        if !record.target_url.is_empty() {
+            params.push(("--url".to_string(), record.target_url.clone()));
+        }
+        if !record.target_model.is_empty() {
+            params.push(("--model".to_string(), record.target_model.clone()));
+        }
+        for (k, v) in &record.params {
+            params.push(("--param".to_string(), format!("{k}={v}")));
+        }
+        if record.benchmark_id == "agentic-webserver" {
+            params.push(("--yes".to_string(), String::new()));
+        }
+        let mut command: Vec<String> = vec![
+            "spark".into(),
+            "benchmark".into(),
+            "run".into(),
+            record.benchmark_id.clone(),
+        ];
+        for (flag, value) in &params {
+            command.push(flag.clone());
+            if !value.is_empty() {
+                command.push(value.clone());
+            }
+        }
+        command.push("--pull-request-gate".into());
+
+        let verdict = frame.verdict.as_ref().map(|v| match v.kind {
+            VerdictKind::Pass => "PASS".to_string(),
+            VerdictKind::Fail => "FAIL".to_string(),
+            VerdictKind::Info => "info".to_string(),
+        });
+        let verdict_reason = frame
+            .verdict
+            .as_ref()
+            .map(|v| v.reason.clone())
+            .unwrap_or_default();
+        Ok(Self {
+            schema: 1,
+            benchmark_id: record.benchmark_id.clone(),
+            benchmark_name: record.benchmark_name.clone(),
+            git_sha,
+            recorded_at: record.recorded_at,
+            target_model: record.target_model.clone(),
+            params: record.params.clone(),
+            command,
+            atlas_version: record.atlas_version.clone(),
+            hardware,
+            metrics: frame.metrics.clone(),
+            frame_status: frame.status,
+            verdict,
+            verdict_reason,
+            summary: summarize(record),
+        })
+    }
+
+    /// True when the run's verdict is a PASS. Anything else — FAIL, info, or
+    /// no verdict at all — has not proven its bar.
+    pub fn verdict_passes(&self) -> bool {
+        self.verdict.as_deref() == Some("PASS")
+    }
+
+    /// True when the run's own frame says it never completed.
+    pub fn frame_status_failed(&self) -> bool {
+        self.frame_status == RunStatus::Failed
+    }
+}
+
+/// The one line a future reader sees first. States the headline numbers and,
+/// when the frame logged warnings, the first one — those are the observations
+/// worth carrying into the next run's context.
+fn summarize(record: &RunRecord) -> String {
+    let frame = &record.frame;
+    let numbers: Vec<String> = frame
+        .metrics
+        .iter()
+        .map(|(k, v)| format!("{k}={v:.2}"))
+        .collect();
+    let numbers = if numbers.is_empty() {
+        "no metrics".to_string()
+    } else {
+        numbers.join(", ")
+    };
+    let warning = frame
+        .log
+        .iter()
+        .find(|l| {
+            matches!(
+                l.level,
+                crate::result::LogLevel::Warn | crate::result::LogLevel::Error
+            )
+        })
+        .map(|l| format!(" · warning: {}", l.text));
+    let verdict = frame
+        .verdict
+        .as_ref()
+        .map(|v| format!("{:?}: {}", v.kind, v.reason))
+        .unwrap_or_else(|| "no verdict".into());
+    format!(
+        "{} · {} · {}{}",
+        record.target_model,
+        numbers,
+        verdict,
+        warning.unwrap_or_default()
+    )
+}
+
+/// Unix seconds now.
+pub fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}

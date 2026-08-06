@@ -169,6 +169,16 @@ pub async fn health_live() -> &'static str {
     "ok"
 }
 
+/// GET /hardware — the serving box's hardware fingerprint, for benchmark
+/// provenance. Probed on request (the sm-clock reading must be live), via
+/// `spawn_blocking` because the vendor tools are synchronous subprocesses.
+pub async fn hardware() -> Response {
+    let hw = tokio::task::spawn_blocking(atlas_plugin::hardware::Hardware::probe)
+        .await
+        .unwrap_or_else(|_| atlas_plugin::hardware::Hardware::unknown());
+    Json(hw).into_response()
+}
+
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.
 pub async fn tokenize(
     CurrentModel(state): CurrentModel,
