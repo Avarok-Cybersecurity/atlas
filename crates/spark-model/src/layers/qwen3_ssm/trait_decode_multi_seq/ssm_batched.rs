@@ -35,7 +35,7 @@ impl Qwen3SsmLayer {
         // (batch4/16, M<=16). Either amortizes the QKVZ/out_proj weight read
         // across the n seqs; otherwise the per-seq loop re-streams it n times.
         let qkvz_ok = (self.qkvz_nvfp4.is_none() && self.w8a16_gemm_k.0 != 0)
-            || (self.qkvz_nvfp4.is_some() && self.w4a16_gemv_batch4_k.0 != 0 && n <= 16);
+            || (self.qkvz_nvfp4.is_some() && self.w4a16_gemv_batch4_k.0 != 0);
         let out_ok = self.out_proj_fp8w.is_some()
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
@@ -179,17 +179,25 @@ impl Qwen3SsmLayer {
         } else if let Some(ref nvfp4) = self.qkvz_nvfp4 {
             // FP4 batched QKVZ: ONE NVFP4 weight pass for all n seqs
             // (sequential layout writes the deinterleaved buffer directly).
-            ops::w4a16_gemv_batchm(
-                ctx.gpu,
-                fp4_gemv_batch_k,
-                normed_base,
-                nvfp4,
-                deinterleaved,
-                n as u32,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
+            // TASK-160 (gx10): tile n>16 into <=16-row chunks so the batched
+            // path (weights read ceil(n/16)x) survives decode batches >16
+            // instead of disengaging to the per-seq loop (weights read n x).
+            let mut c0 = 0usize;
+            while c0 < n {
+                let m = (n - c0).min(16);
+                ops::w4a16_gemv_batchm(
+                    ctx.gpu,
+                    fp4_gemv_batch_k,
+                    normed_base.offset(c0 * h * bf16),
+                    nvfp4,
+                    deinterleaved.offset(c0 * qkvz_size * bf16),
+                    m as u32,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+                c0 += m;
+            }
         } else {
             ops::dense_gemm(
                 ctx.gpu,
@@ -297,17 +305,22 @@ impl Qwen3SsmLayer {
             // FP4 batched out_proj: ONE NVFP4 weight pass for all n seqs.
             // (qkvz_nvfp4.is_some() ⇒ the NVFP4 SSM build, where ssm.out_proj
             // is the NVFP4 weight the per-seq path also uses via w4a16_gemv.)
-            ops::w4a16_gemv_batchm(
-                ctx.gpu,
-                fp4_gemv_batch_k,
-                normed_out_base,
-                &self.ssm.out_proj,
-                ssm_out_base,
-                n as u32,
-                h as u32,
-                value_dim as u32,
-                stream,
-            )?;
+            let mut c0 = 0usize;
+            while c0 < n {
+                let m = (n - c0).min(16);
+                ops::w4a16_gemv_batchm(
+                    ctx.gpu,
+                    fp4_gemv_batch_k,
+                    normed_out_base.offset(c0 * value_dim * bf16),
+                    &self.ssm.out_proj,
+                    ssm_out_base.offset(c0 * h * bf16),
+                    m as u32,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+                c0 += m;
+            }
         }
         detail_step!("out_proj");
 
