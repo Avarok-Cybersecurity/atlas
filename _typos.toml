@@ -25,6 +25,11 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# `RETUNED` — past tense of "retune", used in the MODEL.toml sampling-default
+# changelogs (`presence_penalty RETUNED 1.5 -> 1.0`). A real word; the checker
+# reads it as a misspelling of `RETURNED`, which it is not.
+RETUNED = "RETUNED"
+retuned = "retuned"
 # `nd` — the num-drafts speculative-decode notation (`nd=2`, `nd=3`) used
 # throughout the MTP verify code and docs. Not a typo of "and".
 nd = "nd"
