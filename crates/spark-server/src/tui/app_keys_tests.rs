@@ -200,7 +200,7 @@ fn esc_outside_a_text_field_drops_focus_and_resumes_following() {
 #[test]
 fn esc_in_the_benchmarks_section_steps_back_instead_of_dropping_focus() {
     // Benchmarks and the Library own Esc — there it means "back one step in the
-    // flow", which is why the global Esc arm is matched AFTER their catch-alls.
+    // flow", which is why the global Esc arm is matched AFTER their catch-all arms.
     use crate::tui::bench_state::View;
     let mut a = app();
     a.log_scroll_max.set(20);

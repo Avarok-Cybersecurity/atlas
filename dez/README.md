@@ -59,7 +59,7 @@ npm run check        # svelte-check, TypeScript strict
 
 Output lands in `build/` as a fully static tree. `npm run build` regenerates
 `static/icons/*.png` from `static/icons/icon.svg` first (see `scripts/gen-icons.mjs`), so the
-installed app icon can never drift from the favicon. The PNGs are generated, not committed.
+installed app icon can never drift from the favicon. The raster icons are generated, not committed.
 
 ### Verifying the PWA
 

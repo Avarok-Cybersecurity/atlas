@@ -217,10 +217,12 @@ fn a_model_with_no_recipe_has_no_cards_and_no_form() {
 
 #[test]
 fn committing_an_edit_with_nothing_selected_is_a_no_op() {
-    let mut s = LibState::default();
-    s.view = View::Config;
-    s.edit_buffer = "9100".into();
-    s.editing = true;
+    let mut s = LibState {
+        view: View::Config,
+        edit_buffer: "9100".into(),
+        editing: true,
+        ..Default::default()
+    };
     s.commit_edit();
     assert!(s.overrides.is_empty());
     assert!(s.error.is_none(), "no row means nothing to complain about");
