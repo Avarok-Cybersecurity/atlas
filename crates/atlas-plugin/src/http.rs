@@ -40,7 +40,7 @@ pub struct ChatOutcome {
     /// for the answer or the tool call, so folding reasoning into it would
     /// feed them the model's thinking as if it were its reply. It is still a
     /// decoded token, so it counts toward `completion_tokens` and it starts
-    /// the TTFT clock — see [`apply_chunk`].
+    /// the TTFT clock.
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
