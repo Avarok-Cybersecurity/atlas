@@ -155,3 +155,31 @@ fn every_subset_maps_to_a_category_except_live_relevance() {
         .collect();
     assert_eq!(uncategorised, vec!["live_relevance"]);
 }
+
+/// The PARAMETER DEFAULTS must reproduce the pinned draw, not just the
+/// `DrawSpec` constants.
+///
+/// ★ This is the test that was missing, and its absence cost a 3.5-hour run.
+/// `configure` rebuilds the spec from parameter defaults, so `DrawSpec::echolp()`
+/// being correct proves nothing about what a default run actually draws. The
+/// echolp variant shipped with `subset_floor` defaulting to 0 while its spec
+/// says 25, which takes `live_parallel` (16 rows) and `live_parallel_multiple`
+/// (24) by percentage instead of whole and yields n=972, not 1004 — a
+/// plausible score against a baseline for a different draw.
+#[test]
+fn the_parameter_defaults_reproduce_each_pinned_draw() {
+    use crate::benchmark::Benchmark as _;
+    use crate::benchmarks::bfcl::{Bfcl, Variant};
+
+    for (variant, want) in [(Variant::Subset, 995usize), (Variant::SubsetEcholp, 1004)] {
+        let mut b = Bfcl::new(variant);
+        let defaults = crate::params::ParamValues::defaults(&b.parameters());
+        b.configure(&defaults).expect("defaults must validate");
+        let n = total(&plan(&b.spec, &real_totals()));
+        assert_eq!(
+            n, want,
+            "{variant:?}: a DEFAULT run draws n={n}, but this draw is pinned at {want}. \
+             Its baseline does not apply to n={n}."
+        );
+    }
+}

@@ -48,7 +48,7 @@ pub use descriptors::{
     SUBSET_METADATA,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     Subset,
     SubsetEcholp,
@@ -80,6 +80,32 @@ impl Variant {
             (Variant::SubsetEcholp, _) => 12.0,
         }
     }
+    /// The subset floor this variant's draw is DEFINED with.
+    ///
+    /// ★ Read from the variant's own `DrawSpec`, never written out again here.
+    /// `configure` rebuilds the whole spec from parameter defaults, so a floor
+    /// spelled out a second time in this file is a second source of truth that
+    /// silently wins. It already went wrong exactly that way: the echolp
+    /// variant was added without extending an `if v == Variant::Subset { 25 }
+    /// else { 0 }`, so its floor defaulted to 0. That takes `live_parallel`
+    /// (16 rows) and `live_parallel_multiple` (24) by percentage instead of
+    /// whole, and the draw silently became n=972 rather than the pinned 1004 --
+    /// a plausible-looking score measured against a baseline for a different
+    /// draw.
+    fn default_floor(self) -> usize {
+        self.spec().subset_floor.unwrap_or(0)
+    }
+
+    /// The draw this variant is defined by. Single source of truth for both
+    /// the constructor and the parameter defaults.
+    fn spec(self) -> DrawSpec {
+        match self {
+            Variant::Subset => DrawSpec::golden(),
+            Variant::SubsetEcholp => DrawSpec::echolp(),
+            Variant::Full => DrawSpec::full(),
+        }
+    }
+
     /// The sample count this draw must produce, if it is a pinned draw.
     ///
     /// A draw that silently drifts off its pinned n produces a score that looks
@@ -144,11 +170,7 @@ impl Bfcl {
             responses: Vec::new(),
             responses_path: None,
             scores: None,
-            spec: match variant {
-                Variant::Subset => DrawSpec::golden(),
-                Variant::SubsetEcholp => DrawSpec::echolp(),
-                Variant::Full => DrawSpec::full(),
-            },
+            spec: variant.spec(),
             max_new_tokens: 1024,
             temperature: 0.0,
             request_timeout: Duration::from_secs(600),
@@ -303,7 +325,7 @@ impl Benchmark for Bfcl {
                     min: 0,
                     max: 10_000,
                 },
-                ParamValue::Int(if v == Variant::Subset { 25 } else { 0 }),
+                ParamValue::Int(v.default_floor() as i64),
             ),
             ParamSpec::new(
                 "max_new_tokens",
