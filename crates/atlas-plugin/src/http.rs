@@ -282,7 +282,8 @@ async fn get_models(target: &TargetEndpoint, timeout: Duration) -> Result<String
 ///
 /// Fetched from the endpoint rather than probed locally because a benchmark
 /// number belongs to the box that did the inference, which is not necessarily
-/// the box running the benchmark CLI. Falls back to [`Hardware::unknown`] —
+/// the box running the benchmark CLI. Falls back to
+/// [`crate::hardware::Hardware::unknown`] —
 /// an old server without the endpoint must not make a run unrecordable.
 pub async fn fetch_hardware(
     target: &TargetEndpoint,
