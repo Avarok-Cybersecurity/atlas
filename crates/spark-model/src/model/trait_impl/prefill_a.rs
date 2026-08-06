@@ -308,30 +308,32 @@ impl TransformerModel {
             }
             cursor += proc_count * 8;
 
-            let devs = if marconi_skip {
-                let bt_start = (cursor + 3) & !3;
-                let bt_len = seq.block_table.len() * 4;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        seq.block_table.as_ptr() as *const u8,
-                        pinned.add(bt_start),
-                        bt_len,
-                    );
-                }
-                let sl_start = (bt_start + bt_len + 3) & !3;
-                let seq_len_val = n as u32;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        &seq_len_val as *const u32 as *const u8,
-                        pinned.add(sl_start),
-                        4,
-                    );
-                }
-                cursor = sl_start + 4;
-                (meta_base.offset(bt_start), meta_base.offset(sl_start))
-            } else {
-                (DevicePtr::NULL, DevicePtr::NULL)
-            };
+            // Upload the sequence's paged-KV block table + seq_len into the
+            // meta buffer. The chunk-0 flash path ignores them, but the paged
+            // path (used by Gemma-4 E2B's KV-shared layers even at chunk 0)
+            // dereferences the block table — leaving it NULL here was the
+            // illegal-address source. Previously gated on `marconi_skip`
+            // (SSM snapshot restore), which E2B never hits.
+            let bt_start = (cursor + 3) & !3;
+            let bt_len = seq.block_table.len() * 4;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    seq.block_table.as_ptr() as *const u8,
+                    pinned.add(bt_start),
+                    bt_len,
+                );
+            }
+            let sl_start = (bt_start + bt_len + 3) & !3;
+            let seq_len_val = n as u32;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    &seq_len_val as *const u32 as *const u8,
+                    pinned.add(sl_start),
+                    4,
+                );
+            }
+            cursor = sl_start + 4;
+            let devs = (meta_base.offset(bt_start), meta_base.offset(sl_start));
 
             assert!(cursor <= stg.bytes, "prefill metadata overflow");
             let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };

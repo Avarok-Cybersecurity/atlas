@@ -78,7 +78,11 @@ impl TransformerModel {
         } else {
             (pos_stream_bytes + 7) & !7
         };
-        let needs_paged = effective_seq_len_start > 0;
+        // Paged metadata (block table + seq_len) is needed for chunk > 0 AND
+        // for KV-shared models (Gemma-4 E2B): the shared layers' paged
+        // attention dereferences the block table even at chunk 0 — leaving
+        // it NULL was the illegal-address source.
+        let needs_paged = effective_seq_len_start > 0 || self.config.num_kv_shared_layers > 0;
 
         // Lock staging, build positions plus non-paged slots, and upload.
         {
