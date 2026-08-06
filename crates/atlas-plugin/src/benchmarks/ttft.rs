@@ -241,7 +241,7 @@ impl TtftGate {
             .handle()
             .map(|h| h.target().model.clone())
             .unwrap_or_default();
-        if base.target != target_now || base.model != model_now {
+        if !same_box(&base.target, &target_now) || base.model != model_now {
             summary.push(Stat::new("Baseline", "other target", "").with_style(CellStyle::Warn));
             return (
                 Verdict::info(format!(
@@ -457,6 +457,10 @@ impl Benchmark for TtftGate {
         .log_line(line))
     }
 }
+
+#[path = "ttft_target.rs"]
+mod ttft_target;
+use ttft_target::same_box;
 
 #[cfg(test)]
 #[path = "ttft_tests.rs"]

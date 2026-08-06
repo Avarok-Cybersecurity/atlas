@@ -34,9 +34,17 @@ pub struct ToolCall {
 #[derive(Clone, Debug, Default)]
 pub struct ChatOutcome {
     pub text: String,
+    /// Chain-of-thought, when the model streams `reasoning_content`.
+    ///
+    /// Kept OUT of `text` on purpose. Every scorer downstream parses `text`
+    /// for the answer or the tool call, so folding reasoning into it would
+    /// feed them the model's thinking as if it were its reply. It is still a
+    /// decoded token, so it counts toward `completion_tokens` and it starts
+    /// the TTFT clock — see [`apply_chunk`].
+    pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
-    /// Client-measured: request start → first content/tool delta.
+    /// Client-measured: request start → first reasoning/content/tool delta.
     pub ttft_ms: Option<f64>,
     /// Client-measured decode inter-token latency.
     pub tpot_ms: Option<f64>,
@@ -153,6 +161,23 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
         return false;
     };
     let mut carried = false;
+    // ★ A reasoning delta is a TOKEN. Counting only `content` measures
+    // "time to first token the model was no longer thinking about", which on
+    // a thinking model is not TTFT at all — it is TTFT plus the entire
+    // reasoning block. That blind spot has already produced one phantom
+    // 18-second TTFT in the TUI clock; a benchmark repeating it reports a
+    // fabricated regression, or (when reasoning is the WHOLE reply, as on a
+    // short prompt) declares "no token was emitted" and measures nothing.
+    // The server agrees: its `usage.completion_tokens` includes
+    // `reasoning_tokens`, so streamed and reported counts only match if these
+    // are counted here too.
+    if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str)
+        && !reasoning.is_empty()
+    {
+        out.reasoning.push_str(reasoning);
+        out.completion_tokens += 1;
+        carried = true;
+    }
     if let Some(content) = delta.get("content").and_then(Value::as_str)
         && !content.is_empty()
     {
