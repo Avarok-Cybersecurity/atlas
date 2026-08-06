@@ -172,3 +172,7 @@ pub fn install_tty_subscriber(progress_tx: Sender<ProgressEvent>) {
         .with(progress_layer)
         .init();
 }
+
+#[cfg(test)]
+#[path = "init_tests.rs"]
+mod tests;

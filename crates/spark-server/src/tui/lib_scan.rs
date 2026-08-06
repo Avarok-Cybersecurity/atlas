@@ -55,3 +55,7 @@ impl LibState {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "lib_scan_tests.rs"]
+mod tests;

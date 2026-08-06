@@ -208,3 +208,7 @@ impl LibState {
 #[cfg(test)]
 #[path = "lib_keys_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lib_keys_more_tests.rs"]
+mod more_tests;

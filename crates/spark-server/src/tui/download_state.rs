@@ -219,3 +219,7 @@ fn describe(repo: &str, e: &DownloadError) -> String {
 #[cfg(test)]
 #[path = "download_state_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "download_state_more_tests.rs"]
+mod more_tests;

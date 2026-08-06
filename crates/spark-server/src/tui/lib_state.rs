@@ -468,3 +468,11 @@ mod tests;
 #[cfg(test)]
 #[path = "lib_state_more_tests.rs"]
 mod more_tests;
+
+#[cfg(test)]
+#[path = "lib_state_recipe_tests.rs"]
+mod recipe_tests;
+
+#[cfg(test)]
+#[path = "lib_state_list_tests.rs"]
+mod list_tests;
