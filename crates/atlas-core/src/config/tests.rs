@@ -526,6 +526,10 @@ fn test_parse_deepseek_v4_config() {
         "eos_token_id": 1,
         "tie_word_embeddings": false,
         "num_nextn_predict_layers": 1,
+        "dspark_block_size": 5,
+        "dspark_noise_token_id": 128799,
+        "dspark_target_layer_ids": [40, 41, 42],
+        "dspark_markov_rank": 256,
         "rope_scaling": {
             "type": "yarn",
             "factor": 16,
@@ -533,6 +537,9 @@ fn test_parse_deepseek_v4_config() {
             "beta_fast": 32,
             "beta_slow": 1
         },
+        "index_n_heads": 64,
+        "index_head_dim": 128,
+        "index_topk": 512,
         "compress_ratios": [0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0],
         "num_hash_layers": 3
     }"#;
@@ -558,6 +565,10 @@ fn test_parse_deepseek_v4_config() {
     assert!(cfg.use_routing_bias);
     assert_eq!(cfg.num_mtp_modules, 1);
     assert_eq!(cfg.mtp_transformer_layers, 1);
+    assert_eq!(cfg.dspark_block_size, 5);
+    assert_eq!(cfg.dspark_noise_token_id, 128799);
+    assert_eq!(cfg.dspark_target_layer_ids, vec![40, 41, 42]);
+    assert_eq!(cfg.dspark_markov_rank, 256);
     assert_eq!(cfg.sliding_window, 128);
     assert_eq!(cfg.max_position_embeddings, 1048576);
     assert_eq!(cfg.rope_theta, 10000.0);
@@ -571,6 +582,9 @@ fn test_parse_deepseek_v4_config() {
     // DeepSeek-V4 ships 44 compress_ratios for 43 layers — the last
     // trailing value is an artifact, not an error.
     assert_eq!(cfg.compress_ratios.len(), 44);
+    assert_eq!(cfg.index_n_heads, 64);
+    assert_eq!(cfg.index_head_dim, 128);
+    assert_eq!(cfg.index_topk, 512);
     assert_eq!(cfg.num_hash_layers, 3);
     // Fallback: all layers treated as FullAttention
     assert_eq!(cfg.num_attention_layers(), 43);
