@@ -33,6 +33,25 @@ use atlas_plugin::{TargetEndpoint, gate};
 const BOOT_TIMEOUT: Duration = Duration::from_secs(900);
 const POLL: Duration = Duration::from_millis(500);
 
+/// The highest `gpu_memory_utilization` a self-start will serve.
+///
+/// GB10 is UNIFIED memory — one 121 GB pool shared by CPU and GPU — and a gate
+/// run is BY DEFINITION a co-located benchmark: the driver and the server are
+/// the same process on the same box. At 0.90 the server takes ~108 GB of that
+/// shared pool, leaving ~13 GB for the OS *and* the benchmark client, which is
+/// the documented condition that froze a box and cost hours of power-cycling.
+///
+/// 0.85 is the campaign's established ceiling (its floor is ~0.82, set by the
+/// MTP verify pools), so it is the highest value known to leave host headroom.
+///
+/// ★ Several shipped recipes carry 0.90. That is not a mistake in them: they
+/// were written for the container launcher, where `--memory` caps the container
+/// and a host OOM is contained. In-process on the host it is not. This is the
+/// new risk self-start introduces — it turns a recipe from a document into
+/// something that executes — so the check lives here, at the point of
+/// execution, rather than as an edit to recipes other tooling depends on.
+const MAX_SELF_START_UTIL: f64 = 0.85;
+
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// A server this process started, and the endpoint that reaches it.
@@ -162,6 +181,24 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
     let serve_args = recipe.serve_args(&overrides).with_context(|| {
         format!("rendering serve args from recipe {recipe_id:?} (port override {port})")
     })?;
+
+    // Refuse rather than clamp. Clamping would mean the gate did NOT run the
+    // recipe while reporting that it had — the substitution this whole mode
+    // exists to prevent, just moved one level down.
+    if serve_args.gpu_memory_utilization > MAX_SELF_START_UTIL {
+        bail!(
+            "recipe {recipe_id:?} asks for --gpu-memory-utilization {:.2}, above the \
+             {MAX_SELF_START_UTIL:.2} a self-start will serve. GB10 shares one 121 GB pool \
+             between CPU and GPU, and a gate run is a co-located benchmark: at {:.2} the server \
+             takes ~{:.0} GB and leaves too little for the host and the driver, which is the \
+             condition that has frozen a box. Either lower the recipe (it may carry a value \
+             chosen for the container launcher, where a host OOM is contained), or drive an \
+             already-running server with --url/--model and no --pull-request-gate.",
+            serve_args.gpu_memory_utilization,
+            serve_args.gpu_memory_utilization,
+            serve_args.gpu_memory_utilization * 121.0,
+        );
+    }
 
     eprintln!("gate: serving {model} from recipe {recipe_id} on port {port}");
     let mut server =
