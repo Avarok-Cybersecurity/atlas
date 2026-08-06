@@ -240,3 +240,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "hardware_gate_key_tests.rs"]
+mod gate_key_tests;
