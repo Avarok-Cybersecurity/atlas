@@ -9,6 +9,21 @@ use crate::result::{BenchmarkResult, RunStatus, Verdict};
 use std::collections::BTreeMap;
 
 const MODEL: &str = "Qwen/Qwen3.6-35B-A3B-FP8";
+/// The box class the fixtures report, and the key their baselines are under.
+const TEST_HW: &str = "gb10";
+
+/// A realistic fingerprint, so the tests exercise the real `gate_key()`
+/// derivation rather than the degenerate "unknown" path — which has its own
+/// test below, because an unknown box must FAIL to resolve rather than
+/// quietly borrow some other box's thresholds.
+fn hw() -> Hardware {
+    Hardware {
+        gpu: "NVIDIA GB10".to_string(),
+        driver: "580.126.09".to_string(),
+        sm_clock_mhz: Some(2405.0),
+        source: "nvidia-smi".to_string(),
+    }
+}
 const SHA: &str = "b72dad1893";
 
 mod tempdir {
@@ -69,10 +84,36 @@ fn bfcl_baseline() -> GateBaseline {
             ..Bound::default()
         },
     );
+    baseline_for(MODEL, metrics)
+}
+
+/// A schema-v2 baseline with one hardware class and one model.
+///
+/// The hardware key must match what `Hardware::gate_key()` derives from the
+/// record under test — `TEST_HW` below is the fingerprint the fixtures carry,
+/// so a mismatch here shows up as an unresolved baseline rather than a silent
+/// pass.
+fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> GateBaseline {
+    let mut models = BTreeMap::new();
+    models.insert(
+        model.to_string(),
+        crate::gate::ModelBaseline {
+            recipe: Some("qwen3.6/test-recipe".to_string()),
+            note: "MLPerf floor".to_string(),
+            metrics,
+        },
+    );
+    let mut hardware = BTreeMap::new();
+    hardware.insert(
+        TEST_HW.to_string(),
+        crate::gate::HardwareBaseline {
+            default: model.to_string(),
+            models,
+        },
+    );
     GateBaseline {
-        model: MODEL.to_string(),
-        note: "MLPerf floor".to_string(),
-        metrics,
+        schema: 2,
+        hardware,
     }
 }
 
@@ -98,23 +139,19 @@ fn the_record_path_is_date_and_sha_and_replaces_a_same_day_rerun() {
 #[test]
 fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
-    assert!(GateRecord::from_run(&record, Hardware::unknown(), String::new()).is_err());
+    assert!(GateRecord::from_run(&record, hw(), String::new()).is_err());
 
     let mut running = record.clone();
     running.frame.status = RunStatus::Running;
-    assert!(GateRecord::from_run(&running, Hardware::unknown(), SHA.into()).is_err());
+    assert!(GateRecord::from_run(&running, hw(), SHA.into()).is_err());
 }
 
 #[test]
 fn from_run_reconstructs_the_exact_cli_command() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
-        Hardware::unknown(),
-        SHA.into(),
-    )
-    .unwrap();
+    let gate =
+        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
     let joined = gate.command.join(" ");
     assert!(
         joined.starts_with("spark benchmark run bfcl-subset"),
@@ -134,7 +171,7 @@ fn from_run_reconstructs_the_exact_cli_command() {
 fn the_agentic_bench_needs_yes_in_its_command() {
     let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(&record, Hardware::unknown(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into()).unwrap();
     assert!(gate.command.contains(&"--yes".to_string()));
 }
 
@@ -148,7 +185,7 @@ fn a_failed_frame_is_recorded_but_never_passes() {
         ),
         ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
     };
-    let gate = GateRecord::from_run(&record, Hardware::unknown(), SHA.into()).unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into()).unwrap();
     assert!(gate.frame_status_failed());
     assert!(!gate.verdict_passes());
 }
@@ -189,34 +226,85 @@ fn compare_enforces_min_max_and_noise() {
 fn check_record_refuses_a_cross_checkpoint_comparison() {
     let gate = GateRecord::from_run(
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
-        Hardware::unknown(),
+        hw(),
         SHA.into(),
     )
     .unwrap();
-    let mut baseline = bfcl_baseline();
-    baseline.model = "some-other-model".to_string();
+    // The baseline knows only another checkpoint, so the record's model does
+    // not resolve — refused, not scored against the wrong thresholds.
+    let mut metrics = BTreeMap::new();
+    metrics.insert(
+        "overall_accuracy".to_string(),
+        Bound {
+            min: Some(83.64),
+            ..Bound::default()
+        },
+    );
+    let baseline = baseline_for("some-other-model", metrics);
     let problems = check_record(&gate, &baseline).expect("refused");
+    assert!(problems[0].contains(MODEL), "{}", problems[0]);
     assert!(problems[0].contains("some-other-model"), "{}", problems[0]);
+}
+
+#[test]
+fn check_record_refuses_a_cross_hardware_comparison() {
+    // A TTFT ceiling measured on one box says nothing about another, so a
+    // record from an unrecognised box must fail to resolve rather than borrow
+    // whatever entry happens to be present.
+    let mut gate = GateRecord::from_run(
+        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+    )
+    .unwrap();
+    gate.hardware = Hardware {
+        gpu: "AMD Instinct MI300X".to_string(),
+        ..Hardware::default()
+    };
+    let problems = check_record(&gate, &bfcl_baseline()).expect("refused");
+    assert!(problems[0].contains("instinctmi300x"), "{}", problems[0]);
+    assert!(problems[0].contains(TEST_HW), "{}", problems[0]);
+}
+
+#[test]
+fn an_unknown_fingerprint_never_silently_matches() {
+    // `fetch_hardware` degrades to `Hardware::unknown()` on EVERY error path
+    // without surfacing one, so a torn-down or unreachable endpoint yields a
+    // record with no fingerprint. That must not resolve to some box's entry.
+    let mut gate = GateRecord::from_run(
+        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+    )
+    .unwrap();
+    gate.hardware = Hardware::unknown();
+    assert_eq!(gate.hardware.gate_key(), "unknown");
+    let problems = check_record(&gate, &bfcl_baseline()).expect("refused");
+    assert!(problems[0].contains("unknown"), "{}", problems[0]);
 }
 
 #[test]
 fn check_record_scores_every_bound_and_missing_metric() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
-        Hardware::unknown(),
-        SHA.into(),
-    )
-    .unwrap();
-    let mut baseline = bfcl_baseline();
-    baseline.metrics.insert(
+    let gate =
+        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
+    let mut metrics = BTreeMap::new();
+    metrics.insert(
+        "overall_accuracy".to_string(),
+        Bound {
+            min: Some(83.64),
+            ..Bound::default()
+        },
+    );
+    metrics.insert(
         "samples".to_string(),
         Bound {
             min: Some(995.0),
             ..Bound::default()
         },
     );
+    let baseline = baseline_for(MODEL, metrics);
     let problems = check_record(&gate, &baseline).expect("samples missing");
     assert!(
         problems.iter().any(|p| p.starts_with("samples")),
@@ -232,12 +320,8 @@ fn write_and_read_round_trip_through_the_repo_layout() {
     let dir = tempdir::Dir::new();
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
-        Hardware::unknown(),
-        SHA.into(),
-    )
-    .unwrap();
+    let gate =
+        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
     let path = write_record(dir.path(), &gate).unwrap();
     assert!(path.starts_with(dir.path().join(".benchmarks")));
     let back = read_record(&path).unwrap();
@@ -249,7 +333,7 @@ fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let record = run_record(metrics, Verdict::pass("ok"));
-    let mut gate = GateRecord::from_run(&record, Hardware::unknown(), sha.to_string()).unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string()).unwrap();
     gate.benchmark_id = id.to_string();
     gate.verdict = Some(verdict.to_string());
     gate.recorded_at = secs;
@@ -405,7 +489,7 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
     record.frame = frame(RunStatus::Failed, metrics, Verdict::fail("scoring crashed"));
-    let mut gate = GateRecord::from_run(&record, Hardware::unknown(), SHA.into()).unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), SHA.into()).unwrap();
     gate.recorded_at = 1_785_891_382;
     write_record(root, &gate).unwrap();
 
@@ -420,12 +504,8 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
 fn the_summary_names_the_model_the_numbers_and_the_verdict() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 87.74);
-    let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
-        Hardware::unknown(),
-        SHA.into(),
-    )
-    .unwrap();
+    let gate =
+        GateRecord::from_run(&run_record(metrics, Verdict::pass("ok")), hw(), SHA.into()).unwrap();
     assert!(gate.summary.contains(MODEL), "{}", gate.summary);
     assert!(
         gate.summary.contains("overall_accuracy=87.74"),

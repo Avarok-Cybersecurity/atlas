@@ -41,6 +41,36 @@ impl Hardware {
         Self::default()
     }
 
+    /// The box-class key a gate baseline is indexed by, e.g. `"gb10"`.
+    ///
+    /// Derived from the reported GPU model, lowercased with the vendor prefix
+    /// and separators dropped: `"NVIDIA GB10"` → `"gb10"`. A CLASS, not a host
+    /// — two GB10 boxes share thresholds; a GB10 and an MI300 do not.
+    ///
+    /// An unknown fingerprint yields `"unknown"` rather than a guess or an
+    /// empty string, so a baseline lookup for it FAILS with a name instead of
+    /// silently matching some other box's entry. That matters because
+    /// `fetch_hardware` degrades to `Hardware::unknown()` on every error path
+    /// without surfacing one.
+    pub fn gate_key(&self) -> String {
+        if self.gpu.is_empty() {
+            return "unknown".to_string();
+        }
+        let key: String = self
+            .gpu
+            .to_lowercase()
+            .replace("nvidia", "")
+            .replace("amd", "")
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        if key.is_empty() {
+            "unknown".to_string()
+        } else {
+            key
+        }
+    }
+
     /// True when no field carries information.
     pub fn is_unknown(&self) -> bool {
         self.gpu.is_empty() && self.driver.is_empty() && self.sm_clock_mhz.is_none()

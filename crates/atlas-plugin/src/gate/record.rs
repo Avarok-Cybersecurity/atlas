@@ -62,19 +62,75 @@ pub struct Bound {
     pub noise: Option<f64>,
 }
 
-/// The thresholds a benchmark's gate records must meet, committed as
-/// `.benchmarks/<id>/BASELINE.json` beside the records themselves.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GateBaseline {
-    /// The checkpoint the thresholds were measured on. A record against a
-    /// different model is a configuration error the check refuses to score,
-    /// rather than a silently wrong comparison.
-    pub model: String,
+/// One (hardware, model) pair's thresholds, and the recipe that produces them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ModelBaseline {
+    /// The recipe that serves this model, as `<family>/<stem>` — e.g.
+    /// `qwen3.6/qwen3.6-27b-nvfp4-unsloth`. This is the ONLY machine-readable
+    /// binding from a benchmark to its serve config; without it a gate can be
+    /// run against hand-typed flags that differ from the ones the thresholds
+    /// were measured under, which is the failure this whole file exists to
+    /// stop. `None` means the gate cannot self-provision and must be told a
+    /// live endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<String>,
     /// Why these are the thresholds — the source run the numbers come from.
     #[serde(default)]
     pub note: String,
     #[serde(default)]
     pub metrics: BTreeMap<String, Bound>,
+}
+
+/// Every model measured on one box class, and which one to serve by default.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct HardwareBaseline {
+    /// The model to use when the caller does not name one.
+    ///
+    /// Explicit rather than "the only entry" or "the first key": a second model
+    /// added later must not silently move the gate's subject.
+    pub default: String,
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelBaseline>,
+}
+
+/// The thresholds a benchmark's gate records must meet, committed as
+/// `.benchmarks/<id>/BASELINE.json` beside the records themselves.
+///
+/// Keyed **hardware → model → thresholds** because both axes genuinely move the
+/// numbers. TTFT is box-local by construction — a ceiling measured on one box
+/// says nothing about another — and a BFCL score is checkpoint-specific, so a
+/// single flat threshold set could only ever be right for one combination and
+/// silently wrong for the rest.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GateBaseline {
+    /// Schema version. 2 introduced the hardware/model nesting.
+    #[serde(default)]
+    pub schema: u32,
+    pub hardware: BTreeMap<String, HardwareBaseline>,
+}
+
+impl GateBaseline {
+    /// Resolve one (hardware, model) entry. `model: None` takes the hardware's
+    /// declared default.
+    ///
+    /// Every failure names both what was asked for and what exists — an
+    /// unresolved baseline must never read as "nothing to check".
+    pub fn resolve(&self, hardware: &str, model: Option<&str>) -> Result<(String, &ModelBaseline)> {
+        let hw = self.hardware.get(hardware).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no baseline for hardware {hardware:?}; this benchmark has entries for [{}]",
+                self.hardware.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        let want = model.unwrap_or(&hw.default);
+        let entry = hw.models.get(want).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no baseline for model {want:?} on {hardware:?}; it has [{}]",
+                hw.models.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        Ok((want.to_string(), entry))
+    }
 }
 
 /// `YYYY-MM-DD` (UTC) from unix seconds, hand-rolled to keep the crate

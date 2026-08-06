@@ -38,14 +38,17 @@ pub fn compare(name: &str, value: f64, bound: &super::record::Bound) -> Comparis
 /// match the baseline's is a hard failure — comparing gate numbers across
 /// checkpoints manufactures results.
 pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<String>> {
-    if record.target_model != baseline.model {
-        return Some(vec![format!(
-            "record was measured against {:?}, but the baseline is defined on {:?}",
-            record.target_model, baseline.model
-        )]);
-    }
+    // The record names both axes: which box served it, and which checkpoint.
+    // Score it against THAT pair's thresholds or not at all — a TTFT ceiling
+    // from another box, or a BFCL floor from another checkpoint, is not a
+    // lenient comparison, it is a meaningless one.
+    let hardware = record.hardware.gate_key();
+    let entry = match baseline.resolve(&hardware, Some(&record.target_model)) {
+        Ok((_, entry)) => entry,
+        Err(e) => return Some(vec![format!("{e:#}")]),
+    };
     let mut problems = Vec::new();
-    for (name, bound) in &baseline.metrics {
+    for (name, bound) in &entry.metrics {
         let Some(value) = record.metrics.get(name) else {
             problems.push(format!("{name}: missing from the record"));
             continue;

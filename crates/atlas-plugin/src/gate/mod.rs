@@ -32,8 +32,8 @@ pub use check::{
     Comparison, GateStatus, check_gates, check_record, compare, record_covers, records_newest_first,
 };
 pub use record::{
-    Bound, GateBaseline, GateRecord, date_of, now_secs, read_baseline, read_record, record_path,
-    write_record,
+    Bound, GateBaseline, GateRecord, HardwareBaseline, ModelBaseline, date_of, now_secs,
+    read_baseline, read_record, record_path, write_record,
 };
 
 /// The five benches whose records must pass for the branch to be gated.

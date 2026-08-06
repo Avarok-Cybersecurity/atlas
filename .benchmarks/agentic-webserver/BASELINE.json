@@ -1,9 +1,25 @@
 {
-  "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-  "note": "Gate A (benchmark-pr skill): N=10 agentic-webserver on the 35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s. The two 10/10 counts are ABSOLUTE correctness bounds and take no noise. ★ Σwall is DELIBERATELY NOT RATCHETED to the 978.13 s best (PR #388, dgx3): unlike the BFCL scores, tier Σwall carries +/-200-300 s of run-to-run noise from single 230-320 s outlier iterations, so a ~978 s ceiling would fail constantly on healthy builds. 1300 s is a BLOWUP DETECTOR, not a perf gate — it cannot see a 5-10% TTFT regression, which is what the two TTFT gates are for. Historical band Σwall 950-1287 s; high-water (fastest) 978.13 s recorded here for reference only. Walls are box-specific: compare like-for-like or not at all.",
-  "metrics": {
-    "webserver_ok": { "min": 10.0 },
-    "followed_directions": { "min": 10.0 },
-    "sum_wall_s": { "max": 1300.0 }
+  "schema": 2,
+  "hardware": {
+    "gb10": {
+      "default": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "models": {
+        "Qwen/Qwen3.6-35B-A3B-FP8": {
+          "recipe": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+          "note": "Gate A (benchmark-pr skill): N=10 agentic-webserver on the 35B MoE flagship \u2014 10/10 webserver_ok, 10/10 followed_directions, \u03a3wall <= 1300 s. The two 10/10 counts are ABSOLUTE correctness bounds and take no noise. \u2605 \u03a3wall is DELIBERATELY NOT RATCHETED to the 978.13 s best (PR #388, dgx3): unlike the BFCL scores, tier \u03a3wall carries +/-200-300 s of run-to-run noise from single 230-320 s outlier iterations, so a ~978 s ceiling would fail constantly on healthy builds. 1300 s is a BLOWUP DETECTOR, not a perf gate \u2014 it cannot see a 5-10% TTFT regression, which is what the two TTFT gates are for. Historical band \u03a3wall 950-1287 s; high-water (fastest) 978.13 s recorded here for reference only. Walls are box-specific: compare like-for-like or not at all.",
+          "metrics": {
+            "webserver_ok": {
+              "min": 10.0
+            },
+            "followed_directions": {
+              "min": 10.0
+            },
+            "sum_wall_s": {
+              "max": 1300.0
+            }
+          }
+        }
+      }
+    }
   }
 }
