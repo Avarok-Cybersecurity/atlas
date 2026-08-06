@@ -17,6 +17,7 @@ the rate-limit assertion is skipped with a note.
 """
 import json
 import os
+import re
 import sys
 import time
 from urllib.parse import urlparse
