@@ -199,9 +199,14 @@ impl TransformerModel {
         }
 
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
+        // ATLAS_DFLASH_DEBUG_NO_GRAPH forces eager here too — this path
+        // previously ignored it (only verify_d honored it), so the debug
+        // hatch silently failed on fused-verify configs.
+        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
+            && !force_eager
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
