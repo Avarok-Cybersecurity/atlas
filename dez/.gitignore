@@ -1,0 +1,13 @@
+node_modules/
+build/
+.svelte-kit/
+.vite/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+npm-debug.log*
+
+# Rasterised from static/icons/icon.svg by `npm run icons`.
+static/icons/*.png
