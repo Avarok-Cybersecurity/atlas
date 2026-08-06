@@ -33,24 +33,26 @@ use atlas_plugin::{TargetEndpoint, gate};
 const BOOT_TIMEOUT: Duration = Duration::from_secs(900);
 const POLL: Duration = Duration::from_millis(500);
 
-/// The highest `gpu_memory_utilization` a self-start will serve.
+/// The fraction of this box's memory that must still be available before a
+/// self-start will serve.
 ///
-/// GB10 is UNIFIED memory — one 121 GB pool shared by CPU and GPU — and a gate
-/// run is BY DEFINITION a co-located benchmark: the driver and the server are
-/// the same process on the same box. At 0.90 the server takes ~108 GB of that
-/// shared pool, leaving ~13 GB for the OS *and* the benchmark client, which is
-/// the documented condition that froze a box and cost hours of power-cycling.
+/// The recipe's `gpu_memory_utilization` is honoured VERBATIM — a gate that
+/// quietly serves a different config than the one its thresholds were measured
+/// under is the substitution this whole mode exists to prevent. So this does
+/// NOT judge that number. `gpu_memory_utilization` is an allocator budget, not
+/// resident host RAM, and values up to 0.90 have served fine for a long time on
+/// a clean box.
 ///
-/// 0.85 is the campaign's established ceiling (its floor is ~0.82, set by the
-/// MTP verify pools), so it is the highest value known to leave host headroom.
+/// What actually turns a working utilisation into an OOM freeze is CO-TENANCY:
+/// the recorded incident was two serves plus a heavy Python client on one
+/// unified 121 GB pool, which took SSH with it. Co-tenancy also corrupts the
+/// measurement long before it freezes anything — 16.3 GB of co-tenants was
+/// measured to cost 32 % at C=16 while costing vLLM ~0 %.
 ///
-/// ★ Several shipped recipes carry 0.90. That is not a mistake in them: they
-/// were written for the container launcher, where `--memory` caps the container
-/// and a host OOM is contained. In-process on the host it is not. This is the
-/// new risk self-start introduces — it turns a recipe from a document into
-/// something that executes — so the check lives here, at the point of
-/// execution, rather than as an edit to recipes other tooling depends on.
-const MAX_SELF_START_UTIL: f64 = 0.85;
+/// 0.85 therefore means "nothing else is holding more than ~15 % of this box".
+/// A clean GB10 sits at ~0.94 available and passes; a single 16 GB container
+/// drops it to ~0.81 and is refused — which is the case worth catching.
+const MIN_FREE_FRACTION: f64 = 0.85;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -182,23 +184,7 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
         format!("rendering serve args from recipe {recipe_id:?} (port override {port})")
     })?;
 
-    // Refuse rather than clamp. Clamping would mean the gate did NOT run the
-    // recipe while reporting that it had — the substitution this whole mode
-    // exists to prevent, just moved one level down.
-    if serve_args.gpu_memory_utilization > MAX_SELF_START_UTIL {
-        bail!(
-            "recipe {recipe_id:?} asks for --gpu-memory-utilization {:.2}, above the \
-             {MAX_SELF_START_UTIL:.2} a self-start will serve. GB10 shares one 121 GB pool \
-             between CPU and GPU, and a gate run is a co-located benchmark: at {:.2} the server \
-             takes ~{:.0} GB and leaves too little for the host and the driver, which is the \
-             condition that has frozen a box. Either lower the recipe (it may carry a value \
-             chosen for the container launcher, where a host OOM is contained), or drive an \
-             already-running server with --url/--model and no --pull-request-gate.",
-            serve_args.gpu_memory_utilization,
-            serve_args.gpu_memory_utilization,
-            serve_args.gpu_memory_utilization * 121.0,
-        );
-    }
+    check_box_is_free_enough(serve_args.gpu_memory_utilization, &recipe_id)?;
 
     eprintln!("gate: serving {model} from recipe {recipe_id} on port {port}");
     let mut server =
@@ -213,6 +199,65 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
         recipe_id,
         server,
     })
+}
+
+/// Refuse to self-start onto a box that is already holding memory.
+///
+/// The recipe's utilisation is honoured verbatim — the question is only whether
+/// this box can honour it right now. A value that serves fine on a clean box is
+/// what OOM-freezes one that is already running a container or another serve,
+/// and on unified memory that freeze takes SSH with it. So this reads the live
+/// figure rather than judging the recipe's number.
+///
+/// Named remedies, because "not enough memory" without saying what is holding
+/// it sends the reader looking in the wrong place.
+fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
+    let Some((total_gib, avail_gib)) = host_memory_gib() else {
+        // No /proc/meminfo (non-Linux, or a container without it). Say so and
+        // continue: refusing on a box we cannot measure would block every
+        // platform that is not this one.
+        eprintln!("gate: cannot read host memory; skipping the free-memory preflight");
+        return Ok(());
+    };
+    let free_fraction = avail_gib / total_gib;
+    if free_fraction < MIN_FREE_FRACTION {
+        bail!(
+            "this box is not free enough to serve recipe {recipe_id:?}: only {avail_gib:.0} GiB \
+             of {total_gib:.0} GiB is available ({:.0} %, below the {:.0} % a self-start \
+             requires). Something else is holding memory — check `sudo docker ps` and \
+             `nvidia-smi --query-compute-apps=pid,used_memory --format=csv`, free it, and \
+             re-run. This is not a judgement on the recipe's --gpu-memory-utilization {util:.2}, \
+             which is served exactly as written: co-tenancy is what turns a working \
+             utilisation into an OOM freeze on unified memory, and it corrupts the measurement \
+             well before that.",
+            free_fraction * 100.0,
+            MIN_FREE_FRACTION * 100.0,
+        );
+    }
+    eprintln!(
+        "gate: {avail_gib:.0} GiB of {total_gib:.0} GiB free ({:.0} %); serving at {util:.2} as the recipe states",
+        free_fraction * 100.0
+    );
+    Ok(())
+}
+
+/// `(MemTotal, MemAvailable)` in GiB from `/proc/meminfo`.
+///
+/// `MemAvailable`, not `MemFree`: page cache is reclaimable, and `MemFree`
+/// reads near-zero on a healthy box that has been running a while, which would
+/// make this refuse everything.
+fn host_memory_gib() -> Option<(f64, f64)> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let field = |name: &str| -> Option<f64> {
+        text.lines()
+            .find(|l| l.starts_with(name))?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<f64>()
+            .ok()
+            .map(|kb| kb / 1024.0 / 1024.0)
+    };
+    Some((field("MemTotal:")?, field("MemAvailable:")?))
 }
 
 /// Block until `/v1/models` names `model`.
