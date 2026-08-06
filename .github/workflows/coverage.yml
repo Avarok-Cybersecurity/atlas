@@ -1,0 +1,160 @@
+name: Coverage
+#
+# Reports line/region coverage; it does NOT gate. Test failures are ci.yml's
+# `test` job, and both Codecov statuses are `informational: true` on purpose —
+# see codecov.yml for the condition under which each gets tightened.
+#
+# Cost note: this is a second full instrumented compile of the workspace on
+# every PR, on top of ci.yml's `test` job (they cannot share artifacts —
+# `-C instrument-coverage` is a different profile). If runner capacity ever
+# becomes the constraint, move the `pull_request` trigger behind a path filter
+# on `crates/**` rather than deleting the job.
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+# Least privilege, same as ci.yml: this workflow only reads the repo. The
+# Codecov upload is tokenless (see the upload step) and needs no write scope.
+# If you switch to Codecov's OIDC upload (`use_oidc: true`) you must add
+# `id-token: write` here — do that deliberately, not by reflex.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Identical to ci.yml. The workspace does NOT build on a GPU-free runner
+  # without these: ATLAS_SKIP_BUILD makes build.rs emit a stub target_ptx.rs
+  # instead of invoking nvcc, and CUDARC_CUDA_VERSION short-circuits cudarc's
+  # nvcc probe (format {major}0{minor}0; 13000 == CUDA 13.0). Keep in sync with
+  # ci.yml — a coverage job that cannot compile is worse than no coverage job.
+  ATLAS_SKIP_BUILD: "1"
+  CUDARC_CUDA_VERSION: "13000"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: cargo llvm-cov --workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install vendor/xgrammar-rs build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+
+      - name: Generate no-GPU library stubs
+        # libcuda / libnccl / libcublasLt / libcudart fail-fast stubs so the
+        # workspace LINKS on a runner with no GPU. Same script the ci.yml test
+        # job runs — instrumented test binaries link exactly the same libraries.
+        run: bash scripts/ci_gpu_stubs.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      # rust-toolchain.toml pins the channel to 1.93.1, and cargo honours that
+      # pin over whatever `dtolnay/rust-toolchain@stable` made default — so the
+      # `components:` above can land on the WRONG toolchain and
+      # `cargo llvm-cov` then dies with "llvm-profdata not found". This second
+      # add runs inside the checkout, i.e. against the pinned toolchain.
+      # Cheap and idempotent; do not "simplify" it away.
+      - name: Ensure llvm-tools on the pinned toolchain
+        run: rustup component add llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct key: cargo-llvm-cov builds into its own target dir
+          # (target/llvm-cov-target) with `-C instrument-coverage`, so it
+          # shares no compiled artifacts with the ci.yml `test` job. Without a
+          # separate key the two would repeatedly evict each other's cache.
+          # What actually gets reused here is the registry/git download cache;
+          # the nested instrumented target dir is largely rebuilt each run.
+          key: llvm-cov
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Command line + the exclusion list live in scripts/coverage.sh so CI and
+      # a local `scripts/coverage.sh lcov.info` cannot drift apart. Same SSOT
+      # rationale as scripts/ci_gpu_stubs.sh.
+      - name: Measure coverage
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/coverage.sh lcov.info | tee coverage-summary.txt
+          status=${PIPESTATUS[0]}
+
+          # Put the TOTAL row in the run summary. While the Codecov statuses
+          # are informational, this is the only place the number is visible
+          # without leaving GitHub.
+          {
+            echo '### Coverage (workspace, GPU-free)'
+            echo ''
+            echo '```'
+            tail -n 3 coverage-summary.txt
+            echo '```'
+            echo ''
+            echo 'Exclusions and rationale: `scripts/coverage.sh`.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail on ANY non-zero status, and do not try to be clever about
+          # which kind of failure it was.
+          #
+          # The tempting version of this step downgrades a failing test to a
+          # warning, on the grounds that ci.yml's `test` job is the real gate
+          # and reding twice for one cause is noise. That was tried and it is
+          # WRONG: a *compile* failure and a *test* failure are both cargo
+          # exit 101, and on a compile failure `cargo llvm-cov report` still
+          # emits a large, well-formed, entirely ZERO lcov.info. Passing the
+          # step would then publish 0% as a real measurement — and with the
+          # Codecov statuses informational, nothing downstream would object.
+          #
+          # A redundant red check is cheap. A number that is quietly a lie is
+          # not. So: exit non-zero, skip the Codecov upload, keep the artifact.
+          exit "$status"
+
+      # Keep the raw report recoverable even when Codecov is unreachable — the
+      # number is then still auditable from the run itself. `always()` because
+      # scripts/coverage.sh writes lcov.info BEFORE re-raising a test failure,
+      # so a red test run still has a report worth keeping. `warn` rather than
+      # `error` for the other case: a compile failure produces no file at all,
+      # and erroring there would stack a second, misleading red step on the
+      # real one.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov.info
+          path: lcov.info
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          # TOKENLESS on purpose: Avarok-Cybersecurity/atlas is public, and
+          # Codecov accepts tokenless uploads from public repos. No secret is
+          # added, so a fork PR uploads with the same configuration a branch PR
+          # does. ★ If this repo is ever made PRIVATE, tokenless stops working:
+          # add the repository upload token as the `CODECOV_TOKEN` secret and
+          # set `token: ${{ secrets.CODECOV_TOKEN }}` here. Do NOT commit a
+          # token to the tree.
+          #
+          # ADVISORY until the first upload lands. Before the repo is activated
+          # on Codecov, a tokenless upload 404s — and on the PR that INTRODUCES
+          # this workflow it necessarily has not been activated yet, so failing
+          # the job would block the change that makes the upload possible.
+          # Tokenless uploads are also rate-limited, which is a Codecov-side
+          # outage, not an Atlas defect.
+          # ★ FLIP THIS TO `true` once a first report is visible on Codecov.
+          # An upload that can fail silently forever is a decoration.
+          fail_ci_if_error: false
+          # Surface the raw uploader output in the job log; without it a
+          # rejected upload is a single grey line.
+          verbose: true

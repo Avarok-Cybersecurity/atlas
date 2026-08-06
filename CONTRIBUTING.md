@@ -83,6 +83,46 @@ compatibility matrix, quant selection, and known-issue workarounds. Cutting an
 image? The build → verify → publish pipeline is the `atlas-release` skill
 (`.claude/skills/atlas-release/`).
 
+#### Coverage
+
+`.github/workflows/coverage.yml` measures line/region coverage with
+[`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) on the same
+GPU-free runner as `cargo test`, and uploads LCOV to Codecov. Reproduce it
+locally with the exact command CI runs:
+
+```bash
+cargo install cargo-llvm-cov          # one-time
+rustup component add llvm-tools-preview
+
+scripts/coverage.sh lcov.info                  # LCOV + a per-file summary table
+COVERAGE_HTML=1 scripts/coverage.sh lcov.info  # ...plus target/llvm-cov/html/
+```
+
+`scripts/coverage.sh` is the single source of truth for the invocation and for
+the exclusion list — CI calls the same script, so a local number and a CI
+number cannot drift. Excluded: `build.rs`, build-script-generated PTX,
+vendored `cudarc`, the pure-FFI crates (`atlas-kernels`, `cufile-sys`,
+`spark-comm`, `atlas-rdma/src/verbs.rs`), the `layers/ops/` kernel-launch
+wrappers, and test/bench/example harnesses. All of those are unreachable
+without a GB10, so counting them would measure the runner, not the test suite.
+**Adding an exclusion requires a rationale comment next to it** — that list is
+how a coverage number quietly turns into a decoration.
+
+Both Codecov statuses (`project` and `patch`) are **informational on purpose**:
+they report the delta on every PR but cannot block a merge while coverage is
+still being built up. `codecov.yml` states the condition for tightening each
+one; read it before assuming coverage is ungated forever.
+
+Practical note: the workspace total is dominated by `crates/spark-model`, which
+is overwhelmingly CUDA kernel dispatch a CPU-only runner cannot execute — it
+measured **5%** of ~61k lines when this job was added (2026-08-06), against a
+workspace total of **33%**. Well-tested host-side crates sit far higher in the
+same run (`xgrammar` 87%, `atlas-plugin` 75%, `atlas-core` 54%). Read the
+workspace number as a trend line, not a grade; the coverage that actually
+moves is host-side logic — config/weight-map parsing, the scheduler's state
+machine, the tool parser and grammar compiler, the tokenizer/chat-template
+path, the TUI, and the API layer.
+
 ### Code Formatting
 
 ```bash

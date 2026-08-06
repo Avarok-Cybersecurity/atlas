@@ -1,0 +1,93 @@
+# Codecov configuration for Atlas.
+#
+# Produced by .github/workflows/coverage.yml, which runs
+# `scripts/coverage.sh` (cargo-llvm-cov -> lcov.info) on a GPU-free
+# ubuntu-latest runner. Read that script first: it is the SSOT for WHICH
+# files are measured, and this file's `ignore:` list only mirrors it so the
+# Codecov UI agrees with the CI summary.
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # Don't post a comment until CI has finished, so a coverage delta is never
+    # attributed to a build that later failed.
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  # Sets the red...green scale in the UI only; it is NOT a gate.
+  range: "30...80"
+
+  status:
+    # ─────────────────────────────────────────────────────────────────────
+    # BOTH STATUSES ARE `informational: true` ON PURPOSE.
+    #
+    # Atlas is ~340k LoC of Rust of which a large fraction is CUDA
+    # kernel-dispatch code that cannot execute on a CPU-only runner at all.
+    # Coverage is being built up (the TUI test wave is in flight); a hard
+    # gate today would either (a) sit at a target so low it passes
+    # unconditionally, which is a decoration, or (b) red every PR on a
+    # branch nobody can currently fix, which is worse. Informational means
+    # the delta is REPORTED on every PR and reviewers can see it, but it
+    # cannot block a merge.
+    #
+    # ★ CONDITION FOR TIGHTENING — do this, don't leave it forever:
+    #   1. `patch` first. Once three consecutive weeks of PRs show patch
+    #      coverage comfortably above 70%, set `patch.default.informational:
+    #      false` with `target: 70%`. New code is the only coverage a PR
+    #      author actually controls, so this is the honest gate to turn on
+    #      first.
+    #   2. `project` second, and only after the number has been STABLE on
+    #      main for ~10 builds. Then set `informational: false` and keep
+    #      `target: auto` + `threshold: 1%` — i.e. "don't regress by more
+    #      than a point", not an absolute bar.
+    # Whoever flips either flag: say so in the PR description, and delete
+    # the corresponding note here rather than leaving stale instructions.
+    # ─────────────────────────────────────────────────────────────────────
+    project:
+      default:
+        informational: true
+        # Compare against the base commit rather than a fixed number.
+        target: auto
+        # Tolerated drop once this stops being informational.
+        threshold: 1%
+    patch:
+      default:
+        informational: true
+        target: 70%
+
+comment:
+  layout: "condensed_header, diff, files, components"
+  behavior: default
+  # No comment on PRs that change no measured file (kernel-only / docs-only
+  # diffs are common here).
+  require_changes: true
+
+# Inline PR annotations off: a kernel-dispatch file legitimately shows as
+# uncovered, and annotating every such line buries real review comments.
+github_checks:
+  annotations: false
+
+# Mirrors the --ignore-filename-regex in scripts/coverage.sh. If you change
+# one, change the other — a mismatch shows up as files present in the Codecov
+# UI that the CI summary never counted.
+ignore:
+  - "vendor/**"                              # vendored cudarc (upstream)
+  - "target/**"                              # build-script output (generated PTX)
+  - "**/build.rs"                            # build scripts, not under test
+  - "crates/atlas-kernels/**"                # entirely build.rs-generated PTX constants
+  - "crates/cufile-sys/**"                   # raw dlopen FFI to libcufile (GDS)
+  - "crates/spark-comm/**"                   # raw FFI to libnccl (stubbed in CI)
+  - "crates/atlas-rdma/src/verbs.rs"         # ibverbs FFI; cfg'd out under ATLAS_SKIP_BUILD
+  - "crates/spark-model/src/layers/ops/**"   # thin KernelLaunch wrappers, one CUDA launch each
+  - "**/tests/**"                            # test code, not product code
+  - "**/benches/**"                          # criterion harnesses (GPU-only)
+  - "**/examples/**"                         # dev-only GB10 harnesses
+  # Non-Rust trees Codecov would otherwise list as 0%.
+  - "kernels/**"
+  - "cuda_kernels/**"
+  - "book/**"
+  - "site/**"
+  - "scripts/**"
+  - "tests/**"
