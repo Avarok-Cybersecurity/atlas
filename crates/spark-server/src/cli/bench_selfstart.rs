@@ -164,11 +164,11 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
     })?;
 
     eprintln!("gate: serving {model} from recipe {recipe_id} on port {port}");
-    let server =
+    let mut server =
         tokio::spawn(async move { crate::main_modules::serve::serve(serve_args, None).await });
 
     let target = TargetEndpoint::local(port, &model);
-    await_serving(&target, &model, &server).await?;
+    await_serving(&target, &model, &mut server).await?;
     eprintln!("gate: endpoint is serving {model}");
 
     Ok(SelfServed {
@@ -187,12 +187,26 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
 async fn await_serving(
     target: &TargetEndpoint,
     model: &str,
-    server: &tokio::task::JoinHandle<Result<()>>,
+    server: &mut tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
     let deadline = Instant::now() + BOOT_TIMEOUT;
     loop {
         if server.is_finished() {
-            bail!("the server exited before it began serving {model:?}");
+            // Await the finished task for the REASON it stopped. Reporting only
+            // "the server exited" would send the reader to a fifteen-minute
+            // timeout hunt for an error the task is already holding — the whole
+            // point of watching the handle is to surface it.
+            return match server.await {
+                Ok(Err(e)) => Err(e).with_context(|| {
+                    format!("the server failed before it began serving {model:?}")
+                }),
+                Ok(Ok(())) => bail!(
+                    "the server returned before it began serving {model:?} — it stopped without \
+                     an error, which should not happen while the accept loop is running"
+                ),
+                Err(join) => Err(anyhow::Error::new(join))
+                    .with_context(|| format!("the server task died serving {model:?}")),
+            };
         }
         if let Ok(models) = atlas_plugin::http::list_models(target, Duration::from_secs(5)).await
             && models.iter().any(|m| m == model)

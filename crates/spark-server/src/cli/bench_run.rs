@@ -248,8 +248,6 @@ async fn run(args: RunArgs) -> Result<i32> {
             s.shutdown().await;
         }
         written?;
-    } else if let Some(s) = served {
-        s.shutdown().await;
     }
 
     match args.format {
