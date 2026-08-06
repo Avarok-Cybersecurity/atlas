@@ -42,6 +42,12 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
     } else {
         text
     };
+    if text.contains(DSML_OPEN) {
+        let parsed = parse_dsml_tool_calls(text);
+        if !parsed.1.is_empty() {
+            return parsed;
+        }
+    }
     // MiniMax uses `<minimax:tool_call>` as the outer wrapper (different
     // tag from Qwen's `<tool_call>`). Normalize both wrappers to the
     // same outer form so the scanning loop below doesn't need

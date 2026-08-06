@@ -5,6 +5,7 @@
 // was renamed to `parse_minimax_xml_calls_all`. File left on disk; update
 // the call sites and un-comment.
 // mod group_a;
+mod deepseek_v4_dsml;
 mod group_b;
 mod group_b_mistral;
 mod group_c;
