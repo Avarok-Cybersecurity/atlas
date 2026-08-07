@@ -3,66 +3,103 @@
 //! The agent loop: tool-calling against the served endpoint, with the tools
 //! executed inside a sandbox directory.
 //!
+//! **A port of one client, not a generic agent.** The recorded Gate A history
+//! was measured by driving `opencode` 1.18.14 from
+//! `bench/fp8_dgx2_drift/harness/run_tier.sh`, so "faithful" means reproducing
+//! the scaffolding opencode put in front of the model: the six tools the
+//! harness's own agent enables (see [`tools`]), that agent's system prompt plus
+//! opencode's environment block, its sampling, and its output caps. Each is
+//! cited at the constant or function that carries it.
+//!
 //! **This executes model-authored shell.** There is no version of the agentic
 //! webserver benchmark that does not — building and running the code the model
-//! wrote is the measurement. The containment is explicit and lives here:
-//!
-//!   * every command runs with the sandbox as its working directory;
-//!   * `write_file`/`read_file` paths are resolved lexically and rejected if
-//!     they are absolute or climb out with `..`;
-//!   * every command has a hard timeout and is killed on expiry;
-//!   * tool output is truncated, so a runaway `yes` cannot exhaust memory;
-//!   * the turn count is capped, so a loop cannot run forever.
+//! wrote is the measurement. The containment is explicit and lives here: every
+//! command runs in the sandbox, under a hard timeout, and is killed on expiry;
+//! file-tool paths are rejected if they leave the sandbox; tool output is
+//! capped so a runaway `yes` cannot exhaust memory; turns are capped so a loop
+//! cannot run forever.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
-use crate::http;
-use crate::plugin::PluginHandle;
+#[path = "agent_tools.rs"]
+pub mod tools;
+pub use tools::{glob_match, tool_schema};
 
-/// Cap on a single tool result, in characters.
-const MAX_TOOL_OUTPUT: usize = 8_000;
+/// Bytes of one tool result.
+///
+/// opencode's own bash cap is 30000 characters, tail-only. This is deliberately
+/// tighter, and middle-elided, because `run_tier.sh` explains what a big result
+/// costs on this window: past it "the model leaks repeated `<tool_call>` XML as
+/// plain text and runs a turn to the max_tokens cap". One `cargo build` error
+/// dump gets there in a single turn. 8192 matches the *model* output cap the
+/// harness pins beside it (`ATLAS_OPENCODE_OUTPUT_CAP` → `limit.output`, which
+/// `mod.rs` mirrors as `max_tokens`), so one tool result can never cost more
+/// context than one whole reply.
+const MAX_TOOL_OUTPUT: usize = 8192;
+
+/// Conversation characters kept before old tool results are elided. opencode
+/// never lets a session exceed the window (`SessionPrompt.run` checks
+/// `isOverflow` every step, then compacts); `mod.rs`'s Gate A recipe serves
+/// `--max-seq-len 32768`, less one 8192-token reply ≈ 24k tokens.
+const HISTORY_BUDGET: usize = 96_000;
+
+/// Recent tool results compaction never touches — the model is mid-edit here.
+const LIVE_TOOL_RESULTS: usize = 4;
+
+/// `~/.config/opencode/opencode.json` sets `options.temperature: 0.3` on every
+/// `atlas*` model. Greedy decoding is not what scored 10/10.
+const TEMPERATURE: f64 = 0.3;
+
+/// Grace for the output pumps once the process is gone. Only a grace: a pipe
+/// inherited by a detached child never reaches EOF at all.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// The harness agent's prompt, verbatim from the body of
+/// `~/.config/opencode/agents/atlas.md` — the agent `run_tier.sh` selects with
+/// `default_agent: atlas`. `LLMRequestPrep.prepare` uses an agent's own prompt
+/// *instead of* the built-in provider prompt, so this is the whole of it.
+///
+/// The last paragraph is the load-bearing one for a thinking model on a 32k
+/// window: without "keep thinking short", reasoning alone walks the session into
+/// the degeneration zone the harness header describes.
+const AGENT_PROMPT: &str = "\
+You are a coding assistant running locally on Atlas Spark. No data leaves this machine.
+
+You have access to tools for interacting with the filesystem and running commands:
+- **bash**: Execute shell commands (ls, cat, grep, find, git, etc.)
+- **read**: Read file contents
+- **write**: Create or overwrite files
+- **edit**: Edit existing files (find and replace)
+- **glob**: Find files matching a pattern
+- **grep**: Search file contents with regex
+
+When asked to list files, check directories, or run commands, use the **bash** tool.
+When asked to read a file, use the **read** tool.
+
+IMPORTANT: Think briefly, then act. Do NOT describe tool calls in your thinking — just make \
+them directly. Keep thinking short (under 50 words). Never put tool calls inside thinking tags. \
+Use the write tool (not edit) when creating new files.";
 
 /// What one agent run did, for scoring.
+#[derive(Default)]
 pub struct Transcript {
     /// Every shell command the agent issued, in order. `followed_directions`
     /// is computed from this.
     pub commands: Vec<String>,
     pub turns: usize,
     pub tool_calls: usize,
-    /// True when the loop ended because the turn cap was hit rather than
-    /// because the agent stopped calling tools.
+    /// True when the loop ended at the turn cap rather than because the agent
+    /// stopped calling tools.
     pub hit_turn_cap: bool,
     pub final_text: String,
-}
-
-pub fn tool_schema() -> Value {
-    json!([
-        {"type": "function", "function": {
-            "name": "bash",
-            "description": "Run a shell command in the project directory and return its output.",
-            "parameters": {"type": "object", "properties": {
-                "command": {"type": "string", "description": "The shell command to run."}
-            }, "required": ["command"]}}},
-        {"type": "function", "function": {
-            "name": "write_file",
-            "description": "Write a file in the project directory, creating parent directories.",
-            "parameters": {"type": "object", "properties": {
-                "path": {"type": "string", "description": "Path relative to the project directory."},
-                "content": {"type": "string", "description": "Full file contents."}
-            }, "required": ["path", "content"]}}},
-        {"type": "function", "function": {
-            "name": "read_file",
-            "description": "Read a file from the project directory.",
-            "parameters": {"type": "object", "properties": {
-                "path": {"type": "string", "description": "Path relative to the project directory."}
-            }, "required": ["path"]}}}
-    ])
 }
 
 pub struct AgentConfig {
@@ -77,173 +114,205 @@ pub struct AgentConfig {
     pub cargo_target_dir: Option<PathBuf>,
 }
 
+/// opencode's environment block, appended to the agent prompt inside one system
+/// message (`LLMRequestPrep.prepare`). Naming the working directory is what
+/// makes the absolute paths its file tools ask for constructible.
+///
+/// `Today's date` is omitted deliberately: a prompt that changes at midnight is
+/// not a fixed benchmark, and `run_tier.sh` holds the task prompt constant for
+/// that very reason ("a bit-identical token sequence for every run").
+fn system_prompt(sandbox: &Path, model: &str) -> String {
+    let dir = sandbox.display();
+    format!(
+        "{AGENT_PROMPT}\nYou are powered by the model named {model}. The exact model ID is \
+         {model}\nHere is some useful information about the environment you are running in:\n\
+         <env>\n  Working directory: {dir}\n  Workspace root folder: {dir}\n  \
+         Is directory a git repo: no\n  Platform: linux\n</env>"
+    )
+}
+
 /// Run one agentic task to completion (or to the turn cap).
 pub async fn run_task(
-    handle: &PluginHandle,
+    handle: &crate::plugin::PluginHandle,
     cfg: &AgentConfig,
     prompt: &str,
 ) -> Result<Transcript> {
+    let mut transcript = Transcript::default();
+    let outcome = agent_loop(handle, cfg, prompt, &mut transcript).await;
+    // Reap on every path, including a transport error: a leaked server holds
+    // its port into the next iteration, and the scorer has not run yet.
+    reap(&cfg.sandbox).await;
+    outcome.map(|()| transcript)
+}
+
+/// Kill anything still running out of the sandbox.
+///
+/// `run_tier.sh:329` reaps the same way and says why: on the timeout SIGTERM a
+/// backgrounded server "reparents to init (PPID=1) and KEEPS HOLDING ITS PORT".
+/// `kill_on_drop` cannot reach it — the prompt tells the model to use `setsid`,
+/// so the process is deliberately not our child any more. Victims are
+/// identified by working directory alone, exactly as the harness does, so
+/// nothing outside this run's sandbox is ever touched. Without `/proc` (i.e.
+/// not Linux) this is a no-op.
+async fn reap(sandbox: &Path) {
+    let real = std::fs::canonicalize(sandbox).unwrap_or_else(|_| sandbox.to_path_buf());
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    let me = std::process::id().to_string();
+    let victims: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && *n != me)
+        .filter(|pid| {
+            std::fs::read_link(format!("/proc/{pid}/cwd")).is_ok_and(|c| c.starts_with(&real))
+        })
+        .collect();
+    if !victims.is_empty() {
+        let _ = tokio::process::Command::new("kill")
+            .arg("-9")
+            .args(&victims)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+}
+
+async fn agent_loop(
+    handle: &crate::plugin::PluginHandle,
+    cfg: &AgentConfig,
+    prompt: &str,
+    transcript: &mut Transcript,
+) -> Result<()> {
     let target = handle.target();
     let mut messages = vec![
-        json!({"role": "system", "content":
-            "You are a software engineer working in the current project directory. \
-             Use the provided tools to create, inspect and run code. Call tools rather than \
-             describing what you would do, and stop once the task is fully verified."}),
+        json!({"role": "system", "content": system_prompt(&cfg.sandbox, &target.model)}),
         json!({"role": "user", "content": prompt}),
     ];
     let tools = tool_schema();
-    let mut transcript = Transcript {
-        commands: Vec::new(),
-        turns: 0,
-        tool_calls: 0,
-        hit_turn_cap: false,
-        final_text: String::new(),
-    };
 
     for turn in 0..cfg.max_turns {
         handle.check_cancelled()?;
         handle.status(format!("agent turn {}/{}", turn + 1, cfg.max_turns));
+        compact(&mut messages);
         let body = json!({
-            "model": target.model,
-            "stream": true,
-            "temperature": 0.0,
-            "max_tokens": cfg.max_tokens,
-            "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
+            "model": target.model, "stream": true, "temperature": TEMPERATURE,
+            "max_tokens": cfg.max_tokens, "messages": messages,
+            "tools": tools, "tool_choice": "auto",
         });
-        let outcome = http::chat_stream(target, &body, cfg.request_timeout).await?;
+        let outcome = crate::http::chat_stream(target, &body, cfg.request_timeout).await?;
         transcript.turns = turn + 1;
         transcript.final_text = outcome.text.clone();
 
         if outcome.tool_calls.is_empty() {
-            return Ok(transcript);
+            return Ok(());
         }
 
         messages.push(assistant_message(&outcome));
         for (i, call) in outcome.tool_calls.iter().enumerate() {
             handle.check_cancelled()?;
             transcript.tool_calls += 1;
-            let id = if call.id.is_empty() {
-                format!("call_{turn}_{i}")
-            } else {
-                call.id.clone()
-            };
-            let result = execute(cfg, call, &mut transcript.commands).await;
-            let content = match result {
+            // A tool error is data for the model, not a run failure: an agent
+            // recovering from a bad command is normal behaviour, and aborting
+            // here would score it as a crash.
+            let content = match tools::execute(cfg, call, &mut transcript.commands).await {
                 Ok(text) => text,
-                // A tool error is data for the model, not a run failure: an
-                // agent recovering from a bad command is normal behaviour and
-                // aborting here would score it as a crash.
                 Err(e) => format!("error: {e:#}"),
             };
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": id,
-                "content": truncate(&content),
-            }));
+            messages.push(json!({"role": "tool", "content": truncate(&content),
+                "tool_call_id": call_id(&call.id, turn * 100 + i)}));
         }
     }
     transcript.hit_turn_cap = true;
-    Ok(transcript)
+    Ok(())
 }
 
-fn assistant_message(outcome: &http::ChatOutcome) -> Value {
+/// Servers reject a `tool_call_id` that pairs with nothing on the assistant
+/// message, so a model that omits ids must get the same synthesised one twice.
+fn call_id(id: &str, nth: usize) -> String {
+    match id.is_empty() {
+        true => format!("call_{nth}"),
+        false => id.to_string(),
+    }
+}
+
+/// Elide the oldest tool results once the session outgrows the window — the
+/// port of opencode's auto-compaction (`isOverflow` → `compaction`).
+///
+/// It rewrites tool *contents* and never removes a message: an assistant
+/// `tool_calls` block whose matching `role: "tool"` reply went missing is a 400
+/// from the server, which would end the run rather than shorten it.
+fn compact(messages: &mut [Value]) {
+    let size = |m: &Value| m["content"].as_str().map_or(64, str::len);
+    let mut total: usize = messages.iter().map(size).sum();
+    let tools: Vec<usize> = (0..messages.len())
+        .filter(|i| messages[*i]["role"] == "tool")
+        .collect();
+    for &i in tools
+        .iter()
+        .take(tools.len().saturating_sub(LIVE_TOOL_RESULTS))
+    {
+        if total <= HISTORY_BUDGET {
+            return;
+        }
+        let was = size(&messages[i]);
+        let marker = format!("[{was} characters elided to stay inside the context window]");
+        total = total - was + marker.len();
+        messages[i]["content"] = Value::String(marker);
+    }
+}
+
+fn assistant_message(outcome: &crate::http::ChatOutcome) -> Value {
     let calls: Vec<Value> = outcome
         .tool_calls
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            json!({
-                "id": if c.id.is_empty() { format!("call_{i}") } else { c.id.clone() },
-                "type": "function",
-                "function": {
-                    "name": c.name,
-                    // Some models emit no arguments at all for a zero-arg call;
-                    // an empty string is not valid JSON to a strict server.
-                    "arguments": if c.arguments.is_empty() { "{}".to_string() } else { c.arguments.clone() },
-                },
-            })
+            json!({"id": call_id(&c.id, i), "type": "function", "function": {"name": c.name,
+                // Some models emit no arguments at all for a zero-arg call; an
+                // empty string is not valid JSON to a strict server.
+                "arguments": if c.arguments.is_empty() { "{}" } else { &c.arguments }}})
         })
         .collect();
-    json!({
-        "role": "assistant",
-        "content": if outcome.text.is_empty() { Value::Null } else { Value::String(outcome.text.clone()) },
-        "tool_calls": calls,
-    })
+    let text = &outcome.text;
+    json!({"role": "assistant", "tool_calls": calls,
+        "content": if text.is_empty() { Value::Null } else { Value::String(text.clone()) }})
 }
 
-async fn execute(
-    cfg: &AgentConfig,
-    call: &http::ToolCall,
-    commands: &mut Vec<String>,
-) -> Result<String> {
-    let args: Value = serde_json::from_str(if call.arguments.is_empty() {
-        "{}"
-    } else {
-        &call.arguments
-    })
-    .map_err(|e| anyhow!("arguments were not valid JSON: {e}"))?;
-    match call.name.as_str() {
-        "bash" => {
-            let cmd = args
-                .get("command")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("bash needs a `command` string"))?;
-            commands.push(cmd.to_string());
-            run_shell(cfg, cmd).await
-        }
-        "write_file" => {
-            let rel = args
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("write_file needs a `path`"))?;
-            let content = args.get("content").and_then(Value::as_str).unwrap_or("");
-            let path = resolve(&cfg.sandbox, rel)?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&path, content)?;
-            Ok(format!("wrote {} ({} bytes)", rel, content.len()))
-        }
-        "read_file" => {
-            let rel = args
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("read_file needs a `path`"))?;
-            Ok(std::fs::read_to_string(resolve(&cfg.sandbox, rel)?)?)
-        }
-        other => bail!("unknown tool {other}"),
-    }
-}
-
-/// Resolve `rel` inside `sandbox`, rejecting anything that escapes it.
+/// Resolve `path` inside `sandbox`, rejecting anything that escapes it.
 ///
 /// Lexical, not `canonicalize`: the target usually does not exist yet, and a
 /// canonicalize-then-compare check silently passes on a missing path.
-pub fn resolve(sandbox: &Path, rel: &str) -> Result<PathBuf> {
-    let rel = Path::new(rel);
-    if rel.is_absolute() {
-        bail!(
-            "path must be relative to the project directory: {}",
-            rel.display()
-        );
-    }
+///
+/// An absolute path is accepted **only** when it is already inside the sandbox.
+/// opencode's file tools ask for absolute paths and its environment block hands
+/// the model the working directory to build them from, so rejecting every
+/// absolute path — as this did — failed the prompt-compliant call.
+pub fn resolve(sandbox: &Path, path: &str) -> Result<PathBuf> {
+    let path = Path::new(path);
+    let path = match path.strip_prefix(sandbox) {
+        Ok(inside) => inside,
+        Err(_) if path.is_absolute() => bail!(
+            "path must be inside the project directory {}: {}",
+            sandbox.display(),
+            path.display()
+        ),
+        Err(_) => path,
+    };
     let mut out = sandbox.to_path_buf();
-    for component in rel.components() {
+    for component in path.components() {
         match component {
             Component::Normal(c) => out.push(c),
             Component::CurDir => {}
             Component::ParentDir => bail!("path must not leave the project directory"),
-            Component::RootDir | Component::Prefix(_) => {
-                bail!("absolute paths are not allowed")
-            }
+            Component::RootDir | Component::Prefix(_) => bail!("absolute paths are not allowed"),
         }
     }
     Ok(out)
 }
 
-async fn run_shell(cfg: &AgentConfig, command: &str) -> Result<String> {
+pub(crate) async fn run_shell(cfg: &AgentConfig, command: &str, limit: Duration) -> Result<String> {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c")
         .arg(command)
@@ -254,130 +323,94 @@ async fn run_shell(cfg: &AgentConfig, command: &str) -> Result<String> {
         // `kill_on_drop` is what makes the timeout below real: without it a
         // timed-out `cargo build` keeps running and keeps holding the CPU that
         // every later iteration is being timed on.
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        // `run_tier.sh:296` sets this on the opencode process. It is the signal
+        // the cargo shim (`/workspace/.cargo-shim/cargo`) reads to force-detach
+        // `cargo run` "regardless of how the model writes the command". Set on
+        // THIS child only, never process-wide: the shim reserves the detach for
+        // the agent, and the scorer must keep `cargo run` in the foreground.
+        .env("ATLAS_AGENT_SHELL", "1");
     if let Some(dir) = &cfg.cargo_target_dir {
         cmd.env("CARGO_TARGET_DIR", dir);
     }
     let mut child = cmd.spawn()?;
-    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
-    let collect = async {
-        let (mut o, mut e) = (String::new(), String::new());
-        let _ = tokio::try_join!(stdout.read_to_string(&mut o), stderr.read_to_string(&mut e));
-        let status = child.wait().await?;
-        anyhow::Ok((status, o, e))
-    };
-    match tokio::time::timeout(cfg.command_timeout, collect).await {
-        Ok(Ok((status, out, err))) => {
-            let mut text = out;
-            if !err.trim().is_empty() {
-                text.push_str("\n[stderr]\n");
-                text.push_str(&err);
-            }
-            if !status.success() {
-                text.push_str(&format!("\n[exit {status}]"));
-            }
-            Ok(truncate(&text))
+    let (out, err) = (Arc::default(), Arc::default());
+    // Drain concurrently with the wait: output past the pipe buffer blocks the
+    // writer until someone reads it.
+    let pumps = (
+        tokio::spawn(pump(child.stdout.take(), Arc::clone(&out))),
+        tokio::spawn(pump(child.stderr.take(), Arc::clone(&err))),
+    );
+    // Wait on the PROCESS, not on end-of-pipe. `setsid cargo run &` inherits
+    // this tool's stdout, so the pipe never reaches EOF even though `sh` has
+    // exited — reading to EOF first (as this did) charged the whole timeout to a
+    // command that finished instantly, then reported none of its output. The
+    // prompt's `> /tmp/server.log 2>&1` avoids it; a model that forgets should
+    // lose one command, not the run.
+    let status = match tokio::time::timeout(limit, child.wait()).await {
+        Ok(s) => Some(s?),
+        Err(_) => {
+            let _ = child.kill().await;
+            None
         }
-        Ok(Err(e)) => Err(e),
-        Err(_) => Ok(format!(
-            "[timed out after {}s and was killed]",
-            cfg.command_timeout.as_secs()
+    };
+    let _ = tokio::time::timeout(DRAIN_GRACE, async {
+        let _ = pumps.0.await;
+        let _ = pumps.1.await;
+    })
+    .await;
+    let mut text = String::from_utf8_lossy(&out.lock()).into_owned();
+    let stderr = String::from_utf8_lossy(&err.lock()).into_owned();
+    if !stderr.trim().is_empty() {
+        // A failing command's stderr is the most valuable signal the model gets,
+        // so it survives every path — including the timeout.
+        text.push_str("\n[stderr]\n");
+        text.push_str(&stderr);
+    }
+    match status {
+        Some(s) if !s.success() => text.push_str(&format!("\n[exit {s}]")),
+        Some(_) => {}
+        None => text.push_str(&format!(
+            "\n[timed out after {}s and was killed; the output above is what it had produced. \
+             If this was a server, start it detached with its output redirected to a file.]",
+            limit.as_secs()
         )),
+    }
+    Ok(truncate(&text))
+}
+
+/// Bytes, not `String`: a UTF-8 sequence split across two reads would be
+/// mangled if each chunk were decoded on its own.
+async fn pump<R: AsyncReadExt + Unpin>(reader: Option<R>, sink: Arc<Mutex<Vec<u8>>>) {
+    let Some(mut reader) = reader else { return };
+    let mut buf = [0u8; 8192];
+    while let Ok(n) = reader.read(&mut buf).await {
+        if n == 0 {
+            return;
+        }
+        sink.lock().extend_from_slice(&buf[..n]);
     }
 }
 
-/// Keep the head and tail of long output — a build failure's error is at the
-/// end, and a head-only truncation would cut off exactly what matters.
+/// Keep the head and tail of long output — a build failure's first error is at
+/// the top and its summary is at the bottom, and either alone is a worse signal.
+/// A silent truncation would be worse still, so the elision is stated.
 pub fn truncate(text: &str) -> String {
-    if text.chars().count() <= MAX_TOOL_OUTPUT {
+    if text.len() <= MAX_TOOL_OUTPUT {
         return text.to_string();
     }
-    let chars: Vec<char> = text.chars().collect();
-    let half = MAX_TOOL_OUTPUT / 2;
-    let head: String = chars[..half].iter().collect();
-    let tail: String = chars[chars.len() - half..].iter().collect();
-    format!(
-        "{head}\n… [{} chars elided] …\n{tail}",
-        chars.len() - MAX_TOOL_OUTPUT
-    )
+    let (mut cut, mut from) = (MAX_TOOL_OUTPUT / 2, text.len() - MAX_TOOL_OUTPUT / 2);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    let (head, tail) = (&text[..cut], &text[from..]);
+    let elided = text.len() - head.len() - tail.len();
+    format!("{head}\n… [{elided} characters elided from the middle] …\n{tail}")
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn paths_cannot_escape_the_sandbox() {
-        let sb = Path::new("/tmp/sandbox");
-        assert_eq!(resolve(sb, "src/main.rs").unwrap(), sb.join("src/main.rs"));
-        assert_eq!(resolve(sb, "./Cargo.toml").unwrap(), sb.join("Cargo.toml"));
-        assert!(resolve(sb, "../../etc/passwd").is_err());
-        assert!(resolve(sb, "/etc/passwd").is_err());
-        assert!(resolve(sb, "src/../../../etc/shadow").is_err());
-    }
-
-    #[test]
-    fn truncation_keeps_both_ends() {
-        let text = format!("{}ERROR_AT_END", "a".repeat(20_000));
-        let t = truncate(&text);
-        assert!(t.ends_with("ERROR_AT_END"), "tail must survive");
-        assert!(t.starts_with("aaa"));
-        assert!(t.contains("elided"));
-        assert!(t.chars().count() < 20_100);
-    }
-
-    #[test]
-    fn short_output_is_untouched() {
-        assert_eq!(truncate("hello"), "hello");
-    }
-
-    #[test]
-    fn assistant_message_substitutes_empty_arguments_with_an_object() {
-        let outcome = http::ChatOutcome {
-            tool_calls: vec![http::ToolCall {
-                id: String::new(),
-                name: "bash".into(),
-                arguments: String::new(),
-            }],
-            ..Default::default()
-        };
-        let m = assistant_message(&outcome);
-        assert_eq!(m["tool_calls"][0]["function"]["arguments"], "{}");
-        assert_eq!(m["tool_calls"][0]["id"], "call_0");
-        assert!(m["content"].is_null());
-    }
-
-    #[tokio::test]
-    async fn a_hanging_command_is_killed_at_the_timeout() {
-        let cfg = AgentConfig {
-            sandbox: std::env::temp_dir(),
-            max_turns: 1,
-            command_timeout: Duration::from_millis(300),
-            request_timeout: Duration::from_secs(1),
-            max_tokens: 16,
-            cargo_target_dir: None,
-        };
-        let out = run_shell(&cfg, "sleep 30").await.unwrap();
-        assert!(out.contains("timed out"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn stderr_and_a_non_zero_exit_are_both_reported() {
-        let cfg = AgentConfig {
-            sandbox: std::env::temp_dir(),
-            max_turns: 1,
-            command_timeout: Duration::from_secs(5),
-            request_timeout: Duration::from_secs(1),
-            max_tokens: 16,
-            cargo_target_dir: None,
-        };
-        let out = run_shell(&cfg, "echo hi; echo bad >&2; exit 7")
-            .await
-            .unwrap();
-        assert!(
-            out.contains("hi") && out.contains("bad") && out.contains("exit"),
-            "{out}"
-        );
-    }
-}
+#[path = "agent_tests.rs"]
+mod tests;

@@ -42,7 +42,9 @@
 //!   (their probes count only content tokens), not Gate A's.
 
 pub mod agent;
+pub mod preflight;
 pub mod score;
+pub mod warm;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -293,7 +295,7 @@ impl Plugin for AgenticWebserver {
     fn load(&mut self, handle: PluginHandle) -> impl Future<Output = Result<()>> + Send {
         self.started = Some(Instant::now());
         let store = handle.artifacts().clone();
-        self.handle = Some(handle);
+        self.handle = Some(handle.clone());
         async move {
             // `cargo` has to exist or nothing can be scored — say so now rather
             // than after the model has spent five minutes writing code.
@@ -305,16 +307,12 @@ impl Plugin for AgenticWebserver {
             let root = store.runs_dir(DESCRIPTOR.id)?.join("sandbox");
             std::fs::create_dir_all(&root)?;
             self.sandbox_root = Some(root);
-            // Share one warm target dir across every iteration, matching the
-            // harness's ATLAS_WARM_TARGET_DIR. Without it each iteration
-            // cold-compiles the axum/tokio tree and the wall time measures
-            // dependency compilation instead of the model.
-            let warm = match std::env::var_os("ATLAS_WARM_TARGET_DIR") {
-                Some(p) => PathBuf::from(p),
-                None => store.root().join("cargo-warm-target"),
-            };
-            std::fs::create_dir_all(&warm)?;
-            self.cargo_target_dir = Some(warm);
+            // Pre-warm (not merely allocate) the shared target dir the agent AND
+            // the scorer build in. Creating an empty dir is not the harness's
+            // behaviour: `run_tier.sh:75-96` warms BOTH profiles up front
+            // because a tier drives `cargo test` 141× and the cold dep build
+            // "was the entire 92s↔305s wall variance". See [`warm`].
+            self.cargo_target_dir = Some(warm::prepare(&handle).await?);
             Ok(())
         }
     }
@@ -368,7 +366,9 @@ impl Benchmark for AgenticWebserver {
             ParamSpec::new(
                 "serve_timeout_s",
                 "Ping timeout",
-                "Seconds to wait for /ping to answer 'pong' after the server is started.",
+                "Seconds to wait for /ping to answer 'pong' after the server is started. \
+                 The harness's own budget is 15s (score_run.py::webserver_test), so this is \
+                 already the looser of the two — lowering it would not match anything.",
                 ParamKind::Int { min: 5, max: 300 },
                 ParamValue::Int(30),
             ),
@@ -418,6 +418,10 @@ impl Benchmark for AgenticWebserver {
             http::probe(handle.target(), Duration::from_secs(10))
                 .await
                 .context("endpoint probe failed — check the target URL and port")?;
+            // run_tier.sh halts on a bad 2+2 rather than after 25 min of tier:
+            // a 200 from /v1/models proves a server is listening, not that the
+            // checkpoint still decodes.
+            preflight::sanity_check(&handle, Duration::from_secs(60)).await?;
             let root = self.sandbox_root.clone().context("no sandbox root")?;
             return Ok(BenchmarkResult::running("probe", self.elapsed())
                 .with_progress(0, total)
