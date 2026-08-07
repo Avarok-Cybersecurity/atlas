@@ -99,6 +99,16 @@ param = "param"
 # `ratatui` — the Rust TUI crate (`ratatui = "0.29"` in spark-server), named in
 # the campaign notes as "the ratatui TUI". Not a typo of "ratatouille".
 ratatui = "ratatui"
+# `oints` — the tail of "endpoints", left dangling by a real degeneration and
+# asserted VERBATIM in the agentic-gate turn-classification test
+# (agent_tests.rs). Gate run 7 at 66b20718 repeated "Now let me test the other
+# endpoints:" until the repeats overlapped, emitted a tool call inside the
+# message body, and stopped — the fixture reproduces that byte for byte,
+# `</tool_call>oints:` included, because the point of the test is what the
+# server actually returned. Sanitizing it to spell `points` would make the
+# fixture a paraphrase of the bug instead of the bug. Same rationale as the
+# `paramete`/`parame` close-tag ladder above.
+oints = "oints"
 # `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
 # (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.
