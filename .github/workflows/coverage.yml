@@ -173,8 +173,23 @@ jobs:
         run: |
           echo "::warning title=Codecov upload skipped::No CODECOV_TOKEN secret is set, so no coverage report was uploaded. lcov.info is attached to this run as an artifact."
 
+      # `fail_ci_if_error` is deliberately FALSE, and that is not a return to
+      # swallowing errors — the next step reads the outcome and shouts.
+      #
+      # The distinction that matters: a rejected upload is either "coverage
+      # tooling is broken" or "this repository was never onboarded to Codecov".
+      # Right now it is the latter — the token authenticates and the API answers
+      # `404 {"message":"Repository not found"}`. That is an org setup task, and
+      # failing a code PR on it reports a problem the PR cannot possibly fix,
+      # which is how a red check becomes background noise people click past.
+      #
+      # So: never silent, never blocking on someone else's setup. When the repo
+      # is registered this starts succeeding with no edit here; if it then fails
+      # for a real reason, the warning says so with the uploader's own words.
       - name: Upload to Codecov
+        id: codecov
         if: env.CODECOV_TOKEN != ''
+        continue-on-error: true
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           files: lcov.info
@@ -183,3 +198,9 @@ jobs:
           # Surface the raw uploader output in the job log; without it a
           # rejected upload is a single grey line.
           verbose: true
+
+      - name: Report a failed Codecov upload
+        if: env.CODECOV_TOKEN != '' && steps.codecov.outcome == 'failure'
+        run: |
+          echo "::warning title=Codecov upload failed::The token authenticated but the upload was rejected. If this says 'Repository not found', Avarok-Cybersecurity/atlas has not been added to Codecov yet — do that at https://app.codecov.io and this passes with no workflow change. lcov.info is attached to this run as an artifact either way."
+
