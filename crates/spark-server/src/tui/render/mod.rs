@@ -31,7 +31,7 @@ use super::theme;
 /// with no test that could notice them drifting apart. The failure mode is
 /// silent: nothing crashes and no row is out of range, the wrong section just
 /// opens. It is the same class of defect as the subsection-offset bug
-/// [`super::events::sidebar_row`] was extracted to fix, one layer out.
+/// `events::sidebar_row` was extracted to fix, one layer out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chrome {
     /// Header rows above the sidebar's first row.
