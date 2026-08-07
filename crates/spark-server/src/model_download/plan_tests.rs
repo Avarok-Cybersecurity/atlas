@@ -139,3 +139,51 @@ fn selection_is_stable_regardless_of_listing_order() {
     shuffled.reverse();
     assert_eq!(select(&repo()), select(&shuffled));
 }
+
+#[test]
+fn a_name_that_climbs_out_of_the_snapshot_is_refused() {
+    // `rfilename` is whatever the repo owner typed. The downloader joins it
+    // onto the snapshot dir, and `Path::join` resolves `..` against the
+    // parent, so before this check a published repo could write a shard
+    // anywhere the server process could reach — including over another
+    // model's weights. The extension filter alone did not stop it: every
+    // name below ends in `.safetensors` and so passed `is_weight`.
+    for evil in [
+        "../../../../etc/cron.d/x.safetensors",
+        "../model.safetensors",
+        "subdir/../../escape.safetensors",
+        "/etc/ld.so.preload.safetensors",
+        "//rooted/model.safetensors",
+        "./model.safetensors",
+        "a//b/model.safetensors",
+        "..\\windows\\model.safetensors",
+        "C:/windows/model.safetensors",
+    ] {
+        assert!(!wanted(evil), "must refuse {evil:?}");
+    }
+}
+
+#[test]
+fn a_weight_in_an_ordinary_subdirectory_still_downloads() {
+    // The containment check must not cost the legitimate layout: weights do
+    // live in subdirectories, which is why `/` cannot simply be banned.
+    assert!(wanted("model.safetensors"));
+    assert!(wanted("weights/model-00001-of-00002.safetensors"));
+    assert!(wanted("a/b/c/model.safetensors.index.json"));
+    // A dotfile is not a traversal component.
+    assert!(wanted(".hidden/model.safetensors"));
+}
+
+#[test]
+fn a_traversing_name_is_dropped_from_the_plan_not_just_from_wanted() {
+    // `select` is what the downloader actually calls; the guard has to hold
+    // there, not only in the predicate it delegates to.
+    let listing = vec![
+        f("config.json", 1_000),
+        f("model.safetensors", 10),
+        f("../../escape.safetensors", 10),
+    ];
+    let names: Vec<String> = select(&listing).into_iter().map(|f| f.name).collect();
+    assert!(!names.iter().any(|n| n.contains("..")), "{names:?}");
+    assert_eq!(names.len(), 2);
+}
