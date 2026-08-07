@@ -61,6 +61,38 @@ pub async fn sanity_check(handle: &PluginHandle, timeout: Duration) -> Result<()
     Ok(())
 }
 
+// **A repeat-until-settled warm-up was tried here on 2026-08-07, and REJECTED
+// on the measurement.** It is written down because the reasoning that leads to
+// it is sound and someone will reach for it again.
+//
+// The observation it was built on holds. Repeating ONE tool-attached request
+// against a fresh 35B FP8 serve on the Gate A recipe:
+//
+// | regime | `--speculative` | identical replies |
+// |---|---|---|
+// | first 6 requests of a fresh serve | on  | 1/6 (3 distinct) |
+// | first 6 requests of a fresh serve | off | 4/6 (2 distinct) |
+// | next 6 on the same process        | on  | 6/6 |
+// | next 6 on the same process        | off | 6/6 |
+//
+// So a cold endpoint is not repeatable and a warmed one is — and a tier starts
+// a fresh serve and measures iterations 0, 1, 2 straight into the cold regime.
+// Sending discardable probes until two replies matched (settling took 3) looks
+// like the obvious fix.
+//
+// It made the gate WORSE, and not marginally: with the warm-up, N=10 scored
+// **3/10 webserver_ok · 1/10 followed_directions**, with 8 turns of 90 ending
+// in `finish_reason: length` — the model degenerating into a repetition loop
+// mid-run. The same binary with the warm-up removed and nothing else changed
+// scored **3/3 webserver_ok** with no degeneration at all. Probing leaves
+// prefix-cache and SSM-snapshot state behind that the real requests then
+// partially match, and a partially matched SSM snapshot is not a cheaper
+// prefix — it is the wrong recurrent state.
+//
+// Two rules follow, both paid for: do not send this endpoint traffic the
+// measurement does not need, and A/B any determinism fix against the score
+// before shipping it.
+
 #[cfg(test)]
 mod tests {
     use super::*;

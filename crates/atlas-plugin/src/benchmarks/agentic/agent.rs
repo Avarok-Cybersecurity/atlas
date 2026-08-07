@@ -29,8 +29,12 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
+#[path = "norm.rs"]
+pub mod norm;
 #[path = "agent_tools.rs"]
 pub mod tools;
+#[path = "trace.rs"]
+pub mod trace;
 pub use tools::{glob_match, tool_schema};
 
 /// Bytes of one tool result.
@@ -54,9 +58,28 @@ const HISTORY_BUDGET: usize = 96_000;
 /// Recent tool results compaction never touches — the model is mid-edit here.
 const LIVE_TOOL_RESULTS: usize = 4;
 
+/// **The one place this gate deliberately departs from the harness it ports.**
+///
 /// `~/.config/opencode/opencode.json` sets `options.temperature: 0.3` on every
-/// `atlas*` model. Greedy decoding is not what scored 10/10.
-const TEMPERATURE: f64 = 0.3;
+/// `atlas*` model, and that is right for a research harness: it samples the
+/// model's behaviour distribution, and 10 runs at 0.3 say something about the
+/// spread. A PR gate has the opposite job. Its bar is an exact 10-of-10, so a
+/// sampled instrument cannot separate a regression from a draw — the same
+/// binary measured 10/10 then 8/10 on `webserver_ok` and 9/10 then 5/10 on
+/// `followed_directions`, and re-running until green is not a gate.
+///
+/// At 0 the sampler is argmax (`adaptive_sampler::should_use_greedy` short-
+/// circuits on `base_temperature == 0.0`), and Atlas is bitwise-deterministic
+/// at batch 1 — which is what this benchmark runs, one agent at a time. Greedy
+/// decoding is a necessary condition for a repeatable trajectory, not a
+/// sufficient one: see [`norm`] for the other half.
+const TEMPERATURE: f64 = 0.0;
+
+/// Pinned beside the temperature. At 0 the sampler never draws, so the seed is
+/// unused today; it is sent so that a serve path which ever *does* sample
+/// samples the same way twice rather than silently reintroducing the spread
+/// this gate just removed.
+const SEED: u64 = 0;
 
 /// Grace for the output pumps once the process is gone. Only a grace: a pipe
 /// inherited by a detached child never reaches EOF at all.
@@ -191,25 +214,23 @@ async fn agent_loop(
         json!({"role": "user", "content": prompt}),
     ];
     let tools = tool_schema();
+    let trace = trace::Trace::start(&cfg.sandbox, prompt);
 
     for turn in 0..cfg.max_turns {
         handle.check_cancelled()?;
         handle.status(format!("agent turn {}/{}", turn + 1, cfg.max_turns));
         compact(&mut messages);
-        let body = json!({
-            "model": target.model, "stream": true, "temperature": TEMPERATURE,
-            "max_tokens": cfg.max_tokens, "messages": messages,
-            "tools": tools, "tool_choice": "auto",
-        });
+        let body = request_body(&target.model, &messages, &tools, cfg.max_tokens);
         let outcome = crate::http::chat_stream(target, &body, cfg.request_timeout).await?;
         transcript.turns = turn + 1;
         transcript.final_text = outcome.text.clone();
+        trace.turn(turn, &outcome);
 
         if outcome.tool_calls.is_empty() {
             return Ok(());
         }
 
-        messages.push(assistant_message(&outcome));
+        messages.push(assistant_message(&outcome, turn));
         for (i, call) in outcome.tool_calls.iter().enumerate() {
             handle.check_cancelled()?;
             transcript.tool_calls += 1;
@@ -220,21 +241,45 @@ async fn agent_loop(
                 Ok(text) => text,
                 Err(e) => format!("error: {e:#}"),
             };
-            messages.push(json!({"role": "tool", "content": truncate(&content),
-                "tool_call_id": call_id(&call.id, turn * 100 + i)}));
+            let content = truncate(&content);
+            trace.result(&call.name, &content);
+            messages.push(json!({"role": "tool", "content": content,
+                "tool_call_id": call_id(turn, i)}));
         }
     }
     transcript.hit_turn_cap = true;
     Ok(())
 }
 
-/// Servers reject a `tool_call_id` that pairs with nothing on the assistant
-/// message, so a model that omits ids must get the same synthesised one twice.
-fn call_id(id: &str, nth: usize) -> String {
-    match id.is_empty() {
-        true => format!("call_{nth}"),
-        false => id.to_string(),
-    }
+/// One chat request. Split out so the gate's sampling pins are asserted by a
+/// test rather than trusted: a silent drift back to sampled decoding would not
+/// fail anything, it would just make the gate flaky again.
+fn request_body(model: &str, messages: &[Value], tools: &Value, max_tokens: usize) -> Value {
+    json!({
+        "model": model, "stream": true, "temperature": TEMPERATURE, "seed": SEED,
+        "max_tokens": max_tokens, "messages": messages,
+        "tools": tools, "tool_choice": "auto",
+    })
+}
+
+/// The `tool_call_id` this conversation carries — **ours, never the server's.**
+///
+/// Atlas mints ids from a per-process counter (`call_0000000000000004`), so the
+/// same turn of the same work is labelled differently depending on how many
+/// tool calls that server has answered since it started. Echoing it wrote a
+/// value from outside the run into the model's context, where it changes the
+/// next turn's tokens: measured here, five identical requests came back with
+/// five distinct id sets and identical text. An id only has to pair one
+/// assistant `tool_calls` entry with its `role: "tool"` reply inside this
+/// request, so a positional one is both legal and reproducible.
+///
+/// Turn *and* index, because the two sites must agree — a `tool_call_id` that
+/// pairs with nothing on the assistant message is a 400. They previously
+/// numbered from different bases (`i` against `turn * 100 + i`) and only
+/// matched because both echoed the server's id; a model that emits no ids hit
+/// the mismatch.
+fn call_id(turn: usize, nth: usize) -> String {
+    format!("call_{turn}_{nth}")
 }
 
 /// Elide the oldest tool results once the session outgrows the window — the
@@ -263,13 +308,13 @@ fn compact(messages: &mut [Value]) {
     }
 }
 
-fn assistant_message(outcome: &crate::http::ChatOutcome) -> Value {
+fn assistant_message(outcome: &crate::http::ChatOutcome, turn: usize) -> Value {
     let calls: Vec<Value> = outcome
         .tool_calls
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            json!({"id": call_id(&c.id, i), "type": "function", "function": {"name": c.name,
+            json!({"id": call_id(turn, i), "type": "function", "function": {"name": c.name,
                 // Some models emit no arguments at all for a zero-arg call; an
                 // empty string is not valid JSON to a strict server.
                 "arguments": if c.arguments.is_empty() { "{}" } else { &c.arguments }}})
@@ -376,7 +421,12 @@ pub(crate) async fn run_shell(cfg: &AgentConfig, command: &str, limit: Duration)
             limit.as_secs()
         )),
     }
-    Ok(truncate(&text))
+    // Normalise BEFORE truncating. The other order looks equivalent and is not:
+    // `truncate` reports how many characters it elided and cuts at a byte
+    // offset, so a duration that is one digit longer on one run shifts the cut
+    // and changes text the model reads on both sides of it. See [`norm`] for
+    // what is rewritten and, more importantly, what is not.
+    Ok(truncate(&norm::normalize(&text)))
 }
 
 /// Bytes, not `String`: a UTF-8 sequence split across two reads would be

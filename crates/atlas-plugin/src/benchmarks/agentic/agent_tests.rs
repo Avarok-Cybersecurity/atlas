@@ -84,10 +84,41 @@ fn assistant_message_substitutes_empty_arguments_with_an_object() {
         }],
         ..Default::default()
     };
-    let m = assistant_message(&outcome);
+    let m = assistant_message(&outcome, 0);
     assert_eq!(m["tool_calls"][0]["function"]["arguments"], "{}");
-    assert_eq!(m["tool_calls"][0]["id"], "call_0");
+    assert_eq!(m["tool_calls"][0]["id"], "call_0_0");
     assert!(m["content"].is_null());
+}
+
+#[test]
+fn tool_call_ids_are_positional_and_never_the_servers() {
+    // Atlas mints ids from a per-process counter, so the same turn of the same
+    // work carries a different id depending on what that server did earlier —
+    // measured: five identical requests, five distinct id sets, identical text.
+    // Echoing it wrote a value from outside the run into the model's context.
+    let outcome = http::ChatOutcome {
+        tool_calls: vec![
+            http::ToolCall {
+                id: "call_0000000000000004".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            http::ToolCall {
+                id: "call_0000000000000005".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    let m = assistant_message(&outcome, 3);
+    assert_eq!(m["tool_calls"][0]["id"], "call_3_0");
+    assert_eq!(m["tool_calls"][1]["id"], "call_3_1");
+    // The pairing is what the server validates: the id on the assistant message
+    // and the one on the matching tool reply must be the same string.
+    assert_eq!(m["tool_calls"][1]["id"].as_str().unwrap(), call_id(3, 1));
+    // Two turns never collide, so an old reply cannot pair with a new call.
+    assert_ne!(call_id(3, 1), call_id(4, 1));
 }
 
 #[test]
@@ -115,10 +146,25 @@ fn the_system_prompt_is_the_harness_agent_prompt_plus_the_environment() {
 }
 
 #[test]
-fn sampling_matches_the_harness_opencode_config() {
-    // ~/.config/opencode/opencode.json, providers atlas1/atlas2/atlas3,
-    // options.temperature. The 10/10 tier was NOT greedy.
-    const { assert!(TEMPERATURE == 0.3) };
+fn the_gate_samples_greedily_and_pins_it_on_the_wire() {
+    // This asserted `TEMPERATURE == 0.3` — opencode's own setting — until the
+    // gate's bar (an exact 10/10 on two counts) made a sampled instrument
+    // useless: the same binary measured 10/10 then 8/10. The deviation from the
+    // ported harness is deliberate and is documented at the constant.
+    const { assert!(TEMPERATURE == 0.0) };
+    let body = request_body(
+        "Qwen/Qwen3.6-35B-A3B-FP8",
+        &[json!({"role": "user", "content": "hi"})],
+        &tool_schema(),
+        8192,
+    );
+    assert_eq!(body["temperature"], 0.0);
+    assert_eq!(body["seed"], SEED);
+    assert_eq!(body["model"], "Qwen/Qwen3.6-35B-A3B-FP8");
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["max_tokens"], 8192);
+    assert_eq!(body["tool_choice"], "auto");
+    assert_eq!(body["tools"], tool_schema());
 }
 
 // ── context compaction ─────────────────────────────────────────────
@@ -222,6 +268,26 @@ async fn a_timed_out_command_still_returns_what_it_printed() {
         out.contains("late"),
         "stderr before the kill is lost: {out}"
     );
+}
+
+#[tokio::test]
+async fn shell_output_reaches_the_model_normalised() {
+    // The wiring, not the rules (those are `norm_tests`): every byte the bash
+    // tool returns has been through the normaliser, because that is the only
+    // path by which run-to-run noise enters the conversation.
+    let c = cfg(std::env::temp_dir());
+    let out = run_shell(
+        &c,
+        "echo '   Compiling pingpong v0.1.0 (/tmp/x)'; \
+         echo '    Finished `test` profile [unoptimized] target(s) in 1.23s'; \
+         echo 'kill: (1417733) - No such process'",
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!out.contains("Compiling"), "{out}");
+    assert!(out.contains("target(s) in <elapsed>"), "{out}");
+    assert!(out.contains("kill: (<pid>)"), "{out}");
 }
 
 #[tokio::test]
