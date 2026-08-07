@@ -21,6 +21,18 @@ that mechanism against the two defects that silently corrupt a build:
 Unique shadows (no matching regular file elsewhere) are valid. Symlinks are
 valid regardless of what they point to (they are the sharing mechanism).
 
+NOT CHECKED HERE — dropped entry points. A shadow that keeps its namesake's
+name but declares FEWER kernels is the third defect of this family, and the one
+that actually shipped (the 27B's four multi-sequence GDN decode kernels, gone
+until 2026-07-26). Deciding it needs the entry points a source declares, which
+means resolving `#define KERNEL_NAME` + `#include` + token-paste macros, and
+then filtering by the per-target `[shadow_exempt]` tables. That resolver is
+`crates/atlas-kernels/build_shadow.rs`, and it is enforced by
+`crates/atlas-kernels/tests/kernel_shadow_detector.rs` in the same CI run as
+this script. Reimplementing it here in Python would be a second, silently
+diverging copy of the rule — this note exists so the gap in THIS file reads as
+a decision rather than an oversight.
+
 Exit 0 when clean; exit 1 and list every violation otherwise.
 
 Usage: scripts/check_kernel_shadows.py [kernels_root]

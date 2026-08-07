@@ -41,8 +41,8 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -51,19 +51,11 @@ jobs:
     name: cargo clippy --tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
-      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
-      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
-      # Kept only until someone confirms no transitive consumer needs them.
-      - name: Install native build deps (vestigial — see comment)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Lint policy lives in the workspace `Cargo.toml` `[workspace.lints]`
       # block (deny `warnings` + `clippy::all`, with a few targeted
       # allows for kernel-style signatures). Each crate inherits via
@@ -76,8 +68,8 @@ jobs:
     name: SPDX license headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: apache/skywalking-eyes/header@v0.8.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0
         with:
           config: .licenserc.yaml
           mode: check
@@ -86,14 +78,14 @@ jobs:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: crate-ci/typos@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: crate-ci/typos@2a44449ff3410624a0fa2ea073c670e1c9236a40 # master
 
   kernel-structure:
     name: kernel shadow structure
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Validates the kernels/{hw} shadowing mechanism (build.rs
       # collect_cu_files): no shadow byte-identical to its common
       # namesake (dead override), no duplicate regular copies of the
@@ -106,22 +98,14 @@ jobs:
     name: cargo test --workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
-      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
-      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
-      # Kept only until someone confirms no transitive consumer needs them.
-      - name: Install native build deps (vestigial — see comment)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Generate no-GPU library stubs
         # libcuda / libnccl / libcublasLt / libcudart fail-fast stubs, so the
         # workspace links on a runner with no GPU. Extracted to a script so the
         # test job and the benchmark-gate job cannot drift apart.
         run: bash scripts/ci_gpu_stubs.sh
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is
       # exactly what we want — every test that requires a real GPU
       # (spark-runtime, spark-storage, atlas-kernels, atlas-spark-bench
@@ -133,9 +117,9 @@ jobs:
     name: cargo test --features metal (macOS aarch64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Apple Silicon path: no CUDA toolchain, no nvcc. The `metal`
       # feature opts out of cudarc workspace-wide and into the Metal
       # runtime backend (objc2-metal). xcrun + metallib are part of
@@ -204,38 +188,33 @@ jobs:
   pr-benchmark-gate:
     name: PR benchmark gate
     runs-on: ubuntu-latest
-    # ADVISORY until the first records land. The check is correct to fail today
-    # — no bench record is committed yet — but on the PR that INTRODUCES the
-    # gate no record can exist: a record names the sha it was measured at, and
-    # `record_covers` deliberately cannot accept one written AT head (committing
-    # it moves head). Failing the whole pipeline on that bootstrap gap would
-    # block the gate from ever landing.
+    # ENFORCING as of this commit. The `continue-on-error: true` that used to
+    # sit here was justified by a bootstrap gap — "no bench record is committed
+    # yet, and the PR that introduces the gate cannot commit one". That gap is
+    # closed: `.benchmarks/` now carries a BASELINE plus records for all five
+    # required gates, so the precondition its own comment named for removal is
+    # met, and keeping the line would leave a check that cannot fail.
     #
-    # The job still runs, still prints every missing bench, and still exits
-    # non-zero in its own log — it just does not red the PR. ★ REMOVE THIS LINE
-    # once the four/five benches have committed records; leaving it forever
-    # turns a gate into a decoration, which is the exact failure mode this
-    # system exists to prevent.
-    continue-on-error: true
+    # What a red here means: this branch has no record that still COVERS its
+    # head. `record_covers` invalidates every earlier record once the diff
+    # touches a PERF_PATH (crates, kernels, Cargo.*, vendor, jinja-templates,
+    # rust-toolchain.toml) — which is the point. Fix it by measuring on a GPU
+    # box and committing the record, not by re-adding continue-on-error.
+    #
+    # It is deliberately NOT in `release-matrix`'s `needs`, and deliberately
+    # not a required status check on `main`: a missing GPU measurement must
+    # show as red without wedging the image path or the merge button.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # check_gates walks git ancestry to decide whether a record taken at an
           # earlier sha still covers HEAD, so a shallow clone would make every
           # record look uncovered.
           fetch-depth: 0
-      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
-      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
-      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
-      # Kept only until someone confirms no transitive consumer needs them.
-      - name: Install native build deps (vestigial — see comment)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
       - name: Generate no-GPU library stubs
         run: bash scripts/ci_gpu_stubs.sh
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check committed benchmark records against their baselines
         env:
           ATLAS_SKIP_BUILD: "1"

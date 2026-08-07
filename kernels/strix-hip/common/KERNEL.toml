@@ -1,6 +1,38 @@
 [build]
 extra_nvcc_flags = ["--fmad=false"]
 
+# Kernels a model shadow may omit WITHOUT that being shadow drift.
+# Keyed by MODULE name (post-`[modules]` mapping) → list of entry points,
+# i.e. exactly the `module::kernel` strings the build warning and the startup
+# audit print.
+#
+# SCOPE — this suppresses the shadow-drop BUILD WARNING only. Exempt pairs stay
+# in `TargetPtxSet::shadowed_dropped`, so the startup gate
+# (`kernel_audit::classify_failures`) still hard-errors if a model's dispatch
+# ever actually asks for one. An entry here can quiet build-log noise; it can
+# NOT let a genuinely-missing kernel boot. That split is deliberate: the audit
+# must stay fail-closed.
+#
+# Both entries are the same two SUPERSEDED entry points gb10 and strix already
+# declare, with the same reasons — this hardware set was simply never given the
+# block, so its two model shadows reported drift that its siblings did not.
+# Found by `atlas-kernels/tests/kernel_shadow_detector.rs`, which compares every
+# hardware set the same way.
+#
+#   w4a16::w4a16_dequant
+#       Standalone dequant helper. Zero callers repo-wide (no `.kernel(...)`
+#       or `try_kernel` site in any crate). No model shadow has ever carried it.
+#
+#   moe_w4a16::moe_w4a16_grouped_gemm
+#       The original expert-offsets grouped GEMM, replaced everywhere by the
+#       `_ptrtable` family (`..._ptrtable`, `..._ptrtable_t`, `..._ptrtable_t_k64`
+#       and their `_e8m0` twins), which every model shadow implements. The only
+#       remaining reference is `atlas-spark-bench/benches/moe.rs`, a benchmark —
+#       no production dispatch path resolves it.
+[shadow_exempt]
+w4a16 = ["w4a16_dequant"]
+moe_w4a16 = ["moe_w4a16_grouped_gemm"]
+
 # File stem → module name overrides.
 # Any .cu file not listed here uses its file stem as the module name.
 [modules]

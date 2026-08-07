@@ -192,18 +192,23 @@ fn main() {
         .get("hardware")
         .and_then(|h| h.get("vendor"))
         .and_then(|v| v.as_str());
-    // Force the BR=32 prefill path (skip the BR64=64 large-chunk kernels)
-    // on targets that can't fit the _64 kernel's LDS (e.g. RDNA3.5's hard
-    // 64 KB/workgroup cap). Only emitted when the HW opts in; absent on
-    // NVIDIA → option_env! None → BR64 dispatch unchanged.
-    if hw_toml
-        .get("hardware")
-        .and_then(|h| h.get("force_br32_prefill"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        println!("cargo:rustc-env=ATLAS_HW_FORCE_BR32=true");
-    }
+    // NOTE: a `force_br32_prefill` HARDWARE.toml key used to be re-emitted here
+    // as `cargo:rustc-env=ATLAS_HW_FORCE_BR32`, for an `option_env!` reader in
+    // spark-model's prefill dispatch. That reader was dropped by the squash
+    // merge that landed Strix support, leaving an emit nothing consumed — and
+    // the contract could not have worked anyway: `cargo:rustc-env` only reaches
+    // the crate whose build script emits it, so it can never reach spark-model.
+    // BR=32 on RDNA3.5 is enforced by two live mechanisms instead, and the key
+    // was redundant even when it had a reader:
+    //   * kernel side  — `#if defined(__SCALE__) #define BR64 32` in
+    //     kernels/gb10/common/prefill_paged_compute.cuh (and an unconditional
+    //     `#define BR64 32` in the strix-hip shadow), which is what keeps the
+    //     _64 kernels inside the 64 KB LDS cap.
+    //   * host side    — `cfg!(atlas_scale)` picks the matching 32-row grid
+    //     stride in ops/prefill_attn_main_a.rs (non-paged) and
+    //     ops/prefill_attn_main_b.rs (paged); the cfg comes from spark-model's
+    //     own build.rs reading ATLAS_TARGET_HW.
+    // Re-adding a HARDWARE.toml key for this would re-create the dead lever.
     let compute_target = resolve_compute_target(vendor_str);
     let output_ext = compute_target.output_extension();
     let uses_cuda_api = compute_target.uses_cuda_module_api();
@@ -1058,10 +1063,19 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 
 #[path = "build_parse.rs"]
 mod build_parse;
+
+// Entry-point resolution for `shadowed_dropped_pairs`. Lives in its own file so
+// `tests/kernel_shadow_detector.rs` can compile the SAME code a build script
+// would otherwise keep untestable — a build script's `#[cfg(test)]` modules are
+// never run by `cargo test`, which is how the previous text-scan shipped a hole
+// with no test that could have noticed.
+#[path = "build_shadow.rs"]
+mod build_shadow;
 use build_parse::{
     parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
     parse_sampling_presets, parse_shadow_exempt,
 };
+use build_shadow::shadowed_missing_symbols;
 
 /// Collect kernel-source files with shadowing: common dir provides the
 /// base set, model-specific dir can override individual files by matching
@@ -1169,70 +1183,4 @@ fn shadowed_dropped_pairs(
     }
     out.sort();
     out
-}
-
-/// Kernel entry points a shadowing model file drops relative to its `common/`
-/// namesake. Scans for `extern "C" __global__ void <name>` (tolerating an
-/// interposed `__launch_bounds__(...)`), which is how every Atlas kernel entry
-/// point is declared. Text-scan by design: it runs before nvcc, so it cannot
-/// depend on compiled artifacts. Returns sorted names for stable warnings.
-fn shadowed_missing_symbols(
-    common_file: &std::path::Path,
-    model_file: &std::path::Path,
-) -> Vec<String> {
-    fn entry_points(p: &std::path::Path) -> std::collections::BTreeSet<String> {
-        let Ok(text) = std::fs::read_to_string(p) else {
-            return Default::default();
-        };
-        let mut out = std::collections::BTreeSet::new();
-        for (idx, _) in text.match_indices("__global__") {
-            let tail = &text[idx..];
-            // Skip `__global__`, an optional `__launch_bounds__(...)`, and the
-            // return type, then take the identifier before `(`.
-            let Some(paren) = tail.find('(') else {
-                continue;
-            };
-            let mut head = &tail[..paren];
-            if let Some(lb) = head.find("__launch_bounds__") {
-                // `__launch_bounds__(N, M)` — the name follows its close paren.
-                let after = &tail[idx_after_balanced(tail, lb)..];
-                let Some(p2) = after.find('(') else { continue };
-                head = &after[..p2];
-            }
-            if let Some(name) = head.split_whitespace().last() {
-                let name = name.trim_start_matches('*');
-                if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    out.insert(name.to_string());
-                }
-            }
-        }
-        out
-    }
-    // Index just past the balanced `(...)` that follows `from` in `s`.
-    fn idx_after_balanced(s: &str, from: usize) -> usize {
-        let bytes = s.as_bytes();
-        let mut i = from;
-        while i < bytes.len() && bytes[i] != b'(' {
-            i += 1;
-        }
-        let mut depth = 0usize;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return i + 1;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        from
-    }
-    entry_points(common_file)
-        .difference(&entry_points(model_file))
-        .cloned()
-        .collect()
 }

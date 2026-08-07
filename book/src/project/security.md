@@ -34,7 +34,7 @@ Atlas is an inference server that runs locally with GPU access. The primary surf
 - **Integer overflow** in kernel grid/block parameter computation.
 - **Buffer overflows** in shared-memory layouts.
 
-Automated: `cppcheck` static analysis on CUDA source. Human: kernel reviews require the PR author to document tile shapes and memory accesses.
+Automated: nothing — there is no static analyser on the CUDA sources. Human: kernel reviews require the PR author to document tile shapes and memory accesses.
 
 ### 2. HTTP API input
 
@@ -69,9 +69,12 @@ Every `unsafe` block is annotated with the safety invariant it relies on. Review
 | Check | Frequency | File |
 |---|---|---|
 | `cargo-deny` advisories | every PR + weekly | `.github/workflows/security.yml` |
-| `cppcheck` CUDA static analysis | every PR touching kernels | same |
 | SPDX license header check | every PR | `.github/workflows/ci.yml` |
 | `cargo clippy -D correctness -D suspicious` | every PR | `.github/workflows/ci.yml` |
+
+This table previously listed a `cppcheck` CUDA static-analysis row. No such job
+has ever existed; it was removed rather than left as an advertised control
+nobody runs.
 
 The `-D correctness -D suspicious` gate is deliberate: stylistic `clippy` lints churn across toolchain releases and are not worth blocking PRs, but the correctness + suspicious categories map to real bugs and always block.
 
