@@ -55,6 +55,27 @@ fn the_writer_reports_every_byte_as_written_and_never_fails() {
     TUI_ACTIVE.store(false, Ordering::Relaxed);
     assert_eq!(SwitchableIo.write(b"").expect("empty is fine"), 0);
     SwitchableIo.flush().expect("flush cannot fail");
+
+    // Folded into this test rather than given its own, for the reason above:
+    // a second test toggling the same global in parallel would decide this
+    // one's answer.
+    //
+    // The claim's whole job is the release, and the release used to be a
+    // statement at the bottom of the event loop that two `return`s jumped over
+    // — leaving the flag set, and stdout logging dead, for the rest of the
+    // process. Dropping is the part that must hold even when nobody calls it.
+    {
+        let _claim = ActiveClaim::claim();
+        assert!(
+            TUI_ACTIVE.load(Ordering::SeqCst),
+            "a claim means the TUI owns the screen and logs stay off stdout"
+        );
+    }
+    assert!(
+        !TUI_ACTIVE.load(Ordering::SeqCst),
+        "dropping the claim hands stdout back — the two bail-out paths in the \
+         event loop depend on this happening without being asked"
+    );
     drop(restore);
 }
 

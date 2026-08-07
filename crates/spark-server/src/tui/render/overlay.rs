@@ -79,7 +79,7 @@ pub(super) fn truncate_toast(text: &str, width: usize) -> String {
 }
 
 /// The key map, and the SSOT for how tall its modal has to be.
-pub(super) const KEYS: [(&str, &str); 18] = [
+pub(super) const KEYS: [(&str, &str); 19] = [
     ("1-6", "jump to section (repeat cycles its subsections)"),
     (
         "Tab / Shift+Tab",
@@ -105,9 +105,20 @@ pub(super) const KEYS: [(&str, &str); 18] = [
     // ★ NOT "quit TUI". `q` sets should_quit, and the loop then calls
     // shutdown::request -- it DRAINS AND STOPS THE SERVER, exactly like
     // Ctrl+C. Describing that as closing a window invites a stray keypress to
-    // end a four-hour benchmark. The honest label is the whole fix here; a
-    // confirmation prompt while a run is in flight is tracked separately.
-    ("q", "shut down the server (drain + exit)"),
+    // end a four-hour benchmark. The honest label is half the fix; the other
+    // half is `App::work_in_flight`, which makes the press cost a confirmation
+    // whenever there is something to lose.
+    ("q", "shut down the server (drain + exit; confirms if busy)"),
+    // ★ The one way to leave the dashboard WITHOUT stopping the server, and it
+    // was reachable only by typing it into the Terminal tab and knowing it
+    // existed. A user looking for "how do I get out of this" found `q` in this
+    // list and nothing else -- so the destructive answer was the discoverable
+    // one. It is a slash command rather than a key, and it is listed here
+    // anyway, because this modal is where the question gets asked.
+    (
+        "/detach",
+        "Terminal: leave the TUI, keep serving with plain logs",
+    ),
     ("?", "this help"),
 ];
 
@@ -136,6 +147,50 @@ pub(super) fn draw_help(f: &mut Frame, area: Rect) {
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(theme::border(false))
         .title(Span::styled("─ KEYS ─", theme::text2()))
+        .style(Style::default().bg(theme::BG_PANEL.color()));
+    f.render_widget(Paragraph::new(lines).block(block), modal);
+}
+
+/// Ask before `q` drains a server that is in the middle of something.
+///
+/// Deliberately modal and deliberately small: it names WHAT is in flight,
+/// because "are you sure" answers nothing a user did not already know, and
+/// the thing they need to weigh is whether the hours already spent matter
+/// more than getting their prompt back.
+pub(super) fn draw_quit_confirm(f: &mut Frame, app: &App, area: Rect) {
+    let Some(what) = app.work_in_flight() else {
+        return;
+    };
+    let lines = vec![
+        Line::from(Span::styled(format!("  {what}."), theme::warn())),
+        Line::from(Span::styled(
+            "  Quitting drains it and stops the server.",
+            theme::text(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  q / y", theme::brand_cyan()),
+            Span::styled("  quit anyway", theme::text2()),
+            Span::styled("     any other key", theme::brand_cyan()),
+            Span::styled("  stay", theme::text2()),
+        ]),
+    ];
+    let w = 62.min(area.width.saturating_sub(4));
+    let h = ((lines.len() + 2) as u16).min(area.height.saturating_sub(2));
+    let modal = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, modal);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::warn())
+        .title(Span::styled(
+            "\u{2500} STOP THE SERVER? \u{2500}",
+            theme::warn(),
+        ))
         .style(Style::default().bg(theme::BG_PANEL.color()));
     f.render_widget(Paragraph::new(lines).block(block), modal);
 }

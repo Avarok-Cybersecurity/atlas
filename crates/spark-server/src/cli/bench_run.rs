@@ -116,6 +116,41 @@ fn gate_check_cmd() -> Result<i32> {
     }
 }
 
+/// The commit and the uncommitted invalidation-set files, both read BEFORE the
+/// run — the two halves of "which sources produced this binary".
+///
+/// ★ The dirty list is captured HERE, at the start, and warned about HERE,
+/// because that is the only moment the warning can still save anything: a
+/// `bfcl-subset` gate takes ~3.5 hours, and an operator told at the end that
+/// the binary never matched the commit has already spent the afternoon. A
+/// failure to read the dirt is itself reported and does not abort — the run is
+/// the expensive thing, and `git_sha` above has already proven this is a
+/// checkout.
+fn capture_provenance() -> Result<(String, Vec<String>)> {
+    let root = repo_root()?;
+    let sha = gate::git_sha(&root)?;
+    let dirty = gate::dirty_perf_paths(&root).unwrap_or_else(|e| {
+        eprintln!("gate: could not read the working tree's state ({e:#})");
+        Vec::new()
+    });
+    if !dirty.is_empty() {
+        eprintln!(
+            "gate: WARNING — {} uncommitted file(s) that change what a gate \
+             measures are in this tree, so the record will be stamped {sha} \
+             but the binary is not {sha}:",
+            dirty.len()
+        );
+        for path in &dirty {
+            eprintln!("gate:   {path}");
+        }
+        eprintln!(
+            "gate: the record will disclose this and the gate check will \
+             reject it. Commit (or stash) and rebuild first."
+        );
+    }
+    Ok((sha, dirty))
+}
+
 /// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
 ///
 /// The hardware fingerprint is fetched from the endpoint that did the work —
@@ -129,6 +164,7 @@ async fn write_gate_record(
     model: &str,
     recipe: Option<String>,
     sha_at_start: String,
+    dirty_at_start: Vec<String>,
 ) -> Result<()> {
     // ★ An INCOMPLETE run must not become a gate record.
     //
@@ -173,9 +209,22 @@ async fn write_gate_record(
     }
     let target = TargetEndpoint::new(url, model);
     let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
-    let gate_record = gate::GateRecord::from_run(record, hardware, sha, recipe)?;
+    let dirty = dirty_at_start;
+    let gate_record = gate::GateRecord::from_run(record, hardware, sha, dirty, recipe)?;
     let path = gate::write_record(&root, &gate_record)?;
     eprintln!("gate record written as {}", path.display());
+    // Repeated at the end as well as the start: the start-of-run warning has
+    // scrolled hours off the top of the terminal by now, and this one names the
+    // file the reader is about to commit.
+    if !gate_record.dirty_paths.is_empty() {
+        eprintln!(
+            "gate: that record is stamped {} but was measured from a tree with \
+             {} uncommitted invalidation-set file(s); it records them, and \
+             --pull-request-gate-check will reject it. Re-run from a clean tree.",
+            gate_record.git_sha,
+            gate_record.dirty_paths.len()
+        );
+    }
     Ok(())
 }
 
@@ -224,9 +273,11 @@ async fn run(args: RunArgs) -> Result<i32> {
     // benchmark's recipe, so the record describes a config nobody typed. Without
     // it, --url/--model drive an existing endpoint exactly as before.
     // Captured BEFORE the run so a multi-hour benchmark records the commit it
-    // actually measured rather than whatever lands on HEAD meanwhile.
-    let sha_at_start = if args.pull_request_gate {
-        Some(gate::git_sha(&repo_root()?)?)
+    // actually measured rather than whatever lands on HEAD meanwhile — and,
+    // with it, the uncommitted files that make that commit an incomplete
+    // answer, warned about now while aborting is still cheap.
+    let provenance = if args.pull_request_gate {
+        Some(capture_provenance()?)
     } else {
         None
     };
@@ -326,12 +377,14 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
+        let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
             recipe,
-            sha_at_start.clone().unwrap_or_default(),
+            sha_at_start,
+            dirty_at_start,
         )
         .await;
         if let Some(s) = served {

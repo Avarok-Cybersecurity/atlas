@@ -134,7 +134,12 @@ fn the_speculation_pane_names_the_gate_and_the_rate_it_delivered() {
     a.stats.tool_calls_total = 61;
     a.stats.entropy = 1.234;
     let rows = screen(&a, 160, 48);
-    assert!(has(&rows, "MTP gate Mtp"), "{rows:#?}");
+    // ★ This asserted "MTP gate Mtp" — the `{:?}` of the enum, which is what
+    // the code happened to print. A test that pins Debug output makes the
+    // defect the requirement: it would have gone on passing if the variant
+    // were renamed to something equally meaningless, and it could never fail
+    // for the reason it should, which is that "Mtp" tells a reader nothing.
+    assert!(has(&rows, "MTP gate speculative"), "{rows:#?}");
     assert!(has(&rows, "delivered 42 tok/s"));
     assert!(has(&rows, "accept k=4"));
     assert!(has(&rows, "75%"));

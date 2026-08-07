@@ -339,7 +339,13 @@ fn draw_spec_cache(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     if let Some(x) = s.sched {
         lines.push(Line::from(vec![
-            Span::styled(format!(" MTP gate {:?}", x.mtp_mode), theme::text()),
+            Span::styled(
+                format!(
+                    " MTP gate {}",
+                    crate::tui::format::mtp_mode_label(x.mtp_mode)
+                ),
+                theme::text(),
+            ),
             Span::styled(
                 format!(" · delivered {:.0} tok/s", x.delivered_tps),
                 theme::text2(),

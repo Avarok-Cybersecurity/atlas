@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 
 use super::app::{App, Section};
 use super::capture_layer::ProgressEvent;
-use super::init::TUI_ACTIVE;
+use super::init::{ActiveClaim, TUI_ACTIVE};
 use super::terminal_guard::TerminalGuard;
 use super::{render, shutdown};
 
@@ -26,6 +26,11 @@ pub fn run(
     progress_rx: Receiver<ProgressEvent>,
     levers_rx: Receiver<crate::tui::RunHandles>,
 ) {
+    // Taken FIRST, so it outlives every `return` below. `tui::start` already
+    // set the flag before this thread existed (see the comment there); this
+    // takes ownership of giving it back, which the two bail-outs below used to
+    // skip — see `init::ActiveClaim`.
+    let claim = ActiveClaim::claim();
     super::terminal_guard::install_panic_hook();
     let guard = match TerminalGuard::enter() {
         Ok(g) => g,
@@ -230,8 +235,13 @@ pub fn run(
     // in-flight recipe fetches would otherwise run to the 20 s timeout while
     // the process is trying to exit.
     app.lib.cancel_refresh();
-    TUI_ACTIVE.store(false, Ordering::SeqCst);
-    drop(guard); // restore terminal; logs fall back to stdout
+    // Restore the terminal FIRST, release the claim second: the old order let
+    // go of the claim while raw mode and the alternate screen were still up, so
+    // any line logged in that window was written into a screen ratatui still
+    // believed it owned. The two lines below need stdout back, hence the
+    // explicit drop rather than leaving it to the end of the function.
+    drop(guard);
+    drop(claim);
     if app.should_quit && !app.detach {
         shutdown::request("TUI quit");
     } else {

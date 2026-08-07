@@ -133,6 +133,10 @@ pub struct App {
     pub run: Option<crate::tui::RunHandles>,
     pub toasts: Vec<Toast>,
     pub help_open: bool,
+    /// A `q` that would have destroyed work in flight, waiting to be answered.
+    /// Set only when [`App::work_in_flight`] named something; an idle
+    /// dashboard still quits on the first press.
+    pub confirm_quit: bool,
     pub tick: u64,
     pub should_quit: bool,
     pub detach: bool,
@@ -185,6 +189,7 @@ impl App {
             bench: BenchState::default(),
             toasts: Vec::new(),
             help_open: false,
+            confirm_quit: false,
             tick: 0,
             should_quit: false,
             detach: false,
@@ -276,6 +281,10 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // A pending confirmation owns the keyboard until it is answered.
+        if self.confirm_quit && self.answer_quit_prompt(key) {
+            return;
+        }
         if self.help_open {
             self.help_open = false;
             return;
@@ -285,7 +294,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => self.on_quit_key(),
             KeyCode::Char('?') => self.help_open = true,
             KeyCode::Char('1') => self.jump(Section::Main),
             KeyCode::Char('2') => self.jump(Section::Stats),

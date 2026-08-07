@@ -235,6 +235,25 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
         Err(e) => return GateStatus::Missing(format!("baseline unreadable: {e:#}")),
     };
     let mut problems = Vec::new();
+    // ★ A record measured from a dirty tree does not describe its own sha.
+    //
+    // `record_covers` above proved that nothing in the invalidation set changed
+    // between the record's commit and head. That proof is worthless if the
+    // binary already differed from the record's commit when the run started —
+    // the diff was never committed, so no ancestry walk can ever see it. Fail
+    // rather than skip: the record's numbers are real, but they belong to no
+    // commit, and the only thing that makes the file true again is a re-run on
+    // a clean tree. Records written before this field existed carry an empty
+    // vector and are unaffected.
+    if !record.dirty_paths.is_empty() {
+        problems.push(format!(
+            "measured from a dirty tree — {} uncommitted invalidation-set \
+             file(s) when the run started ({}), so the binary was not {}",
+            record.dirty_paths.len(),
+            record.dirty_paths.join(", "),
+            record.git_sha
+        ));
+    }
     if !record.verdict_passes() {
         problems.push(format!(
             "run verdict is not PASS: {}",

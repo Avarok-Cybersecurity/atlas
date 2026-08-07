@@ -18,9 +18,11 @@
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
 //!   section         Section — the sidebar/nav SSOT
 //!   app             App state + reducer (section, focus, per-tab state)
+//!   app_quit        what `q` costs, and when it costs a second press
 //!   bench_state     Benchmarks section state + the executor's channels
 //!   bench_keys      Benchmarks key handling (list / params / run / history)
 //!   theme           palette + shared styles (brand chevron colors)
+//!   format          byte counts and scheduler enums, as the screen says them
 //!   logo            header art + CLI flag badge derivation
 //!   commands        Terminal tab slash-command parser/dispatch
 //!   chat            Chat transcript state + delta reducer
@@ -78,6 +80,7 @@ pub mod terminal_guard;
 pub mod app;
 mod app_input;
 pub mod app_library;
+pub mod app_quit;
 pub mod app_scroll;
 pub mod bench_host;
 pub mod bench_keys;
@@ -86,6 +89,7 @@ pub mod bench_state;
 pub mod commands;
 pub mod download_state;
 pub mod events;
+pub mod format;
 pub mod lib_dates;
 pub mod lib_keys;
 pub mod lib_scan;

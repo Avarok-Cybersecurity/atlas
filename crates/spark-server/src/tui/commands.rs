@@ -107,8 +107,10 @@ fn cmd_status(app: &mut App) {
                 s.kv_blocks_free, s.kv_blocks_total, s.ssm_slots_used, s.ssm_slots_total
             ));
             app.ops.output.push(format!(
-                "  mtp {:?} · delivered {:.1} tok/s · {} steps",
-                s.mtp_mode, s.delivered_tps, s.steps_total
+                "  mtp {} · delivered {:.1} tok/s · {} steps",
+                crate::tui::format::mtp_mode_label(s.mtp_mode),
+                s.delivered_tps,
+                s.steps_total
             ));
         }
         None => app

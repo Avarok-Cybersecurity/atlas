@@ -312,3 +312,46 @@ fn every_section_draws_a_whole_frame_at_hostile_geometries() {
         }
     }
 }
+
+/// The prompt has to say WHAT is in flight. "Are you sure?" tells the user
+/// nothing they did not already know, and the thing they are weighing is the
+/// hours already spent against getting their prompt back.
+#[test]
+fn the_quit_prompt_names_the_work_it_is_about_to_destroy() {
+    let mut a = app();
+    a.chat.streaming = true;
+    a.confirm_quit = true;
+    let rows = screen(&a, 160, 48);
+    assert!(has(&rows, "STOP THE SERVER?"), "{rows:#?}");
+    assert!(has(&rows, "a chat reply is still streaming"), "{rows:#?}");
+    assert!(has(&rows, "quit anyway"), "{rows:#?}");
+    assert!(has(&rows, "stay"), "{rows:#?}");
+}
+
+/// It outranks the help modal — a question the user must answer beats a
+/// reference they were browsing — and it must not draw outside a small frame,
+/// the same failure the key map had.
+#[test]
+fn the_quit_prompt_covers_the_help_overlay_and_fits_any_frame() {
+    let mut a = app();
+    a.chat.streaming = true;
+    a.confirm_quit = true;
+    a.help_open = true;
+    let rows = screen(&a, 160, 48);
+    assert!(has(&rows, "STOP THE SERVER?"), "{rows:#?}");
+
+    for (w, h) in [(20u16, 6u16), (40, 8), (60, 12), (1, 1)] {
+        let rows = screen(&a, w, h);
+        assert_eq!(rows.len(), h as usize, "{w}x{h} drew a partial frame");
+    }
+}
+
+/// Nothing in flight means nothing to warn about: the modal declines to draw
+/// rather than asking about work that does not exist.
+#[test]
+fn the_quit_prompt_declines_when_the_dashboard_is_idle() {
+    let mut a = app();
+    a.confirm_quit = true;
+    assert!(a.work_in_flight().is_none());
+    assert!(!has(&screen(&a, 160, 48), "STOP THE SERVER?"));
+}

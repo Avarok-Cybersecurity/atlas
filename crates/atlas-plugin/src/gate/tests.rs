@@ -143,11 +143,11 @@ fn the_record_path_is_date_and_sha_and_replaces_a_same_day_rerun() {
 #[test]
 fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
-    assert!(GateRecord::from_run(&record, hw(), String::new(), None).is_err());
+    assert!(GateRecord::from_run(&record, hw(), String::new(), Vec::new(), None).is_err());
 
     let mut running = record.clone();
     running.frame.status = RunStatus::Running;
-    assert!(GateRecord::from_run(&running, hw(), SHA.into(), None).is_err());
+    assert!(GateRecord::from_run(&running, hw(), SHA.into(), Vec::new(), None).is_err());
 }
 
 #[test]
@@ -158,6 +158,7 @@ fn from_run_reconstructs_the_exact_cli_command() {
         &run_record(metrics, Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -189,6 +190,7 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
         &run_record(metrics, Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
     )
     .unwrap();
@@ -209,7 +211,7 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
 fn the_agentic_bench_needs_yes_in_its_command() {
     let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(&record, hw(), SHA.into(), None).unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert!(gate.command.contains(&"--yes".to_string()));
 }
 
@@ -223,7 +225,7 @@ fn a_failed_frame_is_recorded_but_never_passes() {
         ),
         ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
     };
-    let gate = GateRecord::from_run(&record, hw(), SHA.into(), None).unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert!(gate.frame_status_failed());
     assert!(!gate.verdict_passes());
 }
@@ -277,6 +279,7 @@ fn check_record_refuses_a_cross_checkpoint_comparison() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -305,6 +308,7 @@ fn check_record_refuses_a_cross_hardware_comparison() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -326,6 +330,7 @@ fn an_unknown_fingerprint_never_silently_matches() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -343,6 +348,7 @@ fn check_record_scores_every_bound_and_missing_metric() {
         &run_record(metrics, Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -381,6 +387,7 @@ fn write_and_read_round_trip_through_the_repo_layout() {
         &run_record(metrics, Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -395,7 +402,7 @@ pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) 
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let record = run_record(metrics, Verdict::pass("ok"));
-    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string(), None).unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string(), Vec::new(), None).unwrap();
     gate.benchmark_id = id.to_string();
     gate.verdict = Some(verdict.to_string());
     gate.recorded_at = secs;

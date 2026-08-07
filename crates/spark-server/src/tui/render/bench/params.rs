@@ -5,7 +5,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
@@ -79,7 +79,7 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(format!("   {hint}"), theme::dim()));
         let mut line = Line::from(spans);
         if selected {
-            line = line.style(Style::default().bg(theme::BG_SELECTION.color()));
+            line = line.style(theme::selected());
         }
         lines.push(line);
 

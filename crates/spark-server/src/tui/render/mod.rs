@@ -81,6 +81,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help_open {
         overlay::draw_help(f, area);
     }
+    // After the help modal: a question the user must answer outranks a
+    // reference they were browsing.
+    if app.confirm_quit {
+        overlay::draw_quit_confirm(f, app, area);
+    }
     // LAST, over everything including the help overlay: the highlight has to
     // show what will actually be copied, and what is copied is read back out
     // of this finished frame.
@@ -175,7 +180,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {
         }
         let mut line = Line::from(spans);
         if selected {
-            line = line.style(Style::default().bg(theme::BG_SELECTION.color()));
+            line = line.style(theme::selected());
         }
         lines.push(line);
         // Subsections under the active section (full mode).
@@ -232,7 +237,13 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-6 jump · ? help",
         Section::Library => library_hints(app),
         Section::Benchmarks => bench_hints(app),
-        Section::Terminal => "⏎ input · Esc back · ↑/↓ scroll · End follow · ⇥ Ops↔Chat · ? help",
+        // `/detach` named here and nowhere else on screen: it is the only way
+        // out that leaves the server running, and this is the tab it is typed
+        // into. Without it the only exit a user could find was `q`, which
+        // stops the server.
+        Section::Terminal => {
+            "⏎ input · Esc back · ↑/↓ scroll · ⇥ Ops↔Chat · /detach leave · ? help"
+        }
     };
     let line = Line::from(vec![
         Span::styled(

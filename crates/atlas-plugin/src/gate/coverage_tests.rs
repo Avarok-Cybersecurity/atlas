@@ -12,7 +12,7 @@ use super::*;
 use crate::result::{RunStatus, Verdict};
 use std::collections::BTreeMap;
 
-mod scratch_repo {
+pub(super) mod scratch_repo {
     use std::path::Path;
     use std::process::Command;
 
@@ -235,6 +235,7 @@ fn a_baseline_entry_with_no_thresholds_is_not_a_pass() {
         &run_record(BTreeMap::new(), Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();
@@ -260,7 +261,7 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
     record.frame = frame(RunStatus::Failed, metrics, Verdict::fail("scoring crashed"));
-    let mut gate = GateRecord::from_run(&record, hw(), SHA.into(), None).unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     gate.recorded_at = 1_785_891_382;
     write_record(root, &gate).unwrap();
 
@@ -279,6 +280,7 @@ fn the_summary_names_the_model_the_numbers_and_the_verdict() {
         &run_record(metrics, Verdict::pass("ok")),
         hw(),
         SHA.into(),
+        Vec::new(),
         None,
     )
     .unwrap();

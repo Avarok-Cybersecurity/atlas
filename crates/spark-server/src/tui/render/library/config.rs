@@ -9,7 +9,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -70,7 +70,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(shown, value_style),
         ]);
         if selected {
-            line = line.style(Style::default().bg(theme::BG_SELECTION.color()));
+            line = line.style(theme::selected());
         }
         lines.push(line);
 

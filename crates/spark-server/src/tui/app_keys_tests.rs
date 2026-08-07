@@ -394,3 +394,75 @@ fn a_keystroke_ends_a_mouse_selection() {
     press(&mut a, 'z');
     assert!(a.selection.is_none(), "even a key that does nothing else");
 }
+
+/// `q` on an idle dashboard is unchanged — nothing is lost, so nothing is
+/// asked. The confirmation is a cost, and a cost paid for nothing trains the
+/// user to dismiss it.
+#[test]
+fn q_still_quits_immediately_when_there_is_nothing_to_lose() {
+    let mut a = app();
+    assert!(a.work_in_flight().is_none());
+    press(&mut a, 'q');
+    assert!(a.should_quit);
+    assert!(!a.confirm_quit);
+}
+
+/// ★ `q` DRAINS AND STOPS THE SERVER. A single stray keypress used to end a
+/// multi-hour benchmark with no way back, from any screen, including one where
+/// the user was only reading logs.
+#[test]
+fn q_asks_first_when_a_run_is_in_flight_and_a_second_q_confirms() {
+    let mut a = app();
+    a.chat.streaming = true;
+    press(&mut a, 'q');
+    assert!(a.confirm_quit, "the first press asks");
+    assert!(!a.should_quit, "and does NOT quit");
+
+    press(&mut a, 'q');
+    assert!(a.should_quit, "the second press is the deliberate one");
+    assert!(!a.confirm_quit);
+}
+
+#[test]
+fn y_also_confirms_because_the_prompt_offers_it() {
+    let mut a = app();
+    a.chat.streaming = true;
+    press(&mut a, 'q');
+    press(&mut a, 'y');
+    assert!(a.should_quit);
+}
+
+/// The safe reading of an ambiguous keystroke is "do not stop the server", so
+/// everything that is not an affirmative cancels — and cancelling must not
+/// also do the thing the key normally does, or dismissing the prompt would
+/// jump the user to another section as a side effect.
+#[test]
+fn any_other_key_cancels_and_does_nothing_else() {
+    for code in [
+        KeyCode::Esc,
+        KeyCode::Char('n'),
+        KeyCode::Char('3'),
+        KeyCode::Enter,
+    ] {
+        let mut a = app();
+        a.chat.streaming = true;
+        let before = a.section;
+        press(&mut a, 'q');
+        tap(&mut a, code);
+        assert!(!a.should_quit, "{code:?} must not quit");
+        assert!(!a.confirm_quit, "{code:?} must dismiss the prompt");
+        assert_eq!(a.section, before, "{code:?} was swallowed by the prompt");
+    }
+}
+
+/// Ctrl+C is the deliberate override and must stay one keystroke: it is what a
+/// user falls back on when the UI is not responding, and a confirmation on it
+/// would be a prompt they cannot see.
+#[test]
+fn ctrl_c_still_shuts_down_without_asking() {
+    let mut a = app();
+    a.chat.streaming = true;
+    chord(&mut a, 'c', KeyModifiers::CONTROL);
+    assert!(a.should_quit);
+    assert!(!a.confirm_quit);
+}

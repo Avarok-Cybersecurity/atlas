@@ -139,6 +139,66 @@ pub fn git_sha(root: &Path) -> Result<String> {
     Ok(sha)
 }
 
+/// The uncommitted [`PERF_PATHS`] files in this working tree, sorted.
+///
+/// ★ **`sha_at_start` stops HEAD moving out from under a run; this stops the
+/// binary having never been HEAD in the first place.** A gate record names a
+/// commit, and a reader takes that to mean "this commit's sources built the
+/// binary that produced these numbers". Nothing enforced it: build with an
+/// uncommitted fix in `crates/`, run the gate, and the record confidently
+/// stamps the commit that does NOT contain the change it measured. That has
+/// happened for real — a passing agentic record named `b75394fb` while the
+/// binary carried an uncommitted truncation fix.
+///
+/// The intersection with [`PERF_PATHS`] is the whole point, and it is the same
+/// invalidation set [`check::record_covers`] uses between two commits: a dirty
+/// tree is just that diff taken against the index instead. During a campaign
+/// the tree is *routinely* dirty with the previous gate's own record file, so
+/// a guard that fired on any modification would be noise nobody reads —
+/// `.benchmarks` is deliberately not a perf path, and this stays silent for it.
+/// A dirty `crates/` file means the record is lying.
+///
+/// Untracked-but-not-ignored files count. A new `kernels/*.cu` picked up by a
+/// glob is exactly as invisible to the sha as an edited one, and over-broad
+/// costs a re-run while under-broad is a lie. `--untracked-files=all` rather
+/// than the default `normal`, which collapses a wholly-untracked directory to
+/// `kernels/` — the record has to name the file a reader would go open, not
+/// the directory it is somewhere under.
+///
+/// Errs when git cannot answer (no metadata, no git) rather than reporting a
+/// clean tree — "could not tell" must never render as "nothing to disclose".
+pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain", "--untracked-files=all", "--"])
+        .args(PERF_PATHS)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git status")?;
+    if !out.status.success() {
+        bail!(
+            "git status failed in {} — cannot tell whether the measured binary \
+             matches the commit being stamped",
+            root.display()
+        );
+    }
+    let mut paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.get(3..))
+        // A rename reads `R  old -> new`; the destination is the file that is
+        // in the tree now, and the one a reader would go look at.
+        .map(|entry| match entry.split_once(" -> ") {
+            Some((_, dest)) => dest.trim().to_string(),
+            None => entry.trim().to_string(),
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
@@ -146,3 +206,7 @@ mod tests;
 #[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(test)]
+#[path = "dirty_tests.rs"]
+mod dirty_tests;

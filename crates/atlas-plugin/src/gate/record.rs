@@ -23,6 +23,16 @@ pub struct GateRecord {
     /// Commit the measured binary was built from. A record that cannot name
     /// its commit cannot be traced, so the writer refuses one without it.
     pub git_sha: String,
+    /// The uncommitted invalidation-set files present when the run started —
+    /// the ones that make `git_sha` above an incomplete description of the
+    /// binary. Empty (and absent from the JSON) is the normal case.
+    ///
+    /// ★ Recorded, not just warned about, because the console warning is
+    /// ephemeral and the record is what survives. A reader six weeks later
+    /// asking "does this number belong to that commit?" has to be able to
+    /// answer it from the file, without having watched the run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirty_paths: Vec<String>,
     pub recorded_at: u64,
     pub target_model: String,
     /// Every parameter of the run, defaults included — the exact inputs of
@@ -214,10 +224,16 @@ impl GateRecord {
     /// the same benchmark again (the recipe re-derives the endpoint), whereas
     /// naming its `--url` would point at an ephemeral port that no longer
     /// exists and a `--model` nobody typed.
+    ///
+    /// `dirty_paths` is the invalidation-set dirt that was in the tree when the
+    /// run started (see [`super::dirty_perf_paths`]); it is a parameter rather
+    /// than a setter so that a caller cannot produce a record that quietly
+    /// omits it.
     pub fn from_run(
         record: &RunRecord,
         hardware: Hardware,
         git_sha: String,
+        dirty_paths: Vec<String>,
         served_by: Option<String>,
     ) -> Result<Self> {
         if git_sha.is_empty() {
@@ -271,6 +287,7 @@ impl GateRecord {
             benchmark_id: record.benchmark_id.clone(),
             benchmark_name: record.benchmark_name.clone(),
             git_sha,
+            dirty_paths,
             recorded_at: record.recorded_at,
             target_model: record.target_model.clone(),
             params: record.params.clone(),

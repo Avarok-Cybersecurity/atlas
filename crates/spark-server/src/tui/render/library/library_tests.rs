@@ -98,7 +98,11 @@ fn the_progress_line_sheds_fields_from_the_right_as_the_pane_narrows() {
     assert!(!has(&cramped, "file 3/85"), "{cramped:#?}");
 
     let roomy = screen(&a, 200, 40);
-    assert!(has(&roomy, "4.0 GB / 34.9 GB"), "{roomy:#?}");
+    // ★ This asserted "4.0 GB / 34.9 GB" — the decimal divisor this line used
+    // to apply, which is the same bytes the Library card next to it rendered
+    // as 32.5 GB. The test pinned the disagreement rather than the
+    // requirement, which is that one file has one size wherever it is shown.
+    assert!(has(&roomy, "3.7 GB / 32.5 GB"), "{roomy:#?}");
     assert!(has(&roomy, "96 MB/s"), "{roomy:#?}");
 
     let wide = screen(&a, 280, 40);
