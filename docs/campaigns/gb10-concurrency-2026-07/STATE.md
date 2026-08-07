@@ -2626,22 +2626,27 @@ share. It is now one accessor behind one flag. The five knobs the best config ne
 | `ATLAS_SSM_TAIL_MIDCHUNK=0` | `--ssm-tail-midchunk <bool>` | on |
 | `ATLAS_MTP_GATE_FORCE=1` | `--mtp-gate {auto,force}` | `auto` |
 
-★ **The environment variables do NOT still work as a fallback under `spark serve` — all
-five are dead there.** Each is read once through a `OnceLock`, and
-`main_modules/serve.rs::publish_kernel_flags()` publishes the clap value
-*unconditionally*, before anything can ask. Because every one of these flags carries a
-clap default, the `OnceLock` is always already sealed with the default by the time the
-`env::var` closure would run, so `get_or_init` never invokes it. The flag doesn't merely
-win when passed — it wins **always**, including when the user never passed it.
-`spark_runtime`'s own comment on `ssm_tail_midchunk_enabled()` says exactly this:
-"`ATLAS_SSM_TAIL_MIDCHUNK=0` does NOTHING under `spark serve`". The env reads survive only
-for callers that never publish (tests, examples).
+★ **The clap defaults sealed all five under `spark serve`. That is fixed now — but every
+number this campaign recorded was measured before the fix.** Each knob is read once
+through a `OnceLock` whose fallback closure reads the environment, and
+`publish_kernel_flags()` published the clap DEFAULT into all five cells on every boot.
+Sealing a cell with a default makes the closure unreachable, so the flag did not merely
+win when it was passed — it won **always**, including when the operator never passed it.
 
-Consequence for this campaign's frozen configs: every launch script that sets
-`-e ATLAS_SSM_TAIL_MIDCHUNK=0` **without** also passing `--ssm-tail-midchunk false` ran with
-mid-chunk capture **ON**. `grep -rn 'ssm-tail-midchunk'` over `scripts/`, `docker/`, `docs/`
-and the root `*.md` returns this table and nothing else — the flag is used nowhere. The same
-holds for the other four rows.
+The fix: the five flags are `Option`s, an absent flag publishes NOTHING, and the
+environment decides again exactly as this table says. Check it by content, not by date —
+`spark_runtime::set_ssm_tail_midchunk` takes an `Option<bool>` and returns without writing
+on `None`, `scheduler::levers::set_mtp_gate_force` does the same, and the three GDN flags
+are published together only when at least one of them is given
+(`main_modules/serve_flags.rs`, which is where `publish_kernel_flags` now lives). The bare
+switches still mean on; `--gdn-fused-norm false` is the newly expressible explicit off.
+
+Consequence for this campaign's frozen configs, which the fix does NOT undo: every launch
+script that set `-e ATLAS_SSM_TAIL_MIDCHUNK=0` **without** also passing
+`--ssm-tail-midchunk false` ran with mid-chunk capture **ON**, and every ladder measured
+before the fix ran with the other four at their clap defaults whatever the environment
+said. `grep -rn 'ssm-tail-midchunk'` over `scripts/`, `docker/`, `docs/` and the root
+`*.md` returns this table and nothing else — the flag is used nowhere.
 
 `--ssm-h-dtype f16` without `--gdn-fused-norm` is now a startup ERROR (it used to be a
 silent FP32-kernel-over-FP16-pool, i.e. fluent garbage).

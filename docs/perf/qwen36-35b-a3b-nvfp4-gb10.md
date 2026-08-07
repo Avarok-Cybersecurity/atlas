@@ -47,8 +47,11 @@ Filing so the decode flags land in the canonical serve config and the perf basel
   with no value silently does nothing — write `=1` on every one of them.
 
 ★ `ATLAS_SSM_BATCHED_RECURRENT` additionally has a CLI flag now
-  (`--ssm-batched-recurrent`) whose clap default seals the value before the env read runs
-  under `spark serve`, so the env form is inert there. Pass the flag.
+  (`--ssm-batched-recurrent`). Its clap default USED to seal the value before the env read
+  ran, which made the env form inert under `spark serve`; the flag is an `Option` now and
+  an absent one publishes nothing, so the variable decides again. Pass the flag anyway —
+  it is what `--help` and `ps` show, and it is the only form that cannot be lost in an
+  `-e` preamble.
 
 
 ## Performance matrix — concurrency (workload: 1220-tok prompt → 128-tok gen, base, temp 0)
