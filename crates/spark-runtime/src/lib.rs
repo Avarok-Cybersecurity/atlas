@@ -96,10 +96,22 @@ static SSM_TAIL_MIDCHUNK: std::sync::OnceLock<bool> = std::sync::OnceLock::new()
 pub fn ssm_tail_midchunk_enabled() -> bool {
     // Default ON (2026-07-19): mid-chunk GDN tail capture eliminates the warm-turn
     // SSM replay (~1.17s component of warm TTFT) by capturing state in-pass at the
-    // block-floored matched-prefix boundary. Validated: flag-off byte-identical to
-    // the prior baseline; warm-TTFT -9.3% median / -54% max (tail-spike elimination);
-    // 20/20 contamination-clean (session-gate prevents cross-request SSM corruption);
-    // BFCL e2e 1007/1007. Opt OUT with ATLAS_SSM_TAIL_MIDCHUNK=0.
+    // block-floored matched-prefix boundary.
+    //
+    // ★ `--ssm-tail-midchunk` IS THE CONTROL. `ATLAS_SSM_TAIL_MIDCHUNK=0` does
+    // NOTHING under `spark serve`: serve.rs publishes the clap value
+    // unconditionally, so this `get_or_init` is already sealed by the time
+    // anything asks. The env read below survives only for callers that never
+    // publish (tests, examples). Stated because a knob that looks like an
+    // opt-out and silently is not costs more than no knob at all.
+    //
+    // ★ The 2026-07-19 validation did not cover what it appeared to. It read
+    // "BFCL e2e 1007/1007" — a COMPLETION count, not an accuracy score — and
+    // warm-TTFT, which is a timing signal. Neither can see a wrong recurrent
+    // state, and on NVIDIA the captured h_state was in fact never written at
+    // all (see `prepare_midchunk_capture`, which now refuses the plan off
+    // `atlas_scale`). "flag-off byte-identical" held; it just was not evidence
+    // that flag-ON was correct.
     *SSM_TAIL_MIDCHUNK
         .get_or_init(|| !matches!(std::env::var("ATLAS_SSM_TAIL_MIDCHUNK").as_deref(), Ok("0")))
 }
