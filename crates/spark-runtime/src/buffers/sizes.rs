@@ -3,6 +3,7 @@
 //! Byte sizes for the per-pass GPU buffer arena.
 
 use atlas_core::config::ModelConfig;
+use atlas_core::device::sm121::NUM_SMS;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
@@ -241,7 +242,11 @@ impl BufferSizes {
         // Split-K decode workspace: NUM_SMS * (head_dim + 2) * sizeof(f32).
         // Partials from split CTAs are stored as [o[head_dim], m, l] per split.
         // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
-        let splitk_workspace = 48 * (hd + 2) * 4;
+        // Read NUM_SMS rather than repeating its value: run_paged_decode derives
+        // num_splits from the same constant, so a literal here is a second source
+        // of truth that under-allocates — silently, into out-of-bounds device
+        // writes — the moment the constant moves.
+        let splitk_workspace = NUM_SMS as usize * (hd + 2) * 4;
 
         // The residual stream is always BF16.
         let residual_elem = bf16;
