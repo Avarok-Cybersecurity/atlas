@@ -143,28 +143,31 @@ jobs:
           if-no-files-found: warn
 
       # TOKENLESS UPLOAD DOES NOT WORK HERE — measured, not assumed. Every run
-      # of this job has been rejected with
+      # of this job had been rejected with
       #   HTTP 400 {"message":"Token required - not valid tokenless upload"}
       # while `fail_ci_if_error: false` swallowed it, so the job went green and
       # no report ever reached Codecov. That is precisely the decoration the
       # old comment warned about, sustained by the same comment's premise that
       # a public repo may upload tokenless. It may not.
       #
-      # So the token is now the precondition, and the failure is real:
+      # `CODECOV_TOKEN` now exists as an ORGANIZATION secret shared with this
+      # repository, so the token is the precondition and the failure is real:
       #
-      #   * no `CODECOV_TOKEN` secret  -> the step is SKIPPED and the job says
-      #     so out loud. No upload is attempted, nothing pretends to have
-      #     succeeded, and `lcov.info` is still kept as an artifact above, so
-      #     the number stays auditable from the run itself.
-      #   * `CODECOV_TOKEN` present    -> the upload runs and `fail_ci_if_error`
-      #     is TRUE. A rejected upload reds this job.
+      #   * token visible -> the upload runs and `fail_ci_if_error` is TRUE.
+      #     A rejected upload reds this job. This is the normal path for any
+      #     branch PR and for pushes to `main`.
+      #   * token absent  -> the step is SKIPPED and the job says so out loud.
+      #     Nothing pretends to have succeeded, and `lcov.info` is still kept
+      #     as an artifact above, so the number stays auditable from the run.
       #
-      # Fork PRs cannot read the secret, so they skip rather than fail — a
-      # contributor must not be blocked by an upload credential they have no
-      # way to hold. Coverage is reported from the base-branch runs.
-      # ★ To turn this on: add the repository upload token from
-      # https://app.codecov.io/gh/Avarok-Cybersecurity/atlas/settings as the
-      # `CODECOV_TOKEN` repository secret. Do NOT commit a token to the tree.
+      # The skip path is not dead: `secrets` are not exposed to a workflow
+      # triggered by a fork's pull request, so a fork PR skips rather than
+      # fails. A contributor must not be blocked by a credential they have no
+      # way to hold; their coverage lands when the branch is merged.
+      #
+      # Coverage POLICY (increase per PR) lives in `codecov.yml`, not here:
+      # both the project and patch statuses enforce. This step's job is only to
+      # make sure a report actually arrives for them to judge.
       - name: Note missing Codecov token
         if: env.CODECOV_TOKEN == ''
         run: |

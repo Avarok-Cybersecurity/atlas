@@ -21,40 +21,44 @@ coverage:
 
   status:
     # ─────────────────────────────────────────────────────────────────────
-    # BOTH STATUSES ARE `informational: true` ON PURPOSE.
+    # BOTH STATUSES ENFORCE. The policy is that coverage goes UP per PR, so
+    # a status that cannot fail does not express it.
     #
-    # Atlas is ~340k LoC of Rust of which a large fraction is CUDA
-    # kernel-dispatch code that cannot execute on a CPU-only runner at all.
-    # Coverage is being built up (the TUI test wave is in flight); a hard
-    # gate today would either (a) sit at a target so low it passes
-    # unconditionally, which is a decoration, or (b) red every PR on a
-    # branch nobody can currently fix, which is worse. Informational means
-    # the delta is REPORTED on every PR and reviewers can see it, but it
-    # cannot block a merge.
+    # These were `informational: true` behind a staged plan ("watch patch
+    # coverage for three weeks, then turn it on"). That plan could never have
+    # completed: no report had ever reached Codecov. Every upload was rejected
+    # with HTTP 400 "Token required - not valid tokenless upload" while the
+    # workflow's `fail_ci_if_error: false` swallowed it, so the observation
+    # window the plan waited on was never going to open. The token now exists
+    # as an org secret and the upload step fails loudly, so the numbers start
+    # arriving; the flags are flipped in the same change rather than left
+    # waiting on a condition that had no way to arrive.
     #
-    # ★ CONDITION FOR TIGHTENING — do this, don't leave it forever:
-    #   1. `patch` first. Once three consecutive weeks of PRs show patch
-    #      coverage comfortably above 70%, set `patch.default.informational:
-    #      false` with `target: 70%`. New code is the only coverage a PR
-    #      author actually controls, so this is the honest gate to turn on
-    #      first.
-    #   2. `project` second, and only after the number has been STABLE on
-    #      main for ~10 builds. Then set `informational: false` and keep
-    #      `target: auto` + `threshold: 1%` — i.e. "don't regress by more
-    #      than a point", not an absolute bar.
-    # Whoever flips either flag: say so in the PR description, and delete
-    # the corresponding note here rather than leaving stale instructions.
+    # NEITHER IS A REQUIRED CHECK on `main` (branch protection requires fmt,
+    # clippy, test, typos, SPDX headers, the LoC cap and the CLA). So these
+    # report red on a PR that loses coverage without wedging the merge button.
+    # Add them to branch protection when the numbers have settled and you want
+    # them blocking.
+    #
+    # ★ The first PRs after this lands are the calibration. If `patch` at 70%
+    # proves to be the wrong number for this codebase, MOVE THE NUMBER and say
+    # why — do not go back to `informational`, which is how it got stuck for
+    # this long.
     # ─────────────────────────────────────────────────────────────────────
     project:
       default:
-        informational: true
-        # Compare against the base commit rather than a fixed number.
+        # "Don't regress by more than a point" — self-calibrating, so it is
+        # meaningful from the very first report rather than needing a baseline
+        # someone has to pick. Codecov passes this when no base report exists,
+        # which is exactly the bootstrap case.
         target: auto
-        # Tolerated drop once this stops being informational.
         threshold: 1%
     patch:
       default:
-        informational: true
+        # New code is the only coverage a PR author actually controls, so this
+        # is the status that carries the "coverage increases" policy. Kernel
+        # dispatch that cannot run on a CPU runner is excluded by `ignore:`
+        # below, so a patch here is code that genuinely can be tested.
         target: 70%
 
 comment:
