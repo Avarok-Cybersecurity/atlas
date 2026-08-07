@@ -431,11 +431,19 @@ fn parse_qwen3_coder_empty_body_then_backfill() {
     //
     // This test verifies the recovery semantics: parse → empty
     // args → backfill adds the required string field with empty
-    // value (mirroring path A) → validator passes (only
-    // WRITE_FAMILY rejects empty paths; `exec` is not in that
-    // list). The chat_stream::tool_handlers fix calls this same
-    // chain inside handle_tool_call_delta so streaming behaviour
-    // matches.
+    // value (mirroring path A). The chat_stream::tool_handlers fix
+    // calls this same chain inside handle_tool_call_delta so
+    // streaming behaviour matches.
+    //
+    // The validator then REJECTS the backfilled-empty `exec`: the
+    // SHELL_FAMILY rule in validation.rs mirrors F78 for shell
+    // tools, because opencode's bash handler answers an empty
+    // command with "The argument 'file' cannot be empty" and the
+    // model burns to max_tokens retrying it. Rejecting turns the
+    // call into a no-op so the reply falls through to text.
+    // (This assertion once expected `is_ok()` on the theory that
+    // only WRITE_FAMILY rejects empty values — that predates
+    // SHELL_FAMILY, which covers `exec`.)
     let input = "<tool_call>\n\
             <function=exec>\n\
             </function>\n\
@@ -470,9 +478,11 @@ fn parse_qwen3_coder_empty_body_then_backfill() {
         args["command"], "",
         "backfill must add the required string key with an empty default"
     );
+    let err = validate_single_tool_call(&calls[0], std::slice::from_ref(&tool))
+        .expect_err("SHELL_FAMILY rejects `exec` with an empty command");
     assert!(
-        validate_single_tool_call(&calls[0], std::slice::from_ref(&tool)).is_ok(),
-        "validator passes once required key is present (non-WRITE-family)"
+        err.contains("non-empty 'command'"),
+        "rejection must name the offending key so the model can recover; got {err:?}"
     );
 }
 
