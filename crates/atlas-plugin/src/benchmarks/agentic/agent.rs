@@ -122,6 +122,11 @@ pub struct Transcript {
     /// True when the loop ended at the turn cap rather than because the agent
     /// stopped calling tools.
     pub hit_turn_cap: bool,
+    /// Turns cut off at `max_tokens` and resumed rather than mistaken for the
+    /// agent finishing. Counted because it is the signature of greedy
+    /// repetition degeneration, and a run that needed several of these is worth
+    /// looking at even when it ends up passing.
+    pub truncated_turns: usize,
     pub final_text: String,
 }
 
@@ -227,6 +232,32 @@ async fn agent_loop(
         trace.turn(turn, &outcome);
 
         if outcome.tool_calls.is_empty() {
+            // A turn that hit the token cap did not FINISH — it was CUT OFF, and
+            // those are not the same event. The agent stops calling tools when
+            // it considers the task done; a truncated reply says nothing about
+            // whether it was done, only that it ran out of room mid-sentence.
+            // Treating the two alike is what made one stuck turn cost an entire
+            // run: the model would loop inside the turn that writes
+            // `src/main.rs`, hit `max_tokens`, return no tool call, and the loop
+            // would exit as if it had chosen to — scoring 0/6 steps on a run
+            // that had not actually failed the task, only failed to fit.
+            //
+            // So say so and let it continue. The partial text goes back in as
+            // the assistant turn it was, followed by the fact of the truncation,
+            // which is information the model cannot otherwise have: from its
+            // side the reply simply ended. This is what a real agent client does
+            // with a `length` stop, and it is correct independently of any score
+            // — a harness that silently reinterprets truncation as completion is
+            // measuring something other than the agent.
+            if was_cut_off(&outcome) {
+                transcript.truncated_turns += 1;
+                messages.push(json!({"role": "assistant", "content": outcome.text}));
+                messages.push(json!({"role": "user", "content":
+                    "Your previous message was cut off at the output limit before you \
+                     finished. Do not repeat it. Continue from where it stopped, and make \
+                     the tool call you intended."}));
+                continue;
+            }
             return Ok(());
         }
 
@@ -254,6 +285,16 @@ async fn agent_loop(
 /// One chat request. Split out so the gate's sampling pins are asserted by a
 /// test rather than trusted: a silent drift back to sampled decoding would not
 /// fail anything, it would just make the gate flaky again.
+/// Did this turn run out of room, rather than run out of things to do?
+///
+/// The distinction is the whole point: no tool calls AND a natural stop means
+/// the agent is finished, while no tool calls AND `length` means it never got
+/// to say what it wanted. Only the second is resumable, and only the first
+/// should end the run.
+fn was_cut_off(outcome: &crate::http::ChatOutcome) -> bool {
+    outcome.tool_calls.is_empty() && outcome.finish_reason.as_deref() == Some("length")
+}
+
 fn request_body(model: &str, messages: &[Value], tools: &Value, max_tokens: usize) -> Value {
     json!({
         "model": model, "stream": true, "temperature": TEMPERATURE, "seed": SEED,

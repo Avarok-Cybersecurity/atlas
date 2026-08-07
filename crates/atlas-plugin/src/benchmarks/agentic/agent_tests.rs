@@ -328,3 +328,45 @@ async fn output_past_the_pipe_buffer_does_not_deadlock_the_writer() {
     assert!(!out.contains("timed out"), "{}", &out[..80.min(out.len())]);
     assert!(out.contains("elided"), "the cap still applies");
 }
+
+// ── truncated turns ────────────────────────────────────────────────
+
+#[test]
+fn a_turn_cut_off_at_the_token_cap_is_not_a_turn_that_finished() {
+    // The failure this encodes: the model loops inside the turn that writes
+    // src/main.rs, hits max_tokens, and returns no tool call. Read as "the
+    // agent stopped calling tools", the loop exits and the run scores 0/6 —
+    // recorded as a task failure when it was a truncation.
+    let cut_off = http::ChatOutcome {
+        text: "fn main() {".into(),
+        finish_reason: Some("length".into()),
+        ..Default::default()
+    };
+    assert!(was_cut_off(&cut_off), "length + no tool call is resumable");
+
+    // A natural stop with no tool calls IS the agent finishing, and must still
+    // end the run — otherwise every completed run would be prodded to continue.
+    let done = http::ChatOutcome {
+        text: "All six steps pass.".into(),
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    };
+    assert!(!was_cut_off(&done), "a natural stop ends the run");
+
+    // Truncation WITH a tool call is not this case: the call is actionable, so
+    // the loop proceeds normally and nothing needs resuming.
+    let cut_off_with_call = http::ChatOutcome {
+        tool_calls: vec![http::ToolCall {
+            id: String::new(),
+            name: "write".into(),
+            arguments: "{}".into(),
+        }],
+        finish_reason: Some("length".into()),
+        ..Default::default()
+    };
+    assert!(!was_cut_off(&cut_off_with_call));
+
+    // A server that reports no finish_reason at all must not be guessed at.
+    let unknown = http::ChatOutcome::default();
+    assert!(!was_cut_off(&unknown));
+}
