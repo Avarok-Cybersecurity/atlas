@@ -49,12 +49,20 @@ impl TransformerModel {
             effective_seq_len_start,
             kv_cache,
             meta_base,
+            self.buffers.scratch_bytes().saturating_sub(meta_offset),
             stream,
         )
     }
 
     /// Build positions + slots metadata for `proc_count` tokens and upload
-    /// to the caller-provided `meta_base` device pointer. Used by both the
+    /// to the caller-provided `meta_base` device pointer.
+    ///
+    /// `meta_region_bytes` is how much room this metadata block owns AT
+    /// `meta_base` — the tail of the scratch arena for the single-stream entry
+    /// point, one per-stream slice for the Q12 batched one. It is a required
+    /// parameter because `meta_base` is a bare `DevicePtr` that carries no size,
+    /// so without it the pack can only be bounded against the HOST staging
+    /// buffer and would happily run off the end of the DEVICE allocation. Used by both the
     /// single-stream entry point above and Q12 batched prefill (multiple
     /// per-stream metadata blocks concatenated in one big scratch region).
     pub(in crate::model) fn prefill_b_upload_meta_at(
@@ -68,6 +76,7 @@ impl TransformerModel {
         effective_seq_len_start: usize,
         kv_cache: &PagedKvCache,
         meta_base: DevicePtr,
+        meta_region_bytes: usize,
         stream: u64,
     ) -> Result<MetaLayout> {
         // MRoPE-interleaved packs three u32 position streams (T, H, W).
@@ -186,7 +195,7 @@ impl TransformerModel {
             // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
             // position streams that no copy writes; they are still initialised
             // (see the `pinned_pack` module docs).
-            let mut pack = stg.packer();
+            let mut pack = stg.packer_for(meta_region_bytes);
             pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
             if use_mrope {
                 let h_at = pos_stream_bytes;

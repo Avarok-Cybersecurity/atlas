@@ -323,7 +323,7 @@ impl TransformerModel {
             // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
             // positions array that no copy writes; they are still initialised
             // (see the `pinned_pack` module docs).
-            let mut pack = stg.packer();
+            let mut pack = stg.packer_for(self.buffers.scratch_bytes().saturating_sub(meta_offset));
             pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
             if !needs_paged {
                 pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;

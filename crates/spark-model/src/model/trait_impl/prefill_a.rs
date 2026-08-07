@@ -311,7 +311,7 @@ impl TransformerModel {
             // (see the `pinned_pack` module docs). `slot_offset` and
             // `proc_count*8` are both multiples of 8, so `bt_start` and
             // `sl_start` round to their inputs and open no further gap.
-            let mut pack = stg.packer();
+            let mut pack = stg.packer_for(self.buffers.scratch_bytes().saturating_sub(meta_offset));
             pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
             pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
 

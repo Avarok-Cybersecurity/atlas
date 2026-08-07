@@ -340,6 +340,10 @@ impl TransformerModel {
 
             // Per-stream meta upload to distinct scratch slice.
             let meta_base = self.buffers.scratch().offset(scratch_cursor);
+            // This stream's slice runs from `scratch_cursor` to the end of the
+            // arena; the per-stream stride advance below keeps successive
+            // blocks from overlapping.
+            let meta_region_bytes = self.buffers.scratch_bytes().saturating_sub(scratch_cursor);
             let layout = self.prefill_b_upload_meta_at(
                 tokens,
                 seq,
@@ -350,6 +354,7 @@ impl TransformerModel {
                 effective_seq_len_start,
                 &kv_cache,
                 meta_base,
+                meta_region_bytes,
                 stream,
             )?;
             if layout.needs_paged || force_paged_first_chunk {

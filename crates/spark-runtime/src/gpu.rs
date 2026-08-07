@@ -237,38 +237,27 @@ pub trait GpuBackend: Send + Sync {
     /// Async host-to-device copy: **`src` may be dropped or overwritten the
     /// moment this returns.**
     ///
-    /// That is the contract the ~90 call sites in `spark-model` actually rely
-    /// on — nearly all of them hand over a stack array or a local `Vec` that
-    /// dies at the end of the statement. It used to be true only by accident:
-    /// `cuMemcpyHtoDAsync_v2` from PAGEABLE host memory stages through a
-    /// driver-internal buffer before returning, so a dying source happened to be
-    /// safe. From PAGE-LOCKED memory the same call is genuinely asynchronous and
-    /// the DMA reads the source after it returns — so the day any of those
-    /// buffers got pinned, every one of those call sites became a
-    /// use-after-free, silently and all at once.
+    /// That is what the ~90 call sites in `spark-model` rely on — nearly all
+    /// hand over a stack array or local `Vec` that dies at the end of the
+    /// statement — and it used to hold only by accident. See
+    /// [`crate::pinned_hosts`] for why, and for how the CUDA backend now MAKES
+    /// the promise true (page-locked source ⇒ it buys the ordering that the
+    /// pageable path gets from the driver for free) instead of inheriting it.
     ///
-    /// Implementations must therefore MAKE the promise true rather than inherit
-    /// it: see the CUDA backend, which detects a page-locked source (via the
-    /// registry every `alloc_host_pinned` feeds) and adds the stream
-    /// synchronisation that the pageable path gets for free. Pinning a buffer
-    /// now costs latency instead of correctness.
-    ///
-    /// Use [`GpuBackend::copy_h2d_async_retained`] when the source genuinely
-    /// outlives the next synchronisation and the extra ordering is not wanted.
+    /// Use [`GpuBackend::copy_h2d_async_retained`] when the source outlives the
+    /// next synchronisation and the extra ordering is not wanted.
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, _stream: u64) -> Result<()> {
         self.copy_h2d(src, dst)
     }
 
     /// Async host-to-device copy for a source the CALLER keeps alive.
     ///
-    /// The strict variant: `src` must remain valid, and must not be rewritten,
-    /// until the next synchronisation point on `stream`. In exchange it never
-    /// inserts an implicit sync, which is what makes a batched scatter out of
-    /// one pinned staging blob (N enqueues + one `synchronize`) worth doing —
-    /// see [`GpuBackend::copy_d2h_async`] for the measured shape.
-    ///
-    /// The name is the point: it marks, greppably, every site that is making a
-    /// lifetime promise the compiler cannot check.
+    /// `src` must remain valid, and must not be rewritten, until the next
+    /// synchronisation point on `stream`. In exchange it never inserts an
+    /// implicit sync — what makes a batched scatter out of one pinned staging
+    /// blob (N enqueues + one `synchronize`) worth doing; see
+    /// [`GpuBackend::copy_d2h_async`] for the measured shape. The name marks,
+    /// greppably, every site making a promise the compiler cannot check.
     fn copy_h2d_async_retained(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
         // Default: the transient path. Strictly stronger ordering than promised,
         // so it is always correct — just not always the fastest.
@@ -478,34 +467,5 @@ impl fmt::Display for DevicePtr {
 pub mod mock;
 
 #[cfg(test)]
-mod tests {
-    use super::mock::MockGpuBackend;
-    use super::*;
-
-    #[test]
-    fn test_mock_alloc_free() {
-        let gpu = MockGpuBackend::new();
-        let ptr = gpu.alloc(1024).unwrap();
-        assert!(!ptr.is_null());
-        assert_eq!(gpu.alloc_count(), 1);
-        gpu.free(ptr).unwrap();
-        assert_eq!(gpu.alloc_count(), 0);
-    }
-
-    #[test]
-    fn test_mock_copy_roundtrip() {
-        let gpu = MockGpuBackend::new();
-        let ptr = gpu.alloc(8).unwrap();
-        let src = [1u8, 2, 3, 4, 5, 6, 7, 8];
-        gpu.copy_h2d(&src, ptr).unwrap();
-        let mut dst = [0u8; 8];
-        gpu.copy_d2h(ptr, &mut dst).unwrap();
-        assert_eq!(src, dst);
-    }
-
-    #[test]
-    fn test_device_ptr_offset() {
-        let ptr = DevicePtr(0x1000);
-        assert_eq!(ptr.offset(256).0, 0x1100);
-    }
-}
+#[path = "gpu_tests.rs"]
+mod tests;

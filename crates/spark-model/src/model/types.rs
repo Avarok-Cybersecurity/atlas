@@ -455,17 +455,34 @@ impl PinnedMetaStaging {
     /// [`crate::model::pinned_pack`] for why the rule lives there and not in
     /// each of the five call sites that pack it.
     ///
+    /// `dest_bytes` is how much room the DEVICE destination has, and it is
+    /// required rather than defaulted because it is the bound that was missing.
+    /// `bytes` here equals `sizes.scratch` exactly (`impl_a1.rs` allocates
+    /// `scratch.max(64 KiB)` and `sizes.rs` already floors scratch at 64 KiB),
+    /// but every one of these packs is uploaded to `scratch().offset(k)` for
+    /// some non-zero `k`. So a pack that fits the HOST staging buffer can still
+    /// run `k` bytes off the end of the DEVICE allocation, and checking only
+    /// `cursor <= stg.bytes` — which is all the old code did — never sees it.
+    /// The packer's capacity is the smaller of the two ends.
+    ///
     /// Takes `&self` rather than `&mut self` on purpose — the bytes it writes
     /// are the separate `cuMemAllocHost` region `ptr` refers to, not this
     /// struct, so a shared borrow is enough and callers can still read the
     /// reusable source `Vec`s alongside it.
-    pub(crate) fn packer(&self) -> crate::model::pinned_pack::PinnedPacker<'_> {
+    pub(crate) fn packer_for(
+        &self,
+        dest_bytes: usize,
+    ) -> crate::model::pinned_pack::PinnedPacker<'_> {
         // SAFETY: `ptr`/`bytes` are the `alloc_host_pinned` region installed in
         // `impl_a1.rs` and released in `drop.rs`; it is live for the model's
         // lifetime, zeroed at allocation (the trait's contract), and only ever
         // touched from the single scheduler thread — the same invariant that
-        // `unsafe impl Sync for TransformerModel` above rests on.
-        unsafe { crate::model::pinned_pack::PinnedPacker::new(self.ptr, self.bytes) }
+        // `unsafe impl Sync for TransformerModel` above rests on. The capacity
+        // handed over is `min(host room, device room)`, never more than the
+        // allocation.
+        unsafe {
+            crate::model::pinned_pack::PinnedPacker::new(self.ptr, self.bytes.min(dest_bytes))
+        }
     }
 }
 

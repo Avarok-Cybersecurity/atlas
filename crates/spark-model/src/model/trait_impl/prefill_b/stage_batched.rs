@@ -232,7 +232,7 @@ impl TransformerModel {
         // initialised because `alloc_host_pinned` zeroes the region (see the
         // `pinned_pack` module docs), and keeping them makes this upload
         // byte-for-byte what it was before.
-        let mut pack = stg.packer();
+        let mut pack = stg.packer_for(scratch_cap.saturating_sub(scratch_offset_bytes));
         let mut cursor = 0usize;
         pack.put_prefix_at("positions", cursor, &stg.positions, total_tokens)?;
         cursor = pos_aligned;
