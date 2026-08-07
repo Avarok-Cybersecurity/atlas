@@ -99,6 +99,50 @@ fn the_port_survives_everywhere_it_appears() {
 }
 
 #[test]
+fn the_port_survives_the_lines_that_also_talk_about_killing() {
+    // The prompt's teardown instruction is "kill whatever is listening on its
+    // port", so the model writes that sentence into its script and its
+    // comments — and `cat` shows it the result. Naming a pid word licensed
+    // rewriting every four-digit number on the line, so these three came back
+    // with the PORT replaced by `<pid>`: the model would then read its own file
+    // back wrong, and an `edit` built from what it saw would no longer match.
+    for raw in [
+        "# kill whatever is listening on port 3001",
+        "let port = 3001; // process the request",
+        "echo \"Killing the process on port 3001\"",
+        "Killed process 12345 on port 3001",
+    ] {
+        assert!(normalize(raw).contains("3001"), "port lost: {raw}");
+    }
+    // …and the pid on that same line is still a pid.
+    assert_eq!(
+        normalize("Killed process 12345 on port 3001"),
+        "Killed process <pid> on port 3001"
+    );
+}
+
+#[test]
+fn a_pid_word_is_a_word_and_not_a_substring() {
+    // `contains("process")` fired on "Processing" and `contains("kill")` on
+    // "skill", and a match licenses rewriting every four-digit number on the
+    // line — so the model's own program output was rewritten under it.
+    assert_eq!(
+        normalize("Processing 1000 records"),
+        "Processing 1000 records"
+    );
+    assert_eq!(
+        normalize("installed cargo-skill 1234 files"),
+        "installed cargo-skill 1234 files"
+    );
+    // The forms the genuine cases actually take all still fire.
+    assert_eq!(normalize("kill 12345"), "kill <pid>");
+    assert_eq!(normalize("Killed process 12345"), "Killed process <pid>");
+    assert_eq!(normalize("killing 12345 now"), "killing <pid> now");
+    assert_eq!(normalize("pid=12345"), "pid=<pid>");
+    assert_eq!(normalize("PIDs: 12345 12346"), "PIDs: <pid> <pid>");
+}
+
+#[test]
 fn exit_statuses_and_test_counts_survive() {
     let raw = "test result: FAILED. 1 passed; 2 failed; 0 ignored\n[exit exit status: 101]";
     let out = normalize(raw);

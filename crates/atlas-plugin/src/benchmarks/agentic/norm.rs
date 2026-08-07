@@ -317,28 +317,42 @@ fn number(b: &[u8], i: usize) -> Option<usize> {
 /// `(exit status: 101)`, `test result: 2 passed`, and an HTTP status out of it,
 /// and it costs nothing here: this box's pids are six and seven digits.
 ///
-/// Two residuals are accepted knowingly, both harmless: a four-digit byte count
-/// alone on a line (`… | wc -c`), and a *source* line that both says "kill" and
-/// carries a free-standing four-digit number, which `cat` would show rewritten.
-/// Neither drives a decision, and the second cannot reach an `edit`, whose
-/// `oldString` comes from `read` — a tool that does not pass through here.
-/// `ps` output is NOT covered: its pid column has no anchor word, so a run that
-/// inspects processes by hand still varies.
+/// One residual is accepted knowingly and is harmless: a four-digit byte count
+/// alone on a line (`… | wc -c`). `ps` output is NOT covered beyond [`ps_line`]:
+/// its pid column has no anchor word, so a run that inspects processes by hand
+/// still varies.
 fn pids(line: &str) -> String {
     if let Some(rewritten) = ps_line(line).or_else(|| fuser_line(line)) {
         return rewritten;
     }
-    let lower = line.to_ascii_lowercase();
     // A line that already carries a placeholder has been through here; re-
     // anchoring on the word inside `<pid>` would let a second pass reach digits
     // the first pass deliberately kept (a port in a `ps` COMMAND column).
-    let named =
-        !line.contains("<pid>") && ["kill", "pid", "process"].iter().any(|k| lower.contains(k));
+    let named = !line.contains("<pid>")
+        && line
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .any(|w| NAMES_A_PID.iter().any(|k| w.eq_ignore_ascii_case(k)));
     match named || bare_numbers(line) {
         true => digit_runs(line, 4, 7),
         false => line.to_string(),
     }
 }
+
+/// Whole words, not substrings. `contains("process")` also fired on
+/// "Processing", and `contains("kill")` on "skill" — and a match here licenses
+/// rewriting every four-digit number on the line, so `Processing 1000 records`
+/// (the model's own program, printing its own output) came back as
+/// `Processing <pid> records`. These seven are every form the genuine cases
+/// take: `kill: (12345) - No such process`, `Killed process 12345`, `pid=12345`.
+const NAMES_A_PID: [&str; 7] = [
+    "kill",
+    "killed",
+    "killing",
+    "pid",
+    "pids",
+    "process",
+    "processes",
+];
 
 /// `ps aux`'s bookkeeping columns.
 ///
@@ -400,7 +414,7 @@ fn digit_runs(s: &str, min: usize, max: usize) -> String {
             let end = digits(b, i, 1, usize::MAX).unwrap_or(i);
             let glued_before = i > 0 && glued(b[i - 1]);
             let glued_after = b.get(end).copied().is_some_and(glued);
-            let free = !(glued_before || glued_after);
+            let free = !(glued_before || glued_after || after_port_word(s, i));
             match free && (min..=max).contains(&(end - i)) {
                 true => out.push_str("<pid>"),
                 false => out.push_str(&s[i..end]),
@@ -413,6 +427,20 @@ fn digit_runs(s: &str, min: usize, max: usize) -> String {
         i += c.len_utf8();
     }
     out
+}
+
+/// A number the line has just called a port is a port, and this module's header
+/// promises ports are never scrubbed. The prompt's own teardown instruction is
+/// "kill whatever is listening on its port", so the model writes that sentence
+/// into its script and its comments: `# kill whatever is on port 3001` names a
+/// pid word and carries a free-standing four-digit number, and came back with
+/// the port replaced. `3001/tcp` and `0.0.0.0:3001` are already safe by
+/// [`GLUED`]; this is the spelled-out case.
+fn after_port_word(s: &str, i: usize) -> bool {
+    let head = s[..i].trim_end_matches([' ', '\t', '=', ':']);
+    head.rsplit(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .is_some_and(|w| w.eq_ignore_ascii_case("port"))
 }
 
 /// Neighbours that mean "this number is part of a larger token".

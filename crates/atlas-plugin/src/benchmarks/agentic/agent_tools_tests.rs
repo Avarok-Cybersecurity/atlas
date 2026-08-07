@@ -157,7 +157,7 @@ async fn edit_replaces_exactly_once_and_says_how_to_retry_when_it_cannot() {
     )
     .await
     .unwrap();
-    tool(
+    let said = tool(
         &c,
         "edit",
         json!({"filePath": "src/main.rs",
@@ -165,6 +165,10 @@ async fn edit_replaces_exactly_once_and_says_how_to_retry_when_it_cannot() {
     )
     .await
     .unwrap();
+    // Sandbox-relative, like `write` — the absolute form puts `$HOME` and the
+    // run index into the model's context and into the trajectory trace that is
+    // meant to `diff` clean between two runs, on two boxes.
+    assert_eq!(said, "replaced 1 occurrence(s) in src/main.rs");
     assert!(
         std::fs::read_to_string(c.sandbox.join("src/main.rs"))
             .unwrap()
@@ -263,6 +267,83 @@ async fn glob_and_grep_see_the_project_but_not_the_build_tree() {
     .await
     .unwrap();
     assert_eq!(none, "No files found");
+}
+
+#[tokio::test]
+async fn a_file_bigger_than_read_can_return_is_not_loaded_whole() {
+    // Nothing bounds what ends up in the sandbox — a server redirected to
+    // `./server.log` instead of `/tmp/server.log`, a `dd`, a looping
+    // `println!`. `read` and `grep` used to load whatever they found in one
+    // allocation; the cap is what `read` could return anyway.
+    let c = cfg(sandbox("bigfile"));
+    let mut big = "x".repeat(READ_LINES * READ_LINE_CHARS);
+    big.push_str("\nNEEDLE_AT_THE_END\n");
+    std::fs::write(c.sandbox.join("server.log"), &big).unwrap();
+
+    let read = tool(&c, "read", json!({"filePath": "server.log"}))
+        .await
+        .unwrap();
+    assert!(
+        read.contains("(file truncated at this point)"),
+        "not capped"
+    );
+    assert!(!read.contains("NEEDLE_AT_THE_END"));
+    assert_eq!(
+        tool(&c, "grep", json!({"pattern": "NEEDLE_AT_THE_END"}))
+            .await
+            .unwrap(),
+        "No files found"
+    );
+
+    // Capping must not turn a binary into mojibake: `read_to_string` refused
+    // non-UTF-8, `read` said so, and `grep` skipped the file. A multi-byte
+    // character the cap itself cut in half is the only tolerated case.
+    std::fs::write(c.sandbox.join("a.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+    assert!(
+        tool(&c, "read", json!({"filePath": "a.bin"}))
+            .await
+            .is_err()
+    );
+    // The leading byte puts the cap's cut in the middle of a two-byte `é`.
+    let wide = "a".to_string() + &"é".repeat(READ_LINES * READ_LINE_CHARS);
+    std::fs::write(c.sandbox.join("wide.txt"), &wide).unwrap();
+    let read = tool(&c, "read", json!({"filePath": "wide.txt"}))
+        .await
+        .unwrap();
+    assert!(!read.contains('\u{fffd}'), "a cut character was mangled");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_cycle_does_not_wedge_the_search_tools() {
+    // One bash call: `ln -s . a; ln -s . b; ln -s . c`. `is_dir()` resolves the
+    // link, so the walk explored 3^40 paths — bounded in depth by the kernel's
+    // ELOOP limit and not at all in breadth — and nothing times out a tool
+    // call, so `glob` never returned and the iteration was lost. The link to
+    // /etc is the other half: `grep` reads what the walk hands it without
+    // consulting `resolve`, so a followed link is an exfiltration path too.
+    let c = cfg(sandbox("cycle"));
+    tool(
+        &c,
+        "write",
+        json!({"filePath": "src/main.rs", "content": "async fn ping() {}\n"}),
+    )
+    .await
+    .unwrap();
+    for name in ["a", "b", "c"] {
+        std::os::unix::fs::symlink(".", c.sandbox.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink("/etc/hostname", c.sandbox.join("host.rs")).unwrap();
+    assert_eq!(
+        tool(&c, "glob", json!({"pattern": "**/*.rs"}))
+            .await
+            .unwrap(),
+        "src/main.rs"
+    );
+    let g = tool(&c, "grep", json!({"pattern": "fn ping"}))
+        .await
+        .unwrap();
+    assert_eq!(g, "Found 1 matches\nsrc/main.rs:1: async fn ping() {}");
 }
 
 #[tokio::test]

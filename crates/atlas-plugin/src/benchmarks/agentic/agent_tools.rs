@@ -111,7 +111,18 @@ pub async fn execute(
             ))
         }
         "read" => read_tool(&args, file()?),
-        "edit" => edit_tool(&args, file()?, &need("oldString")?, &need("newString")?),
+        "edit" => {
+            let path = file()?;
+            let hits = edit_tool(&args, &path, &need("oldString")?, &need("newString")?)?;
+            // Sandbox-relative, like `write`: the absolute form carries `$HOME`
+            // and the run index into the model's context and into the
+            // trajectory trace, whose whole job is to `diff` clean between two
+            // runs — including two runs on different boxes.
+            Ok(format!(
+                "replaced {hits} occurrence(s) in {}",
+                rel(cfg, &path)
+            ))
+        }
         "glob" => {
             let hits: Vec<String> = matching(cfg, Some(&need("pattern")?)).collect();
             Ok(or_empty(hits.join("\n")))
@@ -135,7 +146,7 @@ fn read_tool(args: &Value, path: PathBuf) -> Result<String> {
         names.sort();
         return Ok(or_empty(names.join("\n")));
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    let text = read_capped(&path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
     let num = |k: &str| args.get(k).and_then(Value::as_u64).map(|n| n as usize);
     let offset = num("offset").unwrap_or(1).max(1);
     let body: Vec<String> = text
@@ -159,9 +170,11 @@ fn read_tool(args: &Value, path: PathBuf) -> Result<String> {
 /// the only defect in its `main.rs` was a missing `.await`. The failure text is
 /// opencode's word for word: it tells the model *how* to retry, which a bare
 /// "no match" does not.
-fn edit_tool(args: &Value, path: PathBuf, old: &str, new: &str) -> Result<String> {
+fn edit_tool(args: &Value, path: &Path, old: &str, new: &str) -> Result<usize> {
     let all = args.get("replaceAll").and_then(Value::as_bool) == Some(true);
-    let text = std::fs::read_to_string(&path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    // Not capped like [`read_capped`]: this text is written back, so reading a
+    // prefix of the file would truncate it on disk.
+    let text = std::fs::read_to_string(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
     let hits = text.matches(old).count();
     if hits == 0 {
         bail!("oldString not found in content");
@@ -172,17 +185,54 @@ fn edit_tool(args: &Value, path: PathBuf, old: &str, new: &str) -> Result<String
              oldString to identify the correct match, or set replaceAll to change every instance."
         );
     }
-    std::fs::write(&path, text.replacen(old, new, if all { hits } else { 1 }))?;
-    Ok(format!(
-        "replaced {hits} occurrence(s) in {}",
-        path.display()
-    ))
+    std::fs::write(path, text.replacen(old, new, if all { hits } else { 1 }))?;
+    Ok(hits)
+}
+
+/// Load a file the model wrote, refusing to be the thing that runs the box out
+/// of memory.
+///
+/// Nothing bounds what ends up in the sandbox: the prompt's example redirects a
+/// server to `/tmp/server.log`, and a model that redirects to `./server.log`
+/// instead — or a `dd`, or a looping `println!` — leaves a file that `read` and
+/// `grep` used to load whole. The cap is the most `read` can return anyway
+/// (2000 lines × 2000 characters), so no byte that could have reached the model
+/// is lost, and it is stated in the result rather than silently applied.
+fn read_capped(path: &Path) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind, Read};
+    const CAP: usize = READ_LINES * READ_LINE_CHARS;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?
+        .take(CAP as u64)
+        .read_to_end(&mut buf)?;
+    let capped = buf.len() == CAP;
+    let mut text = match String::from_utf8(buf) {
+        Ok(text) => text,
+        // Non-UTF-8 is what `read_to_string` refused, and refusing is right: a
+        // `read` of a binary should say so, and `grep` should skip the file
+        // rather than paste mojibake into the model's context. The one
+        // exception is a multi-byte character the cap itself cut in half.
+        Err(e) if capped && e.as_bytes().len() - e.utf8_error().valid_up_to() < 4 => {
+            let whole = e.utf8_error().valid_up_to();
+            String::from_utf8_lossy(&e.as_bytes()[..whole]).into_owned()
+        }
+        Err(_) => {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ));
+        }
+    };
+    if capped {
+        text.push_str("\n… (file truncated at this point) …");
+    }
+    Ok(text)
 }
 
 fn grep_tool(cfg: &AgentConfig, pattern: &str, include: Option<&str>) -> String {
     let mut out = Vec::new();
     for rel in matching(cfg, include) {
-        let Ok(text) = std::fs::read_to_string(cfg.sandbox.join(&rel)) else {
+        let Ok(text) = read_capped(&cfg.sandbox.join(&rel)) else {
             continue;
         };
         for (i, line) in text
@@ -205,6 +255,15 @@ fn grep_tool(cfg: &AgentConfig, pattern: &str, include: Option<&str>) -> String 
 /// Sandbox-relative paths of every file, optionally filtered by a glob. Build
 /// output and VCS metadata are skipped — a `target/` tree holds thousands of
 /// files and none of them are the model's work.
+///
+/// **Symlinks are skipped entirely**, by [`entry.file_type()`][std::fs::DirEntry::file_type],
+/// which reports the link rather than what it points at. `is_dir()` resolves the
+/// link, and `ln -s . a` — three of them, one bash call — turns this walk into
+/// 3^40 paths: the kernel's own `ELOOP` ceiling is the only thing that bounds
+/// the depth, and it does not bound the breadth. Nothing times out a tool call,
+/// so `glob` never returns and the iteration is lost. Skipping is also the
+/// honest answer for a link that leaves the sandbox: `grep` reads what it finds
+/// with no path check at all.
 fn matching(cfg: &AgentConfig, pattern: Option<&str>) -> impl Iterator<Item = String> {
     let (mut stack, mut files) = (vec![cfg.sandbox.clone()], Vec::new());
     while let Some(dir) = stack.pop() {
@@ -215,10 +274,14 @@ fn matching(cfg: &AgentConfig, pattern: Option<&str>) -> impl Iterator<Item = St
             if matches!(entry.file_name().to_str(), Some("target") | Some(".git")) {
                 continue;
             }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let path = entry.path();
-            match path.is_dir() {
-                true => stack.push(path),
-                false => files.push(rel(cfg, &path)),
+            match (kind.is_dir(), kind.is_file()) {
+                (true, _) => stack.push(path),
+                (_, true) => files.push(rel(cfg, &path)),
+                _ => {}
             }
         }
     }

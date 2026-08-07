@@ -135,7 +135,15 @@ pub async fn webserver_test(
     // invisible.
     let err_log =
         std::env::temp_dir().join(format!("atlas-ws-stderr-{}-{port}.log", std::process::id()));
-    let sink = match std::fs::File::create(&err_log) {
+    // `create_new`, because the name of this file is predictable and the thing
+    // whose code we are about to run may still have processes in the sandbox.
+    // `create` would follow a symlink planted at that path and truncate whatever
+    // it points at; failing closed costs one diagnosis, not a file.
+    let sink = match std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(&err_log)
+    {
         Ok(f) => Stdio::from(f),
         Err(_) => Stdio::null(),
     };
@@ -265,7 +273,7 @@ pub fn followed_directions(commands: &[String], sandbox: &Path) -> Directions {
     // `followed_directions.py:124-136`, step for step. Its detectors are all
     // word-anchored (`\bcurl\b`, `\bp?kill\b`) so that "killed" in a log line or
     // a path containing "cargo" cannot stand in as evidence of the step.
-    let wrote_project = sandbox.join("Cargo.toml").is_file() && has_main(sandbox);
+    let wrote_project = regular(&sandbox.join("Cargo.toml")) && has_main(sandbox);
     let wrote_tests = has_tests(sandbox);
     let ran_tests = contains_cargo(&joined, &["test", "nextest"]);
     let ran_server = contains_cargo(&joined, &["run"]) || ran_binary(&joined);
@@ -346,7 +354,7 @@ fn contains_cargo(haystack: &str, subs: &[&str]) -> bool {
 /// `followed_directions.py:125` counts the project written only when a `main.rs`
 /// exists — a lone `Cargo.toml` plus a stray `build.rs` is not an Axum project.
 fn has_main(sandbox: &Path) -> bool {
-    sandbox.join("src/main.rs").is_file()
+    regular(&sandbox.join("src/main.rs"))
         || walk(sandbox).any(|p| p.file_name().is_some_and(|n| n == "main.rs"))
 }
 
@@ -355,7 +363,8 @@ fn has_main(sandbox: &Path) -> bool {
 /// `cargo init` creates directories the agent never filled in.
 fn has_tests(sandbox: &Path) -> bool {
     let tests = sandbox.join("tests");
-    if tests.is_dir() && walk(&tests).any(|p| p.extension().is_some_and(|e| e == "rs")) {
+    let real_dir = std::fs::symlink_metadata(&tests).is_ok_and(|m| m.is_dir());
+    if real_dir && walk(&tests).any(|p| p.extension().is_some_and(|e| e == "rs")) {
         return true;
     }
     walk(sandbox)
@@ -370,6 +379,15 @@ fn has_tests(sandbox: &Path) -> bool {
 
 /// Shallow recursive walk that skips build output and VCS metadata — a
 /// `target/` tree contains thousands of files and none of them are evidence.
+///
+/// Symlinks are neither followed nor collected, for two reasons that both come
+/// back to this walking a tree written by the thing it is scoring. `ln -s . a`
+/// (three of them, one bash call) makes the walk explode combinatorially up to
+/// the kernel's `ELOOP` depth, and nothing here has a timeout — the agent has
+/// already finished by the time the scorer runs, so that hangs the whole
+/// benchmark, not one iteration. And a link is not evidence: `ln -s
+/// ~/atlas/tests/foo.rs tests/foo.rs` would otherwise credit `wrote_tests` to an
+/// agent that wrote no tests.
 fn walk(root: &Path) -> impl Iterator<Item = std::path::PathBuf> {
     let mut stack = vec![root.to_path_buf()];
     let mut files = Vec::new();
@@ -378,19 +396,26 @@ fn walk(root: &Path) -> impl Iterator<Item = std::path::PathBuf> {
             continue;
         };
         for entry in entries.flatten() {
-            let path = entry.path();
             let name = entry.file_name();
             if matches!(name.to_str(), Some("target") | Some(".git")) {
                 continue;
             }
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                files.push(path);
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            match (kind.is_dir(), kind.is_file()) {
+                (true, _) => stack.push(entry.path()),
+                (_, true) => files.push(entry.path()),
+                _ => {}
             }
         }
     }
     files.into_iter()
+}
+
+/// A file the agent actually wrote, rather than a link to one it did not.
+fn regular(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
 }
 
 #[cfg(test)]

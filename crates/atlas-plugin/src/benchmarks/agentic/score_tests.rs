@@ -100,6 +100,35 @@ fn a_project_without_a_main_rs_is_not_a_written_project() {
     assert!(step(&d, "wrote_project"));
 }
 
+#[cfg(unix)]
+#[test]
+fn the_evidence_walk_neither_follows_a_symlink_nor_counts_one() {
+    // The scorer walks a tree written by the thing it is scoring, after that
+    // thing has finished and with no timeout over it. `ln -s . a` three times
+    // used to make this walk 3^40 paths — the kernel's ELOOP ceiling bounds the
+    // depth and nothing bounds the breadth — so the model could hang the whole
+    // benchmark from a shell command. A link is also not evidence: the two
+    // symlinked files below are somebody else's `main.rs` and tests.
+    let d = sandbox("symlinks");
+    std::fs::write(d.join("Cargo.toml"), "[package]").unwrap();
+    let elsewhere = d.parent().unwrap().join("atlas-agentic-symlinks-donor");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("main.rs"), "fn main() {}").unwrap();
+    std::fs::write(elsewhere.join("it.rs"), "#[test] fn t() {}").unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("main.rs"), d.join("src/main.rs")).unwrap();
+    std::fs::create_dir_all(d.join("tests")).unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("it.rs"), d.join("tests/it.rs")).unwrap();
+    for name in ["a", "b", "c"] {
+        std::os::unix::fs::symlink(".", d.join(name)).unwrap();
+    }
+    // Returning at all is half the assertion; the harness has no timeout to
+    // rescue it if this walk does not terminate.
+    assert!(!step(&d, "wrote_project"), "a symlinked main.rs is not one");
+    assert!(!step(&d, "wrote_tests"), "a symlinked test file is not one");
+    std::fs::write(d.join("src/real.rs"), "#[test] fn t() {}").unwrap();
+    assert!(step(&d, "wrote_tests"), "a real test file still counts");
+}
+
 #[test]
 fn the_detectors_are_word_anchored_like_the_harness_regexes() {
     let d = full_project("anchored");

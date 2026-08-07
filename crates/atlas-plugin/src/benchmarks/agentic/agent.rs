@@ -376,6 +376,15 @@ fn assistant_message(outcome: &crate::http::ChatOutcome, turn: usize) -> Value {
 /// opencode's file tools ask for absolute paths and its environment block hands
 /// the model the working directory to build them from, so rejecting every
 /// absolute path — as this did — failed the prompt-compliant call.
+///
+/// Lexical containment is necessary and not sufficient: `ln -s / esc` inside the
+/// sandbox makes `esc/etc/passwd` a lexically-clean path that `read` and `write`
+/// would follow straight out, so the resolved path is checked against the
+/// sandbox's real location as well. That check is defence in depth, not a
+/// privilege boundary — `bash` runs unconfined by construction, which is the
+/// measurement — and it is a check, so a symlink swapped between here and the
+/// open would still win. What it does buy is that the rule this function
+/// documents is the rule it enforces.
 pub fn resolve(sandbox: &Path, path: &str) -> Result<PathBuf> {
     let path = Path::new(path);
     let path = match path.strip_prefix(sandbox) {
@@ -396,7 +405,34 @@ pub fn resolve(sandbox: &Path, path: &str) -> Result<PathBuf> {
             Component::RootDir | Component::Prefix(_) => bail!("absolute paths are not allowed"),
         }
     }
+    if leaves_via_symlink(sandbox, &out) {
+        bail!("path must not leave the project directory through a symlink");
+    }
     Ok(out)
+}
+
+/// Does `out` — already lexically inside `sandbox` — resolve to somewhere else?
+///
+/// The target itself usually does not exist yet (`write` creates it), so the
+/// deepest ancestor that DOES exist is what gets canonicalised. Walking stops at
+/// the sandbox: with nothing on disk below it there is no symlink to follow, and
+/// a sandbox that does not exist at all (the path-rule unit tests) resolves
+/// nothing and denies nothing.
+fn leaves_via_symlink(sandbox: &Path, out: &Path) -> bool {
+    let Ok(root) = std::fs::canonicalize(sandbox) else {
+        return false;
+    };
+    let mut probe = out;
+    while probe != sandbox {
+        if let Ok(real) = std::fs::canonicalize(probe) {
+            return !real.starts_with(&root);
+        }
+        match probe.parent() {
+            Some(parent) => probe = parent,
+            None => return false,
+        }
+    }
+    false
 }
 
 #[cfg(test)]

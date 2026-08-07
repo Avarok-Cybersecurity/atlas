@@ -48,6 +48,25 @@ fn an_absolute_path_inside_the_sandbox_is_accepted() {
     assert!(resolve(sb, "/tmp/sandbox/../escape").is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlink_out_of_the_sandbox_is_not_a_way_out_of_it() {
+    // Lexically `escape/passwd` never leaves the sandbox. `ln -s /etc escape`
+    // is one bash call away, and `read`/`write`/`edit` follow symlinks, so the
+    // lexical rule alone let the file tools read and overwrite anything this
+    // user owns.
+    let sb = sandbox("symlink-escape");
+    std::os::unix::fs::symlink("/etc", sb.join("escape")).unwrap();
+    assert!(resolve(&sb, "escape/passwd").is_err());
+    assert!(resolve(&sb, "escape").is_err());
+    // A symlink that stays inside is still usable, and an ordinary path that
+    // does not exist yet — every `write` of a new file — must still resolve.
+    std::fs::create_dir(sb.join("src")).unwrap();
+    std::os::unix::fs::symlink(sb.join("src"), sb.join("inside")).unwrap();
+    assert!(resolve(&sb, "inside/main.rs").is_ok());
+    assert!(resolve(&sb, "src/deep/new.rs").is_ok());
+}
+
 // ── truncation ─────────────────────────────────────────────────────
 
 #[test]
