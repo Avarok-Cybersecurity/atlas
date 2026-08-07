@@ -40,7 +40,23 @@ not be interruptible mid-tag.
 
 ### Gate records (`spark benchmark --pull-request-gate-check`)
 
-3 of 5 pass at the frozen commit `2ed73e4ef9`:
+**Superseded — all five now have committed PASS records.** The table below was
+written mid-sweep at the frozen commit `2ed73e4ef9`; the branch has since landed a
+record for every gate. Read `.benchmarks/<gate>/<date>-<sha>.json` first — those
+files, not this prose, are what `--pull-request-gate-check` reads:
+
+| gate | record | metrics | verdict |
+|---|---|---|---|
+| `agentic-webserver` | `2026-08-07-2e1ad5b0fb` | 10/10 ws_ok · 10/10 fd · Σwall 986.12 s ≤ 1300 | PASS |
+| `ttft-warm-gate` | `2026-08-07-9e9f731ee4` | median 1561.00 ms · p90 4485.88 ms | PASS |
+| `ttft-cold-gate` | `2026-08-07-9e9f731ee4` | median 1639.09 ms · p90 4477.48 ms | PASS |
+| `bfcl-subset-echolp` | `2026-08-07-d2800e3e1c` | **85.56 / 85.69**, n=1004 | PASS |
+| `bfcl-subset` | `2026-08-07-cc1ebf2758` | **88.04 / 88.74**, n=995 | PASS |
+
+`bfcl-subset` is therefore **no longer blocked** — see the Owed list below, which
+predates that record.
+
+The mid-sweep snapshot it replaced, kept for the reasoning:
 
 | gate | result |
 |---|---|
@@ -80,7 +96,7 @@ internalising: *the value that reads correct is not the value that runs*, and
 
 ### Owed
 
-- **PR `qwen3.6-27b-nvfp4-unsloth` to `atlas-recipes`** (branch `feat/qwen3.6-27b-nvfp4-unsloth`) — unblocks `bfcl-subset`. Outward action, needs owner sign-off.
+- ~~**PR `qwen3.6-27b-nvfp4-unsloth` to `atlas-recipes`** — unblocks `bfcl-subset`.~~ **Done**: `bfcl-subset` has a passing record at `cc1ebf27` (88.04 / 88.74, n=995). The upstream recipe PR (branch `feat/qwen3.6-27b-nvfp4-unsloth`) is still an outward action needing owner sign-off, but it no longer blocks a gate.
 - **Remaining UX findings** (audit in the transcript): GPU renders a fabricated `0.0 GB` when NVML is absent; `{:?}` Debug reaches the screen twice; no ETA on downloads or benchmark runs; `NO_COLOR` unhonoured; three different byte units under one roof; `q` still needs a confirmation while a run is in flight, and `/detach` is missing from the key map.
 - **One Lighthouse pass on dez.rs** — no Chromium on the build box, so its a11y/contrast claims are computed and reviewed, not machine-audited.
 - **`.webmanifest` missing from avarok2's global `/etc/nginx/mime.types`** — patched for dez.rs only; every other PWA on that host has the same latent bug.
@@ -135,9 +151,19 @@ Image: **`avarok/atlas-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B =
 |---|---|---|---|
 | **C2** NVFP4 smoke | PASS | dgx2 | 3/3 tool calls, 3/3 coherent, 0 degenerate |
 | **A** webserver_ok | PASS | dgx3 | 10/10 ws_ok, 10/10 followed_directions, **Σ 978.13 s** ≤ 1300 |
-| **B** ST-1004 (35B) | PASS | dgx3 | **84.26 / 82.15** vs baseline 84.06 / 82.06, n=1004 |
+| **B** ST-1004 (35B) | ⚠ see note | dgx3 | **84.26 / 82.15** vs the same-box *live* control 84.06 / 82.06, n=1004 |
 | **C** warm-TTFT | PASS | dgx1 | PR 1107.44 / 1778.04 ms vs control 1123.03 / 1807.05 ms ⇒ **−1.39% / −1.61%** |
 | **D** ST-995 (dense 27B) | PASS | dgx2 | **87.74 / 89.43**, n=995; MLPerf floor 83.64 / 85.32 ⇒ **+4.1** clear |
+
+⚠ **Gate B's "PASS" here was scored against the wrong bar.** 84.06 / 82.06 is the
+*live same-box control*, not the gate's threshold.
+`.benchmarks/bfcl-subset-echolp/BASELINE.json` ratchets to the **high-water**
+84.66 / 83.32, and its own note predicts exactly this: "a run reproducing today's
+live behaviour will FAIL this gate by ~0.6/1.3 until that drift is explained".
+84.26 / 82.15 is below both mins, so this row would **not** clear the committed
+baseline. The gate that does clear it is the later `d2800e3e` record
+(85.56 / 85.69) in §0. Comparing to a control run rather than to
+`BASELINE.json` is the mistake to avoid repeating — the JSON is the bar.
 
 Gate C's control was built fresh from `c19481aa` as `atlas-gb10:mainctl388` (do **not** reuse `mainctl-tui` — it predates main's tip by two days).
 

@@ -1,6 +1,6 @@
 # Workspace Layout
 
-Atlas is a twelve-member Cargo workspace plus a build-time kernel tree. This chapter maps every top-level directory to its role, and the twelve crates to the axes of variation they each insulate.
+Atlas is a **nineteen**-member Cargo workspace plus a build-time kernel tree (count them in the root `Cargo.toml` `members` list). This chapter maps every top-level directory to its role, and the crates to the axes of variation they each insulate.
 
 ## Repository tree (top level)
 
@@ -29,7 +29,7 @@ atlas/
 └── vendor/                       vendored deps (e.g. xgrammar-rs)
 ```
 
-## The twelve workspace members
+## The workspace members
 
 `Cargo.toml` lists:
 
@@ -88,7 +88,7 @@ kernels/
     │   └── nvfp4/
     ├── minimax-m2-229b/
     │   └── nvfp4/
-    └── ... (one leaf per supported model, twelve leaves today)
+    └── ... (one leaf per (model, quant) target — 22 under kernels/gb10/ today)
 ```
 
 Every leaf directory is a fully self-contained `(gb10, model, quant)` target. The kernels inside a leaf can use any tile shape, any register budget, any shared-memory layout — they are physically incapable of regressing a different target.

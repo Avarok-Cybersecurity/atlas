@@ -52,7 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install vendor/xgrammar-rs build deps
+      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
+      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
+      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
+      # Kept only until someone confirms no transitive consumer needs them.
+      - name: Install native build deps (vestigial — see comment)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
@@ -103,7 +107,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install vendor/xgrammar-rs build deps
+      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
+      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
+      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
+      # Kept only until someone confirms no transitive consumer needs them.
+      - name: Install native build deps (vestigial — see comment)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
@@ -216,7 +224,11 @@ jobs:
           # earlier sha still covers HEAD, so a shallow clone would make every
           # record look uncovered.
           fetch-depth: 0
-      - name: Install vendor/xgrammar-rs build deps
+      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
+      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
+      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
+      # Kept only until someone confirms no transitive consumer needs them.
+      - name: Install native build deps (vestigial — see comment)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake clang libclang-dev

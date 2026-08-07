@@ -2626,9 +2626,25 @@ share. It is now one accessor behind one flag. The five knobs the best config ne
 | `ATLAS_SSM_TAIL_MIDCHUNK=0` | `--ssm-tail-midchunk <bool>` | on |
 | `ATLAS_MTP_GATE_FORCE=1` | `--mtp-gate {auto,force}` | `auto` |
 
-The environment variables still work as a fallback; the flag wins. `--ssm-h-dtype f16`
-without `--gdn-fused-norm` is now a startup ERROR (it used to be a silent FP32-kernel-over-
-FP16-pool, i.e. fluent garbage).
+★ **The environment variables do NOT still work as a fallback under `spark serve` — all
+five are dead there.** Each is read once through a `OnceLock`, and
+`main_modules/serve.rs::publish_kernel_flags()` publishes the clap value
+*unconditionally*, before anything can ask. Because every one of these flags carries a
+clap default, the `OnceLock` is always already sealed with the default by the time the
+`env::var` closure would run, so `get_or_init` never invokes it. The flag doesn't merely
+win when passed — it wins **always**, including when the user never passed it.
+`spark_runtime`'s own comment on `ssm_tail_midchunk_enabled()` says exactly this:
+"`ATLAS_SSM_TAIL_MIDCHUNK=0` does NOTHING under `spark serve`". The env reads survive only
+for callers that never publish (tests, examples).
+
+Consequence for this campaign's frozen configs: every launch script that sets
+`-e ATLAS_SSM_TAIL_MIDCHUNK=0` **without** also passing `--ssm-tail-midchunk false` ran with
+mid-chunk capture **ON**. `grep -rn 'ssm-tail-midchunk'` over `scripts/`, `docker/`, `docs/`
+and the root `*.md` returns this table and nothing else — the flag is used nowhere. The same
+holds for the other four rows.
+
+`--ssm-h-dtype f16` without `--gdn-fused-norm` is now a startup ERROR (it used to be a
+silent FP32-kernel-over-FP16-pool, i.e. fluent garbage).
 
 **The other six of the ten did nothing.** `ATLAS_MTP_CATCHUP=0`, `ATLAS_MTP_DRAFT_CONF=0.0`,
 `ATLAS_SSM_TAIL_PROTECT=1`, `ATLAS_SSM_TAIL_LEASE_TTL=128`, `ATLAS_BF16_TC_PREFILL=1`

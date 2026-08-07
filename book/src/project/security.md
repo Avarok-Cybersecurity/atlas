@@ -39,7 +39,7 @@ Automated: `cppcheck` static analysis on CUDA source. Human: kernel reviews requ
 ### 2. HTTP API input
 
 - **Malformed JSON** — axum + serde handles schema validation; unknown fields are rejected by default.
-- **Oversized request bodies** — `ATLAS_MAX_BODY_BYTES` (default 8 MiB) caps inbound body size.
+- **Oversized request bodies** — `ATLAS_MAX_BODY_BYTES` caps inbound body size. The default is **32 MiB**, not 8 (`main_modules/serve_router.rs`); size your reverse proxy against 32.
 - **Prompt injection** via the chat template — the model is the primary defense; Atlas does not attempt content-level filtering.
 - **Rate-limit exhaustion** — per-key token bucket with a `MAX_KEYS` DoS guard against cardinality explosion.
 

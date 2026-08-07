@@ -40,14 +40,27 @@ hardware. CI runs all of these on a standard `ubuntu-latest` runner:
 
 ```bash
 # Rust correctness — no GPU, no nvcc required.
-# scripts/check.sh sets ATLAS_SKIP_BUILD=1 + CUDARC_CUDA_VERSION
-# so cudarc skips its driver probe and atlas-kernels emits a stub.
-./scripts/check.sh                  # cargo check, ~30s incremental
-./scripts/check.sh clippy --tests   # cargo clippy
-./scripts/check.sh test             # cargo test (unit tests only)
+# ATLAS_SKIP_BUILD=1 makes atlas-kernels emit a stub instead of invoking
+# nvcc; CUDARC_CUDA_VERSION short-circuits cudarc's `nvcc --version` probe.
+# Both are needed. These are exactly what ci.yml sets workflow-wide.
+ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo check --workspace
+ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo test --workspace
 cargo fmt --all -- --check          # formatting
+```
 
-# File-size cap (≤500 LoC per .rs file in crates/) — local check
+`scripts/check.sh` wraps the same idea, but it exports `SKIP_ATLAS_BUILD`, and
+`crates/atlas-kernels/build.rs` matches on `ATLAS_SKIP_BUILD` only — so the
+wrapper does **not** currently skip the PTX build. Use the explicit env vars
+above until the script is fixed.
+
+The file-size cap (≤500 LoC per `crates/**/*.rs`) is enforced by
+`.github/workflows/file-size-cap.yml`, which carries a long allow-list of
+rationale-documented carry-overs. A bare `find` knows nothing about that list —
+it flags ~88 files today, nearly all of them allow-listed — so cross-check any
+hit against the workflow before treating it as a violation:
+
+```bash
 find crates -name '*.rs' -not -name '*.bak' -not -path '*/target/*' \
   | xargs wc -l | awk '$1 > 500 && $2 != "total"'
 ```
@@ -69,10 +82,18 @@ cargo bench -p atlas-spark-bench
 ```
 
 CI enforces (all GPU-free): `fmt`, `clippy`, `cargo test --workspace`
-(unit tests + non-`#[ignore]` integration tests), license-headers,
-typo check, `cargo-deny`, file-size cap (≤500 LoC per `crates/**/*.rs`).
+(unit tests + non-`#[ignore]` integration tests), license-headers, typo check,
+**kernel shadow structure** (`scripts/check_kernel_shadows.py` — no shadow
+byte-identical to its `common/` namesake, no duplicate regular copies of the
+same shadow), file-size cap (≤500 LoC per `crates/**/*.rs`), and mdBook +
+`cargo doc --workspace --no-deps`. `cargo-deny` lives in its own workflow
+(`.github/workflows/security.yml`), not in `ci.yml`.
 PRs fail without an authoring maintainer needing GPU access — the kernel
 work happens locally.
+
+`ci.yml` also runs `test-macos-metal`, `release-matrix`, and an **advisory**
+`pr-benchmark-gate` (`continue-on-error: true`) that checks committed
+`.benchmarks/*` records against their baselines without reddening the PR.
 
 **CI-green is not the same as shippable.** The GPU-free CI proves the code
 compiles and is hygienic; it does *not* boot a model. An image is only
@@ -130,7 +151,7 @@ path, the TUI, and the API layer.
 cargo fmt --all
 
 # CUDA kernels
-find cuda_kernels/ -name '*.cu' -print0 | xargs -0 clang-format -i
+find kernels/ -name '*.cu' -print0 | xargs -0 clang-format -i
 ```
 
 ## What to Contribute
@@ -139,7 +160,12 @@ find cuda_kernels/ -name '*.cu' -print0 | xargs -0 clang-format -i
 
 Each hardware × model × quantization combination is a self-contained body of work. To add a new target:
 
-1. Add kernel variants in `cuda_kernels/` optimized for the target SM architecture
+1. Add kernel variants under `kernels/<hardware>/` optimized for the target SM
+   architecture — `kernels/<hw>/common/` for sources every model shares, or
+   `kernels/<hw>/<model>/<quant>/` to *shadow* a `common/` file for one target.
+   `scripts/check_kernel_shadows.py` (CI job `kernel-structure`) rejects a shadow
+   that is byte-identical to its `common/` namesake, and duplicate regular copies
+   of the same shadow across models — symlink to one canonical file instead.
 2. Register them in the appropriate `crates/atlas-*` kernel crate
 3. Add benchmark shapes to `crates/atlas-spark-bench/`
 4. Demonstrate speedup over the baseline (PyTorch, cuBLAS, etc.)
@@ -169,7 +195,11 @@ Open an issue with:
 
 - **Rust** — `cargo fmt` and `cargo clippy -- -D warnings` must pass
 - **CUDA** — `clang-format` with the repo's `.clang-format` config
-- **No Python** — Atlas is pure Rust + CUDA. The Python benchmarks in `historical-python/` are archived for reference only.
+- **No Python in the engine** — the shipped binary is pure Rust + CUDA and the
+  image carries no Python runtime. Python is still the language of the *harnesses*
+  around it: `tests/run_all_models.py`, `scripts/check_kernel_shadows.py` (a CI
+  job), `scripts/dev/`, `bench/`. Don't add Python to `crates/`; do use it for
+  test and benchmark drivers. (There is no `historical-python/` directory.)
 - **Tests** — Add unit tests for new functionality. Use `MockGpuBackend` for tests that don't need a real GPU.
 
 ## Pull Request Process

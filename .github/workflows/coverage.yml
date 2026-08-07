@@ -50,7 +50,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install vendor/xgrammar-rs build deps
+      # VESTIGIAL: `vendor/xgrammar-rs` no longer exists — the grammar engine is
+      # now the pure-Rust in-tree port at `crates/xgrammar` (no build.rs, no C++
+      # toolchain). Nothing in Cargo.lock pulls bindgen, cmake or clang-sys.
+      # Kept only until someone confirms no transitive consumer needs them.
+      - name: Install native build deps (vestigial — see comment)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
@@ -114,7 +118,7 @@ jobs:
           #
           # The tempting version of this step downgrades a failing test to a
           # warning, on the grounds that ci.yml's `test` job is the real gate
-          # and reding twice for one cause is noise. That was tried and it is
+          # and redding twice for one cause is noise. That was tried and it is
           # WRONG: a *compile* failure and a *test* failure are both cargo
           # exit 101, and on a compile failure `cargo llvm-cov report` still
           # emits a large, well-formed, entirely ZERO lcov.info. Passing the
