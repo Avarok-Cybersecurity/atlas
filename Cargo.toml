@@ -2,11 +2,6 @@
 resolver = "2"
 members = [
     "crates/atlas-core",
-    "crates/atlas-quant",
-    "crates/atlas-norm",
-    "crates/atlas-activation",
-    "crates/atlas-embed",
-    "crates/atlas-reduce",
     "crates/atlas-kernels",
     "crates/atlas-plugin",
     "crates/atlas-tier",

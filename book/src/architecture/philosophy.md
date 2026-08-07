@@ -53,13 +53,12 @@ Read the workspace `Cargo.toml` and you'll see nineteen workspace members. Group
 |---|---|
 | *Hardware vendor* | `atlas-core` (`ComputeTarget`, `Vendor` enum, `KernelTarget`), `spark-runtime` (`GpuBackend`), `spark-comm` (`CommBackend`) |
 | *Model architecture* | `spark-model` (`ModelWeightLoader` trait, `TransformerLayer` trait, per-family loaders) |
-| *Quantization format* | `atlas-quant` (NVFP4 and FP8 traits + kernels), `spark-model/quant_format.rs` (runtime dispatch) |
+| *Quantization format* | `spark-model/src/quant_format/` (per-format modules + runtime dispatch), `atlas-core/src/numeric.rs` (host-side FP8/BF16 conversions) |
 | *Compiled kernels (one artifact per axis combination)* | `atlas-kernels` (embedded PTX modules, auto-generated from the kernel tree) |
-| *Operation primitives (shared math, not shared kernels)* | `atlas-norm`, `atlas-activation`, `atlas-embed`, `atlas-reduce` |
 | *Request serving* | `spark-server` (HTTP, tokenizer, tool parsing) |
 | *Measurement* | `atlas-spark-bench` |
 
-Each crate has exactly one reason to change. A new GPU vendor never touches `spark-model`. A new model family never touches `spark-runtime`. A new quantization scheme touches `atlas-quant` and `atlas-kernels`, but not the layer code. This orthogonality is not a happy accident of the crate layout — it *is* the architectural consequence of the specialization thesis.
+Each crate has exactly one reason to change. A new GPU vendor never touches `spark-model`. A new model family never touches `spark-runtime`. A new quantization scheme touches `spark-model`'s format modules and `atlas-kernels`, but not the layer code. This orthogonality is not a happy accident of the crate layout — it *is* the architectural consequence of the specialization thesis.
 
 ## Consequence 3: SBIO — business logic never touches I/O
 

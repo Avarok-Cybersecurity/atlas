@@ -151,7 +151,6 @@ jobs:
             # Allow-listed to unblock the PR; clean splits tracked as follow-up
             # (per-file Ctx/State or sub-module extraction, Atlas idiom).
             "crates/atlas-kernels/build.rs"
-            "crates/atlas-quant/src/fp8.rs"
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
             "crates/spark-model/src/layers/moe/forward.rs"

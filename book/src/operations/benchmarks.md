@@ -55,17 +55,12 @@ The `scripts/sweep_all_models.sh` helper boots each model in turn, runs the cano
 
 ## Running per-kernel benchmarks
 
-Per-crate:
-
 ```bash
-cargo bench -p atlas-norm           # RMSNorm, gated RMSNorm
-cargo bench -p atlas-embed          # RoPE, embedding
-cargo bench -p atlas-activation     # SiLU×Mul
-cargo bench -p atlas-reduce         # topk, moe_sum, softmax
 cargo bench -p spark-runtime        # KV cache ops, sampler micro
+cargo bench -p atlas-spark-bench    # end-to-end client benchmarks
 ```
 
-Each crate has `benches/*.rs` driven by Criterion. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
+Criterion-driven, from each crate's `benches/*.rs`. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
 
 The full kernel numbers table:
 

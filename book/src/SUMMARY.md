@@ -21,8 +21,6 @@
 # Part III — The Crates
 
 - [atlas-core](./crates/atlas-core.md)
-- [atlas-quant](./crates/atlas-quant.md)
-- [Primitives: norm / activation / embed / reduce](./crates/atlas-primitives.md)
 - [atlas-kernels](./crates/atlas-kernels.md)
 - [spark-runtime](./crates/spark-runtime.md)
 - [spark-comm](./crates/spark-comm.md)
