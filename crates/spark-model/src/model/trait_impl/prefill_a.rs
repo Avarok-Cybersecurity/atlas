@@ -303,6 +303,33 @@ impl TransformerModel {
             let pinned = stg.ptr;
             let mut cursor = 0usize;
 
+            // Bound the packing BEFORE the first write, not after the last.
+            // The `assert!(cursor <= stg.bytes)` at the end of this block used
+            // to be the only check, and by the time it fires the writes below
+            // have already happened — so an over-long `seq.block_table` (its
+            // length tracks the sequence's KV blocks, i.e. the context length)
+            // would have overrun the pinned allocation into whatever the
+            // allocator placed after it, and the assert would abort on the
+            // wreckage. Recompute the same offsets the packing uses and refuse
+            // up front.
+            let need = {
+                let after_slots = slot_offset + proc_count * 8;
+                if marconi_skip {
+                    let bt_start = (after_slots + 3) & !3;
+                    let sl_start = (bt_start + seq.block_table.len() * 4 + 3) & !3;
+                    sl_start + 4
+                } else {
+                    after_slots
+                }
+            };
+            anyhow::ensure!(
+                need <= stg.bytes,
+                "prefill metadata does not fit the pinned staging buffer: needs {need} B \
+                 for {proc_count} tokens and a {}-entry block table, have {} B",
+                seq.block_table.len(),
+                stg.bytes
+            );
+
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     stg.positions.as_ptr() as *const u8,
@@ -351,10 +378,11 @@ impl TransformerModel {
                 (DevicePtr::NULL, DevicePtr::NULL)
             };
 
-            assert!(cursor <= stg.bytes, "prefill metadata overflow");
+            debug_assert!(cursor <= need, "prefill packing exceeded its own estimate");
             // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
             // `stg.bytes` bytes (allocated in impl_a1.rs, freed in drop.rs) and
-            // `cursor <= stg.bytes` is asserted on the line above. Every byte
+            // `cursor <= need <= stg.bytes` — `need` is the same offset
+            // arithmetic, checked before the first write above. Every byte
             // of `[0, cursor)` was written by this block: positions over
             // `[0, proc_count*4)`, the alignment pad zeroed up to `slot_offset`,
             // slots over `[slot_offset, slot_offset + proc_count*8)`, and under

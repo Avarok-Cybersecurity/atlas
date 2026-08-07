@@ -312,6 +312,19 @@ impl TransformerModel {
             let pinned = stg.ptr;
             let mut cursor = proc_count * 4;
 
+            // Bound the packing BEFORE the first write. The overflow `assert!`
+            // at the end of this block only fires once the writes have already
+            // landed, which is too late to keep them inside the allocation.
+            // `slot_offset + proc_count * 8` is the high-water mark of every
+            // arm below.
+            anyhow::ensure!(
+                slot_offset + proc_count * 8 <= stg.bytes,
+                "prefill_twophase metadata does not fit the pinned staging buffer: \
+                 needs {} B for {proc_count} tokens, have {} B",
+                slot_offset + proc_count * 8,
+                stg.bytes
+            );
+
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     stg.positions.as_ptr() as *const u8,
