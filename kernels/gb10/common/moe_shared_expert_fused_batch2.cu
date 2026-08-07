@@ -77,7 +77,6 @@ __device__ void reduce_store_batch2(
 ) {
     constexpr unsigned int THREADS_PER_OUT = BLOCK / N_PER_BLOCK;
     constexpr unsigned int WARPS_PER_OUT = THREADS_PER_OUT / WARP_SIZE;
-    constexpr unsigned int SMEM_RED = (WARPS_PER_OUT > 1) ? N_PER_BLOCK * 2 * WARPS_PER_OUT : 1;
 
     if constexpr (WARPS_PER_OUT == 1) {
         if (active) {
@@ -94,6 +93,15 @@ __device__ void reduce_store_batch2(
             }
         }
     } else {
+        // Declared HERE, not beside THREADS_PER_OUT above: at BLOCK=128 the
+        // shuffle branch is taken and a file-scope declaration is never
+        // referenced, which nvcc reports as #177-D — a warning on the Linux
+        // toolchain and a hard error under the Windows CUDA build's stricter
+        // flags, where it broke `windows-x86_64-nvidia-cuda`. Scoping it to the
+        // branch that uses it also retires the `(WARPS_PER_OUT > 1) ? … : 1`
+        // guard the old declaration needed purely to avoid a zero-length array
+        // in the case that never touched it.
+        constexpr unsigned int SMEM_RED = N_PER_BLOCK * 2 * WARPS_PER_OUT;
         __shared__ float smem_reduce[SMEM_RED];
         const unsigned int warp_lane = lane % WARP_SIZE;
         const unsigned int warp_in_output = lane / WARP_SIZE;
