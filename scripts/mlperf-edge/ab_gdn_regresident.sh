@@ -22,10 +22,17 @@
 # That 18.8% (771 s) IS the warm-replay path, run over a p50 of 210 new tokens
 # through 48 GDN layers every turn.
 #
-# TRAP: ATLAS_GDN_REGRESIDENT is a PRESENCE flag (`var_os(..).is_some()`).
-# `=0` ENABLES it. The control leg must have the variable ABSENT, which is why
-# the two legs below are separate `docker run` invocations rather than one
-# parameterised env line.
+# TRAP: there is no `ATLAS_GDN_REGRESIDENT` variable. PR #369 folded this
+# lever default-ON and the only thing Rust reads is the NEGATIVE kill switch
+# (model_levers.rs: `var("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Ok("1")`).
+# Setting the positive spelling does NOTHING, so until this was fixed both legs
+# below ran the identical configuration — regresident ON — and any delta they
+# reported was noise. The legs are therefore inverted relative to the original
+# script: the DEFAULT leg is the one with the feature, and the control leg is
+# the one that has to switch it off.
+#
+# Note the kill switch is an exact `== "1"` test, not a presence test:
+# `ATLAS_NO_GDN_REGRESIDENT=0` leaves the feature ON.
 #
 # Usage: ab_gdn_regresident.sh <atlas_bin> <outdir> [reps]
 set -u
@@ -70,8 +77,8 @@ banners() {
 
 for leg in control regresident; do
   case $leg in
-    control)     EXTRA="" ;;                          # variable ABSENT — see TRAP above
-    regresident) EXTRA="-e ATLAS_GDN_REGRESIDENT=1" ;;
+    control)     EXTRA="-e ATLAS_NO_GDN_REGRESIDENT=1" ;;  # kill switch => WY4
+    regresident) EXTRA="" ;;                               # default => ON, see TRAP
   esac
   serve "$leg" "$EXTRA" || exit 1
   echo "=== leg=$leg serve up ==="

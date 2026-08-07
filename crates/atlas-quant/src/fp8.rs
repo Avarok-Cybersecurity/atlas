@@ -80,11 +80,25 @@ pub fn fp8_e4m3_to_f32(bits: u8) -> f32 {
 
 /// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
 ///
-/// SSOT for the FP32 -> BF16 rounding used by all FP8 dequant paths
-/// (`dequant_fp8_pertensor_to_bf16`, `dequant_fp8_block_to_bf16`, and
-/// transitively `quant_helpers::dequant_fp8_blockscaled_to_bf16`). The
-/// CUDA-side mirror is `__float2bfloat16_rn` in
-/// `kernels/gb10/common/moe_fp8_grouped_gemm.cu`.
+/// NOT the SSOT, despite what this comment used to claim. Nothing in the
+/// workspace depends on `atlas-quant` (it has zero dependents), so neither
+/// this function nor `FP8_E4M3_LUT` above is on any live dequant path. The
+/// copy that actually runs is `crates/spark-model/src/weight_map/fp8_lut.rs`,
+/// reached via that module's `dequant_*` helpers; the CUDA-side mirror is
+/// `__float2bfloat16_rn` in `kernels/gb10/common/moe_fp8_grouped_gemm.cu`.
+///
+/// The two Rust copies are byte-identical today (verified by normalising
+/// comments and whitespace over both the 256-entry LUT construction and this
+/// function body), so the duplication is currently harmless — but it is
+/// duplication, and only the spark-model copy can drift into production.
+/// Treat that one as authoritative; anything asserted here is unverified by
+/// any running code path.
+///
+/// What this file still has that the live copy does not: the PyTorch-parity
+/// test vectors in the `tests` module below. Those are the reason this was
+/// left in place rather than deleted outright — folding them onto the live
+/// copy (or hoisting the shared LUT into `atlas-core`, which both crates
+/// already depend on) is the real fix, and is deliberately NOT done here.
 ///
 /// Phase 2b (Atlas FP8 dequant audit, 2026-05-24): replaced truncation
 /// `(bits >> 16) as u16` with proper ties-to-even rounding. The

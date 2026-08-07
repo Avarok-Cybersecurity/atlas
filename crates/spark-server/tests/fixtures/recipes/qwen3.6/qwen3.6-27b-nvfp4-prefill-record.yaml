@@ -26,7 +26,14 @@ metadata:
     independently coherence-gated 10/10):
       ATLAS_FFN_NVFP4_MMQ=1     # vendored llama Blackwell FP4 block-scale
                                 # MMQ for FFN gate/up (80 TFLOP/s vs 51)
-      ATLAS_GDN_REGRESIDENT=1   # register-resident GDN warm replay
+      ATLAS_GDN_REGRESIDENT=1   # register-resident GDN warm replay.
+                                # HISTORICAL: this variable was live when the
+                                # record was set, but PR #369 folded the lever
+                                # default-ON and now only the kill switch
+                                # ATLAS_NO_GDN_REGRESIDENT=1 is read. Setting
+                                # the line above today does nothing (the lever
+                                # is already on); it is kept so the recorded
+                                # configuration stays readable as written.
       ATLAS_GDN_FLASHINFER=1    # FlashInfer GDN chunked prefill (+17-20%)
       ATLAS_GDN_LIB=<repo>/3rdparty_patches/gdn_aot/libatlasgdn.so
       CUTE_DSL_ARCH=sm_121a
