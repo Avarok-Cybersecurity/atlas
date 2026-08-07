@@ -362,7 +362,7 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
     // window size.
     if width >= 70 && job.rate_bps > 0.0 {
         spans.push(Span::styled(
-            format!("  {:.0} MB/s", job.rate_bps / 1e6),
+            format!("  {}", crate::tui::format::rate(job.rate_bps)),
             theme::dim(),
         ));
     }

@@ -85,9 +85,9 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(
             format!(
-                "  ↓{}/s ↑{}/s",
-                human_bytes(s.bytes_in_rate),
-                human_bytes(s.bytes_out_rate)
+                "  ↓{} ↑{}",
+                crate::tui::format::rate(s.bytes_in_rate),
+                crate::tui::format::rate(s.bytes_out_rate)
             ),
             theme::dim(),
         ),
@@ -405,15 +405,9 @@ fn fmt_ms(v: Option<f64>) -> String {
     }
 }
 
-fn human_bytes(rate: f64) -> String {
-    if rate >= 1_048_576.0 {
-        format!("{:.1}M", rate / 1_048_576.0)
-    } else if rate >= 1024.0 {
-        format!("{:.0}K", rate / 1024.0)
-    } else {
-        format!("{rate:.0}B")
-    }
-}
+// `human_bytes` was here: a private `K`/`M`/`B` ladder that named a magnitude
+// and no unit. It is `crate::tui::format::rate` now, with the download row —
+// see that function for why one formatter and why 1024.
 
 #[cfg(test)]
 #[path = "stats_tab_tests.rs"]

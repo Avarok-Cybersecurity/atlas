@@ -16,6 +16,7 @@
 //!   capture_layer   typed startup-progress event decoding
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
+//!   events_rules    the loop's decisions as pure functions, so they are testable
 //!   section         Section — the sidebar/nav SSOT
 //!   app             App state + reducer (section, focus, per-tab state)
 //!   app_quit        what `q` costs, and when it costs a second press
@@ -89,6 +90,7 @@ pub mod bench_state;
 pub mod commands;
 pub mod download_state;
 pub mod events;
+pub mod events_rules;
 pub mod format;
 pub mod lib_dates;
 pub mod lib_keys;

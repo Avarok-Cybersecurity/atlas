@@ -8,7 +8,10 @@ use crossterm::event::{KeyModifiers, MouseEvent};
 use ratatui::layout::Size;
 
 /// A terminal wide and tall enough for the full sidebar (18 cols) and the tall
-/// header (3 rows) — the geometry the row arithmetic below assumes.
+/// header (3 rows) — the geometry the row arithmetic below assumes, and which
+/// `render::Chrome` now decides for the renderer and this handler alike. The
+/// renderer's half of the invariant is
+/// `render::chrome_tests::the_frame_is_laid_out_where_the_chrome_says_it_is`.
 const WIDE: Size = Size {
     width: 120,
     height: 40,

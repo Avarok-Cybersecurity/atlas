@@ -48,15 +48,10 @@ fn ttft_switches_from_milliseconds_to_seconds_at_one_thousand() {
     assert_eq!(fmt_ms(Some(999.6)), "1000ms");
 }
 
-#[test]
-fn byte_rates_step_up_a_unit_at_each_binary_boundary() {
-    assert_eq!(human_bytes(0.0), "0B");
-    assert_eq!(human_bytes(1023.0), "1023B");
-    assert_eq!(human_bytes(1024.0), "1K");
-    assert_eq!(human_bytes(1_048_576.0), "1.0M");
-    // Same seam as `fmt_ms`: rounding happens after the unit is picked.
-    assert_eq!(human_bytes(1_048_575.0), "1024K");
-}
+// `byte_rates_step_up_a_unit_at_each_binary_boundary` was here, against a
+// private `human_bytes` this tab owned. The ladder is `tui::format::rate` now,
+// shared with the download row, and `format_tests` owns its boundaries — the
+// same ones, including the "1024 KB/s" seam one short of the turnover.
 
 #[test]
 fn an_idle_server_reports_nothing_measured_rather_than_a_plausible_zero() {
@@ -97,7 +92,10 @@ fn a_server_under_load_reports_its_measurements_in_the_tiles() {
     assert!(has(&rows, "p90 3.0s"));
     assert!(has(&rows, "atlas 57.2 GB"));
     assert!(has(&rows, "free 62.4"));
-    assert!(has(&rows, "↓2K/s ↑3.0M/s"), "{rows:#?}");
+    // ★ This read "↓2K/s ↑3.0M/s": a magnitude with no unit, on a tile whose
+    // other two figures are request counts. Same formatter as the download
+    // row now, so `M` cannot mean one thing here and another there.
+    assert!(has(&rows, "↓2.0 KB/s ↑3.0 MB/s"), "{rows:#?}");
 }
 
 #[test]

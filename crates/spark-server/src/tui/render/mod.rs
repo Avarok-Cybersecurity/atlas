@@ -14,13 +14,56 @@ mod stats_tab;
 mod terminal_tab;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::app::{App, Focus, MainSub, Section};
 use super::theme;
+
+/// Where the header ends and the sidebar ends, for a terminal of this size.
+///
+/// ★ **One definition, because the renderer and the hit-tester have to agree
+/// exactly.** `events::on_mouse` maps a click back to a sidebar row by
+/// subtracting the header height and testing the column against the sidebar
+/// width — so it held its own copy of all four breakpoints, in another file,
+/// with no test that could notice them drifting apart. The failure mode is
+/// silent: nothing crashes and no row is out of range, the wrong section just
+/// opens. It is the same class of defect as the subsection-offset bug
+/// [`super::events::sidebar_row`] was extracted to fix, one layer out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chrome {
+    /// Header rows above the sidebar's first row.
+    pub header_h: u16,
+    /// Sidebar columns.
+    pub sidebar_w: u16,
+}
+
+impl Chrome {
+    /// The chrome a terminal this size gets.
+    pub fn of(size: Size) -> Self {
+        Self {
+            // The three-row header carries the logo block; below this the
+            // content pane cannot spare the two rows, so it collapses to a
+            // one-line strip.
+            header_h: if size.height >= 28 { 3 } else { 1 },
+            // The wide sidebar carries labels; the narrow one is icons only.
+            sidebar_w: if size.width >= 96 { 18 } else { 4 },
+        }
+    }
+
+    /// Is the header drawing the logo block rather than the one-line strip?
+    pub fn tall_header(&self) -> bool {
+        self.header_h > 1
+    }
+
+    /// Is the sidebar drawing labels — and therefore the active section's
+    /// subsection rows, which shift every row below them?
+    pub fn full_sidebar(&self) -> bool {
+        self.sidebar_w >= 18
+    }
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -39,24 +82,22 @@ pub fn draw(f: &mut Frame, app: &App) {
         Block::default().style(Style::default().bg(theme::BG_BASE.color())),
         area,
     );
-    let tall = area.height >= 28;
-    let header_h = if tall { 3 } else { 1 };
+    let chrome = Chrome::of(area.as_size());
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_h),
+            Constraint::Length(chrome.header_h),
             Constraint::Min(5),
             Constraint::Length(1),
         ])
         .split(area);
-    header::draw_header(f, app, rows[0], tall);
+    header::draw_header(f, app, rows[0], chrome.tall_header());
 
-    let sidebar_w = if area.width >= 96 { 18 } else { 4 };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(sidebar_w), Constraint::Min(20)])
+        .constraints([Constraint::Length(chrome.sidebar_w), Constraint::Min(20)])
         .split(rows[1]);
-    draw_sidebar(f, app, cols[0], sidebar_w >= 18);
+    draw_sidebar(f, app, cols[0], chrome.full_sidebar());
 
     // The content area always wears a 1-cell ring so nothing shifts when a
     // benchmark starts; the ring is dim while idle and pulses brand cyan while
