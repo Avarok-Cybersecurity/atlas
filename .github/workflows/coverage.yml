@@ -1,8 +1,10 @@
 name: Coverage
 #
-# Reports line/region coverage; it does NOT gate. Test failures are ci.yml's
-# `test` job, and both Codecov statuses are `informational: true` on purpose —
-# see codecov.yml for the condition under which each gets tightened.
+# Reports line/region coverage. Test failures are ci.yml's `test` job. Both
+# Codecov statuses ENFORCE now (project `auto`/1%, patch 70% — see codecov.yml);
+# neither is a required check on `main`, so a coverage regression reports red
+# without wedging the merge button. This comment said `informational: true` for
+# as long as they were, and it outlived them by one commit.
 #
 # Cost note: this is a second full instrumented compile of the workspace on
 # every PR, on top of ci.yml's `test` job (they cannot share artifacts —
@@ -98,9 +100,10 @@ jobs:
           bash scripts/coverage.sh lcov.info | tee coverage-summary.txt
           status=${PIPESTATUS[0]}
 
-          # Put the TOTAL row in the run summary. While the Codecov statuses
-          # are informational, this is the only place the number is visible
-          # without leaving GitHub.
+          # Put the TOTAL row in the run summary: the number is then readable
+          # from the run itself, without a Codecov account and without leaving
+          # GitHub — including on a fork PR, where the upload is skipped for
+          # want of the token and Codecov posts nothing at all.
           {
             echo '### Coverage (workspace, GPU-free)'
             echo ''
@@ -120,8 +123,10 @@ jobs:
           # WRONG: a *compile* failure and a *test* failure are both cargo
           # exit 101, and on a compile failure `cargo llvm-cov report` still
           # emits a large, well-formed, entirely ZERO lcov.info. Passing the
-          # step would then publish 0% as a real measurement — and with the
-          # Codecov statuses informational, nothing downstream would object.
+          # step would then publish 0% as a real measurement. That was written
+          # when nothing downstream would have objected; now that both statuses
+          # enforce, something would — and it would report a coverage collapse
+          # on a branch whose actual problem is that it does not compile.
           #
           # A redundant red check is cheap. A number that is quietly a lie is
           # not. So: exit non-zero, skip the Codecov upload, keep the artifact.
