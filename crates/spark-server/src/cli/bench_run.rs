@@ -46,6 +46,12 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
             // readable half and must survive returning through main.
+            //
+            // ★ Nothing that must happen may be placed AFTER this call. Both
+            // exits here — the `exit` below and the `?` above — skip whatever
+            // follows, `exit` skipping destructors too. Teardown of a
+            // self-started server therefore lives inside `run` (and, for the
+            // paths that miss it, in `SelfServed::drop`), never here.
             if code != 0 {
                 std::process::exit(code);
             }
@@ -224,6 +230,11 @@ async fn run(args: RunArgs) -> Result<i32> {
     } else {
         None
     };
+    // Discovered BEFORE the server exists. It is fallible, and every fallible
+    // step that happens with a model loaded is one more path that has to tear
+    // it down; the ones that can happen first, should. (`SelfServed::drop`
+    // covers the ones that cannot.)
+    let store = store()?;
     let served = if args.pull_request_gate {
         Some(super::bench_selfstart::serve_for(&args.id, args.hardware.as_deref()).await?)
     } else {
@@ -234,7 +245,6 @@ async fn run(args: RunArgs) -> Result<i32> {
         None => TargetEndpoint::new(&args.url, args.model.as_deref().unwrap_or_default()),
     };
 
-    let store = store()?;
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
     let request = RunRequest {
         descriptor,

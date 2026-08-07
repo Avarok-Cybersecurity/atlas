@@ -20,6 +20,17 @@
 //! invocation therefore serves exactly one model and then exits. A second
 //! self-start in the same process is refused with a real message rather than
 //! left to hang on a listener that will never come up.
+//!
+//! ## Teardown on EVERY path
+//!
+//! This mode manages a model on a unified-memory box, where a leaked serve does
+//! not waste a GPU, it wedges the machine. So the handle lives inside
+//! [`SelfServed`], which tears it down in `Drop` — not only in the explicit
+//! `shutdown()`. Dropping a `JoinHandle` DETACHES the task, so every `?` between
+//! the spawn and the caller's teardown used to leak a loaded model: a boot
+//! timeout inside [`serve_for`] and an artifact-store failure in `bench_run`
+//! both did. The `Drop` makes those paths — and a panic — teardowns rather than
+//! leaks.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,21 +72,58 @@ pub struct SelfServed {
     pub target: TargetEndpoint,
     /// The recipe that produced it, for the record's provenance.
     pub recipe_id: String,
-    server: tokio::task::JoinHandle<Result<()>>,
+    /// `None` once teardown has taken it. An `Option` rather than a bare handle
+    /// so that `Drop` — which cannot move out of `self` — can still tear down
+    /// whatever `shutdown()` did not.
+    server: Option<tokio::task::JoinHandle<Result<()>>>,
 }
 
 impl SelfServed {
-    /// Stop the server.
+    /// Stop the server and WAIT for it to be gone.
     ///
     /// ★ Call this AFTER the gate record is written, never before. The record's
     /// hardware fingerprint is fetched from the endpoint, and that fetch
     /// degrades to `Hardware::unknown()` on every failure path WITHOUT
     /// surfacing an error — so tearing down first yields a committed record
     /// that claims an unknown box and still exits successfully.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         crate::tui::shutdown::request("benchmark gate run finished");
-        self.server.abort();
-        let _ = self.server.await;
+        if let Some(server) = self.server.take() {
+            server.abort();
+            let _ = server.await;
+        }
+    }
+}
+
+impl Drop for SelfServed {
+    /// Last-resort teardown for the paths that never reach [`Self::shutdown`].
+    ///
+    /// A dropped `JoinHandle` DETACHES its task — the server would keep the
+    /// model resident with nothing left holding a reference to it. On a unified
+    /// 121 GB pool that is not a leaked GPU, it is a wedged box, and "the
+    /// process exits soon anyway" is not a teardown: it is an assumption about
+    /// the caller that `--no-fail-on-verdict` and any in-process caller break.
+    ///
+    /// Best-effort by construction: `Drop` cannot await, so this aborts and
+    /// returns. The awaiting version is [`Self::shutdown`], which is what the
+    /// normal paths call; by the time this runs on those, `server` is already
+    /// `None` and there is nothing to do.
+    ///
+    /// It deliberately does NOT call `shutdown::request` the way
+    /// [`Self::shutdown`] does. That latch is process-wide and has no reset, so
+    /// tripping it from a destructor would make one gate's failed boot refuse
+    /// every later `model_swap` and cancel every later `run_blocking` in the
+    /// process — a scope far wider than the thing being cleaned up. The abort is
+    /// enough on its own: it drops the serve future, which drops the host, which
+    /// closes the scheduler's request channel, and THAT is what releases the
+    /// weights. Refusing a second self-start is `claim_start_slot`'s job, not a
+    /// side effect of this one.
+    fn drop(&mut self) {
+        let Some(server) = self.server.take() else {
+            return;
+        };
+        eprintln!("gate: tearing down the self-started server (no explicit shutdown ran)");
+        server.abort();
     }
 }
 
@@ -138,13 +186,6 @@ pub(super) fn resolve(
 /// baseline has exactly one, and otherwise refuses rather than guessing which
 /// box's config to serve.
 pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<SelfServed> {
-    if STARTED.swap(true, Ordering::SeqCst) {
-        bail!(
-            "a benchmark gate already started a server in this process; the shutdown latch is \
-             one-way, so a second one cannot come up. Run one benchmark per invocation."
-        );
-    }
-
     let root = super::bench_run::repo_root()?;
     let baseline = gate::read_baseline(&root, benchmark_id)?;
     let Resolved { model, recipe_id } = resolve(&baseline, benchmark_id, hardware)?;
@@ -186,19 +227,64 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
 
     check_box_is_free_enough(serve_args.gpu_memory_utilization, &recipe_id)?;
 
+    // Claimed HERE — immediately before the spawn — and not on entry. Everything
+    // above this line can fail without a server ever existing and therefore
+    // without tripping the shutdown latch, so poisoning the process on a
+    // mistyped `--hardware` would refuse a second attempt that would have
+    // worked.
+    claim_start_slot(&STARTED, crate::tui::shutdown::requested())?;
+
     eprintln!("gate: serving {model} from recipe {recipe_id} on port {port}");
-    let mut server =
+    let server =
         tokio::spawn(async move { crate::main_modules::serve::serve(serve_args, None).await });
 
-    let target = TargetEndpoint::local(port, &model);
-    await_serving(&target, &model, &mut server).await?;
+    // The handle is handed to `SelfServed` BEFORE the wait, so the `?` below is
+    // a teardown and not a leak: a boot timeout used to drop the handle, which
+    // detaches the task and leaves the model resident.
+    let mut served = SelfServed {
+        target: TargetEndpoint::local(port, &model),
+        recipe_id,
+        server: Some(server),
+    };
+    await_serving(
+        &served.target,
+        &model,
+        served.server.as_mut().expect("just constructed as Some"),
+    )
+    .await?;
     eprintln!("gate: endpoint is serving {model}");
 
-    Ok(SelfServed {
-        target,
-        recipe_id,
-        server,
-    })
+    Ok(served)
+}
+
+/// Claim this process's ONE self-start slot.
+///
+/// Pure so both refusals are testable without a GPU: the decision is the whole
+/// of the invariant, and the state it reads is process-global.
+///
+/// Two ways to be refused, and they are different failures:
+///
+/// * A gate already started a server here. Teardown tripped the one-way
+///   shutdown latch, so a second serve would come up into a process that is
+///   already draining and would never begin serving.
+/// * A shutdown was requested for some other reason (Ctrl+C during the recipe
+///   resolution, say). Same outcome, different cause — and worth saying so,
+///   because "run one benchmark per invocation" would be wrong advice here.
+fn claim_start_slot(started: &AtomicBool, shutdown_requested: bool) -> Result<()> {
+    if shutdown_requested {
+        bail!(
+            "a shutdown has already been requested in this process, and that latch has no reset. \
+             A server started now would return without ever serving, so the run is refused here \
+             rather than after a fifteen-minute wait for a listener that is not coming."
+        );
+    }
+    if started.swap(true, Ordering::SeqCst) {
+        bail!(
+            "a benchmark gate already started a server in this process; the shutdown latch is \
+             one-way, so a second one cannot come up. Run one benchmark per invocation."
+        );
+    }
+    Ok(())
 }
 
 /// Refuse to self-start onto a box that is already holding memory.
@@ -219,6 +305,22 @@ fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
         eprintln!("gate: cannot read host memory; skipping the free-memory preflight");
         return Ok(());
     };
+    eprintln!(
+        "{}",
+        headroom_verdict(total_gib, avail_gib, util, recipe_id)?
+    );
+    Ok(())
+}
+
+/// The preflight decision for one reading: the line to print, or the refusal.
+///
+/// Pure, because the threshold is the whole of the check and a threshold that
+/// is only exercised on a box that happens to be busy is a threshold nobody has
+/// tested. `total_gib` is guaranteed positive by [`host_memory_gib`].
+///
+/// Named remedies in the refusal: "not enough memory" without saying what is
+/// holding it sends the reader looking in the wrong place.
+fn headroom_verdict(total_gib: f64, avail_gib: f64, util: f64, recipe_id: &str) -> Result<String> {
     let free_fraction = avail_gib / total_gib;
     if free_fraction < MIN_FREE_FRACTION {
         bail!(
@@ -234,11 +336,10 @@ fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
             MIN_FREE_FRACTION * 100.0,
         );
     }
-    eprintln!(
+    Ok(format!(
         "gate: {avail_gib:.0} GiB of {total_gib:.0} GiB free ({:.0} %); serving at {util:.2} as the recipe states",
         free_fraction * 100.0
-    );
-    Ok(())
+    ))
 }
 
 /// `(MemTotal, MemAvailable)` in GiB from `/proc/meminfo`.
@@ -246,6 +347,11 @@ fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
 /// `MemAvailable`, not `MemFree`: page cache is reclaimable, and `MemFree`
 /// reads near-zero on a healthy box that has been running a while, which would
 /// make this refuse everything.
+///
+/// A non-positive `MemTotal` reads as UNREADABLE rather than as a reading: the
+/// fraction would be NaN or infinite, and `NaN < MIN_FREE_FRACTION` is false —
+/// i.e. an unparsable `/proc/meminfo` would silently PASS the preflight it
+/// exists to fail.
 fn host_memory_gib() -> Option<(f64, f64)> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     let field = |name: &str| -> Option<f64> {
@@ -257,7 +363,8 @@ fn host_memory_gib() -> Option<(f64, f64)> {
             .ok()
             .map(|kb| kb / 1024.0 / 1024.0)
     };
-    Some((field("MemTotal:")?, field("MemAvailable:")?))
+    let (total, avail) = (field("MemTotal:")?, field("MemAvailable:")?);
+    (total > 0.0 && avail.is_finite()).then_some((total, avail))
 }
 
 /// Block until `/v1/models` names `model`.
@@ -290,14 +397,19 @@ async fn await_serving(
                     .with_context(|| format!("the server task died serving {model:?}")),
             };
         }
-        if let Ok(models) = atlas_plugin::http::list_models(target, Duration::from_secs(5)).await
-            && models.iter().any(|m| m == model)
-        {
-            return Ok(());
-        }
+        // What the endpoint just said, so a timeout can distinguish "nothing
+        // was listening" from "something answered, with a DIFFERENT
+        // checkpoint". The second is the case this function exists to refuse,
+        // and reporting it as a bare timeout would send the reader hunting a
+        // slow load instead.
+        let last = match atlas_plugin::http::list_models(target, Duration::from_secs(5)).await {
+            Ok(models) if models.iter().any(|m| m == model) => return Ok(()),
+            Ok(models) => format!("the endpoint is serving {models:?}"),
+            Err(e) => format!("{e:#}"),
+        };
         if Instant::now() >= deadline {
             bail!(
-                "{model:?} did not come up within {}s",
+                "{model:?} did not come up within {}s — {last}",
                 BOOT_TIMEOUT.as_secs()
             );
         }
@@ -306,90 +418,5 @@ async fn await_serving(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use atlas_plugin::gate::{GateBaseline, HardwareBaseline, ModelBaseline};
-
-    fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
-        let mut hardware = BTreeMap::new();
-        for (hw, model, recipe) in entries {
-            let e = hardware
-                .entry(hw.to_string())
-                .or_insert_with(|| HardwareBaseline {
-                    default: model.to_string(),
-                    models: BTreeMap::new(),
-                });
-            e.models.insert(
-                model.to_string(),
-                ModelBaseline {
-                    recipe: recipe.map(str::to_string),
-                    note: String::new(),
-                    metrics: BTreeMap::new(),
-                },
-            );
-        }
-        GateBaseline {
-            schema: 2,
-            hardware,
-        }
-    }
-
-    #[test]
-    fn a_single_box_class_is_inferred() {
-        let b = baseline(&[("gb10", "unsloth/Qwen3.6-27B-NVFP4", Some("qwen3.6/x"))]);
-        let r = resolve(&b, "bfcl-subset", None).expect("inferred");
-        assert_eq!(r.model, "unsloth/Qwen3.6-27B-NVFP4");
-        assert_eq!(r.recipe_id, "qwen3.6/x");
-    }
-
-    #[test]
-    fn several_box_classes_refuse_to_guess() {
-        // Guessing here would serve one box's config and score it against the
-        // other's thresholds — TTFT ceilings are box-local.
-        let b = baseline(&[("gb10", "m", Some("r")), ("mi300x", "m", Some("r2"))]);
-        let err = resolve(&b, "ttft-warm-gate", None).expect_err("refused");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("gb10"), "{msg}");
-        assert!(msg.contains("mi300x"), "{msg}");
-        assert!(msg.contains("--hardware"), "names the fix: {msg}");
-    }
-
-    #[test]
-    fn an_explicit_box_class_picks_its_entry() {
-        let b = baseline(&[
-            ("gb10", "a", Some("recipe-a")),
-            ("mi300x", "b", Some("recipe-b")),
-        ]);
-        let r = resolve(&b, "ttft-warm-gate", Some("mi300x")).expect("picked");
-        assert_eq!(r.recipe_id, "recipe-b");
-    }
-
-    #[test]
-    fn an_unknown_box_class_names_what_exists() {
-        let b = baseline(&[("gb10", "m", Some("r"))]);
-        let err = resolve(&b, "bfcl-subset", Some("h100")).expect_err("refused");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("h100"), "{msg}");
-        assert!(msg.contains("gb10"), "lists what it has: {msg}");
-    }
-
-    #[test]
-    fn a_baseline_without_a_recipe_cannot_self_start() {
-        // The honest failure: this gate has thresholds but nothing says how to
-        // serve them, so it must refuse rather than invent a config.
-        let b = baseline(&[("gb10", "m", None)]);
-        let err = resolve(&b, "bfcl-subset", None).expect_err("refused");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("no recipe is bound"), "{msg}");
-        assert!(
-            msg.contains("--url/--model"),
-            "offers the alternative: {msg}"
-        );
-    }
-
-    #[test]
-    fn an_empty_baseline_is_an_error_not_a_default() {
-        let b = baseline(&[]);
-        assert!(resolve(&b, "bfcl-subset", None).is_err());
-    }
-}
+#[path = "bench_selfstart_tests.rs"]
+mod tests;

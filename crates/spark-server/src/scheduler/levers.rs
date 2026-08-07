@@ -103,8 +103,30 @@ fn present(var: &str) -> bool {
 static MTP_GATE_FORCE_CLI: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Publish the command line's `--mtp-gate`. Call once, at serve time.
-pub fn set_mtp_gate_force(force: bool) {
-    let _ = MTP_GATE_FORCE_CLI.set(force);
+///
+/// `None` means the flag was NOT given. Publishing the `auto` default instead
+/// sealed this cell on every `spark serve` and left `ATLAS_MTP_GATE_FORCE=1`
+/// documented but dead — the fallback below could never be reached. An absent
+/// flag now publishes nothing, so the variable works again for the scripts it
+/// exists for, and an explicit `--mtp-gate auto` still overrides it.
+pub fn set_mtp_gate_force(force: Option<bool>) {
+    if let Some(force) = force {
+        let _ = MTP_GATE_FORCE_CLI.set(force);
+    }
+}
+
+/// The `--mtp-gate force` decision IN FORCE: the flag when it was given, the
+/// legacy variable otherwise.
+///
+/// The SSOT for the resolution — `SchedLevers::from_env` reads it, and so does
+/// the startup log, which must print what is in force rather than what was
+/// asked for. Two spellings of this rule is how the log came to report `auto`
+/// on a run that was forcing.
+pub fn mtp_gate_force() -> bool {
+    MTP_GATE_FORCE_CLI
+        .get()
+        .copied()
+        .unwrap_or_else(|| opt_in("ATLAS_MTP_GATE_FORCE"))
 }
 
 impl SchedLevers {
@@ -145,10 +167,7 @@ impl SchedLevers {
             mtp_timing: opt_in("ATLAS_MTP_TIMING"),
             // `--mtp-gate force` is the configured spelling; the env var is
             // the fallback for scripts that predate the flag.
-            mtp_gate_force: MTP_GATE_FORCE_CLI
-                .get()
-                .copied()
-                .unwrap_or_else(|| opt_in("ATLAS_MTP_GATE_FORCE")),
+            mtp_gate_force: mtp_gate_force(),
             adadec_diagnostic: present("ATLAS_ADADEC_DIAGNOSTIC"),
 
             loop_watchdog: AtomicBool::new(false),
@@ -255,6 +274,30 @@ mod tests {
         assert!(d.loop_watchdog());
         d.set_loop_watchdog(false);
         assert!(!d.loop_watchdog());
+    }
+
+    #[test]
+    fn an_absent_mtp_gate_flag_leaves_the_legacy_variable_reachable() {
+        // The whole of the fix: publishing the clap default sealed
+        // `MTP_GATE_FORCE_CLI` on every `spark serve`, so the
+        // `ATLAS_MTP_GATE_FORCE` fallback in `mtp_gate_force` could never run
+        // even though `--help` documents it. `None` must not seal.
+        //
+        // ★ The cell is process-global with no reset, so this is the only test
+        // in this binary that may write it — a second writer would make both
+        // order-dependent.
+        for _ in 0..3 {
+            set_mtp_gate_force(None);
+        }
+        set_mtp_gate_force(Some(true));
+        assert!(
+            mtp_gate_force(),
+            "an absent flag must leave the cell open for the next writer"
+        );
+        assert!(
+            SchedLevers::from_env().mtp_gate_force,
+            "and the carried levers read the same resolution — one rule, not two"
+        );
     }
 
     #[test]

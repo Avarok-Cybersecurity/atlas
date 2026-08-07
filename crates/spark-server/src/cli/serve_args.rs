@@ -163,10 +163,13 @@ pub struct ServeArgs {
     /// vanishes at C=64. Choose it per workload — which is precisely why it is
     /// a flag and not a default.
     ///
-    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when the flag is
-    /// absent.
-    #[arg(long, default_value = "f32")]
-    pub ssm_h_dtype: String,
+    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when NONE of the three
+    /// GDN flags is given. `GdnFlags` is published as one cell, so any of them
+    /// takes the whole decision away from the environment; `warn_shadowed_env`
+    /// says so when that happens rather than leaving it to be discovered in a
+    /// benchmark number.
+    #[arg(long)]
+    pub ssm_h_dtype: Option<String>,
 
     /// Fused GDN output-norm kernel on the decode path (default: off).
     ///
@@ -178,18 +181,25 @@ pub struct ServeArgs {
     /// nondeterminism. Under PCND an unproven numerics change is explicit
     /// configuration, not a default.
     ///
-    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`.
-    #[arg(long, default_value_t = false)]
-    pub gdn_fused_norm: bool,
+    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
+    ///
+    /// `Option` so that ABSENT is distinguishable from `false`: publishing the
+    /// clap default sealed the flags cell on every boot, which made the legacy
+    /// variable inert while `--help` still documented it. Bare
+    /// `--gdn-fused-norm` still means on; `--gdn-fused-norm false` is the
+    /// explicit off.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub gdn_fused_norm: Option<bool>,
 
     /// Batched multi-sequence GDN recurrent decode kernel (default: off).
     ///
     /// One strided launch across the batch instead of one per sequence.
     /// Same bitwise-certification gap as `--gdn-fused-norm`; see that flag.
     ///
-    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`.
-    #[arg(long, default_value_t = false)]
-    pub ssm_batched_recurrent: bool,
+    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`, on the same terms as
+    /// `--gdn-fused-norm`, and `Option` for the same reason.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub ssm_batched_recurrent: Option<bool>,
 
     /// Mid-chunk SSM tail capture on the prefill path (default: on).
     ///
@@ -198,9 +208,15 @@ pub struct ServeArgs {
     /// clamp-based tail-checkpoint path costs on a warm turn. Off is
     /// byte-identical to the pre-2026-07-19 baseline.
     ///
-    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    pub ssm_tail_midchunk: bool,
+    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
+    ///
+    /// Absent is not the same as `--ssm-tail-midchunk true`, which is why there
+    /// is no clap default here: publishing a default sealed the runtime's cell
+    /// on every boot and made that documented opt-out a silent no-op. Give the
+    /// flag to decide, omit it to let the environment decide, and with neither
+    /// it is on.
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub ssm_tail_midchunk: Option<bool>,
 
     /// MTP throughput gate: `auto` (default) or `force`.
     ///
@@ -212,12 +228,16 @@ pub struct ServeArgs {
     /// if forcing wins, the GATE is miscalibrated and that is the fix, not
     /// this flag. To run without speculation at all, omit `--speculative`.
     ///
-    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force`.
-    #[arg(long, default_value = "auto")]
-    pub mtp_gate: String,
+    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force` when this flag is
+    /// ABSENT. As with `--ssm-tail-midchunk`, there is no clap default: a
+    /// published default would seal the scheduler's cell to `auto` on every
+    /// boot and silently ignore the variable it documents.
+    #[arg(long)]
+    pub mtp_gate: Option<String>,
 
-    /// LM-head precision: `default` (model-config-driven), `bf16` (final vocab projection
-    /// in BF16 — the SAFE DEFAULT, matches vLLM checkpoint precision), `nvfp4` (force the
+    /// LM-head precision: `default` (the clap default — no override, the model config
+    /// decides), `bf16` (final vocab projection in BF16 — the SAFE CHOICE, and what to pass
+    /// when the config picks something lower; matches vLLM checkpoint precision), `nvfp4` (force the
     /// model's NVFP4-packed lm_head), or `fp8` (runtime-quantize the lm_head to FP8 E4M3
     /// per-row, w8a16_gemv decode). The big vocab projection (~1.78 GB/token BF16 at a
     /// 248K vocab) is the single largest per-token weight read; `fp8` halves it and `nvfp4`
