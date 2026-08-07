@@ -65,7 +65,7 @@ function extractJs(text) {
     const out = [];
     // Closed <script>…</script> bodies (skip external src=).
     for (const s of block.matchAll(
-      /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi
+      /<script\b([^>]*)>([\s\S]*?)<\/script(?=[\s/>])[^>]*>/gi
     )) {
       if (!/\bsrc\s*=/.test(s[1])) out.push(s[2]);
     }
@@ -78,7 +78,7 @@ function extractJs(text) {
       // whitespace before the `>` is VALID, so a tail containing one is NOT
       // unclosed. Fixing only the first regex and leaving this twin is how the
       // bug survives — a closed block would be re-pushed as an open one.
-      !/<\/script\s*>/i.test(lastOpen[2])
+      !/<\/script(?=[\s\/>])[^>]*>/i.test(lastOpen[2])
     ) {
       out.push(lastOpen[2]);
     }
