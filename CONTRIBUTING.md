@@ -204,16 +204,86 @@ Open an issue with:
 
 ## Pull Request Process
 
-1. Fork the repo and create a feature branch
-2. Make your changes with clear, atomic commits
-3. Ensure CI passes: `cargo fmt`, `cargo clippy`, `cargo test`, CUDA format + lint
-4. Open a PR with:
-   - **What** — Summary of the change
-   - **Why** — Motivation and context
-   - **Benchmarks** — Before/after numbers for performance-related changes
-   - **Authorship** — Indicate whether the PR was AI-generated, human-written, or a mix. Human-written sections must include justification for why AI was not used.
-5. **Sign the Contributor License Agreement (CLA)**. Our automated `CLA Assistant` bot will leave a comment on your PR. You must reply to this comment explicitly acknowledging and signing the [CLA](CLA.md) before we can merge your changes.
-6. A maintainer (and/or AI reviewer) will review and merge
+The loop below is the whole process. It has exactly two exits: **merge**, or
+**back to editing**. Nothing else advances, and nothing skips the gates.
+
+```mermaid
+flowchart TD
+    classDef human fill:#5a189a,stroke:#3c096c,color:#e0aaff
+    classDef auto fill:#1e6091,stroke:#184e77,color:#d9ed92
+    classDef gate fill:#7f4f24,stroke:#582f0e,color:#ffe6a7
+    classDef done fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
+
+    MAIN([main]):::done
+    BRANCH[branch off main<br/><code>git switch -c feat/thing origin/main</code>]:::auto
+    OPEN[open the PR<br/>What · Why · Benchmarks · <b>Authorship</b>]:::auto
+    EDIT[make edits<br/>atomic commits, each explaining WHY]:::auto
+    CHECKS[run the PR gate checks<br/><code>spark benchmark run &lt;gate&gt; --pull-request-gate --yes</code>]:::gate
+    GREEN{all gates green?}:::gate
+    REVIEW[wait for human review]:::human
+    VERDICT{approved?}:::human
+    MERGE([squash and merge]):::done
+
+    MAIN --> BRANCH --> OPEN --> EDIT --> CHECKS --> GREEN
+    GREEN -- no --> EDIT
+    GREEN -- yes --> REVIEW --> VERDICT
+    VERDICT -- changes requested --> EDIT
+    VERDICT -- yes --> MERGE
+    MERGE --> MAIN
+```
+
+### The same loop, for an agent
+
+Machine-readable because an agent should not have to infer the contract from
+prose. Each state names its exit condition and the command that proves it.
+
+| # | State | Command | Advance when | Else |
+|---|---|---|---|---|
+| 1 | `branch` | `git switch -c <topic> origin/main` | branch exists, based on current `origin/main` | — |
+| 2 | `open` | `gh pr create` | PR body has What, Why, Benchmarks, **Authorship** | fill them in |
+| 3 | `edit` | — | change is complete and committed | — |
+| 4 | `checks` | `cargo fmt --all -- --check`<br/>`cargo clippy --workspace --tests`<br/>`cargo test --workspace`<br/>`cargo doc --workspace --no-deps` | all four exit 0 | → 3 |
+| 5 | `gates` | `./target/release/spark benchmark run <id> --pull-request-gate --yes` | every required gate PASSes at the **current tip** | → 3 |
+| 6 | `cla` | reply to the CLA bot | signed | blocked |
+| 7 | `review` | — | a human approves | → 3 |
+| 8 | `merge` | maintainer squashes | — | — |
+
+Invariants an agent must not violate:
+
+- **A gate record is only valid for the commit that produced it.** Any change
+  under `crates/`, `kernels/`, `Cargo.*`, `vendor/`, `jinja-templates/` or
+  `rust-toolchain.toml` invalidates every record. Re-run the gates after your
+  last code commit, not before it.
+- **Never commit a record produced by a dirty tree.** It names a commit whose
+  binary did not produce it, which is worse than having no record.
+- **Never lower a threshold in `.benchmarks/*/BASELINE.json` to make a gate
+  pass.** Those are evidence. If a gate is wrong, say so in the PR and argue it.
+- **`cargo doc` is part of the sweep.** `fmt`, `clippy` and `test` all pass on a
+  broken rustdoc; a dangling intra-doc link only fails under `cargo doc`.
+- **Report what you measured, separately from what you inferred.** A precise
+  negative result is worth more than a confident guess.
+
+### Authorship, and why we ask
+
+Atlas is an **AI-first codebase**, and the PR template's Authorship field is not
+bookkeeping — it is the measurement. We expect essentially every PR to be
+AI-generated, and we are tracking the exceptions on purpose.
+
+- **AI-authored is the default and the target.** No justification needed.
+- **Human-authored code must be defended.** Name the parts a human wrote and
+  explain what the human did that the AI could not. "I found it faster by hand"
+  is a real answer; so is "the AI produced something that measured worse, here
+  are both numbers."
+- **Those defences are the dataset.** Each one marks a place where the tooling
+  is still behind, and each is a target for closing. The intent is that the
+  share of human-written code trends toward zero — not because humans are
+  unwelcome, but because every case where a human still has to intervene is a
+  gap we would rather fix than institutionalise.
+- **Human-written code gets reviewed by AI**, to check the claim that the human
+  approach was genuinely better. This cuts both ways: if the review says the
+  human was right, that is a finding worth keeping.
+
+You will not be penalised for writing code by hand. You will be asked why.
 
 ## License & CLA
 

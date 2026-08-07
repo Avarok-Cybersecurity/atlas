@@ -82,6 +82,44 @@ We make no compromises or generalizations. Each hardware and model combination h
 
 It took a significant amount of time to build this codebase. We also know people will want to submit AI-generated PRs. We can't stop you, and in fact, given SOTA, you might just have to! The good news is that this codebase was built with enough railguards, structure, and abstraction to guide your AI to absorb the entire monorepo and contribute meaningfully. There's enough context to keep this going off the rails like a crazy train.This means ultimately that instead of waiting for days to weeks before getting model support, you can just fork this repo, and ask your AI to integrate it, then within hours you'll more likely than not have a working model running. We will not be condescending, [unlike some other inference engines out there when good-faith PRs that simply work are posted](https://github.com/ggml-org/llama.cpp/pull/18680#issuecomment-3723954542). We are not stymied by bureacracy, and want to enable the community to rapidly expand this monorepo ecosystem safely and effectively.
 
+**AI-authored PRs are the default, and the target.** If you write code by hand,
+we ask you to say which parts and why the human beat the AI — not to discourage
+you, but because every such case marks a gap in the tooling that we would rather
+close than live with. The intent is that the share of hand-written code trends
+toward zero. Human-written sections are reviewed by AI to check that claim, and
+if the review finds the human was right, that is a result worth keeping.
+
+The contribution loop has exactly two exits — merge, or back to editing:
+
+```mermaid
+flowchart TD
+    classDef human fill:#5a189a,stroke:#3c096c,color:#e0aaff
+    classDef auto fill:#1e6091,stroke:#184e77,color:#d9ed92
+    classDef gate fill:#7f4f24,stroke:#582f0e,color:#ffe6a7
+    classDef done fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
+
+    MAIN([main]):::done
+    BRANCH[branch off main]:::auto
+    OPEN[open the PR<br/>What · Why · Benchmarks · <b>Authorship</b>]:::auto
+    EDIT[make edits]:::auto
+    CHECKS[run the PR gate checks]:::gate
+    GREEN{all gates green?}:::gate
+    REVIEW[wait for human review]:::human
+    VERDICT{approved?}:::human
+    MERGE([squash and merge]):::done
+
+    MAIN --> BRANCH --> OPEN --> EDIT --> CHECKS --> GREEN
+    GREEN -- no --> EDIT
+    GREEN -- yes --> REVIEW --> VERDICT
+    VERDICT -- changes requested --> EDIT
+    VERDICT -- yes --> MERGE
+    MERGE --> MAIN
+```
+
+The per-state commands, exit conditions and the invariants an agent must not
+violate are in [`CONTRIBUTING.md`](CONTRIBUTING.md#pull-request-process) — in a
+table, because an agent should not have to infer the contract from prose.
+
 #### Theory-Friendly Codebase
 
 Arxiv is getting countless papers published every day on AI. Nobody can keep up. Yet, some papers may be relevant to this project, others may not. Research endeavors to improve quality, alignment, and speed ought to be considered by our community as something we can integrate cleanly. Feel free to open a PoC PR here and just explain what you did and why, and how it works.

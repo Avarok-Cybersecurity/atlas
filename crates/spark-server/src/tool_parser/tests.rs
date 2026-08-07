@@ -2,6 +2,7 @@
 #![allow(unused_imports, dead_code)]
 
 mod group_a;
+mod group_a_formats;
 mod group_b;
 mod group_b_mistral;
 mod group_c;
