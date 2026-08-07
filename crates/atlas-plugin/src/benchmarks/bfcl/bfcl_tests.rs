@@ -114,6 +114,55 @@ fn reconfiguring_clears_generated_responses() {
     assert!(b.responses.is_empty() && b.cursor == 0 && b.tool_call_samples == 0);
 }
 
+/// The committed baseline pins the draw each variant actually makes.
+///
+/// ★ Three places state a draw size — the variant's `expected_samples`, the
+/// arithmetic the parameter defaults produce (`draw_tests`), and the `samples`
+/// bound in `.benchmarks/<id>/BASELINE.json`. The first two are tested against
+/// each other; nothing tied either to the third, which is the only one that
+/// actually FAILS a run. A baseline pinned to a draw the benchmark no longer
+/// makes fails every honest run, and a baseline pinned to nothing accepts a
+/// score from any draw at all — the failure this pin exists to catch, moved
+/// one file over.
+///
+/// The pin must be EXACT (`min == max`). A one-sided `min` would accept the
+/// full 3625-sample draw against subset thresholds.
+#[test]
+fn the_committed_baselines_pin_the_draw_each_variant_makes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root is two levels above the crate");
+
+    for variant in [Variant::Subset, Variant::SubsetEcholp] {
+        let id = variant.descriptor().id;
+        let want = variant
+            .expected_samples()
+            .expect("a gated variant has a pinned draw") as f64;
+        let baseline = crate::gate::read_baseline(root, id)
+            .unwrap_or_else(|e| panic!("{id}: baseline does not load: {e:#}"));
+        for (hw, entry) in &baseline.hardware {
+            for (model, mb) in &entry.models {
+                let bound = mb.metrics.get("samples").unwrap_or_else(|| {
+                    panic!(
+                        "{id}/{hw}/{model}: no `samples` bound — a score from any draw \
+                         would be accepted against these thresholds"
+                    )
+                });
+                assert_eq!(
+                    (bound.min, bound.max),
+                    (Some(want), Some(want)),
+                    "{id}/{hw}/{model}: the draw must be pinned EXACTLY at {want}"
+                );
+                assert!(
+                    bound.noise.is_none(),
+                    "{id}/{hw}/{model}: a sample count is exact; noise would widen the pin"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_mlperf_floors_are_the_recorded_thresholds() {
     // 86.23 / 87.96 × 0.97, the `mlperf-edge-current` numbers for qwen3.6-27b.

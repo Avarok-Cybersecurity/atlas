@@ -63,6 +63,41 @@ pub const REQUIRED_GATES: [&str; 5] = [
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.
 pub const HARDWARE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The tracked paths that determine what a gate run measures. A diff touching
+/// any of them between a record's commit and `head` invalidates that record —
+/// see [`check::record_covers`].
+///
+/// ★ **Over-broad costs a re-run; under-broad is a lie.** A path missing from
+/// this list does not fail loudly — it makes a stale record keep speaking for a
+/// commit it never measured, which is the one outcome a gate must never
+/// produce. So the bar for adding a path is "could changing it move a number?",
+/// not "is it code?".
+///
+/// * `crates`, `kernels`, `Cargo.toml`, `Cargo.lock`, `vendor` — the binary.
+///   `crates` also carries the BFCL dataset provisioner and AST scorer
+///   (`crates/atlas-plugin/assets/bfcl/*.py`), which define the score itself.
+/// * `jinja-templates` — **not build input, runtime input.** The server loads
+///   `jinja-templates/<model_type>.jinja` from the repo root at startup and it
+///   OVERRIDES the checkpoint's own chat template, so editing one changes the
+///   exact bytes every prompt is rendered to. A tool-schema change in a
+///   template has already been measured moving BFCL by +2.70 points; without
+///   this entry that edit would have inherited the previous run's record.
+/// * `rust-toolchain.toml` — pins the compiler. A bump rebuilds every kernel
+///   launch path from the same sources into a different binary.
+///
+/// Deliberately NOT here: `.benchmarks` (the records and thresholds are the
+/// verdict, not the subject), `bench/` and `scripts/` (developer tooling that
+/// no gate drives), and docs.
+pub const PERF_PATHS: [&str; 7] = [
+    "crates",
+    "kernels",
+    "Cargo.toml",
+    "Cargo.lock",
+    "vendor",
+    "jinja-templates",
+    "rust-toolchain.toml",
+];
+
 /// `.benchmarks/<benchmark_id>` under `root`.
 pub fn gate_dir(root: &Path, benchmark_id: &str) -> PathBuf {
     root.join(".benchmarks").join(benchmark_id)

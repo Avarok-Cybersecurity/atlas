@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::record::{GateBaseline, GateRecord, read_baseline, read_record};
-use super::{REQUIRED_GATES, gate_dir};
+use super::{PERF_PATHS, REQUIRED_GATES, gate_dir};
 
 /// One metric's comparison, or why it cannot be judged.
 pub enum Comparison {
@@ -64,6 +64,18 @@ pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<
         Ok((_, entry)) => entry,
         Err(e) => return Some(vec![format!("{e:#}")]),
     };
+    // ★ An entry with no thresholds must not read as "everything passed". The
+    // loop below is a no-op over an empty map, so without this the strictest
+    // possible verdict — Pass, unconditionally, whatever the run measured —
+    // would be produced by the WEAKEST possible baseline. A gate with nothing
+    // to enforce has not been passed; it has not been defined.
+    if entry.metrics.is_empty() {
+        return Some(vec![format!(
+            "the baseline entry for {} on {hardware} declares no thresholds — \
+             there is nothing here for this run to have passed",
+            record.target_model
+        )]);
+    }
     let mut problems = Vec::new();
     for (name, bound) in &entry.metrics {
         let Some(value) = record.metrics.get(name) else {
@@ -96,9 +108,26 @@ pub enum GateStatus {
     Missing(String),
 }
 
-/// The newest-first list of record files in one benchmark's directory. The
-/// `YYYY-MM-DD-<sha>` prefix keeps lexical order chronological, so a sort is
-/// a time sort; `BASELINE.json` is not a record.
+/// The newest-first list of record files in one benchmark's directory, ordered
+/// by each record's own `recorded_at`. `BASELINE.json` is not a record.
+///
+/// ★ **The filename is not a clock.** A record is named
+/// `YYYY-MM-DD-<sha>.json`, so a lexical sort orders by DATE and then by SHA —
+/// and a sha is random. Two records cut on the same UTC day therefore sorted by
+/// which hex digit happened to come first, which is exactly the situation a
+/// re-run produces: measure, commit a fix, measure again, both records dated
+/// today. The gate takes the first covering record as the branch's current
+/// word, so under the old order a FAIL measured after a PASS was silently
+/// discarded whenever its sha sorted lower — the gate passing on a superseded
+/// result. It fails the other way just as easily, and neither is detectable
+/// after the fact.
+///
+/// `recorded_at` is written by [`super::record::GateRecord::from_run`] from the
+/// run itself, and it is the same number the filename's date is derived from,
+/// so the two agree by construction and only the within-day tie changes. An
+/// unreadable record sorts last (it can never be selected anyway) but stays in
+/// the list, so a directory of nothing but corrupt records still reports
+/// "unreadable" rather than "no records committed".
 pub fn records_newest_first(root: &Path, benchmark_id: &str) -> Vec<PathBuf> {
     let dir = gate_dir(root, benchmark_id);
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -109,20 +138,24 @@ pub fn records_newest_first(root: &Path, benchmark_id: &str) -> Vec<PathBuf> {
             && p.file_name()
                 .is_some_and(|n| n.to_string_lossy() != "BASELINE.json")
     });
-    candidates.sort();
-    candidates.reverse();
-    candidates
+    let mut keyed: Vec<(u64, PathBuf)> = candidates
+        .into_iter()
+        .map(|p| (read_record(&p).map(|r| r.recorded_at).unwrap_or(0), p))
+        .collect();
+    // Newest first, and the filename breaks a tie so the order is total and
+    // reproducible rather than dependent on readdir.
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    keyed.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Whether a record measured at `record_sha` still stands for `head`.
 ///
 /// Same commit always covers itself. An ancestor covers `head` while nothing
-/// the binary measures changed in between — a diff touching `crates/`,
-/// `kernels/`, `Cargo.toml`, `Cargo.lock` or `vendor/` invalidates every
-/// earlier record, because the measured binary is no longer the recorded
-/// one. A record can never be written AT `head` (committing it moves head),
-/// so this ancestry rule is what makes "gated at the current commit"
-/// achievable at all.
+/// the run measures changed in between — a diff touching any of
+/// [`PERF_PATHS`] invalidates every earlier record, because the binary and the
+/// prompts it renders are no longer the recorded ones. A record can never be
+/// written AT `head` (committing it moves head), so this ancestry rule is what
+/// makes "gated at the current commit" achievable at all.
 pub fn record_covers(root: &Path, head: &str, record_sha: &str) -> bool {
     if head == record_sha {
         return true;
@@ -140,18 +173,8 @@ pub fn record_covers(root: &Path, head: &str, record_sha: &str) -> bool {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
-        .args([
-            "diff",
-            "--name-only",
-            record_sha,
-            head,
-            "--",
-            "crates",
-            "kernels",
-            "Cargo.toml",
-            "Cargo.lock",
-            "vendor",
-        ])
+        .args(["diff", "--name-only", record_sha, head, "--"])
+        .args(PERF_PATHS)
         .stdin(std::process::Stdio::null())
         .output();
     match out {

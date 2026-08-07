@@ -110,6 +110,142 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     }
 }
 
+/// A record measured LATER wins, even when its sha sorts lower.
+///
+/// ★ Regression, and the dangerous direction of it. Records are named
+/// `YYYY-MM-DD-<sha>.json` and were ordered by that name, so two records cut on
+/// the same UTC day were ranked by a random hex string. `check_one` takes the
+/// first covering record as the branch's current word — so a FAIL measured
+/// after a PASS was discarded whenever its sha happened to sort lower, and the
+/// gate reported PASS on a result that had already been superseded. Nothing
+/// downstream could see it: both files are valid, both cover head, and the
+/// chosen one is a genuine passing run.
+///
+/// The shas here are real commits, so which one sorts higher is not ours to
+/// choose — the roles are assigned from the observed order instead, which is
+/// what makes this deterministic rather than a coin flip that passes half the
+/// time.
+#[test]
+fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
+    let dir = tempdir::Dir::new();
+    let root = dir.path();
+    scratch_repo::init(root);
+    let sha_a = scratch_repo::head(root);
+    scratch_repo::commit(root, "docs/a.md", "a", "docs only");
+    let sha_b = scratch_repo::head(root);
+    scratch_repo::commit(root, "docs/b.md", "b", "docs only");
+    let head = scratch_repo::head(root);
+
+    std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
+    std::fs::write(
+        baseline_path(root, "bfcl-subset"),
+        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
+    )
+    .unwrap();
+
+    // Same UTC day for both, so only the within-day tie is under test. The
+    // PASS is the EARLIER measurement and gets the lexically GREATER sha —
+    // the arrangement a filename sort gets backwards.
+    let day = 1_785_891_382;
+    let (earlier_pass, later_fail) = if sha_a > sha_b {
+        (&sha_a, &sha_b)
+    } else {
+        (&sha_b, &sha_a)
+    };
+    plant(root, "bfcl-subset", earlier_pass, day, "PASS");
+    plant(root, "bfcl-subset", later_fail, day + 3_600, "FAIL");
+
+    let ordered = records_newest_first(root, "bfcl-subset");
+    assert!(
+        ordered[0].to_string_lossy().contains(later_fail.as_str()),
+        "the record measured last must come first, got {ordered:?}"
+    );
+    // Both records cover head — only docs changed — so the ordering alone
+    // decides the verdict.
+    assert!(record_covers(root, &head, earlier_pass));
+    assert!(record_covers(root, &head, later_fail));
+    match &check_gates(root, &head)["bfcl-subset"] {
+        GateStatus::Fail(reasons) => assert!(
+            reasons.iter().any(|r| r.contains("not PASS")),
+            "{reasons:?}"
+        ),
+        other => panic!("a superseded PASS must not speak for the branch, got {other:?}"),
+    }
+}
+
+/// Every path the invalidation rule names must exist in THIS repo.
+///
+/// A guard entry that matches nothing is silently inert: `git diff -- gone/`
+/// is always empty, so the rule keeps returning "covered" while looking
+/// thorough. A rename is exactly how that happens, and it produces no error
+/// anywhere.
+#[test]
+fn every_invalidating_path_exists_in_this_repo() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root is two levels above the crate");
+    for path in PERF_PATHS {
+        assert!(
+            root.join(path).exists(),
+            "{path} is in PERF_PATHS but not in the tree — the guard matches \
+             nothing and invalidates nothing"
+        );
+    }
+}
+
+/// A chat template or a toolchain bump invalidates an earlier record.
+///
+/// Neither is under `crates/`, and both change the number a re-run would
+/// produce: `jinja-templates/<model_type>.jinja` is read from the repo root at
+/// serve time and OVERRIDES the checkpoint's own chat template, so it decides
+/// the exact bytes of every prompt; `rust-toolchain.toml` decides which
+/// compiler built the binary.
+#[test]
+fn a_prompt_template_or_toolchain_change_invalidates_an_earlier_record() {
+    for (file, contents) in [
+        ("jinja-templates/qwen3_5_moe.jinja", "{{ messages }}"),
+        ("rust-toolchain.toml", "[toolchain]\nchannel = \"1.94.0\"\n"),
+    ] {
+        let dir = tempdir::Dir::new();
+        let root = dir.path();
+        scratch_repo::init(root);
+        let before = scratch_repo::head(root);
+        scratch_repo::commit(root, "docs/n.md", "inert", "docs only");
+        assert!(
+            record_covers(root, &scratch_repo::head(root), &before),
+            "a docs commit must stay inert"
+        );
+        scratch_repo::commit(root, file, contents, "change what gets measured");
+        assert!(
+            !record_covers(root, &scratch_repo::head(root), &before),
+            "{file} changes what a run measures, so an earlier record cannot speak for head"
+        );
+    }
+}
+
+/// A baseline entry with no thresholds must be refused, not passed.
+///
+/// The comparison loop is a no-op over an empty metric map, so the weakest
+/// possible baseline would otherwise produce the strongest possible verdict:
+/// Pass, unconditionally, whatever the run measured.
+#[test]
+fn a_baseline_entry_with_no_thresholds_is_not_a_pass() {
+    let gate = GateRecord::from_run(
+        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        None,
+    )
+    .unwrap();
+    let problems = check_record(&gate, &baseline_for(MODEL, BTreeMap::new())).expect("refused");
+    assert!(
+        problems[0].contains("no thresholds"),
+        "{}",
+        problems[0].clone()
+    );
+}
+
 #[test]
 fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     let dir = tempdir::Dir::new();

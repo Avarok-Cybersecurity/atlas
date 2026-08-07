@@ -171,7 +171,14 @@ fn the_parameter_defaults_reproduce_each_pinned_draw() {
     use crate::benchmark::Benchmark as _;
     use crate::benchmarks::bfcl::{Bfcl, Variant};
 
-    for (variant, want) in [(Variant::Subset, 995usize), (Variant::SubsetEcholp, 1004)] {
+    for variant in [Variant::Subset, Variant::SubsetEcholp] {
+        // Read from the variant rather than restated here: `expected_samples`
+        // is what warns mid-run and what the committed baseline is checked
+        // against, so a fourth copy of "995" would be a fourth thing to keep
+        // in step.
+        let want = variant
+            .expected_samples()
+            .expect("a gated variant is pinned");
         let mut b = Bfcl::new(variant);
         let defaults = crate::params::ParamValues::defaults(&b.parameters());
         b.configure(&defaults).expect("defaults must validate");
