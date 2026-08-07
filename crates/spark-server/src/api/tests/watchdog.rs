@@ -48,22 +48,35 @@ fn phrase_with_unique_interstitials(n: usize) -> String {
     feed
 }
 
+/// Token-sized SSE deltas. The watchdog only ever inspects the LAST line
+/// in its buffer, so what it sees depends on where a chunk boundary
+/// happens to land; sweeping the realistic sizes keeps a passing result
+/// from being one lucky alignment.
+const TOKEN_SIZES: std::ops::RangeInclusive<usize> = 1..=16;
+
 #[test]
 fn a_repeat_separated_by_kilobytes_of_unique_prose_still_fires() {
     // The claude-export.txt failure: the phrase recurred four times but
     // each instance sat behind ~3 KB of source-dump prose, so under the
     // old 3 KB window only one copy was ever in view. The window is 8 KB
     // (trimmed from 10 KB) precisely so this stays visible.
+    //
+    // The filler is unique per repetition on purpose. The version of this
+    // test that predated the rewrite reused the SAME filler every time, so
+    // the watchdog could fire on the repeated FILLER and the test passed
+    // without the phrase ever mattering.
     let feed = phrase_with_unique_interstitials(5);
     assert!(
         feed.len() > 3_000,
         "the interstitials must exceed the old 3 KB window to be a regression test; got {}",
         feed.len()
     );
-    assert!(
-        fires(&feed, 64),
-        "watchdog must fire on 5 repeats across large unique interstitials"
-    );
+    for chunk in TOKEN_SIZES {
+        assert!(
+            fires(&feed, chunk),
+            "5 repeats across large unique interstitials must fire at chunk size {chunk}"
+        );
+    }
 }
 
 #[test]
@@ -72,10 +85,13 @@ fn three_repeats_do_not_fire() {
     // "build / fix / build" cycles repeat their intro line innocently —
     // and a truncated response is a worse failure than a long one.
     let feed = phrase_with_unique_interstitials(3);
-    assert!(
-        !fires(&feed, 64),
-        "three repeats are below the threshold and must not stop the stream"
-    );
+    for chunk in TOKEN_SIZES {
+        assert!(
+            !fires(&feed, chunk),
+            "three repeats are below the threshold and must not stop the stream \
+             (chunk size {chunk})"
+        );
+    }
 }
 
 #[test]
@@ -92,10 +108,13 @@ fn a_repeat_whose_last_instance_starts_mid_line_still_fires() {
     }
     feed.push_str(PHRASE);
     feed.push_str("        let body = vec![];");
-    assert!(
-        fires(&feed, 48),
-        "substring scan must catch a repeated phrase whose last instance is mid-line"
-    );
+    for chunk in TOKEN_SIZES {
+        assert!(
+            fires(&feed, chunk),
+            "substring scan must catch a repeated phrase whose last instance \
+             is mid-line (chunk size {chunk})"
+        );
+    }
 }
 
 #[test]
