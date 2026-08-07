@@ -300,101 +300,33 @@ impl TransformerModel {
                     (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                 }));
 
-            let pinned = stg.ptr;
-            let mut cursor = 0usize;
-
-            // Bound the packing BEFORE the first write, not after the last.
-            // The `assert!(cursor <= stg.bytes)` at the end of this block used
-            // to be the only check, and by the time it fires the writes below
-            // have already happened — so an over-long `seq.block_table` (its
-            // length tracks the sequence's KV blocks, i.e. the context length)
-            // would have overrun the pinned allocation into whatever the
-            // allocator placed after it, and the assert would abort on the
-            // wreckage. Recompute the same offsets the packing uses and refuse
-            // up front.
-            let need = {
-                let after_slots = slot_offset + proc_count * 8;
-                if marconi_skip {
-                    let bt_start = (after_slots + 3) & !3;
-                    let sl_start = (bt_start + seq.block_table.len() * 4 + 3) & !3;
-                    sl_start + 4
-                } else {
-                    after_slots
-                }
-            };
-            anyhow::ensure!(
-                need <= stg.bytes,
-                "prefill metadata does not fit the pinned staging buffer: needs {need} B \
-                 for {proc_count} tokens and a {}-entry block table, have {} B",
-                seq.block_table.len(),
-                stg.bytes
-            );
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned.add(cursor),
-                    proc_count * 4,
-                );
-            }
-            // NB: rounding `slot_offset` up to 8 leaves up to 4 bytes of pad
-            // after the positions array that no copy here writes. Those bytes
-            // are still initialised, because `GpuBackend::alloc_host_pinned`
-            // zeroes the whole region at allocation — see the contract on the
-            // trait method. That is what lets the `from_raw_parts(pinned,
-            // cursor)` below span the pad without being UB.
-            cursor = slot_offset;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.slots.as_ptr() as *const u8,
-                    pinned.add(cursor),
-                    proc_count * 8,
-                );
-            }
-            cursor += proc_count * 8;
+            // Each field is bounded BEFORE it is written — the packer refuses
+            // rather than overrunning and asserting on the wreckage afterwards.
+            // The field that can actually get too big is `seq.block_table`,
+            // whose length tracks the sequence's KV blocks, i.e. the context
+            // length.
+            //
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // positions array that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs). `slot_offset` and
+            // `proc_count*8` are both multiples of 8, so `bt_start` and
+            // `sl_start` round to their inputs and open no further gap.
+            let mut pack = stg.packer();
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
 
             let devs = if marconi_skip {
-                let bt_start = (cursor + 3) & !3;
-                let bt_len = seq.block_table.len() * 4;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        seq.block_table.as_ptr() as *const u8,
-                        pinned.add(bt_start),
-                        bt_len,
-                    );
-                }
-                let sl_start = (bt_start + bt_len + 3) & !3;
-                let seq_len_val = n as u32;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        &seq_len_val as *const u32 as *const u8,
-                        pinned.add(sl_start),
-                        4,
-                    );
-                }
-                cursor = sl_start + 4;
+                let bt_start = (pack.high_water() + 3) & !3;
+                pack.put_at("block_table", bt_start, &seq.block_table)?;
+                let sl_start = (pack.high_water() + 3) & !3;
+                pack.put_at("seq_len", sl_start, &[n as u32])?;
                 (meta_base.offset(bt_start), meta_base.offset(sl_start))
             } else {
                 (DevicePtr::NULL, DevicePtr::NULL)
             };
 
-            debug_assert!(cursor <= need, "prefill packing exceeded its own estimate");
-            // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
-            // `stg.bytes` bytes (allocated in impl_a1.rs, freed in drop.rs) and
-            // `cursor <= need <= stg.bytes` — `need` is the same offset
-            // arithmetic, checked before the first write above. Every byte
-            // of `[0, cursor)` was written by this block: positions over
-            // `[0, proc_count*4)`, the alignment pad zeroed up to `slot_offset`,
-            // slots over `[slot_offset, slot_offset + proc_count*8)`, and under
-            // `marconi_skip` the block table then seq_len — `slot_offset` and
-            // `proc_count*8` are both multiples of 8, so `bt_start` and
-            // `sl_start` round to their inputs and open no further gap.
-            // Source side: `stg.positions` / `stg.slots` are `clear()`ed and
-            // re-`extend`ed with exactly `proc_count` elements at the top of
-            // this block, so neither copy reads past its own source, and
-            // `seq.block_table` supplies its own `bt_len`.
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
-            self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
+            self.gpu
+                .copy_h2d_async_retained(pack.packed(), meta_base, stream)?;
             devs
         };
 

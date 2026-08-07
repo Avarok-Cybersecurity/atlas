@@ -249,30 +249,6 @@ impl TransformerModel {
             stg.positions
                 .extend(proc_start as u32..(proc_start + proc_count) as u32);
 
-            let pinned = stg.ptr;
-            let mut cursor = proc_count * 4;
-
-            // Bound the packing BEFORE the first write. The overflow `assert!`
-            // at the end of this block only fires once the writes have already
-            // landed, which is too late to keep them inside the allocation.
-            // `slot_offset + proc_count * 8` is the high-water mark of every
-            // arm below.
-            anyhow::ensure!(
-                slot_offset + proc_count * 8 <= stg.bytes,
-                "mixed_forward prefill metadata does not fit the pinned staging buffer: \
-                 needs {} B for {proc_count} tokens, have {} B",
-                slot_offset + proc_count * 8,
-                stg.bytes
-            );
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned,
-                    proc_count * 4,
-                );
-            }
-
             if !needs_paged {
                 stg.slots.clear();
                 stg.slots
@@ -282,41 +258,18 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
-                // NB: rounding `slot_offset` up to 8 leaves up to 4 pad bytes
-                // after the positions array that no copy here writes. They are
-                // still initialised — `GpuBackend::alloc_host_pinned` zeroes
-                // the whole region at allocation (see its contract) — which is
-                // what lets the `from_raw_parts(pinned, cursor)` below span the
-                // pad without being UB.
-                cursor = slot_offset;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        stg.slots.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        proc_count * 8,
-                    );
-                }
-                cursor += proc_count * 8;
             }
 
-            assert!(
-                cursor <= stg.bytes,
-                "mixed_forward prefill metadata overflow: {cursor} > {}",
-                stg.bytes
-            );
-            // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
-            // `stg.bytes` bytes and `cursor <= stg.bytes` is asserted directly
-            // above. Every byte of `[0, cursor)` was written here: positions
-            // over `[0, proc_count*4)` (the `extend` above pushes exactly
-            // `proc_count` u32s), and — only in the `!needs_paged` arm, the only
-            // arm that advances `cursor` past `proc_count*4` — the zeroed
-            // alignment pad followed by slots over
-            // `[slot_offset, slot_offset + proc_count*8)` (`stg.slots` is
-            // `clear()`ed and re-`extend`ed with exactly `proc_count` i64s in
-            // that same arm, so neither copy reads past its own source).
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // positions array that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs).
+            let mut pack = stg.packer();
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            if !needs_paged {
+                pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
+            }
             self.gpu
-                .copy_h2d_async(pinned_slice, prefill_meta_base, stream)?;
+                .copy_h2d_async_retained(pack.packed(), prefill_meta_base, stream)?;
         }
 
         if needs_paged {

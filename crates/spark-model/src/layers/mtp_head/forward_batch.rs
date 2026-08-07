@@ -41,6 +41,7 @@ use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
 use super::batch_caps::PROPOSE_META_STRIDE;
+use crate::layers::mtp_meta::pack_mtp_attn_meta;
 
 /// Byte offset inside the shared scratch arena where the batched propose
 /// stages the per-row top-1 log-probabilities (FP32). The n argmax ids live at
@@ -308,32 +309,20 @@ impl MtpHead {
             while state.block_table.len() < blocks_needed {
                 state.block_table.push(kv_cache.alloc_block()?);
             }
-            let bt_len = state.block_table.len() * 4;
-            ensure!(
-                256 + bt_len <= PROPOSE_META_STRIDE,
-                "propose_batch: drafter block table {} exceeds meta stride",
-                bt_len
-            );
             let meta_base = self.propose_meta.offset(i * PROPOSE_META_STRIDE);
             let block_idx = state.block_table[state.seq_len / bs];
             let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
-            let mut meta_buf = vec![0u8; 256 + bt_len];
-            meta_buf[0..4].copy_from_slice(&(positions[i] as u32).to_le_bytes());
-            meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
-            meta_buf[16..20].copy_from_slice(&((state.seq_len + 1) as i32).to_le_bytes());
-            // SAFETY: `bt_len = state.block_table.len() * 4` is read off this
-            // sequence's own Vec (above), and `block_table: Vec<u32>` (mtp_head.rs)
-            // ⇒ `size_of::<u32>() == 4`, so the span is exactly
-            // `len * size_of::<u32>()` bytes. Every element is initialised — the Vec
-            // only grows through the `push(alloc_block()?)` loop directly above, not
-            // via `with_capacity` + partial fill. Shared borrow only; the `&mut`
-            // reborrow of `state` used by that loop is no longer in use. The
-            // destination `meta_buf[256..256 + bt_len]` is in bounds (`meta_buf` was
-            // sized `256 + bt_len`) and the device-side stride was `ensure!`d above.
-            let bt_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(state.block_table.as_ptr() as *const u8, bt_len)
-            };
-            meta_buf[256..256 + bt_len].copy_from_slice(bt_bytes);
+            // This site's `ensure!(256 + bt_len <= PROPOSE_META_STRIDE)` was the
+            // only one of the three MTP metadata packers that had a bound. It
+            // now lives in `pack_mtp_attn_meta` so the other two have it too;
+            // the region here is one `propose_meta` stride.
+            let meta_buf = pack_mtp_attn_meta(
+                positions[i] as u32,
+                global_slot,
+                (state.seq_len + 1) as i32,
+                &state.block_table,
+                PROPOSE_META_STRIDE,
+            )?;
             gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
 
             let q_row = q_out.offset(i * qg_dim * bf16);

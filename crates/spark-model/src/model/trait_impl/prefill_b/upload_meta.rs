@@ -156,50 +156,8 @@ impl TransformerModel {
                 }
             }
 
-            // The MRoPE+vision arm above REBUILDS `positions` from the chunk's
-            // pad-token runs (one entry per text token, `gh*gw` per image run)
-            // instead of from `proc_count`, so its length is data-dependent —
-            // it tracks `chunk_len`, and `proc_count <= chunk_len` only because
-            // every `ProcRange::Compute` arm caps it there. Each copy below
-            // reads `pos_stream_bytes = proc_count * 4` bytes out of these Vecs,
-            // so fail fast here rather than read past their `len`.
-            anyhow::ensure!(
-                stg.positions.len() >= proc_count
-                    && (!use_mrope
-                        || (stg.positions_h.len() >= proc_count
-                            && stg.positions_w.len() >= proc_count)),
-                "prefill metadata: staged positions (t={} h={} w={}) shorter than \
-                 proc_count={proc_count} (chunk_start={chunk_start} chunk_len={chunk_len})",
-                stg.positions.len(),
-                stg.positions_h.len(),
-                stg.positions_w.len(),
-            );
-
-            let pinned = stg.ptr;
-            let mut cursor = pos_stream_bytes;
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned,
-                    pos_stream_bytes,
-                );
-                if use_mrope {
-                    std::ptr::copy_nonoverlapping(
-                        stg.positions_h.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        pos_stream_bytes,
-                    );
-                    cursor += pos_stream_bytes;
-                    std::ptr::copy_nonoverlapping(
-                        stg.positions_w.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        pos_stream_bytes,
-                    );
-                    cursor += pos_stream_bytes;
-                }
-            }
-
+            // Build the slot table before packing: the packer borrows the
+            // staging struct, so every reusable `Vec` has to be final first.
             if !needs_paged {
                 let bs = kv_cache.block_size();
                 stg.slots.clear();
@@ -210,40 +168,37 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
-                // NB: rounding `slot_offset` up to 8 leaves up to 4 pad bytes
-                // after the position streams that no copy here writes. They are
-                // still initialised — `GpuBackend::alloc_host_pinned` zeroes
-                // the whole region at allocation (see its contract) — which is
-                // what lets the `from_raw_parts(pinned, cursor)` below span the
-                // pad without being UB.
-                cursor = slot_offset;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        stg.slots.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        proc_count * 8,
-                    );
-                }
-                cursor += proc_count * 8;
             }
 
-            assert!(
-                cursor <= stg.bytes,
-                "prefill_chunk metadata overflow: {cursor} > {}",
-                stg.bytes
-            );
-            // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
-            // `stg.bytes` bytes and `cursor <= stg.bytes` is asserted directly
-            // above. Every byte of `[0, cursor)` was written here: the T stream
-            // over `[0, pos_stream_bytes)`, then (MRoPE only) H and W packed
-            // back-to-back with no gap, then — only in the `!needs_paged` arm,
-            // the only arm that advances `cursor` past the position streams —
-            // the zeroed alignment pad followed by `proc_count * 8` slot bytes.
-            // The `ensure!` above establishes the source Vecs are long enough
-            // for the position copies; `slots` is `extend`ed with exactly
-            // `proc_count` i64s in this same arm.
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
-            self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
+            // The MRoPE+vision arm above REBUILDS `positions` from the chunk's
+            // pad-token runs (one entry per text token, `gh*gw` per image run)
+            // instead of from `proc_count`, so its length is data-dependent —
+            // it tracks `chunk_len`, and `proc_count <= chunk_len` only because
+            // every `ProcRange::Compute` arm caps it there. `put_prefix_at`
+            // carries that check: each stream contributes exactly `proc_count`
+            // elements or the pack is refused.
+            //
+            // The DESTINATION bound used to be missing here entirely — the only
+            // check was an `assert!(cursor <= stg.bytes)` AFTER the writes had
+            // already landed, which is too late to keep them inside the
+            // allocation. The packer checks each field before writing it.
+            //
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // position streams that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs).
+            let mut pack = stg.packer();
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            if use_mrope {
+                let h_at = pos_stream_bytes;
+                let w_at = h_at + pos_stream_bytes;
+                pack.put_prefix_at("positions_h", h_at, &stg.positions_h, proc_count)?;
+                pack.put_prefix_at("positions_w", w_at, &stg.positions_w, proc_count)?;
+            }
+            if !needs_paged {
+                pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
+            }
+            self.gpu
+                .copy_h2d_async_retained(pack.packed(), meta_base, stream)?;
         }
 
         Ok(MetaLayout {

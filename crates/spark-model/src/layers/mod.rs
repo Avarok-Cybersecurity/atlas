@@ -7,6 +7,7 @@ pub mod ep_dispatch;
 pub mod fp8_calibration;
 pub mod moe;
 pub mod mtp_head;
+pub(crate) mod mtp_meta;
 pub mod mtp_multi;
 pub mod nemotron_mamba2;
 pub mod nemotron_moe;

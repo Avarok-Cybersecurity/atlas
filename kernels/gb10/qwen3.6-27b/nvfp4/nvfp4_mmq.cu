@@ -191,12 +191,18 @@ extern "C" __global__ void atlas_nvfp4_repack(
     for (int s2 = 0; s2 < 4; ++s2) d_out[s2] = dst.d[s2];
 }
 
-// SiLU(gate*gs)*(up*us): mirrors moe_silu_mul's math exactly (incl. the swiglu ±10 clamp)
-// plus the per-projection scale2 fold — the MMQ GEMM output is missing the checkpoint's
-// per-tensor FP32 scale2 (hardware applies only the per-16 e4m3 scales), so it is folded
-// here, BEFORE the clamp/nonlinearity, where the values first become "true"-scaled.
-// Contained duplicate of moe_silu_mul (5 lines of math) to avoid an ABI change on the
-// shared kernel for this flag-gated path.
+// SiLU(gate*gs)*(up*us): mirrors moe_silu_mul's math exactly, plus the per-projection
+// scale2 fold — the MMQ GEMM output is missing the checkpoint's per-tensor FP32 scale2
+// (hardware applies only the per-16 e4m3 scales), so it is folded here, where the values
+// first become "true"-scaled. Contained duplicate of moe_silu_mul (a few lines of math)
+// to avoid an ABI change on the shared kernel for this flag-gated path.
+// These two kernels own the 27B's PREFILL activation while moe_silu_mul owns its decode
+// and K-verify; they carried a copy of the swiglu ±10 clamp for exactly that reason, and
+// it was removed with the original when the clamp moved into the shadows of the two
+// models whose configs declare a swiglu_limit. Qwen3.6-27B declares none. Leaving the
+// copy behind would have split the 27B's own prefill from its own decode, which is the
+// failure this whole change is about — if a clamp ever returns to moe_silu_mul for this
+// model, it has to return here in the same commit.
 // In-place ×scale for the down-projection MMQ output (its scale2 has no SiLU-mul to
 // ride; the consumer is the residual add). [M, H] bf16, ~0.3ms at M=4096 vs the ~6ms
 // the MMQ down GEMM saves.
@@ -215,9 +221,6 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_scaled(
     if (idx >= total_elements) return;
     float g = __bfloat162float(gate[idx]) * gate_scale;
     float u = __bfloat162float(up[idx]) * up_scale;
-    const float SWIGLU_LIMIT = 10.0f;
-    g = fminf(g, SWIGLU_LIMIT);
-    u = fminf(fmaxf(u, -SWIGLU_LIMIT), SWIGLU_LIMIT);
     float sigmoid_g = 1.0f / (1.0f + __expf(-g));
     output[idx] = __float2bfloat16(g * sigmoid_g * u);
 }
@@ -247,7 +250,6 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
     block_fp4_mmq* yb = (block_fp4_mmq*) vy + ib;
     const int sub = (int) ((i0_base % QK_K) / QK_NVFP4_SUB);
 
-    const float SWIGLU_LIMIT = 10.0f;
     float vals_raw[QK_NVFP4_SUB];
     float amax_raw = 0.0f;
     const int64_t base_idx = i1 * ne00;
@@ -258,8 +260,6 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
         if (i00 < ne00) {
             float g = __bfloat162float(gate[base_idx + i00]) * gate_scale;
             float u = __bfloat162float(up[base_idx + i00]) * up_scale;
-            g = fminf(g, SWIGLU_LIMIT);
-            u = fminf(fmaxf(u, -SWIGLU_LIMIT), SWIGLU_LIMIT);
             v = g * (1.0f / (1.0f + __expf(-g))) * u;
         }
         vals_raw[k] = v;

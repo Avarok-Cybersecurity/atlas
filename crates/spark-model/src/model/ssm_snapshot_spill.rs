@@ -330,6 +330,15 @@ impl SsmSnapshotPool {
 
     /// Enqueue the per-layer H2D chunks of `blob` into `snap_slot`. Enqueue
     /// only — the caller owns the single trailing `synchronize`.
+    ///
+    /// `blob` is the `SpillStaging` buffer, which IS page-locked when the box
+    /// allows it, so these copies are genuinely asynchronous and the bytes are
+    /// read after each call returns. That is exactly the contract
+    /// `copy_h2d_async_retained` names: the caller holds the `StagingGuard`
+    /// across the whole scatter and synchronises before releasing it. Using the
+    /// transient `copy_h2d_async` here would be correct but would reintroduce
+    /// one stream drain per chunk — the ~400 ms shape this path exists to
+    /// escape.
     pub(super) fn scatter_async(
         &self,
         snap_slot: usize,
@@ -340,12 +349,12 @@ impl SsmSnapshotPool {
         let per_layer = self.h_bytes + self.conv_bytes;
         for i in 0..self.num_ssm_layers {
             let off = i * per_layer;
-            gpu.copy_h2d_async(
+            gpu.copy_h2d_async_retained(
                 &blob[off..off + self.h_bytes],
                 self.h_snapshots[i].offset(snap_slot * self.h_bytes),
                 stream,
             )?;
-            gpu.copy_h2d_async(
+            gpu.copy_h2d_async_retained(
                 &blob[off + self.h_bytes..off + per_layer],
                 self.conv_snapshots[i].offset(snap_slot * self.conv_bytes),
                 stream,

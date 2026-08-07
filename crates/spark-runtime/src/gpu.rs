@@ -234,14 +234,45 @@ pub trait GpuBackend: Send + Sync {
         None
     }
 
-    /// Async host-to-device copy (no stream synchronization).
+    /// Async host-to-device copy: **`src` may be dropped or overwritten the
+    /// moment this returns.**
     ///
-    /// **Lifetime requirement**: the source buffer must remain valid until the
-    /// copy completes (i.e., until the next synchronization point on this
-    /// stream). All current callers use stack-local byte arrays or pinned
-    /// memory that outlives the stream sync, satisfying this requirement.
+    /// That is the contract the ~90 call sites in `spark-model` actually rely
+    /// on — nearly all of them hand over a stack array or a local `Vec` that
+    /// dies at the end of the statement. It used to be true only by accident:
+    /// `cuMemcpyHtoDAsync_v2` from PAGEABLE host memory stages through a
+    /// driver-internal buffer before returning, so a dying source happened to be
+    /// safe. From PAGE-LOCKED memory the same call is genuinely asynchronous and
+    /// the DMA reads the source after it returns — so the day any of those
+    /// buffers got pinned, every one of those call sites became a
+    /// use-after-free, silently and all at once.
+    ///
+    /// Implementations must therefore MAKE the promise true rather than inherit
+    /// it: see the CUDA backend, which detects a page-locked source (via the
+    /// registry every `alloc_host_pinned` feeds) and adds the stream
+    /// synchronisation that the pageable path gets for free. Pinning a buffer
+    /// now costs latency instead of correctness.
+    ///
+    /// Use [`GpuBackend::copy_h2d_async_retained`] when the source genuinely
+    /// outlives the next synchronisation and the extra ordering is not wanted.
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, _stream: u64) -> Result<()> {
         self.copy_h2d(src, dst)
+    }
+
+    /// Async host-to-device copy for a source the CALLER keeps alive.
+    ///
+    /// The strict variant: `src` must remain valid, and must not be rewritten,
+    /// until the next synchronisation point on `stream`. In exchange it never
+    /// inserts an implicit sync, which is what makes a batched scatter out of
+    /// one pinned staging blob (N enqueues + one `synchronize`) worth doing —
+    /// see [`GpuBackend::copy_d2h_async`] for the measured shape.
+    ///
+    /// The name is the point: it marks, greppably, every site that is making a
+    /// lifetime promise the compiler cannot check.
+    fn copy_h2d_async_retained(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+        // Default: the transient path. Strictly stronger ordering than promised,
+        // so it is always correct — just not always the fastest.
+        self.copy_h2d_async(src, dst, stream)
     }
 
     /// Async device-to-host copy (no stream synchronization).

@@ -450,6 +450,25 @@ pub(crate) struct PinnedMetaStaging {
     pub(super) slots: Vec<i64>,
 }
 
+impl PinnedMetaStaging {
+    /// The ONLY way to write this buffer: a bounds-checked cursor. See
+    /// [`crate::model::pinned_pack`] for why the rule lives there and not in
+    /// each of the five call sites that pack it.
+    ///
+    /// Takes `&self` rather than `&mut self` on purpose — the bytes it writes
+    /// are the separate `cuMemAllocHost` region `ptr` refers to, not this
+    /// struct, so a shared borrow is enough and callers can still read the
+    /// reusable source `Vec`s alongside it.
+    pub(crate) fn packer(&self) -> crate::model::pinned_pack::PinnedPacker<'_> {
+        // SAFETY: `ptr`/`bytes` are the `alloc_host_pinned` region installed in
+        // `impl_a1.rs` and released in `drop.rs`; it is live for the model's
+        // lifetime, zeroed at allocation (the trait's contract), and only ever
+        // touched from the single scheduler thread — the same invariant that
+        // `unsafe impl Sync for TransformerModel` above rests on.
+        unsafe { crate::model::pinned_pack::PinnedPacker::new(self.ptr, self.bytes) }
+    }
+}
+
 // SAFETY: TransformerModel is constructed on the main thread, then moved to
 // the scheduler thread via Box<dyn Model>. After the move, ALL access
 // (prefill, decode, batch_decode) happens on the single scheduler thread.
