@@ -85,6 +85,15 @@ pub struct TtftGate {
 }
 
 impl TtftGate {
+    /// Smallest absolute TTFT change this gate will call a regression.
+    ///
+    /// Paired with the percentage limits, never used alone. Host scheduling
+    /// jitter on a loopback endpoint is comfortably over a millisecond, so a
+    /// delta under this floor is not a measurement — it is the clock. Chosen
+    /// to sit above that jitter and far below any TTFT a served model produces
+    /// (GB10 27B warm median is ~1.5 s, where the 3% limit binds at ~43 ms).
+    const NOISE_FLOOR_MS: f64 = 2.0;
+
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
@@ -265,8 +274,18 @@ impl TtftGate {
                 _ => CellStyle::Neutral,
             }),
         );
-        let median_bad = dm.is_some_and(|d| d > self.median_limit_pct);
-        let p90_bad = dp.is_some_and(|d| d > self.p90_limit_pct);
+        // A percentage alone cannot gate a fast endpoint. At a 30 ms TTFT the
+        // +3% limit is 0.9 ms — below host scheduling jitter — so ordinary
+        // noise reads as REGRESSED. On a real serve (TTFT ~1.5 s) the floor is
+        // never the binding constraint; it only suppresses deltas too small to
+        // have been measured. A regression must clear BOTH tests to fail.
+        let over_floor = |now: Option<f64>, key: &str| {
+            now.zip(base.get(key))
+                .is_some_and(|(now, was)| now - was > Self::NOISE_FLOOR_MS)
+        };
+        let median_bad =
+            dm.is_some_and(|d| d > self.median_limit_pct) && over_floor(median, "median_ms");
+        let p90_bad = dp.is_some_and(|d| d > self.p90_limit_pct) && over_floor(p90, "p90_ms");
         let detail = format!(
             "median {} (limit +{:.1}%) · p90 {} (limit +{:.1}%)",
             dm.map(|d| format!("{d:+.1}%"))
