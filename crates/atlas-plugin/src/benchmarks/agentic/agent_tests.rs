@@ -389,3 +389,62 @@ fn a_turn_cut_off_at_the_token_cap_is_not_a_turn_that_finished() {
     let unknown = http::ChatOutcome::default();
     assert!(!was_cut_off(&unknown));
 }
+
+#[test]
+fn a_tool_call_left_in_the_message_body_is_not_a_turn_that_finished() {
+    // Verbatim from gate run 7 at 66b20718, which is how this was found: after
+    // five thinking-loop watchdog fires the model repeated a sentence, emitted
+    // its next call as raw syntax inside the CONTENT, and stopped. The server's
+    // parser rejected the malformed block, so `tool_calls` came back empty with
+    // finish_reason `stop` — indistinguishable, to the old code, from the agent
+    // deciding it was done. The curl never ran, the loop exited, the server was
+    // never killed, and the run lost `tore_down`: 9/10 on a 10/10 gate.
+    let degenerate = http::ChatOutcome {
+        text: "Now let me test the other endpoints:\n\
+               Now let me test the other endpoints:\n\
+               <tool_call>\n<function=bash>\n<parameter=command>\n\
+               timeout 15 curl -s http://localhost:3001/pong\n\
+               </parameter>\n</function>\n</tool_call>oints:"
+            .into(),
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    };
+    assert!(
+        emitted_unparsed_call(&degenerate),
+        "tool-call syntax in the body with nothing parsed must be re-asked"
+    );
+    // ★ and it is NOT the truncation case — that is why it needed its own arm.
+    assert!(!was_cut_off(&degenerate));
+
+    // Plain prose still ends the run. If this ever returns true the gate can
+    // never terminate: every finished run would be prodded to continue forever.
+    let done = http::ChatOutcome {
+        text: "All six steps pass. The server is stopped.".into(),
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    };
+    assert!(!emitted_unparsed_call(&done));
+
+    // Prose that TALKS about tool calls without emitting the wire syntax is
+    // ordinary text — the detector keys on the markers, not on the words.
+    let talks_about_it = http::ChatOutcome {
+        text: "I would normally call the bash function to curl the endpoint.".into(),
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    };
+    assert!(!emitted_unparsed_call(&talks_about_it));
+
+    // A turn whose call DID parse never reaches this branch, however much
+    // syntax the accompanying prose quotes.
+    let parsed = http::ChatOutcome {
+        text: "running <tool_call> now".into(),
+        tool_calls: vec![http::ToolCall {
+            id: String::new(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }],
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    };
+    assert!(!emitted_unparsed_call(&parsed));
+}

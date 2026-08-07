@@ -128,6 +128,12 @@ pub struct Transcript {
     /// repetition degeneration, and a run that needed several of these is worth
     /// looking at even when it ends up passing.
     pub truncated_turns: usize,
+    /// Turns that carried tool-call syntax in the CONTENT while the server
+    /// parsed none, and were re-asked rather than mistaken for the agent
+    /// finishing. Counted for the same reason as `truncated_turns`: it is a
+    /// degeneration signature, and a run that needed one is worth looking at
+    /// even when it passes.
+    pub unparsed_call_turns: usize,
     pub final_text: String,
 }
 
@@ -259,6 +265,32 @@ async fn agent_loop(
                      the tool call you intended."}));
                 continue;
             }
+            // The same mistake wearing a different stop reason. A turn can
+            // degenerate into repetition, emit its tool call as raw syntax
+            // inside the CONTENT, and stop naturally — the server's parser
+            // rejects the malformed block, so `tool_calls` is empty and
+            // `finish_reason` is `stop`. Nothing about that says the agent
+            // chose to finish; it says the reply came apart. Observed for real
+            // on gate run 7 at `66b20718`: after five thinking-loop watchdog
+            // fires the model emitted
+            // `<tool_call><function=bash>…curl …/pong…</function></tool_call>`
+            // wrapped in repeated prose, the call never executed, the loop
+            // exited, and the run lost `tore_down` — 9/10 on a gate that wants
+            // 10/10, from one unparsed call.
+            //
+            // Re-ask instead. This cannot mask a real failure: if the model
+            // meant to stop it simply stops again next turn, with no syntax in
+            // the text, and the run ends one turn later than it would have.
+            if emitted_unparsed_call(&outcome) {
+                transcript.unparsed_call_turns += 1;
+                messages.push(json!({"role": "assistant", "content": outcome.text}));
+                messages.push(json!({"role": "user", "content":
+                    "Your previous message contained tool-call syntax in the message body, so \
+                     no tool actually ran. Re-issue exactly that one call as a real tool call, \
+                     with nothing else in the message. If you are finished, say so in plain \
+                     text with no tool-call syntax."}));
+                continue;
+            }
             return Ok(());
         }
 
@@ -294,6 +326,26 @@ async fn agent_loop(
 /// should end the run.
 fn was_cut_off(outcome: &crate::http::ChatOutcome) -> bool {
     outcome.tool_calls.is_empty() && outcome.finish_reason.as_deref() == Some("length")
+}
+
+/// Did this turn try to call a tool and fail to be understood as one?
+///
+/// True when the server parsed no tool calls but the text still carries the
+/// opening syntax of one. Both markers are *opening* tags on purpose: the
+/// failure mode is a block the parser could not close, so requiring a
+/// well-formed pair would miss precisely the case this exists to catch.
+///
+/// ★ Deliberately narrow. `<tool_call>` and `<function=` are the qwen3_coder
+/// wire forms, not English — prose that merely discusses calling a tool does
+/// not contain them, and a model that writes one in a fenced code block to
+/// explain itself gets one extra turn, not a failed run. It is checked only
+/// after `tool_calls.is_empty()`, so a turn whose call parsed correctly never
+/// reaches it however much syntax the prose quotes.
+fn emitted_unparsed_call(outcome: &crate::http::ChatOutcome) -> bool {
+    outcome.tool_calls.is_empty()
+        && ["<tool_call>", "<function="]
+            .iter()
+            .any(|m| outcome.text.contains(m))
 }
 
 fn request_body(model: &str, messages: &[Value], tools: &Value, max_tokens: usize) -> Value {
