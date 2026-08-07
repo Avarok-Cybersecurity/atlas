@@ -74,7 +74,11 @@ function extractJs(text) {
     if (
       lastOpen &&
       !/\bsrc\s*=/.test(lastOpen[1]) &&
-      !/<\/script>/i.test(lastOpen[2])
+      // Same end-tag shape as the matchAll above: `</script >` with
+      // whitespace before the `>` is VALID, so a tail containing one is NOT
+      // unclosed. Fixing only the first regex and leaving this twin is how the
+      // bug survives — a closed block would be re-pushed as an open one.
+      !/<\/script\s*>/i.test(lastOpen[2])
     ) {
       out.push(lastOpen[2]);
     }
