@@ -37,7 +37,7 @@
 //! can see the box. `ps aux | grep <its crate>` — a command this model issues
 //! unprompted — returns the COMMAND line of every matching process, including
 //! anything *else* running that happens to mention the benchmark. The numeric
-//! columns are normalised (see [`ps_line`]); the command text of a stranger's
+//! columns are normalised (see `ps_line` below); the command text of a stranger's
 //! process is data we must not invent. So a tier is only repeatable on a box
 //! that is quiet: no second benchmark, and no polling loop of your own whose
 //! command line the agent's `grep` would match. Ordinary timing (a build that
