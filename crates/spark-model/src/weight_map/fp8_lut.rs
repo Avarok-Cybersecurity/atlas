@@ -133,6 +133,11 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
     }
 
     let buf = gpu.alloc(total * 2)?;
+    // SAFETY: `bf16_out` is `vec![0u16; total]`, so `bf16_out.len() == total` and
+    // every element is initialised (zeroed at construction, then overwritten by the
+    // `group`/`elem` dequant loop above). `total * 2 == bf16_out.len() *
+    // size_of::<u16>()`, so the span is exactly the Vec's buffer. Shared borrow
+    // only; `buf` was allocated at `total * 2` bytes so the H2D destination matches.
     let bf16_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(bf16_out.as_ptr() as *const u8, total * 2) };
     gpu.copy_h2d(bf16_bytes, buf)?;

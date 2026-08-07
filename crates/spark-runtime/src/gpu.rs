@@ -390,14 +390,6 @@ pub trait GpuBackend: Send + Sync {
         Ok(())
     }
 
-    /// Allocate page-locked (pinned) host memory for efficient async H2D.
-    ///
-    /// On DGX Spark (UMA/LPDDR5X), pinned memory enables true async DMA
-    /// without internal CUDA staging overhead. Small metadata buffers
-    /// should be packed into a single pinned region and copied in one call.
-    ///
-    /// Returns a raw pointer to `bytes` of page-locked host memory.
-    /// Caller must call `free_host_pinned` to release.
     /// Device-side alias of a page-locked host pointer from
     /// [`Self::alloc_host_pinned`] (cuMemHostGetDevicePointer). On UMA parts
     /// (GB10) this lets a KERNEL write results directly into host-visible
@@ -407,6 +399,21 @@ pub trait GpuBackend: Send + Sync {
         anyhow::bail!("host_ptr_to_device: not supported by this backend")
     }
 
+    /// Allocate page-locked (pinned) host memory for efficient async H2D.
+    ///
+    /// On DGX Spark (UMA/LPDDR5X), pinned memory enables true async DMA
+    /// without internal CUDA staging overhead. Small metadata buffers
+    /// should be packed into a single pinned region and copied in one call.
+    ///
+    /// Returns a raw pointer to `bytes` of page-locked host memory.
+    /// Caller must call `free_host_pinned` to release.
+    ///
+    /// **The returned region is ZEROED.** Callers pack these buffers with
+    /// alignment padding between fields and then form a `&[u8]` over the whole
+    /// packed range for one `copy_h2d`; a slice over a never-written byte is UB
+    /// no matter what the device later does with it. Every implementation must
+    /// uphold this — `cuMemAllocHost_v2` and `newBufferWithLength` do not zero
+    /// on their own and their wrappers memset explicitly.
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
         // Default: regular heap allocation (mock backend, no pinning)
         let layout = std::alloc::Layout::from_size_align(bytes, 64)

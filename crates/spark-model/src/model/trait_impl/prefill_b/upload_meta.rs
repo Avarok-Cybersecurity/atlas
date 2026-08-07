@@ -156,6 +156,25 @@ impl TransformerModel {
                 }
             }
 
+            // The MRoPE+vision arm above REBUILDS `positions` from the chunk's
+            // pad-token runs (one entry per text token, `gh*gw` per image run)
+            // instead of from `proc_count`, so its length is data-dependent —
+            // it tracks `chunk_len`, and `proc_count <= chunk_len` only because
+            // every `ProcRange::Compute` arm caps it there. Each copy below
+            // reads `pos_stream_bytes = proc_count * 4` bytes out of these Vecs,
+            // so fail fast here rather than read past their `len`.
+            anyhow::ensure!(
+                stg.positions.len() >= proc_count
+                    && (!use_mrope
+                        || (stg.positions_h.len() >= proc_count
+                            && stg.positions_w.len() >= proc_count)),
+                "prefill metadata: staged positions (t={} h={} w={}) shorter than \
+                 proc_count={proc_count} (chunk_start={chunk_start} chunk_len={chunk_len})",
+                stg.positions.len(),
+                stg.positions_h.len(),
+                stg.positions_w.len(),
+            );
+
             let pinned = stg.ptr;
             let mut cursor = pos_stream_bytes;
 
@@ -191,6 +210,12 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
+                // NB: rounding `slot_offset` up to 8 leaves up to 4 pad bytes
+                // after the position streams that no copy here writes. They are
+                // still initialised — `GpuBackend::alloc_host_pinned` zeroes
+                // the whole region at allocation (see its contract) — which is
+                // what lets the `from_raw_parts(pinned, cursor)` below span the
+                // pad without being UB.
                 cursor = slot_offset;
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -207,6 +232,16 @@ impl TransformerModel {
                 "prefill_chunk metadata overflow: {cursor} > {}",
                 stg.bytes
             );
+            // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
+            // `stg.bytes` bytes and `cursor <= stg.bytes` is asserted directly
+            // above. Every byte of `[0, cursor)` was written here: the T stream
+            // over `[0, pos_stream_bytes)`, then (MRoPE only) H and W packed
+            // back-to-back with no gap, then — only in the `!needs_paged` arm,
+            // the only arm that advances `cursor` past the position streams —
+            // the zeroed alignment pad followed by `proc_count * 8` slot bytes.
+            // The `ensure!` above establishes the source Vecs are long enough
+            // for the position copies; `slots` is `extend`ed with exactly
+            // `proc_count` i64s in this same arm.
             let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
             self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
         }

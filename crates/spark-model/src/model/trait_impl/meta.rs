@@ -199,6 +199,10 @@ impl TransformerModel {
         let ptrs: Vec<u64> = (0..num_ssm)
             .map(|i| self.ssm_pool.h_state(i, slot).0)
             .collect();
+        // SAFETY: the length is derived from `ptrs` itself —
+        // `ptrs.len() * size_of::<u64>()` — over the `Vec<u64>` the `collect`
+        // above just materialised (`len == num_ssm`, every element written by
+        // the map, no `with_capacity` gap).
         let ptr_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(ptrs.as_ptr() as *const u8, ptrs.len() * 8) };
         self.gpu

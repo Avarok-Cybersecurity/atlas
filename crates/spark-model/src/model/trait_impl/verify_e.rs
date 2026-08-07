@@ -183,13 +183,27 @@ impl TransformerModel {
                 seq_lens[r] = (pos + 1) as i32;
             }
         }
+        // SAFETY: `positions` is the fixed `[0u32; 96]` above, so its size is
+        // 96 * 4 = 384 B; the `ensure!(r_total <= VERIFY_ROW_CAP)` guard
+        // (VERIFY_ROW_CAP == 96, verify_e2.rs) makes `r_total * 4 <= 384`.
+        // The array is zero-init at declaration and rows `0..r_total` are all
+        // written by the fill loop (`off` is the prefix sum of `ks`, so
+        // `off[i]+j` covers `0..r_total` exactly). `u32` is POD.
         let pos_bytes =
             unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, r_total * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
+        // SAFETY: `slots` is the fixed `[0i64; 96]` above (768 B); the same
+        // `ensure!(r_total <= VERIFY_ROW_CAP == 96)` bounds `r_total * 8 <=
+        // 768`. Zero-init at declaration, rows `0..r_total` written by the
+        // fill loop; `i64` is POD.
         let slot_bytes =
             unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, r_total * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(768), stream)?;
+        // SAFETY: `seq_lens` is the fixed `[0i32; 96]` above (384 B); the same
+        // `ensure!(r_total <= VERIFY_ROW_CAP == 96)` bounds `r_total * 4 <=
+        // 384`. Zero-init at declaration, rows `0..r_total` written by the
+        // fill loop; `i32` is POD.
         let sl_bytes =
             unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, r_total * 4) };
         self.gpu
@@ -207,6 +221,11 @@ impl TransformerModel {
                 }
             }
         }
+        // SAFETY: `bt_buf` is `vec![0i32; needed]` on the line above, so its
+        // LEN is `needed` and `needed * 4 == size_of_val(&bt_buf[..])` — the
+        // read stops at `len`, never in the `Vec`'s spare capacity. Zero-init
+        // at construction covers the rows/columns the fill loop skips when
+        // `block_table.len() < mb`.
         let bt_bytes =
             unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu
@@ -515,9 +534,13 @@ impl TransformerModel {
             // Kernel-written host-mapped results: one stream sync (kernels
             // only — no copy op in the queue), then read host memory.
             self.gpu.synchronize(stream)?;
-            // SAFETY: host points at the live pinned blob (>= 64 KB);
-            // r_total <= 96 so r_total*4 <= 384 B; the argmax kernel wrote
-            // these bytes and the sync ordered them.
+            // SAFETY: `host` is the 65_536 B `alloc_host_pinned` blob from
+            // `mapped_argmax_host_dev`, live for the process lifetime; the
+            // `ensure!(r_total <= VERIFY_ROW_CAP)` guard (cap 96) bounds
+            // `r_total * 4 <= 384`. Those exact bytes were INITIALISED by the
+            // argmax dispatch, which wrote one 4 B row each for `0..r_total`
+            // through this blob's UMA device alias, and the `synchronize`
+            // above ordered those writes before this read.
             let src = unsafe { std::slice::from_raw_parts(host, r_total * 4) };
             buf.copy_from_slice(src);
             filled = true;
@@ -554,8 +577,14 @@ impl TransformerModel {
             }
             if buf.len() <= PINNED_CAP {
                 // SAFETY: PINNED points at a live cuMemAllocHost blob of
-                // PINNED_CAP bytes; the scheduler thread is the sole user, and
-                // the slice does not outlive this block.
+                // PINNED_CAP bytes and the enclosing `if buf.len() <=
+                // PINNED_CAP` is the length bound, so the `&mut [u8]` stays
+                // inside the allocation. `u8` has no validity invariant, so
+                // aliasing uninitialised pinned bytes as `&mut [u8]` is sound
+                // to WRITE; the `copy_d2h_on_stream` below fills all
+                // `buf.len()` bytes before `copy_from_slice` reads them. The
+                // scheduler thread is the sole user, and the slice does not
+                // outlive this block.
                 let dst = unsafe { std::slice::from_raw_parts_mut(p, buf.len()) };
                 self.gpu
                     .copy_d2h_on_stream(self.buffers.scratch(), dst, stream)?;

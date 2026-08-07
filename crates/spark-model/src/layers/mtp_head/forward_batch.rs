@@ -321,6 +321,15 @@ impl MtpHead {
             meta_buf[0..4].copy_from_slice(&(positions[i] as u32).to_le_bytes());
             meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
             meta_buf[16..20].copy_from_slice(&((state.seq_len + 1) as i32).to_le_bytes());
+            // SAFETY: `bt_len = state.block_table.len() * 4` is read off this
+            // sequence's own Vec (above), and `block_table: Vec<u32>` (mtp_head.rs)
+            // ⇒ `size_of::<u32>() == 4`, so the span is exactly
+            // `len * size_of::<u32>()` bytes. Every element is initialised — the Vec
+            // only grows through the `push(alloc_block()?)` loop directly above, not
+            // via `with_capacity` + partial fill. Shared borrow only; the `&mut`
+            // reborrow of `state` used by that loop is no longer in use. The
+            // destination `meta_buf[256..256 + bt_len]` is in bounds (`meta_buf` was
+            // sized `256 + bt_len`) and the device-side stride was `ensure!`d above.
             let bt_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(state.block_table.as_ptr() as *const u8, bt_len)
             };

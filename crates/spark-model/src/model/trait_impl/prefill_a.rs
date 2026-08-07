@@ -245,6 +245,14 @@ impl TransformerModel {
 
         // ── 2. Embed tokens → [proc_count, H] contiguous ──
         {
+            // SAFETY: `proc_count` is not an independent count. Each of the
+            // three arms of the `(proc_tokens, proc_count, seq_len_start)`
+            // binding above pairs a subslice of `tokens` with that subslice's
+            // OWN length — `&tokens[n-1..]`/1, `&tokens[kv_write_start..]`/
+            // `n - kv_write_start`, `tokens`/`n` — so
+            // `proc_count == proc_tokens.len()` on every path and the byte
+            // length is exactly `proc_tokens.len() * size_of::<u32>()`. The
+            // bytes are initialised: `tokens` is a live `&[u32]`.
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(proc_tokens.as_ptr() as *const u8, proc_count * 4)
             };
@@ -302,6 +310,12 @@ impl TransformerModel {
                     proc_count * 4,
                 );
             }
+            // NB: rounding `slot_offset` up to 8 leaves up to 4 bytes of pad
+            // after the positions array that no copy here writes. Those bytes
+            // are still initialised, because `GpuBackend::alloc_host_pinned`
+            // zeroes the whole region at allocation — see the contract on the
+            // trait method. That is what lets the `from_raw_parts(pinned,
+            // cursor)` below span the pad without being UB.
             cursor = slot_offset;
             unsafe {
                 std::ptr::copy_nonoverlapping(
@@ -338,6 +352,19 @@ impl TransformerModel {
             };
 
             assert!(cursor <= stg.bytes, "prefill metadata overflow");
+            // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
+            // `stg.bytes` bytes (allocated in impl_a1.rs, freed in drop.rs) and
+            // `cursor <= stg.bytes` is asserted on the line above. Every byte
+            // of `[0, cursor)` was written by this block: positions over
+            // `[0, proc_count*4)`, the alignment pad zeroed up to `slot_offset`,
+            // slots over `[slot_offset, slot_offset + proc_count*8)`, and under
+            // `marconi_skip` the block table then seq_len — `slot_offset` and
+            // `proc_count*8` are both multiples of 8, so `bt_start` and
+            // `sl_start` round to their inputs and open no further gap.
+            // Source side: `stg.positions` / `stg.slots` are `clear()`ed and
+            // re-`extend`ed with exactly `proc_count` elements at the top of
+            // this block, so neither copy reads past its own source, and
+            // `seq.block_table` supplies its own `bt_len`.
             let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
             self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
             devs
@@ -454,6 +481,12 @@ impl TransformerModel {
                 let last_offset = (proc_count - 1) * self.config.hidden_size * 4;
                 let h_sz = self.config.hidden_size;
                 let mut buf = vec![0u16; h_sz];
+                // SAFETY: `buf` is `vec![0u16; h_sz]` on the line above, so it
+                // owns exactly `h_sz * size_of::<u16>()` initialised bytes and
+                // the length matches its capacity. `bytes` is the only live
+                // reference to that allocation for its whole lifetime — it is
+                // last used on the `copy_d2h` line below, and `buf` is not read
+                // again until after that.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, h_sz * 2)
                 };

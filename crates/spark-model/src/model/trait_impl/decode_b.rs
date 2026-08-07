@@ -129,6 +129,11 @@ impl TransformerModel {
         {
             let chunk_tokens =
                 &prefill_tokens[prefill_chunk_start..prefill_chunk_start + n_prefill];
+            // SAFETY: `chunk_tokens` is sliced on the line above with an END
+            // bound of `prefill_chunk_start + n_prefill`, so its length IS
+            // `n_prefill` (an out-of-range chunk panics in that slice index
+            // first) and the byte length is `chunk_tokens.len() * size_of::<u32>()`
+            // over a live `&[u32]`.
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(chunk_tokens.as_ptr() as *const u8, n_prefill * 4)
             };
@@ -264,6 +269,12 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
+                // NB: rounding `slot_offset` up to 8 leaves up to 4 pad bytes
+                // after the positions array that no copy here writes. They are
+                // still initialised — `GpuBackend::alloc_host_pinned` zeroes
+                // the whole region at allocation (see its contract) — which is
+                // what lets the `from_raw_parts(pinned, cursor)` below span the
+                // pad without being UB.
                 cursor = slot_offset;
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -280,6 +291,16 @@ impl TransformerModel {
                 "mixed_forward prefill metadata overflow: {cursor} > {}",
                 stg.bytes
             );
+            // SAFETY: `pinned` is the model's `cuMemAllocHost` staging block of
+            // `stg.bytes` bytes and `cursor <= stg.bytes` is asserted directly
+            // above. Every byte of `[0, cursor)` was written here: positions
+            // over `[0, proc_count*4)` (the `extend` above pushes exactly
+            // `proc_count` u32s), and — only in the `!needs_paged` arm, the only
+            // arm that advances `cursor` past `proc_count*4` — the zeroed
+            // alignment pad followed by slots over
+            // `[slot_offset, slot_offset + proc_count*8)` (`stg.slots` is
+            // `clear()`ed and re-`extend`ed with exactly `proc_count` i64s in
+            // that same arm, so neither copy reads past its own source).
             let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
             self.gpu
                 .copy_h2d_async(pinned_slice, prefill_meta_base, stream)?;
@@ -293,6 +314,9 @@ impl TransformerModel {
             // Phase 6.3: skip upload in HSS mode (orchestrator bypasses kernel).
             if upload_start < current_blocks && prefill_seq.hss_window_start() == 0 {
                 let new_blocks = &prefill_seq.block_table[upload_start..];
+                // SAFETY: the length is `size_of_val(new_blocks)` — derived from
+                // the slice itself, so it can never exceed it — over a live
+                // `&[u32]` sub-slice of `prefill_seq.block_table`.
                 let bt_bytes = unsafe {
                     std::slice::from_raw_parts(
                         new_blocks.as_ptr() as *const u8,
@@ -317,6 +341,8 @@ impl TransformerModel {
             }
 
             let seq_len_val = (proc_start + proc_count) as u32;
+            // SAFETY: exactly `size_of::<u32>()` bytes over the live, fully
+            // initialised `seq_len_val` local on the line above.
             let seq_len_bytes = unsafe {
                 std::slice::from_raw_parts(
                     &seq_len_val as *const u32 as *const u8,

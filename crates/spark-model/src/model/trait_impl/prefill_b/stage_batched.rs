@@ -39,6 +39,12 @@ use super::super::super::types::TransformerModel;
 use crate::layer::BatchedAttnMetadata;
 use crate::traits::{PrefillSlice, SequenceState};
 
+// `block_ptrs_bytes` below is computed from `size_of::<DevicePtr>()` while the
+// host-side staging Vecs (`bt_ptrs`, `sl_ptrs`) hold plain `u64`s — that byte
+// count is only a valid bound on those Vecs if the two widths agree. Assert it
+// at compile time rather than assume the single-field wrapper never grows.
+const _: () = assert!(std::mem::size_of::<DevicePtr>() == std::mem::size_of::<u64>());
+
 /// Per-stream metadata needed to stage one entry of the batched arrays.
 /// Built by the per-stream Phase 1-3 setup and consumed by
 /// `stage_batched_attn_metadata`.
@@ -213,6 +219,22 @@ impl TransformerModel {
 
         // Host-side pack into pinned buffer at the correct relative offsets.
         let pinned = stg.ptr;
+        // SAFETY (whole block): every copy below reads a length derived from
+        // the source it copies — `pos_bytes = total_tokens * 4` against
+        // `stg.positions`, which the loop above pushes `info.proc_count` entries
+        // into per stream, i.e. `total_tokens` in all (`acc` is the same sum);
+        // `slot_bytes = total_tokens * 8` against `stg.slots`, filled by the
+        // identical nested loop; `block_ptrs_bytes = n * 8` against `bt_ptrs` /
+        // `sl_ptrs`, each `with_capacity(n)` and then pushed exactly once per
+        // `streams_info` entry (`n = streams_info.len()`, no capacity gap); and
+        // `cu_seqlens_bytes = (n + 1) * 4` against `cu_seqlens_host`, which gets
+        // one `push(0)` plus one push per stream. The `*_aligned` round-ups can
+        // leave up to 4 pad bytes that no copy writes; those are nonetheless
+        // initialised, because `GpuBackend::alloc_host_pinned` zeroes the whole
+        // region at allocation (see its contract), so the
+        // `from_raw_parts(pinned, cursor)` at the end of the block spans no
+        // uninit byte. Every write stays under `cursor`, which is asserted
+        // `<= stg.bytes` before the slice is formed.
         unsafe {
             let mut cursor = 0usize;
             // positions

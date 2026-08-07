@@ -261,6 +261,13 @@ impl MtpHead {
         meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
         meta_buf[16..20].copy_from_slice(&actual_seq_len.to_le_bytes());
         // Block table values are always < 2^31 (block indices), so u32 → i32 is lossless.
+        // SAFETY: `bt_len = state.block_table.len() * 4` is read off the Vec itself
+        // (above), and `block_table: Vec<u32>` (mtp_head.rs) ⇒ `size_of::<u32>() == 4`,
+        // so the span is exactly `len * size_of::<u32>()` bytes. Its elements are all
+        // initialised: the Vec only ever grows via the `push(alloc_block()?)` loop a
+        // few lines up, never via `with_capacity` + a partial fill. Shared borrow
+        // only, and no `&mut state.block_table` is live here (the push loop ended).
+        // `meta_buf` was sized `256 + bt_len`, so the copy destination is in bounds.
         let bt_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(state.block_table.as_ptr() as *const u8, bt_len) };
         meta_buf[256..256 + bt_len].copy_from_slice(bt_bytes);

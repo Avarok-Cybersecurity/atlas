@@ -288,6 +288,12 @@ impl DeepseekV4MtpHead {
         meta_buf[0..4].copy_from_slice(&(position as u32).to_le_bytes());
         meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
         meta_buf[16..20].copy_from_slice(&actual_seq_len.to_le_bytes());
+        // SAFETY: `bt_len = bt_i32.len() * 4` is derived from `bt_i32` on the line
+        // above, so the span is exactly `bt_i32.len() * size_of::<i32>()` bytes.
+        // `bt_i32` comes from `collect()` (len == items yielded, no uninitialised
+        // capacity tail) and is only shared-borrowed here. The destination slice
+        // `meta_buf[256..256 + bt_len]` is in bounds because `meta_buf` was sized
+        // `256 + bt_len`.
         let bt_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_len) };
         meta_buf[256..256 + bt_len].copy_from_slice(bt_bytes);

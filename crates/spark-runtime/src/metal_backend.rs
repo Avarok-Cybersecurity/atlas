@@ -699,6 +699,13 @@ impl GpuBackend for MetalGpuBackend {
         if addr == 0 {
             bail!("alloc_host_pinned: gpuAddress returned 0");
         }
+        // `newBufferWithLength` does not promise zeroed contents. Match the
+        // trait contract (and the CUDA backend) so callers may form a `&[u8]`
+        // over the whole buffer without every one of them re-establishing
+        // initialisation. SAFETY: `host_ptr` is the `contents()` pointer of a
+        // live Shared buffer of at least `bytes.max(1)` bytes, uniquely owned
+        // here until it is parked in the alloc table.
+        unsafe { std::ptr::write_bytes(host_ptr, 0, bytes.max(1)) };
         self.allocations.lock().insert(addr, buf);
         Ok(host_ptr)
     }
