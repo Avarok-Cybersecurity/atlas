@@ -165,6 +165,36 @@ pub fn record_covers(
     invalidating_paths(root, head, record_sha, gate).is_some_and(|p| p.is_empty())
 }
 
+/// Whether `record` still describes `sha`, path boundary first, closure second.
+///
+/// Two rungs, in order, and the second can only ever narrow the first:
+///
+/// 1. **The path boundary** ([`record_covers`]). Nothing in the invalidation
+///    set changed ⇒ covered, no further question.
+/// 2. **The closure hash** ([`super::closure::excuses`]). Everything that did
+///    change is inside `kernels/`, and every target those paths can affect
+///    still compiles to byte-identical device code ⇒ covered.
+///
+/// Rung 2 exists because `kernels/<hw>/common/` holds the majority of kernels
+/// and every model inherits from it, so treating one shared edit as "re-test
+/// all 28 targets" costs more GPU time than anyone will pay — and a gate people
+/// route around is worse than a slower one. It never widens coverage: a path
+/// outside `kernels/`, an unattested target, or an uncomputable hash all leave
+/// the record invalidated exactly as before.
+fn record_still_stands(
+    root: &Path,
+    sha: &str,
+    record: &GateRecord,
+    gate: &super::coverage::GateCoverage,
+) -> bool {
+    match invalidating_paths(root, sha, &record.git_sha, gate) {
+        // Not an ancestor, or git failed: unchanged fail-closed doctrine.
+        None => false,
+        Some(paths) if paths.is_empty() => true,
+        Some(paths) => super::closure::excuses(root, &paths, &record.closure),
+    }
+}
+
 /// The changed paths that invalidate `gate` between two commits.
 ///
 /// `None` means the question could not be answered — not an ancestor, or git
@@ -245,26 +275,40 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     let mut covered: Option<GateRecord> = None;
     for path in &paths {
         if let Ok(record) = read_record(path)
-            && record_covers(root, sha, &record.git_sha, gate)
+            && record_still_stands(root, sha, &record, gate)
         {
             covered = Some(record);
             break;
         }
     }
     let Some(record) = covered else {
-        let newest_sha = read_record(&paths[0]).ok().map(|r| r.git_sha);
-        return GateStatus::Missing(match newest_sha {
+        let newest = read_record(&paths[0]).ok();
+        return GateStatus::Missing(match newest {
             // ★ Name the files that invalidated it. "does not cover this
             // commit" tells an author a gate is open but not what re-opened
             // it, which turns a 20-second fix into a bisect. `why` is empty
             // when the record is not an ancestor at all, which the wording
             // then says outright instead of implying a path list exists.
-            Some(newest) => {
+            Some(newest_record) => {
+                let newest = newest_record.git_sha.clone();
                 let why = invalidating_paths(root, sha, &newest, gate).unwrap_or_default();
                 let because = if why.is_empty() {
                     "it is not an ancestor of this commit".to_string()
                 } else {
-                    format!("invalidated by {}", summarize_paths(&why))
+                    // Naming the TARGETS as well as the files is the difference
+                    // between "a kernel changed" and "this is why you owe a
+                    // 3.5-hour run": a shared edit that re-opens one model
+                    // reads very differently from one that re-opens all 22.
+                    let targets =
+                        super::closure::changed_targets(root, &why, &newest_record.closure);
+                    match targets.len() {
+                        0 => format!("invalidated by {}", summarize_paths(&why)),
+                        n => format!(
+                            "invalidated by {} — device code changed for {n} target(s): {}",
+                            summarize_paths(&why),
+                            summarize_paths(&targets)
+                        ),
+                    }
                 };
                 format!(
                     "latest record is for {newest} ({}) — {because}",

@@ -21,6 +21,7 @@
 //!   carries no per-box state ([`check`]).
 
 pub mod check;
+pub mod closure;
 pub mod coverage;
 pub mod record;
 pub mod taxon;

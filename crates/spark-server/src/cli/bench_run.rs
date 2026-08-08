@@ -213,7 +213,11 @@ async fn write_gate_record(
     let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
     let dirty = dirty_at_start;
     let gate_record =
-        gate::GateRecord::from_run(record, hardware, sha, dirty, recipe, serve_overrides)?;
+        gate::GateRecord::from_run(record, hardware, sha, dirty, recipe, serve_overrides)?
+            // What THIS binary's kernels were compiled from. Baked at build
+            // time, so it describes the code that actually ran rather than the
+            // tree as it stands now.
+            .with_closure(atlas_kernels::TARGET_CLOSURES);
     let path = gate::write_record(&root, &gate_record)?;
     eprintln!("gate record written as {}", path.display());
     // Repeated at the end as well as the start: the start-of-run warning has

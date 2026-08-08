@@ -73,6 +73,14 @@ pub struct GateRecord {
     /// One line a future reader scans before the numbers: what was measured,
     /// what it hit, and anything the verdict or log makes noteworthy.
     pub summary: String,
+    /// What each kernel target compiled to when this was measured.
+    ///
+    /// Lets a later `kernels/`-only diff keep this record for the targets whose
+    /// device code did not change — see [`super::closure`]. Empty (and absent
+    /// from the JSON) is the pre-attestation case and excuses nothing, so
+    /// records written before this existed behave exactly as they did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub closure: super::closure::Attestation,
 }
 
 /// Comparison against one metric's threshold. `min` fails below (scores),
@@ -301,6 +309,17 @@ impl GateRecord {
             .unwrap_or_default();
         Ok(Self {
             schema: 1,
+            // Attached afterwards by `with_closure`, unlike `dirty_paths`.
+            //
+            // The asymmetry is deliberate and rests on which direction an
+            // omission fails in. A record missing its dirt OVERSTATES its
+            // provenance — it claims to describe a commit it does not — so the
+            // constructor refuses to build one. A record missing its
+            // attestation merely forfeits the savings: it excuses no future
+            // diff and behaves exactly like every record written before this
+            // existed. Requiring it here would mean threading a repo root
+            // through every caller to buy nothing.
+            closure: Default::default(),
             benchmark_id: record.benchmark_id.clone(),
             benchmark_name: record.benchmark_name.clone(),
             git_sha,
@@ -319,6 +338,21 @@ impl GateRecord {
             verdict_reason,
             summary: summarize(record),
         })
+    }
+
+    /// Attach what each kernel target in the measuring BINARY compiled from.
+    ///
+    /// `baked` is `atlas_kernels::TARGET_CLOSURES` — computed by the build
+    /// script at the moment the kernels were compiled. It deliberately does not
+    /// recompute from the working tree: doing so would attest to sources that
+    /// may never have been built, which is the staleness this exists to catch.
+    ///
+    /// Unparseable or empty input attaches nothing, which excuses no future
+    /// diff. That is the correct failure: it costs re-runs, not soundness.
+    #[must_use]
+    pub fn with_closure(mut self, baked: &str) -> Self {
+        self.closure = serde_json::from_str(baked).unwrap_or_default();
+        self
     }
 
     /// True when the run's verdict is a PASS. Anything else — FAIL, info, or

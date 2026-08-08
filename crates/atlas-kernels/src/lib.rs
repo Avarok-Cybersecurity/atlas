@@ -33,6 +33,27 @@ include!(concat!(env!("OUT_DIR"), "/target_ptx.rs"));
 /// that silently embedded a stale module list (the 98-vs-99 regression).
 pub const KERNEL_SET_HASH: &str = env!("ATLAS_KERNEL_SET_HASH");
 
+/// What each kernel target in THIS binary was compiled from, as JSON.
+///
+/// A map of `"hardware/model/quant"` to `{hash, arch, compiler, flags}`, baked
+/// by `build.rs` at the moment the kernels were compiled. The benchmark gate
+/// copies it into a record so the record attests to the binary's sources rather
+/// than to whatever the working tree held when the record was written — a
+/// commit sha does not describe a stale `target/`, a dirty tree, or an image
+/// carried between boxes.
+///
+/// `{}` when the build compiled nothing (`ATLAS_SKIP_BUILD=1`) or could not
+/// identify its compiler. That is not an error: an empty attestation excuses no
+/// future diff, so such a binary's records behave exactly as they did before
+/// attestations existed.
+///
+/// `option_env!` rather than `env!` so the crate still builds against an
+/// `OUT_DIR` produced by an older build script.
+pub const TARGET_CLOSURES: &str = match option_env!("ATLAS_TARGET_CLOSURES") {
+    Some(json) => json,
+    None => "{}",
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // Target-aware PTX grouping
 // ═══════════════════════════════════════════════════════════════════

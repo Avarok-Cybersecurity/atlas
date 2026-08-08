@@ -160,6 +160,11 @@ fn main() {
             content_hash(stub)
         );
         println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
+        // No compiler ran, so this binary can attest to nothing. Emitted
+        // explicitly rather than left unset so a reader of lib.rs does not have
+        // to infer it: a record written from a skip build excuses no future
+        // diff, exactly as a record written before attestations existed.
+        println!("cargo:rustc-env=ATLAS_TARGET_CLOSURES={{}}");
         return;
     }
 
@@ -520,6 +525,78 @@ fn main() {
         content_hash(&generated)
     );
     println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
+
+    // ── Bake what each target was compiled from ──
+    // Read back by the benchmark gate so a record can attest to the BINARY's
+    // sources rather than to whatever the tree held when the record was
+    // written — the two differ whenever a build is stale, a tree is dirty, or
+    // an image is carried between boxes, all of which happen during a gate
+    // campaign.
+    println!(
+        "cargo:rustc-env=ATLAS_TARGET_CLOSURES={}",
+        closure_attestation(workspace_root, &targets, compute_target.as_ref())
+    );
+}
+
+/// Per-target closure hashes, as one line of JSON.
+///
+/// Returns `{}` — attesting to nothing — whenever any part cannot be computed:
+/// an unknown compiler, sources that will not resolve, an unresolvable
+/// `#include`. Every such case costs a future re-run, which is the direction a
+/// provenance hash must fail in; a placeholder would let two different builds
+/// compare equal.
+fn closure_attestation(
+    workspace_root: &std::path::Path,
+    targets: &[Target],
+    compute_target: &dyn build_target::ComputeTarget,
+) -> String {
+    let Some(compiler) = compute_target.compiler_id() else {
+        return "{}".into();
+    };
+    let mut map = serde_json::Map::new();
+    for target in targets {
+        let sources = collect_cu_files(
+            target.common_kernel_dir.as_deref(),
+            &target.model_kernel_dir,
+            compute_target.source_extension(),
+        );
+        if sources.is_empty() {
+            continue;
+        }
+        let model_dir = target.model_kernel_dir.parent();
+        let configs = [
+            workspace_root
+                .join("kernels")
+                .join(&target.hw)
+                .join("HARDWARE.toml"),
+            model_dir.map(|d| d.join("MODEL.toml")).unwrap_or_default(),
+            target.model_kernel_dir.join("KERNEL.toml"),
+        ]
+        .into_iter()
+        .filter(|p| p.is_file())
+        .collect();
+
+        let inputs = atlas_closure::ClosureInputs {
+            sources,
+            configs,
+            flags: target.extra_flags.clone(),
+            arch: target.arch.clone(),
+            compiler: compiler.clone(),
+        };
+        let Ok(hash) = atlas_closure::hash(workspace_root, &inputs) else {
+            continue;
+        };
+        map.insert(
+            format!("{}/{}/{}", target.hw, target.model, target.quant),
+            serde_json::json!({
+                "hash": hash,
+                "arch": target.arch,
+                "compiler": compiler,
+                "flags": target.extra_flags,
+            }),
+        );
+    }
+    serde_json::Value::Object(map).to_string()
 }
 
 /// FNV-1a 64-bit content fingerprint → 12 hex chars. Deterministic, no deps.
