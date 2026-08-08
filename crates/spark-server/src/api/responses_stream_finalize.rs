@@ -82,6 +82,67 @@ pub(super) async fn emit_responses_prologue(
     seq
 }
 
+/// Close the in-flight `reasoning` output item (if open): emit the
+/// terminal `summary_text.done` + `summary_part.done` + `output_item.done`
+/// frames, record the item in `completed_items`, and advance
+/// `output_index` past it. No-op when reasoning never opened. Returns the
+/// next free sequence number. Reasoning always leads the turn, so this is
+/// invoked on the first visible output (content/tool call) and again at
+/// stream end for thinking-only turns.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn close_open_reasoning(
+    tx: &mpsc::Sender<Result<Event, std::convert::Infallible>>,
+    completed_items: &mut Vec<crate::openai::ResponsesOutputItem>,
+    seq: u64,
+    reasoning_open: &mut bool,
+    reasoning_item_id: &str,
+    reasoning_text: &str,
+    reasoning_output_index: usize,
+    output_index: &mut usize,
+) -> u64 {
+    if !*reasoning_open {
+        return seq;
+    }
+    *reasoning_open = false;
+    let mut seq = seq;
+    let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryTextDone {
+        sequence_number: seq,
+        item_id: reasoning_item_id.to_string(),
+        output_index: reasoning_output_index,
+        summary_index: 0,
+        text: reasoning_text.to_string(),
+    };
+    emit(tx, &ev).await;
+    seq += 1;
+    let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryPartDone {
+        sequence_number: seq,
+        item_id: reasoning_item_id.to_string(),
+        output_index: reasoning_output_index,
+        summary_index: 0,
+        part: crate::openai::ResponsesSummaryPart::SummaryText {
+            text: reasoning_text.to_string(),
+        },
+    };
+    emit(tx, &ev).await;
+    seq += 1;
+    let done = crate::openai::ResponsesOutputItem::Reasoning {
+        id: reasoning_item_id.to_string(),
+        summary: vec![crate::openai::ResponsesSummaryPart::SummaryText {
+            text: reasoning_text.to_string(),
+        }],
+    };
+    completed_items.push(done.clone());
+    let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
+        sequence_number: seq,
+        output_index: reasoning_output_index,
+        item: done,
+    };
+    emit(tx, &ev).await;
+    seq += 1;
+    *output_index += 1;
+    seq
+}
+
 /// State for any "in-flight" output item that may need closing once the
 /// upstream chat stream drains. Mirrors the locals in
 /// `responses_endpoint_stream`'s tail block 1:1.
@@ -251,14 +312,26 @@ pub(super) async fn finalize_responses_stream(
     };
     // Aggregate every emitted message's text so multi-item streams
     // (text→fc→text) round-trip cleanly through previous_response_id
-    // resume and the Conversations API.
+    // resume and the Conversations API. Same for the reasoning trace —
+    // resuming without it makes the template emit empty `<think>`
+    // wrappers for the prior assistant turn.
     let mut transcript_text = String::new();
+    let mut transcript_reasoning = String::new();
     for item in &final_resp.output {
-        if let crate::openai::ResponsesOutputItem::Message { content, .. } = item {
-            for part in content {
-                let crate::openai::ResponsesContentPart::OutputText { text, .. } = part;
-                transcript_text.push_str(text);
+        match item {
+            crate::openai::ResponsesOutputItem::Message { content, .. } => {
+                for part in content {
+                    let crate::openai::ResponsesContentPart::OutputText { text, .. } = part;
+                    transcript_text.push_str(text);
+                }
             }
+            crate::openai::ResponsesOutputItem::Reasoning { summary, .. } => {
+                for part in summary {
+                    let crate::openai::ResponsesSummaryPart::SummaryText { text } = part;
+                    transcript_reasoning.push_str(text);
+                }
+            }
+            crate::openai::ResponsesOutputItem::FunctionCall { .. } => {}
         }
     }
     // Persist for previous_response_id resume (Responses API defaults
@@ -290,7 +363,10 @@ pub(super) async fn finalize_responses_stream(
                 _ => None,
             })
             .collect();
-        if !transcript_text.is_empty() || !stored_tool_calls.is_empty() {
+        if !transcript_text.is_empty()
+            || !stored_tool_calls.is_empty()
+            || !transcript_reasoning.is_empty()
+        {
             transcript.push(crate::openai::IncomingMessage {
                 role: "assistant".to_string(),
                 content: crate::openai::ParsedContent {
@@ -304,7 +380,11 @@ pub(super) async fn finalize_responses_stream(
                 },
                 tool_call_id: None,
                 name: None,
-                reasoning_content: None,
+                reasoning_content: if transcript_reasoning.is_empty() {
+                    None
+                } else {
+                    Some(transcript_reasoning)
+                },
             });
         }
         store_ref.insert(crate::response_store::StoredEntry {

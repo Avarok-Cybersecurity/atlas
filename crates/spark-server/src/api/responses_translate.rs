@@ -107,6 +107,18 @@ pub(super) async fn translate_chat_response_to_responses(
     let full_id = format!("chatcmpl-{}", chat.id);
     let mut output: Vec<crate::openai::ResponsesOutputItem> = Vec::new();
     if let Some(choice) = chat.choices.first() {
+        // The reasoning trace leads the output — OpenAI orders reasoning
+        // items before message/function_call. Surfacing it as a
+        // first-class item keeps the blocking surface at parity with the
+        // stream (and with the chat surface's `reasoning_content`).
+        if let Some(reasoning) = choice.reasoning.as_deref().filter(|r| !r.is_empty()) {
+            output.push(crate::openai::ResponsesOutputItem::Reasoning {
+                id: format!("rs_{}", full_id),
+                summary: vec![crate::openai::ResponsesSummaryPart::SummaryText {
+                    text: reasoning.to_string(),
+                }],
+            });
+        }
         for (i, tc) in choice.tool_calls.iter().enumerate() {
             output.push(crate::openai::ResponsesOutputItem::FunctionCall {
                 id: format!("fc_{}_{}", full_id, i),

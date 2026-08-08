@@ -14,7 +14,8 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::chat_stream::run_chat_stream;
 use super::responses_stream_finalize::{
-    CloseOpenCtx, FinalizeCtx, close_open_items, emit_responses_prologue, finalize_responses_stream,
+    CloseOpenCtx, FinalizeCtx, close_open_items, close_open_reasoning, emit_responses_prologue,
+    finalize_responses_stream,
 };
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
@@ -132,6 +133,15 @@ pub(super) async fn responses_endpoint_stream(
         let mut final_usage: Option<serde_json::Value> = None;
         let mut finish_reason = "stop".to_string();
         let mut refusal_text: Option<String> = None;
+        // Reasoning item state: opened on the first Reasoning delta,
+        // streamed as `response.reasoning_summary_text.delta` frames,
+        // closed by the first visible output (content or tool call) or
+        // at stream end. Always the first output item (thinking
+        // precedes content).
+        let mut reasoning_open = false;
+        let mut reasoning_item_id = String::new();
+        let mut reasoning_text = String::new();
+        let mut reasoning_output_index: usize = 0;
 
         seq = emit_responses_prologue(&tx, seq, &resp_id, created_at, &model, &metadata).await;
 
@@ -139,8 +149,52 @@ pub(super) async fn responses_endpoint_stream(
         while let Some(delta) = deltas.next().await {
             use crate::ir::StreamDelta;
             match delta {
-                // Reasoning has no Responses-stream representation (the
-                // old transformer ignored reasoning_content chunks too).
+                // Reasoning streams as a first-class `reasoning` output
+                // item (spec representation) so Responses-API clients see
+                // the thought. The item opens on the first delta and is
+                // closed by the first visible output or at stream end —
+                // see `close_open_reasoning`.
+                StreamDelta::Reasoning { text, .. } if !text.is_empty() => {
+                    if !reasoning_open {
+                        reasoning_open = true;
+                        reasoning_output_index = output_index;
+                        reasoning_item_id = format!("rs_{}_{}", resp_id, output_index);
+                        // output_item.added for the reasoning item.
+                        let item = crate::openai::ResponsesOutputItem::Reasoning {
+                            id: reasoning_item_id.clone(),
+                            summary: vec![],
+                        };
+                        let ev = crate::openai::ResponsesStreamEvent::OutputItemAdded {
+                            sequence_number: seq,
+                            output_index,
+                            item,
+                        };
+                        emit(&tx, &ev).await;
+                        seq += 1;
+                        // reasoning_summary_part.added (single summary_text part).
+                        let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryPartAdded {
+                            sequence_number: seq,
+                            item_id: reasoning_item_id.clone(),
+                            output_index,
+                            summary_index: 0,
+                            part: crate::openai::ResponsesSummaryPart::SummaryText {
+                                text: String::new(),
+                            },
+                        };
+                        emit(&tx, &ev).await;
+                        seq += 1;
+                    }
+                    reasoning_text.push_str(&text);
+                    let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryTextDelta {
+                        sequence_number: seq,
+                        item_id: reasoning_item_id.clone(),
+                        output_index,
+                        summary_index: 0,
+                        delta: text,
+                    };
+                    emit(&tx, &ev).await;
+                    seq += 1;
+                }
                 StreamDelta::Reasoning { .. } => {}
                 // Refusal delta (post-hoc: one delta carries the full
                 // refusal sentence).
@@ -159,6 +213,26 @@ pub(super) async fn responses_endpoint_stream(
                 StreamDelta::Refusal { .. } => {}
                 // Text content delta.
                 StreamDelta::Content { text, .. } if !text.is_empty() => {
+                    // First visible output closes the in-flight reasoning
+                    // item; the message then opens on the next
+                    // output_index. Re-mint the message id only on that
+                    // transition so the text→fc→text path below keeps
+                    // its own id bookkeeping.
+                    let had_reasoning = reasoning_open;
+                    seq = close_open_reasoning(
+                        &tx,
+                        &mut completed_items,
+                        seq,
+                        &mut reasoning_open,
+                        &reasoning_item_id,
+                        &reasoning_text,
+                        reasoning_output_index,
+                        &mut output_index,
+                    )
+                    .await;
+                    if had_reasoning {
+                        message_item_id = format!("msg_{}_{}", resp_id, output_index);
+                    }
                     // If a function_call is currently open, close it
                     // before opening a fresh message item — otherwise
                     // the message would collide with the function_call
@@ -243,6 +317,20 @@ pub(super) async fn responses_endpoint_stream(
                 // A tool call opens (name always present on the start
                 // delta).
                 StreamDelta::ToolCallStart { id, name, .. } => {
+                    // First visible output closes the in-flight reasoning
+                    // item; the function_call opens on the next
+                    // output_index.
+                    seq = close_open_reasoning(
+                        &tx,
+                        &mut completed_items,
+                        seq,
+                        &mut reasoning_open,
+                        &reasoning_item_id,
+                        &reasoning_text,
+                        reasoning_output_index,
+                        &mut output_index,
+                    )
+                    .await;
                     current_tool_name = Some(name.clone());
                     current_tool_call_id = Some(id);
                     if !fc_started {
@@ -340,6 +428,21 @@ pub(super) async fn responses_endpoint_stream(
                 }
             }
         }
+
+        // A thinking-only turn (reasoning opened, no visible output ever
+        // arrived) leaves the reasoning item in flight — close it before
+        // the generic item closer. No-op when reasoning already closed.
+        seq = close_open_reasoning(
+            &tx,
+            &mut completed_items,
+            seq,
+            &mut reasoning_open,
+            &reasoning_item_id,
+            &reasoning_text,
+            reasoning_output_index,
+            &mut output_index,
+        )
+        .await;
 
         seq = close_open_items(
             &tx,
