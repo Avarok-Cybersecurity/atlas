@@ -217,3 +217,126 @@ That last one is the interesting case: TTFT excludes the BFCL driver on the
 grounds that one cannot affect the other. If somebody later makes BFCL import
 from TTFT, that reasoning silently becomes false. The test turns it into a
 compile-visible event instead.
+
+## Below the path floor: what a target actually compiles
+
+The floor above answers at the granularity of a path list, and for `kernels/`
+that is very coarse. `kernels/gb10/common/` holds 160 shared kernels; each model
+directory shadows only 5–18 of them, and nothing shadows
+`paged_decode_attn_fp8.cu` at all. Under the path rule, editing one shared kernel
+re-opens every gate for all 28 targets. At roughly three and a half GPU-hours per
+accuracy leg, that is a cost people route around, and a gate people route around
+is worse than a slower one.
+
+So a second rung sits *on top of* the floor. It can only ever narrow, never
+widen, and only for paths inside `kernels/`:
+
+```
+ changed paths
+      │
+      ├─ any path outside kernels/ ─────────────► every gate re-opens (unchanged)
+      │
+      └─ all paths inside kernels/
+             │
+             └─ for each target those paths can reach:
+                    closure hash now == closure hash when measured?
+                       ├─ yes for every one ─────► the record still stands
+                       └─ no for any one ───────► that gate re-opens, and the
+                                                  message names which targets
+```
+
+### Why a file *set* is not enough
+
+The tempting version hashes each target's resolved `.cu` set after shadowing: if
+the set is unchanged, the record still covers. It is wrong twice, and both were
+found by reading the tree rather than reasoning about it.
+
+**A shadow file may `#include` the very file it shadows.**
+`kernels/gb10/qwen3.6-27b/nvfp4/inferspark_prefill_paged_indirect.cu` contains
+`#include "../../common/inferspark_prefill_paged_indirect.cu"`, and eight files
+do this. A set hash reports "this model shadows that stem, so the common copy
+cannot reach it" — while the edited bytes are compiled straight into the model's
+kernel. Silent, and it fails *open*, on exactly the change class the scheme
+exists to scope.
+
+**Headers are in no set at all.** The resolver matches `*.cu` non-recursively, so
+the nine `common/*.cuh` files — including the one carrying `BR64` — are invisible.
+Editing a header would invalidate nothing.
+
+Following includes dissolves both, because an included file's bytes are inside
+the hash wherever it lives.
+
+### Two-sided, or it proves nothing
+
+The hash is **baked into the binary by `build.rs`**, at the moment the kernels
+are compiled, and copied from there into the record. It is deliberately not
+recomputed from the working tree when the record is written: the tree and the
+binary differ precisely when it matters — a stale `target/`, a dirty tree, an
+image carried between boxes — and a tree-side attestation would paper over all
+three while looking correct.
+
+Verification then recomputes from the tree using the **record's own** stored
+arch, compiler and flags, so the only thing that can move the hash is a source
+change. Substituting the checker's environment would let whichever machine ran
+CI invalidate every record.
+
+Two implementations of "what are this target's sources" now exist — `build.rs`
+uses `collect_cu_files`, the gate uses `taxon::sources` — and if they ever drift,
+the hashes never match, every record stays invalidated, and it looks *exactly*
+like "the kernels changed". `spark-server/tests/closure_attestation.rs` is the
+only place they are compared; it recomputes every baked hash from the tree and
+prints the count it checked, because "3 passed" reads identically at 21 targets
+and at 22.
+
+### What it does not cover
+
+Angle-bracket includes (covered coarsely by the recorded compiler version);
+headers reached through an `-I` search path; `#if`/`#ifdef`, which are not
+evaluated, so an include in an untaken branch is walked anyway — over-including,
+which costs re-runs rather than soundness. Host code stays outside entirely.
+Equal hash proves equal *device code*, not equal *outcome under load*, which is
+why bitwise output gating remains valid only at C=1.
+
+## Thresholds live beside the model
+
+`kernels/<hw>/<model>/BENCH.toml`, sibling of `MODEL.toml`. One file per model,
+`[[benchmarks]]` entries keyed first by quant and naming their gate, so hardware
+and model are implied by the path and cannot disagree with the contents.
+
+Thresholds are per **checkpoint**, not per model — two checkpoints of one model
+differ by several BFCL points and cannot share a bar.
+
+Three rules the schema enforces, each a way a threshold file can lie:
+
+- `status = "unmeasured"` entries carry **no** metrics table. Absence is the
+  TODO. A guessed number a run can clear is worse than no number, because it
+  reports PASS for something nobody measured.
+- `measured` entries must carry metrics, so the status cannot overstate.
+- Exactly one checkpoint per (gate, hardware) sets `default = true`. There is no
+  "the only entry wins" — a second checkpoint added later would silently move
+  which one the gate scores.
+
+`BENCH.toml` is under `kernels/`, a boundary path, so it is exempted by exact
+filename. Without that, raising a bar would invalidate every record — including
+the run that proved the new bar reachable. The exemption is safe only because
+nothing compiles the file, and it is checked *after* the boundary-file rule, so
+it can never exempt the rules that grant it.
+
+## The telemetry plane
+
+Everything above judges one PR. Nothing in it can answer *are these green
+together*: two PRs touching one kernel target are each measured against a
+baseline the other will move, so whichever lands second is gated on a number that
+no longer describes the tree. Both were genuinely green when measured, which is
+why a merge queue cannot see it.
+
+A scheduled workflow renders one comment, rewritten in place, carrying the
+per-PR blast radius, the collisions, a suggested order, CODEOWNERS mentions, and
+**every** target in the tree — including untouched ones, because listing only the
+affected ones would convert *ungated* into *unaffected* by omission.
+
+It is advisory and fails nothing. The blocking decisions stay with the committed
+records. The judgement lives in `gate::telemetry` as a pure function of the PR
+facts plus the tree, so which targets, which order and who to mention are all
+unit-testable with no network and no fixture repository; the workflow only
+fetches and posts.
