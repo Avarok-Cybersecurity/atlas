@@ -23,6 +23,7 @@
 pub mod check;
 pub mod coverage;
 pub mod record;
+pub mod taxon;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
