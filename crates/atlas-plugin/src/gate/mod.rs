@@ -23,9 +23,11 @@
 pub mod bench;
 pub mod check;
 pub mod closure;
+pub mod codeowners;
 pub mod coverage;
 pub mod record;
 pub mod taxon;
+pub mod telemetry;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -193,6 +195,12 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+/// Split from `tests.rs` for the 500-LoC cap: writing a fixture baseline into
+/// the kernel tree, where the thresholds now live.
+#[cfg(test)]
+#[path = "fixture_baseline.rs"]
+mod fixture_baseline;
 
 /// Split from `coverage_tests.rs` for the 500-LoC cap: the deterministic floor.
 #[cfg(test)]
