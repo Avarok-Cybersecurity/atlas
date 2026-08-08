@@ -514,7 +514,7 @@ jobs:
                  || shasum -a 256 "$(basename "$asset")" > "$(basename "$asset").sha256"; } )
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: spark-${{ matrix.id }}
           retention-days: ${{ inputs.retention_days }}
@@ -542,7 +542,7 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

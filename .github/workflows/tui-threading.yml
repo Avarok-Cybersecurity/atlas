@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     name: No block_on under tui/ or recipe/
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the render thread never blocks on a future
         shell: bash
         run: |
