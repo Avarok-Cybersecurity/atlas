@@ -43,6 +43,7 @@ pub async fn list_models(
             object: "model".to_string(),
             created: crate::ids::unix_timestamp(),
             owned_by: "atlas-spark".to_string(),
+            max_model_len: Some(state.max_seq_len as u64),
         });
     }
     // Cold STAGEABLE names (peer- and disk-backed) are selectable via `model`
@@ -60,6 +61,7 @@ pub async fn list_models(
             object: "model".to_string(),
             created: crate::ids::unix_timestamp(),
             owned_by: "atlas-spark".to_string(),
+            max_model_len: Some(state.max_seq_len as u64),
         });
     }
     data.push(ModelInfo {
@@ -67,6 +69,7 @@ pub async fn list_models(
         object: "model".to_string(),
         created: crate::ids::unix_timestamp(),
         owned_by: "atlas-spark".to_string(),
+        max_model_len: Some(state.max_seq_len as u64),
     });
     Json(ModelListResponse {
         object: "list".to_string(),
@@ -108,6 +111,7 @@ pub async fn get_model(
             "object": "model",
             "created": crate::ids::unix_timestamp(),
             "owned_by": "atlas-spark",
+            "max_model_len": state.max_seq_len,
         }))
         .into_response()
     } else {

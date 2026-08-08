@@ -121,6 +121,9 @@ pub struct ModelInfo {
     pub object: String,
     pub created: u64,
     pub owned_by: String,
+    /// Maximum sequence length (context window) this model serves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_model_len: Option<u64>,
 }
 
 impl ChatCompletionResponse {
