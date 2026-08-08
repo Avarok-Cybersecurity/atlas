@@ -135,7 +135,7 @@ name = "atlas-governance"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "lattice-core",
+ "latticedb-core",
  "serde",
  "serde_json",
 ]
@@ -1366,9 +1366,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "lattice-core"
-version = "0.3.2"
-source = "git+https://github.com/Avarok-Cybersecurity/lattice-db?rev=282c8e8#282c8e8a1470f9ebed612b38aa695f62f9ef85c0"
+name = "latticedb-core"
+version = "0.3.3"
+source = "git+https://github.com/Avarok-Cybersecurity/lattice-db?rev=e722d71#e722d71b2d958cf372aba4a5a496775eda97964b"
 dependencies = [
  "async-trait",
  "bumpalo",

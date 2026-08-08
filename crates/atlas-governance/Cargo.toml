@@ -15,8 +15,14 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 # The graph/vector engine the materialised view is built in. Pinned to a rev
-# rather than a tag: `interchange` (the logical JSONL dump this crate's
-# canonical format relies on) landed in v0.3.2 and there is no published
-# crates.io release carrying it yet.
-lattice-core = { git = "https://github.com/Avarok-Cybersecurity/lattice-db", rev = "282c8e8" }
+# rather than a version: `interchange` — the logical JSONL dump this crate's
+# canonical format rests on — lands in v0.3.3, and nothing is published to
+# crates.io carrying it yet.
+#
+# ★ `package` is not optional here. The crate publishes as `latticedb-core`
+# (plain `lattice-core` is taken on crates.io by an unrelated project) while
+# its lib target is still `lattice_core`, so `use lattice_core::…` is
+# unchanged. Without this key cargo looks for a package named `lattice-core`
+# inside the repo, finds nothing, and fails to resolve.
+lattice-core = { git = "https://github.com/Avarok-Cybersecurity/lattice-db", rev = "e722d71", package = "latticedb-core" }
 
