@@ -50,6 +50,15 @@ pub struct GateRecord {
     /// what actually determined the config is the recipe, not the flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub served_by: Option<String>,
+    /// Recipe keys the operator changed on the command line for this run.
+    ///
+    /// Empty (and absent from the JSON) means the recipe served exactly as
+    /// pinned. Non-empty means `served_by` alone OVERSTATES the provenance —
+    /// the numbers describe a config that exists in no file, and a reader who
+    /// opened that recipe would be reading the wrong one. That is the same
+    /// failure `served_by` was added to prevent, one level in.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_overrides: BTreeMap<String, String>,
     pub atlas_version: String,
     /// The box that served the model during the run.
     pub hardware: Hardware,
@@ -235,6 +244,7 @@ impl GateRecord {
         git_sha: String,
         dirty_paths: Vec<String>,
         served_by: Option<String>,
+        serve_overrides: BTreeMap<String, String>,
     ) -> Result<Self> {
         if git_sha.is_empty() {
             bail!("a gate record needs the commit sha it was measured from");
@@ -254,6 +264,13 @@ impl GateRecord {
         }
         for (k, v) in &record.params {
             params.push(("--param".to_string(), format!("{k}={v}")));
+        }
+        // Reconstructed alongside the rest so `command` stays REPLAYABLE, not
+        // merely descriptive: a self-provisioned run's config is the recipe
+        // plus these, and a command that omitted them would rerun a different
+        // server and quietly disagree with the record it came from.
+        for (k, v) in &serve_overrides {
+            params.push(("--serve-override".to_string(), format!("{k}={v}")));
         }
         if record.benchmark_id == "agentic-webserver" {
             params.push(("--yes".to_string(), String::new()));
@@ -293,6 +310,7 @@ impl GateRecord {
             params: record.params.clone(),
             command,
             served_by,
+            serve_overrides,
             atlas_version: record.atlas_version.clone(),
             hardware,
             metrics: frame.metrics.clone(),

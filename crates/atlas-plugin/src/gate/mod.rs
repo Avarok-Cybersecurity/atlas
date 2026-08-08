@@ -210,3 +210,8 @@ mod coverage_tests;
 #[cfg(test)]
 #[path = "dirty_tests.rs"]
 mod dirty_tests;
+
+/// Split from `tests.rs` for the 500-LoC cap: `--serve-override` provenance.
+#[cfg(test)]
+#[path = "override_tests.rs"]
+mod override_tests;

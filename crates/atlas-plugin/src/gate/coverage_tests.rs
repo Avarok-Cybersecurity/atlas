@@ -237,6 +237,7 @@ fn a_baseline_entry_with_no_thresholds_is_not_a_pass() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     let problems = check_record(&gate, &baseline_for(MODEL, BTreeMap::new())).expect("refused");
@@ -261,7 +262,15 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
     record.frame = frame(RunStatus::Failed, metrics, Verdict::fail("scoring crashed"));
-    let mut gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
+    let mut gate = GateRecord::from_run(
+        &record,
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     gate.recorded_at = 1_785_891_382;
     write_record(root, &gate).unwrap();
 
@@ -282,6 +291,7 @@ fn the_summary_names_the_model_the_numbers_and_the_verdict() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     assert!(gate.summary.contains(MODEL), "{}", gate.summary);

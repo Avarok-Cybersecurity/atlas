@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use atlas_plugin::{TargetEndpoint, gate};
 
 /// How long to wait for the endpoint to answer with the model we asked for.
@@ -72,6 +72,12 @@ pub struct SelfServed {
     pub target: TargetEndpoint,
     /// The recipe that produced it, for the record's provenance.
     pub recipe_id: String,
+    /// The recipe keys the operator overrode, for the record's provenance.
+    ///
+    /// Empty means the recipe ran exactly as pinned. Non-empty means the
+    /// numbers describe a config that exists nowhere in the repo, which the
+    /// record must state — otherwise it reads as a measurement of the recipe.
+    pub overrides: BTreeMap<String, String>,
     /// `None` once teardown has taken it. An `Option` rather than a bare handle
     /// so that `Drop` — which cannot move out of `self` — can still tear down
     /// whatever `shutdown()` did not.
@@ -180,12 +186,53 @@ pub(super) fn resolve(
     Ok(Resolved { model, recipe_id })
 }
 
+/// Parse `--serve-override KEY=VALUE` pairs into recipe overrides.
+///
+/// Only splits and validates — whether the KEY exists is `Recipe::argv`'s
+/// question, and it already refuses an unknown one, so re-checking here would
+/// be a second copy of that rule.
+///
+/// `port` is refused: `serve_for` picks a free port and passes its own, so a
+/// second opinion would either be silently dropped or race whatever else holds
+/// the operator's port. Saying so beats both.
+pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for pair in pairs {
+        let (key, value) = pair.split_once('=').with_context(|| {
+            format!("--serve-override {pair:?} is not KEY=VALUE (e.g. kv_cache_dtype=fp8)")
+        })?;
+        let key = key.trim();
+        ensure!(
+            !key.is_empty(),
+            "--serve-override {pair:?} has an empty key"
+        );
+        ensure!(
+            key != "port",
+            "--serve-override cannot set `port`: the gate binds a free port itself and serves \
+             on it, so an override here would name a port nothing is listening on."
+        );
+        // Last wins, deliberately: repeating a key is how you edit a long
+        // command line, and silently keeping the FIRST would contradict every
+        // other CLI on the box.
+        out.insert(key.to_string(), value.to_string());
+    }
+    Ok(out)
+}
+
 /// Resolve the recipe for `benchmark_id` and serve it on a free port.
 ///
 /// `hardware` picks the baseline entry; `None` uses the sole entry when the
 /// baseline has exactly one, and otherwise refuses rather than guessing which
 /// box's config to serve.
-pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<SelfServed> {
+///
+/// `overrides` are recipe keys the operator changed on the command line. They
+/// are returned in [`SelfServed::overrides`] so the gate record can name the
+/// config that actually ran rather than the recipe it started from.
+pub async fn serve_for(
+    benchmark_id: &str,
+    hardware: Option<&str>,
+    overrides: BTreeMap<String, String>,
+) -> Result<SelfServed> {
     let root = super::bench_run::repo_root()?;
     let baseline = gate::read_baseline(&root, benchmark_id)?;
     let Resolved { model, recipe_id } = resolve(&baseline, benchmark_id, hardware)?;
@@ -219,11 +266,23 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
     }
 
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
-    let mut overrides = BTreeMap::new();
+    let requested = overrides;
+    let mut overrides = requested.clone();
     overrides.insert("port".to_string(), port.to_string());
     let serve_args = recipe.serve_args(&overrides).with_context(|| {
         format!("rendering serve args from recipe {recipe_id:?} (port override {port})")
     })?;
+    if !requested.is_empty() {
+        let shown = requested
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::warn!(
+            "serving recipe {recipe_id} with OVERRIDES: {shown} — this run does not measure the \
+             recipe as pinned; the gate record will say so"
+        );
+    }
 
     check_box_is_free_enough(serve_args.gpu_memory_utilization, &recipe_id)?;
 
@@ -244,6 +303,7 @@ pub async fn serve_for(benchmark_id: &str, hardware: Option<&str>) -> Result<Sel
     let mut served = SelfServed {
         target: TargetEndpoint::local(port, &model),
         recipe_id,
+        overrides: requested,
         server: Some(server),
     };
     await_serving(
