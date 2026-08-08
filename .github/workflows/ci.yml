@@ -184,6 +184,95 @@ jobs:
       pr_mode: true
       retention_days: 1
 
+  # OBSERVE-ONLY, and structurally incapable of being anything else.
+  #
+  # This job asks a language model what the pull request is *for*, and records
+  # the answer. It does not gate. `pr-benchmark-gate` below neither `needs:`
+  # this job nor reads its outputs, so there is no path — not a slow one, not a
+  # subtle one — by which this reaches a verdict. That separation is the design,
+  # not a rollout stage: the input is attacker-controlled (a PR title is written
+  # by whoever opened the PR), and arranging for that text to be UNABLE to
+  # affect verification is stronger than hoping a model resists it.
+  #
+  # What it is for right now is evidence. Before any category is allowed to add
+  # verification, the log has to show what it would have said, on real pull
+  # requests, including the ones where it abstained.
+  pr-categorize:
+    name: PR categorize (advisory)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # No write scopes. It reports into the job summary, not onto the PR, so a
+    # compromised model response has nowhere to go even in principle.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Collect the changed paths
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Both values come from the event payload, which GitHub controls, not
+          # the branch contents. They still go through env rather than being
+          # interpolated into this script.
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt || true
+          echo "count=$(wc -l < changed.txt)" >> "$GITHUB_OUTPUT"
+          head -c 4000 changed.txt > changed_head.txt
+      - name: Read the model id
+        id: models
+        run: |
+          set -euo pipefail
+          echo "categorize=$(jq -r '.models.categorize' .github/ai-models.json)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/categorize
+        id: cat
+        with:
+          # The PR title reaches the action through the action's own env, never
+          # spliced into a shell here.
+          text: |
+            ${{ github.event.pull_request.title }}
+
+            Changed files:
+            ${{ steps.diff.outputs.count }} paths
+          categories: '["numerics","performance","serving","tooling","docs","ci","unknown"]'
+          model: ${{ steps.models.outputs.categorize }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          # The most conservative member of the set. A fork PR has no secret and
+          # a free endpoint is sometimes down; neither may read as a confident
+          # answer, and "unknown" is the category that claims nothing.
+          fallback: unknown
+          title: atlas-pr-categorize
+      - name: Record what it said
+        # Every value crosses into the script through `env:`, even though the
+        # action guarantees its outputs are closed-set enums and its own fixed
+        # strings — no model-authored text ever reaches them. Interpolating
+        # `${{ }}` into a `run:` body is the injection shape this repo warns
+        # about in CODEOWNERS, and "it happens to be safe here" is not a habit
+        # worth teaching the next person who copies this block.
+        env:
+          CATEGORY: ${{ steps.cat.outputs.category }}
+          STATUS: ${{ steps.cat.outputs.status }}
+          REASON: ${{ steps.cat.outputs.reason }}
+          CHANGED: ${{ steps.diff.outputs.count }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### PR category (advisory — does not gate)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            printf '| category | `%s` |\n' "$CATEGORY"
+            printf '| status | `%s` |\n' "$STATUS"
+            printf '| reason | %s |\n' "$REASON"
+            printf '| changed paths | %s |\n' "$CHANGED"
+            echo
+            echo "The required gate set is computed from the diff by"
+            echo '`gate::coverage`, in Rust, and is not affected by this.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Standalone and NON-BLOCKING by design: it reports whether the branch has
   # passing, committed benchmark records, but `release-matrix` deliberately does
   # NOT wait on it. Bench records can only be produced on a GPU box, so making
