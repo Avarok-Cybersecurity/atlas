@@ -13,6 +13,8 @@ description = "Atlas: plugin + benchmark abstraction and registry driven by the 
 # reasoned about and tested on any box.
 [dependencies]
 atlas-closure = { path = "../atlas-closure" }
+# BENCH.toml — a model's benchmarks and thresholds, beside the model.
+toml = "0.8"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

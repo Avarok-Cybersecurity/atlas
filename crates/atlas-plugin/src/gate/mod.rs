@@ -20,6 +20,7 @@
 //!   committed records are checked against this file alone, so the check
 //!   carries no per-box state ([`check`]).
 
+pub mod bench;
 pub mod check;
 pub mod closure;
 pub mod coverage;
@@ -96,11 +97,6 @@ pub use coverage::PERF_PATHS;
 /// `.benchmarks/<benchmark_id>` under `root`.
 pub fn gate_dir(root: &Path, benchmark_id: &str) -> PathBuf {
     root.join(".benchmarks").join(benchmark_id)
-}
-
-/// `.benchmarks/<benchmark_id>/BASELINE.json` under `root`.
-pub fn baseline_path(root: &Path, benchmark_id: &str) -> PathBuf {
-    gate_dir(root, benchmark_id).join("BASELINE.json")
 }
 
 /// The short commit id for this working tree. `ATLAS_GATE_SHA` overrides —

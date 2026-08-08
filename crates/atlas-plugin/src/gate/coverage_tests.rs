@@ -76,16 +76,19 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
     scratch_repo::init(root);
-    let sha_a = scratch_repo::head(root);
 
+    // Committed BEFORE sha_a. `write_baseline` now scaffolds a small kernel
+    // tree (HARDWARE.toml, MODEL.toml, BENCH.toml) because that is where the
+    // thresholds live, and `kernels/` is a boundary path — left uncommitted,
+    // the next `git add .` would sweep the scaffolding into the commit under
+    // test and this would be measuring the fixture rather than the policy.
     for id in REQUIRED_GATES {
         std::fs::create_dir_all(gate_dir(root, id)).unwrap();
-        std::fs::write(
-            baseline_path(root, id),
-            serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-        )
-        .unwrap();
+        write_baseline(root, id, &bfcl_baseline());
     }
+    scratch_repo::commit(root, "docs/seed.md", "seed", "baseline fixtures");
+    let sha_a = scratch_repo::head(root);
+
     for id in REQUIRED_GATES {
         plant(root, id, &sha_a, 1_785_891_382, "PASS");
     }
@@ -150,11 +153,7 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     let head = scratch_repo::head(root);
 
     std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
+    write_baseline(root, "bfcl-subset", &bfcl_baseline());
 
     // Same UTC day for both, so only the within-day tie is under test. The
     // PASS is the EARLIER measurement and gets the lexically GREATER sha —
@@ -266,11 +265,7 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
     std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
+    write_baseline(root, "bfcl-subset", &bfcl_baseline());
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
@@ -415,9 +410,9 @@ fn every_committed_baseline_parses_resolves_and_is_checkable() {
         .to_path_buf();
 
     for id in REQUIRED_GATES {
-        let path = baseline_path(&root, id);
-        assert!(path.is_file(), "{id}: {} is missing", path.display());
-
+        // No per-gate file to stat any more: the thresholds are assembled
+        // from every model's BENCH.toml, so "it loads and has entries" IS the
+        // existence check.
         let baseline = read_baseline(&root, id)
             .unwrap_or_else(|e| panic!("{id}: committed baseline does not load: {e:#}"));
         assert_eq!(baseline.schema, 2, "{id}: unexpected schema version");

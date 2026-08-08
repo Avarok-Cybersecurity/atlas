@@ -77,6 +77,34 @@ pub const PERF_PATHS: [&str; 8] = [
 /// would let a change to the rules escape the rules.
 pub const BOUNDARY_FILES: [&str; 1] = ["crates/atlas-plugin/src/gate/coverage.rs"];
 
+/// Basenames under `kernels/` that are read by the gate and compiled by nothing.
+///
+/// `kernels/` is a boundary path, so everything beneath it invalidates every
+/// gate. That is right for source, and wrong for `BENCH.toml`: it holds the
+/// THRESHOLDS a record is judged against, and if editing it invalidated every
+/// record, then ratcheting a bar would destroy the very record that justified
+/// the ratchet. The records are the verdict, not its subject — the same
+/// reasoning that keeps `.benchmarks/` out of [`PERF_PATHS`], one directory in.
+///
+/// This is safe only because nothing compiles it: `taxon::configs` lists
+/// `HARDWARE.toml`, `MODEL.toml` and `KERNEL.toml` and deliberately not this,
+/// so no target's closure hash contains it, and `bench.rs` is its only reader.
+/// `bench_toml_is_not_a_closure_input` pins that.
+///
+/// Matched on the exact file NAME, so a directory or source file that merely
+/// ends with the same characters is unaffected.
+const NON_COMPILED_KERNEL_FILES: [&str; 1] = ["BENCH.toml"];
+
+/// Whether `path` is one of the gate-read, never-compiled files above.
+fn is_non_compiled_kernel_file(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("kernels/") else {
+        return false;
+    };
+    rest.rsplit('/')
+        .next()
+        .is_some_and(|name| NON_COMPILED_KERNEL_FILES.contains(&name))
+}
+
 /// Gate machinery: reads records, compares them to baselines, prints a verdict.
 ///
 /// It cannot change an inference number — it never runs a model. What it *can*
@@ -219,6 +247,12 @@ pub fn on_boundary(path: &str) -> bool {
 pub fn invalidates(gate: &GateCoverage, path: &str) -> bool {
     if BOUNDARY_FILES.iter().any(|f| under(path, f)) {
         return true;
+    }
+    // After the boundary-file check, so a `BENCH.toml` could never exempt the
+    // rules that exempt it, and before the per-gate excludes, since this holds
+    // for every gate rather than being one gate's claim about its own coverage.
+    if is_non_compiled_kernel_file(path) {
+        return false;
     }
     if !on_boundary(path) {
         return false;

@@ -89,11 +89,7 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
     std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
+    write_baseline(root, "bfcl-subset", &bfcl_baseline());
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
 

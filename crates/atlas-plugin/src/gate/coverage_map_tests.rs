@@ -395,3 +395,70 @@ fn the_boundary_has_no_duplicate_entries() {
     seen.dedup();
     assert_eq!(before, seen.len(), "PERF_PATHS contains a duplicate");
 }
+
+// ---------------------------------------------------------------------------
+// BENCH.toml: read by the gate, compiled by nothing
+// ---------------------------------------------------------------------------
+
+/// ★ A threshold ratchet must not destroy the record that justified it.
+///
+/// `BENCH.toml` lives under `kernels/`, which is a boundary path, so without an
+/// exemption every gate would re-open the moment someone raised a bar — and the
+/// run proving the new bar was reachable would be the first casualty.
+#[test]
+fn a_bench_toml_edit_invalidates_nothing() {
+    for gate in REQUIRED.iter() {
+        assert!(
+            !coverage::invalidates(gate, "kernels/gb10/qwen3.6-27b/BENCH.toml"),
+            "{}: a threshold edit re-opened the gate",
+            gate.id
+        );
+    }
+}
+
+/// The exemption is by exact file NAME, so neighbours keep invalidating.
+#[test]
+fn the_bench_toml_exemption_does_not_leak_to_neighbours() {
+    for gate in REQUIRED.iter() {
+        for path in [
+            "kernels/gb10/qwen3.6-27b/MODEL.toml",
+            "kernels/gb10/qwen3.6-27b/nvfp4/KERNEL.toml",
+            "kernels/gb10/qwen3.6-27b/nvfp4/BENCH.toml.cu",
+            "kernels/gb10/qwen3.6-27b/BENCH.toml/inner.cu",
+            "kernels/gb10/common/NOT-BENCH.toml",
+        ] {
+            assert!(
+                coverage::invalidates(gate, path),
+                "{}: {path} was exempted but is not a BENCH.toml",
+                gate.id
+            );
+        }
+    }
+}
+
+/// The exemption is scoped to `kernels/`. A file of that name anywhere else —
+/// notably inside the gate crate — must keep its normal behaviour.
+#[test]
+fn the_bench_toml_exemption_is_scoped_to_the_kernel_tree() {
+    let gate = REQUIRED
+        .iter()
+        .find(|g| {
+            !g.excludes
+                .iter()
+                .any(|e| e.prefix.starts_with("crates/spark-model"))
+        })
+        .expect("a gate that does not exclude spark-model");
+    assert!(
+        coverage::invalidates(gate, "crates/spark-model/BENCH.toml"),
+        "the exemption must not apply outside kernels/"
+    );
+}
+
+/// The exemption cannot be used to escape the rules that grant it: editing the
+/// boundary file still invalidates everything.
+#[test]
+fn the_boundary_file_still_wins_over_the_exemption() {
+    for gate in REQUIRED.iter() {
+        assert!(coverage::invalidates(gate, BOUNDARY_FILES[0]));
+    }
+}

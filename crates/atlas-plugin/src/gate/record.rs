@@ -129,8 +129,11 @@ pub struct HardwareBaseline {
     pub models: BTreeMap<String, ModelBaseline>,
 }
 
-/// The thresholds a benchmark's gate records must meet, committed as
-/// `.benchmarks/<id>/BASELINE.json` beside the records themselves.
+/// The thresholds a benchmark's gate records must meet.
+///
+/// Assembled at read time from every `kernels/<hw>/<model>/BENCH.toml`; see
+/// [`super::bench`] for why they live beside the model rather than in one file
+/// per gate. `.benchmarks/<id>/` still holds the RECORDS.
 ///
 /// Keyed **hardware → model → thresholds** because both axes genuinely move the
 /// numbers. TTFT is box-local by construction — a ceiling measured on one box
@@ -225,10 +228,10 @@ pub fn read_record(path: &Path) -> Result<GateRecord> {
 
 /// Read one committed baseline.
 pub fn read_baseline(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
-    let path = super::baseline_path(root, benchmark_id);
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    // Assembled from every model's `kernels/<hw>/<model>/BENCH.toml` rather
+    // than read from one file. `.benchmarks/<id>/` still holds the RECORDS —
+    // only the thresholds moved, to sit beside the model they describe.
+    super::bench::baseline_for(root, benchmark_id)
 }
 
 impl GateRecord {
