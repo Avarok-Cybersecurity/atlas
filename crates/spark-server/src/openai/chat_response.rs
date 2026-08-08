@@ -124,7 +124,13 @@ pub struct ModelInfo {
 }
 
 impl ChatCompletionResponse {
-    pub fn new(model: &str, content: String, usage: Usage, finish_reason: &str) -> Self {
+    pub fn new(
+        model: &str,
+        content: String,
+        reasoning_content: Option<String>,
+        usage: Usage,
+        finish_reason: &str,
+    ) -> Self {
         Self {
             id: format!("chatcmpl-{}", uuid_v4()),
             object: "chat.completion".to_string(),
@@ -135,7 +141,7 @@ impl ChatCompletionResponse {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    reasoning_content: None,
+                    reasoning_content,
                     annotations: extract_url_annotations(&content),
                     refusal: None,
                     content: Some(content),
@@ -153,6 +159,7 @@ impl ChatCompletionResponse {
     pub fn with_tool_calls(
         model: &str,
         content: Option<String>,
+        reasoning_content: Option<String>,
         tool_calls: Vec<crate::tool_parser::ToolCall>,
         usage: Usage,
     ) -> Self {
@@ -166,7 +173,7 @@ impl ChatCompletionResponse {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    reasoning_content: None,
+                    reasoning_content,
                     annotations: content.as_deref().and_then(extract_url_annotations),
                     refusal: None,
                     content,
