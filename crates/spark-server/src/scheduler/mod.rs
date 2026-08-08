@@ -52,6 +52,7 @@ pub mod snapshot;
 pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
+mod teardown;
 mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
@@ -965,8 +966,43 @@ pub fn run(
     // is neither ordered nor able to fail, which is precisely why `Teardown`
     // exists.
     //
-    // Every sequence above has been freed and no request can arrive, so this is
-    // the quiescent point frees require on GB10.
+    // Every sequence above has been freed and no request can arrive — but that
+    // is HOST-side quiescence, and it is not the quiescence a free needs.
+    //
+    // `Model::teardown`'s contract says it runs "after the scheduler has
+    // drained AND THE STREAM IS SYNCHRONISED". Draining was honoured; the
+    // synchronise was not, and nothing else supplied it. Every launch above
+    // (`finish_sequence`, `free_sequence`, the decode loop, the EP broadcasts)
+    // is ASYNCHRONOUS: it returns once the work is queued, not once the GPU has
+    // run it. So teardown could start freeing pools while kernels were still
+    // reading them, and on GB10 a freed mapping is unmapped, not merely reused.
+    //
+    // That is not theoretical. A hot-swap on 2026-08-07 took
+    //   NVRM: Xid 31, name=atlas-swap
+    //   MMU Fault: ENGINE GRAPHICS GPC0 ... FAULT_PTE ACCESS_TYPE_VIRT_READ
+    // — a graphics-engine read of an address with no page table entry, on the
+    // thread that drives swap → join → teardown. A kernel reading memory this
+    // function had already handed back is exactly that fault.
+    //
+    // Synchronise BOTH streams the scheduler submits to. The decode path uses
+    // the default stream; prefill has its own since the compute/copy overlap
+    // (`prefill_stream` above), and work outstanding on either one can still be
+    // touching the pools. A failure here is reported and teardown proceeds
+    // regardless: refusing to free would leak the whole model, and a stream
+    // that cannot be synchronised is already in a state teardown will not
+    // improve — but the operator needs it in the log either way.
+    let streams = [
+        ("default", model.default_stream()),
+        ("prefill", prefill_stream),
+    ];
+    let unsynced = teardown::quiesce_streams(&streams, |s| model.synchronize(s));
+    for name in unsynced {
+        tracing::error!(
+            "could not synchronise the {name} stream before teardown — freeing \
+             anyway, but device memory may still be in use"
+        );
+    }
+    // ★ These two must stay adjacent and in this order. See `teardown`.
     if let Err(e) = model.teardown() {
         tracing::error!("model teardown reported a failure: {e:#}");
     }
