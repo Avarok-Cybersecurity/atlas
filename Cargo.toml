@@ -15,6 +15,7 @@ members = [
     "crates/cufile-sys",
     "crates/spark-storage",
     "crates/xgrammar",
+    "crates/atlas-governance",
 ]
 
 # AMD/SCALE + native-HIP: the vendored cudarc 0.19.2 is byte-identical to

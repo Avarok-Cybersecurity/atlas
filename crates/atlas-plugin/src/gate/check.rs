@@ -152,7 +152,7 @@ pub fn records_newest_first(root: &Path, benchmark_id: &str) -> Vec<PathBuf> {
 ///
 /// Same commit always covers itself. An ancestor covers `head` while nothing
 /// the run measures changed in between — a diff touching any of
-/// [`PERF_PATHS`] invalidates every earlier record, because the binary and the
+/// [`super::coverage::PERF_PATHS`] invalidates every earlier record, because the binary and the
 /// prompts it renders are no longer the recorded ones. A record can never be
 /// written AT `head` (committing it moves head), so this ancestry rule is what
 /// makes "gated at the current commit" achievable at all.
