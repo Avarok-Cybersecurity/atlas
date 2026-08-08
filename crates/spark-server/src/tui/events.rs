@@ -14,18 +14,23 @@ use ratatui::backend::CrosstermBackend;
 
 use super::app::{App, Section};
 use super::capture_layer::ProgressEvent;
-use super::init::TUI_ACTIVE;
+use super::events_rules::{Exit, LibraryPhase, exit_kind, key_is_actionable, newest, tick_work};
+use super::init::{ActiveClaim, TUI_ACTIVE};
 use super::terminal_guard::TerminalGuard;
-use super::{render, shutdown};
+use super::{events_rules, render, shutdown};
 
 const TICK: Duration = Duration::from_millis(100);
-const SAMPLE_EVERY: u32 = 10; // 1 Hz metrics sampling at the 10 Hz tick
 
 pub fn run(
     mut app: App,
     progress_rx: Receiver<ProgressEvent>,
     levers_rx: Receiver<crate::tui::RunHandles>,
 ) {
+    // Taken FIRST, so it outlives every `return` below. `tui::start` already
+    // set the flag before this thread existed (see the comment there); this
+    // takes ownership of giving it back, which the two bail-outs below used to
+    // skip — see `init::ActiveClaim`.
+    let claim = ActiveClaim::claim();
     super::terminal_guard::install_panic_hook();
     let guard = match TerminalGuard::enter() {
         Ok(g) => g,
@@ -58,13 +63,13 @@ pub fn run(
     let mut clear_selection = false;
     let mut ticks: u32 = 0;
 
-    loop {
+    // `break`s with the reason, so the classification below reads the same
+    // decision the loop stopped on rather than re-deriving it from the flags.
+    let exit = loop {
         // 1. Input (poll ≤50ms keeps both input latency and tick cadence).
         if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
             match crossterm::event::read() {
-                Ok(Event::Key(k)) if k.kind != crossterm::event::KeyEventKind::Release => {
-                    app.on_key(k)
-                }
+                Ok(Event::Key(k)) if key_is_actionable(k.kind) => app.on_key(k),
                 Ok(Event::Mouse(m)) => {
                     let size = terminal.size().ok();
                     // The copy cannot happen here: the text lives in the
@@ -91,7 +96,7 @@ pub fn run(
         }
         // 2. Data ingress.
         // The newest published run wins — a hot-swap replaces the handle.
-        if let Some(h) = levers_rx.try_iter().last() {
+        if let Some(h) = newest(&levers_rx) {
             app.run = Some(h);
         }
         for ev in progress_rx.try_iter() {
@@ -119,39 +124,39 @@ pub fn run(
             last_tick = Instant::now();
             ticks = ticks.wrapping_add(1);
             app.on_tick();
-            if ticks.is_multiple_of(SAMPLE_EVERY) {
+            if events_rules::samples_metrics(ticks) {
                 app.stats.sample(app.run.as_ref());
             }
-            // Library: scan the local cache lazily on entry, and again
-            // whenever something changed it — a finished download must appear
-            // without a restart. The scan now runs on its own thread
-            // (`poll_scan` below only try_recvs), because it stats every blob
-            // directory and was doing that on the render thread.
-            // The reducer cannot reach `App`, so it raises a flag here.
+            // The Library reducer cannot reach `App`, so it raises a flag the
+            // tick drains into the one `App` owns.
             if std::mem::take(&mut app.lib.mark_dirty) {
                 app.library_dirty = true;
             }
-            if app.library_dirty && app.section == Section::Library {
+            // Everything lazy on this tick decided in one place — see
+            // `events_rules::tick_work` for why each condition reads as it
+            // does, two of which are corrections rather than transcriptions.
+            let work = tick_work(
+                app.section,
+                LibraryPhase {
+                    dirty: app.library_dirty,
+                    scan_in_flight: app.lib.scan_in_flight(),
+                    recipes_attached: app.lib.attached(),
+                    recipes_unavailable: app.lib.recipes_unavailable(),
+                },
+            );
+            // The scan stats every blob directory, so it runs on its own thread
+            // and `poll_scan` below only try_recvs. The flag is cleared HERE,
+            // where a scan that can see the change is what starts.
+            if work.start_scan {
                 app.library_dirty = false;
                 app.lib.start_scan(app.args.cache_dir.as_deref());
             }
-            // The recipe half is genuinely once-only: a rescan must NOT
-            // re-trigger a GitHub fetch, which is rate-limited and unrelated to
-            // what changed on disk.
-            if app.section == Section::Library && !app.lib.attached() {
-                match atlas_plugin::ArtifactStore::discover() {
-                    Ok(store) => {
-                        app.lib.attach(store.root().to_path_buf(), &app.library);
-                        app.lib.refresh();
-                    }
-                    // No HOME, or a read-only one: the local scan still renders.
-                    Err(e) => {
-                        tracing::warn!("recipes unavailable: {e:#}");
-                        app.lib.rebuild(&app.library);
-                    }
-                }
+            // Once only: a rescan must NOT re-trigger the GitHub fetch, which
+            // is rate-limited and unrelated to what changed on disk.
+            if work.attach_recipes {
+                app.attach_recipes();
             }
-            if app.section == Section::Library {
+            if work.poll_library {
                 if let Some(found) = app.lib.poll_scan() {
                     app.library = found;
                     app.lib.rebuild(&app.library);
@@ -168,7 +173,7 @@ pub fn run(
             }
             // Run history: lazily too, and re-read after a run persists a frame
             // (`load_history` is a no-op until something invalidates it).
-            if app.section == Section::Benchmarks {
+            if work.load_history {
                 app.bench.load_history();
             }
             // Unconditional: a pre-flight started in Benchmarks must still
@@ -185,7 +190,10 @@ pub fn run(
         match terminal.draw(|f| render::draw(f, &app)) {
             Err(e) => {
                 tracing::warn!("TUI draw error: {e}; detaching");
-                break;
+                // The terminal stopped accepting frames. The server is
+                // untouched and keeps serving, which is exactly what a detach
+                // is — so it leaves by the same door `/detach` does.
+                break Exit::Detach;
             }
             Ok(frame) => {
                 // `CompletedFrame` borrows the buffer that was just rendered —
@@ -219,26 +227,33 @@ pub fn run(
             }
         }
         // 5. Exit conditions.
-        if shutdown::requested() {
-            break;
+        if let Some(e) = exit_kind(app.should_quit, app.detach, shutdown::requested()) {
+            break e;
         }
-        if app.should_quit || app.detach {
-            break;
-        }
-    }
+    };
     // Nothing is going to render the answer now, so stop asking for it. Eight
     // in-flight recipe fetches would otherwise run to the 20 s timeout while
     // the process is trying to exit.
     app.lib.cancel_refresh();
-    TUI_ACTIVE.store(false, Ordering::SeqCst);
-    drop(guard); // restore terminal; logs fall back to stdout
-    if app.should_quit && !app.detach {
-        shutdown::request("TUI quit");
-    } else {
-        tracing::info!(
-            "TUI detached — plain logs resume (full history: {})",
-            super::init::tee_file_path().unwrap_or("-")
-        );
+    // Restore the terminal FIRST, release the claim second: the old order let
+    // go of the claim while raw mode and the alternate screen were still up, so
+    // any line logged in that window was written into a screen ratatui still
+    // believed it owned. The two lines below need stdout back, hence the
+    // explicit drop rather than leaving it to the end of the function.
+    drop(guard);
+    drop(claim);
+    let log = super::init::tee_file_path().unwrap_or("-");
+    match exit {
+        Exit::Quit => shutdown::request("TUI quit"),
+        Exit::Detach => {
+            tracing::info!("TUI detached — plain logs resume (full history: {log})")
+        }
+        // NOT "detached": the server this would tell the operator is still up
+        // is already draining. Reached by SIGTERM (`docker stop`) and by
+        // `tui::stop_and_join` on the way out of `main`.
+        Exit::ShuttingDown => {
+            tracing::info!("TUI closed — shutdown already under way (full history: {log})")
+        }
     }
 }
 
@@ -250,6 +265,30 @@ enum MouseOutcome {
     CopySelection,
 }
 
+/// What a clicked sidebar row draws.
+enum SidebarRow {
+    /// Index into [`Section::ALL`].
+    Section(usize),
+    /// Subsection of the ACTIVE section, the only one drawing any.
+    Sub(usize),
+}
+
+/// Map a visual sidebar row back to what is drawn on it.
+///
+/// The active section's subsection rows are inserted UNDERNEATH it, so they
+/// shift every row below them — and they belong to the section above, not to
+/// the section index they happen to sit at. Only the shift was handled, and
+/// only for the rows below: a click on Main ▸ Overview selected Stats.
+fn sidebar_row(active_idx: usize, subs: usize, visual: usize) -> SidebarRow {
+    if visual <= active_idx {
+        SidebarRow::Section(visual)
+    } else if visual <= active_idx + subs {
+        SidebarRow::Sub(visual - active_idx - 1)
+    } else {
+        SidebarRow::Section(visual - subs)
+    }
+}
+
 fn on_mouse(
     app: &mut App,
     m: crossterm::event::MouseEvent,
@@ -258,27 +297,30 @@ fn on_mouse(
     let Some(size) = size else {
         return MouseOutcome::None;
     };
-    let header_h: u16 = if size.height >= 28 { 3 } else { 1 };
-    let sidebar_w: u16 = if size.width >= 96 { 18 } else { 4 };
+    // The renderer's own breakpoints, not a second copy of them — see
+    // `render::Chrome`.
+    let chrome = render::Chrome::of(size);
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if m.column < sidebar_w && m.row >= header_h {
-                // Sidebar rows include expanded subsection lines; map the
-                // clicked visual row back to a section index conservatively
-                // (subsections only render under the active section).
-                let mut visual = (m.row - header_h) as usize;
+            if m.column < chrome.sidebar_w && m.row >= chrome.header_h {
+                let visual = (m.row - chrome.header_h) as usize;
                 let active_idx = Section::ALL
                     .iter()
                     .position(|s| *s == app.section)
                     .unwrap_or(0);
                 // `Section::subs` is the SSOT for what the sidebar draws and
                 // what ⇥ stops on; deriving the mouse offset from anything else
-                // is how a sixth section silently breaks clicking.
-                let subs = app.section.subs().len();
-                if visual > active_idx + subs {
-                    visual -= subs;
+                // is how a sixth section silently breaks clicking. A narrow
+                // sidebar draws the icons only, so it offsets nothing.
+                let subs = if chrome.full_sidebar() {
+                    app.section.subs().len()
+                } else {
+                    0
+                };
+                match sidebar_row(active_idx, subs, visual) {
+                    SidebarRow::Section(i) => app.sidebar_click(i),
+                    SidebarRow::Sub(i) => app.sidebar_sub_click(i),
                 }
-                app.sidebar_click(visual);
                 // A sidebar click is navigation, not the start of a drag.
                 app.selection = None;
             } else {
@@ -306,7 +348,7 @@ fn on_mouse(
         }
         // Scrolling moves the content out from under the highlight, so the
         // same argument as a keystroke applies: the cells it covers no longer
-        // hold the text that was chosen.
+        // hold the text that was chosen. (Mouse tests live in `events_tests`.)
         MouseEventKind::ScrollUp => {
             app.selection = None;
             app.scroll(-3);
@@ -319,3 +361,7 @@ fn on_mouse(
     }
     MouseOutcome::None
 }
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod tests;

@@ -316,7 +316,8 @@ mod tests {
         )
         .unwrap();
         let gpu = MockGpuBackend::new();
-        let buffers = spark_runtime::buffers::BufferArena::new(&config, 4, 4096, 16, &gpu).unwrap();
+        let buffers =
+            spark_runtime::buffers::BufferArena::new(&config, 4, 4096, 16, 1, &gpu).unwrap();
         let layer = build_test_layer(&gpu, &config, 0).unwrap();
 
         // Defaults for a non-E2B-installed layer: no PLE weights, not

@@ -109,14 +109,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "atlas-activation"
-version = "1.0.0-beta-preview"
-dependencies = [
- "atlas-core",
- "thiserror",
-]
-
-[[package]]
 name = "atlas-core"
 version = "1.0.0-beta-preview"
 dependencies = [
@@ -128,27 +120,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-embed"
-version = "1.0.0-beta-preview"
-dependencies = [
- "atlas-core",
- "thiserror",
-]
-
-[[package]]
 name = "atlas-kernels"
 version = "1.0.0-beta-preview"
 dependencies = [
  "atlas-core",
  "toml",
-]
-
-[[package]]
-name = "atlas-norm"
-version = "1.0.0-beta-preview"
-dependencies = [
- "atlas-core",
- "thiserror",
 ]
 
 [[package]]
@@ -165,27 +141,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-quant"
-version = "1.0.0-beta-preview"
-dependencies = [
- "atlas-core",
- "thiserror",
-]
-
-[[package]]
 name = "atlas-rdma"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "cc",
-]
-
-[[package]]
-name = "atlas-reduce"
-version = "1.0.0-beta-preview"
-dependencies = [
- "atlas-core",
- "thiserror",
 ]
 
 [[package]]
@@ -2421,6 +2381,7 @@ name = "spark-storage"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
+ "atlas-core",
  "atlas-rdma",
  "atlas-tier",
  "cufile-sys",

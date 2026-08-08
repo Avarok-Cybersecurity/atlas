@@ -11,7 +11,7 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
-- `atlas benchmark <list|run|history>` — the dashboard's benchmark suite as a
+- `spark benchmark <list|run|history>` — the dashboard's benchmark suite as a
   headless subcommand, driving the same executor. Machine-readable output on
   stdout, progress on stderr; exit codes separate a broken harness (1) from a
   failed gate (2).

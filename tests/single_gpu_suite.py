@@ -370,9 +370,13 @@ def run_fibonacci_test(base_url, model):
     # block. temperature=0.0 so fib is deterministic — any non-zero
     # temperature can flip a single token and produce an off-by-one
     # sequence (saw this on 80B-nvfp4-ep2-mtp in pass 3).
-    # repetition_penalty=1.05: nudges the model off sticky-token lockups
-    # that can produce a=0,b=0 loops at strict greedy decode without
-    # affecting the normal numerical output.
+    # NO repetition_penalty. It was set to 1.05 on the theory that it only
+    # nudged the model off sticky-token lockups; measured, it penalises the
+    # NEWLINE token and collapses the emitted code onto too few lines (3
+    # newlines with it vs 8 without), so the extracted block raises
+    # SyntaxError and the probe fails on a healthy image. Control: the
+    # pre-PR image is byte-identical in both conditions, so the collapse is
+    # the sampler setting, not the model. Greedy (temperature=0.0) alone.
     # Nemotron models specifically need thinking ENABLED for fib — see
     # kernels/gb10/nemotron-super-120b-a12b/MODEL.toml comments. Forcing
     # enable_thinking=False produces "We need to write a Python script…"
@@ -384,7 +388,6 @@ def run_fibonacci_test(base_url, model):
         max_tokens=4096,
         timeout=360,
         temperature=0.0,
-        repetition_penalty=1.05,
         extra_body=extra,
     )
     text = extract_text(result)

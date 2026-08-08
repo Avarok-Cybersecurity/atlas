@@ -36,6 +36,9 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         // Use backend's own stream (non-default, required for CUDA graph capture).
         let stream = self.gpu.default_stream();
+        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // once, HERE — outside the CUDA-graph region. No-op without the flag.
+        self.ssm_h_to_f16_dispatch(seq)?;
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
@@ -119,6 +122,7 @@ impl TransformerModel {
             .copy_h2d_async(&actual_seq_len.to_le_bytes(), meta_base.offset(16), stream)?;
 
         let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+        // SAFETY: length derived from `bt_i32` itself — `len() * size_of::<i32>()` over the `collect`ed Vec above.
         let bt_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4) };
         self.gpu

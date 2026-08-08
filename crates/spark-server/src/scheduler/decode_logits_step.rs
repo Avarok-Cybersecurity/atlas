@@ -8,6 +8,73 @@ use super::*;
 // `SchedCtx::scratch.host_bytes` — same zero-contention single-thread
 // access, with a lifetime that ends when the run does.
 
+thread_local! {
+    /// Dequant scratch for ONE rayon worker on the parallel host-sampling arm.
+    ///
+    /// The run-owned `SchedCtx::scratch` is a `RefCell`, so it is neither
+    /// `Sync` nor shareable across the pool; a fan-out needs one buffer per
+    /// worker or it double-borrows. The serial arm — and every other caller —
+    /// still uses the run's scratch, so this exists only for the `n > 1`
+    /// fan-out and holds nothing model-derived: `copy_logits_to_host`
+    /// overwrites every byte it reads, and `seq_f32` is resized per call.
+    static PAR_SAMPLE_SCRATCH: crate::scheduler::sched_ctx::DecodeScratch =
+        crate::scheduler::sched_ctx::DecodeScratch::default();
+}
+
+/// Build the pre-sample pipeline's context around a chosen scratch buffer.
+///
+/// SSOT: the serial arm and each parallel worker differ ONLY in which
+/// `DecodeScratch` they borrow, so the other nine fields are assembled once
+/// here rather than spelled twice.
+fn logits_ctx<'a>(
+    sched: &'a crate::scheduler::sched_ctx::SchedCtx,
+    scratch: &'a crate::scheduler::sched_ctx::DecodeScratch,
+    think_end_token: Option<u32>,
+    think_start_token: Option<u32>,
+    tool_call_start_token: Option<u32>,
+    tool_call_end_token: Option<u32>,
+) -> crate::scheduler::logit_processors::LogitsContext<'a> {
+    crate::scheduler::logit_processors::LogitsContext {
+        think_end_token,
+        think_start_token,
+        tool_call_start_token,
+        tool_call_end_token,
+        watchdog: sched.watchdog,
+        scratch,
+        dumps: &sched.dumps,
+        stats: sched.stats.clone(),
+        boundary_mask: sched.masks.boundary.clone(),
+        mid_word_mask: sched.masks.mid_word.clone(),
+        sampling: sched.levers.sampling(),
+        timing: sched.timing.clone(),
+    }
+}
+
+/// Admit `think_ended` rows (which need only a 2-token mask) to the GPU argmax
+/// fast path. Kill switch: `ATLAS_NO_THINKENDED_GPU_ARGMAX=1`.
+fn think_ended_gpu_argmax_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("ATLAS_NO_THINKENDED_GPU_ARGMAX")
+            .ok()
+            .as_deref()
+            != Some("1")
+    })
+}
+
+/// Steps that fell back to the host path because a GPU argmax landed on a
+/// masked think token. Expected to be a small fraction; a large count means the
+/// fast path is not paying for itself.
+static THINK_MASK_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Parallel host sampling toggle (ATLAS_PARALLEL_SAMPLE, default ON). Set to
+/// "0" to force the serial per-seq sampling path — an escape hatch for the
+/// telemetry-ordering caveat above, or for A/B measurement of the rayon win.
+fn parallel_sample_enabled() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_PARALLEL_SAMPLE").as_deref() != Ok("0"))
+}
+
 /// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
@@ -68,17 +135,62 @@ pub fn process_decode_logits(
     // `argmax_batch` assumes BF16 layout and would interpret 4-byte FP32
     // values as 2-byte BF16 pairs, returning garbage tokens.
     let model_logits_fp32 = model.decode_logits_fp32();
-    let needs_host_logits = active
-        .iter()
-        .any(|a| a.inside_thinking || a.think_ended || a.grammar_state.is_some())
-        || any_logprobs
+    // `think_ended` alone does NOT need the host path. PostCloseThinkMask masks
+    // exactly TWO ids (think_end_token, think_start_token) and nothing else; A4's
+    // bias floor is gated on `inside_thinking` (sample_step.rs) so it is inert
+    // here. With request penalties exactly neutral the pipeline is then a no-op
+    // and the emission is the raw argmax — modulo those two ids, which we check
+    // after the fact and fall back for.
+    //
+    // This matters far beyond a tuning win: `--disable-thinking` sets
+    // `think_ended = true` for EVERY sequence at birth (prefill_a_step.rs:229 and
+    // three siblings), so before this change ONE such row — i.e. all of them —
+    // forced the entire batch through a 7.95 MB D2H plus n full-vocab host
+    // passes. The GPU argmax fast path was dead code in that config, which is
+    // also the MLPerf-edge config.
+    //
+    // Kill switch: ATLAS_NO_THINKENDED_GPU_ARGMAX=1.
+    let think_ended_gpu_ok = |a: &ActiveSeq| {
+        a.think_ended
+            && !a.inside_thinking
+            && a.grammar_state.is_none()
+            && a.repetition_penalty == 1.0
+            && a.presence_penalty == 0.0
+            && a.frequency_penalty == 0.0
+            && a.lz_penalty == 0.0
+            && a.dry_multiplier == 0.0
+    };
+    let admit_think_ended = think_ended_gpu_argmax_enabled();
+    let needs_host_logits = active.iter().any(|a| {
+        let excused = admit_think_ended && think_ended_gpu_ok(a);
+        (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused
+    }) || any_logprobs
         || model_logits_fp32;
 
-    let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
+    // Try the GPU argmax first. `None` here means "not eligible, or the result
+    // needs the host pipeline after all" and falls through to the host branch —
+    // it must never mean "emit nothing".
+    let fast_tokens: Option<Vec<(u32, Option<crate::api::TokenLogprobs>)>> =
         if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
-            // Fast path: all greedy, no grammar, no thinking — GPU argmax for the full batch.
             match model.argmax_batch(logits, n, 0) {
-                Ok(t) => t.into_iter().map(|tok| (tok, None)).collect(),
+                Ok(t) => {
+                    // The two masked ids are the ONLY thing the host pipeline
+                    // would have done differently for a think_ended row. If an
+                    // argmax actually landed on one (rare — the model seldom
+                    // re-opens <think> mid-response), fall through and redo the
+                    // step on the host so the emitted token is exactly what the
+                    // pipeline would produce.
+                    let hit_mask = t.iter().zip(active.iter()).any(|(&tok, a)| {
+                        a.think_ended
+                            && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
+                    });
+                    if hit_mask {
+                        THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    } else {
+                        Some(t.into_iter().map(|tok| (tok, None)).collect())
+                    }
+                }
                 Err(e) => {
                     tracing::error!("argmax_batch error: {e:#}");
                     for mut a in active.drain(..) {
@@ -88,58 +200,115 @@ pub fn process_decode_logits(
                 }
             }
         } else {
-            // Host-side path: copy all batch logits to host, sample per-sequence.
-            // Required when any sequence has temperature > 0 or grammar constraints.
-            let vocab_size = model.vocab_size();
-            // FP32 lm_head dispatch (Gemma-4 dense + ATLAS_GEMMA4_FP32_LMHEAD=1).
-            // When the model writes FP32 logits to its decode-logits buffer, we
-            // copy 4 bytes/element and skip the BF16→FP32 expansion. Earlier
-            // bisection at model.rs:1192-1201 incorrectly concluded FP32 lm_head
-            // had no effect on Gemma-4 because this dispatch was never wired —
-            // the scheduler always read the (stale) BF16 logits buffer.
-            // FP32 lm_head dispatch (Gemma-4 dense). When `use_fp32_logits` is
-            // on, the per-token decode lm_head writes 4 bytes/element. The
-            // passed `logits` pointer is whatever the most-recent forward
-            // returned — that's already the correct buffer (prefill or decode).
-            // We just need to read it with the matching width.
-            let logits_fp32 = model.decode_logits_fp32();
-            let elem_bytes = if logits_fp32 { 4 } else { 2 };
-            let t_copy = std::time::Instant::now();
-            // Reuse the per-thread staging buffer (restored at the end of this
-            // block). `resize` only grows it; `copy_logits_to_host` overwrites
-            // every byte so the residual/zero-fill is irrelevant.
-            let mut buf = sched.scratch.host_bytes.borrow_mut().split_off(0);
-            buf.resize(n * vocab_size * elem_bytes, 0);
-            if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
-                tracing::error!("copy_logits_to_host error: {e:#}");
-                for mut a in active.drain(..) {
-                    send_error(model, &mut a, &format!("{e:#}"));
-                }
-                return;
+            None
+        };
+
+    let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> = if let Some(t) = fast_tokens {
+        t
+    } else {
+        // Host-side path: copy all batch logits to host, sample per-sequence.
+        // Required when any sequence has temperature > 0 or grammar constraints.
+        let vocab_size = model.vocab_size();
+        // FP32 lm_head dispatch (Gemma-4 dense). When `use_fp32_logits` is
+        // on, the per-token decode lm_head writes 4 bytes/element. The
+        // passed `logits` pointer is whatever the most-recent forward
+        // returned — that's already the correct buffer (prefill or decode).
+        // We just need to read it with the matching width.
+        let logits_fp32 = model.decode_logits_fp32();
+        let elem_bytes = if logits_fp32 { 4 } else { 2 };
+        let t_copy = std::time::Instant::now();
+        // Reuse the run's staging buffer (restored at the end of this block).
+        // `resize` only grows it; `copy_logits_to_host` overwrites every byte
+        // so the residual/zero-fill is irrelevant.
+        let mut buf = sched.scratch.host_bytes.borrow_mut().split_off(0);
+        buf.resize(n * vocab_size * elem_bytes, 0);
+        if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
+            tracing::error!("copy_logits_to_host error: {e:#}");
+            for mut a in active.drain(..) {
+                send_error(model, &mut a, &format!("{e:#}"));
             }
-            let copy_us = t_copy.elapsed().as_micros() as u64;
-            // SSOT: build the same `LogitsContext` the verify path passes
-            // into `run_pipeline`, so `process_seq_logits` and the MTP
-            // verify path share one pipeline-stage signature instead of
-            // two divergent arg lists. `think_start_token` lives on the
-            // per-seq `ActiveSeq` (read inside the pipeline stages), so it
-            // is intentionally not carried in the context.
-            let ctx = crate::scheduler::logit_processors::LogitsContext {
+            return;
+        }
+        let copy_us = t_copy.elapsed().as_micros() as u64;
+        let t_sample = std::time::Instant::now();
+        // Per-sequence host sampling is independent: each call reads a
+        // disjoint `buf` slice, mutates its own `ActiveSeq`, uses its own
+        // dequant scratch, and advances a per-seq seed. The collect is
+        // order-preserving, so the emitted tokens are identical to the serial
+        // path. (Process-global sampler telemetry — `sampler::LAST_ENTROPY`,
+        // the AdaDec/B1 diagnostics — is synchronized but last-write-wins
+        // across workers, so those best-effort gauges may report an arbitrary
+        // in-step sequence's value under n>1; token output is unaffected.)
+        // Each call scans the full ~250k vocab (BF16->FP32 expand + penalties
+        // + argmax), the dominant host-path cost at n>=2. Fan out across the
+        // rayon pool ONLY for n>1: at n=1 (the common single-stream /
+        // opencode host path) the serial path avoids rayon's dispatch
+        // overhead. `process_seq_logits` touches no GPU state (its `_model`
+        // arg is unused), so no CUDA calls cross threads. The parallel path
+        // is also gated off when the opt-in `ATLAS_LOGIT_DUMP` diagnostic is
+        // active, since its shared per-step record would interleave across
+        // workers.
+        let parallel_sample = n > 1 && sched.dumps.logits.is_none() && parallel_sample_enabled();
+        let sampled: Vec<(u32, Option<crate::api::TokenLogprobs>)> = if parallel_sample {
+            use rayon::prelude::*;
+            // `SchedCtx` itself is NOT `Sync` (its `DecodeScratch` is a
+            // `RefCell`), so the fan-out closure must not capture it. Hoist
+            // the pieces the pipeline reads — all of them `Copy`, `Arc` or
+            // `&`-to-`Sync` — and leave the scratch to each worker.
+            let dumps = &sched.dumps;
+            let watchdog = sched.watchdog;
+            let stats = sched.stats.clone();
+            let boundary_mask = sched.masks.boundary.clone();
+            let mid_word_mask = sched.masks.mid_word.clone();
+            let sampling = sched.levers.sampling();
+            let timing = sched.timing.clone();
+            active
+                .par_iter_mut()
+                .enumerate()
+                .map(|(i, a)| {
+                    // The run's `DecodeScratch` is a `RefCell` — neither
+                    // `Sync` nor shareable across the pool — so each worker
+                    // borrows its own and builds the context around it. Same
+                    // reuse, one buffer per worker instead of one per run.
+                    PAR_SAMPLE_SCRATCH.with(|scratch| {
+                        let ctx = crate::scheduler::logit_processors::LogitsContext {
+                            think_end_token,
+                            think_start_token,
+                            tool_call_start_token,
+                            tool_call_end_token,
+                            watchdog,
+                            scratch,
+                            dumps,
+                            stats: stats.clone(),
+                            boundary_mask: boundary_mask.clone(),
+                            mid_word_mask: mid_word_mask.clone(),
+                            sampling,
+                            timing: timing.clone(),
+                        };
+                        process_seq_logits(
+                            model,
+                            a,
+                            &buf,
+                            i,
+                            vocab_size,
+                            elem_bytes,
+                            logits_fp32,
+                            &ctx,
+                            adaptive_sampling,
+                        )
+                    })
+                })
+                .collect()
+        } else {
+            let ctx = logits_ctx(
+                sched,
+                &sched.scratch,
                 think_end_token,
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
-                watchdog: sched.watchdog,
-                scratch: &sched.scratch,
-                dumps: &sched.dumps,
-                stats: sched.stats.clone(),
-                boundary_mask: sched.masks.boundary.clone(),
-                mid_word_mask: sched.masks.mid_word.clone(),
-                sampling: sched.levers.sampling(),
-                timing: sched.timing.clone(),
-            };
-            let t_sample = std::time::Instant::now();
-            let sampled: Vec<(u32, Option<crate::api::TokenLogprobs>)> = active
+            );
+            active
                 .iter_mut()
                 .enumerate()
                 .map(|(i, a)| {
@@ -155,14 +324,15 @@ pub fn process_decode_logits(
                         adaptive_sampling,
                     )
                 })
-                .collect();
-            decode_timing_record(sched, copy_us, t_sample.elapsed().as_micros() as u64);
-            // Return the staging buffer for reuse next token (its capacity is
-            // preserved). The error path above intentionally drops it — that is
-            // rare and only forfeits the cached capacity.
-            *sched.scratch.host_bytes.borrow_mut() = buf;
-            sampled
+                .collect()
         };
+        decode_timing_record(sched, copy_us, t_sample.elapsed().as_micros() as u64);
+        // Return the staging buffer for reuse next token (its capacity is
+        // preserved). The error path above intentionally drops it — that is
+        // rare and only forfeits the cached capacity.
+        *sched.scratch.host_bytes.borrow_mut() = buf;
+        sampled
+    };
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let token_ids: Vec<u32> = new_tokens.iter().map(|(t, _)| *t).collect();
@@ -269,9 +439,6 @@ pub fn process_decode_logits(
             a.consume_generation_budget();
             if think_end_token == Some(tok) {
                 a.inside_thinking = false;
-                // Sticky: was THIS close force-injected? Read by the
-                // post-think EOS guard below.
-                a.think_force_closed = a.force_end_thinking;
                 a.force_end_thinking = false;
                 a.sentence_defer_count = 0;
                 a.consecutive_confident = 0;
@@ -559,10 +726,8 @@ pub fn process_decode_logits(
         // MTP-verify emit path (`emit_step.rs`) has no such guard, which is why
         // MTP-on stopped here while MTP-off leaked; this restores parity.
         let tools_armed = a.require_tool_call || a.tool_request;
-        let post_think_suppresses_eos = tools_armed
-            && a.think_ended
-            && a.think_force_closed
-            && post_think_content_tokens < POST_THINK_MIN_CONTENT;
+        let post_think_suppresses_eos =
+            tools_armed && a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
         let suppress_eos = grammar_suppresses_eos
             || legacy_suppresses_eos
             || min_tokens_suppresses
@@ -729,14 +894,11 @@ pub fn process_decode_logits(
                 }
             }
 
-            // Check request timeout.
-            if !a.finished
-                && let Some(deadline) = a.timeout_at
-                && Instant::now() >= deadline
-            {
-                tracing::warn!("Request timeout after {:?}", a.request_start.elapsed());
-                a.finished = true;
-            }
+            // The request-deadline check used to live here. It has moved to
+            // `mod_helpers::enforce_request_deadlines`, which runs once per
+            // scheduler iteration regardless of decode path — this function
+            // is not called at all on the MTP/speculative path, so the
+            // deadline was unenforced in the config of record.
         }
     }
 }

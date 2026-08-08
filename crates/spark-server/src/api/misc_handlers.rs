@@ -105,6 +105,18 @@ pub async fn metrics_handler() -> impl IntoResponse {
         0.0
     };
 
+    // Kernel-resolution health. A gate can assert `== 0` instead of grepping
+    // the boot log — which is the only way this stays checkable once the log
+    // has rolled. Non-zero means some dispatch is on a silent fallback path.
+    let unresolved = spark_runtime::kernel_audit::unresolved_lookups();
+    let _ = write!(
+        text,
+        "\
+        # HELP atlas_kernel_lookups_unresolved Kernel lookups that did not resolve for the live model\n\
+        # TYPE atlas_kernel_lookups_unresolved gauge\n\
+        atlas_kernel_lookups_unresolved {unresolved}\n"
+    );
+
     let _ = write!(
         text,
         "\
@@ -155,6 +167,16 @@ pub async fn health(
 /// GET /health/live — liveness probe (always 200).
 pub async fn health_live() -> &'static str {
     "ok"
+}
+
+/// GET /hardware — the serving box's hardware fingerprint, for benchmark
+/// provenance. Probed on request (the sm-clock reading must be live), via
+/// `spawn_blocking` because the vendor tools are synchronous subprocesses.
+pub async fn hardware() -> Response {
+    let hw = tokio::task::spawn_blocking(atlas_plugin::hardware::Hardware::probe)
+        .await
+        .unwrap_or_else(|_| atlas_plugin::hardware::Hardware::unknown());
+    Json(hw).into_response()
 }
 
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.

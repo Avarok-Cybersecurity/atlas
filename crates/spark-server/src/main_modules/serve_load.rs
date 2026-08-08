@@ -93,7 +93,18 @@ pub(crate) fn load_model(
 
     tracing::info!("Port: {}", args.port);
 
-    tracing::info!("SSM decode dtype: f32 (full precision)");
+    // Report what is actually in force. This line used to be the literal
+    // "f32 (full precision)" unconditionally, printed before the model config
+    // even loaded — so it could not have reflected the resolved state even in
+    // principle, and it said f32 in every run of the campaign that ran f16.
+    tracing::info!(
+        "SSM decode h-state dtype: {} (--ssm-h-dtype)",
+        if spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() {
+            "f16"
+        } else {
+            "f32 (full precision)"
+        }
+    );
 
     // 1. Load model config (supports HF config.json and Mistral params.json)
     spark_runtime::progress::phase(2, "config");
@@ -167,6 +178,12 @@ pub(crate) fn load_model(
             )
         })?;
     let sampling_presets = ptx_set.sampling;
+    // The dashboard's kernel table re-resolves the live target through this
+    // same `ptx_for_config` call. It needs the config shape that selected the
+    // target, because the served-model name is an HF id, not a kernel-target
+    // directory name — and `atlas_kernels::ptx_modules()` (what the table used
+    // to read) is a plain alias of TARGET 0 in a multi-target build.
+    crate::tui::data::kernels::publish_loaded_shape(&config.model_type, config.hidden_size);
 
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //
@@ -516,19 +533,14 @@ pub(crate) fn load_model(
         nllb_lora_dir,
     )?;
 
-    // Kernel load audit: print the table of every kernel resolved during model
-    // construction (grouped by module/operation family) + flag any MISSING
-    // (handle 0 → silent slower-fallback dispatch). Catches build/codegen
-    // regressions like a dropped pipelined GEMM at load time, not as a
-    // mystery slowdown.
+    // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
+    // by here the audit holds this model's COMPLETE lookup set — see
+    // `serve_phases::kernel_gate`, which owns the report, the gate and
+    // `--check-kernels`.
+    // Under `--check-kernels` this call does not return: it prints the report
+    // and exits with the unresolved count as the process status.
     spark_runtime::progress::phase(7, "kernel audit");
-    tracing::info!(
-        "{}",
-        spark_runtime::kernel_audit::render_kernel_table(
-            &ptx_set.modules,
-            atlas_kernels::KERNEL_SET_HASH,
-        )
-    );
+    serve_phases::audit_and_gate(&args, &ptx_set)?;
 
     // Phase 6.3 — HSS config built early so the EP worker can install it.
     let early_high_speed_swap_cfg = serve_phases::build_high_speed_swap_config(&args)?;
@@ -627,6 +639,18 @@ pub(crate) fn load_model(
     } else {
         args.max_batch_size
     };
+    // Derived ceiling (wave-14a): the decode-metadata layout, logits rows and
+    // scratch block-table envelope are all DERIVED from max_batch_size
+    // (`spark_runtime::buffers::DecodeMetaLayout`, rows = max(32, bs) —
+    // byte-identical to the old fixed 32-row layout for every bs <= 32).
+    // DECODE_META_MAX_ROWS is the validated policy ceiling; above it, fail
+    // here at serve time instead of mid-decode (aacd29cb's safety intent).
+    anyhow::ensure!(
+        max_batch_size <= spark_runtime::buffers::DECODE_META_MAX_ROWS,
+        "--max-batch-size {max_batch_size} exceeds the derived decode-metadata \
+         ceiling of {} rows (DECODE_META_MAX_ROWS)",
+        spark_runtime::buffers::DECODE_META_MAX_ROWS
+    );
     // `use_speculative` gates the scheduler's `step_mtp` path which already
     // dispatches both MTP and DFlash proposers via the shared `DraftProposer`
     // trait + the `drafts.len() ≥ 4` ladder route to `step_verify_dflash`

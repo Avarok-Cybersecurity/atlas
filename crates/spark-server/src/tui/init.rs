@@ -38,6 +38,40 @@ use super::log_ring::LogRingLayer;
 /// this; the event loop flips it on attach/detach.
 pub static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Releases [`TUI_ACTIVE`] when dropped, so the claim `tui::start` takes before
+/// spawning the render thread is given back on every way out of that thread.
+///
+/// ★ **A `return` that skipped the release silenced the process's logs for
+/// good.** `SwitchableIo` above writes to stdout only while this flag is
+/// clear — a subscriber writing into a raw-mode alternate screen shreds the
+/// render, so the tee file is the only destination while the TUI owns the
+/// terminal. The event loop had exactly one `store(false)`, at the bottom of
+/// the loop, and two early returns above it: one when `TerminalGuard::enter`
+/// fails and one when the crossterm backend will not initialise. Both announce
+/// "continuing with plain logs" and then took the flag with them, so the plain
+/// logs they promised went nowhere the operator could see for the rest of the
+/// run. Neither branch is reachable under a `TestBackend`, which is precisely
+/// why it survived 689 tests: the terminal has to actually refuse.
+///
+/// Drop rather than a call, because the bug was a missed call, and unwinding
+/// out of the render thread has the same problem.
+pub struct ActiveClaim;
+
+impl ActiveClaim {
+    /// Claim the terminal. Paired with the drop; the store is idempotent, so a
+    /// second claim is not an error, merely redundant.
+    pub fn claim() -> Self {
+        TUI_ACTIVE.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ActiveClaim {
+    fn drop(&mut self) {
+        TUI_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
 /// The always-on log file: its writer, its path, and its raw fd.
 ///
 /// One object rather than three loose globals. They are installed together in
@@ -172,3 +206,7 @@ pub fn install_tty_subscriber(progress_tx: Sender<ProgressEvent>) {
         .with(progress_layer)
         .init();
 }
+
+#[cfg(test)]
+#[path = "init_tests.rs"]
+mod tests;

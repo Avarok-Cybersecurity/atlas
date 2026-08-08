@@ -15,9 +15,36 @@
 //! scoring is a port of `score_run.py`.
 //!
 //! It executes model-authored shell; see [`agent`] for the containment.
+//!
+//! ## Canonical serve recipe (Gate A)
+//!
+//! The recorded 10/10 Gate A history (321ws Σ951s, 307A Σ978s, fixA Σ1158s)
+//! was measured against THIS serve configuration. A Gate A run is only
+//! comparable to that band when served exactly like this (no docker wrapper —
+//! run the binary directly):
+//!
+//! ```sh
+//! spark serve Qwen/Qwen3.6-35B-A3B-FP8 \
+//!   --max-seq-len 32768 --max-batch-size 2 --gpu-memory-utilization 0.70 \
+//!   --kv-cache-dtype bf16 --lm-head-dtype bf16 --scheduling-policy slai \
+//!   --speculative --num-drafts 1 --mtp-quantization bf16 \
+//!   --enable-prefix-caching --ssm-cache-slots 256 --ssm-checkpoint-interval 16 \
+//!   --kv-high-precision-layers auto --port 8888
+//! ```
+//!
+//! Two pins that must not drift:
+//!
+//! * **`--lm-head-dtype bf16` is mandatory.** fp8 and nvfp4 lm-heads pass
+//!   short-prompt coherence but degenerate over this harness's long structured
+//!   trajectories (low-margin argmax flips compound turn over turn).
+//! * **Thinking stays ON** — no `--disable-thinking`. The historical band was
+//!   recorded with thinking enabled; disabling it is the TTFT/BFCL-leg recipe
+//!   (their probes count only content tokens), not Gate A's.
 
 pub mod agent;
+pub mod preflight;
 pub mod score;
+pub mod warm;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -50,32 +77,8 @@ tear down the server by killing whatever is listening on its port rather than gu
 name, always wrapped in a short timeout so it can never stall your shell, for example `timeout 5 \
 fuser -k ${ATLAS_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`.";
 
-const SUMMARY: &str = "N agentic runs: build a working Axum server, then verify it";
-pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
-
-pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "agentic-webserver",
-    name: "Agentic Webserver Test",
-    summary: SUMMARY,
-    detail: "Runs the flagship agentic task N times: the model writes a Rust Axum ping/pong \
-             server, tests it, runs it and tears it down, using bash/write_file/read_file tools \
-             in a fresh sandbox. Each run is scored on OUTCOME (the scorer builds it and gets a \
-             'pong') and on PROCESS (did the agent do all six things the prompt asked?), plus \
-             wall time. RUNS MODEL-AUTHORED SHELL inside the sandbox directory.",
-    duration_hint: "~5 min per iteration",
-    updated: "2026-07-31",
-    needs_confirmation: true,
-    // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1300 s) were
-    // measured on the 35B MoE flagship and mean nothing against another
-    // checkpoint. FP8 and NVFP4 are both the same family and both valid.
-    intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-35b-a3b"],
-        note: "Gate A is defined on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or NVFP4). \
-               The dense 27B is a different gate (C2/D) with different thresholds, so a \
-               run here would produce numbers that compare to nothing.",
-    }),
-    ctor: || Box::new(AgenticWebserver::default()),
-};
+mod descriptors;
+pub use descriptors::{DESCRIPTOR, METADATA};
 
 #[derive(Default)]
 struct IterationRow {
@@ -240,6 +243,24 @@ impl AgenticWebserver {
         ]
     }
 
+    /// Raw gate numbers for `--pull-request-gate` (same source the summary
+    /// tiles and the verdict read from — the three cannot disagree).
+    fn metrics(&self) -> std::collections::BTreeMap<String, f64> {
+        let n = self.rows.len();
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("iterations".to_string(), n as f64);
+        m.insert(
+            "webserver_ok".to_string(),
+            self.rows.iter().filter(|r| r.webserver_ok).count() as f64,
+        );
+        m.insert(
+            "followed_directions".to_string(),
+            self.rows.iter().filter(|r| r.directions.overall()).count() as f64,
+        );
+        m.insert("sum_wall_s".to_string(), self.total_wall());
+        m
+    }
+
     fn verdict(&self) -> Verdict {
         let n = self.rows.len();
         let ok = self.rows.iter().filter(|r| r.webserver_ok).count();
@@ -274,7 +295,7 @@ impl Plugin for AgenticWebserver {
     fn load(&mut self, handle: PluginHandle) -> impl Future<Output = Result<()>> + Send {
         self.started = Some(Instant::now());
         let store = handle.artifacts().clone();
-        self.handle = Some(handle);
+        self.handle = Some(handle.clone());
         async move {
             // `cargo` has to exist or nothing can be scored — say so now rather
             // than after the model has spent five minutes writing code.
@@ -286,16 +307,12 @@ impl Plugin for AgenticWebserver {
             let root = store.runs_dir(DESCRIPTOR.id)?.join("sandbox");
             std::fs::create_dir_all(&root)?;
             self.sandbox_root = Some(root);
-            // Share one warm target dir across every iteration, matching the
-            // harness's ATLAS_WARM_TARGET_DIR. Without it each iteration
-            // cold-compiles the axum/tokio tree and the wall time measures
-            // dependency compilation instead of the model.
-            let warm = match std::env::var_os("ATLAS_WARM_TARGET_DIR") {
-                Some(p) => PathBuf::from(p),
-                None => store.root().join("cargo-warm-target"),
-            };
-            std::fs::create_dir_all(&warm)?;
-            self.cargo_target_dir = Some(warm);
+            // Pre-warm (not merely allocate) the shared target dir the agent AND
+            // the scorer build in. Creating an empty dir is not the harness's
+            // behaviour: `run_tier.sh:75-96` warms BOTH profiles up front
+            // because a tier drives `cargo test` 141× and the cold dep build
+            // "was the entire 92s↔305s wall variance". See [`warm`].
+            self.cargo_target_dir = Some(warm::prepare(&handle).await?);
             Ok(())
         }
     }
@@ -349,7 +366,9 @@ impl Benchmark for AgenticWebserver {
             ParamSpec::new(
                 "serve_timeout_s",
                 "Ping timeout",
-                "Seconds to wait for /ping to answer 'pong' after the server is started.",
+                "Seconds to wait for /ping to answer 'pong' after the server is started. \
+                 The harness's own budget is 15s (score_run.py::webserver_test), so this is \
+                 already the looser of the two — lowering it would not match anything.",
                 ParamKind::Int { min: 5, max: 300 },
                 ParamValue::Int(30),
             ),
@@ -399,6 +418,10 @@ impl Benchmark for AgenticWebserver {
             http::probe(handle.target(), Duration::from_secs(10))
                 .await
                 .context("endpoint probe failed — check the target URL and port")?;
+            // run_tier.sh halts on a bad 2+2 rather than after 25 min of tier:
+            // a 200 from /v1/models proves a server is listening, not that the
+            // checkpoint still decodes.
+            preflight::sanity_check(&handle, Duration::from_secs(60)).await?;
             let root = self.sandbox_root.clone().context("no sandbox root")?;
             return Ok(BenchmarkResult::running("probe", self.elapsed())
                 .with_progress(0, total)
@@ -422,6 +445,7 @@ impl Benchmark for AgenticWebserver {
             .with_progress(total, total)
             .with_summary(self.summary())
             .with_table(self.table())
+            .with_metrics(self.metrics())
             .with_verdict(self.verdict()));
         }
 

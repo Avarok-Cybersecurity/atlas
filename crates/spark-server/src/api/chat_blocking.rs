@@ -403,7 +403,12 @@ fn build_choice_message(
                     crate::metrics::TOOL_CALLS_TOTAL.inc();
                 }
                 msg_tool_calls = Some(validated.valid);
-                finish_reason_i = "tool_calls".to_string();
+                // A deadline cut outranks "tool_calls": the turn was
+                // truncated, so a call parsed out of it may be partial and
+                // the client must not treat it as a completed tool turn.
+                if finish_reason_i != ir::FINISH_REASON_TIMEOUT {
+                    finish_reason_i = "tool_calls".to_string();
+                }
             }
         }
     }

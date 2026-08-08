@@ -3,25 +3,50 @@
 //! Phase 1b spill tier — resident vs spilled state machine (`ATLAS_SSM_TIER`).
 //! Split from `snapshot.rs` (file-size cap); same `SsmSnapshotIndex` impl.
 
+use crate::prefix_cache::TierEvict;
+
 use super::hash_token_prefix;
 use super::snapshot::{SnapLoc, SnapMatch, SsmSnapshotIndex};
 
 impl SsmSnapshotIndex {
-    /// Spill victim selection (tier engaged). Marks the victim spilled, returns
-    /// `(freed_slot, key)`. Entry stays in the index for `lookup_tiered` fault-in.
-    pub(super) fn evict_to_tier(&mut self) -> Option<(usize, u64)> {
+    /// Spill victim selection (tier engaged), with the spill-side cost gate.
+    ///
+    /// Above `min_tokens` the victim is marked spilled and stays in the index
+    /// for `lookup_tiered` fault-in ([`TierEvict::Spill`]). Below it the entry
+    /// is REMOVED and `tier_spills` is not incremented ([`TierEvict::Drop`]):
+    /// a shallow snapshot cannot repay the fixed spill cost, and leaving it
+    /// marked `tiered` would make every warm turn pay a blob-sized `store.get`
+    /// to discover a miss. `min_tokens == 0` disables the gate (spill always),
+    /// which is the pre-gate behaviour byte-for-byte.
+    pub(super) fn evict_to_tier(&mut self, min_tokens: usize) -> Option<TierEvict> {
         if self.entries.is_empty() {
             return None;
         }
         let tail_protect = self.tail_lease_active();
         let idx = self.session_aware_victim(tail_protect, /*skip_tiered*/ true)?;
+        self.evictions_since_lookup = self.evictions_since_lookup.saturating_add(1);
+        let depth = self.entries[idx].token_count;
+        if min_tokens > 0 && depth < min_tokens {
+            // Drop arm: identical bookkeeping to `evict_lru` (swap_remove +
+            // `evictions`), so a gated spill costs exactly what the tier-off
+            // path costs.
+            let e = self.entries.swap_remove(idx);
+            self.stats.evictions += 1;
+            return Some(TierEvict::Drop {
+                slot: e.snapshot_id,
+                depth,
+            });
+        }
         let e = &mut self.entries[idx];
         e.tiered = true;
         let freed_slot = e.snapshot_id;
         let key = e.prefix_hash;
         self.stats.tier_spills += 1;
-        self.evictions_since_lookup = self.evictions_since_lookup.saturating_add(1);
-        Some((freed_slot, key))
+        Some(TierEvict::Spill {
+            slot: freed_slot,
+            key,
+            depth,
+        })
     }
 
     /// **Tier-aware lookup** (used in place of `lookup` when the tier is on).
@@ -113,5 +138,34 @@ impl SsmSnapshotIndex {
             }
         }
         false
+    }
+
+    /// **Reap** a TIERED entry whose blob is gone (see
+    /// `PrefixCache::forget_snapshot_tier_key`): the failed-fault-in twin of
+    /// [`Self::promote`]. Without it the entry keeps advertising a dead tier
+    /// key and every warm turn re-runs `spill a live 66 MB victim → allocate a
+    /// slot → miss → free`, which under the disk cap evicts one more record and
+    /// manufactures the very pressure that dropped the blob.
+    ///
+    /// No-op — returning `false` — for an unknown key or a RESIDENT entry:
+    /// `tiered == false` means `snapshot_id` is a live pool slot, and unlike
+    /// `evict_lru`/`insert_tail` this path has no caller to hand it back to, so
+    /// removing one would leak it permanently. That guard also makes the
+    /// promote-then-reap race a clean no-op.
+    ///
+    /// Does NOT touch `evictions_since_lookup` or `stats.evictions`: a reap
+    /// frees no slot and applies no pressure to the live session's restore
+    /// point, so counting it would shorten the tail lease for no reason.
+    pub(super) fn forget_tiered(&mut self, prefix_hash: u64) -> bool {
+        let Some(idx) = self
+            .entries
+            .iter()
+            .position(|e| e.prefix_hash == prefix_hash && e.tiered)
+        else {
+            return false;
+        };
+        self.entries.swap_remove(idx);
+        self.stats.tier_reaps += 1;
+        true
     }
 }

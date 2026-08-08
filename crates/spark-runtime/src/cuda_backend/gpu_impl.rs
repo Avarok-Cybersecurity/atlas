@@ -37,13 +37,42 @@ use atlas_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
-    AtlasCudaBackend, cuCtxSetCurrent, cuEventCreate, cuEventDestroy_v2, cuEventRecord,
-    cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuMemAlloc_v2,
-    cuMemAllocHost_v2, cuMemAllocManaged, cuMemFree_v2, cuMemFreeHost, cuMemGetInfo_v2,
-    cuMemcpyDtoDAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
-    cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
+    AtlasCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
+    cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
+
+/// Enqueue an H2D copy on `stream` and return without waiting. Shared by both
+/// async H2D entry points so the two differ ONLY in the ordering they add
+/// afterwards, never in the copy itself.
+fn h2d_enqueue(src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+    let status =
+        unsafe { cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream) };
+    if status != 0 {
+        bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
+    }
+    Ok(())
+}
+
+/// Say once, loudly, that a page-locked buffer reached the transient H2D path.
+///
+/// This is the tripwire the whole `pinned_hosts` registry exists to arm. It is a
+/// warning and not a `bail!` because the copy is still CORRECT — the sync above
+/// restores the guarantee — but it is a real, silent latency regression, and the
+/// call site almost certainly wants `copy_h2d_async_retained` instead.
+fn warn_pinned_transient_source() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "copy_h2d_async was handed a PAGE-LOCKED source. That copy is genuinely \
+             asynchronous, so the promise that the caller may drop the buffer on return \
+             is now being paid for with a cuStreamSynchronize on every such call. If the \
+             source outlives the next sync, switch the call site to \
+             copy_h2d_async_retained; if it does not, this sync is what keeps it from \
+             being a use-after-free."
+        );
+    });
+}
 
 impl GpuBackend for AtlasCudaBackend {
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
@@ -116,6 +145,22 @@ impl GpuBackend for AtlasCudaBackend {
         AtlasCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
     }
 
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
+        // Deliberately NO cuStreamSynchronize — that is the entire point.
+        // `copy_d2h`/`copy_d2h_on_stream` drain the stream inside every call,
+        // so a multi-chunk gather pays one full drain per chunk (the SSM spill's
+        // 60 chunks × 66 MB measured ~400 ms = ~165 MB/s, vs ~28 ms for the
+        // async H2D scatter of the same bytes). The caller MUST issue exactly
+        // one `synchronize(stream)` before touching `dst`.
+        let status = unsafe {
+            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
+        };
+        if status != 0 {
+            bail!("cuMemcpyDtoHAsync_v2 (async) failed: status {status}");
+        }
+        Ok(())
+    }
+
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
         AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
@@ -186,33 +231,62 @@ impl GpuBackend for AtlasCudaBackend {
         Some(self.registry().clone())
     }
 
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        // The DISPATCH SITE, not this line: `#[track_caller]` here and on the
+        // trait declaration carries the `.kernel(…)` / `try_kernel(…)` caller's
+        // `file:line` through, which is the only part of an unresolved-lookup
+        // report an operator can act on.
+        let site = std::panic::Location::caller();
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
-                crate::kernel_audit::record(module, func_name, true);
+                crate::kernel_audit::record(module, func_name, true, site);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
                 // Optional kernels (try_kernel) land here and fall back silently;
                 // the audit makes that visible in the startup kernel table.
-                crate::kernel_audit::record(module, func_name, false);
+                crate::kernel_audit::record(module, func_name, false, site);
                 Err(anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))
             }
         }
     }
 
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream)
-        };
-        if status != 0 {
-            bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
+        h2d_enqueue(src, dst, stream)?;
+        // The trait promises the caller may drop `src` right now. From PAGEABLE
+        // memory the driver already made that true by staging the bytes before
+        // returning. From PAGE-LOCKED memory it did not — the DMA engine reads
+        // these pages after the enqueue — so buy the same guarantee with an
+        // explicit wait rather than let ~90 call sites that drop their source
+        // immediately turn into use-after-frees the day a buffer gets pinned.
+        //
+        // Costs nothing on the path everything takes today: no Atlas call site
+        // reaches here with a pinned source (the ones that own pinned staging
+        // use `copy_h2d_async_retained`), so `is_pinned` is a lock-free-ish read
+        // of a three-entry table that says "no".
+        if crate::pinned_hosts::is_pinned(src) {
+            warn_pinned_transient_source();
+            let sync = unsafe { cuStreamSynchronize(stream) };
+            if sync != 0 {
+                bail!(
+                    "cuStreamSynchronize after pinned-source H2D failed: {}",
+                    cuda_error_text(sync)
+                );
+            }
         }
         Ok(())
+    }
+
+    fn copy_h2d_async_retained(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+        // The caller has promised `src` outlives the next sync on `stream`, so
+        // no implicit ordering is added — that is the whole reason this variant
+        // exists (a 60-chunk pinned scatter must not pay 60 stream drains).
+        h2d_enqueue(src, dst, stream)
     }
 
     fn copy_d2d_async(
@@ -274,191 +348,67 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn begin_capture(&self, stream: u64) -> Result<()> {
-        // CU_STREAM_CAPTURE_MODE_RELAXED = 2
-        // Relaxed mode allows NCCL's internal streams to operate during
-        // graph capture (required for EP all-reduce in CUDA graphs).
-        let status = unsafe { cuStreamBeginCapture(stream, 2) };
-        if status != 0 {
-            bail!("cuStreamBeginCapture failed: status {status}");
-        }
-        Ok(())
+        self.begin_capture_cu(stream)
     }
-
     fn end_capture(&self, stream: u64) -> Result<GraphHandle> {
-        let mut graph: u64 = 0;
-        let status = unsafe { cuStreamEndCapture(stream, &mut graph) };
-        if status != 0 {
-            bail!("cuStreamEndCapture failed: status {status}");
-        }
-        // Instantiate the graph into an executable. NVIDIA's libcuda exports
-        // `cuGraphInstantiateWithFlags`; SCALE (gfx1151) exposes the
-        // ABI-identical `cuGraphInstantiate` — see cuda_backend.rs.
-        let mut graph_exec: u64 = 0;
-        #[cfg(not(atlas_scale))]
-        let status = unsafe { super::cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
-        #[cfg(atlas_scale)]
-        let status = unsafe { super::cuGraphInstantiate(&mut graph_exec, graph, 0) };
-        if status != 0 {
-            unsafe { cuGraphDestroy(graph) };
-            bail!("cuGraphInstantiate failed: status {status}");
-        }
-        // The graph template is no longer needed after instantiation
-        unsafe { cuGraphDestroy(graph) };
-        Ok(GraphHandle(graph_exec))
+        self.end_capture_cu(stream)
     }
-
     fn launch_graph(&self, graph: GraphHandle, stream: u64) -> Result<()> {
-        let status = unsafe { cuGraphLaunch(graph.0, stream) };
-        if status != 0 {
-            bail!("cuGraphLaunch failed: status {status}");
-        }
-        Ok(())
+        self.launch_graph_cu(graph, stream)
     }
-
     fn destroy_graph(&self, graph: GraphHandle) -> Result<()> {
-        if graph.0 != 0 {
-            let status = unsafe { cuGraphExecDestroy(graph.0) };
-            if status != 0 {
-                bail!("cuGraphExecDestroy failed: status {status}");
-            }
-        }
-        Ok(())
+        self.destroy_graph_cu(graph)
     }
-
     fn memset(&self, ptr: DevicePtr, value: u8, bytes: usize) -> Result<()> {
-        let status = unsafe { cuMemsetD8Async(ptr.0, value, bytes, self.default_stream) };
-        if status != 0 {
-            bail!("cuMemsetD8Async failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!("cuStreamSynchronize after memset failed: status {sync}");
-        }
-        Ok(())
+        self.memset_cu(ptr, value, bytes)
     }
-
     fn memset_async(&self, ptr: DevicePtr, value: u8, bytes: usize, stream: u64) -> Result<()> {
-        let status = unsafe { cuMemsetD8Async(ptr.0, value, bytes, stream) };
-        if status != 0 {
-            bail!("cuMemsetD8Async failed: status {status}");
-        }
-        Ok(())
+        self.memset_async_cu(ptr, value, bytes, stream)
     }
-
     fn total_memory(&self) -> Result<usize> {
-        let mut free: usize = 0;
-        let mut total: usize = 0;
-        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
-        if status != 0 {
-            bail!("cuMemGetInfo_v2 failed: status {status}");
-        }
-        Ok(total)
+        self.total_memory_cu()
     }
-
     fn free_memory(&self) -> Result<usize> {
-        let mut free: usize = 0;
-        let mut total: usize = 0;
-        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
-        if status != 0 {
-            bail!("cuMemGetInfo_v2 failed: status {status}");
-        }
-        // On unified memory (GB10), cuMemGetInfo reports Linux "free" memory
-        // which excludes reclaimable buff/cache. Use MemAvailable instead.
-        if let Some(mem_available) = super::system_available_memory_bytes() {
-            free = free.max(mem_available);
-        }
-        Ok(free)
+        self.free_memory_cu()
     }
-
+    fn sm_count(&self) -> Result<u32> {
+        self.sm_count_cu()
+    }
     fn create_stream(&self) -> Result<u64> {
-        let mut stream: u64 = 0;
-        // CU_STREAM_NON_BLOCKING = 1 (does not synchronize with stream 0)
-        let status = unsafe { cuStreamCreate(&mut stream, 1) };
-        if status != 0 {
-            bail!("cuStreamCreate failed: status {status}");
-        }
-        Ok(stream)
+        self.create_stream_cu()
     }
-
     fn bind_to_thread(&self) -> Result<()> {
-        let status = unsafe { cuCtxSetCurrent(self.cuda_ctx) };
-        if status != 0 {
-            bail!("cuCtxSetCurrent failed: status {status}");
-        }
-        Ok(())
+        self.bind_to_thread_cu()
     }
-
     fn create_event(&self) -> Result<u64> {
-        let mut event: u64 = 0;
-        // CU_EVENT_DISABLE_TIMING = 0x02 (skip timing overhead)
-        let status = unsafe { cuEventCreate(&mut event, 0x02) };
-        if status != 0 {
-            bail!("cuEventCreate failed: status {status}");
-        }
-        Ok(event)
+        self.create_event_cu()
     }
-
     fn record_event(&self, event: u64, stream: u64) -> Result<()> {
-        let status = unsafe { cuEventRecord(event, stream) };
-        if status != 0 {
-            bail!("cuEventRecord failed: status {status}");
-        }
-        Ok(())
+        self.record_event_cu(event, stream)
     }
-
     fn stream_wait_event(&self, stream: u64, event: u64) -> Result<()> {
-        let status = unsafe { cuStreamWaitEvent(stream, event, 0) };
-        if status != 0 {
-            bail!("cuStreamWaitEvent failed: status {status}");
-        }
-        Ok(())
+        self.stream_wait_event_cu(stream, event)
     }
-
     fn event_synchronize(&self, event: u64) -> Result<()> {
-        // Block calling thread until all work recorded against `event`
-        // (on whatever stream `record_event` targeted) has completed.
-        // Used in Phase E.2: drafter D2H copy is recorded against this
-        // event, host blocks here just before reading the pinned buffer.
-        let status = unsafe { cuEventSynchronize(event) };
-        if status != 0 {
-            bail!("cuEventSynchronize failed: status {status}");
-        }
-        Ok(())
+        self.event_synchronize_cu(event)
     }
-
     fn destroy_event(&self, event: u64) -> Result<()> {
-        if event != 0 {
-            let status = unsafe { cuEventDestroy_v2(event) };
-            if status != 0 {
-                bail!("cuEventDestroy_v2 failed: status {status}");
-            }
+        self.destroy_event_cu(event)
+    }
+    fn host_ptr_to_device(&self, host: *mut u8) -> Result<DevicePtr> {
+        let mut dptr: u64 = 0;
+        let status =
+            unsafe { super::cuMemHostGetDevicePointer_v2(&mut dptr, host as *mut c_void, 0) };
+        if status != 0 {
+            bail!("cuMemHostGetDevicePointer_v2 failed: status {status}");
         }
-        Ok(())
+        Ok(DevicePtr(dptr))
     }
 
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
-        let mut ptr: *mut c_void = std::ptr::null_mut();
-        let status = unsafe { cuMemAllocHost_v2(&mut ptr, bytes) };
-        if status != 0 {
-            bail!("cuMemAllocHost_v2 failed: status {status}, requested {bytes} bytes");
-        }
-        Ok(ptr as *mut u8)
+        self.alloc_host_pinned_cu(bytes)
     }
-
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
-        if !ptr.is_null() {
-            let status = unsafe { cuMemFreeHost(ptr as *mut c_void) };
-            // The driver tears the primary context down in its own atexit
-            // handler, which can run before ours. Pinned host memory allocated
-            // against a context that no longer exists was already reclaimed
-            // with it — reporting that as a failure is noise at every exit.
-            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
-                bail!(
-                    "cuMemFreeHost failed: {}",
-                    atlas_core::registry::cuda_error_text(status)
-                );
-            }
-        }
-        Ok(())
+        self.free_host_pinned_cu(ptr, _bytes)
     }
 }

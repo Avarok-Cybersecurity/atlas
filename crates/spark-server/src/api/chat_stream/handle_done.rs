@@ -186,7 +186,13 @@ pub(super) fn handle_done(
         response_tokens_per_second: tps,
     };
 
-    let fr = if state.tool_loop_capped {
+    let fr = if finish_reason == crate::ir::FINISH_REASON_TIMEOUT {
+        // The server-side request deadline cut this response mid-flight.
+        // It outranks every override below: a truncated turn that emitted
+        // a partial tool call would otherwise be reported "tool_calls" and
+        // the client would run a half-parsed call as if it were complete.
+        finish_reason.as_str()
+    } else if state.tool_loop_capped {
         // A tool-call loop guard (Bug-2 name-run cap, F11 within-dedup,
         // F5 cross-flush dedup, or F44 perm-fail) forcibly ended the
         // response. Signal "length" — OpenAI's slot for a truncated

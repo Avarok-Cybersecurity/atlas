@@ -354,6 +354,28 @@ pub struct TargetPtxSet {
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
     /// set without an explicit `--draft-model` flag.
     pub dflash: Option<DflashConfig>,
+    /// `(module, kernel)` pairs this model's kernel files DROPPED by shadowing
+    /// their `common/` namesakes — the kernel exists in `common/` but this
+    /// model's fork of the file does not define it, so it is not compiled here.
+    ///
+    /// Shadowing is whole-file, so a fork that predates a kernel added to
+    /// `common/` silently loses it: `try_kernel` returns handle 0 and whatever
+    /// depends on it fails CLOSED. The startup audit joins this against the
+    /// kernels the model actually looked up, which separates the two classes of
+    /// missing kernel — dropped-by-fork (a build defect) from
+    /// never-built-for-this-architecture (expected, e.g. MLA on a Qwen model).
+    pub shadowed_dropped: &'static [(&'static str, &'static str)],
+    /// `(module, kernel)` lookups this model's dispatch may issue and fail to
+    /// resolve WITHOUT that being an error, declared in the model's MODEL.toml
+    /// `[expected_absent]` with a mandatory stated reason per entry.
+    ///
+    /// The boot audit (`kernel_audit::classify_failures`) fails CLOSED on every
+    /// unresolved lookup that is not in this list, so the list is the entire
+    /// difference between "this model is known to run this way" and "nobody has
+    /// looked". It is TRANSITIONAL: the right fix for a lookup that can never
+    /// resolve is to gate it on config so it is never issued (see
+    /// `qwen3_attention::init_arch_gates`), which removes it from here.
+    pub expected_absent: &'static [(&'static str, &'static str)],
 }
 
 /// All compiled kernel targets and their PTX module sets.

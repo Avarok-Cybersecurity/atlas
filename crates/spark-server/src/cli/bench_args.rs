@@ -5,11 +5,19 @@
 //! The same suite the dashboard runs, without a terminal — so a benchmark can
 //! be scripted, run in CI, or driven over SSH on a headless box.
 
-/// `spark benchmark <list|run|history>`
+/// `spark benchmark <list|run|history>` — or `--pull-request-gate-check` on
+/// its own, which needs no subcommand.
 #[derive(clap::Args, Debug)]
+#[command(arg_required_else_help = true)]
 pub struct BenchmarkArgs {
+    /// Check the committed `.benchmarks/` records for THIS commit: every
+    /// required gate must have a passing record. Prints what is missing or
+    /// failing and exits non-zero when the branch is not fully gated.
+    /// Runs without a subcommand (and without an endpoint).
+    #[arg(long = "pull-request-gate-check")]
+    pub pull_request_gate_check: bool,
     #[command(subcommand)]
-    pub command: BenchmarkCommand,
+    pub command: Option<BenchmarkCommand>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -34,15 +42,41 @@ pub struct ListArgs {
 pub struct RunArgs {
     /// Benchmark id — `spark benchmark list` prints them.
     pub id: String,
-    /// The endpoint to drive. This does NOT start a server.
-    #[arg(long, default_value = "http://127.0.0.1:8888")]
+    /// The endpoint to drive.
+    ///
+    /// This does NOT start a server — EXCEPT under `--pull-request-gate`, which
+    /// serves the benchmark's own recipe on a free port and tears it down
+    /// after. The two are mutually exclusive: a gate run has nowhere to send
+    /// this, so passing it is rejected rather than quietly overridden.
+    #[arg(
+        long,
+        default_value = "http://127.0.0.1:8888",
+        conflicts_with = "pull_request_gate"
+    )]
     pub url: String,
     /// The `model` field sent in every request.
     ///
     /// Required rather than defaulted: it is recorded with the run, and a
-    /// result that cannot say what it measured is not worth keeping.
+    /// result that cannot say what it measured is not worth keeping. Under
+    /// `--pull-request-gate` it is supplied by the benchmark's recipe instead,
+    /// and passing it is rejected rather than silently ignored — a flag that
+    /// looks like it selects the model while the recipe actually does is the
+    /// confusion this mode exists to remove.
+    #[arg(
+        long,
+        required_unless_present = "pull_request_gate",
+        conflicts_with = "pull_request_gate"
+    )]
+    pub model: Option<String>,
+
+    /// Which box class the run is for, e.g. `gb10`.
+    ///
+    /// Only consulted under `--pull-request-gate`, to pick the baseline entry
+    /// when a benchmark has thresholds for more than one box class. With a
+    /// single entry it is inferred; with several, omitting it is an error
+    /// rather than a guess.
     #[arg(long)]
-    pub model: String,
+    pub hardware: Option<String>,
     /// Override one parameter, e.g. `--param osl=8`. Repeatable.
     ///
     /// Anything not overridden takes the schema default and is still recorded.
@@ -73,6 +107,13 @@ pub struct RunArgs {
     /// skipping the two extra completions, not for silencing a veto.
     #[arg(long)]
     pub skip_coherence_probe: bool,
+    /// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
+    ///
+    /// The record carries the metrics, verdict, hardware fingerprint, the
+    /// exact command and the current commit sha, so the branch itself can
+    /// answer "did this pass" — no `~/.atlas` state required.
+    #[arg(long)]
+    pub pull_request_gate: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -119,7 +160,7 @@ mod tests {
         let cli = Cli::try_parse_from(argv).expect("parses");
         match cli.command {
             crate::cli::Command::Benchmark(b) => match b.command {
-                BenchmarkCommand::Run(r) => r,
+                Some(BenchmarkCommand::Run(r)) => r,
                 other => panic!("wanted run, got {other:?}"),
             },
             other => panic!("wanted benchmark, got {other:?}"),
@@ -141,7 +182,7 @@ mod tests {
             "isls=128,512",
         ]);
         assert_eq!(a.id, "concurrency-sweep");
-        assert_eq!(a.model, "m");
+        assert_eq!(a.model.as_deref(), Some("m"));
         assert_eq!(
             a.params,
             vec![
@@ -172,13 +213,42 @@ mod tests {
     }
 
     #[test]
-    fn the_model_is_required() {
+    fn the_model_is_required_unless_the_gate_supplies_it() {
         // A run whose record cannot say what it measured is not worth keeping,
         // so this is a parse error rather than a silent default.
         assert!(
             Cli::try_parse_from(["spark", "benchmark", "run", "concurrency-sweep"]).is_err(),
-            "--model must be supplied"
+            "--model must be supplied when driving an existing endpoint"
         );
+        // Under the gate the recipe supplies it, so demanding it here would be
+        // demanding a value the caller has no say over.
+        assert!(
+            Cli::try_parse_from([
+                "spark",
+                "benchmark",
+                "run",
+                "bfcl-subset",
+                "--pull-request-gate",
+            ])
+            .is_ok(),
+            "the gate resolves the model from the benchmark's recipe"
+        );
+    }
+
+    #[test]
+    fn the_gate_refuses_a_hand_picked_endpoint() {
+        // Silently ignoring these would leave the operator believing they
+        // selected the target when the recipe did — the precise confusion this
+        // mode exists to remove. Reject instead.
+        for extra in [["--model", "m"], ["--url", "http://127.0.0.1:9999"]] {
+            let mut argv = vec!["spark", "benchmark", "run", "bfcl-subset"];
+            argv.extend_from_slice(&extra);
+            argv.push("--pull-request-gate");
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{extra:?} must conflict with --pull-request-gate"
+            );
+        }
     }
 
     #[test]
@@ -187,5 +257,56 @@ mod tests {
         assert!(Cli::try_parse_from(["spark", "benchmark", "list", "concurrency-sweep"]).is_ok());
         assert!(Cli::try_parse_from(["spark", "benchmark", "history"]).is_ok());
         assert!(Cli::try_parse_from(["spark", "benchmark", "history", "--run", "run-1"]).is_ok());
+    }
+
+    #[test]
+    fn a_run_takes_the_pull_request_gate_flag() {
+        // No --model: the gate resolves it from the recipe, and passing one is
+        // a conflict (see the_gate_refuses_a_hand_picked_endpoint).
+        let a = run_args(&[
+            "spark",
+            "benchmark",
+            "run",
+            "agentic-webserver",
+            "--yes",
+            "--pull-request-gate",
+        ]);
+        assert!(a.pull_request_gate);
+        assert!(a.yes);
+        assert!(a.model.is_none());
+        assert!(a.hardware.is_none(), "inferred when the baseline has one");
+    }
+
+    #[test]
+    fn the_gate_takes_an_explicit_hardware_class() {
+        let a = run_args(&[
+            "spark",
+            "benchmark",
+            "run",
+            "ttft-warm-gate",
+            "--hardware",
+            "gb10",
+            "--pull-request-gate",
+        ]);
+        assert_eq!(a.hardware.as_deref(), Some("gb10"));
+    }
+
+    #[test]
+    fn gate_check_runs_without_a_subcommand() {
+        let cli = Cli::try_parse_from(["spark", "benchmark", "--pull-request-gate-check"])
+            .expect("parses");
+        match cli.command {
+            crate::cli::Command::Benchmark(b) => {
+                assert!(b.pull_request_gate_check);
+                assert!(b.command.is_none());
+            }
+            other => panic!("wanted benchmark, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_benchmark_without_gate_check_still_needs_a_subcommand() {
+        // `spark benchmark` alone must not silently do nothing.
+        assert!(Cli::try_parse_from(["spark", "benchmark"]).is_err());
     }
 }

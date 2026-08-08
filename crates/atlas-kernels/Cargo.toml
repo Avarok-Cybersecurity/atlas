@@ -11,5 +11,11 @@ atlas-core = { workspace = true }
 [build-dependencies]
 toml = "0.8"
 
+# Same crate the build script already pulls, so Cargo.lock is unchanged.
+# `tests/kernel_shadow_detector.rs` reads the `[modules]` and `[shadow_exempt]`
+# tables out of the real KERNEL.toml files rather than restating them.
+[dev-dependencies]
+toml = "0.8"
+
 [lints]
 workspace = true

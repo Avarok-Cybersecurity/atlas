@@ -91,6 +91,7 @@ impl TransformerModel {
         let snap_result = match self.ssm_snapshots.save(
             seq.slot_idx,
             seq.session_hash,
+            self.seq_ssm_h_is_f16(seq),
             &self.ssm_pool,
             self.gpu.as_ref(),
             stream,
@@ -108,6 +109,7 @@ impl TransformerModel {
                         .save(
                             seq.slot_idx,
                             seq.session_hash,
+                            self.seq_ssm_h_is_f16(seq),
                             &self.ssm_pool,
                             self.gpu.as_ref(),
                             stream,
@@ -173,7 +175,7 @@ impl TransformerModel {
             end_token,
             seq.adapter_id,
         );
-        super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+        super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
             boundary_tokens,
             boundary_blocks,

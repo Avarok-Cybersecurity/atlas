@@ -20,6 +20,7 @@ mod decode;
 // code paths are unaffected by the wider visibility.
 pub(crate) mod helpers;
 mod init;
+mod init_arch_gates;
 mod init_kernel_dispatch;
 mod kernel_requirements;
 mod op_dump;

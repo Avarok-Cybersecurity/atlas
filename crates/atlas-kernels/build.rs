@@ -61,6 +61,19 @@ struct Target {
     common_kernel_dir: Option<PathBuf>,
     extra_flags: Vec<String>,
     module_overrides: HashMap<String, String>,
+    /// `(module, kernel)` pairs declared in `[shadow_exempt]` — kernels this
+    /// target may drop from `common/` WITHOUT it being drift, each with a
+    /// stated reason in its KERNEL.toml. Merged common-then-model, same as
+    /// `extra_flags`. Filters the build WARNING only: the pairs stay in
+    /// `shadowed_dropped`, so the startup audit still hard-errors if the
+    /// model's dispatch actually resolves one.
+    shadow_exempt: Vec<(String, String)>,
+    /// `(module, kernel)` pairs declared in MODEL.toml `[expected_absent]` —
+    /// lookups this model's dispatch may issue and fail to resolve WITHOUT that
+    /// being an error, each with a mandatory stated reason. Carried onto
+    /// `TargetPtxSet::expected_absent` and read by the boot audit, which fails
+    /// closed on every unresolved lookup that is NOT declared here.
+    expected_absent: Vec<(String, String)>,
     sampling_thinking_text: SamplingCat,
     sampling_thinking_coding: SamplingCat,
     sampling_non_thinking: SamplingCat,
@@ -179,24 +192,34 @@ fn main() {
         .get("hardware")
         .and_then(|h| h.get("vendor"))
         .and_then(|v| v.as_str());
-    // Force the BR=32 prefill path (skip the BR64=64 large-chunk kernels)
-    // on targets that can't fit the _64 kernel's LDS (e.g. RDNA3.5's hard
-    // 64 KB/workgroup cap). Only emitted when the HW opts in; absent on
-    // NVIDIA → option_env! None → BR64 dispatch unchanged.
-    if hw_toml
-        .get("hardware")
-        .and_then(|h| h.get("force_br32_prefill"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        println!("cargo:rustc-env=ATLAS_HW_FORCE_BR32=true");
-    }
+    // NOTE: a `force_br32_prefill` HARDWARE.toml key used to be re-emitted here
+    // as `cargo:rustc-env=ATLAS_HW_FORCE_BR32`, for an `option_env!` reader in
+    // spark-model's prefill dispatch. That reader was dropped by the squash
+    // merge that landed Strix support, leaving an emit nothing consumed — and
+    // the contract could not have worked anyway: `cargo:rustc-env` only reaches
+    // the crate whose build script emits it, so it can never reach spark-model.
+    // BR=32 on RDNA3.5 is enforced by two live mechanisms instead, and the key
+    // was redundant even when it had a reader:
+    //   * kernel side  — `#if defined(__SCALE__) #define BR64 32` in
+    //     kernels/gb10/common/prefill_paged_compute.cuh (and an unconditional
+    //     `#define BR64 32` in the strix-hip shadow), which is what keeps the
+    //     _64 kernels inside the 64 KB LDS cap.
+    //   * host side    — `cfg!(atlas_scale)` picks the matching 32-row grid
+    //     stride in ops/prefill_attn_main_a.rs (non-paged) and
+    //     ops/prefill_attn_main_b.rs (paged); the cfg comes from spark-model's
+    //     own build.rs reading ATLAS_TARGET_HW.
+    // Re-adding a HARDWARE.toml key for this would re-create the dead lever.
     let compute_target = resolve_compute_target(vendor_str);
     let output_ext = compute_target.output_extension();
     let uses_cuda_api = compute_target.uses_cuda_module_api();
 
     // Per-target: (target_idx, vec of (stem, module_name))
     let mut all_target_modules: Vec<Vec<(String, String)>> = Vec::new();
+    // Per-target: (module, kernel) pairs this model's files dropped by shadowing
+    // their `common/` namesakes. Baked into the binary so the startup audit can
+    // separate "dropped by a fork" (fatal) from "never built for this target"
+    // (expected). See `shadowed_dropped_pairs`.
+    let mut all_target_drops: Vec<Vec<(String, String)>> = Vec::new();
 
     // 2026-05-24 dedup+parallel: pre-walk every (target, cu_file) pair
     // and split into two queues:
@@ -336,6 +359,45 @@ fn main() {
 
         all_target_modules.push(modules);
 
+        let drops = shadowed_dropped_pairs(
+            target.common_kernel_dir.as_deref(),
+            &target.model_kernel_dir,
+            source_ext,
+            &target.module_overrides,
+        );
+        // Warning-visible subset: everything except the pairs `common/`
+        // declares (with a reason) as superseded in `[shadow_exempt]`. The
+        // FULL `drops` list still goes into `TargetPtxSet::shadowed_dropped`
+        // below, so the startup gate (`kernel_audit::classify_failures`)
+        // remains fail-closed for exempt pairs too — an exemption silences
+        // build-log noise, never a runtime miss.
+        let reportable: Vec<&(String, String)> = drops
+            .iter()
+            .filter(|(m, f)| {
+                !target
+                    .shadow_exempt
+                    .iter()
+                    .any(|(em, ef)| em == m && ef == f)
+            })
+            .collect();
+        if !reportable.is_empty() {
+            println!(
+                "cargo:warning=atlas-kernels: ({}, {}) drops {} kernel(s) by shadowing common/: {}. \
+                 A dropped kernel fails CLOSED (try_kernel -> handle 0). If the model genuinely \
+                 cannot use it this is fine; the startup audit will only hard-error if the model's \
+                 dispatch actually requests it.",
+                target.model,
+                target.quant,
+                reportable.len(),
+                reportable
+                    .iter()
+                    .map(|(m, f)| format!("{m}::{f}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        all_target_drops.push(drops);
+
         println!(
             "cargo:rerun-if-changed={}",
             target.model_kernel_dir.display()
@@ -436,8 +498,13 @@ fn main() {
     }
 
     // ── Generate target_ptx.rs ──
-    let generated =
-        generate_target_ptx_rs(&targets, &all_target_modules, output_ext, uses_cuda_api);
+    let generated = generate_target_ptx_rs(
+        &targets,
+        &all_target_modules,
+        &all_target_drops,
+        output_ext,
+        uses_cuda_api,
+    );
     let gen_path = out_dir.join("target_ptx.rs");
     std::fs::write(&gen_path, &generated)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", gen_path.display()));
@@ -894,10 +961,15 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             // flags (deduped, model last) and wins per-key on [modules].
             let mut extra_flags: Vec<String> = Vec::new();
             let mut module_overrides: HashMap<String, String> = HashMap::new();
+            // Shadow-drop exemptions merge the same way: common/ declares the
+            // repo-wide superseded kernels, a model KERNEL.toml adds the ones
+            // only IT may drop (e.g. mistral's divergent RoPE convention).
+            let mut shadow_exempt: Vec<(String, String)> = Vec::new();
             if has_common_dir && common_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&common_kernel_dir, &target_vendor);
                 extra_flags.extend(f);
                 module_overrides.extend(m);
+                shadow_exempt.extend(parse_shadow_exempt(&common_kernel_dir));
             }
             if has_model_dir && model_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&model_kernel_dir, &target_vendor);
@@ -907,13 +979,17 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                     }
                 }
                 module_overrides.extend(m);
+                shadow_exempt.extend(parse_shadow_exempt(&model_kernel_dir));
             }
+            shadow_exempt.sort();
+            shadow_exempt.dedup();
 
             // Parse sampling presets, behavior, and model_types from MODEL.toml
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
+            let expected_absent = parse_expected_absent(&model_dir);
 
             targets.push(Target {
                 hw: hw.clone(),
@@ -928,6 +1004,8 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 },
                 extra_flags,
                 module_overrides,
+                shadow_exempt,
+                expected_absent,
                 sampling_thinking_text: s_tt,
                 sampling_thinking_coding: s_tc,
                 sampling_non_thinking: s_nt,
@@ -985,9 +1063,19 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 
 #[path = "build_parse.rs"]
 mod build_parse;
+
+// Entry-point resolution for `shadowed_dropped_pairs`. Lives in its own file so
+// `tests/kernel_shadow_detector.rs` can compile the SAME code a build script
+// would otherwise keep untestable — a build script's `#[cfg(test)]` modules are
+// never run by `cargo test`, which is how the previous text-scan shipped a hole
+// with no test that could have noticed.
+#[path = "build_shadow.rs"]
+mod build_shadow;
 use build_parse::{
-    parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
+    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
+    parse_sampling_presets, parse_shadow_exempt,
 };
+use build_shadow::shadowed_missing_symbols;
 
 /// Collect kernel-source files with shadowing: common dir provides the
 /// base set, model-specific dir can override individual files by matching
@@ -1045,3 +1133,54 @@ use build_codegen::generate_target_ptx_rs;
 mod build_target;
 use build_target::resolve_compute_target;
 // Force recompilation 1775404930
+
+/// Every `(module, kernel)` this target's model-specific files drop relative to
+/// their `common/` namesakes.
+///
+/// SHADOWING DRIFT. Shadowing is whole-file, not per-symbol: a model file
+/// replaces its common namesake entirely. When `common/` later gains a kernel
+/// the fork never picked up, that kernel silently vanishes for this model —
+/// `try_kernel` returns handle 0 and whatever depends on it fails CLOSED. That
+/// is exactly how the 27B lost the four multi-sequence decode kernels
+/// (`gated_delta_rule_decode_f32_{norm,conv_norm,strided,strided_norm}`),
+/// pinning every concurrent decode to the per-sequence fallback until
+/// 2026-07-26.
+///
+/// This list is baked into the binary (`TargetPtxSet::shadowed_dropped`) so the
+/// startup kernel audit can tell the two failure classes apart:
+///
+///   * a lookup that failed AND is in this list — the kernel EXISTS in
+///     `common/`, this model's fork dropped it. A build defect: fatal.
+///   * a lookup that failed and is NOT — the kernel was never compiled for this
+///     target at all (typically another architecture's: MLA, hyper-connection,
+///     CSA). Expected, and merely informational.
+///
+/// Without that split the audit prints ~26 benign entries for a Qwen model and
+/// the one that matters hides among them.
+fn shadowed_dropped_pairs(
+    common_dir: Option<&std::path::Path>,
+    model_dir: &std::path::Path,
+    source_ext: &str,
+    module_overrides: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let Some(common) = common_dir else {
+        return Vec::new();
+    };
+    let common_by_stem: HashMap<String, PathBuf> = find_cu_files(common, source_ext)
+        .into_iter()
+        .map(|f| (f.file_stem().unwrap().to_str().unwrap().to_string(), f))
+        .collect();
+    let mut out = Vec::new();
+    for f in find_cu_files(model_dir, source_ext) {
+        let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
+        let Some(common_f) = common_by_stem.get(&stem) else {
+            continue;
+        };
+        let module = module_overrides.get(&stem).cloned().unwrap_or(stem);
+        for func in shadowed_missing_symbols(common_f, &f) {
+            out.push((module.clone(), func));
+        }
+    }
+    out.sort();
+    out
+}

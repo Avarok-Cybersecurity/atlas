@@ -91,66 +91,6 @@ impl TransformerModel {
         TransformerModel::decode_draft(self, token, seq, stream)
     }
 
-    /// ATLAS_MTP_DRAFTER_PREFILL: copy this prefill chunk's final-layer
-    /// hiddens (`[proc_count, h]` BF16, contiguous at the head of the hidden
-    /// buffer) into the whole-prompt capture at row `chunk_start`.
-    ///
-    /// Contiguity-tracked: `chunk_start == 0` (re)starts the capture; a chunk
-    /// extending the current range appends; anything else (prefix-cache
-    /// reuse, Marconi warm restore — rows whose hiddens were never computed)
-    /// leaves the tracked length short, which safely disables the drafter
-    /// prefill for that sequence via the coverage check at the propose site.
-    pub(super) fn try_mtp_prefill_capture(
-        &self,
-        chunk_start: usize,
-        proc_count: usize,
-        stream: u64,
-    ) -> Result<()> {
-        if self.mtp_prefill_hidden.is_null() || proc_count == 0 {
-            return Ok(());
-        }
-        use std::sync::atomic::Ordering;
-        if chunk_start + proc_count > self.mtp_prefill_capacity {
-            return Ok(());
-        }
-        let len = self.mtp_prefill_capture_len.load(Ordering::Relaxed);
-        let contiguous_from_zero = if chunk_start == 0 {
-            Some(proc_count)
-        } else if chunk_start == len {
-            Some(len + proc_count)
-        } else {
-            None
-        };
-        // ATLAS_MTP_CARRY_DRAFTER: a warm turn's chunk starts at the reused-
-        // prefix boundary, which the contiguous-from-zero tracker above must
-        // reject (its consumer prefills the drafter from row 0). The carry
-        // path consumes the SAME buffer position-indexed, so it wants the
-        // write regardless of where the chunk starts — the rows are still
-        // `hidden_i` at absolute row `i`. Note the SOURCE is the head of the
-        // hidden buffer (this chunk's rows), only the DESTINATION is absolute.
-        let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled(&self.levers);
-        if contiguous_from_zero.is_none() && !carry_on {
-            return Ok(());
-        }
-        let h = self.config.hidden_size;
-        let bf16 = 2usize;
-        self.gpu.copy_d2d_async(
-            self.buffers.hidden_states(),
-            self.mtp_prefill_hidden.offset(chunk_start * h * bf16),
-            proc_count * h * bf16,
-            stream,
-        )?;
-        if let Some(new_len) = contiguous_from_zero {
-            self.mtp_prefill_capture_len
-                .store(new_len, Ordering::Relaxed);
-        }
-        if carry_on {
-            let mut r = self.mtp_store_range.lock();
-            *r = crate::model::mtp_carry::merge_interval(*r, chunk_start, proc_count);
-        }
-        Ok(())
-    }
-
     /// Give the drafter its prompt context on the FIRST propose of a sequence.
     ///
     /// COLD turn: the whole-prompt capture covers the prompt, so run the
@@ -170,6 +110,7 @@ impl TransformerModel {
         // Disjoint field borrows: the proposer state is mutated while the
         // token slice is read. Destructuring is what makes that legal, and it
         // avoids cloning a 12k-token vector on every propose.
+        let capture_gen = seq.mtp_capture_gen;
         let SequenceState {
             tokens: seq_tokens,
             prompt_len,
@@ -191,7 +132,18 @@ impl TransformerModel {
             let captured = self
                 .mtp_prefill_capture_len
                 .load(std::sync::atomic::Ordering::Relaxed);
-            let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p;
+            // Ownership check: the shared capture must still be THIS
+            // sequence's (stamp == current generation). At C>=2 the seqs
+            // prefill back-to-back before any propose, so without this the
+            // first propose of every seq but the LAST-prefilled would build
+            // drafter KV from its own tokens paired with a DIFFERENT
+            // sequence's hiddens. Blind (skip) beats poisoned.
+            let owns_capture = capture_gen != 0
+                && capture_gen
+                    == self
+                        .mtp_prefill_capture_gen
+                        .load(std::sync::atomic::Ordering::Relaxed);
+            let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p && owns_capture;
             let carry_on = crate::model::mtp_carry::mtp_carry_drafter_enabled(&self.levers);
             // Both branches below are FIRST-PROPOSE only: `prefill_drafter`
             // enforces that itself (`mtp_state.seq_len != row_base` fast-return),
@@ -344,6 +296,64 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Batched-verify Phase 2: copy the raw-hidden row `rows[i]` (the
+    /// accepted position of sequence i in the just-run batched verify
+    /// forward) into stash slot i, BEFORE any propose clobbers the shared
+    /// `hidden_states` buffer (every drafter `forward_one` writes into it —
+    /// mtp_multi.rs). Same RAW-hidden (pre-final-norm) contract as
+    /// `save_hidden_for_mtp_dispatch`.
+    pub(super) fn stash_verify_hidden_rows_dispatch(
+        &self,
+        rows: &[usize],
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.verify_hidden_stash.is_null(),
+            "stash_verify_hidden_rows: verify_hidden_stash not allocated (no MTP proposer)"
+        );
+        anyhow::ensure!(
+            rows.len() <= crate::layer::VERIFY_WY_TABLE_SEQS,
+            "stash_verify_hidden_rows: {} rows exceeds the {}-slot stash",
+            rows.len(),
+            crate::layer::VERIFY_WY_TABLE_SEQS
+        );
+        let stream = self.gpu.default_stream();
+        let h = self.config.hidden_size;
+        let bf16 = 2usize; // residual stream is BF16
+        for (i, &row) in rows.iter().enumerate() {
+            let src = self.buffers.hidden_states().offset(row * h * bf16);
+            let dst = self.verify_hidden_stash.offset(i * h * bf16);
+            self.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
+        }
+        Ok(())
+    }
+
+    /// Batched-verify Phase 3: stash slot `idx` → `mtp_hidden_save` (the MTP
+    /// head's input). Stashed-row variant of `save_hidden_for_mtp_dispatch`
+    /// for verdicts applied AFTER a propose has overwritten the live rows.
+    pub(super) fn save_hidden_for_mtp_from_stash_dispatch(
+        &self,
+        idx: usize,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.verify_hidden_stash.is_null(),
+            "save_hidden_for_mtp_from_stash: verify_hidden_stash not allocated"
+        );
+        anyhow::ensure!(
+            idx < crate::layer::VERIFY_WY_TABLE_SEQS,
+            "save_hidden_for_mtp_from_stash: idx {idx} >= {}",
+            crate::layer::VERIFY_WY_TABLE_SEQS
+        );
+        let stream = self.gpu.default_stream();
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        let src = self.verify_hidden_stash.offset(idx * h * bf16);
+        self.gpu
+            .copy_d2d_async(src, self.mtp_hidden_save, h * bf16, stream)?;
+        Ok(())
+    }
+
     /// ATLAS_MTP_CATCHUP: ring-capture the final hidden of a serially
     /// decoded token (position `pos`), keeping the ring's position range
     /// contiguous (a gap resets the range to just this row).
@@ -412,6 +422,80 @@ impl TransformerModel {
         // MTP loads ALL experts on every rank — no EP all_reduce needed.
         // Rank 1 does not participate in MTP propose.
         self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)
+    }
+
+    /// Batched cross-sequence propose (batched K=4 verify path). Target
+    /// hiddens are read DIRECTLY from the verify stash rows (`stash_idx[i]`),
+    /// so the single-slot `mtp_hidden_save` is never involved. The catchup /
+    /// refeed / carry blocks of `run_mtp_propose_inner` are force-disabled in
+    /// multi-seq MTP mode (the only mode that reaches this path), so skipping
+    /// them here matches the per-seq behavior at cap > 1 exactly.
+    pub(super) fn run_mtp_propose_batched_dispatch(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let proposer = match &self.proposer {
+            Some(p) => p.as_ref(),
+            None => return Ok(None),
+        };
+        // The confidence clamp is a per-seq propose feature; keep semantics
+        // by falling back whenever it is armed.
+        if crate::speculative::draft_conf_tau() > 0.0 {
+            return Ok(None);
+        }
+        if self.verify_hidden_stash.is_null() {
+            return Ok(None);
+        }
+        let stream = self.gpu.default_stream();
+        let ctx = ForwardContext {
+            buffers: &self.buffers,
+            gpu: self.gpu.as_ref(),
+            config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
+            attn_metadata: None,
+            profile: false,
+            comm: None,
+            graph_capture: false,
+            gdn_exact_replay: false,
+            token_ids: None,
+            routed_lora_layers: None,
+            midchunk_capture: None,
+        };
+        // First-propose drafter context (cold-turn prefill); fast no-op on
+        // every later call — same as the per-seq path.
+        for seq in seqs.iter_mut() {
+            self.ensure_drafter_context(proposer, seq, &ctx, stream);
+        }
+        let h = self.config.hidden_size;
+        let hiddens: Vec<spark_runtime::gpu::DevicePtr> = stash_idx
+            .iter()
+            .map(|&i| self.verify_hidden_stash.offset(i * h * 2))
+            .collect();
+        let mut states: Vec<&mut dyn crate::speculative::ProposerState> = Vec::new();
+        for seq in seqs.iter_mut() {
+            match seq.proposer_state.as_mut() {
+                Some(s) => states.push(s.as_mut()),
+                None => return Ok(None),
+            }
+        }
+        proposer.propose_batch(
+            tokens,
+            &hiddens,
+            positions,
+            num_drafts,
+            &mut states,
+            &ctx,
+            stream,
+            out_conf,
+        )
     }
 
     pub(super) fn read_deferred_draft_token_dispatch(&self) -> Result<u32> {

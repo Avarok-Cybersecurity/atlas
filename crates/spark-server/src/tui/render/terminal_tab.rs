@@ -5,14 +5,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::panel;
+use super::{chat_lines, panel};
 use crate::tui::app::{App, Focus, TermSub};
-use crate::tui::chat::Role;
 use crate::tui::{commands, theme};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -42,7 +40,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         tab("Ops", app.term_sub == TermSub::Ops),
         Span::styled("─", theme::dim()),
         tab("Chat", app.term_sub == TermSub::Chat),
-        Span::styled("   (5 toggles)", theme::dim()),
+        Span::styled("   (6 toggles)", theme::dim()),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -99,43 +97,17 @@ fn draw_ops(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), in_inner);
 }
 
-/// Word-wrap `text` into display rows of at most `width` columns.
-///
-/// The chat pane slices its viewport on these rows, so they must be what actually
-/// renders — measured in display columns via `unicode-width`, not `str::len`, or
-/// CJK and emoji replies would compute a tail that is short by a row per line.
-/// A word longer than the pane is hard-split rather than allowed to overhang.
-fn wrap_rows(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
-    }
-    let mut rows = Vec::new();
-    for logical in text.split('\n') {
-        let (mut cur, mut cur_w) = (String::new(), 0usize);
-        for word in logical.split_inclusive(' ') {
-            let w = UnicodeWidthStr::width(word);
-            if cur_w + w > width && !cur.is_empty() {
-                rows.push(std::mem::take(&mut cur));
-                cur_w = 0;
-            }
-            if w > width {
-                for ch in word.chars() {
-                    let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if cur_w + cw > width {
-                        rows.push(std::mem::take(&mut cur));
-                        cur_w = 0;
-                    }
-                    cur.push(ch);
-                    cur_w += cw;
-                }
-            } else {
-                cur.push_str(word);
-                cur_w += w;
-            }
+/// The input pane's key hints, which differ by focus because the bare-letter
+/// toggles are text while the input box owns the keyboard.
+fn chat_hints(focused: bool, wide: bool) -> String {
+    match (focused, wide) {
+        (true, true) => {
+            "─ ⏎ send · \\+⏎ newline · Ctrl+T thinking · Alt+T reasoning · Esc cancel ─".into()
         }
-        rows.push(cur);
+        (true, false) => "─ ⏎ send · Esc cancel ─".into(),
+        (false, true) => "─ ⏎ focus · t thinking · T reasoning ─".into(),
+        (false, false) => "─ ⏎ focus ─".into(),
     }
-    rows
 }
 
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
@@ -144,11 +116,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(input_h)])
         .split(area);
-    // Transcript.
+    // Transcript. The thinking state rides the title: it is a property of the
+    // conversation, and the user must never have to guess whether the toggle
+    // is doing anything. In `Auto` it reports only what the last reply was
+    // OBSERVED to do — never a prediction of what this model will choose.
+    let wide = rows[0].width >= 76;
     let block = panel(
         format!(
-            "CHAT ─ {} ─{}",
+            "CHAT ─ {} ─ {} ─{}",
             super::live_model_name(app),
+            app.chat.think_req.chip(app.chat.observed_thinking, wide),
             match (app.chat.streaming, app.chat.scroll) {
                 (_, Some(n)) => format!(" ↑{n} ─ End follows ─"),
                 (true, None) => " streaming ─".to_string(),
@@ -159,57 +136,19 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     );
     let inner = block.inner(rows[0]);
     f.render_widget(block, rows[0]);
-    // Body width = pane minus the 2-col gutter and the 1-col model rule.
+    // Body width = pane minus the 2-col gutter and the 1-col rule.
     let body_w = inner.width.saturating_sub(3) as usize;
+    let tip = app.chat.transcript.len().saturating_sub(1);
     let mut lines: Vec<Line> = Vec::new();
-    for m in &app.chat.transcript {
-        let (gutter, gstyle) = match m.role {
-            Role::User => ("❯ ", theme::brand_purple().add_modifier(Modifier::BOLD)),
-            Role::Model => ("⬢ ", theme::brand_cyan()),
-        };
-        let body_style = match m.role {
-            Role::User => theme::text(),
-            Role::Model => theme::text().bg(theme::BG_PANEL.color()),
-        };
-        for (i, text_line) in wrap_rows(&m.text, body_w).iter().enumerate() {
-            let g = if i == 0 {
-                Span::styled(gutter, gstyle)
-            } else {
-                Span::styled("  ", Style::default())
-            };
-            let rule = if m.role == Role::Model {
-                Span::styled("▏", theme::brand_cyan())
-            } else {
-                Span::raw("")
-            };
-            lines.push(Line::from(vec![
-                g,
-                rule,
-                Span::styled(text_line.to_string(), body_style),
-            ]));
-        }
-        // Streaming cursor at the tip of the live message.
-        if m.role == Role::Model
-            && app.chat.streaming
-            && std::ptr::eq(m, app.chat.transcript.last().unwrap())
-            && let Some(last) = lines.last_mut()
-        {
-            last.spans.push(Span::styled("▍", theme::brand_cyan()));
-        }
-        // Footer for completed model replies.
-        if m.role == Role::Model && (m.ttft_ms.is_some() || m.tok_per_s.is_some()) {
-            let footer = format!(
-                "  ttft {} · {} · {} tok",
-                m.ttft_ms
-                    .map(|v| format!("{v:.0} ms"))
-                    .unwrap_or_else(|| "—".into()),
-                m.tok_per_s
-                    .map(|v| format!("{v:.0} tok/s"))
-                    .unwrap_or_else(|| "—".into()),
-                m.tokens
-            );
-            lines.push(Line::from(Span::styled(footer, theme::dim())));
-        }
+    for (i, m) in app.chat.transcript.iter().enumerate() {
+        let is_tip = app.chat.streaming && i == tip;
+        lines.extend(chat_lines::message_lines(
+            m,
+            is_tip,
+            app.chat.think_view,
+            app.tick,
+            body_w,
+        ));
         lines.push(Line::default());
     }
     // `lines` is already in DISPLAY rows (see wrap_rows), so the tail slice is
@@ -231,14 +170,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(shown), inner);
     // Input.
     let focused = app.focus == Focus::Input;
-    let in_block = panel(
-        if focused {
-            "─ Enter send · \\+Enter newline · Esc cancel ─".into()
-        } else {
-            "─ Enter to focus ─".into()
-        },
-        focused,
-    );
+    let in_block = panel(chat_hints(focused, wide), focused);
     let in_inner = in_block.inner(rows[1]);
     f.render_widget(in_block, rows[1]);
     let mut text = app.chat.input.clone();
@@ -252,3 +184,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         in_inner,
     );
 }
+
+#[cfg(test)]
+#[path = "terminal_tab_tests.rs"]
+mod tests;
