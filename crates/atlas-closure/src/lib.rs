@@ -39,9 +39,14 @@
 //! - **Angle-bracket includes** (`#include <cuda_fp16.h>`). Toolchain headers,
 //!   covered coarsely by the recorded compiler version.
 //! - **Include search paths.** Only quoted, path-relative includes are
-//!   resolved. A `-I`-found or generated header is NOT followed — and an
-//!   include that cannot be resolved makes the whole computation fail rather
-//!   than silently omit a file. See [`ClosureError::UnresolvedInclude`].
+//!   resolved. A `-I`-found or generated header is NOT followed; a quoted
+//!   include naming no file on disk is recorded in [`Closure::unresolved`] and
+//!   hashed by NAME rather than by content. See [`hash_with_report`] for the
+//!   measurement behind that choice.
+//! - **Preprocessor conditionals.** `#if`/`#ifdef` are not evaluated, so an
+//!   include inside a branch this build never takes is still walked. That
+//!   over-includes, which costs re-runs rather than soundness — the safe
+//!   direction.
 //! - **Host code.** Anything under `crates/` is outside this hash entirely and
 //!   keeps invalidating every gate through the existing path boundary.
 //! - **Out-of-repo inputs.** Checkpoint revision, recipe content, serve
@@ -64,16 +69,13 @@ use sha2::{Digest, Sha256};
 /// fed into the digest — a new input, a different ordering, a changed
 /// separator — must bump this, or old and new records compare equal while
 /// meaning different things.
-pub const CLOSURE_SCHEMA: u32 = 1;
+///
+/// - 1: initial.
+/// - 2: unresolvable includes became a hashed set instead of a hard error.
+pub const CLOSURE_SCHEMA: u32 = 2;
 
 #[derive(Debug)]
 pub enum ClosureError {
-    /// A quoted include did not resolve to a file on disk.
-    ///
-    /// Deliberately fatal. Skipping it would drop real compiled bytes out of
-    /// the hash, which is the one failure mode this module exists to prevent —
-    /// so an unresolvable include invalidates everything instead.
-    UnresolvedInclude { from: PathBuf, include: String },
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -83,16 +85,19 @@ pub enum ClosureError {
 impl std::fmt::Display for ClosureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnresolvedInclude { from, include } => write!(
-                f,
-                "{}: #include \"{include}\" does not resolve to a file. The closure hash \
-                 refuses to omit compiled bytes, so this invalidates every gate rather than \
-                 hashing an incomplete source set.",
-                from.display()
-            ),
             Self::Io { path, source } => write!(f, "reading {}: {source}", path.display()),
         }
     }
+}
+
+/// A computed closure: the digest, plus what could not be resolved.
+#[derive(Debug, Clone)]
+pub struct Closure {
+    /// Hex sha256.
+    pub digest: String,
+    /// Quoted includes naming a file that is not on disk, as
+    /// `including-file -> include`. Not an error — see [`hash_with_report`].
+    pub unresolved: BTreeSet<String>,
 }
 
 impl std::error::Error for ClosureError {}
@@ -120,10 +125,53 @@ pub struct ClosureInputs {
 /// repo-relative strings sorted lexicographically, never as absolute paths,
 /// which would otherwise make two checkouts of the same commit disagree.
 pub fn hash(root: &Path, inputs: &ClosureInputs) -> Result<String> {
+    hash_with_report(root, inputs).map(|c| c.digest)
+}
+
+/// [`hash`], plus the quoted includes that named no file on disk.
+///
+/// # Why an unresolvable include is not fatal
+///
+/// It was, in the first version of this module, on the reasoning that omitting
+/// a file omits compiled bytes. Measurement changed the decision: of 66 quoted
+/// includes in `kernels/`, exactly 2 do not resolve, and both are the
+/// `GGML_USE_HIP` / `GGML_USE_MUSA` arms of one `#if` chain in the 27B's
+/// vendored q4k code whose `#else` arm — the live one — includes
+/// `vendors/cuda.h`. Neither named file exists anywhere in the repository, so
+/// no `-I` path could produce them and no compiler ever opens them.
+///
+/// Failing on those two did not make anything safer. It denied an attestation
+/// to `gb10/qwen3.6-27b/nvfp4` — the MLPerf flagship, the 3.5-GPU-hour target
+/// this scoping exists to spare — while the other 21 targets kept theirs. A
+/// safety rule that switches itself off precisely where the cost is highest is
+/// not buying safety.
+///
+/// The name is still inside the digest: the including file's bytes are hashed,
+/// so changing `"vendors/hip.h"` to anything else moves the hash, and the
+/// unresolved set is hashed under its own label as well. What remains uncovered
+/// is a header found through an `-I` search path whose CONTENT changes with no
+/// source edit — already listed as out of scope in the module docs, and not a
+/// new gap.
+///
+/// The set is returned rather than swallowed so callers can surface it: a
+/// *newly* unresolvable include is worth a build warning even though it is not
+/// worth a build failure.
+pub fn hash_with_report(root: &Path, inputs: &ClosureInputs) -> Result<Closure> {
     let mut closure: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut raw: BTreeSet<(PathBuf, String)> = BTreeSet::new();
     for src in &inputs.sources {
-        expand(src, &mut closure)?;
+        expand(src, &mut closure, &mut raw)?;
     }
+    // Relativised HERE rather than at collection time: an absolute path would
+    // make two checkouts of one commit disagree, which is the property the
+    // file list already takes care to preserve.
+    let unresolved: BTreeSet<String> = raw
+        .into_iter()
+        .map(|(from, include)| {
+            let rel = from.strip_prefix(root).unwrap_or(&from);
+            format!("{} -> {include}", rel.display())
+        })
+        .collect();
     for cfg in &inputs.configs {
         closure.insert(cfg.clone());
     }
@@ -161,7 +209,19 @@ pub fn hash(root: &Path, inputs: &ClosureInputs) -> Result<String> {
         digest.update(b"\x1e");
     }
 
-    Ok(format!("{:x}", digest.finalize()))
+    // Hashed under its own label so an include that becomes unresolvable — or
+    // stops being — moves the digest on its own, independently of the parent
+    // file's bytes.
+    digest.update(b"\x00unresolved\x00");
+    for entry in &unresolved {
+        digest.update(entry.as_bytes());
+        digest.update(b"\x1f");
+    }
+
+    Ok(Closure {
+        digest: format!("{:x}", digest.finalize()),
+        unresolved,
+    })
 }
 
 /// Add `file` and everything it quoted-includes, transitively.
@@ -169,7 +229,11 @@ pub fn hash(root: &Path, inputs: &ClosureInputs) -> Result<String> {
 /// The `BTreeSet` doubles as the cycle guard: a file already inserted is not
 /// walked again, so mutually-including headers terminate instead of recursing
 /// forever. Include guards make that pattern normal in this tree.
-fn expand(file: &Path, out: &mut BTreeSet<PathBuf>) -> Result<()> {
+fn expand(
+    file: &Path,
+    out: &mut BTreeSet<PathBuf>,
+    unresolved: &mut BTreeSet<(PathBuf, String)>,
+) -> Result<()> {
     let canonical = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
     if !out.insert(canonical.clone()) {
         return Ok(());
@@ -182,12 +246,13 @@ fn expand(file: &Path, out: &mut BTreeSet<PathBuf>) -> Result<()> {
     for include in quoted_includes(&text) {
         let target = dir.join(&include);
         if !target.exists() {
-            return Err(ClosureError::UnresolvedInclude {
-                from: canonical.clone(),
-                include,
-            });
+            // Recorded, not fatal — see `hash_with_report`. Keyed by the
+            // including file so two different files naming the same missing
+            // header are two distinct facts.
+            unresolved.insert((canonical.clone(), include));
+            continue;
         }
-        expand(&target, out)?;
+        expand(&target, out, unresolved)?;
     }
     Ok(())
 }

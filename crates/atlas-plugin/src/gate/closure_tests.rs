@@ -197,19 +197,42 @@ fn a_kernel_path_mapping_to_no_target_is_not_excused() {
     ));
 }
 
-/// An unresolvable `#include` makes the hash uncomputable. That must read as
-/// "changed", never as "unchanged".
+/// Deleting a header a source includes is a real change and must re-open the
+/// gate. It no longer makes the hash uncomputable — `atlas_closure` records
+/// unresolvable includes rather than failing — but the recorded set is itself
+/// hashed, so the digest moves either way.
 #[test]
-fn an_uncomputable_hash_is_not_excused() {
-    let root = fixture("uncomputable");
+fn a_vanished_header_re_opens_the_gate() {
+    let root = fixture("vanished-header");
+    std::fs::write(root.join("kernels/gb10/common/tune.cuh"), "#define BR 64\n").unwrap();
+    std::fs::write(
+        root.join(SHARED),
+        "#include \"tune.cuh\"\n__global__ void s() {}\n",
+    )
+    .unwrap();
     let a = attest_all(&root);
-    std::fs::write(root.join(SHARED), "#include \"vanished.cuh\"\n").unwrap();
+
+    std::fs::remove_file(root.join("kernels/gb10/common/tune.cuh")).unwrap();
     assert!(!excuses(&root, &[SHARED.to_string()], &a));
     assert!(
         changed_targets(&root, &[SHARED.to_string()], &a)
             .contains(&"gb10/modelB/nvfp4".to_string()),
-        "an uncomputable target is REPORTED, not silently dropped"
+        "the target that included it is REPORTED, not silently dropped"
     );
+}
+
+/// A target whose sources cannot be resolved at all — the vendor table went
+/// stale, the directory moved — is unknown, and unknown is never excused.
+#[test]
+fn a_target_whose_sources_do_not_resolve_is_not_excused() {
+    let root = fixture("no-sources");
+    let a = attest_all(&root);
+    std::fs::write(
+        root.join("kernels/gb10/HARDWARE.toml"),
+        "[hardware]\nvendor = \"quantum-abacus\"\n",
+    )
+    .unwrap();
+    assert!(!excuses(&root, &[SHARED.to_string()], &a));
 }
 
 /// An empty path list means the caller had nothing to excuse; answering "yes"

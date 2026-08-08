@@ -94,9 +94,28 @@ missing field, or unresolvable include.
 **Worse:**
 - An include walk is a small C preprocessor, and preprocessors are where
   subtle bugs live. It resolves quoted includes only; a `-I` search path or
-  a generated header would be missed. It must fail closed — an unresolvable
-  include invalidates everything — and that rule needs a test, not a
-  comment.
+  a generated header is missed, and `#if`/`#ifdef` are not evaluated, so an
+  include in a branch this build never takes is still walked. That
+  over-includes, which costs re-runs rather than soundness.
+
+  **An unresolvable include was fatal, and that was reverted after
+  measuring.** The rule read well — omitting a file omits compiled bytes —
+  but the tree disagreed with it. Of 66 quoted includes under `kernels/`,
+  exactly 2 do not resolve: the `GGML_USE_HIP` and `GGML_USE_MUSA` arms of
+  one `#if` chain in the 27B's vendored q4k code, whose live `#else` arm
+  includes `vendors/cuda.h`. Neither named file exists anywhere in the
+  repository, so no `-I` path could supply them and no compiler opens them.
+
+  The cost of the rule was not abstract: it denied an attestation to
+  `gb10/qwen3.6-27b/nvfp4` alone — the MLPerf flagship, the 3.5-GPU-hour
+  target this whole scheme exists to spare — while the other 21 targets
+  kept theirs. A safety rule that switches itself off exactly where the
+  cost is highest is not buying safety. Unresolvable includes are now
+  hashed by NAME under their own digest label, and `build.rs` emits a
+  `cargo:warning` for each, so a third one is noticed without being fatal.
+
+  The residual gap is a header reached through `-I` whose content changes
+  with no source edit — already listed as out of scope, not new.
 - The hash is one more thing that can be *wrong* rather than merely
   imprecise. A hash that under-specifies its inputs is a cache that returns
   stale results and reports success. The omission list belongs in the

@@ -121,21 +121,80 @@ fn transitive_includes_are_followed() {
     );
 }
 
-/// ★ Unresolvable includes are FATAL, never skipped.
+/// ★ An unresolvable include is RECORDED, not fatal.
 ///
-/// Skipping one would drop real compiled bytes from the hash — the exact
-/// fail-open this module exists to prevent. Invalidating everything is the
-/// correct, expensive answer.
+/// It was fatal at first. The tree then showed the rule cost more than it
+/// bought: the only two unresolvable includes in `kernels/` are dead `#if`
+/// arms naming files that exist nowhere, and failing on them denied an
+/// attestation to the one target whose benchmarks cost 3.5 GPU-hours. See
+/// `hash_with_report`.
 #[test]
-fn an_unresolvable_include_fails_rather_than_omitting_bytes() {
+fn an_unresolvable_include_is_recorded_rather_than_fatal() {
     let d = tmp();
     let src = d.join("common/x.cu");
-    write(&src, "#include \"nowhere/absent.cuh\"\n");
-    let err = hash(&d, &inputs(vec![src])).unwrap_err().to_string();
-    assert!(err.contains("does not resolve"), "{err}");
+    write(
+        &src,
+        "#include \"nowhere/absent.cuh\"\n__global__ void k() {}\n",
+    );
+    let closure = hash_with_report(&d, &inputs(vec![src])).expect("must not fail");
+    assert_eq!(closure.unresolved.len(), 1, "{:?}", closure.unresolved);
+    let entry = closure.unresolved.iter().next().unwrap();
+    assert!(entry.contains("nowhere/absent.cuh"), "{entry}");
     assert!(
-        err.contains("invalidates every gate"),
-        "the message must say what happens: {err}"
+        entry.starts_with("common/x.cu"),
+        "the report must be repo-relative, or two checkouts disagree: {entry}"
+    );
+}
+
+/// Becoming resolvable — or ceasing to be — must move the digest even though
+/// the including file's own bytes are untouched.
+#[test]
+fn resolving_a_previously_missing_include_changes_the_hash() {
+    let d = tmp();
+    let src = d.join("common/x.cu");
+    write(&src, "#include \"later.cuh\"\n__global__ void k() {}\n");
+    let before = hash(&d, &inputs(vec![src.clone()])).unwrap();
+
+    write(&d.join("common/later.cuh"), "#define L 1\n");
+    let after = hash(&d, &inputs(vec![src.clone()])).unwrap();
+    assert_ne!(before, after, "the file appearing must move the hash");
+
+    // And once it exists, its CONTENT is inside the hash like any other.
+    write(&d.join("common/later.cuh"), "#define L 2\n");
+    assert_ne!(after, hash(&d, &inputs(vec![src])).unwrap());
+}
+
+/// Two different files naming the same missing header are two distinct facts,
+/// so the report is keyed by the including file rather than by the include.
+#[test]
+fn unresolved_entries_are_keyed_by_the_including_file() {
+    let d = tmp();
+    let a = d.join("common/a.cu");
+    let b = d.join("common/b.cu");
+    write(&a, "#include \"gone.cuh\"\n");
+    write(&b, "#include \"gone.cuh\"\n");
+    let closure = hash_with_report(&d, &inputs(vec![a, b])).unwrap();
+    assert_eq!(closure.unresolved.len(), 2, "{:?}", closure.unresolved);
+}
+
+/// A preprocessor conditional is not evaluated, so an include in a branch this
+/// build never takes is still walked. That over-includes — costing re-runs,
+/// not soundness — and the doc says so rather than implying `#if` is understood.
+#[test]
+fn includes_inside_untaken_conditionals_are_still_walked() {
+    let d = tmp();
+    let src = d.join("common/x.cu");
+    write(&d.join("common/dead.cuh"), "#define D 1\n");
+    write(
+        &src,
+        "#if defined(NEVER)\n#include \"dead.cuh\"\n#endif\n__global__ void k() {}\n",
+    );
+    let before = hash(&d, &inputs(vec![src.clone()])).unwrap();
+    write(&d.join("common/dead.cuh"), "#define D 2\n");
+    assert_ne!(
+        before,
+        hash(&d, &inputs(vec![src])).unwrap(),
+        "an untaken branch is over-included, which is the safe direction"
     );
 }
 

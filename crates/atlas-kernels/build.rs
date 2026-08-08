@@ -583,13 +583,20 @@ fn closure_attestation(
             arch: target.arch.clone(),
             compiler: compiler.clone(),
         };
-        let Ok(hash) = atlas_closure::hash(workspace_root, &inputs) else {
+        let Ok(closure) = atlas_closure::hash_with_report(workspace_root, &inputs) else {
             continue;
         };
+        // Surfaced, not swallowed. A quoted include naming no file is hashed by
+        // name rather than content, so a NEW one silently widens what the gate
+        // cannot see. There are two in the tree today, both dead `#if` arms of
+        // the 27B's vendored q4k code; a third deserves a look.
+        for entry in &closure.unresolved {
+            println!("cargo:warning=closure: unresolved include ({entry})");
+        }
         map.insert(
             format!("{}/{}/{}", target.hw, target.model, target.quant),
             serde_json::json!({
-                "hash": hash,
+                "hash": closure.digest,
                 "arch": target.arch,
                 "compiler": compiler,
                 "flags": target.extra_flags,

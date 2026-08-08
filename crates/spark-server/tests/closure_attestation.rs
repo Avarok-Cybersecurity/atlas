@@ -45,6 +45,29 @@ fn the_baked_attestation_reproduces_from_the_tree() {
     }
 
     let root = repo_root();
+
+    // ★ Every target the build resolved must be attested, not merely every
+    // attested target verifiable. Checking only the baked keys is how
+    // `gb10/qwen3.6-27b/nvfp4` — the MLPerf flagship — went missing unnoticed:
+    // 21 of 22 entries verified, the test passed, and the one target the whole
+    // scheme exists to spare had no attestation at all. A silently absent entry
+    // is fail-closed, which is why nothing else catches it.
+    let gb10: Vec<_> = taxon::walk(&root)
+        .into_iter()
+        .filter(|t| t.hardware == "gb10" && t.quant == "nvfp4")
+        .collect();
+    let missing: Vec<String> = gb10
+        .iter()
+        .map(|t| t.to_string())
+        .filter(|k| !baked.contains_key(k))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the build resolved these targets but attested none of them, so their \
+         records can never be excused: {missing:?}. Check build.rs's cargo:warning \
+         output for the reason."
+    );
+
     let mut checked = 0;
     for (key, recorded) in &baked {
         let parts: Vec<&str> = key.split('/').collect();
@@ -88,6 +111,10 @@ fn the_baked_attestation_reproduces_from_the_tree() {
         checked += 1;
     }
     assert!(checked > 0, "an attestation with no usable entries");
+    // Printed rather than merely asserted: "3 passed" looks identical whether
+    // this verified 22 targets or 1, and the count is the only thing that
+    // distinguishes a real check from a nearly-empty one.
+    eprintln!("closure attestation: {checked} target(s) reproduced from the tree");
 }
 
 /// The JSON build.rs writes by hand must deserialize into the struct the gate
