@@ -49,7 +49,7 @@ pub(crate) fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
         Some((app.tick / 3) as usize % 3)
     };
     let up = app.started.elapsed().as_secs();
-    let uptime = format!("up {:02}:{:02}", up / 60 % 100, up % 60);
+    let uptime = fmt_uptime(up);
     let right = Line::from(vec![
         status_pill(app),
         Span::styled(format!("  {uptime} "), theme::text2()),
@@ -119,6 +119,21 @@ pub(crate) fn header_line(app: &App) -> String {
         a.kv_cache_dtype,
         a.port
     )
+}
+
+/// `up H:MM:SS`, or `up Nd HH:MM` past a day.
+///
+/// ★ This used to be `up {:02}:{:02}` over `up / 60 % 100` — minutes taken MOD
+/// 100, with no hours at all. A server up 100 minutes displayed `up 00:xx` and
+/// started counting again. This is the header of a dashboard meant to sit up
+/// for days, so it is the most-looked-at number in the product.
+pub(super) fn fmt_uptime(secs: u64) -> String {
+    let (d, h, m, s) = (secs / 86_400, secs / 3_600 % 24, secs / 60 % 60, secs % 60);
+    if d > 0 {
+        format!("up {d}d {h:02}:{m:02}")
+    } else {
+        format!("up {h}:{m:02}:{s:02}")
+    }
 }
 
 #[cfg(test)]

@@ -215,6 +215,12 @@ impl TransformerModel {
                 let last_offset = (proc_count - 1) * self.config.hidden_size * 4;
                 let h_sz = self.config.hidden_size;
                 let mut buf = vec![0u16; h_sz];
+                // SAFETY: `buf` is `vec![0u16; h_sz]` on the line above, so it
+                // owns exactly `h_sz * size_of::<u16>()` initialised bytes and
+                // its length equals its capacity. `bytes` is the only live
+                // reference to that allocation for its whole lifetime — last
+                // used on the `copy_d2h` line below, and `buf` is not read again
+                // until after that.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, h_sz * 2)
                 };

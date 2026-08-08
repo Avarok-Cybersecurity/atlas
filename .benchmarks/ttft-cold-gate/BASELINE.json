@@ -1,0 +1,22 @@
+{
+  "schema": 2,
+  "hardware": {
+    "gb10": {
+      "default": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "models": {
+        "Qwen/Qwen3.6-35B-A3B-FP8": {
+          "recipe": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+          "note": "Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve recipe) \u00d7 the gate limits: median 1677.93 ms \u00d7 +3% and p90 4580.73 ms \u00d7 +5%. TTFT is box-local by nature \u2014 a different box must re-record this baseline, not reuse it.",
+          "metrics": {
+            "median_ms": {
+              "max": 1728.27
+            },
+            "p90_ms": {
+              "max": 4809.76
+            }
+          }
+        }
+      }
+    }
+  }
+}

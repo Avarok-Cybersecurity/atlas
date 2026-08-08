@@ -7,6 +7,7 @@ pub mod ep_dispatch;
 pub mod fp8_calibration;
 pub mod moe;
 pub mod mtp_head;
+pub(crate) mod mtp_meta;
 pub mod mtp_multi;
 pub mod nemotron_mamba2;
 pub mod nemotron_moe;
@@ -83,6 +84,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 /// (see body). `ATLAS_W4A16_VARIANT=v2` opts in on all three sites at once;
 /// requesting it on a target without the kernel is a HARD startup error
 /// (fail fast, not a silent fallback discovered in a perf regression).
+#[track_caller]
 pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     let variant = std::env::var("ATLAS_W4A16_VARIANT").ok();
     // DEFAULT OFF on the qwen3 layer stack: the 27B port of the 8-warp v2
@@ -113,6 +115,30 @@ pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     h
 }
 
+/// Resolve the W4A16 m128 **v3** GEMM. Opt-in ONLY, same contract as
+/// [`w4a16_v2_kernel`]: `ATLAS_W4A16_VARIANT=v3` selects it, anything else
+/// resolves to a ZERO handle WITHOUT issuing a lookup.
+///
+/// Not issuing the lookup is the point. `prefill_weights` dispatches on
+/// `v == 3 && handle != 0`, so on the default (`v1`) the probe could never be
+/// used — it only ever added a permanently-failing row to the boot audit on
+/// every target that does not ship `w4a16_v3`. Requesting the variant on such a
+/// target is a HARD error, not a silent fallback discovered in a perf report.
+#[track_caller]
+pub fn w4a16_v3_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    if std::env::var("ATLAS_W4A16_VARIANT").as_deref() != Ok("v3") {
+        return KernelHandle(0);
+    }
+    let h = try_kernel(gpu, "w4a16_v3", "w4a16_gemm_t_m128_v3");
+    if h.0 == 0 {
+        panic!(
+            "ATLAS_W4A16_VARIANT=v3 requested but w4a16_v3::w4a16_gemm_t_m128_v3 is not in this \
+             target's kernel set — refusing to start with a silently-degraded config"
+        );
+    }
+    h
+}
+
 /// Resolve the N128/M64 tile GEMM, preferring the 3-deep weight-pipeline variant.
 /// **ON by default**; `ATLAS_NO_TGEMM_PIPELINE3` (presence — `=0` is NOT "off")
 /// falls back to the 2-stage parent. Falls back automatically on any target that
@@ -122,6 +148,7 @@ pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// the dequant phase, which only a co-resident CTA can cover. This kernel's live
 /// shapes — ssm_qkvz (128 CTAs) and the fused QKV (112) — sit in the exposed
 /// band of the grid.x-vs-efficiency curve. Bit-identical.
+#[track_caller]
 pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     if std::env::var("ATLAS_NO_TGEMM_PIPELINE3").is_err() {
         let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_p3");
@@ -142,6 +169,7 @@ pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// exactly 1 CTA/SM — so nothing covers the drain, and they measure ~38% of
 /// achievable while lm_head (1938 CTAs) reaches 83% on the identical loop.
 /// `_p3` keeps step i+2's loads in flight across dequant(i+1). Bit-identical.
+#[track_caller]
 pub fn k64_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
     let want_p3 = std::env::var("ATLAS_NO_K64_PIPELINE3").is_err();
     if want_p3 {
@@ -157,6 +185,7 @@ pub fn k64_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
 /// kernel is absent or the presence kill switch `ATLAS_NO_K64_N64` is set
 /// (`=0` is NOT "off"). Callers must store the handle — `kernel()` is an
 /// init-time lookup, not a per-launch one.
+#[track_caller]
 pub fn k64_n64_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     if std::env::var("ATLAS_NO_K64_N64").is_ok() {
         return KernelHandle(0);
@@ -194,6 +223,18 @@ pub fn k64_n64_wins(m: u32, n: u32) -> bool {
     n.div_ceil(128) * m.div_ceil(64) <= K64_N64_MAX_WIDE_CTAS
 }
 
+/// Optional kernel lookup: `KernelHandle(0)` instead of an error.
+///
+/// `#[track_caller]` so the audit names the DISPATCH SITE — this helper stands
+/// between ~500 call sites and `GpuBackend::kernel`, and without it every
+/// optional lookup in the binary would be reported against this one line.
+///
+/// A zero handle is a SILENT slower path, so a lookup that lands here for a
+/// model that genuinely needs the kernel is a bug. Either gate the call on the
+/// model's config so it is never issued, or declare it in the target's
+/// MODEL.toml `[expected_absent]` with a reason; the boot gate
+/// (`kernel_audit::classify_failures`) fails closed on anything else.
+#[track_caller]
 pub fn try_kernel(gpu: &dyn GpuBackend, module: &str, func: &str) -> KernelHandle {
     match gpu.kernel(module, func) {
         Ok(h) => h,

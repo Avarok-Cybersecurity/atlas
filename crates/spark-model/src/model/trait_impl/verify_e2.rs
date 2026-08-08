@@ -132,6 +132,12 @@ impl TransformerModel {
         }
         // Pageable-source async H2D per house pattern (the driver stages the
         // host bytes before returning, same as the metadata uploads).
+        // SAFETY: the length is derived from the source — `host.len() * 8 ==
+        // size_of_val(&host[..])` — so the read stops at `len` and never
+        // enters the `Vec`'s spare capacity. `host` is `vec![0u64; num_ssm *
+        // entries_per_layer]`, fully zero-initialised at construction, so the
+        // entries the fill loop leaves untouched (the `n..VERIFY_WY_TABLE_SEQS`
+        // tail of each table) are initialised zeros, not garbage. `u64` is POD.
         let bytes =
             unsafe { std::slice::from_raw_parts(host.as_ptr() as *const u8, host.len() * 8) };
         self.gpu

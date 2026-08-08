@@ -20,7 +20,19 @@ name: TUI threading contract
 permissions:
   contents: read
 
+# Only the newest commit on a ref is worth checking; superseded runs otherwise
+# sit in the queue holding runner slots that the newest commit is waiting for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
+  # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
+  # were throttled to aid recovery, so pushes stopped creating runs at all --
+  # and with no dispatch trigger there was no way to ask for one. A check that
+  # can only be started by an event you do not control is a check you cannot
+  # get a verdict from when you most need it.
+  workflow_dispatch:
   pull_request:
     paths:
       - 'crates/spark-server/src/tui/**'
@@ -37,15 +49,30 @@ jobs:
     runs-on: ubuntu-latest
     name: No block_on under tui/ or recipe/
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check the render thread never blocks on a future
         shell: bash
         run: |
           set -euo pipefail
-          # `-w` so `block_on` does not match a comment mentioning `try_block_on`
-          # and so on; comments explaining the rule are allowed to name it, so
-          # only real call syntax counts.
+          # Only real call syntax counts -- comments explaining the rule are
+          # allowed to name it.
+          #
+          # ★ TEST FILES ARE EXCLUDED, and the distinction is the whole point of
+          # the rule rather than a loophole in it. What is forbidden is BLOCKING
+          # THE RENDER THREAD on a future: that freezes the dashboard and, since
+          # the TUI is the server's foreground, hides the server with it. A test
+          # that stands up its own runtime and drives an async fn to completion
+          # is not the render thread and cannot freeze anything -- it is the
+          # ordinary way to test async code, and forbidding it would push the
+          # tests toward worse shapes (sleep-and-poll) for no safety gained.
+          #
+          # The exclusion is by FILENAME (`*_tests.rs`), which is the repo's
+          # convention for `#[cfg(test)]` siblings mounted with `#[path]`. If
+          # production code is ever put in a file named that way, this check
+          # will not see it -- that is the cost, and it is smaller than the
+          # alternative.
           if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
+                      --include='*.rs' --exclude='*_tests.rs' \
                       crates/spark-server/src/tui/ \
                       crates/spark-server/src/recipe/ 2>/dev/null); then
             echo "::error::The TUI render thread must never poll a future."

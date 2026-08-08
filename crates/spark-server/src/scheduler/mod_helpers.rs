@@ -392,7 +392,15 @@ pub(super) fn bounded_stream_send(
     let mut event = match tx.try_send(event) {
         Ok(()) => return true,
         Err(TrySendError::Closed(_)) => {
-            tracing::debug!("stream receiver dropped ({what})");
+            // INFO, not debug. This is the client hanging up mid-stream, and it
+            // is the single most common reason a generation "just stops" — but
+            // at debug it is invisible at the default level, so the server log
+            // shows a `Request:` line, then nothing: no completion, no error.
+            // That is indistinguishable from a hung server, and on 2026-08-07
+            // it cost a real debugging session chasing a stall that had not
+            // happened. One line per abandoned request is the right price for
+            // being able to tell "they left" from "we wedged".
+            tracing::info!("stream receiver dropped — client went away ({what})");
             return false;
         }
         Err(TrySendError::Full(ev)) => ev,
@@ -403,7 +411,11 @@ pub(super) fn bounded_stream_send(
         match tx.try_send(event) {
             Ok(()) => return true,
             Err(TrySendError::Closed(_)) => {
-                tracing::debug!("stream receiver dropped during backpressure ({what})");
+                // Same event, later: they hung up while we were waiting on a
+                // full channel. Same reasoning, same level.
+                tracing::info!(
+                    "stream receiver dropped during backpressure — client went away ({what})"
+                );
                 return false;
             }
             Err(TrySendError::Full(ev)) => {

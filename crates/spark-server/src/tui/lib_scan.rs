@@ -23,6 +23,20 @@ impl LibState {
         self.root.is_some()
     }
 
+    /// Has attaching already been tried and found impossible?
+    pub fn recipes_unavailable(&self) -> bool {
+        self.recipes_unavailable
+    }
+
+    /// Is a background scan running?
+    ///
+    /// A scan reports the cache as it was when it STARTED, so anything that
+    /// dirties the cache while one is in flight needs a LATER scan, not this
+    /// one — which is why the caller asks before clearing its dirty flag.
+    pub fn scan_in_flight(&self) -> bool {
+        self.pending_scan.is_some()
+    }
+
     /// Start a background scan of the local HF cache.
     ///
     /// Idempotent: a second call while one is in flight is ignored, so a
@@ -55,3 +69,7 @@ impl LibState {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "lib_scan_tests.rs"]
+mod tests;

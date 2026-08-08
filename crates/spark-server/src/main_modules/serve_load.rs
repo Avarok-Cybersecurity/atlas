@@ -178,6 +178,12 @@ pub(crate) fn load_model(
             )
         })?;
     let sampling_presets = ptx_set.sampling;
+    // The dashboard's kernel table re-resolves the live target through this
+    // same `ptx_for_config` call. It needs the config shape that selected the
+    // target, because the served-model name is an HF id, not a kernel-target
+    // directory name — and `atlas_kernels::ptx_modules()` (what the table used
+    // to read) is a plain alias of TARGET 0 in a multi-target build.
+    crate::tui::data::kernels::publish_loaded_shape(&config.model_type, config.hidden_size);
 
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //
@@ -527,54 +533,14 @@ pub(crate) fn load_model(
         nllb_lora_dir,
     )?;
 
-    // Kernel load audit: print the table of every kernel resolved during model
-    // construction (grouped by module/operation family) + flag any MISSING
-    // (handle 0 → silent slower-fallback dispatch). Catches build/codegen
-    // regressions like a dropped pipelined GEMM at load time, not as a
-    // mystery slowdown.
+    // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
+    // by here the audit holds this model's COMPLETE lookup set — see
+    // `serve_phases::kernel_gate`, which owns the report, the gate and
+    // `--check-kernels`.
+    // Under `--check-kernels` this call does not return: it prints the report
+    // and exits with the unresolved count as the process status.
     spark_runtime::progress::phase(7, "kernel audit");
-    tracing::info!(
-        "{}",
-        spark_runtime::kernel_audit::render_kernel_table(
-            &ptx_set.modules,
-            atlas_kernels::KERNEL_SET_HASH,
-            ptx_set.shadowed_dropped,
-        )
-    );
-
-    // FAIL FAST on a kernel that this model's dispatch requested, that
-    // `common/` defines, and that this target's kernel file dropped by
-    // shadowing. That conjunction is never intentional: the kernel exists, the
-    // model wanted it, and a stale fork is the only reason it is absent. The
-    // failure is otherwise SILENT — `try_kernel` yields handle 0 and the caller
-    // takes a slower (or disabled) path — which is how the 27B ran with
-    // concurrent decode pinned to its per-sequence fallback while every gate
-    // stayed green. `ATLAS_ALLOW_SHADOWED_KERNELS=1` downgrades this to a
-    // warning for bisects and for a model that deliberately omits a kernel.
-    let fatal = spark_runtime::kernel_audit::fatal_missing(ptx_set.shadowed_dropped);
-    if !fatal.is_empty() {
-        let list = fatal
-            .iter()
-            .map(|(m, f)| format!("{m}::{f}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if std::env::var("ATLAS_ALLOW_SHADOWED_KERNELS").as_deref() == Ok("1") {
-            tracing::warn!(
-                "{} required kernel(s) missing via shadowing ({list}) — continuing because \
-                 ATLAS_ALLOW_SHADOWED_KERNELS=1. Expect silent slow paths.",
-                fatal.len(),
-            );
-        } else {
-            anyhow::bail!(
-                "{} required kernel(s) missing: {list}. This model's dispatch requested them and \
-                 kernels/<hw>/common/ defines them, but this target's kernel file shadows \
-                 common/ without them, so they were never compiled. Port them into the model's \
-                 kernel file (exact piecewise copy from common/), or set \
-                 ATLAS_ALLOW_SHADOWED_KERNELS=1 to run anyway on the slow fallback path.",
-                fatal.len(),
-            );
-        }
-    }
+    serve_phases::audit_and_gate(&args, &ptx_set)?;
 
     // Phase 6.3 — HSS config built early so the EP worker can install it.
     let early_high_speed_swap_cfg = serve_phases::build_high_speed_swap_config(&args)?;

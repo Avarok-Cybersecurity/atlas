@@ -94,6 +94,58 @@ pub(super) fn parse_shadow_exempt(kernel_dir: &std::path::Path) -> Vec<(String, 
     out
 }
 
+/// Parse `[expected_absent]` from a MODEL.toml.
+///
+/// ```toml
+/// [expected_absent.mla_absorbed]
+/// mla_batched_gemv = "no MLA: this checkpoint is standard GQA (kv_lora_rank 0)"
+/// ```
+///
+/// Each entry names a `(module, kernel)` lookup this model's dispatch may issue
+/// and fail to resolve WITHOUT that being an error. The value is a MANDATORY
+/// reason — a bare list would become a place to silence the boot gate, which is
+/// the failure mode the gate exists to remove. TRANSITIONAL: the right fix is
+/// to gate the lookup on config so it is never issued (see
+/// `qwen3_attention::init_arch_gates`). Anything neither gated nor listed here
+/// fails the boot audit.
+pub(super) fn parse_expected_absent(model_dir: &std::path::Path) -> Vec<(String, String)> {
+    let path = model_dir.join("MODEL.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let toml: toml::Value =
+        toml::from_str(&text).unwrap_or_else(|e| panic!("Bad TOML in {}: {e}", path.display()));
+    let Some(table) = toml.get("expected_absent").and_then(|v| v.as_table()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (module, kernels) in table {
+        let entries = kernels.as_table().unwrap_or_else(|| {
+            panic!(
+                "{}: [expected_absent.{module}] must be a table of `kernel = \"reason\"` \
+                 — every entry needs a stated reason",
+                path.display()
+            )
+        });
+        for (kernel, reason) in entries {
+            let reason = reason.as_str().unwrap_or_else(|| {
+                panic!(
+                    "{}: [expected_absent.{module}] {kernel} must be a reason string",
+                    path.display()
+                )
+            });
+            assert!(
+                !reason.trim().is_empty(),
+                "{}: [expected_absent.{module}] {kernel} needs a stated reason",
+                path.display()
+            );
+            out.push((module.clone(), kernel.clone()));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Parse sampling presets from MODEL.toml `[sampling.*]` sections.
 pub(super) fn parse_sampling_presets(
     model_dir: &std::path::Path,

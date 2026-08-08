@@ -162,6 +162,10 @@ fn parse_shard_header(
     out: &mut Vec<WeightTensorRecord>,
 ) -> Result<()> {
     let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file_len = f
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
     let mut size_buf = [0u8; 8];
     f.read_exact(&mut size_buf)
         .with_context(|| format!("read header size of {}", path.display()))?;
@@ -199,17 +203,18 @@ fn parse_shard_header(
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_u64()).collect())
             .unwrap_or_default();
-        let offsets = info["data_offsets"]
-            .as_array()
-            .with_context(|| format!("tensor {name} missing data_offsets"))?;
-        let rel_start = offsets[0].as_u64().context("bad data_offsets[0]")?;
-        let rel_end = offsets[1].as_u64().context("bad data_offsets[1]")?;
+        // Same rule as the O_DIRECT loader, same code. A bad pair here would
+        // be published to RDMA peers as a remote read length, so it must not
+        // survive staging.
+        let span =
+            atlas_core::safetensors::tensor_span(name, &info["data_offsets"], data_start, file_len)
+                .with_context(|| format!("{}", path.display()))?;
         out.push(WeightTensorRecord {
             name: name.clone(),
             dtype,
             shape,
-            offset_in_shard: data_start + rel_start,
-            len: rel_end - rel_start,
+            offset_in_shard: span.abs_offset,
+            len: span.len,
             shard_index,
             extra,
         });

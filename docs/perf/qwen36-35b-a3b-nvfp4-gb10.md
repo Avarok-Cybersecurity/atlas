@@ -25,9 +25,34 @@ Filing so the decode flags land in the canonical serve config and the perf basel
 ## Config (this matrix)
 
 - Model: `unsloth/Qwen3.6-35B-A3B-NVFP4`, GB10, `atlas-gb10:b12x-ready` (CUDA 13.2, CUTLASS).
-- Prefill flags: `ATLAS_FLASHINFER_PREFILL ATLAS_GDN_FLASHINFER ATLAS_CUBLAS_GEMM ATLAS_CUTLASS_WORKSPACE_MB=512 ATLAS_PREFILL_VARLEN ATLAS_PREFILL_CODISPATCH(+WINDOW_MS=100) ATLAS_MOE_PREFILL_EXACT_TILES ATLAS_SSM_BATCHED_RECURRENT ATLAS_HOLO_MOE_GROUPED_CUTLASS ATLAS_HOLO_MOE_GROUPED_DOWN ATLAS_HOLO_FAST_MOE_MODE=full ATLAS_HOLO_FAST_MOE_LAYERS=0-39 ATLAS_HOLO_NATIVE_FP8_ATTN ATLAS_HOLO_NATIVE_FP8_SSM ATLAS_HOLO_LOW_MEMORY_MOE ATLAS_Q12_BATCHED(+_FIRST_CHUNK) ATLAS_GDN_TC_VBLOCK=0 ATLAS_KV_OVERCOMMIT ATLAS_FP8_SINGLE_SCALE`
-- Decode flags: the 5 above + `ATLAS_DECODE_GRAPHS_MULTISEQ ATLAS_MOE_BATCHED_DECODE`
+- Prefill flags: `ATLAS_FLASHINFER_PREFILL ATLAS_GDN_FLASHINFER ATLAS_CUBLAS_GEMM ATLAS_CUTLASS_WORKSPACE_MB=512 ATLAS_PREFILL_VARLEN ATLAS_PREFILL_CODISPATCH(+WINDOW_MS=100) ATLAS_MOE_PREFILL_EXACT_TILES ATLAS_SSM_BATCHED_RECURRENT ATLAS_HOLO_MOE_GROUPED_CUTLASS ATLAS_HOLO_MOE_GROUPED_DOWN ATLAS_HOLO_FAST_MOE_MODE=full ATLAS_HOLO_FAST_MOE_LAYERS=0-39 ATLAS_HOLO_NATIVE_FP8_ATTN ATLAS_HOLO_NATIVE_FP8_SSM ATLAS_HOLO_LOW_MEMORY_MOE ATLAS_Q12_BATCHED(+_FIRST_CHUNK) ATLAS_GDN_TC_VBLOCK=0 ATLAS_FP8_SINGLE_SCALE` (`ATLAS_KV_OVERCOMMIT` dropped — see below)
+- Decode flags: the 5 above + `ATLAS_MOE_BATCHED_DECODE`
 - Serve: `--scheduling-policy slai --tbt-deadline-ms 100 --max-prefill-tokens 16384 --kv-cache-dtype bf16 --max-batch-size 8 --max-num-seqs 8 --gpu-memory-utilization 0.78`
+
+★ **Two of the names above are not live knobs; reproduce with care.**
+  - `ATLAS_DECODE_GRAPHS_MULTISEQ` has **no read site** — multi-seq decode graphs are on by
+    default and the only gate is the negative `ATLAS_NO_DECODE_GRAPHS_MULTISEQ`
+    (`model/trait_impl/decode_a2.rs`). Setting the positive form does nothing; it has been
+    removed from the list.
+  - `ATLAS_KV_OVERCOMMIT` is **default-ON** (`factory/build.rs` reads it as
+    "on unless `0`/`false`"), so setting it is a no-op rather than an opt-in.
+
+★ **These are bare names, but the read sites require the literal string `1`.** Verified
+  strict-`"1"` reads: `ATLAS_FLASHINFER_PREFILL`, `ATLAS_GDN_FLASHINFER`,
+  `ATLAS_CUBLAS_GEMM`, `ATLAS_PREFILL_VARLEN`, `ATLAS_PREFILL_CODISPATCH`,
+  `ATLAS_MOE_PREFILL_EXACT_TILES`, `ATLAS_HOLO_MOE_GROUPED_CUTLASS`,
+  `ATLAS_HOLO_MOE_GROUPED_DOWN`, `ATLAS_HOLO_NATIVE_FP8_ATTN`, `ATLAS_HOLO_NATIVE_FP8_SSM`,
+  `ATLAS_HOLO_LOW_MEMORY_MOE`, `ATLAS_Q12_BATCHED`, `ATLAS_MOE_BATCHED_DECODE`,
+  `ATLAS_FP8_SINGLE_SCALE`, `ATLAS_SSM_BATCHED_RECURRENT`. `export ATLAS_FLASHINFER_PREFILL`
+  with no value silently does nothing — write `=1` on every one of them.
+
+★ `ATLAS_SSM_BATCHED_RECURRENT` additionally has a CLI flag now
+  (`--ssm-batched-recurrent`). Its clap default USED to seal the value before the env read
+  ran, which made the env form inert under `spark serve`; the flag is an `Option` now and
+  an absent one publishes nothing, so the variable decides again. Pass the flag anyway —
+  it is what `--help` and `ps` show, and it is the only form that cannot be lost in an
+  `-e` preamble.
+
 
 ## Performance matrix — concurrency (workload: 1220-tok prompt → 128-tok gen, base, temp 0)
 

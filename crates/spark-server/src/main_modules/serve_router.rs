@@ -104,6 +104,7 @@ pub(crate) async fn build_and_serve(
         .route("/v1/moderations", post(api::moderations_stub))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
+        .route("/hardware", get(api::hardware))
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))

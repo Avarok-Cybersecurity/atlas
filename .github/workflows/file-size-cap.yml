@@ -1,6 +1,16 @@
 name: File size cap (≤500 LoC per .rs)
 
+# Read-only: this job only greps the checkout.
+permissions:
+  contents: read
+
 on:
+  # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
+  # were throttled to aid recovery, so pushes stopped creating runs at all --
+  # and with no dispatch trigger there was no way to ask for one. A check that
+  # can only be started by an event you do not control is a check you cannot
+  # get a verdict from when you most need it.
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main, master]
@@ -14,7 +24,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
@@ -141,7 +151,6 @@ jobs:
             # Allow-listed to unblock the PR; clean splits tracked as follow-up
             # (per-file Ctx/State or sub-module extraction, Atlas idiom).
             "crates/atlas-kernels/build.rs"
-            "crates/atlas-quant/src/fp8.rs"
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
             "crates/spark-model/src/layers/moe/forward.rs"

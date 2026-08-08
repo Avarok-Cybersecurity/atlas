@@ -343,3 +343,33 @@ fn serving_nothing_does_not_promise_numbers() {
     assert!(c.contains("no model loaded"), "{c}");
     assert!(c.contains("Library"), "and says how to fix it: {c}");
 }
+
+#[test]
+fn a_thinking_model_that_reasons_to_the_answer_passes() {
+    // Regression: the probe read only `text`. A thinking model spends the
+    // whole budget on `reasoning_content`, so `text` came back empty and both
+    // checks reported "answered nothing" -- which the message then blamed on a
+    // mis-quantized or base checkpoint. It measured verbosity and called it
+    // brain damage.
+    let (passed, answer) = super::judge("", "2 + 2 = 4, so the answer is 4", &["4", "four"]);
+    assert!(passed, "the fact is present, in the reasoning");
+    assert!(
+        answer.contains("4"),
+        "a failure must still quote something legible, not an empty string: {answer:?}"
+    );
+}
+
+#[test]
+fn the_answer_is_preferred_over_the_reasoning_when_both_are_present() {
+    let (passed, answer) = super::judge("4", "let me think about 4", &["4"]);
+    assert!(passed);
+    assert_eq!(answer, "4", "quote the reply, not the thinking");
+}
+
+#[test]
+fn genuine_garbage_still_fails() {
+    // The probe must keep catching what it exists to catch.
+    let (passed, answer) = super::judge("zzz zzz zzz", "", &["4", "four"]);
+    assert!(!passed);
+    assert_eq!(answer, "zzz zzz zzz");
+}

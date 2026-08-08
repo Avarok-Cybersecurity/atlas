@@ -223,11 +223,29 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemAllocHost_v2 failed: status {status}, requested {bytes} bytes");
         }
+        // `cuMemAllocHost_v2` does NOT zero, unlike the trait's `alloc_zeroed`
+        // default and the mock. Callers pack these buffers with alignment
+        // padding and then form a `&[u8]` over the whole packed range — a slice
+        // over even one never-written byte is UB. Zeroing once here is what
+        // makes `GpuBackend::alloc_host_pinned`'s "fully initialised" contract
+        // true on every backend, so no caller has to re-establish it. One
+        // memset at allocation time; these buffers are allocated at model load
+        // and reused for the process lifetime.
+        // SAFETY: `cuMemAllocHost_v2` returned success, so `ptr` is a valid,
+        // uniquely-owned, writable page-locked region of exactly `bytes`.
+        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, bytes) };
+        // Record it: an H2D from page-locked memory is genuinely async, so
+        // `copy_h2d_async` has to know which sources it may not let the caller
+        // drop out from under. See `crate::pinned_hosts`.
+        crate::pinned_hosts::register(ptr as *const u8, bytes);
         Ok(ptr as *mut u8)
     }
 
     pub(super) fn free_host_pinned_cu(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
         if !ptr.is_null() {
+            // Before the free, so a reused address is never reported as still
+            // page-locked.
+            crate::pinned_hosts::unregister(ptr as *const u8);
             let status = unsafe { cuMemFreeHost(ptr as *mut c_void) };
             // The driver tears the primary context down in its own atexit
             // handler, which can run before ours. Pinned host memory allocated

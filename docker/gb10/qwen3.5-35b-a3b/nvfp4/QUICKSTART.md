@@ -52,11 +52,11 @@ curl http://localhost:8888/v1/chat/completions \
 | `--kv-cache-dtype` | `fp8` | KV cache format (`fp8`, `nvfp4`, `bf16`) |
 | `--mtp-quantization` | `bf16` | MTP head quantization (`nvfp4` saves memory) |
 | `--scheduling-policy` | `fifo` | Scheduler (`fifo` or `slai` for SLO-aware) |
-| `--max-seq-len` | `262144` | Max context length (up to 131072) |
+| `--max-seq-len` | `32768` | Max context length in tokens; sizes the KV pool |
 | `--port` | `8888` | HTTP port |
 | `--max-batch-size` | `8` | Max sequences per GPU decode step |
 | `--max-num-seqs` | `128` | Max concurrent sequences in flight |
-| `--max-prefill-tokens` | `2048` | Chunked prefill size (0 = process entire prompt at once) |
+| `--max-prefill-tokens` | `8192` | Chunked prefill size (0 = process entire prompt at once) |
 
 ## OpenAI-compatible API
 

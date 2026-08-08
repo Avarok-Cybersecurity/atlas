@@ -6,11 +6,11 @@
 //! a model and never touches the GPU. Everything below is a thin shell around
 //! `atlas_plugin::headless`, which the dashboard shares.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use atlas_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
 use atlas_plugin::{
-    ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, history,
-    registry,
+    ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, gate,
+    history, registry,
 };
 
 use super::bench_args::{BenchmarkArgs, BenchmarkCommand, HistoryArgs, OutputFormat, RunArgs};
@@ -28,7 +28,15 @@ pub fn find(id: &str) -> Result<&'static BenchmarkDescriptor> {
 }
 
 pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
-    match args.command {
+    if args.pull_request_gate_check {
+        let code = gate_check_cmd()?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    let command = args.command.expect("clap enforces a subcommand here");
+    match command {
         BenchmarkCommand::List(a) => match a.id {
             Some(id) => bench_print::print_schema(&id, a.format),
             None => bench_print::print_suite(a.format),
@@ -38,12 +46,186 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
             // readable half and must survive returning through main.
+            //
+            // ★ Nothing that must happen may be placed AFTER this call. Both
+            // exits here — the `exit` below and the `?` above — skip whatever
+            // follows, `exit` skipping destructors too. Teardown of a
+            // self-started server therefore lives inside `run` (and, for the
+            // paths that miss it, in `SelfServed::drop`), never here.
             if code != 0 {
                 std::process::exit(code);
             }
             Ok(())
         }
     }
+}
+
+/// The repo root this checkout lives in — where `.benchmarks/` sits.
+pub(super) fn repo_root() -> Result<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git rev-parse")?;
+    if !out.status.success() {
+        bail!("not inside a git checkout — the gate records live in the repo's .benchmarks/");
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        bail!("git rev-parse --show-toplevel printed nothing");
+    }
+    Ok(std::path::PathBuf::from(path))
+}
+
+/// `--pull-request-gate-check`: does THIS commit have a passing record for
+/// every required gate? Prints a line per bench and exits 1 until they all
+/// pass. Pure filesystem reads — fast enough to run on every PR in CI.
+fn gate_check_cmd() -> Result<i32> {
+    let root = repo_root()?;
+    let sha = gate::git_sha(&root)?;
+    let gates = gate::check_gates(&root, &sha);
+    println!("gate check for {sha} ({})", root.display());
+    let mut open = Vec::new();
+    for id in gate::REQUIRED_GATES {
+        let status = &gates[id];
+        match status {
+            gate::GateStatus::Pass => println!("  PASS  {id}"),
+            gate::GateStatus::Fail(reasons) => {
+                println!("  FAIL  {id}");
+                for reason in reasons {
+                    println!("        - {reason}");
+                }
+                open.push(id);
+            }
+            gate::GateStatus::Missing(reason) => {
+                println!("  NONE  {id} — {reason}");
+                open.push(id);
+            }
+        }
+    }
+    if open.is_empty() {
+        println!("all {} required gates pass", gate::REQUIRED_GATES.len());
+        Ok(0)
+    } else {
+        println!(
+            "{} bench(es) still need a passing gate record: {}",
+            open.len(),
+            open.join(", ")
+        );
+        Ok(1)
+    }
+}
+
+/// The commit and the uncommitted invalidation-set files, both read BEFORE the
+/// run — the two halves of "which sources produced this binary".
+///
+/// ★ The dirty list is captured HERE, at the start, and warned about HERE,
+/// because that is the only moment the warning can still save anything: a
+/// `bfcl-subset` gate takes ~3.5 hours, and an operator told at the end that
+/// the binary never matched the commit has already spent the afternoon. A
+/// failure to read the dirt is itself reported and does not abort — the run is
+/// the expensive thing, and `git_sha` above has already proven this is a
+/// checkout.
+fn capture_provenance() -> Result<(String, Vec<String>)> {
+    let root = repo_root()?;
+    let sha = gate::git_sha(&root)?;
+    let dirty = gate::dirty_perf_paths(&root).unwrap_or_else(|e| {
+        eprintln!("gate: could not read the working tree's state ({e:#})");
+        Vec::new()
+    });
+    if !dirty.is_empty() {
+        eprintln!(
+            "gate: WARNING — {} uncommitted file(s) that change what a gate \
+             measures are in this tree, so the record will be stamped {sha} \
+             but the binary is not {sha}:",
+            dirty.len()
+        );
+        for path in &dirty {
+            eprintln!("gate:   {path}");
+        }
+        eprintln!(
+            "gate: the record will disclose this and the gate check will \
+             reject it. Commit (or stash) and rebuild first."
+        );
+    }
+    Ok((sha, dirty))
+}
+
+/// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
+///
+/// The hardware fingerprint is fetched from the endpoint that did the work —
+/// not probed locally — so the record describes the box that actually served
+/// the model. A write failure aborts the command with a clear error: the
+/// point of the flag is the record, so a run that did not produce one must
+/// not report success.
+async fn write_gate_record(
+    record: &atlas_plugin::RunRecord,
+    url: &str,
+    model: &str,
+    recipe: Option<String>,
+    sha_at_start: String,
+    dirty_at_start: Vec<String>,
+) -> Result<()> {
+    // ★ An INCOMPLETE run must not become a gate record.
+    //
+    // A cancelled or failed run still produces a RunRecord -- it just has no
+    // measurements in it. Committing that gives the branch a file that looks
+    // like evidence and contains none; `check_record` then reports every
+    // threshold as "missing from the record", blaming the baseline rather than
+    // the run that never finished. Observed for real: a BFCL run killed at
+    // 972/1004 left a committed record whose metrics were `{}`.
+    if record.frame.status != atlas_plugin::RunStatus::Completed {
+        bail!(
+            "the run ended as {:?}, not Completed -- no gate record was written. \
+             A record is evidence that a benchmark RAN; an interrupted one is not.",
+            record.frame.status
+        );
+    }
+    if record.frame.metrics.is_empty() {
+        bail!(
+            "the run produced no metrics -- no gate record was written. Every \
+             threshold would read as \"missing from the record\", which blames the \
+             baseline for a run that measured nothing."
+        );
+    }
+    let root = repo_root()?;
+    // ★ The sha is the one captured BEFORE the run, not the one HEAD happens to
+    // point at now. A record exists to say "these numbers came from this
+    // commit", and `bfcl-subset` takes ~3.5 hours: reading HEAD at write time
+    // stamps whatever was committed while the benchmark was running. Observed
+    // in practice -- a 4-hour run recorded a sha that was 14 commits newer than
+    // the binary that produced it.
+    let sha = sha_at_start;
+    if let Ok(now) = gate::git_sha(&root)
+        && now != sha
+    {
+        // Not fatal: the measurement is real and belongs to `sha`. But the
+        // tree moved underneath it, so whoever reads this record needs to know
+        // the working copy is no longer what was measured.
+        eprintln!(
+            "gate: HEAD moved during the run ({sha} -> {now}); the record is \
+             stamped {sha}, the commit that was actually measured"
+        );
+    }
+    let target = TargetEndpoint::new(url, model);
+    let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
+    let dirty = dirty_at_start;
+    let gate_record = gate::GateRecord::from_run(record, hardware, sha, dirty, recipe)?;
+    let path = gate::write_record(&root, &gate_record)?;
+    eprintln!("gate record written as {}", path.display());
+    // Repeated at the end as well as the start: the start-of-run warning has
+    // scrolled hours off the top of the terminal by now, and this one names the
+    // file the reader is about to commit.
+    if !gate_record.dirty_paths.is_empty() {
+        eprintln!(
+            "gate: that record is stamped {} but was measured from a tree with \
+             {} uncommitted invalidation-set file(s); it records them, and \
+             --pull-request-gate-check will reject it. Re-run from a clean tree.",
+            gate_record.git_sha,
+            gate_record.dirty_paths.len()
+        );
+    }
+    Ok(())
 }
 
 fn store() -> Result<ArtifactStore> {
@@ -87,12 +269,38 @@ async fn run(args: RunArgs) -> Result<i32> {
         .collect::<Vec<_>>();
     let values = ParamValues::from_overrides(&specs, pairs)?;
 
+    // With --pull-request-gate the suite provisions its own server from the
+    // benchmark's recipe, so the record describes a config nobody typed. Without
+    // it, --url/--model drive an existing endpoint exactly as before.
+    // Captured BEFORE the run so a multi-hour benchmark records the commit it
+    // actually measured rather than whatever lands on HEAD meanwhile — and,
+    // with it, the uncommitted files that make that commit an incomplete
+    // answer, warned about now while aborting is still cheap.
+    let provenance = if args.pull_request_gate {
+        Some(capture_provenance()?)
+    } else {
+        None
+    };
+    // Discovered BEFORE the server exists. It is fallible, and every fallible
+    // step that happens with a model loaded is one more path that has to tear
+    // it down; the ones that can happen first, should. (`SelfServed::drop`
+    // covers the ones that cannot.)
     let store = store()?;
+    let served = if args.pull_request_gate {
+        Some(super::bench_selfstart::serve_for(&args.id, args.hardware.as_deref()).await?)
+    } else {
+        None
+    };
+    let target = match &served {
+        Some(s) => s.target.clone(),
+        None => TargetEndpoint::new(&args.url, args.model.as_deref().unwrap_or_default()),
+    };
+
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
     let request = RunRequest {
         descriptor,
         values,
-        target: TargetEndpoint::new(&args.url, &args.model),
+        target: target.clone(),
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
@@ -132,7 +340,58 @@ async fn run(args: RunArgs) -> Result<i32> {
             &crate::tui::shutdown::requested,
         )
     })
-    .await??;
+    .await;
+
+    // Tear the self-started server down before propagating a failure.
+    //
+    // ★ This used to be `.await??`, which returns early — so a benchmark that
+    // ERRORED skipped teardown entirely and left the model resident on the GPU.
+    // The process happens to exit soon after today, which is what hid it, but
+    // "the OS cleans up" is not a teardown: it depends on the caller exiting,
+    // and `--no-fail-on-verdict` and any future in-process caller break that
+    // assumption. A failed run must not leave a 100 GB model loaded.
+    //
+    // Success still writes the gate record FIRST and tears down second (see
+    // below); only the failure paths shut down here.
+    let outcome = match outcome {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            if let Some(s) = served {
+                s.shutdown().await;
+            }
+            return Err(e);
+        }
+        Err(join) => {
+            if let Some(s) = served {
+                s.shutdown().await;
+            }
+            return Err(join.into());
+        }
+    };
+
+    if args.pull_request_gate {
+        // Order is load-bearing. `write_gate_record` fetches the hardware
+        // fingerprint FROM the endpoint, and that fetch degrades to
+        // `Hardware::unknown()` on every failure path without returning an
+        // error — so tearing the server down first would commit a record that
+        // names no box and still exit 0. Write first, tear down second, and
+        // tear down even when the write fails.
+        let recipe = served.as_ref().map(|s| s.recipe_id.clone());
+        let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
+        let written = write_gate_record(
+            &outcome.record,
+            &target.base_url,
+            &target.model,
+            recipe,
+            sha_at_start,
+            dirty_at_start,
+        )
+        .await;
+        if let Some(s) = served {
+            s.shutdown().await;
+        }
+        written?;
+    }
 
     match args.format {
         OutputFormat::Json => bench_print::print_record(&outcome.record, OutputFormat::Json)?,

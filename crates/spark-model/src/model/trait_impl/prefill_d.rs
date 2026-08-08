@@ -37,6 +37,9 @@ impl TransformerModel {
         seq.seq_len = total_len;
         // Re-embed just the last token at hidden[0] for final norm + LM head.
         let last_tok = tokens[total_len - 1];
+        // SAFETY: 4 == `size_of::<u32>()` bytes over the single, fully
+        // initialised `last_tok` local on the line above (an in-bounds copy out
+        // of `tokens`); the slice never outlives that local.
         let last_tok_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(&last_tok as *const u32 as *const u8, 4) };
         let token_id_dev = self.buffers.scratch();

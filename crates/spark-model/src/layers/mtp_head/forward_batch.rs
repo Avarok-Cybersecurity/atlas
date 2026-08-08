@@ -40,7 +40,7 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
-use super::batch_caps::PROPOSE_META_HEADER;
+use crate::layers::mtp_meta::pack_mtp_attn_meta;
 
 /// Byte offset inside the shared scratch arena where the batched propose
 /// stages the per-row top-1 log-probabilities (FP32). The n argmax ids live at
@@ -308,32 +308,32 @@ impl MtpHead {
             while state.block_table.len() < blocks_needed {
                 state.block_table.push(kv_cache.alloc_block()?);
             }
-            let bt_len = state.block_table.len() * 4;
-            // Hard guard against overrunning the per-sequence meta slab. The
-            // stride is sized at construction for max_seq_len (floor 2048 =
-            // 448 entries = 7,168 tokens, the 4K-era layout that made 10-20K
+            // The stride is sized at construction from max_seq_len (floor 2048
+            // = 448 entries = 7,168 tokens, the 4K-era layout that made 10-20K
             // agentic contexts fall back permanently — PROGRESS_LOG 5.2/6.17),
-            // so this only fires when ATLAS_PROPOSE_META_STRIDE shrank it or
-            // a sequence outgrew max_seq_len. The scheduler demotes exactly
-            // this message to debug — keep the "exceeds meta stride" text in
-            // sync with mtp_bootstrap_step.rs / verify_k4_batch_step.rs.
-            ensure!(
-                PROPOSE_META_HEADER + bt_len <= self.propose_meta_stride,
-                "propose_batch: drafter block table {} exceeds meta stride {}",
-                bt_len,
-                self.propose_meta_stride
-            );
+            // so an overflow is only reachable under an
+            // ATLAS_PROPOSE_META_STRIDE override or a sequence past
+            // max_seq_len.
             let meta_base = self.propose_meta.offset(i * self.propose_meta_stride);
             let block_idx = state.block_table[state.seq_len / bs];
             let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
-            let mut meta_buf = vec![0u8; 256 + bt_len];
-            meta_buf[0..4].copy_from_slice(&(positions[i] as u32).to_le_bytes());
-            meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
-            meta_buf[16..20].copy_from_slice(&((state.seq_len + 1) as i32).to_le_bytes());
-            let bt_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(state.block_table.as_ptr() as *const u8, bt_len)
-            };
-            meta_buf[256..256 + bt_len].copy_from_slice(bt_bytes);
+            // This site's `ensure!(256 + bt_len <= PROPOSE_META_STRIDE)` was the
+            // only one of the three MTP metadata packers that had a bound. It
+            // now lives in `pack_mtp_attn_meta` so the other two have it too;
+            // the region here is one `propose_meta` stride — the RUNTIME one,
+            // sized from max_seq_len, not the old compile-time constant. That
+            // is the whole point of the stride fix: a const bound would refuse
+            // exactly the long-context sequences the larger stride exists to
+            // serve. `pack_mtp_attn_meta` raises "exceeds meta stride", which
+            // `mtp_bootstrap_step.rs` matches to demote this to debug — keep
+            // those two strings in sync.
+            let meta_buf = pack_mtp_attn_meta(
+                positions[i] as u32,
+                global_slot,
+                (state.seq_len + 1) as i32,
+                &state.block_table,
+                self.propose_meta_stride,
+            )?;
             gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
 
             let q_row = q_out.offset(i * qg_dim * bf16);

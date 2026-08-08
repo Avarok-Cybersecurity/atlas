@@ -7,8 +7,26 @@
 //! delegates these four to the implementations here. They carry an `_impl`
 //! suffix so an inherent method can never silently shadow the trait method
 //! at a concrete-typed call site. They are the natural
-//! group to move: same shape, same error handling, and each is a bounds
-//! check plus one driver call.
+//! group to move: same shape, same error handling, and each is one driver
+//! call plus one stream synchronize.
+//!
+//! **There is no bounds check here, on either end.** This module doc used to
+//! claim "a bounds check plus one driver call"; nothing in this file has ever
+//! checked a bound, and a reader who trusted that sentence would have been
+//! looking for a guard that does not exist. What is actually true:
+//!
+//! * The HOST end is bounded by construction — `src: &[u8]` / `dst: &mut [u8]`
+//!   supply their own `len()`, so a host over-run is not expressible.
+//! * The DEVICE end is UNCHECKED. `copy_d2d_impl` in particular takes a bare
+//!   `bytes` that is validated against neither allocation. It cannot be checked
+//!   here: `AtlasCudaBackend::live_allocs` is a `HashSet<u64>` of base pointers
+//!   with no sizes, and callers legitimately pass interior pointers from
+//!   `DevicePtr::offset`, so there is nothing to compare against. Sizing a
+//!   device copy correctly is the CALLER's obligation.
+//!
+//! The Metal backend does check its device end (`metal_backend.rs`), because a
+//! `metal::Buffer` knows its own `length()`. The divergence is real, not an
+//! oversight to paper over in prose.
 //!
 //! The safety contract is the one documented in `gpu_impl.rs`: a primary
 //! context is current on the calling thread, every `DevicePtr` came from a

@@ -20,3 +20,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         View::Config => config::draw(f, app, area),
     }
 }
+
+#[cfg(test)]
+#[path = "library_tests.rs"]
+mod tests;

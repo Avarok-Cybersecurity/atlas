@@ -182,6 +182,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
              \x20           shadowed_dropped: &[{}],\n\
+             \x20           expected_absent: &[{}],\n\
              \x20       }},\n",
             target.model, target.quant,
             fmt_cat(&target.sampling_thinking_text),
@@ -235,6 +236,12 @@ pub(super) fn generate_target_ptx_rs(
                         .join(", ")
                 })
                 .unwrap_or_default(),
+            target
+                .expected_absent
+                .iter()
+                .map(|(m, f)| format!("(\"{m}\", \"{f}\")"))
+                .collect::<Vec<_>>()
+                .join(", "),
         ));
     }
     g.push_str("    ]\n}\n");

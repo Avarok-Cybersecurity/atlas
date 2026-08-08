@@ -43,6 +43,8 @@ pub mod benchmarks;
 pub mod coherence;
 pub mod dynamic;
 pub mod executor;
+pub mod gate;
+pub mod hardware;
 pub mod headless;
 pub mod history;
 pub mod http;

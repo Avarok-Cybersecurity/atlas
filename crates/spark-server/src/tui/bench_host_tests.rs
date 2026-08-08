@@ -125,3 +125,84 @@ fn a_round_cannot_be_built_before_the_server_has_bound() {
         .to_string();
     assert!(err.contains("binding its port"), "{err}");
 }
+
+#[test]
+fn a_cache_directory_with_nothing_in_it_yields_an_empty_roster() {
+    // Derived, not listed: the Python's hand-maintained `ROUNDS` named twelve
+    // checkpoints that were not on the box, and nothing noticed.
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let h = TuiServeHost::new(bound_host(), Some(dir.path().to_path_buf()));
+    assert!(h.roster().expect("a scan of an empty cache").is_empty());
+}
+
+#[test]
+fn a_half_downloaded_checkpoint_reaches_the_roster_as_a_named_absence() {
+    // Skipped, but SAID: a round that silently vanished from the matrix reads
+    // as a model that passed.
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let snapshot = dir
+        .path()
+        .join("models--org--half")
+        .join("snapshots")
+        .join("deadbeef");
+    std::fs::create_dir_all(&snapshot).expect("mock cache");
+    std::fs::write(snapshot.join("config.json"), "{}").expect("config");
+
+    let h = TuiServeHost::new(bound_host(), Some(dir.path().to_path_buf()));
+    let roster = h.roster().expect("a scan");
+    assert_eq!(roster.len(), 1, "{roster:?}");
+    assert_eq!(roster[0].model, "org/half");
+    assert_eq!(roster[0].absent, Some(Absence::NoWeights));
+}
+
+#[test]
+fn the_cache_override_is_carried_into_every_rounds_command_line() {
+    // A round served from a different cache than the one the roster was scanned
+    // from would serve a checkpoint the matrix never saw.
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let h = TuiServeHost::new(bound_host(), Some(dir.path().to_path_buf()));
+    let args = h
+        .argv_for(
+            "org/m",
+            ServeOptions {
+                max_seq_len: 4096,
+                speculative: false,
+            },
+        )
+        .expect("valid");
+    assert_eq!(args.cache_dir.as_deref(), Some(dir.path()));
+}
+
+#[test]
+fn a_scanned_id_reaches_the_round_argv_exactly_as_the_cache_spells_it() {
+    // The roster's ids go through a hand-assembled command line, so a round
+    // that served a re-spelled id would be measuring a different checkpoint
+    // than the one the matrix reports.
+    let h = TuiServeHost::new(bound_host(), None);
+    for id in [
+        "unsloth/Qwen3.6-27B-NVFP4",
+        "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
+        "org/name.with.dots",
+    ] {
+        let args = h
+            .argv_for(
+                id,
+                ServeOptions {
+                    max_seq_len: 4096,
+                    speculative: false,
+                },
+            )
+            .expect("valid");
+        assert_eq!(args.model.as_deref(), Some(id));
+    }
+}
+
+#[test]
+fn restoring_a_box_that_was_serving_nothing_is_a_no_op_not_a_teardown() {
+    // Leaving the last round loaded is closer to where the box was found than
+    // tearing it down to nothing, and either way there is no argv to restore.
+    // No swap is reachable from here, so nothing touches the GPU.
+    let h = TuiServeHost::new(bound_host(), None);
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(h.restore()).expect("nothing to put back");
+}

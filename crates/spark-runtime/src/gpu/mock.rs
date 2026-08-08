@@ -205,6 +205,7 @@ impl GpuBackend for MockGpuBackend {
         0
     }
 
+    #[track_caller]
     fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
         Ok(KernelHandle(0xDEAD))
     }

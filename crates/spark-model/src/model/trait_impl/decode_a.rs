@@ -122,6 +122,7 @@ impl TransformerModel {
             .copy_h2d_async(&actual_seq_len.to_le_bytes(), meta_base.offset(16), stream)?;
 
         let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+        // SAFETY: length derived from `bt_i32` itself — `len() * size_of::<i32>()` over the `collect`ed Vec above.
         let bt_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4) };
         self.gpu

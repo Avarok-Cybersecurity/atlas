@@ -15,7 +15,7 @@ grep -m1 'compiled .* kernels for target' "$WT"/build*.log 2>/dev/null || true
 sudo docker rm -f atlas-conglom >/dev/null 2>&1; sleep 3
 sudo docker run -d --name atlas-conglom --network host --gpus all --ipc=host \
   -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
   -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 ${EXTRA_ENV:-} \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "$WT/target/release/spark:/usr/local/bin/spark:ro" atlas-gb10:followups \

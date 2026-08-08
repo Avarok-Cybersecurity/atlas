@@ -2626,9 +2626,30 @@ share. It is now one accessor behind one flag. The five knobs the best config ne
 | `ATLAS_SSM_TAIL_MIDCHUNK=0` | `--ssm-tail-midchunk <bool>` | on |
 | `ATLAS_MTP_GATE_FORCE=1` | `--mtp-gate {auto,force}` | `auto` |
 
-The environment variables still work as a fallback; the flag wins. `--ssm-h-dtype f16`
-without `--gdn-fused-norm` is now a startup ERROR (it used to be a silent FP32-kernel-over-
-FP16-pool, i.e. fluent garbage).
+★ **The clap defaults sealed all five under `spark serve`. That is fixed now — but every
+number this campaign recorded was measured before the fix.** Each knob is read once
+through a `OnceLock` whose fallback closure reads the environment, and
+`publish_kernel_flags()` published the clap DEFAULT into all five cells on every boot.
+Sealing a cell with a default makes the closure unreachable, so the flag did not merely
+win when it was passed — it won **always**, including when the operator never passed it.
+
+The fix: the five flags are `Option`s, an absent flag publishes NOTHING, and the
+environment decides again exactly as this table says. Check it by content, not by date —
+`spark_runtime::set_ssm_tail_midchunk` takes an `Option<bool>` and returns without writing
+on `None`, `scheduler::levers::set_mtp_gate_force` does the same, and the three GDN flags
+are published together only when at least one of them is given
+(`main_modules/serve_flags.rs`, which is where `publish_kernel_flags` now lives). The bare
+switches still mean on; `--gdn-fused-norm false` is the newly expressible explicit off.
+
+Consequence for this campaign's frozen configs, which the fix does NOT undo: every launch
+script that set `-e ATLAS_SSM_TAIL_MIDCHUNK=0` **without** also passing
+`--ssm-tail-midchunk false` ran with mid-chunk capture **ON**, and every ladder measured
+before the fix ran with the other four at their clap defaults whatever the environment
+said. `grep -rn 'ssm-tail-midchunk'` over `scripts/`, `docker/`, `docs/` and the root
+`*.md` returns this table and nothing else — the flag is used nowhere.
+
+`--ssm-h-dtype f16` without `--gdn-fused-norm` is now a startup ERROR (it used to be a
+silent FP32-kernel-over-FP16-pool, i.e. fluent garbage).
 
 **The other six of the ten did nothing.** `ATLAS_MTP_CATCHUP=0`, `ATLAS_MTP_DRAFT_CONF=0.0`,
 `ATLAS_SSM_TAIL_PROTECT=1`, `ATLAS_SSM_TAIL_LEASE_TTL=128`, `ATLAS_BF16_TC_PREFILL=1`
@@ -2643,3 +2664,32 @@ two identical serves differed on 7 of 42 completions (C=4 and C=16). The flag le
 run-to-run nondeterminism. Under PCND an unproven numerics change is explicit configuration,
 so both became CLI flags rather than defaults. **A control leg that is not reproducible
 retires the whole gate, not just the failing arm.**
+
+## 2026-08-03 — C=1..128 sweep re-verification on the final image (8c #4, CLOSED)
+
+Leg results land in `/workspace/w55_sweep/results/` (driver `/workspace/w55_sweep/w55_conc_ladder.py`,
+sha256 6412b12d). Image `avarok/atlas-gb10:7241a95` = gate image = this branch modulo bench-only
+harness deltas, so this IS the #388 binary's sweep. Recipe-derived serve
+(`serve_atlas.sh` ← `recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml`): util 0.85, bs 128, bf16 KV,
+spec-on num-drafts 3, ssm-h f16 + fused-norm, thinking OFF on BOTH engines
+(`chat_template_kwargs:{"enable_thinking":false}`), prompt parity 200=200, temp 0.
+
+| C | Atlas | vLLM | ratio | prev(2026-08-02) |
+|---|---|---|---|---|
+| 1 | 24.34 | 14.69 | **1.656x** | 1.694x |
+| 2 | 35.79 | 28.63 | **1.250x** | 1.281x |
+| 4 | 71.61 | 54.76 | **1.308x** | 1.368x |
+| 8 | 113.13 | 100.50 | **1.126x** | 1.167x |
+| 16 | 199.51 | 169.07 | **1.180x** | 1.205x |
+| 32 | 290.16 | 260.76 | **1.113x** | 1.105x |
+| 64 | 360.82 | 355.04 | **1.016x** | 1.021x |
+| 128 | 429.52 | 423.49 | **1.014x** | 1.040x |
+
+**8/8 rungs reconfirmed** — Atlas wins every rung on tok/s. Atlas absolute tok/s
+within ±0.6% at C≤2, −1.5..−2.7% at C=4..32, −5.3% at C=64, −9.0% at C=128 vs the
+2026-08-02 ladder. Spread: vLLM 0.05–0.63%; Atlas 1.0–4.1% (C=1 rep spread 9%).
+Two confounds on the original ladder are now explained, not denied:
+1. The C=128 "timeout" finish-reason in the Atlas leg traces to `--request-timeout 300s`
+   (Atlas default; vLLM runs no comparable deadline). Control leg reran C=128 with
+   REQ_TIMEOUT=0: 439.43 tok/s vs spec-on 429.52 — the deadline was costing ~2%, not the engine.
+2. Clock probe healthy on every rung (2236–2457 MHz Atlas, 2463–2483 vLLM) — no 513 MHz clamp.

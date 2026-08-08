@@ -129,6 +129,11 @@ impl TransformerModel {
         {
             let chunk_tokens =
                 &prefill_tokens[prefill_chunk_start..prefill_chunk_start + n_prefill];
+            // SAFETY: `chunk_tokens` is sliced on the line above with an END
+            // bound of `prefill_chunk_start + n_prefill`, so its length IS
+            // `n_prefill` (an out-of-range chunk panics in that slice index
+            // first) and the byte length is `chunk_tokens.len() * size_of::<u32>()`
+            // over a live `&[u32]`.
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(chunk_tokens.as_ptr() as *const u8, n_prefill * 4)
             };
@@ -244,17 +249,6 @@ impl TransformerModel {
             stg.positions
                 .extend(proc_start as u32..(proc_start + proc_count) as u32);
 
-            let pinned = stg.ptr;
-            let mut cursor = proc_count * 4;
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned,
-                    proc_count * 4,
-                );
-            }
-
             if !needs_paged {
                 stg.slots.clear();
                 stg.slots
@@ -264,25 +258,18 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
-                cursor = slot_offset;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        stg.slots.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        proc_count * 8,
-                    );
-                }
-                cursor += proc_count * 8;
             }
 
-            assert!(
-                cursor <= stg.bytes,
-                "mixed_forward prefill metadata overflow: {cursor} > {}",
-                stg.bytes
-            );
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // positions array that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs).
+            let mut pack = stg.packer_for(self.buffers.scratch_bytes().saturating_sub(meta_offset));
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            if !needs_paged {
+                pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
+            }
             self.gpu
-                .copy_h2d_async(pinned_slice, prefill_meta_base, stream)?;
+                .copy_h2d_async_retained(pack.packed(), prefill_meta_base, stream)?;
         }
 
         if needs_paged {
@@ -293,6 +280,9 @@ impl TransformerModel {
             // Phase 6.3: skip upload in HSS mode (orchestrator bypasses kernel).
             if upload_start < current_blocks && prefill_seq.hss_window_start() == 0 {
                 let new_blocks = &prefill_seq.block_table[upload_start..];
+                // SAFETY: the length is `size_of_val(new_blocks)` — derived from
+                // the slice itself, so it can never exceed it — over a live
+                // `&[u32]` sub-slice of `prefill_seq.block_table`.
                 let bt_bytes = unsafe {
                     std::slice::from_raw_parts(
                         new_blocks.as_ptr() as *const u8,
@@ -317,6 +307,8 @@ impl TransformerModel {
             }
 
             let seq_len_val = (proc_start + proc_count) as u32;
+            // SAFETY: exactly `size_of::<u32>()` bytes over the live, fully
+            // initialised `seq_len_val` local on the line above.
             let seq_len_bytes = unsafe {
                 std::slice::from_raw_parts(
                     &seq_len_val as *const u32 as *const u8,

@@ -42,6 +42,38 @@ use super::{
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
+/// Enqueue an H2D copy on `stream` and return without waiting. Shared by both
+/// async H2D entry points so the two differ ONLY in the ordering they add
+/// afterwards, never in the copy itself.
+fn h2d_enqueue(src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+    let status =
+        unsafe { cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream) };
+    if status != 0 {
+        bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
+    }
+    Ok(())
+}
+
+/// Say once, loudly, that a page-locked buffer reached the transient H2D path.
+///
+/// This is the tripwire the whole `pinned_hosts` registry exists to arm. It is a
+/// warning and not a `bail!` because the copy is still CORRECT — the sync above
+/// restores the guarantee — but it is a real, silent latency regression, and the
+/// call site almost certainly wants `copy_h2d_async_retained` instead.
+fn warn_pinned_transient_source() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "copy_h2d_async was handed a PAGE-LOCKED source. That copy is genuinely \
+             asynchronous, so the promise that the caller may drop the buffer on return \
+             is now being paid for with a cuStreamSynchronize on every such call. If the \
+             source outlives the next sync, switch the call site to \
+             copy_h2d_async_retained; if it does not, this sync is what keeps it from \
+             being a use-after-free."
+        );
+    });
+}
+
 impl GpuBackend for AtlasCudaBackend {
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
         let mut dptr: u64 = 0;
@@ -199,33 +231,62 @@ impl GpuBackend for AtlasCudaBackend {
         Some(self.registry().clone())
     }
 
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        // The DISPATCH SITE, not this line: `#[track_caller]` here and on the
+        // trait declaration carries the `.kernel(…)` / `try_kernel(…)` caller's
+        // `file:line` through, which is the only part of an unresolved-lookup
+        // report an operator can act on.
+        let site = std::panic::Location::caller();
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
-                crate::kernel_audit::record(module, func_name, true);
+                crate::kernel_audit::record(module, func_name, true, site);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
                 // Optional kernels (try_kernel) land here and fall back silently;
                 // the audit makes that visible in the startup kernel table.
-                crate::kernel_audit::record(module, func_name, false);
+                crate::kernel_audit::record(module, func_name, false, site);
                 Err(anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))
             }
         }
     }
 
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream)
-        };
-        if status != 0 {
-            bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
+        h2d_enqueue(src, dst, stream)?;
+        // The trait promises the caller may drop `src` right now. From PAGEABLE
+        // memory the driver already made that true by staging the bytes before
+        // returning. From PAGE-LOCKED memory it did not — the DMA engine reads
+        // these pages after the enqueue — so buy the same guarantee with an
+        // explicit wait rather than let ~90 call sites that drop their source
+        // immediately turn into use-after-frees the day a buffer gets pinned.
+        //
+        // Costs nothing on the path everything takes today: no Atlas call site
+        // reaches here with a pinned source (the ones that own pinned staging
+        // use `copy_h2d_async_retained`), so `is_pinned` is a lock-free-ish read
+        // of a three-entry table that says "no".
+        if crate::pinned_hosts::is_pinned(src) {
+            warn_pinned_transient_source();
+            let sync = unsafe { cuStreamSynchronize(stream) };
+            if sync != 0 {
+                bail!(
+                    "cuStreamSynchronize after pinned-source H2D failed: {}",
+                    cuda_error_text(sync)
+                );
+            }
         }
         Ok(())
+    }
+
+    fn copy_h2d_async_retained(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+        // The caller has promised `src` outlives the next sync on `stream`, so
+        // no implicit ordering is added — that is the whole reason this variant
+        // exists (a 60-chunk pinned scatter must not pay 60 stream drains).
+        h2d_enqueue(src, dst, stream)
     }
 
     fn copy_d2d_async(

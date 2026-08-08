@@ -201,6 +201,10 @@ fn human_tokens(n: usize) -> String {
 }
 
 #[cfg(test)]
+#[path = "logo_tests.rs"]
+mod more_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

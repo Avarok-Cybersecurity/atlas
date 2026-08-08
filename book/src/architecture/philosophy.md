@@ -12,14 +12,34 @@ The single design rule that every choice below derives from is:
 kernels/
   gb10/                               # Hardware
     HARDWARE.toml                     # vendor, arch, memory specs
+    common/
+      KERNEL.toml
+      *.cu                            # the shared baseline — 160 files today
     qwen3-next-80b-a3b/               # Model
       MODEL.toml                      # layer counts, sampling defaults
       nvfp4/                          # Quantization
         KERNEL.toml                   # compiler flags
-        *.cu                          # ~35 hyperoptimized kernels
+        *.cu                          # only the files this target overrides
 ```
 
-Three levels of directory. The shape is deliberate: a leaf directory owns *exactly one* `(H, M_q)` target. Two kernels in different leaves are *guaranteed* not to share source code, tile shapes, register budgets, or shared-memory layouts. When we say "Atlas ships twelve targets," we mean twelve independent leaves — not twelve code paths through one shared kernel.
+Three levels of directory, over a `common/` baseline. The shape is deliberate: a
+leaf directory owns *exactly one* `(H, M_q)` target, and a leaf file **shadows**
+its same-stem namesake in `common/` (`atlas-kernels/build.rs::collect_cu_files`).
+Shadowing is whole-file, not per-symbol.
+
+So a leaf holds *only its divergences*, not a full kernel set — `qwen3.6-27b/nvfp4`
+carries 11 `.cu`, `qwen3.6-35b-a3b/nvfp4` carries 5, `qwen3-next-80b-a3b/nvfp4`
+carries 3, over the 160 in `common/`. Two leaves therefore **do** share source for
+everything neither of them overrides; what is guaranteed is that where a target
+*does* diverge, it diverges in a file nothing else compiles. When we say "Atlas
+ships N targets," we mean N independent leaves — 22 of them on GB10 today.
+
+The corollary is a real failure class: because shadowing is whole-file, a shadow
+that has quietly become identical to `common/` overrides nothing while masking
+every later `common/` improvement, and two models keeping private byte-identical
+copies of the same shadow will drift apart. CI's `kernel-structure` job
+(`scripts/check_kernel_shadows.py`) rejects both; the sanctioned way to share one
+file between leaves is a relative symlink.
 
 The three `.toml` files are the only metadata the build system consumes. `HARDWARE.toml` tells `atlas-kernels/build.rs` which `ComputeTarget` impl to use (nvidia, amd, apple, intel) and what arch flag to pass the compiler. `MODEL.toml` is the per-model behavior SSOT — sampling presets, thinking budgets, tool-call parser defaults. `KERNEL.toml` overrides compiler flags and module names.
 
@@ -27,19 +47,18 @@ Adding a model or a hardware target is, at the file-system level, *creating a ne
 
 ## Consequence 2: the runtime crate structure mirrors the axis split
 
-Read the workspace `Cargo.toml` and you'll see twelve workspace members. Group them by what axis of variation they insulate:
+Read the workspace `Cargo.toml` and you'll see nineteen workspace members. Group them by what axis of variation they insulate:
 
 | Axis they insulate | Crates |
 |---|---|
 | *Hardware vendor* | `atlas-core` (`ComputeTarget`, `Vendor` enum, `KernelTarget`), `spark-runtime` (`GpuBackend`), `spark-comm` (`CommBackend`) |
 | *Model architecture* | `spark-model` (`ModelWeightLoader` trait, `TransformerLayer` trait, per-family loaders) |
-| *Quantization format* | `atlas-quant` (NVFP4 and FP8 traits + kernels), `spark-model/quant_format.rs` (runtime dispatch) |
+| *Quantization format* | `spark-model/src/quant_format/` (per-format modules + runtime dispatch), `atlas-core/src/numeric.rs` (host-side FP8/BF16 conversions) |
 | *Compiled kernels (one artifact per axis combination)* | `atlas-kernels` (embedded PTX modules, auto-generated from the kernel tree) |
-| *Operation primitives (shared math, not shared kernels)* | `atlas-norm`, `atlas-activation`, `atlas-embed`, `atlas-reduce` |
 | *Request serving* | `spark-server` (HTTP, tokenizer, tool parsing) |
 | *Measurement* | `atlas-spark-bench` |
 
-Each crate has exactly one reason to change. A new GPU vendor never touches `spark-model`. A new model family never touches `spark-runtime`. A new quantization scheme touches `atlas-quant` and `atlas-kernels`, but not the layer code. This orthogonality is not a happy accident of the crate layout — it *is* the architectural consequence of the specialization thesis.
+Each crate has exactly one reason to change. A new GPU vendor never touches `spark-model`. A new model family never touches `spark-runtime`. A new quantization scheme touches `spark-model`'s format modules and `atlas-kernels`, but not the layer code. This orthogonality is not a happy accident of the crate layout — it *is* the architectural consequence of the specialization thesis.
 
 ## Consequence 3: SBIO — business logic never touches I/O
 
@@ -62,7 +81,7 @@ This is what "embedded in the binary" means throughout the book. It is the concr
 
 ## Consequence 5: one binary per installation, N kernel sets
 
-You deploy one Docker image. It contains one `spark-server` binary. It contains twelve (today) `(gb10, model, quant)` PTX sets embedded in that binary. At startup, the binary reads the model's `config.json`, computes the canonical `model_type`, looks up the matching `KernelTarget`, and uses that set.
+You deploy one Docker image. It contains one `spark-server` binary. It contains 22 (today) `(gb10, model, quant)` PTX sets embedded in that binary. At startup, the binary reads the model's `config.json`, computes the canonical `model_type`, looks up the matching `KernelTarget`, and uses that set.
 
 The knobs that let this scale:
 
@@ -76,7 +95,7 @@ The same image works across all supported targets. The startup dispatcher picks 
 
 Every subsequent chapter is an elaboration of one of the consequences above. The [workspace layout chapter](./workspace.md) walks the directory tree. The [dispatch chapter](./dispatch.md) traces a single request from HTTP to kernel launch. The [SBIO chapter](./sbio.md) shows how the testability claim actually holds.
 
-The deep-dive chapters in Part IV show what the kernels look like — what the "35 hyperoptimized kernels per target" buys you, and how you'd write new ones when you're porting Atlas to your own `(H, M_q)` target.
+The deep-dive chapters in Part IV show what the kernels look like — what a hand-tuned kernel set per target buys you, and how you'd write new ones when you're porting Atlas to your own `(H, M_q)` target.
 
 ## Reading the architecture categorically
 

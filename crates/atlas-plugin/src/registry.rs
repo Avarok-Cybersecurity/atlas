@@ -17,6 +17,7 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &ttft::COLD_DESCRIPTOR,
     &agentic::DESCRIPTOR,
     &bfcl::SUBSET_DESCRIPTOR,
+    &bfcl::SUBSET_ECHOLP_DESCRIPTOR,
     &bfcl::FULL_DESCRIPTOR,
     // Last: the only one that REPLACES the model the box is serving, so it is
     // the one an operator should have to travel furthest to start by accident.

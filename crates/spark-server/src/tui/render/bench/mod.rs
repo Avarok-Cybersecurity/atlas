@@ -161,3 +161,7 @@ pub(super) fn draw_table(
         inner,
     );
 }
+
+#[cfg(test)]
+#[path = "bench_tests.rs"]
+mod tests;
