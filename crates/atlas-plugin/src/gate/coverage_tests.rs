@@ -12,6 +12,19 @@ use super::*;
 use crate::result::{RunStatus, Verdict};
 use std::collections::BTreeMap;
 
+/// A gate that excludes nothing.
+///
+/// These tests are about the boundary and git ancestry, not about any one
+/// gate's exclusions, so they use the strictest possible coverage: everything
+/// on the boundary invalidates. Using a real gate here would couple ancestry
+/// tests to whichever exclusions that gate happens to carry today.
+pub(super) fn any_gate() -> super::coverage::GateCoverage {
+    super::coverage::GateCoverage {
+        id: "test-strictest",
+        excludes: &[],
+    }
+}
+
 pub(super) mod scratch_repo {
     use std::path::Path;
     use std::process::Command;
@@ -81,7 +94,7 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     scratch_repo::commit(root, "docs/notes.md", "hello", "docs only");
     let sha_b = scratch_repo::head(root);
     assert!(
-        record_covers(root, &sha_b, &sha_a),
+        record_covers(root, &sha_b, &sha_a, &any_gate()),
         "docs-only diff is inert"
     );
     let gates = check_gates(root, &sha_b);
@@ -97,7 +110,7 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     scratch_repo::commit(root, "crates/x.rs", "// code", "touch a crate");
     let sha_c = scratch_repo::head(root);
     assert!(
-        !record_covers(root, &sha_c, &sha_a),
+        !record_covers(root, &sha_c, &sha_a, &any_gate()),
         "crates/ diff invalidates"
     );
     let gates = check_gates(root, &sha_c);
@@ -162,8 +175,8 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     );
     // Both records cover head — only docs changed — so the ordering alone
     // decides the verdict.
-    assert!(record_covers(root, &head, earlier_pass));
-    assert!(record_covers(root, &head, later_fail));
+    assert!(record_covers(root, &head, earlier_pass, &any_gate()));
+    assert!(record_covers(root, &head, later_fail, &any_gate()));
     match &check_gates(root, &head)["bfcl-subset"] {
         GateStatus::Fail(reasons) => assert!(
             reasons.iter().any(|r| r.contains("not PASS")),
@@ -213,12 +226,12 @@ fn a_prompt_template_or_toolchain_change_invalidates_an_earlier_record() {
         let before = scratch_repo::head(root);
         scratch_repo::commit(root, "docs/n.md", "inert", "docs only");
         assert!(
-            record_covers(root, &scratch_repo::head(root), &before),
+            record_covers(root, &scratch_repo::head(root), &before, &any_gate()),
             "a docs commit must stay inert"
         );
         scratch_repo::commit(root, file, contents, "change what gets measured");
         assert!(
-            !record_covers(root, &scratch_repo::head(root), &before),
+            !record_covers(root, &scratch_repo::head(root), &before, &any_gate()),
             "{file} changes what a run measures, so an earlier record cannot speak for head"
         );
     }

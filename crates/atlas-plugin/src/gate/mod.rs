@@ -21,6 +21,7 @@
 //!   carries no per-box state ([`check`]).
 
 pub mod check;
+pub mod coverage;
 pub mod record;
 
 use std::path::{Path, PathBuf};
@@ -53,11 +54,11 @@ pub use record::{
 /// bench's `BASELINE.json` pins its own model, and a model mismatch is a hard
 /// fail in `check_record`.
 pub const REQUIRED_GATES: [&str; 5] = [
-    "agentic-webserver",
-    "ttft-warm-gate",
-    "ttft-cold-gate",
-    "bfcl-subset",
-    "bfcl-subset-echolp",
+    coverage::REQUIRED[0].id,
+    coverage::REQUIRED[1].id,
+    coverage::REQUIRED[2].id,
+    coverage::REQUIRED[3].id,
+    coverage::REQUIRED[4].id,
 ];
 
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.
@@ -88,15 +89,7 @@ pub const HARDWARE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Deliberately NOT here: `.benchmarks` (the records and thresholds are the
 /// verdict, not the subject), `bench/` and `scripts/` (developer tooling that
 /// no gate drives), and docs.
-pub const PERF_PATHS: [&str; 7] = [
-    "crates",
-    "kernels",
-    "Cargo.toml",
-    "Cargo.lock",
-    "vendor",
-    "jinja-templates",
-    "rust-toolchain.toml",
-];
+pub use coverage::PERF_PATHS;
 
 /// `.benchmarks/<benchmark_id>` under `root`.
 pub fn gate_dir(root: &Path, benchmark_id: &str) -> PathBuf {
@@ -202,6 +195,11 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+/// Split from `coverage_tests.rs` for the 500-LoC cap: the deterministic floor.
+#[cfg(test)]
+#[path = "coverage_map_tests.rs"]
+mod coverage_map_tests;
 
 #[cfg(test)]
 #[path = "coverage_tests.rs"]

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::record::{GateBaseline, GateRecord, read_baseline, read_record};
-use super::{PERF_PATHS, REQUIRED_GATES, gate_dir};
+use super::{REQUIRED_GATES, gate_dir};
 
 /// One metric's comparison, or why it cannot be judged.
 pub enum Comparison {
@@ -156,9 +156,34 @@ pub fn records_newest_first(root: &Path, benchmark_id: &str) -> Vec<PathBuf> {
 /// prompts it renders are no longer the recorded ones. A record can never be
 /// written AT `head` (committing it moves head), so this ancestry rule is what
 /// makes "gated at the current commit" achievable at all.
-pub fn record_covers(root: &Path, head: &str, record_sha: &str) -> bool {
+pub fn record_covers(
+    root: &Path,
+    head: &str,
+    record_sha: &str,
+    gate: &super::coverage::GateCoverage,
+) -> bool {
+    invalidating_paths(root, head, record_sha, gate).is_some_and(|p| p.is_empty())
+}
+
+/// The changed paths that invalidate `gate` between two commits.
+///
+/// `None` means the question could not be answered — not an ancestor, or git
+/// itself failed. Every such case is treated as "not covered" by the caller,
+/// keeping the existing fail-closed doctrine: a gate check that cannot see the
+/// history must never read as a pass.
+///
+/// The diff is taken with NO pathspec and filtered in Rust. Two reasons, both
+/// practical: the filter is then unit-testable without a git fixture, and
+/// git's exclude-pathspec precedence rules are subtle enough that expressing
+/// per-gate exclusions in them would move the policy somewhere nobody reviews.
+pub fn invalidating_paths(
+    root: &Path,
+    head: &str,
+    record_sha: &str,
+    gate: &super::coverage::GateCoverage,
+) -> Option<Vec<String>> {
     if head == record_sha {
-        return true;
+        return Some(Vec::new());
     }
     let is_ancestor = std::process::Command::new("git")
         .arg("-C")
@@ -168,19 +193,27 @@ pub fn record_covers(root: &Path, head: &str, record_sha: &str) -> bool {
         .output()
         .is_ok_and(|o| o.status.success());
     if !is_ancestor {
-        return false;
+        return None;
     }
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["diff", "--name-only", record_sha, head, "--"])
-        .args(PERF_PATHS)
+        .args(["diff", "--name-only", record_sha, head])
         .stdin(std::process::Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().is_empty(),
-        _ => false,
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
     }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .filter(|p| super::coverage::invalidates(gate, p))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// The full gate verdict for `sha`: every required bench, in order.
@@ -193,6 +226,13 @@ pub fn check_gates(root: &Path, sha: &str) -> BTreeMap<String, GateStatus> {
 }
 
 fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
+    let Some(gate) = super::coverage::find(benchmark_id) else {
+        // Unreachable through `check_gates`, which iterates the coverage table
+        // itself, and a test pins that every required id resolves. Refusing
+        // beats defaulting to "no exclusions": a silent fallback here would be
+        // a second, undeclared coverage policy.
+        return GateStatus::Missing(format!("{benchmark_id} has no coverage entry"));
+    };
     let paths = records_newest_first(root, benchmark_id);
     if paths.is_empty() {
         return GateStatus::Missing("no gate records committed".into());
@@ -205,7 +245,7 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     let mut covered: Option<GateRecord> = None;
     for path in &paths {
         if let Ok(record) = read_record(path)
-            && record_covers(root, sha, &record.git_sha)
+            && record_covers(root, sha, &record.git_sha, gate)
         {
             covered = Some(record);
             break;
@@ -214,13 +254,26 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     let Some(record) = covered else {
         let newest_sha = read_record(&paths[0]).ok().map(|r| r.git_sha);
         return GateStatus::Missing(match newest_sha {
-            Some(newest) => format!(
-                "latest record is for {newest} ({}), which does not cover this commit",
-                paths[0]
-                    .file_name()
-                    .map(|n| n.to_string_lossy())
-                    .unwrap_or_default()
-            ),
+            // ★ Name the files that invalidated it. "does not cover this
+            // commit" tells an author a gate is open but not what re-opened
+            // it, which turns a 20-second fix into a bisect. `why` is empty
+            // when the record is not an ancestor at all, which the wording
+            // then says outright instead of implying a path list exists.
+            Some(newest) => {
+                let why = invalidating_paths(root, sha, &newest, gate).unwrap_or_default();
+                let because = if why.is_empty() {
+                    "it is not an ancestor of this commit".to_string()
+                } else {
+                    format!("invalidated by {}", summarize_paths(&why))
+                };
+                format!(
+                    "latest record is for {newest} ({}) — {because}",
+                    paths[0]
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default()
+                )
+            }
             None => "latest record is unreadable".to_string(),
         });
     };
@@ -268,4 +321,20 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     } else {
         GateStatus::Fail(problems)
     }
+}
+
+/// Render invalidating paths for a one-line message: a few names, then a count.
+///
+/// A refactor can touch hundreds of files, and pasting all of them buries the
+/// verdict it is attached to.
+fn summarize_paths(paths: &[String]) -> String {
+    const SHOWN: usize = 3;
+    if paths.len() <= SHOWN {
+        return paths.join(", ");
+    }
+    format!(
+        "{} and {} more",
+        paths[..SHOWN].join(", "),
+        paths.len() - SHOWN
+    )
 }
