@@ -220,12 +220,21 @@ pub(super) async fn translate_chat_response_to_responses(
             .first()
             .and_then(|c| c.content.as_deref())
             .unwrap_or("");
-        if !assistant_text.is_empty() {
-            batch.push(serde_json::json!({
+        let assistant_reasoning = chat
+            .choices
+            .first()
+            .and_then(|c| c.reasoning.as_deref())
+            .unwrap_or("");
+        if !assistant_text.is_empty() || !assistant_reasoning.is_empty() {
+            let mut item = serde_json::json!({
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "output_text", "text": assistant_text}],
-            }));
+            });
+            if !assistant_reasoning.is_empty() {
+                item["reasoning_content"] = serde_json::json!(assistant_reasoning);
+            }
+            batch.push(item);
         }
         if !batch.is_empty()
             && let Err(e) = conv_store.add_items(&conv_id, batch)

@@ -14,8 +14,8 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::chat_stream::run_chat_stream;
 use super::responses_stream_finalize::{
-    CloseOpenCtx, FinalizeCtx, close_open_items, close_open_reasoning, emit_responses_prologue,
-    finalize_responses_stream,
+    CloseOpenCtx, FinalizeCtx, ReasoningState, close_open_fc, close_open_items, close_open_message,
+    close_open_reasoning, emit_responses_prologue, finalize_responses_stream,
 };
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
@@ -136,12 +136,14 @@ pub(super) async fn responses_endpoint_stream(
         // Reasoning item state: opened on the first Reasoning delta,
         // streamed as `response.reasoning_summary_text.delta` frames,
         // closed by the first visible output (content or tool call) or
-        // at stream end. Always the first output item (thinking
-        // precedes content).
-        let mut reasoning_open = false;
-        let mut reasoning_item_id = String::new();
-        let mut reasoning_text = String::new();
-        let mut reasoning_output_index: usize = 0;
+        // at stream end. The model can re-open <think> mid-content,
+        // producing further reasoning items after visible output.
+        let mut reasoning = ReasoningState {
+            open: false,
+            item_id: String::new(),
+            text: String::new(),
+            output_index: 0,
+        };
 
         seq = emit_responses_prologue(&tx, seq, &resp_id, created_at, &model, &metadata).await;
 
@@ -155,13 +157,54 @@ pub(super) async fn responses_endpoint_stream(
                 // closed by the first visible output or at stream end —
                 // see `close_open_reasoning`.
                 StreamDelta::Reasoning { text, .. } if !text.is_empty() => {
-                    if !reasoning_open {
-                        reasoning_open = true;
-                        reasoning_output_index = output_index;
-                        reasoning_item_id = format!("rs_{}_{}", resp_id, output_index);
+                    if !reasoning.open {
+                        // The model can RE-OPEN <think> mid-content
+                        // (chat_stream/handle_token.rs resets
+                        // thinking_done on a fresh `<think>` tag), so a
+                        // Reasoning delta may arrive while a message or
+                        // function_call is open: close the visible item
+                        // and start a fresh reasoning item at the next
+                        // output_index. fc and message are never open
+                        // simultaneously, hence the else-if.
+                        if fc_started && !fc_done {
+                            if let Some(fcid) = fc_item_id.clone() {
+                                seq = close_open_fc(
+                                    &tx,
+                                    &mut completed_items,
+                                    seq,
+                                    &fcid,
+                                    current_tool_call_id.as_deref().unwrap_or_default(),
+                                    current_tool_name.as_deref().unwrap_or_default(),
+                                    &tool_args,
+                                    output_index,
+                                )
+                                .await;
+                            }
+                            output_index += 1;
+                            fc_done = true;
+                        } else if message_started {
+                            seq = close_open_message(
+                                &tx,
+                                &mut completed_items,
+                                seq,
+                                &message_item_id,
+                                &content_text,
+                                output_index,
+                            )
+                            .await;
+                            output_index += 1;
+                            message_started = false;
+                            content_text.clear();
+                        }
+                        reasoning.open = true;
+                        reasoning.output_index = output_index;
+                        reasoning.item_id = format!("rs_{}_{}", resp_id, output_index);
+                        // Fresh buffer per reasoning item — a reopened
+                        // segment must not inherit the prior one's text.
+                        reasoning.text.clear();
                         // output_item.added for the reasoning item.
                         let item = crate::openai::ResponsesOutputItem::Reasoning {
-                            id: reasoning_item_id.clone(),
+                            id: reasoning.item_id.clone(),
                             summary: vec![],
                         };
                         let ev = crate::openai::ResponsesStreamEvent::OutputItemAdded {
@@ -174,7 +217,7 @@ pub(super) async fn responses_endpoint_stream(
                         // reasoning_summary_part.added (single summary_text part).
                         let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryPartAdded {
                             sequence_number: seq,
-                            item_id: reasoning_item_id.clone(),
+                            item_id: reasoning.item_id.clone(),
                             output_index,
                             summary_index: 0,
                             part: crate::openai::ResponsesSummaryPart::SummaryText {
@@ -184,10 +227,10 @@ pub(super) async fn responses_endpoint_stream(
                         emit(&tx, &ev).await;
                         seq += 1;
                     }
-                    reasoning_text.push_str(&text);
+                    reasoning.text.push_str(&text);
                     let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryTextDelta {
                         sequence_number: seq,
-                        item_id: reasoning_item_id.clone(),
+                        item_id: reasoning.item_id.clone(),
                         output_index,
                         summary_index: 0,
                         delta: text,
@@ -218,15 +261,12 @@ pub(super) async fn responses_endpoint_stream(
                     // output_index. Re-mint the message id only on that
                     // transition so the text→fc→text path below keeps
                     // its own id bookkeeping.
-                    let had_reasoning = reasoning_open;
+                    let had_reasoning = reasoning.open;
                     seq = close_open_reasoning(
                         &tx,
                         &mut completed_items,
                         seq,
-                        &mut reasoning_open,
-                        &reasoning_item_id,
-                        &reasoning_text,
-                        reasoning_output_index,
+                        &mut reasoning,
                         &mut output_index,
                     )
                     .await;
@@ -239,30 +279,17 @@ pub(super) async fn responses_endpoint_stream(
                     // on the same `output_index`.
                     if fc_started && !fc_done {
                         if let Some(fcid) = fc_item_id.clone() {
-                            let ev =
-                                crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDone {
-                                    sequence_number: seq,
-                                    item_id: fcid.clone(),
-                                    output_index,
-                                    arguments: tool_args.clone(),
-                                };
-                            emit(&tx, &ev).await;
-                            seq += 1;
-                            let done = crate::openai::ResponsesOutputItem::FunctionCall {
-                                id: fcid,
-                                call_id: current_tool_call_id.clone().unwrap_or_default(),
-                                name: current_tool_name.clone().unwrap_or_default(),
-                                arguments: tool_args.clone(),
-                                status: "completed",
-                            };
-                            completed_items.push(done.clone());
-                            let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
-                                sequence_number: seq,
+                            seq = close_open_fc(
+                                &tx,
+                                &mut completed_items,
+                                seq,
+                                &fcid,
+                                current_tool_call_id.as_deref().unwrap_or_default(),
+                                current_tool_name.as_deref().unwrap_or_default(),
+                                &tool_args,
                                 output_index,
-                                item: done,
-                            };
-                            emit(&tx, &ev).await;
-                            seq += 1;
+                            )
+                            .await;
                         }
                         output_index += 1;
                         message_item_id = format!("msg_{}_{}", resp_id, output_index);
@@ -324,10 +351,7 @@ pub(super) async fn responses_endpoint_stream(
                         &tx,
                         &mut completed_items,
                         seq,
-                        &mut reasoning_open,
-                        &reasoning_item_id,
-                        &reasoning_text,
-                        reasoning_output_index,
+                        &mut reasoning,
                         &mut output_index,
                     )
                     .await;
@@ -336,32 +360,15 @@ pub(super) async fn responses_endpoint_stream(
                     if !fc_started {
                         // Close any open message before starting function call.
                         if message_started {
-                            let ev = crate::openai::ResponsesStreamEvent::OutputTextDone {
-                                sequence_number: seq,
-                                item_id: message_item_id.clone(),
+                            seq = close_open_message(
+                                &tx,
+                                &mut completed_items,
+                                seq,
+                                &message_item_id,
+                                &content_text,
                                 output_index,
-                                content_index: 0,
-                                text: content_text.clone(),
-                            };
-                            emit(&tx, &ev).await;
-                            seq += 1;
-                            let done = crate::openai::ResponsesOutputItem::Message {
-                                id: message_item_id.clone(),
-                                status: "completed",
-                                role: "assistant",
-                                content: vec![crate::openai::ResponsesContentPart::OutputText {
-                                    text: content_text.clone(),
-                                    annotations: crate::openai::merged_annotations(&content_text),
-                                }],
-                            };
-                            completed_items.push(done.clone());
-                            let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
-                                sequence_number: seq,
-                                output_index,
-                                item: done,
-                            };
-                            emit(&tx, &ev).await;
-                            seq += 1;
+                            )
+                            .await;
                             output_index += 1;
                             message_started = false;
                             content_text.clear();
@@ -436,10 +443,7 @@ pub(super) async fn responses_endpoint_stream(
             &tx,
             &mut completed_items,
             seq,
-            &mut reasoning_open,
-            &reasoning_item_id,
-            &reasoning_text,
-            reasoning_output_index,
+            &mut reasoning,
             &mut output_index,
         )
         .await;

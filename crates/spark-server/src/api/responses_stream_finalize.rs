@@ -82,59 +82,61 @@ pub(super) async fn emit_responses_prologue(
     seq
 }
 
+/// Mutable state of the in-flight `reasoning` output item, threaded
+/// through the stream loop.
+pub(super) struct ReasoningState {
+    pub open: bool,
+    pub item_id: String,
+    pub text: String,
+    /// `output_index` the open item owns.
+    pub output_index: usize,
+}
+
 /// Close the in-flight `reasoning` output item (if open): emit the
-/// terminal `summary_text.done` + `summary_part.done` + `output_item.done`
-/// frames, record the item in `completed_items`, and advance
-/// `output_index` past it. No-op when reasoning never opened. Returns the
-/// next free sequence number. Reasoning always leads the turn, so this is
-/// invoked on the first visible output (content/tool call) and again at
-/// stream end for thinking-only turns.
-#[allow(clippy::too_many_arguments)]
+/// terminal summary events, record the item in `completed_items`, and
+/// advance `output_index` past it. Returns the next free sequence number.
 pub(super) async fn close_open_reasoning(
     tx: &mpsc::Sender<Result<Event, std::convert::Infallible>>,
     completed_items: &mut Vec<crate::openai::ResponsesOutputItem>,
     seq: u64,
-    reasoning_open: &mut bool,
-    reasoning_item_id: &str,
-    reasoning_text: &str,
-    reasoning_output_index: usize,
+    reasoning: &mut ReasoningState,
     output_index: &mut usize,
 ) -> u64 {
-    if !*reasoning_open {
+    if !reasoning.open {
         return seq;
     }
-    *reasoning_open = false;
+    reasoning.open = false;
     let mut seq = seq;
     let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryTextDone {
         sequence_number: seq,
-        item_id: reasoning_item_id.to_string(),
-        output_index: reasoning_output_index,
+        item_id: reasoning.item_id.clone(),
+        output_index: reasoning.output_index,
         summary_index: 0,
-        text: reasoning_text.to_string(),
+        text: reasoning.text.clone(),
     };
     emit(tx, &ev).await;
     seq += 1;
     let ev = crate::openai::ResponsesStreamEvent::ReasoningSummaryPartDone {
         sequence_number: seq,
-        item_id: reasoning_item_id.to_string(),
-        output_index: reasoning_output_index,
+        item_id: reasoning.item_id.clone(),
+        output_index: reasoning.output_index,
         summary_index: 0,
         part: crate::openai::ResponsesSummaryPart::SummaryText {
-            text: reasoning_text.to_string(),
+            text: reasoning.text.clone(),
         },
     };
     emit(tx, &ev).await;
     seq += 1;
     let done = crate::openai::ResponsesOutputItem::Reasoning {
-        id: reasoning_item_id.to_string(),
+        id: reasoning.item_id.clone(),
         summary: vec![crate::openai::ResponsesSummaryPart::SummaryText {
-            text: reasoning_text.to_string(),
+            text: reasoning.text.clone(),
         }],
     };
     completed_items.push(done.clone());
     let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
         sequence_number: seq,
-        output_index: reasoning_output_index,
+        output_index: reasoning.output_index,
         item: done,
     };
     emit(tx, &ev).await;
@@ -160,6 +162,87 @@ pub(super) struct CloseOpenCtx<'a> {
     pub output_index: usize,
 }
 
+/// Close the in-flight message item: `output_text.done` →
+/// `output_item.done`, recorded in `completed_items`. Returns the next
+/// free sequence number. Shared by every transition that leaves an open
+/// message (content→function_call, content→reasoning re-open, stream
+/// end).
+pub(super) async fn close_open_message(
+    tx: &mpsc::Sender<Result<Event, std::convert::Infallible>>,
+    completed_items: &mut Vec<crate::openai::ResponsesOutputItem>,
+    seq: u64,
+    message_item_id: &str,
+    content_text: &str,
+    output_index: usize,
+) -> u64 {
+    let mut seq = seq;
+    let ev = crate::openai::ResponsesStreamEvent::OutputTextDone {
+        sequence_number: seq,
+        item_id: message_item_id.to_string(),
+        output_index,
+        content_index: 0,
+        text: content_text.to_string(),
+    };
+    emit(tx, &ev).await;
+    seq += 1;
+    let done = crate::openai::ResponsesOutputItem::Message {
+        id: message_item_id.to_string(),
+        status: "completed",
+        role: "assistant",
+        content: vec![crate::openai::ResponsesContentPart::OutputText {
+            text: content_text.to_string(),
+            annotations: crate::openai::merged_annotations(content_text),
+        }],
+    };
+    completed_items.push(done.clone());
+    let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
+        sequence_number: seq,
+        output_index,
+        item: done,
+    };
+    emit(tx, &ev).await;
+    seq + 1
+}
+
+/// Close the in-flight function_call item:
+/// `function_call_arguments.done` → `output_item.done`, recorded in
+/// `completed_items`. Returns the next free sequence number.
+pub(super) async fn close_open_fc(
+    tx: &mpsc::Sender<Result<Event, std::convert::Infallible>>,
+    completed_items: &mut Vec<crate::openai::ResponsesOutputItem>,
+    seq: u64,
+    fc_item_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    tool_args: &str,
+    output_index: usize,
+) -> u64 {
+    let mut seq = seq;
+    let ev = crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDone {
+        sequence_number: seq,
+        item_id: fc_item_id.to_string(),
+        output_index,
+        arguments: tool_args.to_string(),
+    };
+    emit(tx, &ev).await;
+    seq += 1;
+    let done = crate::openai::ResponsesOutputItem::FunctionCall {
+        id: fc_item_id.to_string(),
+        call_id: tool_call_id.to_string(),
+        name: tool_name.to_string(),
+        arguments: tool_args.to_string(),
+        status: "completed",
+    };
+    completed_items.push(done.clone());
+    let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
+        sequence_number: seq,
+        output_index,
+        item: done,
+    };
+    emit(tx, &ev).await;
+    seq + 1
+}
+
 /// Close any open message- or function-call output item left behind when
 /// the inner chat stream ended. Pushes `OutputItemDone` events into
 /// `completed_items` and returns the next free sequence number.
@@ -170,60 +253,31 @@ pub(super) async fn close_open_items(
 ) -> u64 {
     let mut seq = ctx.seq;
     if ctx.message_started {
-        let ev = crate::openai::ResponsesStreamEvent::OutputTextDone {
-            sequence_number: seq,
-            item_id: ctx.message_item_id.to_string(),
-            output_index: ctx.output_index,
-            content_index: 0,
-            text: ctx.content_text.to_string(),
-        };
-        emit(tx, &ev).await;
-        seq += 1;
-        let done = crate::openai::ResponsesOutputItem::Message {
-            id: ctx.message_item_id.to_string(),
-            status: "completed",
-            role: "assistant",
-            content: vec![crate::openai::ResponsesContentPart::OutputText {
-                text: ctx.content_text.to_string(),
-                annotations: crate::openai::merged_annotations(ctx.content_text),
-            }],
-        };
-        completed_items.push(done.clone());
-        let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
-            sequence_number: seq,
-            output_index: ctx.output_index,
-            item: done,
-        };
-        emit(tx, &ev).await;
-        seq += 1;
+        seq = close_open_message(
+            tx,
+            completed_items,
+            seq,
+            ctx.message_item_id,
+            ctx.content_text,
+            ctx.output_index,
+        )
+        .await;
     }
     if ctx.fc_started
         && !ctx.fc_done
         && let Some(fcid) = ctx.fc_item_id.clone()
     {
-        let ev = crate::openai::ResponsesStreamEvent::FunctionCallArgumentsDone {
-            sequence_number: seq,
-            item_id: fcid.clone(),
-            output_index: ctx.output_index,
-            arguments: ctx.tool_args.to_string(),
-        };
-        emit(tx, &ev).await;
-        seq += 1;
-        let done = crate::openai::ResponsesOutputItem::FunctionCall {
-            id: fcid,
-            call_id: ctx.current_tool_call_id.clone().unwrap_or_default(),
-            name: ctx.current_tool_name.clone().unwrap_or_default(),
-            arguments: ctx.tool_args.to_string(),
-            status: "completed",
-        };
-        completed_items.push(done.clone());
-        let ev = crate::openai::ResponsesStreamEvent::OutputItemDone {
-            sequence_number: seq,
-            output_index: ctx.output_index,
-            item: done,
-        };
-        emit(tx, &ev).await;
-        seq += 1;
+        seq = close_open_fc(
+            tx,
+            completed_items,
+            seq,
+            &fcid,
+            ctx.current_tool_call_id.as_deref().unwrap_or_default(),
+            ctx.current_tool_name.as_deref().unwrap_or_default(),
+            ctx.tool_args,
+            ctx.output_index,
+        )
+        .await;
     }
     seq
 }
@@ -310,11 +364,10 @@ pub(super) async fn finalize_responses_stream(
         usage,
         metadata: metadata_for_done,
     };
-    // Aggregate every emitted message's text so multi-item streams
-    // (text→fc→text) round-trip cleanly through previous_response_id
-    // resume and the Conversations API. Same for the reasoning trace —
-    // resuming without it makes the template emit empty `<think>`
-    // wrappers for the prior assistant turn.
+    // Aggregate emitted text + reasoning so multi-item streams round-trip
+    // through previous_response_id resume and the Conversations API;
+    // without the reasoning trace, resume renders an empty `<think>`
+    // wrapper for the prior assistant turn (F1 empty-think poisoning).
     let mut transcript_text = String::new();
     let mut transcript_reasoning = String::new();
     for item in &final_resp.output {
@@ -383,7 +436,7 @@ pub(super) async fn finalize_responses_stream(
                 reasoning_content: if transcript_reasoning.is_empty() {
                     None
                 } else {
-                    Some(transcript_reasoning)
+                    Some(transcript_reasoning.clone())
                 },
             });
         }
@@ -402,12 +455,16 @@ pub(super) async fn finalize_responses_stream(
     // SSE stream is never disrupted by conversation-store issues).
     if let Some(cid) = conversation_id.as_ref() {
         let mut batch = conv_new_user_items.clone();
-        if !transcript_text.is_empty() {
-            batch.push(serde_json::json!({
+        if !transcript_text.is_empty() || !transcript_reasoning.is_empty() {
+            let mut item = serde_json::json!({
                 "type": "message",
                 "role": "assistant",
                 "content": [{"type": "output_text", "text": transcript_text}],
-            }));
+            });
+            if !transcript_reasoning.is_empty() {
+                item["reasoning_content"] = serde_json::json!(transcript_reasoning);
+            }
+            batch.push(item);
         }
         if !batch.is_empty()
             && let Err(e) = state_arc.conversation_store.add_items(cid, batch)
