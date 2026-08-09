@@ -6,7 +6,8 @@ use crate::gpu::mock::MockGpuBackend;
 #[test]
 fn test_buffer_sizes_qwen3() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
-    let sizes = BufferSizes::from_config(&cfg, 1, 4096, 16);
+    // max_batch_size=32: the decode-meta rows floor — legacy byte-identical sizing.
+    let sizes = BufferSizes::from_config(&cfg, 1, 4096, 16, 32);
 
     // hidden_states: 1 * 2048 * 2 = 4096 (BF16, 2 bytes/elem).
     // (Was FP32 = 8192 in earlier prototypes; NVFP4 path keeps the
@@ -36,7 +37,8 @@ fn test_buffer_sizes_qwen3() {
 fn test_buffer_arena_alloc() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
     let gpu = MockGpuBackend::new();
-    let arena = BufferArena::new(&cfg, 128, 4096, 16, &gpu).unwrap();
+    // max_batch_size=32: the decode-meta rows floor — legacy byte-identical sizing.
+    let arena = BufferArena::new(&cfg, 128, 4096, 16, 32, &gpu).unwrap();
 
     assert!(!arena.hidden_states().is_null());
     assert!(!arena.logits().is_null());
@@ -55,16 +57,53 @@ fn test_buffer_arena_alloc() {
     // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
     //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
     //     allocated unconditionally). 27 + 2 = 29.
+    // (wip-laguna-lora counts 30 here: its keep-packed GGUF grouped MoE adds
+    // a moe_grouped_q8 arena buffer (06c89a33) that this branch does not
+    // carry. Re-sync this count if that work is ever picked.)
     assert_eq!(gpu.alloc_count(), 29);
 }
 
 #[test]
 fn test_buffer_sizes_scale_with_batch() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
-    let s1 = BufferSizes::from_config(&cfg, 1, 4096, 16);
-    let s128 = BufferSizes::from_config(&cfg, 128, 4096, 16);
+    // max_batch_size=32: the decode-meta rows floor — legacy byte-identical sizing.
+    let s1 = BufferSizes::from_config(&cfg, 1, 4096, 16, 32);
+    let s128 = BufferSizes::from_config(&cfg, 128, 4096, 16, 32);
     assert_eq!(s128.hidden_states, s1.hidden_states * 128);
-    // logits is capped at 16 tokens; FP32 sampling buffer (4 bytes/elem),
-    // so s128.logits = 16 * vocab * 4 (not 128× the unbatched value).
-    assert_eq!(s128.logits, 16 * cfg.vocab_size * 4);
+    // logits does NOT scale with batch: BF16 rows (2 bytes/elem) capped at
+    // 96 tokens — the batched-verify row cap (n=32 × k=3 rows, the wave-11
+    // depth-at-width envelope, VERIFY_ROW_CAP; sizes.rs `logits_tokens`).
+    // This assert was stale twice (16-row FP32 era, then unnoticed through
+    // the 33-row bump) — it is the byte twin of the sizes.rs formula, so
+    // update BOTH together.
+    assert_eq!(s128.logits, 96 * cfg.vocab_size * 2);
+}
+
+/// bs=64 native boots (wave-14a): sizing must be BYTE-IDENTICAL to bs=32 —
+/// the widened decode-meta layout (rows=64) still sits strictly inside the
+/// 96-row verify scratch overlay (bt at 24*64=1536 < 2048, 64 < 96 rows)
+/// and the 65-row logits need is under the 96-row cap. Only above those
+/// bounds may sizes grow — asserted for the 128-row ceiling.
+#[test]
+fn test_buffer_sizes_decode_meta_widening() {
+    let cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    let s32 = BufferSizes::from_config(&cfg, 8192, 4096, 16, 32);
+    // bs 1..=32: rows floor 32 — identical sizing in every field.
+    for bs in [1usize, 31, 32] {
+        let s = BufferSizes::from_config(&cfg, 8192, 4096, 16, bs);
+        assert_eq!(s.total_bytes(), s32.total_bytes(), "bs={bs}");
+        assert_eq!(s.scratch, s32.scratch, "bs={bs}");
+        assert_eq!(s.logits, s32.logits, "bs={bs}");
+    }
+    // bs 33..=64: layout widens but stays inside the verify envelope.
+    for bs in [33usize, 64] {
+        let s = BufferSizes::from_config(&cfg, 8192, 4096, 16, bs);
+        assert_eq!(s.total_bytes(), s32.total_bytes(), "bs={bs}");
+    }
+    // bs=128 (the derived ceiling): logits go to 129 rows and the scratch
+    // envelope must cover the decode layout term (24R + R*max_blocks*4).
+    let s128 = BufferSizes::from_config(&cfg, 8192, 4096, 16, 128);
+    assert_eq!(s128.logits, 129 * cfg.vocab_size * 2);
+    let max_blocks = 4096 / 16 + 1;
+    assert!(s128.scratch >= 32768 + 24 * 128 + 128 * max_blocks * 4);
 }

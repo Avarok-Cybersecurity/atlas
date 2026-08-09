@@ -82,11 +82,17 @@ pub(super) fn build_mtp_proposer(
     mtp_weights: Vec<MtpWeights>,
     embed_tokens: DenseWeight,
     lm_head_nvfp4: Option<QuantizedWeight>,
+    // Padded transposed twin of the SHARED main head for the batched-propose
+    // tile GEMM; `Some` only when the drafter head IS the main head (caller
+    // guarantees it — see `draft_lm_head_nvfp4_t` in impl_a1.rs).
+    lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     mtp_quant: crate::layers::MtpQuantization,
     mtp_vocab_size: u32,
     max_seq_len: usize,
+    main_kv_blocks: usize,
+    levers: &crate::layers::ops::ModelLevers,
 ) -> Option<Arc<dyn DraftProposer>> {
     if !use_speculative {
         if !mtp_weights.is_empty() {
@@ -114,11 +120,14 @@ pub(super) fn build_mtp_proposer(
             mtp_wts,
             embed_tokens,
             lm_nvfp4,
+            lm_head_nvfp4_t,
             config,
             gpu,
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            main_kv_blocks,
+            levers,
         )
     };
     if mtp_weights.len() == 1 {

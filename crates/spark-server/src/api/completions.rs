@@ -2,7 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
-use axum::extract::State;
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive};
@@ -95,7 +95,7 @@ fn validate_token_ids(state: &AppState, ids: &[u32]) -> Result<(), (StatusCode, 
 }
 
 pub async fn completions(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -344,7 +344,9 @@ pub(super) async fn completions_stream(
         top_logprobs: logprobs_k,
         prompt_logprobs: if echo { logprobs_k } else { None },
         echo,
-        timeout_at: None,
+        // Was hard-coded `None`: streaming /v1/completions was the one
+        // surface with NO deadline while every other surface had 300 s.
+        timeout_at: state.request_deadline(None),
         token_tx,
         // /v1/completions has no guard pipeline yet — the flag is
         // created so the scheduler's emit_step type-checks cleanly,

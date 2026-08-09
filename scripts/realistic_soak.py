@@ -58,7 +58,7 @@ TOOLS = [
 DECODE_LENS = [64, 128, 200, 300]
 
 
-def build_request(rng, kinds, prefix_hit_rate, model, img_urls):
+def build_request(rng, kinds, prefix_hit_rate, model, img_urls, think_rate):
     """Return (body, kind, think). body is a full chat-completions payload."""
     target = rng.choices(SIZES, weights=SIZE_WEIGHTS)[0]
     shared_tok = int(target * max(0.0, min(1.0, prefix_hit_rate)))
@@ -70,7 +70,7 @@ def build_request(rng, kinds, prefix_hit_rate, model, img_urls):
                                   ).format(nonce) * (unique_tok // 16)
 
     kind = rng.choice(kinds)
-    think = rng.random() < args_think_rate            # thinking on/off mix
+    think = rng.random() < think_rate                 # thinking on/off mix
     text_q = {
         "fact": "\nExtract every entity, channel, and operator mentioned as a JSON array.",
         "tool": "\nUsing the tools, fetch the temperature metric for sector G-12, then query the DB for anomalies.",
@@ -148,8 +148,6 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-error-rate", type=float, default=2.0, help="fail (exit 1) above this %% errors")
     args = ap.parse_args()
-    global args_think_rate
-    args_think_rate = args.think_rate
 
     chat_url = args.url.rstrip("/") + "/v1/chat/completions"
     try:
@@ -190,12 +188,17 @@ def main():
             if r["ok"]:
                 st["ct"] += r["ct"]; st["pt"] += r["pt"]; st["cached"] += r["cached"]
                 st["rtok"] += r["rtok"]; st["tc"] += int(r["toolcall"]); lat.append(r["el"])
+            else:
+                # Count failures so errs=/err_rate and the --max-error-rate exit-1
+                # gate actually work (previously st["err"] was never incremented).
+                st["err"] += 1
+                print(f"  [err] {kind}: {r.get('err', 'unknown')}", file=sys.stderr, flush=True)
         return r["ok"]
 
     def oneshot_client(cid, rng):
         consec = 0
         while time.time() < stop:
-            body, kind, think = build_request(rng, kinds, args.prefix_hit_rate, args.model, img_urls)
+            body, kind, think = build_request(rng, kinds, args.prefix_hit_rate, args.model, img_urls, args.think_rate)
             ok = record(stream_chat(chat_url, body, args.timeout), kind, think)
             consec = 0 if ok else consec + 1
             if consec:
@@ -208,7 +211,7 @@ def main():
         consec = 0
         while time.time() < stop:
             # seed the thread with a shared cacheable preamble + opening question
-            body, _, think = build_request(rng, ["fact"], args.prefix_hit_rate, args.model, img_urls)
+            body, _, think = build_request(rng, ["fact"], args.prefix_hit_rate, args.model, img_urls, args.think_rate)
             msgs = body["messages"]
             thread_tok = 0; turns = 0
             with lock:

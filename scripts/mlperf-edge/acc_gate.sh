@@ -18,7 +18,14 @@
 # fails the accuracy leg silently while everything else completes.
 #
 # Usage: acc_gate.sh <atlas_bin> <outdir> <flag_env_or_NONE> [pct_scale]
-#   e.g. acc_gate.sh .../spark out/ ATLAS_GDN_REGRESIDENT=1 4
+#   e.g. acc_gate.sh .../spark out/ ATLAS_NO_GDN_REGRESIDENT=1 4
+#
+# NOTE on that example: the regresident lever is default-ON since PR #369 and
+# only the NEGATIVE spelling is read, so the candidate leg is the one that
+# switches the lever OFF and the accuracy question runs backwards — the gate is
+# "does removing it change BFCL", not "does adding it". A positive
+# `ATLAS_GDN_REGRESIDENT=1` (which this example used to pass) is read by nothing
+# and would have scored the default against itself.
 set -u
 BIN="${1:?path to the built spark binary}"
 OUT="${2:?output dir}"
@@ -36,7 +43,7 @@ for leg in control cand; do
   # shellcheck disable=SC2086
   sudo docker run -d --name atlas-acc --network host --gpus all --ipc=host \
     -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
     -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $EXTRA \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \

@@ -14,7 +14,9 @@ pub mod stream;
 
 pub use message::{ContentPart, ImageData, Message, Role};
 pub use request::{ChatRequest, ResponseFormat, SamplingParams, ThinkingDirective};
-pub use response::{ChatResponse, Choice, ChoiceLogprobs, FinishReason, TokenLogprob, Usage};
+pub use response::{
+    ChatResponse, Choice, ChoiceLogprobs, FINISH_REASON_TIMEOUT, FinishReason, TokenLogprob, Usage,
+};
 pub use stream::{DeltaStream, StreamDelta};
 
 #[cfg(test)]

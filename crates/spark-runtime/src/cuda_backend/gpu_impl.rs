@@ -33,7 +33,7 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
-use atlas_core::registry::{AtlasRegistry, RawCudaFunc, cuda_error_text};
+use atlas_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
@@ -41,6 +41,38 @@ use super::{
     cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
+
+/// Enqueue an H2D copy on `stream` and return without waiting. Shared by both
+/// async H2D entry points so the two differ ONLY in the ordering they add
+/// afterwards, never in the copy itself.
+fn h2d_enqueue(src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+    let status =
+        unsafe { cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream) };
+    if status != 0 {
+        bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
+    }
+    Ok(())
+}
+
+/// Say once, loudly, that a page-locked buffer reached the transient H2D path.
+///
+/// This is the tripwire the whole `pinned_hosts` registry exists to arm. It is a
+/// warning and not a `bail!` because the copy is still CORRECT — the sync above
+/// restores the guarantee — but it is a real, silent latency regression, and the
+/// call site almost certainly wants `copy_h2d_async_retained` instead.
+fn warn_pinned_transient_source() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "copy_h2d_async was handed a PAGE-LOCKED source. That copy is genuinely \
+             asynchronous, so the promise that the caller may drop the buffer on return \
+             is now being paid for with a cuStreamSynchronize on every such call. If the \
+             source outlives the next sync, switch the call site to \
+             copy_h2d_async_retained; if it does not, this sync is what keeps it from \
+             being a use-after-free."
+        );
+    });
+}
 
 impl GpuBackend for AtlasCudaBackend {
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
@@ -57,6 +89,7 @@ impl GpuBackend for AtlasCudaBackend {
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
         }
+        self.record_alloc(DevicePtr(dptr));
         Ok(DevicePtr(dptr))
     }
 
@@ -70,6 +103,7 @@ impl GpuBackend for AtlasCudaBackend {
                  Check system swap space: swapon --show"
             );
         }
+        self.record_alloc(DevicePtr(dptr));
         Ok(DevicePtr(dptr))
     }
 
@@ -77,77 +111,38 @@ impl GpuBackend for AtlasCudaBackend {
         if ptr.is_null() {
             return Ok(());
         }
+        // Off the ledger BEFORE the free: an entry that survives a successful
+        // free would be double-freed at teardown.
+        self.forget_alloc(ptr);
         let status = unsafe { cuMemFree_v2(ptr.0) };
-        if status != 0 {
+        // A context that is already being destroyed reports every free as
+        // failing, and at process exit that is the normal case, not an error:
+        // the driver has reclaimed the allocation by definition. Two other
+        // free paths in this crate already consult `is_teardown_noop`; this one
+        // did not, so wiring `Model::teardown` into shutdown turned a benign
+        // status 4 into `ERROR model teardown reported a failure` on every
+        // clean exit — the exact species of false alarm this work set out to
+        // remove.
+        if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
     }
 
+    fn sweep_unreleased(&self) -> usize {
+        AtlasCudaBackend::sweep_unreleased(self)
+    }
+
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(
-                dst.0,
-                src.as_ptr() as *const c_void,
-                src.len(),
-                self.default_stream,
-            )
-        };
-        if status != 0 {
-            bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
-        }
-        // Synchronize to ensure the copy completes before host buffer is freed.
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after H2D failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_h2d_impl(self, src, dst)
     }
 
     fn copy_d2h(&self, src: DevicePtr, dst: &mut [u8]) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(
-                dst.as_mut_ptr() as *mut c_void,
-                src.0,
-                dst.len(),
-                self.default_stream,
-            )
-        };
-        if status != 0 {
-            bail!("cuMemcpyDtoHAsync_v2 failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2H failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2h_impl(self, src, dst)
     }
 
     fn copy_d2h_on_stream(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
-        // Enqueue the copy on the caller's stream so CUDA orders it after
-        // any prior kernel launches on the same stream. Without this, the
-        // copy may run on the default stream concurrently with kernels on
-        // `stream` and read torn bytes (HSS Turbo8 race, 2026-04-28).
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(dst.as_mut_ptr() as *mut c_void, src.0, dst.len(), stream)
-        };
-        if status != 0 {
-            bail!("cuMemcpyDtoHAsync_v2 (on_stream) failed: status {status}");
-        }
-        let sync = unsafe { cuStreamSynchronize(stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2H on_stream failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
     }
 
     fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
@@ -167,19 +162,7 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
-        let status = unsafe { cuMemcpyDtoDAsync_v2(dst.0, src.0, bytes, self.default_stream) };
-        if status != 0 {
-            bail!("cuMemcpyDtoDAsync_v2 failed: status {status}");
-        }
-        // Synchronize to ensure copy completes before kernels on other streams read it.
-        let sync = unsafe { cuStreamSynchronize(self.default_stream) };
-        if sync != 0 {
-            bail!(
-                "cuStreamSynchronize after D2D failed: {}",
-                cuda_error_text(sync)
-            );
-        }
-        Ok(())
+        AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
 
     fn launch(
@@ -197,7 +180,7 @@ impl GpuBackend for AtlasCudaBackend {
             block_dim: (block[0], block[1], block[2]),
             shared_mem_bytes: shared_mem,
         };
-        let registry = AtlasRegistry::get();
+        let registry = self.registry();
         unsafe {
             registry
                 .launch_on_stream(raw_func, cfg, stream, params)
@@ -236,33 +219,74 @@ impl GpuBackend for AtlasCudaBackend {
         self.default_stream
     }
 
+    fn op_cache(&self) -> &crate::op_cache::OpCache {
+        &self.op_cache
+    }
+
+    fn debug_sync_kernels(&self) -> bool {
+        AtlasCudaBackend::debug_sync_kernels(self)
+    }
+
+    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+        Some(self.registry().clone())
+    }
+
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        // The DISPATCH SITE, not this line: `#[track_caller]` here and on the
+        // trait declaration carries the `.kernel(…)` / `try_kernel(…)` caller's
+        // `file:line` through, which is the only part of an unresolved-lookup
+        // report an operator can act on.
+        let site = std::panic::Location::caller();
         // Ephemeral OnceLock — no cross-call caching, but kernel() is only
         // called at model init time. Layers store the returned KernelHandle.
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
-        let registry = AtlasRegistry::get();
+        let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
-                crate::kernel_audit::record(module, func_name, true);
+                crate::kernel_audit::record(module, func_name, true, site);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
                 // Optional kernels (try_kernel) land here and fall back silently;
                 // the audit makes that visible in the startup kernel table.
-                crate::kernel_audit::record(module, func_name, false);
+                crate::kernel_audit::record(module, func_name, false, site);
                 Err(anyhow::anyhow!("Kernel lookup {module}::{func_name}: {e}"))
             }
         }
     }
 
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream)
-        };
-        if status != 0 {
-            bail!("cuMemcpyHtoDAsync_v2 failed: status {status}");
+        h2d_enqueue(src, dst, stream)?;
+        // The trait promises the caller may drop `src` right now. From PAGEABLE
+        // memory the driver already made that true by staging the bytes before
+        // returning. From PAGE-LOCKED memory it did not — the DMA engine reads
+        // these pages after the enqueue — so buy the same guarantee with an
+        // explicit wait rather than let ~90 call sites that drop their source
+        // immediately turn into use-after-frees the day a buffer gets pinned.
+        //
+        // Costs nothing on the path everything takes today: no Atlas call site
+        // reaches here with a pinned source (the ones that own pinned staging
+        // use `copy_h2d_async_retained`), so `is_pinned` is a lock-free-ish read
+        // of a three-entry table that says "no".
+        if crate::pinned_hosts::is_pinned(src) {
+            warn_pinned_transient_source();
+            let sync = unsafe { cuStreamSynchronize(stream) };
+            if sync != 0 {
+                bail!(
+                    "cuStreamSynchronize after pinned-source H2D failed: {}",
+                    cuda_error_text(sync)
+                );
+            }
         }
         Ok(())
+    }
+
+    fn copy_h2d_async_retained(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+        // The caller has promised `src` outlives the next sync on `stream`, so
+        // no implicit ordering is added — that is the whole reason this variant
+        // exists (a 60-chunk pinned scatter must not pay 60 stream drains).
+        h2d_enqueue(src, dst, stream)
     }
 
     fn copy_d2d_async(
@@ -347,6 +371,9 @@ impl GpuBackend for AtlasCudaBackend {
     fn free_memory(&self) -> Result<usize> {
         self.free_memory_cu()
     }
+    fn sm_count(&self) -> Result<u32> {
+        self.sm_count_cu()
+    }
     fn create_stream(&self) -> Result<u64> {
         self.create_stream_cu()
     }
@@ -368,6 +395,16 @@ impl GpuBackend for AtlasCudaBackend {
     fn destroy_event(&self, event: u64) -> Result<()> {
         self.destroy_event_cu(event)
     }
+    fn host_ptr_to_device(&self, host: *mut u8) -> Result<DevicePtr> {
+        let mut dptr: u64 = 0;
+        let status =
+            unsafe { super::cuMemHostGetDevicePointer_v2(&mut dptr, host as *mut c_void, 0) };
+        if status != 0 {
+            bail!("cuMemHostGetDevicePointer_v2 failed: status {status}");
+        }
+        Ok(DevicePtr(dptr))
+    }
+
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
         self.alloc_host_pinned_cu(bytes)
     }

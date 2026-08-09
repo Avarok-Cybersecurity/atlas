@@ -36,10 +36,11 @@ pub(super) fn run_batched_mixed_step(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     did_mixed_step: &mut bool,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
-    super::poll_innerq();
+    super::poll_innerq(model);
     let n_prefill = prefilling.len();
     let n_decode = active.len();
 
@@ -77,6 +78,20 @@ pub(super) fn run_batched_mixed_step(
     }
 
     // Gather decode-side inputs.
+    // Sort by SSM pool slot before building the batch, exactly as
+    // `decode_step.rs` does for pure-decode steps. Without it the batched
+    // GDN recurrence declines: its precondition is that the n sequences sit
+    // in CONSECUTIVE pool slots IN SLICE ORDER, and retire+compaction packs
+    // the slot SET while scrambling the ORDER (a finishing sequence's slot
+    // is backfilled by the highest-slot survivor, which stays last in the
+    // vec). Pure-decode steps healed this and mixed steps did not, so every
+    // step for the duration of a prefill fell back to the per-seq loop —
+    // measured 853 us/layer vs 618 batched, a 28% penalty on ~30 ms/step.
+    // Reordering whole ActiveSeq elements keeps the post-decode
+    // position->seq mapping consistent (same argument as decode_step.rs).
+    if active.len() > 1 {
+        active.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(a.seq.slot_idx));
+    }
     let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
 
     // Build slices in a temporary scope so the &mut borrows on prefilling
@@ -149,6 +164,7 @@ pub(super) fn run_batched_mixed_step(
             p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            &sched.levers.sampling(),
         ) {
             Ok(first) => {
                 tracing::info!(
@@ -179,6 +195,7 @@ pub(super) fn run_batched_mixed_step(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
+            sched,
         );
     }
     *did_mixed_step = true;

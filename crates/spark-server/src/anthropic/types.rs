@@ -45,24 +45,11 @@ pub struct SystemBlock {
     pub text: Option<String>,
 }
 
-impl SystemContent {
-    pub(super) fn to_text(&self) -> String {
-        match self {
-            SystemContent::Text(s) => s.clone(),
-            SystemContent::Blocks(blocks) => blocks
-                .iter()
-                .filter_map(|b| {
-                    if b.block_type == "text" {
-                        b.text.clone()
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        }
-    }
-}
+// NOTE: `SystemContent` deliberately has no `to_text()`. It used to, and
+// nothing called it: the live joiner lives in `to_ir.rs`, which also
+// filters `x-anthropic-*` billing blocks. Two joiners that disagree about
+// filtering is the shape of bug where a serving problem gets debugged in
+// the copy that never runs.
 
 #[derive(Debug, Deserialize)]
 pub struct AnthropicMessage {

@@ -81,23 +81,20 @@ pub(super) fn strip_in_tool_opener_bias(
     logit_bias.retain(|&(id, delta)| id != tc_open || delta <= 0.0);
 }
 
-/// P1-4 (2026-07-09): kill-switch for threading the sequence's resolved
-/// `min_p` (request value, already floored by MODEL.toml `min_p_floor` in
-/// `sampling_setup`) into the MTP bootstrap / first-token / verify sample
-/// sites that previously passed hardcoded `0.0` literals — bypassing the
-/// exact FP8/NVFP4 argmax-flip safety net the floor exists for. Default ON
-/// (SSOT wiring fix); set `ATLAS_NO_MTP_MINP=1` to restore the 0.0 literals.
-/// One-time read, mirroring `hint_injector::bash_wander_enabled`.
-pub(super) fn mtp_minp_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_MINP").ok().as_deref() != Some("1"))
-}
-
-/// P1-4 (2026-07-09): the min_p actually handed to the sampler at the
-/// previously-hardcoded sites — the caller's resolved value, or 0.0 under
-/// the `ATLAS_NO_MTP_MINP=1` kill-switch.
-pub(super) fn effective_min_p(min_p: f32) -> f32 {
-    if mtp_minp_enabled() { min_p } else { 0.0 }
+/// P1-4 (2026-07-09): the min_p actually handed to the sampler at the sites
+/// that previously passed hardcoded `0.0` literals — the caller's resolved
+/// value (request value, already floored by MODEL.toml `min_p_floor` in
+/// `sampling_setup`), or `0.0` under the kill-switch.
+///
+/// Those literals bypassed the exact FP8/NVFP4 argmax-flip safety net the
+/// floor exists for. Threading the resolved value is the SSOT wiring fix and
+/// is on by default; `ATLAS_NO_MTP_MINP=1` restores the literals. The switch
+/// is `SchedLevers::mtp_minp`, read off the run's levers rather than a static.
+pub(super) fn effective_min_p(
+    min_p: f32,
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
+) -> f32 {
+    if levers.mtp_minp { min_p } else { 0.0 }
 }
 
 /// Build the penalty/bias-carrying [`SamplingParams`] for one sequence —
@@ -277,6 +274,7 @@ pub fn sample_token(
     top_p: f32,
     min_p: f32,
     suppress_ids: &[u32],
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     if temperature == 0.0 && suppress_ids.is_empty() {
         return model.argmax_on_device(logits, 0);
@@ -332,7 +330,7 @@ pub fn sample_token(
             top_p,
             top_n_sigma: 0.0,
             // P1-4 (2026-07-09): caller's resolved min_p, not a 0.0 literal.
-            min_p: effective_min_p(min_p),
+            min_p: effective_min_p(min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             presence_penalty: 0.0,
@@ -374,6 +372,7 @@ pub fn sample_token_with_grammar(
     mut grammar_state: Option<&mut GrammarState>,
     penalties: &SamplingParams,
     history: &[u32],
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     // ── FAST PATH (#3, 2026-06-02): on-GPU greedy pick under grammar ──
     // The MTP bootstrap sample (~1 token/step) otherwise D2Hs + dequants the
@@ -389,9 +388,9 @@ pub fn sample_token_with_grammar(
     // an argmax that is not in the scoped `history` and has a positive raw
     // logit (proof in `fast_greedy` module docs). `history` here is already
     // the scoped span the slow path feeds to `apply_penalties_and_bias`.
-    if crate::scheduler::verify_pipeline_helper::fast_greedy_grammar_enabled()
+    if levers.fast_greedy_grammar
         && suppress_ids.is_empty()
-        && (temperature == 0.0 || crate::scheduler::decode_logits_seq::force_temp_zero_enabled())
+        && (temperature == 0.0 || levers.force_temp_zero)
     {
         let gate = crate::scheduler::fast_greedy::classify_penalties(penalties);
         if gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
@@ -477,7 +476,7 @@ pub fn sample_token_with_grammar(
             // stochastic sample points under MTP — bypassed the FP8
             // argmax-flip safety net the floor documents. Kill-switch:
             // ATLAS_NO_MTP_MINP=1 restores the 0.0 literal.
-            min_p: effective_min_p(penalties.min_p),
+            min_p: effective_min_p(penalties.min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             presence_penalty: 0.0,
@@ -535,6 +534,7 @@ pub fn sample_first_token(
     min_p: f32,
     suppress_ids: &[u32],
     grammar_state: Option<&mut GrammarState>,
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     let Some(gs) = grammar_state else {
         return sample_token(
@@ -545,6 +545,7 @@ pub fn sample_first_token(
             top_p,
             min_p,
             suppress_ids,
+            levers,
         );
     };
     let neutral = SamplingParams {
@@ -579,6 +580,7 @@ pub fn sample_first_token(
         Some(gs),
         &neutral,
         &[],
+        levers,
     )?;
     // Advance the matcher past the first token (the emit_step accept_token
     // only runs for tokens 2..N). A grammar-disallowed first token here would

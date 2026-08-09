@@ -169,21 +169,31 @@ impl Qwen3AttentionLayer {
 
         let use_t_pipelined =
             std::env::var("ATLAS_ATTN_PREFILL_T_PIPE").ok().as_deref() == Some("1");
-        if ops::cutlass_nvfp4_attn_qkv_enabled(label)
+        if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(nvfp4_t) = nvfp4_t
         {
-            ops::log_cutlass_nvfp4_route(label, n, out_dim, h);
-            ops::cutlass_nvfp4_proj(ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream)?;
-        } else if ops::cutlass_nvfp4_attn_qkv_enabled(label)
+            ops::log_cutlass_nvfp4_route(ctx.gpu, label, n, out_dim, h);
+            ops::cutlass_nvfp4_proj(ctx, normed, nvfp4_t, out, n, out_dim, h, stream)?;
+        } else if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
         {
-            ops::log_cutlass_nvfp4_route(label, n, out_dim, h);
-            ops::cutlass_nvfp4_proj_from_fp8(ctx.gpu, normed, fp8w, out, n, out_dim, h, stream)?;
-        } else if ops::cublas_gemm_enabled()
+            ops::log_cutlass_nvfp4_route(ctx.gpu, label, n, out_dim, h);
+            ops::cutlass_nvfp4_proj_from_fp8(ctx, normed, fp8w, out, n, out_dim, h, stream)?;
+        } else if ctx.dispatch.cublas_gemm
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
         {
             // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(ctx.gpu, normed, fp8w, out, n, out_dim, h, stream)?;
+            ops::cublas_bf16_proj(
+                ctx.gpu,
+                ctx.derived,
+                normed,
+                fp8w,
+                out,
+                n,
+                out_dim,
+                h,
+                stream,
+            )?;
         } else if let Some(fp8t) = fp8w_t
             && use_t_pipelined
             && self.w8a16_gemm_t_pipelined_k.0 != 0
@@ -295,7 +305,15 @@ impl Qwen3AttentionLayer {
         } else if let Some(nvfp4_t) = nvfp4_t {
             if n > 128 {
                 self.w4a16_gemm_m128_dispatch(
-                    ctx.gpu, normed, nvfp4_t, out, n, out_dim, h, stream,
+                    ctx.gpu,
+                    ctx.dispatch,
+                    normed,
+                    nvfp4_t,
+                    out,
+                    n,
+                    out_dim,
+                    h,
+                    stream,
                 )?;
             } else {
                 ops::w4a16_gemm_n128(

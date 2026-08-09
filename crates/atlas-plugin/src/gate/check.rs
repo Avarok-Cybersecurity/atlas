@@ -1,0 +1,457 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! `--pull-request-gate-check`: does this commit have a passing record for
+//! every required gate? Pure reads over `.benchmarks/` plus git ancestry —
+//! no endpoint, no GPU, fast enough for every PR in CI.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use super::record::{GateBaseline, GateRecord, read_baseline, read_record};
+use super::{REQUIRED_GATES, gate_dir};
+
+/// One metric's comparison, or why it cannot be judged.
+pub enum Comparison {
+    Pass,
+    Fail(String),
+    Skip(String),
+}
+
+/// Compare one recorded metric against its bound.
+pub fn compare(name: &str, value: f64, bound: &super::record::Bound) -> Comparison {
+    let noise = bound.noise.unwrap_or(0.0);
+    match (bound.min, bound.max) {
+        (Some(min), None) if value + noise >= min => Comparison::Pass,
+        (Some(min), None) => Comparison::Fail(format!(
+            "{name} {value:.2} is below the floor {min:.2} (noise {noise:.2})"
+        )),
+        (None, Some(max)) if value - noise <= max => Comparison::Pass,
+        (None, Some(max)) => Comparison::Fail(format!(
+            "{name} {value:.2} is above the ceiling {max:.2} (noise {noise:.2})"
+        )),
+        // BOTH bounds: a range, or — when they are equal — an EXACT pin.
+        //
+        // ★ This arm was missing, and a two-sided bound fell through to
+        // "malformed". That is fail-closed, so nothing was scored leniently,
+        // but it made an exact pin unusable: the gate failed every time and
+        // blamed the baseline's syntax rather than the measurement. The BFCL
+        // draw size is pinned this way (n=995 / n=1004), because a draw that
+        // silently changes size produces a plausible score against thresholds
+        // that no longer apply.
+        (Some(min), Some(max)) if value + noise >= min && value - noise <= max => Comparison::Pass,
+        (Some(min), Some(max)) if (min - max).abs() < f64::EPSILON => Comparison::Fail(format!(
+            "{name} is {value:.0}, but this gate is pinned to exactly {min:.0} — \
+             the run measured something other than what the baseline describes"
+        )),
+        (Some(min), Some(max)) => Comparison::Fail(format!(
+            "{name} {value:.2} is outside [{min:.2}, {max:.2}] (noise {noise:.2})"
+        )),
+        (None, None) => Comparison::Skip(format!("{name} has no bound")),
+    }
+}
+
+/// Check one record against its baseline. `None` means every checkable metric
+/// passed; `Some` carries the list of failures. A record whose model does not
+/// match the baseline's is a hard failure — comparing gate numbers across
+/// checkpoints manufactures results.
+pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<String>> {
+    // The record names both axes: which box served it, and which checkpoint.
+    // Score it against THAT pair's thresholds or not at all — a TTFT ceiling
+    // from another box, or a BFCL floor from another checkpoint, is not a
+    // lenient comparison, it is a meaningless one.
+    let hardware = record.hardware.gate_key();
+    let entry = match baseline.resolve(&hardware, Some(&record.target_model)) {
+        Ok((_, entry)) => entry,
+        Err(e) => return Some(vec![format!("{e:#}")]),
+    };
+    // ★ An entry with no thresholds must not read as "everything passed". The
+    // loop below is a no-op over an empty map, so without this the strictest
+    // possible verdict — Pass, unconditionally, whatever the run measured —
+    // would be produced by the WEAKEST possible baseline. A gate with nothing
+    // to enforce has not been passed; it has not been defined.
+    if entry.metrics.is_empty() {
+        return Some(vec![format!(
+            "the baseline entry for {} on {hardware} declares no thresholds — \
+             there is nothing here for this run to have passed",
+            record.target_model
+        )]);
+    }
+    let mut problems = Vec::new();
+    for (name, bound) in &entry.metrics {
+        let Some(value) = record.metrics.get(name) else {
+            problems.push(format!("{name}: missing from the record"));
+            continue;
+        };
+        match compare(name, *value, bound) {
+            Comparison::Pass => {}
+            Comparison::Fail(reason) => problems.push(reason),
+            Comparison::Skip(reason) => problems.push(reason),
+        }
+    }
+    if problems.is_empty() {
+        None
+    } else {
+        Some(problems)
+    }
+}
+
+/// One required bench's standing in the committed tree.
+#[derive(Debug)]
+pub enum GateStatus {
+    /// The newest covering record passes the baseline.
+    Pass,
+    /// The newest covering record exists but fails: the record's own verdict
+    /// and each baseline breach.
+    Fail(Vec<String>),
+    /// No covering record exists, or the newest one is unreadable or never
+    /// completed.
+    Missing(String),
+}
+
+/// The newest-first list of record files in one benchmark's directory, ordered
+/// by each record's own `recorded_at`. `BASELINE.json` is not a record.
+///
+/// ★ **The filename is not a clock.** A record is named
+/// `YYYY-MM-DD-<sha>.json`, so a lexical sort orders by DATE and then by SHA —
+/// and a sha is random. Two records cut on the same UTC day therefore sorted by
+/// which hex digit happened to come first, which is exactly the situation a
+/// re-run produces: measure, commit a fix, measure again, both records dated
+/// today. The gate takes the first covering record as the branch's current
+/// word, so under the old order a FAIL measured after a PASS was silently
+/// discarded whenever its sha sorted lower — the gate passing on a superseded
+/// result. It fails the other way just as easily, and neither is detectable
+/// after the fact.
+///
+/// `recorded_at` is written by [`super::record::GateRecord::from_run`] from the
+/// run itself, and it is the same number the filename's date is derived from,
+/// so the two agree by construction and only the within-day tie changes. An
+/// unreadable record sorts last (it can never be selected anyway) but stays in
+/// the list, so a directory of nothing but corrupt records still reports
+/// "unreadable" rather than "no records committed".
+pub fn records_newest_first(root: &Path, benchmark_id: &str) -> Vec<PathBuf> {
+    let dir = gate_dir(root, benchmark_id);
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    candidates.retain(|p| {
+        p.extension().is_some_and(|e| e == "json")
+            && p.file_name()
+                .is_some_and(|n| n.to_string_lossy() != "BASELINE.json")
+    });
+    let mut keyed: Vec<(u64, PathBuf)> = candidates
+        .into_iter()
+        .map(|p| (read_record(&p).map(|r| r.recorded_at).unwrap_or(0), p))
+        .collect();
+    // Newest first, and the filename breaks a tie so the order is total and
+    // reproducible rather than dependent on readdir.
+    keyed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    keyed.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Whether a record measured at `record_sha` still stands for `head`.
+///
+/// Same commit always covers itself. An ancestor covers `head` while nothing
+/// the run measures changed in between — a diff touching any of
+/// [`super::coverage::PERF_PATHS`] invalidates every earlier record, because the binary and the
+/// prompts it renders are no longer the recorded ones. A record can never be
+/// written AT `head` (committing it moves head), so this ancestry rule is what
+/// makes "gated at the current commit" achievable at all.
+pub fn record_covers(
+    root: &Path,
+    head: &str,
+    record_sha: &str,
+    gate: &super::coverage::GateCoverage,
+) -> bool {
+    invalidating_paths(root, head, record_sha, gate).is_some_and(|p| p.is_empty())
+}
+
+/// Whether `record` still describes `sha`, path boundary first, closure second.
+///
+/// Two rungs, in order, and the second can only ever narrow the first:
+///
+/// 1. **The path boundary** ([`record_covers`]). Nothing in the invalidation
+///    set changed ⇒ covered, no further question.
+/// 2. **The closure hash** ([`super::closure::excuses`]). Everything that did
+///    change is inside `kernels/`, and every target those paths can affect
+///    still compiles to byte-identical device code ⇒ covered.
+///
+/// Rung 2 exists because `kernels/<hw>/common/` holds the majority of kernels
+/// and every model inherits from it, so treating one shared edit as "re-test
+/// all 28 targets" costs more GPU time than anyone will pay — and a gate people
+/// route around is worse than a slower one. It never widens coverage: a path
+/// outside `kernels/`, an unattested target, or an uncomputable hash all leave
+/// the record invalidated exactly as before.
+fn record_still_stands(
+    root: &Path,
+    sha: &str,
+    record: &GateRecord,
+    gate: &super::coverage::GateCoverage,
+) -> bool {
+    match invalidating_paths(root, sha, &record.git_sha, gate) {
+        // Not an ancestor, or git failed: unchanged fail-closed doctrine.
+        None => false,
+        Some(paths) if paths.is_empty() => true,
+        Some(paths) => super::closure::excuses(root, &paths, &record.closure),
+    }
+}
+
+/// The changed paths that invalidate `gate` between two commits.
+///
+/// `None` means the question could not be answered — git failed, or one of the
+/// two commits is not in this clone. Every such case is treated as "not
+/// covered" by the caller, keeping the fail-closed doctrine: a gate check that
+/// cannot see the trees must never read as a pass.
+///
+/// # This deliberately does NOT require ancestry
+///
+/// It used to. `merge-base --is-ancestor record_sha head` gated the diff, and
+/// that was wrong in a way that took main down: **Atlas squash-merges.** A
+/// record is written on a PR branch, against a commit on that branch; the
+/// squash lands a brand-new commit on main with a different sha and no parent
+/// link to the branch. Every record the PR paid GPU hours for stops being an
+/// ancestor of anything the instant it merges.
+///
+/// It did exactly that. `.benchmarks/*/2026-08-09-b0be4ba0e6.json` are five
+/// real passing records for #389 — `b0be4ba0e` being the branch's merge of
+/// #417 — and after #389 squash-landed as `dd2ac46d5` the gate reported
+/// "not an ancestor of this commit" for all five. Main went red, and every PR
+/// opened afterwards inherited it and demanded 5 fresh GPU legs to fix a
+/// typo.
+///
+/// Ancestry was never what the check needed. `git diff A B` compares TREES; it
+/// is defined for any two commits and needs no history relationship. The
+/// question a gate record answers is "was the perf-relevant code the same when
+/// this was measured?", and the diff answers exactly that. Ancestry only added
+/// an assumption about the shape of history — one this repo's merge strategy
+/// violates by design.
+///
+/// The obvious worry — "then a record from an unrelated branch could cover
+/// main" — is answered by the diff itself. An unrelated branch differs on the
+/// perf paths and is rejected. If it does NOT differ on them, it measured the
+/// same code, and the record is valid; that is the whole content-not-ancestry
+/// doctrine, and it is why an identical squash lands covered.
+///
+/// The one thing ancestry incidentally caught was a missing commit (a shallow
+/// clone). `git diff` fails outright there, so that case still returns `None`.
+/// The gate job checks out with `fetch-depth: 0`.
+///
+/// The diff is taken with NO pathspec and filtered in Rust. Two reasons, both
+/// practical: the filter is then unit-testable without a git fixture, and
+/// git's exclude-pathspec precedence rules are subtle enough that expressing
+/// per-gate exclusions in them would move the policy somewhere nobody reviews.
+pub fn invalidating_paths(
+    root: &Path,
+    head: &str,
+    record_sha: &str,
+    gate: &super::coverage::GateCoverage,
+) -> Option<Vec<String>> {
+    if head == record_sha {
+        return Some(Vec::new());
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only", record_sha, head])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .filter(|p| super::coverage::invalidates(gate, p))
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// The full gate verdict for `sha`: every required bench, in order.
+pub fn check_gates(root: &Path, sha: &str) -> BTreeMap<String, GateStatus> {
+    let mut out = BTreeMap::new();
+    for id in REQUIRED_GATES {
+        out.insert((*id).to_string(), check_one(root, id, sha));
+    }
+    out
+}
+
+/// Does this record actually belong to the gate whose directory it sits in?
+///
+/// Records were located by DIRECTORY and their own `benchmark_id` was never
+/// read back. Nothing stopped one gate's record from satisfying another's, and
+/// two of the five gates make that a one-command forgery:
+/// `ttft-warm-gate` and `ttft-cold-gate` share a checkpoint, a hardware key and
+/// their metric names (`median_ms`, `p90_ms`). On `main` today the committed
+/// WARM record reads 1562.58 / 4478.42 against the COLD ceilings of
+/// 1728.27 / 4809.76 — so `cp` one file into the other directory turns the cold
+/// gate green with no cold leg ever run.
+///
+/// That is the worst possible pair to be able to confuse: cold-TTFT is the only
+/// leg that sees a cold-LOAD regression, and #389 — the change this gate was
+/// built alongside — is "GPU-transpose quantized weights at cold load".
+///
+/// It also needs no malice. Both records are produced minutes apart in one
+/// session with near-identical filenames.
+///
+/// Mismatches are SKIPPED, not failed: a stray file in a directory should leave
+/// the gate reading "no covering record" (which is true and actionable), not
+/// manufacture a hard failure from someone else's passing run.
+fn record_is_for(record: &GateRecord, benchmark_id: &str, path: &Path) -> bool {
+    if record.benchmark_id == benchmark_id {
+        return true;
+    }
+    tracing::warn!(
+        "ignoring {}: it is a `{}` record sitting in the `{benchmark_id}` directory",
+        path.display(),
+        record.benchmark_id,
+    );
+    false
+}
+
+fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
+    let Some(gate) = super::coverage::find(benchmark_id) else {
+        // Unreachable through `check_gates`, which iterates the coverage table
+        // itself, and a test pins that every required id resolves. Refusing
+        // beats defaulting to "no exclusions": a silent fallback here would be
+        // a second, undeclared coverage policy.
+        return GateStatus::Missing(format!("{benchmark_id} has no coverage entry"));
+    };
+    let paths = records_newest_first(root, benchmark_id);
+    if paths.is_empty() {
+        return GateStatus::Missing("no gate records committed".into());
+    }
+    // The newest record that still stands for `sha`. A record measured at an
+    // ancestor covers head while no perf-path file changed in between; a
+    // record whose commit is unrelated, or was invalidated since, is skipped
+    // rather than failed — the branch's current word is the newest one still
+    // valid, and an old clean record is better than none.
+    let mut covered: Option<GateRecord> = None;
+    for path in &paths {
+        if let Ok(record) = read_record(path)
+            && record_is_for(&record, benchmark_id, path)
+            && record_still_stands(root, sha, &record, gate)
+        {
+            covered = Some(record);
+            break;
+        }
+    }
+    let Some(record) = covered else {
+        let newest = read_record(&paths[0]).ok();
+        return GateStatus::Missing(match newest {
+            // ★ Name the files that invalidated it. "does not cover this
+            // commit" tells an author a gate is open but not what re-opened
+            // it, which turns a 20-second fix into a bisect.
+            //
+            // `None` here is the fail-closed arm of `invalidating_paths`: git
+            // could not diff the two trees, which in practice means the record's
+            // commit is not in this clone (a shallow fetch). Say that, rather
+            // than reporting an empty path list as if nothing had changed.
+            Some(newest_record) => {
+                let newest = newest_record.git_sha.clone();
+                let Some(why) = invalidating_paths(root, sha, &newest, gate) else {
+                    return GateStatus::Missing(format!(
+                        "latest record is for {newest} ({}) — git cannot diff that commit \
+                         against this one; is it in this clone? (the gate job needs \
+                         `fetch-depth: 0`)",
+                        paths[0]
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default()
+                    ));
+                };
+                let because = if why.is_empty() {
+                    // Reachable only if a record was skipped for a reason other
+                    // than its path diff — today, a closure-hash mismatch that
+                    // `excuses` refused.
+                    "its recorded build inputs do not match this commit".to_string()
+                } else {
+                    // Naming the TARGETS as well as the files is the difference
+                    // between "a kernel changed" and "this is why you owe a
+                    // 3.5-hour run": a shared edit that re-opens one model
+                    // reads very differently from one that re-opens all 22.
+                    let targets =
+                        super::closure::changed_targets(root, &why, &newest_record.closure);
+                    match targets.len() {
+                        0 => format!("invalidated by {}", summarize_paths(&why)),
+                        n => format!(
+                            "invalidated by {} — device code changed for {n} target(s): {}",
+                            summarize_paths(&why),
+                            summarize_paths(&targets)
+                        ),
+                    }
+                };
+                format!(
+                    "latest record is for {newest} ({}) — {because}",
+                    paths[0]
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default()
+                )
+            }
+            None => "latest record is unreadable".to_string(),
+        });
+    };
+    if record.frame_status_failed() {
+        return GateStatus::Fail(vec![format!(
+            "the run itself failed: {}",
+            record.verdict_reason
+        )]);
+    }
+    let baseline = match read_baseline(root, benchmark_id) {
+        Ok(b) => b,
+        Err(e) => return GateStatus::Missing(format!("baseline unreadable: {e:#}")),
+    };
+    let mut problems = Vec::new();
+    // ★ A record measured from a dirty tree does not describe its own sha.
+    //
+    // `record_covers` above proved that nothing in the invalidation set changed
+    // between the record's commit and head. That proof is worthless if the
+    // binary already differed from the record's commit when the run started —
+    // the diff was never committed, so no ancestry walk can ever see it. Fail
+    // rather than skip: the record's numbers are real, but they belong to no
+    // commit, and the only thing that makes the file true again is a re-run on
+    // a clean tree. Records written before this field existed carry an empty
+    // vector and are unaffected.
+    if !record.dirty_paths.is_empty() {
+        problems.push(format!(
+            "measured from a dirty tree — {} uncommitted invalidation-set \
+             file(s) when the run started ({}), so the binary was not {}",
+            record.dirty_paths.len(),
+            record.dirty_paths.join(", "),
+            record.git_sha
+        ));
+    }
+    if !record.verdict_passes() {
+        problems.push(format!(
+            "run verdict is not PASS: {}",
+            record.verdict_reason
+        ));
+    }
+    if let Some(breaches) = check_record(&record, &baseline) {
+        problems.extend(breaches);
+    }
+    if problems.is_empty() {
+        GateStatus::Pass
+    } else {
+        GateStatus::Fail(problems)
+    }
+}
+
+/// Render invalidating paths for a one-line message: a few names, then a count.
+///
+/// A refactor can touch hundreds of files, and pasting all of them buries the
+/// verdict it is attached to.
+fn summarize_paths(paths: &[String]) -> String {
+    const SHOWN: usize = 3;
+    if paths.len() <= SHOWN {
+        return paths.join(", ");
+    }
+    format!(
+        "{} and {} more",
+        paths[..SHOWN].join(", "),
+        paths.len() - SHOWN
+    )
+}

@@ -46,11 +46,6 @@ Atlas is a single Cargo workspace with 15 crates organized into four layers:
    │                 │    enums, error types.
    └─────────────────┘
 
-   Placeholder crates (not yet wired into the hot path):
-   atlas-activation · atlas-norm · atlas-quant · atlas-embed · atlas-reduce
-   These exist as future homes for host-side primitives and are
-   currently thin scaffolding so the dependency graph is stable.
-
    Test/bench crates:
    atlas-spark-bench  (Criterion microbenchmarks per kernel category)
    cufile-sys         (FFI for NVIDIA cuFile / GDS — currently dormant on GB10)

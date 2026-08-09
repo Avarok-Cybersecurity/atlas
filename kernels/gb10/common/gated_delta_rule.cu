@@ -286,6 +286,9 @@ extern "C" __global__ void gated_delta_rule_decode_f32(
     float v_new_i = (v_i - g * hk_dot) * bt;
 
     float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
     #pragma unroll 4
     for (unsigned int j = 0; j < k_dim; j += 4) {
         float h0 = H[(j + 0) * v_dim + tid];
@@ -301,15 +304,22 @@ extern "C" __global__ void gated_delta_rule_decode_f32(
         H[(j + 2) * v_dim + tid] = h2;
         H[(j + 3) * v_dim + tid] = h3;
         q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
     }
 
     #ifdef SSM_STATE_NORM_ENABLED
     {
-        float local_sq = 0.0f;
-        for (unsigned int j = 0; j < k_dim; j++) {
-            float hv = H[j * v_dim + tid];
-            local_sq += hv * hv;
-        }
+        float local_sq = norm_acc;
         for (int offset = 16; offset >= 1; offset >>= 1)
             local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
         __shared__ float norm_sums[4];
@@ -400,6 +410,9 @@ extern "C" __global__ void gated_delta_rule_decode_f32_norm(
     float v_new_i = (v_i - g * hk_dot) * bt;
 
     float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
     #pragma unroll 4
     for (unsigned int j = 0; j < k_dim; j += 4) {
         float h0 = H[(j + 0) * v_dim + tid];
@@ -415,15 +428,22 @@ extern "C" __global__ void gated_delta_rule_decode_f32_norm(
         H[(j + 2) * v_dim + tid] = h2;
         H[(j + 3) * v_dim + tid] = h3;
         q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
     }
 
     #ifdef SSM_STATE_NORM_ENABLED
     {
-        float local_sq = 0.0f;
-        for (unsigned int j = 0; j < k_dim; j++) {
-            float hv = H[j * v_dim + tid];
-            local_sq += hv * hv;
-        }
+        float local_sq = norm_acc;
         for (int offset = 16; offset >= 1; offset >>= 1)
             local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
         __shared__ float norm_sums[4];
@@ -733,6 +753,9 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided(
     float v_new_i = (v_i - g * hk_dot) * bt;
 
     float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
     #pragma unroll 4
     for (unsigned int j = 0; j < k_dim; j += 4) {
         float h0 = H[(j + 0) * v_dim + tid];
@@ -748,15 +771,22 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided(
         H[(j + 2) * v_dim + tid] = h2;
         H[(j + 3) * v_dim + tid] = h3;
         q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
     }
 
     #ifdef SSM_STATE_NORM_ENABLED
     {
-        float local_sq = 0.0f;
-        for (unsigned int j = 0; j < k_dim; j++) {
-            float hv = H[j * v_dim + tid];
-            local_sq += hv * hv;
-        }
+        float local_sq = norm_acc;
         for (int offset = 16; offset >= 1; offset >>= 1)
             local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
         __shared__ float norm_sums[4];
@@ -852,6 +882,9 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm(
     float v_new_i = (v_i - g * hk_dot) * bt;
 
     float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
     #pragma unroll 4
     for (unsigned int j = 0; j < k_dim; j += 4) {
         float h0 = H[(j + 0) * v_dim + tid];
@@ -867,15 +900,22 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm(
         H[(j + 2) * v_dim + tid] = h2;
         H[(j + 3) * v_dim + tid] = h3;
         q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
     }
 
     #ifdef SSM_STATE_NORM_ENABLED
     {
-        float local_sq = 0.0f;
-        for (unsigned int j = 0; j < k_dim; j++) {
-            float hv = H[j * v_dim + tid];
-            local_sq += hv * hv;
-        }
+        float local_sq = norm_acc;
         for (int offset = 16; offset >= 1; offset >>= 1)
             local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
         __shared__ float norm_sums[4];

@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -43,7 +44,7 @@ use super::inference_types::*;
 use super::sanitizer::*;
 
 pub(super) async fn responses_endpoint_stream(
-    state: State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     mut chat_req: ChatCompletionRequest,
     metadata: Option<std::collections::HashMap<String, String>>,
     store_flag: bool,
@@ -59,7 +60,7 @@ pub(super) async fn responses_endpoint_stream(
 
     let model = chat_req.model.clone();
     let input_messages = chat_req.messages.clone();
-    let state_arc = state.0.clone();
+    let state_arc = state.clone();
 
     // Capture the conversation-linked user items (the new turn's user
     // input) before handing chat_req off. We use them to append back
@@ -87,7 +88,7 @@ pub(super) async fn responses_endpoint_stream(
 
     // Run the chat-completions streaming handler (re-using the full
     // pipeline: scheduler, tool detection, thinking, logprobs, ...).
-    let deltas = match chat_completions_inner(state.0, None, chat_req.into(), None).await {
+    let deltas = match chat_completions_inner(state, None, chat_req.into(), None).await {
         super::chat::ChatOutcome::Streaming(d) => d,
         // Error envelope — forward unchanged.
         super::chat::ChatOutcome::Http(r) => return r,

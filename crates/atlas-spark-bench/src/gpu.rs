@@ -25,15 +25,20 @@ unsafe extern "C" {
     fn cuEventDestroy_v2(event: u64) -> i32;
 }
 
-static INIT: OnceLock<()> = OnceLock::new();
+/// The bench process's registry. A benchmark run loads one model's kernels and
+/// keeps them for the process — leaking it deliberately is what buys the
+/// `&'static` the bench harnesses are written against. Production loads a
+/// registry per model and drops it; see `atlas_core::registry::release`.
+static INIT: OnceLock<&'static AtlasRegistry> = OnceLock::new();
 
-/// Ensure the AtlasRegistry is initialized (idempotent).
+/// Ensure the registry is loaded (idempotent).
 pub fn ensure_registry() -> &'static AtlasRegistry {
     INIT.get_or_init(|| {
         let ptx = atlas_kernels::ptx_modules();
-        AtlasRegistry::get_or_init(0, &ptx).expect("AtlasRegistry init failed — is GPU available?");
-    });
-    AtlasRegistry::get()
+        let registry =
+            AtlasRegistry::load(0, &ptx).expect("AtlasRegistry load failed — is GPU available?");
+        Box::leak(Box::new(registry)) as &'static AtlasRegistry
+    })
 }
 
 /// Allocate `bytes` of GPU memory, zero-initialized.
@@ -66,15 +71,17 @@ pub fn gpu_sync(stream: u64) -> Result<()> {
     Ok(())
 }
 
-/// Look up a kernel function handle with caching.
-pub fn get_kernel(
-    registry: &'static AtlasRegistry,
-    cache: &OnceLock<RawCudaFunc>,
-    module: &str,
-    func: &str,
-) -> RawCudaFunc {
+/// Resolve `module::func` for a bench.
+///
+/// Each bench function calls this ONCE, before its timed group — so the
+/// `OnceLock` the benches used to declare at file scope memoized a lookup that
+/// already happened exactly once. It is a local here, which keeps
+/// `raw_function_cached`'s signature satisfied without a process global per
+/// kernel per bench binary.
+pub fn get_kernel(registry: &'static AtlasRegistry, module: &str, func: &str) -> RawCudaFunc {
+    let cache = OnceLock::new();
     registry
-        .raw_function_cached(cache, module, func)
+        .raw_function_cached(&cache, module, func)
         .unwrap_or_else(|e| panic!("Kernel {module}::{func} not found: {e}"))
 }
 

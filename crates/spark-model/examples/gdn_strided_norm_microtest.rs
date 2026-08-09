@@ -5,6 +5,14 @@
 //!   gated_delta_rule_decode_f32_strided -> gated_rms_norm_f32_input
 //!
 //! Uses Holo/Qwen3.6 GDN dimensions with synthetic batch=4 inputs.
+//!
+//! Second leg — BITWISE parity gate for the SRAM-staged retention twin:
+//!   gated_delta_rule_decode_f32_strided_norm_half  (1.5R + 1W over H)
+//!   gated_delta_rule_decode_f32_strided_norm_smem  (1.0R + 1W over H)
+//! These differ only in WHERE the un-retained H columns live between the two
+//! passes (DRAM vs shared memory), so they must agree BIT FOR BIT on both the
+//! BF16 output and the final FP32 H state. A cosine threshold would not be a
+//! gate here — the whole claim is that no arithmetic changed.
 
 use anyhow::Result;
 use half::bf16;
@@ -67,6 +75,18 @@ fn dn_bf16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
     Ok(b.chunks_exact(2)
         .map(|c| bf16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
         .collect())
+}
+
+fn dn_raw(g: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> Result<Vec<u8>> {
+    let mut b = vec![0u8; bytes];
+    g.copy_d2h(p, &mut b)?;
+    Ok(b)
+}
+
+/// Index of the first differing byte, or `None` when the two buffers are
+/// bit-for-bit equal.
+fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
+    a.iter().zip(b).position(|(x, y)| x != y)
 }
 
 fn cos(a: &[f32], b: &[f32]) -> f64 {
@@ -252,5 +272,79 @@ fn main() -> Result<()> {
 
     anyhow::ensure!(out_cos >= 0.99999, "output cosine below threshold");
     anyhow::ensure!(h_cos >= 0.999999, "h_state cosine below threshold");
+
+    // ── BITWISE parity gate: register-retention twin vs SRAM-staged twin ──
+    let half_k = g.kernel(
+        "gated_delta_rule",
+        "gated_delta_rule_decode_f32_strided_norm_half",
+    )?;
+    let smem_k = g.kernel(
+        "gated_delta_rule",
+        "gated_delta_rule_decode_f32_strided_norm_smem",
+    )?;
+    let h_half = up_f32(g, &h0)?;
+    let h_smem = up_f32(g, &h0)?;
+    let out_half = g.alloc(B * VALUE_DIM * 2)?;
+    let out_smem = g.alloc(B * VALUE_DIM * 2)?;
+    launch_fused(
+        g,
+        half_k,
+        h_half,
+        conv_d,
+        gates_d,
+        z_d.offset(CONV_DIM * 2),
+        norm_w_d,
+        out_half,
+    )?;
+    launch_fused(
+        g,
+        smem_k,
+        h_smem,
+        conv_d,
+        gates_d,
+        z_d.offset(CONV_DIM * 2),
+        norm_w_d,
+        out_smem,
+    )?;
+    g.synchronize(0)?;
+
+    let ob_half = dn_raw(g, out_half, B * VALUE_DIM * 2)?;
+    let ob_smem = dn_raw(g, out_smem, B * VALUE_DIM * 2)?;
+    let hb_half = dn_raw(g, h_half, B * NV * KD * VD * 4)?;
+    let hb_smem = dn_raw(g, h_smem, B * NV * KD * VD * 4)?;
+    let out_diff = first_diff(&ob_half, &ob_smem);
+    let h_diff = first_diff(&hb_half, &hb_smem);
+    eprintln!(
+        "  half-vs-smem BITWISE: output {} ({} B) | h_state {} ({} B)",
+        if out_diff.is_none() {
+            "EQUAL"
+        } else {
+            "DIFFER"
+        },
+        ob_half.len(),
+        if h_diff.is_none() { "EQUAL" } else { "DIFFER" },
+        hb_half.len(),
+    );
+    anyhow::ensure!(
+        out_diff.is_none(),
+        "smem twin output differs from the register twin at byte {}",
+        out_diff.unwrap()
+    );
+    anyhow::ensure!(
+        h_diff.is_none(),
+        "smem twin h_state differs from the register twin at byte {}",
+        h_diff.unwrap()
+    );
+
+    // Both twins must also match the reference the first leg already scored,
+    // otherwise "bit-identical to each other" would be satisfied by two
+    // equally-wrong kernels.
+    let out_h = dn_bf16(g, out_half, B * VALUE_DIM)?;
+    let half_cos = cos(&out_a, &out_h);
+    eprintln!("  half-vs-reference output cos={half_cos:.9}");
+    anyhow::ensure!(
+        half_cos >= 0.99999,
+        "retention twins diverge from reference"
+    );
     Ok(())
 }

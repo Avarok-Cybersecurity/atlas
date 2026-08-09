@@ -29,6 +29,8 @@ mod citation;
 mod citation_structured;
 mod cli;
 mod conversation_store;
+mod disk_guard;
+mod error_hints;
 pub mod grammar;
 mod halluc_probe;
 mod hint_injector;
@@ -41,12 +43,14 @@ mod loop_simhash;
 mod lqer;
 mod main_modules;
 pub mod metrics;
+mod model_download;
 mod model_resolver;
 mod moe_quality;
 mod ngram;
 mod openai;
 mod rate_limiter;
 pub mod reasoning_parser;
+pub mod recipe;
 mod refusal;
 mod request_dumper;
 mod response_store;
@@ -79,7 +83,13 @@ async fn main() -> Result<()> {
     // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
     let no_tui = match &cli.command {
-        Command::Serve(args) => args.no_tui || args.rank > 0,
+        // `--check-kernels` is a script's entry point too: it prints a report
+        // and a JSON line on stdout and exits, so a dashboard would take the
+        // terminal, garble both, and have nothing to show afterwards.
+        Command::Serve(args) => args.no_tui || args.rank > 0 || args.check_kernels,
+        // The benchmark subcommand is a script's entry point: always plain, so
+        // nothing here reaches `tui::start` or takes the terminal.
+        Command::Benchmark(_) => true,
     };
 
     let tui_channels = if tui::plain_mode(no_tui) {
@@ -106,6 +116,15 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
     tui::shutdown::arm_startup_escape(shutdown_tx);
     let result = match cli.command {
+        Command::Benchmark(args) => {
+            // No model load, so none of the startup-escape plumbing below
+            // applies — `dispatch` installs its own Ctrl-C handling. Drop the
+            // receiver explicitly: `let _ =` on a future silently discards it
+            // without polling, which is a different thing and one clippy is
+            // right to flag.
+            drop(shutdown_rx);
+            cli::bench_run::dispatch(args).await
+        }
         Command::Serve(args) => {
             let serving = serve(args, tui_channels);
             tokio::pin!(serving);

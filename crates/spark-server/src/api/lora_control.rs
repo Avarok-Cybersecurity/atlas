@@ -9,9 +9,8 @@
 //! changes the adapter applied to ALL subsequent requests (per-request adapter
 //! routing is a future increment).
 
-use std::sync::Arc;
+use crate::main_modules::model_host::CurrentModel;
 
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -91,7 +90,7 @@ struct SetActiveLoraResponse {
 
 /// POST /v1/lora/active  `{"adapter": "NAME"}`
 pub async fn set_active_lora(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     body: Result<Json<SetActiveLoraRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match body {
@@ -179,7 +178,7 @@ struct LoadLoraResponse {
 /// `--max-loras 1` only one adapter is resident, and this swaps the single
 /// slot's contents on demand (needs `ATLAS_LORA_ROTATE=1` so decode is eager).
 pub async fn load_lora_into_slot(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     body: Result<Json<LoadLoraRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match body {

@@ -34,8 +34,13 @@ impl ToolCallParser for BareJsonParser {
         true
     }
 
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String {
-        let tools_json = tool_list_body(tools, || {
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &super::PromptLevers,
+    ) -> String {
+        let tools_json = tool_list_body(tools, levers, || {
             serde_json::to_string(tools).unwrap_or_else(|_| "[]".into())
         });
         let mut prompt = format!(

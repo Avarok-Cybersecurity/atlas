@@ -88,6 +88,12 @@ pub(crate) struct SsmSnapshotPool {
     /// Marconi slots that currently hold a valid `hidden_snapshot` entry
     /// (only leaf saves populate it; intermediate checkpoints do not).
     pub(super) slot_has_hidden: Mutex<std::collections::HashSet<usize>>,
+    /// FP16 -> FP32 h-state converter (`ATLAS_SSM_H_FP16`). A snapshot taken
+    /// from a DECODING slot reads an FP16 state, but every restore lands in a
+    /// PREFILL, which is FP32. Widening at save time keeps the snapshot pool
+    /// uniformly FP32, so restore, spill, fault-in, the tier fingerprint and
+    /// the swap file all stay dtype-agnostic. Zero when the module is absent.
+    pub(super) h_f16_to_f32_k: KernelHandle,
     /// Reusable page-locked staging blob shared by the tier spill/fault-in
     /// paths. See [`super::ssm_spill_staging::SpillStaging`] — a fresh
     /// `vec![0u8; 66_846_720]` per event was part of the measured ~400 ms
@@ -133,6 +139,7 @@ impl SsmSnapshotPool {
                 hidden_snapshot: DevicePtr::NULL,
                 hidden_bytes,
                 slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
+                h_f16_to_f32_k: KernelHandle(0),
                 spill_staging: Default::default(),
             });
         }
@@ -191,6 +198,7 @@ impl SsmSnapshotPool {
             hidden_snapshot,
             hidden_bytes,
             slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
+            h_f16_to_f32_k: crate::layers::try_kernel(gpu, "ssm_h_dtype", "ssm_h_state_f16_to_f32"),
             spill_staging: Default::default(),
         })
     }
@@ -288,16 +296,27 @@ impl SsmSnapshotPool {
     /// Save SSM state from active pool slot into a snapshot slot.
     /// Returns `None` if no free snapshot slots are available.
     /// Tags the snapshot with `session_hash` for session-scoped isolation.
+    /// `h_is_f16` is the storage dtype of the SOURCE slot. Under
+    /// `ATLAS_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
+    /// widens it back: snapshots are always written FP32, so `restore` — which
+    /// only ever lands in a prefill — needs no dtype knowledge, and neither do
+    /// the spill, fault-in, tier-fingerprint or swap paths.
     pub(super) fn save(
         &self,
         ssm_slot: usize,
         session_hash: u64,
+        h_is_f16: bool,
         main_pool: &SsmStatePool,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Option<usize>> {
         if !self.is_enabled() {
             return Ok(None);
+        }
+        if h_is_f16 && self.h_f16_to_f32_k.0 == 0 {
+            bail!(
+                "ATLAS_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
+            );
         }
         let snap_slot = match self.free_slots.lock().pop() {
             Some(s) => s,
@@ -307,12 +326,23 @@ impl SsmSnapshotPool {
         // caller re-populates it via `save_hidden` for leaf snapshots only.
         self.slot_has_hidden.lock().remove(&snap_slot);
         for i in 0..self.num_ssm_layers {
-            gpu.copy_d2d_async(
-                main_pool.h_state(i, ssm_slot),
-                self.h_snapshots[i].offset(snap_slot * self.h_bytes),
-                self.h_bytes,
-                stream,
-            )?;
+            if h_is_f16 {
+                crate::layers::ops::ssm_h_state_f16_to_f32(
+                    gpu,
+                    self.h_f16_to_f32_k,
+                    main_pool.h_state(i, ssm_slot),
+                    self.h_snapshots[i].offset(snap_slot * self.h_bytes),
+                    (self.h_bytes / 4) as u64,
+                    stream,
+                )?;
+            } else {
+                gpu.copy_d2d_async(
+                    main_pool.h_state(i, ssm_slot),
+                    self.h_snapshots[i].offset(snap_slot * self.h_bytes),
+                    self.h_bytes,
+                    stream,
+                )?;
+            }
             gpu.copy_d2d_async(
                 main_pool.conv_state(i, ssm_slot),
                 self.conv_snapshots[i].offset(snap_slot * self.conv_bytes),

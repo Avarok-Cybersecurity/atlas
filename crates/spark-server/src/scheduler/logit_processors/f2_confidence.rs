@@ -27,25 +27,29 @@ impl LogitsProcessor for F2ConfidenceEarlyStop {
         &self,
         logits: &mut [f32],
         a: &mut ActiveSeq,
-        _ctx: &LogitsContext,
+        ctx: &LogitsContext,
     ) -> ProcessorOutcome {
-        if !crate::scheduler::helpers::disable_watchdogs()
+        if !ctx.sampling.disable_watchdogs
             && a.inside_thinking
             && !a.force_end_thinking
             && a.thinking_tokens >= 400
-            && crate::scheduler::helpers::watchdog_params().confidence_early_stop
+            && ctx.watchdog.confidence_early_stop
         {
             let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let sum_exp: f32 = logits.iter().map(|&l| (l - max_logit).exp()).sum();
             let confident = sum_exp > 0.0 && 1.0 / sum_exp >= 0.95;
-            let (run, force_end) = confidence_run_step(confident, a.consecutive_confident);
+            let (run, force_end) = confidence_run_step(
+                confident,
+                a.consecutive_confident,
+                ctx.watchdog.confidence_run_length,
+            );
             a.consecutive_confident = run;
             if force_end {
                 a.force_end_thinking = true;
                 a.sentence_defer_count = 0;
                 tracing::info!(
                     "Confidence early stop armed: top-1 prob >= 0.95 for {} tokens (after {} thinking tokens){}",
-                    crate::scheduler::helpers::watchdog_params().confidence_run_length,
+                    ctx.watchdog.confidence_run_length,
                     a.thinking_tokens,
                     if a.in_code_fence {
                         " — deferred until ``` fence closes"

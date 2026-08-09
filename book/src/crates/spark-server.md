@@ -32,7 +32,7 @@ The scheduler is driven by an inbound `mpsc::Receiver<Request>`; each HTTP handl
 | POST | `/v1/responses` | `api::responses` (OpenAI Responses API, stateful) |
 | POST | `/v1/messages` | `anthropic::messages` (Anthropic) |
 | GET | `/health` | simple 200 — used by the bench harness |
-| POST | `/tokenize`, `/detokenize` | helpers, optionally gated behind `ATLAS_REQUIRE_AUTH` |
+| POST | `/tokenize`, `/detokenize` | helpers, optionally gated behind `--require-auth` |
 
 Streaming is the default for chat; non-streaming aggregates and returns `ChatCompletionResponse`. Tool-call chunks are emitted as `delta.tool_calls` in the SSE stream. Anthropic streaming populates `stop_sequence` on `message_delta` events (fixed in wave-12).
 

@@ -23,7 +23,12 @@ mod kv_summary;
 
 pub fn build_model(
     mut config: ModelConfig,
-    store: &WeightStore,
+    // BY VALUE. Every reader below still takes `&WeightStore` — the change is
+    // only in who OWNS it. The store is the one structure that knows every
+    // weight pointer, and it used to be a local in `startup()` that was dropped
+    // once the layers had copied pointers out of it: the memory stayed live
+    // with nothing able to free it. The model owns it now, so `teardown` can.
+    store: WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
     kv_block_size: usize,
@@ -80,7 +85,7 @@ pub fn build_model(
         };
         let model = crate::model::nllb::NllbGpuModel::new(
             &config,
-            store,
+            &store,
             gpu,
             lang,
             max_seq_len,
@@ -158,11 +163,11 @@ pub fn build_model(
     // "use global num_kv_heads/head_dim for all layers" (backward compatible).
     config.kv_layer_dims = loader.kv_layer_dims(&config);
 
-    let mut layers = loader.load_layers(store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
-    let embed = loader.load_embedding(store, &config, gpu.as_ref())?;
-    let final_norm = loader.load_final_norm(store, &config, gpu.as_ref())?;
-    let lm_head = loader.load_lm_head(store, &config, gpu.as_ref())?;
-    let mtp_weights = loader.load_mtp_weights_multi(store, &config, gpu.as_ref())?;
+    let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
+    let embed = loader.load_embedding(&store, &config, gpu.as_ref())?;
+    let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
+    let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
+    let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
 
     // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
     // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path and keep it
@@ -176,7 +181,7 @@ pub fn build_model(
     let v4_mtp_module =
         if config.model_type == "deepseek_v4" && use_speculative && config.ep_rank == 0 {
             match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
-                store,
+                &store,
                 &config,
                 gpu.as_ref(),
                 &attn_layer_dtypes,
@@ -211,7 +216,7 @@ pub fn build_model(
              or use a checkpoint that ships an MTP head (e.g. `mtp.safetensors`)."
         );
     }
-    let vision_encoder = loader.load_vision_encoder(store, &config, gpu.as_ref())?;
+    let vision_encoder = loader.load_vision_encoder(&store, &config, gpu.as_ref())?;
 
     // If the checkpoint's `quantization_config.ignore_modules` lists MTP
     // (e.g. Sehyo/Qwen3.5-35B-A3B-NVFP4 ignores `mtp.*`), the MTP weights
@@ -219,7 +224,7 @@ pub fn build_model(
     // anyway — which is what `mtp_quant` would otherwise do — produces
     // garbage drafts (vllm PR #38832). Force BF16 in that case.
     let effective_mtp_quant = if !mtp_weights.is_empty() {
-        let quant_fmt = crate::quant_format::detect_quant_format(&config, store);
+        let quant_fmt = crate::quant_format::detect_quant_format(&config, &store);
         if quant_fmt.is_ignored("mtp.fc.weight")
             || quant_fmt.is_ignored("mtp.layers.0.self_attn.q_proj.weight")
         {
@@ -242,7 +247,7 @@ pub fn build_model(
     // draft-only NVFP4 head for MTP — extracted to lm_head_setup.rs
     // (file-size cap; pure code move).
     let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = super::lm_head_setup::setup_lm_heads(
-        store,
+        &store,
         &lm_head,
         &config,
         gpu.as_ref(),
@@ -277,6 +282,7 @@ pub fn build_model(
         max_batch_tokens,
         max_seq_len,
         kv_block_size,
+        max_batch_size,
         gpu.as_ref(),
     )?;
 
@@ -490,13 +496,16 @@ pub fn build_model(
         // --max-seq-len. With paged KV (blocks allocated on demand) that almost
         // never holds for real agent traffic (mixed/shorter sequences), so a high
         // --max-seq-len (e.g. 64K for long agent contexts) needlessly caps
-        // --max-batch-size. ATLAS_KV_OVERCOMMIT=1 downgrades the hard error to a
+        // --max-batch-size. Overcommit (DEFAULT ON since wave 10: config of
+        // record for the native bs=32 rung) downgrades the hard error to a
         // warning: the scheduler admits up to max_batch_size and the pool fills on
         // demand (a genuinely over-long burst gets back-pressured by the block
-        // allocator, not a boot-time refusal).
-        let overcommit = matches!(
+        // allocator, not a boot-time refusal). Kill switch: ATLAS_KV_OVERCOMMIT=0
+        // (or =false) restores the boot-time hard refusal. Value is parsed, not
+        // presence-checked.
+        let overcommit = !matches!(
             std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("0") | Ok("false")
         );
         if overcommit {
             tracing::warn!(
@@ -516,7 +525,7 @@ pub fn build_model(
                  but --max-batch-size={} was requested. \
                  KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
                  Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
-                 or set ATLAS_KV_OVERCOMMIT=1 to allow on-demand paged allocation.",
+                 or unset ATLAS_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
                 max_concurrent,
                 max_seq_len,
                 max_batch_size,
@@ -635,5 +644,10 @@ pub fn build_model(
     // adapter — base output is unchanged until the M1 compute insertions.
     model.set_lora_weights(lora_weights)?;
 
+    // Every layer has taken the pointers it needs; hand the ledger to the model
+    // so `teardown` can free the weights. Dropping it here — which is what used
+    // to happen — orphaned the memory: live, referenced by the layers, with
+    // nothing owning the ability to release it.
+    model.adopt_weight_store(store);
     Ok(Box::new(model))
 }

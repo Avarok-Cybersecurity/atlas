@@ -23,6 +23,7 @@
 //!                      timeout / logprobs resolution
 
 pub(crate) mod echo;
+pub(crate) mod levers;
 mod loop_detect;
 mod msg_entry;
 pub(crate) mod prepare;
@@ -30,6 +31,7 @@ mod sampling_setup;
 mod template;
 mod thinking;
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -60,7 +62,8 @@ pub(crate) fn test_build_msg_entries(
     input: &[crate::ir::Message],
     tools_active: bool,
 ) -> Result<Vec<msg_entry::MsgEntry>, axum::response::Response> {
-    msg_entry::build_msg_entries(None, None, input, tools_active).map(|o| o.messages)
+    msg_entry::build_msg_entries(None, None, input, tools_active, &levers::ChatLevers::OFF)
+        .map(|o| o.messages)
 }
 
 #[cfg(test)]
@@ -71,7 +74,13 @@ pub(crate) fn test_build_json_messages(entries: &[msg_entry::MsgEntry]) -> Vec<s
 use super::compact::openai_error_response;
 
 pub async fn chat_completions(
-    State(state): State<Arc<AppState>>,
+    // The HOST, not `CurrentModel`: this is the one handler that can CREATE the
+    // model. Extractors run before the body is read, so `CurrentModel` would
+    // hand back whatever was loaded BEFORE the request said which model it
+    // wanted — exactly the thing the auto-swap has to decide on.
+    axum::extract::State(host): axum::extract::State<
+        std::sync::Arc<crate::main_modules::model_host::ModelHost>,
+    >,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -88,6 +97,64 @@ pub async fn chat_completions(
                 format!("Invalid request JSON: {e}"),
             );
         }
+    };
+
+    // Ollama-style: a request naming a different KNOWN model loads it first.
+    // Off unless `--auto-swap`, and `--no-auto-swap` overrides that; every
+    // other case (absent, unknown, already live) falls through untouched, which
+    // is byte-identical to the behaviour before this existed.
+    if host.auto_swap_enabled() {
+        let live = host.live_model().unwrap_or_default();
+        // Short-circuit the overwhelmingly common case — a client naming the
+        // model that is already loaded — before touching the disk. Reading the
+        // recipe index means an `ArtifactStore::discover` plus a JSON parse,
+        // and doing that per request put blocking I/O on a runtime worker in
+        // the hot path of every completion.
+        if !req.model.is_empty() && req.model != live {
+            let requested = req.model.clone();
+            let swap_host = host.clone();
+            // Both the catalogue read and the load are blocking, so BOTH belong
+            // off the runtime — the decision needs the index, and the index is
+            // on disk.
+            let outcome = tokio::task::spawn_blocking(move || {
+                let catalogue = atlas_plugin::ArtifactStore::discover()
+                    .ok()
+                    .map(|s| crate::recipe::fetch::cached(s.root()).recipes)
+                    .unwrap_or_default();
+                match crate::main_modules::auto_swap::decide(&requested, &live, &catalogue) {
+                    crate::main_modules::auto_swap::Decision::SwapTo(recipe_id) => {
+                        crate::main_modules::auto_swap::ensure_loaded(
+                            &swap_host, &recipe_id, &requested, &catalogue,
+                        )
+                    }
+                    // Unknown to the catalogue, or already live: serve as-is.
+                    crate::main_modules::auto_swap::Decision::ServeCurrent => Ok(()),
+                }
+            })
+            .await;
+            match outcome {
+                Ok(Ok(())) => {}
+                // A failed load already restored the previous model where it
+                // could; say so and serve on whatever is actually live rather
+                // than failing a request the old model could have answered.
+                Ok(Err(e)) => tracing::warn!("auto-swap to {:?} failed: {e:#}", req.model),
+                Err(e) => tracing::warn!("auto-swap task failed: {e}"),
+            }
+        }
+    }
+
+    // Resolve AFTER any swap, so the request is served by the model it asked
+    // for rather than the one that happened to be loaded when it arrived.
+    let Some(state) = host.current() else {
+        // `_typed`, not the plain form: the plain one derives `error.type` from
+        // the status and would label this `server_error`, which is both wrong
+        // (nothing failed) and inconsistent with the `CurrentModel` extractor,
+        // which reports `model_not_loaded` for the identical condition.
+        return crate::api::compact::openai_error_response_typed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no model is loaded".to_string(),
+            "model_not_loaded",
+        );
     };
 
     // --dump: record the incoming request body verbatim.
@@ -322,7 +389,7 @@ pub(crate) async fn chat_completions_inner(
         Ok(s) => s,
         Err(resp) => return ChatOutcome::Http(resp),
     };
-    if prepare::phase_timing_enabled() {
+    if state.chat.phase_timing {
         let us_sampling =
             _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect - us_session_hash;
         tracing::info!(

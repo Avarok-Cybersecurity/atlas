@@ -6,6 +6,7 @@
 
 mod build;
 mod config;
+mod kernel_gate;
 mod kv_cache;
 mod preflight;
 mod runtime;
@@ -21,6 +22,7 @@ pub(super) use config::{
     apply_model_default_num_drafts, cap_vocab_size_to_tokenizer, load_model_config,
     merge_sidecar_quant_config, resolve_model_dir,
 };
+pub(super) use kernel_gate::audit_and_gate;
 pub(super) use kv_cache::{
     KvCacheConfig, PrefillBudget, resolve_kv_cache_config, resolve_prefill_budget,
 };
@@ -33,6 +35,4 @@ pub(super) use runtime::{
 };
 pub(super) use tokenizer_runtime::{TokenizerRuntime, resolve_tokenizer_runtime};
 pub(super) use topology::{Topology, init_nccl_comm, resolve_topology};
-pub(super) use weights::{
-    auto_detect_weight_prefix, load_dflash_drafter, load_lora_adapters, load_weight_store,
-};
+pub(super) use weights::{load_dflash_drafter, load_lora_adapters, load_weight_store};

@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use crate::main_modules::AppState;
 use crate::rate_limiter;
 
 /// OpenAI-compatible observability headers. Injects on every `/v1/*`
@@ -42,27 +41,13 @@ pub(crate) async fn openai_observability_middleware(
     if let Ok(v) = HeaderValue::from_str(&elapsed_ms.to_string()) {
         headers.insert(HeaderName::from_static("openai-processing-ms"), v);
     }
-    // Static "effectively unlimited" stubs (Atlas does not enforce rate limits).
-    for (k, v) in [
-        ("x-ratelimit-limit-requests", "1000000"),
-        ("x-ratelimit-remaining-requests", "999999"),
-        ("x-ratelimit-reset-requests", "0s"),
-        ("x-ratelimit-limit-tokens", "1000000000"),
-        ("x-ratelimit-remaining-tokens", "999999999"),
-        ("x-ratelimit-reset-tokens", "0s"),
-        ("openai-organization", "atlas-local"),
-        ("openai-version", "2026-01-01"),
-    ] {
-        if let Ok(val) = HeaderValue::from_str(v) {
-            headers.insert(HeaderName::from_static(k), val);
-        }
-    }
+    apply_compat_stubs(headers);
     resp
 }
 
 /// Bearer-token gate. Active when the operator passed `--require-auth`
-/// (which lands in `AppState.auth` as `Some(...)`); otherwise this is a
-/// pass-through. When active, requests to `/v1/*`, `/tokenize`, and
+/// (which installs the policy on the HOST, not on any model); otherwise this
+/// is a pass-through. When active, requests to `/v1/*`, `/tokenize`, and
 /// `/detokenize` must carry `Authorization: Bearer <token>` matching one
 /// of the loaded tokens. Health / metrics / liveness paths stay open
 /// (they're scrape targets / discovery endpoints, expected to be
@@ -74,19 +59,37 @@ pub(crate) async fn openai_observability_middleware(
 /// surface "missing_api_key" / "invalid_api_key" the same way they do
 /// against `api.openai.com`.
 pub(crate) async fn require_auth_middleware(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    // The HOST, resolved per request — never a bound `Arc<AppState>`. A clone
+    // held for the router's lifetime keeps `request_tx` open, so the scheduler
+    // never drains and a swap's join blocks forever. That deadlock is not
+    // hypothetical: it wedged a live server, and nothing in the type system
+    // says "this Arc must not outlive the model".
+    axum::extract::State(host): axum::extract::State<Arc<super::model_host::ModelHost>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let Some(auth_cfg) = state.auth.as_ref() else {
-        return next.run(req).await;
-    };
+    // From the HOST, not the model: the policy is process-scoped, so it applies
+    // whether or not a model is loaded. Reading it off `AppState` meant no
+    // model implied no auth, and `/v1/models` answered 200 without a token in
+    // exactly that window.
+    //
+    // Taking it by value also matters for the swap: a layer that holds an
+    // `Arc<AppState>` across `next.run` holds it for the whole request, and a
+    // swap triggered BY that request can then never release the outgoing model
+    // — which is precisely the "2 reference(s) outlived the drain window" a
+    // live swap reported.
+    // Path first, for the same reason as the rate limiter: /health and
+    // /metrics are never gated, and they are the most frequently polled routes
+    // on the server.
     let path = req.uri().path();
     let needs_auth = path.starts_with("/v1/") || path == "/tokenize" || path == "/detokenize";
     if !needs_auth {
         return next.run(req).await;
     }
+    let Some(auth_cfg) = host.auth() else {
+        return next.run(req).await;
+    };
     let presented_token = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -134,18 +137,38 @@ pub(crate) async fn require_auth_middleware(
 /// `openai_observability_middleware`. When the limiter is disabled, this
 /// middleware is a pass-through (the observability stubs stand).
 pub(crate) async fn rate_limit_middleware(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    // See `require_auth_middleware`: resolved per request so no clone outlives
+    // the model.
+    axum::extract::State(host): axum::extract::State<Arc<super::model_host::ModelHost>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::{HeaderName, HeaderValue, StatusCode};
+    // See `require_auth_middleware`: the model must not be held across
+    // `next.run`.
+    // From the HOST, so the limiter is in force whether or not a model is
+    // loaded. Read off `AppState` it did not exist in that window, and every
+    // /v1/* request went through unlimited — the same shape as the auth
+    // bypass fixed alongside it.
     use axum::response::IntoResponse;
 
-    // Only apply to /v1/* routes — health/metrics/tokenize stay open.
-    let is_v1 = req.uri().path().starts_with("/v1/");
-    if !is_v1 || !state.rate_limiter.config().is_enabled() {
+    // The cheap gate first. Only /v1/* is limited, and /health is polled by
+    // supervisors far more often than the API is called — taking two locks and
+    // cloning an `Arc` before deciding that is work done for nothing.
+    if !req.uri().path().starts_with("/v1/") {
         return next.run(req).await;
     }
+    let Some(rate_limiter) = host.rate_limiter() else {
+        return next.run(req).await;
+    };
+    if !rate_limiter.config().is_enabled() {
+        return next.run(req).await;
+    }
+    // The token estimate IS model-derived. With no model the request cannot
+    // consume any, so it reserves none and is still counted as a request —
+    // which is the axis that matters for a client hammering a server that has
+    // nothing loaded.
+    let max_seq_len = host.current().map(|state| state.max_seq_len).unwrap_or(0);
 
     // Peer addr comes from the ConnectInfo extension injected by
     // `into_make_service_with_connect_info`. Falls through to None when
@@ -161,9 +184,9 @@ pub(crate) async fn rate_limit_middleware(
     // for streaming paths (handlers call `refund_tokens` with the actual
     // usage). This over-counts for small requests but prevents a single
     // client from consuming the whole TPM budget in one burst.
-    let estimated = state.max_seq_len as u64;
+    let estimated = max_seq_len as u64;
 
-    let decision = state.rate_limiter.admit(&identity, estimated);
+    let decision = rate_limiter.admit(&identity, estimated);
     if !decision.allowed {
         let (param, code) = match decision.denied_by {
             Some(rate_limiter::DenialReason::Requests) => ("requests", "rate_limit_exceeded"),
@@ -197,6 +220,40 @@ pub(crate) async fn rate_limit_middleware(
     let mut resp = next.run(req).await;
     apply_rate_headers(resp.headers_mut(), &decision);
     resp
+}
+
+/// Fill in the OpenAI-compat headers a client expects, without clobbering any
+/// the rate limiter already set.
+///
+/// They are a FALLBACK, not an override. The call site's comment used to read
+/// "Atlas does not enforce rate limits" and the loop used `insert`, which was
+/// true when written and became false when the limiter landed: this layer runs
+/// outside `rate_limit_middleware`, so it overwrote the real numbers with
+/// "unlimited, nothing used, no reset" on every response. A client honouring
+/// these headers — the only reason to send them — would never back off, and
+/// would drive straight into the 429s the limiter was configured to prevent.
+/// Measured: RPM=3 rejected the 4th request while every response advertised a
+/// limit of 1000000.
+fn apply_compat_stubs(headers: &mut axum::http::HeaderMap) {
+    use axum::http::{HeaderName, HeaderValue};
+    for (k, v) in [
+        ("x-ratelimit-limit-requests", "1000000"),
+        ("x-ratelimit-remaining-requests", "999999"),
+        ("x-ratelimit-reset-requests", "0s"),
+        ("x-ratelimit-limit-tokens", "1000000000"),
+        ("x-ratelimit-remaining-tokens", "999999999"),
+        ("x-ratelimit-reset-tokens", "0s"),
+        ("openai-organization", "atlas-local"),
+        ("openai-version", "2026-01-01"),
+    ] {
+        let name = HeaderName::from_static(k);
+        if headers.contains_key(&name) {
+            continue;
+        }
+        if let Ok(val) = HeaderValue::from_str(v) {
+            headers.insert(name, val);
+        }
+    }
 }
 
 pub(crate) fn apply_rate_headers(
@@ -240,3 +297,7 @@ pub(crate) fn apply_rate_headers(
         format!("{}s", d.tokens.reset_secs),
     );
 }
+
+#[cfg(test)]
+#[path = "middleware_tests.rs"]
+mod tests;

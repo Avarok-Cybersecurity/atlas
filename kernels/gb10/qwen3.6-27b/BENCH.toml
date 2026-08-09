@@ -1,0 +1,57 @@
+# Benchmarks for this model, and the thresholds its gate records must meet.
+#
+# Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path and cannot disagree with the
+# contents. Read by `atlas_plugin::gate::bench`.
+#
+# Thresholds are per CHECKPOINT, not per model: two checkpoints of one model
+# can differ by several BFCL points, so they cannot share a bar.
+#
+# This file is deliberately OUTSIDE the closure hash (`taxon::configs` does not
+# list it), so ratcheting a threshold does not invalidate the record that
+# justified the ratchet.
+#
+# `status = "unmeasured"` entries carry NO [benchmarks.metrics] table. Absence
+# is the TODO -- a guessed threshold a run could clear would report PASS for
+# something nobody measured.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "bfcl-subset"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+default = true
+status = "measured"
+note = """\
+Gate D. Golden ST-995 draw (62/10/10, floor 25, n=995, seed 42, temp 0) on the DENSE 27B — \
+the MLPerf-edge submission model, which is the model these numbers are defined for. \
+THRESHOLDS ARE THE HIGH-WATER RATCHET, NOT THE FLOOR: 87.44 overall is the best \
+like-for-like value ever recorded under these serve flags (2026-07-13 prestack b45af988); \
+88.59 normalized is the best (2026-07-26 pr369 de6153f3). Ratcheting to best-ever rather \
+than to a survivable floor is deliberate — it catches regression from our best instead of \
+only catching catastrophe, and it stops repeated sub-noise dips silently walking the gate \
+down over successive PRs. `noise` is the MEASURED +/-0.4 MTP-greedy-nondeterminism band on \
+this model: a bit-identical change has swung overall by 0.40, so a dip inside it is not \
+signal. The MLPerf-edge floor (83.64 / 85.32, = llama.cpp Q4_K_M golden 86.23/87.96 x 0.97) \
+is NOT repeated as a field here because this schema enforces only `metrics` and an extra key \
+would be silently ignored — it is subsumed, since 87.44 > 83.64 and 88.59 > 85.32. If these \
+mins are ever lowered, re-check them against that floor by hand: dropping below it is an \
+outright MLPerf submission failure, not a regression. Do NOT score the echolp n=1004 draw \
+against these numbers — see bfcl-subset-echolp. History: 2026-07-13 prestack b45af988 \
+87.44/88.53 (overall high-water); 2026-07-13 main d77bdf84 87.24/88.40; 2026-07-26 pr369 \
+de6153f3 87.34/88.59 (normalized high-water); 2026-08-03 PR #388 Gate D 87.74/89.43 n=995. \
+The draw is PINNED at n=995: a score from a different draw is not comparable to these \
+thresholds, and the sample count is the only thing that reveals it after the fact, so it is \
+gated exactly rather than merely recorded."""
+
+[benchmarks.metrics.normalized_single_turn_score]
+min = 88.59
+noise = 0.4
+
+[benchmarks.metrics.overall_accuracy]
+min = 87.44
+noise = 0.4
+
+[benchmarks.metrics.samples]
+min = 995
+max = 995

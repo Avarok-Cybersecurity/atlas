@@ -11,7 +11,7 @@ elsewhere:
 |------|------|
 | Copy-paste per-model `docker run` recipes | [`QUICKSTART.md`](../QUICKSTART.md) · the `@atlas` [recipe registry](https://github.com/Avarok-Cybersecurity/atlas-recipes) |
 | Deployment *modes* (single-GPU, EP=2/TP=2, NVMe swap) | [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) |
-| The native binary (no Docker) | [`docs/DISTRIBUTION.md`](DISTRIBUTION.md) |
+| Release/image pipeline, and the native binary | the `atlas-release` skill (`.claude/skills/atlas-release/`) |
 | Adding a new model/hardware target | [`docs/HARDWARE.md`](HARDWARE.md) · [`AGENTS.md`](../AGENTS.md) |
 
 **Serve config SSOT:** the `defaults:` block of the matching
@@ -34,8 +34,10 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
 | Image | `avarok/atlas-gb10:latest` — one **multi-model** binary; the right kernel set is auto-selected at startup from the model's `config.json` |
 
 **Prerequisites**, in order:
-1. NVIDIA driver ≥ 580 — verify: `nvidia-smi` shows CUDA 13.0+. (Native binary
-   fails fast below the floor; bypass at your own risk with `ATLAS_SKIP_DRIVER_CHECK=1`.)
+1. NVIDIA driver ≥ 580 — verify: `nvidia-smi` shows CUDA 13.0+. (There is no
+   driver-version gate in the engine and **no `ATLAS_SKIP_DRIVER_CHECK` escape
+   hatch** — that variable has no read site. Below the floor you get a CUDA
+   driver/PTX-load error at startup, not a friendly message.)
 2. NVIDIA Container Toolkit (for the Docker path).
 3. A clean GPU before launch: `nvidia-smi` should show no other process holding
    VRAM. Atlas sizes its KV cache from *free* memory at boot.
@@ -142,7 +144,10 @@ You don't choose weight quant with a flag — you choose it by which **HuggingFa
 checkpoint** you point `serve` at (the id in §2). The image serves all three.
 
 ### KV-cache dtype — `--kv-cache-dtype` (independent of weight quant)
-KV precision trades context length / batch against fidelity. Six options:
+KV precision trades context length / batch against fidelity. The six you will
+actually reach for are below; `KvCacheDtype` accepts **16** values in total —
+these plus `turbo2` and nine asymmetric K/V pairings (`bf16k_turbo3v`,
+`fp8k_turbo4v`, …) documented in [`turboquant-plus.md`](turboquant-plus.md).
 
 | `--kv-cache-dtype` | Bits/elem | Notes |
 |--------------------|-----------|-------|
@@ -163,8 +168,9 @@ A GB10 has ~120 GB. Budget ≈ *weights + CUDA/NCCL workspace + dequant scratch 
 **`KV cache can hold at most 0 concurrent sequence(s)`**, walk this ladder:
 
 1. **Lower `--gpu-memory-utilization`** first if it fails *during* boot (workspace
-   starve): `0.85` default → `0.70`. If you have headroom and nothing else on the
-   GPU, raise toward `0.92` for more KV.
+   starve): the CLI default is **`0.90`** → try `0.70`. If you have headroom and
+   nothing else on the GPU, raise toward `0.92` for more KV. (A recipe may pin a
+   different value; the recipe wins.)
 2. **Cut `--max-seq-len`** — KV scales linearly with it (64K → 16K is a 4× KV cut).
 3. **Cut `--max-num-seqs`** — fewer concurrent sequences = less KV. On the tight
    122B single-node recipe this is `--max-num-seqs 4`.
@@ -188,7 +194,7 @@ The gotchas that cost people an evening, in one place:
    symlinked extra-weights file. **Fix:** download to a real dir and serve from a
    path:
    ```bash
-   huggingface-cli download Sehyo/Qwen3.5-35B-A3B-NVFP4 --local-dir /models/qwen3.5-35b
+   hf download Sehyo/Qwen3.5-35B-A3B-NVFP4 --local-dir /models/qwen3.5-35b
    docker run ... -v /models/qwen3.5-35b:/model avarok/atlas-gb10:latest \
      serve --model-from-path /model --speculative --num-drafts 1
    ```
@@ -201,9 +207,10 @@ The gotchas that cost people an evening, in one place:
    flags — otherwise rank 0's verify lands on a layer rank 1 never allocated for.
    `scripts/start-ep2.sh` mirrors them; if you hand-write two `docker run`s, copy
    the spec flags verbatim. (See §7.)
-4. **Native binary: "driver too old" / glibc errors.** The tarball fails fast below
-   driver 580 (CUDA 13.0) and is built against glibc 2.39 (Ubuntu 24.04). Older
-   distro → use the Docker image. Emergency bypass: `ATLAS_SKIP_DRIVER_CHECK=1`.
+4. **Native binary: driver / glibc errors.** The tarball needs driver 580
+   (CUDA 13.0) and is built against glibc 2.39 (Ubuntu 24.04). Older distro →
+   use the Docker image. There is no bypass env var; `ATLAS_SKIP_DRIVER_CHECK`
+   is not read anywhere and setting it does nothing.
 5. **First request hangs for 5–30 s.** That's cold-start CUDA-graph capture +
    autotuner + prefix-cache init, not a hang. Eliminate it with `--warmup-prompt`.
 6. **Garbage / incoherent output.** Two usual causes: (a) **tool-parser mismatch** —
@@ -292,6 +299,5 @@ clean checkout against a running server.
 ## See also
 - [`QUICKSTART.md`](../QUICKSTART.md) — the copy-paste recipes this guide routes to.
 - [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) — deployment modes + NVMe swap internals.
-- [`docs/DISTRIBUTION.md`](DISTRIBUTION.md) — the native (no-Docker) binary.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) · [`AGENTS.md`](../AGENTS.md) — building & contributing.
 - [`atlas-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) — the serve-config SSOT (`sparkrun run @atlas/<recipe>`).

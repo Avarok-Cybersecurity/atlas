@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Tests extracted from the original `api.rs` `sanitizer_tests` module.
-//! Each submodule preserves its original tests verbatim; shared helpers
-//! live in `common`.
+//! Tests for the streaming-side guards on the OpenAI-compatible API.
+//!
+//! - `harness`   — whole-stream driver for the content sanitizer
+//! - `sanitizer` — orphan tool-call fragments must not reach the client
+//! - `envelope`  — F73: inner tags inside a sanctioned envelope must
+//! - `watchdog`  — repetition guard: fires on real loops, not on prose
+//!
+//! The F7/F28-F32/F39/F44/F49/F50 suites that used to live here were
+//! deleted with the prompt-injection subtree they tested (#90); nothing
+//! in the request path counts duplicate writes or appends stall
+//! reminders any more.
 
-mod common;
-// TODO: stale F-code tests — reference helper functions that have been
-// refactored away (`f37FailureClass`, `f49_detect_duplicate_writes`,
-// `f44_check_permanent_failure`, etc.). Files left on disk; un-comment
-// these once the assertions are updated against the current API.
-// mod sanitizer;
-// mod watchdog_f7;
-// mod f28_f32;
-// mod f49;
+mod envelope;
+mod harness;
+mod sanitizer;
+mod watchdog;

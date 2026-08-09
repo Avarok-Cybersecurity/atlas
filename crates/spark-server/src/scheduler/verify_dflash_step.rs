@@ -29,6 +29,7 @@ use super::*;
 pub fn step_verify_dflash(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
@@ -71,9 +72,7 @@ pub fn step_verify_dflash(
     // drafter judge on the SAME (GOLD) basis. For non-DFlash callers (unreachable
     // today since step_verify_dflash is only dispatched at drafts.len()>=4 which
     // only DFlash produces), apply the full pre-sample pipeline as in K=2/3/4.
-    let verified = if dflash_verify_raw_argmax
-        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
-    {
+    let verified = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
         verified_argmax
     } else {
         crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
@@ -81,6 +80,7 @@ pub fn step_verify_dflash(
             &verified_argmax,
             a,
             verify_ctx,
+            0,
         )
     };
 
@@ -108,7 +108,7 @@ pub fn step_verify_dflash(
 
     // Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): feed the rolling
     // accept window; may suspend this seq's speculation (see adaptive_spec).
-    crate::scheduler::adaptive_spec::record_verify(a, num_accepted);
+    crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
 
     // Roll back the over-extended `seq_len` and `seq.tokens`. The verify
     // advanced both by `tokens.len() = γ+1` (all γ drafts + the prefix
@@ -137,7 +137,7 @@ pub fn step_verify_dflash(
     // Unified ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1): ONE unconditional
     // commit at the K=gamma point — rows 0..=num_accepted at RoPE base
     // pre_verify_len. Structural replacement for dflash_eagle_kgamma_append.
-    if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+    if sched.levers.dflash_unified_ctx {
         if let Err(e) = model.commit_ctx(&mut a.seq, num_accepted + 1, pre_verify_len) {
             tracing::error!("commit_ctx (kgamma): {e:#}");
         }
@@ -153,7 +153,7 @@ pub fn step_verify_dflash(
 
     // Emit accepted drafts.
     for i in 0..num_accepted {
-        emit_token(a, drafts[i], None);
+        emit_token(a, drafts[i], None, sched);
         if a.finished {
             return;
         }
@@ -164,7 +164,7 @@ pub fn step_verify_dflash(
     let bonus_idx = num_accepted;
     if bonus_idx < verified.len() {
         let bonus = verified[bonus_idx];
-        emit_token(a, bonus, None);
+        emit_token(a, bonus, None, sched);
         if a.finished {
             return;
         }
@@ -223,7 +223,7 @@ pub fn step_verify_dflash(
     // this seq (no drafts → the scheduler serial-decodes it via bootstrap).
     let _mtp_grammar_mask = mtp_grammar_mask_for(a);
     let t_propose = std::time::Instant::now();
-    if crate::scheduler::adaptive_spec::spec_allowed(a) {
+    if crate::scheduler::adaptive_spec::spec_allowed(a, sched) {
         match model.run_mtp_propose_multi(
             a.last_token,
             a.seq.seq_len,
