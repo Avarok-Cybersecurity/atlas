@@ -6,8 +6,11 @@
 //! `Journey`, deduplication, and 16 tests — and **zero writers**. Nothing had
 //! ever appended a line. This is the first one.
 //!
-//!     ledger-append --pr 433 --head-sha abc123 --run-id 42 --attempt 1 \
-//!                   category --value performance/decode --status ok
+//! ```text
+//! ledger_append category --root . --pr 433 --head-sha abc123 \
+//!               --run-id 42 --attempt 1 --at 1786280000 \
+//!               --value performance/decode --status ok
+//! ```
 //!
 //! Writes `governance/pr-<n>.jsonl` under the repo root. The workflow commits
 //! it; this binary does not touch git, for the same reason `pr_telemetry` does
