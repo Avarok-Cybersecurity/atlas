@@ -56,9 +56,8 @@ fn w4a16_gemm_t_ldb_drift_is_exactly_the_known_set() {
     );
 
     let known: std::collections::BTreeSet<&str> = [
-        "kernels/gb10/common/w4a16_gemm.cu",
-        "kernels/strix-hip/common/w4a16_gemm.cu",
-        "kernels/strix/common/w4a16_gemm.cu",
+        // EMPTY: every copy now takes `ldb`. A new one that does not will fail
+        // the `newly` assertion below — which is the whole point of the guard.
     ]
     .into_iter()
     .collect();
