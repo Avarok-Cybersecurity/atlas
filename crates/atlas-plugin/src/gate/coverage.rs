@@ -242,6 +242,32 @@ pub const REQUIRED: [GateCoverage; 5] = [
 /// Registered benchmarks that are deliberately **not** gates, each with the
 /// reason. Stated rather than implied: a reader asking "why doesn't
 /// `bfcl-full` gate?" should find the answer here, not infer it from absence.
+/// Gates that are NOT required **yet**, but are on a declared promotion path.
+///
+/// ★ The difference from [`NOT_REQUIRED`] is the whole point. Those three are
+/// permanently excused, with a reason: `bfcl-full` duplicates cheaper coverage,
+/// `concurrency-sweep` has no thresholds, `serve-matrix` measures breadth.
+/// Nothing is owed for them, ever.
+///
+/// A promotion candidate is different: it is a gate we intend to require once
+/// it has proven itself, run on release cuts in the meantime. That leaves a gap
+/// with a shape this repository has been bitten by repeatedly — **listing only
+/// what was gated silently converts "ungated" into "unaffected"**. A PR whose
+/// paths the candidate cares about can merge with nothing measured, and nothing
+/// anywhere says so.
+///
+/// So a candidate carries a FULL [`GateCoverage`], exactly as a required gate
+/// does, and [`promotion_debt`] joins it against changed paths. The telemetry
+/// renders the result as an explicit debt row. No model is involved and none is
+/// needed: it is a deterministic join between paths and records.
+///
+/// Empty today, deliberately. `memory-convergence` is the first intended entry
+/// (owner decision: NOT_REQUIRED, then promote once proven) and cannot be
+/// listed until the benchmark exists — a candidate naming an unregistered id
+/// would be a debt row nobody can ever discharge, which is worse than no row.
+/// `every_promotion_candidate_is_a_registered_benchmark` pins that.
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[];
+
 pub const NOT_REQUIRED: [(&str, &str); 3] = [
     (
         "bfcl-full",
@@ -327,4 +353,21 @@ where
 /// Look up a gate's coverage by id.
 pub fn find(id: &str) -> Option<&'static GateCoverage> {
     REQUIRED.iter().find(|g| g.id == id)
+}
+
+/// Which [`PROMOTION_CANDIDATES`] these changed paths would have invalidated.
+///
+/// This is the DEBT a merge takes on: each id returned is a gate that wanted to
+/// run, was not required to, and therefore did not. Rendering it is the whole
+/// mechanism — an unrendered debt is indistinguishable from no debt.
+pub fn promotion_debt<'a, I>(paths: I) -> Vec<&'static str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let paths: Vec<&str> = paths.into_iter().collect();
+    PROMOTION_CANDIDATES
+        .iter()
+        .filter(|gate| paths.iter().any(|p| invalidates(gate, p)))
+        .map(|gate| gate.id)
+        .collect()
 }

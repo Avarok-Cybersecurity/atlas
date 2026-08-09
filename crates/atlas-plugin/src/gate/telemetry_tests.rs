@@ -219,3 +219,72 @@ fn the_mermaid_graph_is_valid_with_one_pr() {
     assert!(body.contains("pr1["));
     assert!(!body.contains("--> pr1"), "no edge into the only node");
 }
+
+/// ★ The debt section is rendered even when nothing is owed — that is the
+/// whole mechanism. A section that appears only when non-empty cannot be
+/// distinguished from a section nobody wired up, and "no row" then reads as
+/// "no debt" whether or not the join ever ran.
+#[test]
+fn the_promotion_debt_section_is_always_rendered() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let prs = vec![super::PrFacts {
+        number: 1,
+        title: "a scheduler change".into(),
+        author: "someone".into(),
+        draft: false,
+        changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
+    }];
+    let body = super::render(&root, &prs);
+    assert!(
+        body.contains("### Promotion-candidate debt"),
+        "the debt heading must appear unconditionally"
+    );
+    // With the list empty today, it must SAY that rather than render a blank.
+    assert!(
+        body.contains("nothing can be owed"),
+        "an empty candidate list must be stated, not implied by absence"
+    );
+}
+
+/// The PR's debt is computed from its own paths, so it stays correct as the
+/// candidate list grows.
+#[test]
+fn debt_is_derived_from_the_prs_own_paths() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let prs = vec![
+        super::PrFacts {
+            number: 1,
+            title: "docs".into(),
+            author: "a".into(),
+            draft: false,
+            changed_paths: vec!["docs/adr/README.md".into()],
+        },
+        super::PrFacts {
+            number: 2,
+            title: "engine".into(),
+            author: "b".into(),
+            draft: false,
+            changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
+        },
+    ];
+    let views = super::views(&root, &prs);
+    // Empty candidate list => both empty. When a candidate is registered this
+    // becomes a real discrimination and the assertion below must be updated.
+    assert!(views.iter().all(|v| v.promotion_debt.is_empty()));
+    assert_eq!(
+        super::coverage::PROMOTION_CANDIDATES.len(),
+        0,
+        "a candidate was registered — update this test to assert #2 owes it \
+         and #1 does not"
+    );
+}
