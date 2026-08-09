@@ -28,11 +28,11 @@
 //! they justify, rather than duplicated here where they would drift.
 //!
 //!
-//! In `auto`, the MTP gate is a bandit arbiter that switches MTP<->serial at
-//! runtime on **wall-clock** tok/s EWMAs. Speculation is NOT output-neutral at
-//! temperature 0 — rollback and SSM-conv restore are inexact, measured at
-//! structural 4.1-nat margins on 2026-07-22 — so a throughput-timed path switch
-//! makes greedy decode depend on how fast the box happened to be. The client
+//! Why `--mtp-gate force` is a DETERMINISM pin — and why the non-neutrality
+//! it works around is a BUG with an open fix — is documented on `DESCRIPTOR`
+//! in `descriptors.rs`, beside the thresholds it protects.
+//!
+//! The client
 //! side of this gate is pinned to the bone (temp 0.0, seed 0, constant prompt,
 //! normalized tool output) and none of that helps while the SERVER is choosing
 //! numeric paths by stopwatch.
