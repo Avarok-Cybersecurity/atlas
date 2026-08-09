@@ -299,11 +299,28 @@ impl Qwen3SsmLayer {
         };
         let fused_gdn_norm = use_f32_gdn
             && self.gdn_f32_norm_k.0 != 0
-            && std::env::var("ATLAS_GDN_FUSED_NORM").ok().as_deref() == Some("1");
+            && crate::layers::qwen3_ssm::gdn_fused_norm_enabled();
+        // FP16 h-state (ATLAS_SSM_H_FP16). This is the single-sequence decode
+        // arm, so it must honour the same invariant the batched path does —
+        // otherwise C=1 would read an FP16 pool through an FP32 kernel.
+        let h_f16 = super::ssm_h_fp16_enabled();
+        if h_f16 {
+            super::ssm_h_fp16::require_h_f16(state)?;
+            if !fused_gdn_norm {
+                anyhow::bail!(
+                    "ATLAS_SSM_H_FP16: single-seq decode fell through to the FP32-only                      gated_delta_rule_decode arm (use_f32_gdn={use_f32_gdn},                      gdn_f32_norm={}). Set ATLAS_GDN_FUSED_NORM=1.",
+                    self.gdn_f32_norm_k.0
+                );
+            }
+        }
         if fused_gdn_norm {
             ops::gdn_decode_f32_norm(
                 ctx.gpu,
-                self.gdn_f32_norm_k,
+                if h_f16 {
+                    self.gdn_f16_norm_k
+                } else {
+                    self.gdn_f32_norm_k
+                },
                 state.h_state,
                 q_conv,
                 k_conv,
@@ -439,6 +456,14 @@ impl Qwen3SsmLayer {
             ctx.gpu.synchronize(stream)?;
             Self::debug_bf16(ctx.gpu, "out-proj", out, 4);
         }
+
+        // GDN HeadParallel: `out` is this rank's PARTIAL row-parallel out_proj
+        // over its local value heads. Reduce across TP ranks to the complete
+        // SSM output before the caller's residual add. Single-token path
+        // (dense_gemv / w8a16_gemv / w4a16_gemv above → one position), so
+        // num_tokens = 1. No-op at tp=1. Covers single-token decode
+        // (trait_decode) and per-sequence multi-seq decode (trait_decode_multi_seq).
+        self.ssm_tp_all_reduce(out, 1, ctx, stream)?;
 
         Ok(out)
     }

@@ -23,8 +23,13 @@ impl ToolCallParser for Qwen3XmlParser {
         true
     }
 
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String {
-        Qwen3CoderParser.system_prompt(tools, tool_choice)
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &super::PromptLevers,
+    ) -> String {
+        Qwen3CoderParser.system_prompt(tools, tool_choice, levers)
     }
 
     fn format_tool_calls(&self, calls: &[IncomingToolCall]) -> String {

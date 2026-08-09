@@ -1,6 +1,16 @@
 name: Security Audit
 
+# Read-only by default; jobs needing more grant it themselves.
+permissions:
+  contents: read
+
 on:
+  # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
+  # were throttled to aid recovery, so pushes stopped creating runs at all --
+  # and with no dispatch trigger there was no way to ask for one. A check that
+  # can only be started by an event you do not control is a check you cannot
+  # get a verdict from when you most need it.
+  workflow_dispatch:
   # No path filter on pull_request: cargo deny is a required check, and a
   # path-filtered required check never reports on PRs outside its paths
   # (kernel-only diffs), leaving them permanently "expected" and unmergeable.
@@ -25,7 +35,7 @@ jobs:
     name: cargo deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # `rust-version` pins the action's in-container toolchain to our
       # rust-toolchain.toml channel. Without it, the action's bundled Rust
       # can't honor the repo pin and rustup errors ("override toolchain
@@ -33,7 +43,7 @@ jobs:
       # with rust-toolchain.toml. (cargo-deny is metadata-only — it audits the
       # pinned Cargo.lock and does not compile the workspace — so the toolchain
       # is about consistency with the repo pin, not the audit result.)
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           rust-version: "1.93.1"
           command: check advisories licenses sources bans

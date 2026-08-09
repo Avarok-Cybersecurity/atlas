@@ -1,3 +1,13 @@
+# ⚠ LEGACY TARGET (accepted 2026-08-04): this kernel set is unreachable in
+# the standard multi-target build. The only checkpoint in the fleet
+# (Sehyo/Qwen3.5-35B-A3B-NVFP4, this MODEL.toml's own hf_id) enables MRoPE,
+# which dispatch.rs rewrites to model_type "qwen3_6_moe" — matching
+# qwen3.6-35b-a3b's exact `(qwen3_6_moe, 2048)` entry, not this target's
+# `(qwen3_5_moe, None)` wildcard. Its KERNEL.toml module map is identical to
+# qwen3.6-35b-a3b's (diff-empty), and its three .cu files are a strict
+# subset of that target's four. It is retained for historical/recipe
+# reference; no `[expected_absent]` harvest applies because no checkpoint
+# can route here.
 [model]
 name = "qwen3.5-35b-a3b"
 hf_id = "Sehyo/Qwen3.5-35B-A3B-NVFP4"

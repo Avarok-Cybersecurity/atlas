@@ -14,7 +14,10 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 mod transformer_layer;
-pub use transformer_layer::TransformerLayer;
+pub use transformer_layer::{
+    TransformerLayer, VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS,
+    VERIFY_WY_TABLE_STRIDE_BYTES, VERIFY_WY_TABLES_PER_LAYER,
+};
 
 /// Per-layer persistent state tracked across decode steps.
 ///
@@ -57,6 +60,16 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// Storage dtype of `h_state`: `false` = FP32 (the only format prefill
+    /// ever writes), `true` = FP16 packed into the first half of the same
+    /// FP32-sized pool region (`ATLAS_SSM_H_FP16`).
+    ///
+    /// This is the single source of truth for the h-state format. The decode
+    /// mixer flips it exactly once per sequence, on the first decode step
+    /// after any FP32 writer touched the slot, so no caller has to know where
+    /// the prefill->decode edge is. It rides through swap-out/swap-in because
+    /// `state_io` mutates these states in place rather than rebuilding them.
+    pub h_is_f16: bool,
 }
 
 impl LayerState for SsmLayerState {
@@ -102,6 +115,13 @@ pub struct AttnMetadataDev {
     pub max_blocks_per_seq: u32,
     /// Number of sequences in this batch (1 for single-sequence decode).
     pub num_seqs: u32,
+    /// M2 per-request LoRA routing: `[num_seqs]` i32 at this device address,
+    /// one adapter SLOT index per row (`< 0` = base / no delta; pad rows are
+    /// `-1`). Uploaded each decode step to a stable address (like positions /
+    /// block_table), so the batched bgmv stays inside the captured decode
+    /// graph. `DevicePtr(0)` on every non-routed path (single-seq decode,
+    /// prefill, verify, MLA, MTP) — the bgmv apply sites no-op when it is null.
+    pub seq_slot: DevicePtr,
 }
 
 /// Q12 batched-prefill device-side metadata.
@@ -207,6 +227,23 @@ pub struct ForwardContext<'a> {
     pub gpu: &'a dyn GpuBackend,
     /// Model configuration (dimensions, hyperparameters).
     pub config: &'a ModelConfig,
+    /// Which GEMM implementation each projection takes. Carried rather than
+    /// read from a static so it cannot outlive the model whose flags it
+    /// encodes — see `layers::ops::GemmDispatch`.
+    pub dispatch: &'a crate::layers::ops::GemmDispatch,
+    /// Re-encoded copies of this model's weights, memoized for this model's
+    /// lifetime. Carried rather than kept in a static keyed by device pointer,
+    /// where a recycled address would HIT after a model swap.
+    pub derived: &'a crate::layers::ops::DerivedWeights,
+    /// Kernel-path levers for this model — the SSM/GDN variant, FFN routing,
+    /// MoE quantization, LoRA mode, diagnostics. The non-GEMM half of the
+    /// lever set; `dispatch` is the GEMM half.
+    pub levers: &'a crate::layers::ops::ModelLevers,
+    /// This model's diagnostic counters and one-shot dump latches. Carried
+    /// for the same reason as `levers`: a counter that spans a model swap
+    /// averages two models and describes neither, and a one-shot latch that
+    /// already fired swallows the next model's dump.
+    pub stats: &'a crate::layers::ops::ModelStats,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.
@@ -232,6 +269,59 @@ pub struct ForwardContext<'a> {
     /// for models without hash routing. Must be a STABLE address across the
     /// layer loop (and, under CUDA-graph decode, uploaded before each replay).
     pub token_ids: Option<DevicePtr>,
+    /// #30 (routed-prefill precision): the REQUEST slot's per-layer LoRA pairs,
+    /// GLOBAL-layer-indexed (`len == num_hidden_layers`), set ONLY at the prefill
+    /// entries and ONLY when the request routes to a NON-active slot. `Some` makes
+    /// the K/V/O prefill apply sites select the request slot's pair and fold it
+    /// through the SAME dense `apply_lora_delta` (dense_gemm_tc) the ACTIVE adapter
+    /// uses — numerically identical to serving that adapter active, instead of the
+    /// per-row bgmv (whose fp accumulation order tips razor-margin tokens). `None`
+    /// (active/base request, no LoRA, and every decode/verify/mtp/moe pass) leaves
+    /// the installed-active-pair path byte-identical. Prefill runs eager
+    /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
+    pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
+    /// Default-ON mid-chunk SSM tail capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
+    ///
+    /// `Some` only on the single prefill pass whose local token range spans
+    /// the block-floored matched-prefix boundary `tb`. GDN/SSM layers then
+    /// split their recurrent (h_state) and conv (conv_state) kernels at
+    /// `cap_local` and copy the @tb state into the reserved snapshot slot.
+    /// `None` (default) => no split, byte-identical to prior behavior.
+    pub midchunk_capture: Option<MidchunkCapture<'a>>,
+}
+
+/// Per-pass descriptor for mid-chunk SSM tail capture. Points at the reserved
+/// Marconi snapshot slot's per-SSM-layer destination buffers (already offset to
+/// the slot) plus the split point in local (chunk) token coordinates.
+///
+/// `ssm_layer_counter` is a fresh per-pass counter: each SSM layer's prefill
+/// increments it once, in model order, so the value indexes `h_dsts`/`conv_dsts`
+/// (which are in the same SSM-layer order as the snapshot pool).
+pub struct MidchunkCapture<'a> {
+    /// Split point in local token coordinates: capture state AFTER this many
+    /// tokens (== `tb - proc_start`).
+    pub cap_local: usize,
+    /// Per-SSM-layer h_state snapshot destination (offset to the reserved slot).
+    pub h_dsts: &'a [DevicePtr],
+    /// Per-SSM-layer conv_state snapshot destination (offset to the reserved slot).
+    pub conv_dsts: &'a [DevicePtr],
+    /// Bytes per layer of h_state.
+    pub h_bytes: usize,
+    /// Bytes per layer of conv_state.
+    pub conv_bytes: usize,
+    /// Fresh per-pass SSM-layer ordinal counter (model order == pool order).
+    pub ssm_layer_counter: &'a std::sync::atomic::AtomicUsize,
+    /// Optional SECOND capture one KV block earlier, at `tb - block_size`
+    /// (local split point `cap_local - block_size`). `Some` only when the pass
+    /// also covers that point. On ~5/19 warm turns the next turn's block-floored
+    /// `matched_tokens` lands exactly `tb - block_size` (generation-suffix /
+    /// retokenize divergence), one block short of the tail; registering this
+    /// earlier restore point makes those turns zero-replay too.
+    pub cap_local_early: Option<usize>,
+    /// Per-SSM-layer h_state dst for the `tb - block_size` slot (offset applied).
+    pub h_dsts_early: &'a [DevicePtr],
+    /// Per-SSM-layer conv_state dst for the `tb - block_size` slot.
+    pub conv_dsts_early: &'a [DevicePtr],
 }
 
 /// A single transformer layer performing the full per-layer computation.

@@ -114,19 +114,45 @@ pub(super) fn validate_required_kernels(
     kv_dtype: KvCacheDtype,
     head_dim: usize,
 ) -> anyhow::Result<()> {
-    let missing: Vec<String> = required_optional_kernels_for_dtype(kv_dtype, head_dim)
+    // The HARD-required reshape/decode pair belongs in this preflight too.
+    // `Qwen3AttentionLayer::new` resolves it with `gpu.kernel(..)?`, so a
+    // target that does not build it aborts layer construction with a bare
+    // "Kernel lookup <module>::<fn>" — after the multi-minute weight load, and
+    // with no hint that the dtype is the reason. Checking it here turns that
+    // into the named message below, before any weight is read.
+    let (reshape_mod, reshape_fn, decode_mod, decode_fn) =
+        super::init_kernel_dispatch::kernel_modules_for_dtype(kv_dtype, head_dim);
+    let mut required = vec![(reshape_mod, reshape_fn), (decode_mod, decode_fn)];
+    required.extend(required_optional_kernels_for_dtype(kv_dtype, head_dim));
+    let missing: Vec<String> = required
         .into_iter()
         .filter(|(m, f)| gpu.kernel(m, f).is_err())
         .map(|(m, f)| format!("{m}::{f}"))
         .collect();
     if !missing.is_empty() {
+        // Turbo dtypes are EXPERIMENTAL and are not built for every target.
+        // Say so: "missing kernel" reads as a broken build, and an operator who
+        // picked an experimental dtype needs to know that is what happened.
+        let note = if is_experimental(kv_dtype) {
+            " This KV-cache dtype is EXPERIMENTAL and is not supported on this kernel target; \
+             use --kv-cache-dtype fp8, bf16 or nvfp4."
+        } else {
+            " Rebuild kernels or pick a supported dtype."
+        };
         anyhow::bail!(
             "kv-cache-dtype {kv_dtype:?} (head_dim {head_dim}) requires kernel(s) \
-             missing from this build: {} — rebuild kernels or pick a supported dtype",
+             missing from this build: {}.{note}",
             missing.join(", ")
         );
     }
     Ok(())
+}
+
+/// True for the turbo (Lloyd-Max packed) KV dtypes and the asymmetric pairs
+/// built from them — the set that is not built for every kernel target.
+fn is_experimental(kv_dtype: KvCacheDtype) -> bool {
+    let (k, v) = kv_dtype.kv_pair();
+    k.is_wht_rotated() || v.is_wht_rotated()
 }
 
 #[cfg(test)]

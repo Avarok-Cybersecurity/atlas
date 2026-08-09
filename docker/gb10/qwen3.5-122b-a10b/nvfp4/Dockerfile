@@ -19,7 +19,7 @@
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
 
 RUN apt-get update -qq && \
-    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev && \
+    apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev libibverbs-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -30,6 +30,7 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
+COPY vendor/ vendor/
 COPY kernels/ kernels/
 
 ENV ATLAS_TARGET_HW=gb10

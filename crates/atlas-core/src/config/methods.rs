@@ -33,12 +33,19 @@ impl ModelConfig {
         }
     }
 
-    /// Number of full attention layers.
+    /// Number of attention (KV-cache-consuming) layers: full attention plus
+    /// sliding attention. Sliding-attention layers write to the paged KV cache
+    /// exactly like full-attention ones (only their attention window differs),
+    /// so every consumer sized from this count — KV pool `num_layers`,
+    /// `attn_layer_dtypes`, loader `layer_kv_dtypes` indexing — must see them
+    /// all. Step 3.7 is the only model emitting `SlidingAttention` layer types
+    /// (12 full + 33 sliding); counting full-only there undersized the dtype
+    /// vec and panicked the loader at layer 13.
     pub fn num_attention_layers(&self) -> usize {
         if !self.layer_types.is_empty() {
             self.layer_types
                 .iter()
-                .filter(|t| **t == LayerType::FullAttention)
+                .filter(|t| matches!(t, LayerType::FullAttention | LayerType::SlidingAttention))
                 .count()
         } else {
             self.num_hidden_layers
@@ -57,6 +64,23 @@ impl ModelConfig {
         } else {
             self.num_hidden_layers - self.num_attention_layers()
         }
+    }
+
+    /// Whether this model carries recurrent (SSM / linear-attention) state —
+    /// the honest capability signal for the SSM snapshot tiers. Derived from
+    /// [`Self::num_ssm_layers`] so the config-level predicate and the runtime
+    /// pool predicate (`ssm_pool.num_ssm_layers > 0`) agree by construction
+    /// (SSOT). A pure-attention model (dense or MoE) returns `false`:
+    /// requesting an SSM tier for it must fail fast, never silently no-op.
+    pub fn has_recurrent_state(&self) -> bool {
+        self.num_ssm_layers() > 0
+    }
+
+    /// Whether this model has MoE routed experts — the capability signal for
+    /// the expert-streaming tier. Keyed on config, never on observed expert
+    /// tensors (EP ranks legitimately own zero local expert tensors).
+    pub fn has_experts(&self) -> bool {
+        self.num_experts > 0
     }
 
     /// Rotary embedding dimension.
@@ -301,6 +325,37 @@ impl ModelConfig {
         } else {
             self.hidden_size
         }
+    }
+
+    /// Routed expert intermediate size for layer `i`.
+    ///
+    /// Puzzle checkpoints prune channels non-uniformly across MoE layers;
+    /// look up `moe_intermediate_sizes[i]` when populated, else the scalar.
+    pub fn moe_intermediate_size_for(&self, layer: usize) -> usize {
+        self.moe_intermediate_sizes
+            .get(layer)
+            .copied()
+            .filter(|&s| s > 0)
+            .unwrap_or(self.moe_intermediate_size)
+    }
+
+    /// Top-K experts per token for layer `i` (Puzzle per-block schedule).
+    pub fn num_experts_per_tok_for(&self, layer: usize) -> usize {
+        self.num_experts_per_toks
+            .get(layer)
+            .copied()
+            .filter(|&k| k > 0)
+            .unwrap_or(self.num_experts_per_tok)
+    }
+
+    /// Max routed intermediate across all layers (buffer / scratch sizing).
+    pub fn max_moe_intermediate_size(&self) -> usize {
+        self.moe_intermediate_sizes
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(self.moe_intermediate_size)
     }
 
     /// Number of MoE-only layers (Nemotron-H).

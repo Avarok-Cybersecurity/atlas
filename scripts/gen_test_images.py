@@ -6,7 +6,7 @@ under tests/fixtures/images/. Synthetic => no licensing concern; varied sizes
 exercise the vision preprocessor (patch counts, aspect-ratio handling, the
 max_pixels resize path) under concurrency. Each image has distinct geometry +
 a size label so the model has describable content and they are visually
-distinct. Re-run to regenerate identically (fixed RNG).
+distinct. Re-run to regenerate identically (fully deterministic; no RNG).
 
 Usage:  python3 scripts/gen_test_images.py
 """

@@ -15,11 +15,10 @@ memory_type = "LPDDR5X"
 # GPU-visible pool is the dedicated-VRAM carveout (<<64 GB) — model
 # sizing for the WSL bring-up must account for that, not this number.
 memory_gb = 64
-# RDNA3.5 has a hard 64 KB/workgroup LDS cap. The BR64=64 large-chunk
-# prefill kernel's __shared__ (smem_Q64[64]) overflows it even after
-# single-buffering K. Force the BR=32 prefill path on this target: the
-# BR=32 kernel is LDS-fixed, correct for all chunk sizes, and the _64
-# kernels become compile-only (never dispatched). Perf-only tradeoff
-# (large prefill chunks tile in 32 rows instead of 64). NVIDIA targets
-# omit this key → option_env! None → unchanged behaviour.
-force_br32_prefill = true
+# NOTE — `force_br32_prefill` was removed from here: atlas-kernels/build.rs
+# re-emitted it as ATLAS_HW_FORCE_BR32 and nothing consumed that (the reader
+# was lost in the Strix squash merge, and cargo:rustc-env cannot cross crates
+# to spark-model in any case). RDNA3.5's 64 KB/workgroup LDS cap is handled by
+# the unconditional `#define BR64 32` in common/prefill_paged_compute.cuh, with
+# the matching 32-row host grid stride selected by cfg!(atlas_scale) in
+# ops/prefill_attn_main_{a,b}.rs. Do not re-add the key without a reader.

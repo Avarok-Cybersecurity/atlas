@@ -1,6 +1,6 @@
 [package]
 name = "spark-comm"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas Spark communication backend — collective operations abstraction"

@@ -297,8 +297,9 @@ pub(crate) fn load_nemotron_moe(
     };
 
     // Routed experts: detect NVFP4 vs FP8 vs BF16 from first local expert.
+    // Puzzle: per-layer intermediate size from block_configs.
     let moe_input = config.moe_input_size();
-    let moe_inter = config.moe_intermediate_size;
+    let moe_inter = config.moe_intermediate_size_for(layer);
     let first_local = (0..num_experts).find(|e| config.is_local_expert(*e));
     let experts_are_nvfp4 = first_local
         .is_none_or(|e| store.contains(&format!("{p}.experts.{e}.up_proj.weight_scale_2")));

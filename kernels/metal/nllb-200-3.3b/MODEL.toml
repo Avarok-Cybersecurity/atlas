@@ -1,0 +1,38 @@
+[model]
+name = "nllb-200-3.3b"
+hf_id = "facebook/nllb-200-3.3B"
+params = "3.3B"
+active_params = "3.3B"
+architecture = "M2M-100 / NLLB encoder-decoder translation transformer"
+
+encoder_layers = 24
+decoder_layers = 24
+hidden_dim = 2048
+head_dim = 128
+q_heads = 16
+kv_heads = 16
+intermediate_size = 8192
+vocab_size = 256206
+max_position_embeddings = 1024
+position_encoding = "learned_absolute"
+activation = "relu"
+
+[[model_types]]
+model_type = "m2m_100"
+hidden_size = 2048
+
+[[model_types]]
+model_type = "nllb"
+hidden_size = 2048
+
+[sampling.non_thinking]
+temperature = 0.0
+top_p = 1.0
+top_k = 0
+presence_penalty = 0.0
+repetition_penalty = 1.0
+
+[behavior]
+default_kv_dtype = "bf16"
+thinking_default = false
+thinking_in_tools = false

@@ -55,7 +55,7 @@ impl TransformerModel {
         // dual-buffer pre-verify copy (~60 MB h_state + conv D2D per K=2
         // step) is gone. The CUDA-graph capture below is unaffected: the
         // captured nodes take the same `h_state` pointer, which never moves.
-        // (K=3/K=4/DFlash verify still run pre_verify_copy_async.)
+        // (K=3/K=4/DFlash verify share the same in-place convention.)
 
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
@@ -80,6 +80,7 @@ impl TransformerModel {
                 self.prefix_cache.as_ref(),
                 self.gpu.as_ref(),
                 stream,
+                self.levers.kv_poison,
             )?;
         }
 
@@ -89,6 +90,11 @@ impl TransformerModel {
 
         // Zero-alloc metadata upload: cast stack arrays to byte slices directly.
         let positions = [seq.seq_len as u32, (seq.seq_len + 1) as u32];
+        // SAFETY: `positions` is the `[u32; 2]` literal on the line above —
+        // a fully-initialised local whose size is 2 * 4 = 8, exactly the byte
+        // length requested. `u32` is POD (no padding, every bit pattern
+        // valid), so the `&[u8]` view is sound, and `positions` is live for
+        // the whole function so the borrow outlives the H2D enqueue below.
         let pos_bytes = unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, 8) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
 
@@ -110,11 +116,18 @@ impl TransformerModel {
             });
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
+        // SAFETY: `slots` is the `[0i64; 2]` declared above and zero-init at
+        // declaration (the `for t in 0..k` loop with `k == 2` then overwrites
+        // both elements, so no element is even logically stale). Its size is
+        // 2 * 8 = 16, exactly the byte length requested; `i64` is POD.
         let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, 16) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
 
         let seq_lens = [(seq.seq_len + 1) as i32, (seq.seq_len + 2) as i32];
+        // SAFETY: `seq_lens` is the `[i32; 2]` literal on the line above, so
+        // its size is 2 * 4 = 8 — exactly the byte length requested. `i32` is
+        // POD and the local outlives this borrow.
         let sl_bytes = unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, 8) };
         self.gpu
             .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
@@ -135,10 +148,30 @@ impl TransformerModel {
                 bt_buf[row * mb + j] = block as i32;
             }
         }
+        // SAFETY: `bt_buf.len() == needed` in BOTH arms of the `if needed <=
+        // 1024` above — the stack arm slices `bt_buf_stack[..needed]` and the
+        // heap arm is `vec![0i32; needed]`, whose LEN (not just capacity) is
+        // `needed`. So `needed * 4 == size_of_val(bt_buf)`, never past the
+        // end and never over a `Vec`'s uninitialised spare capacity. Both
+        // arms are zero-initialised before the `for row in 0..k` fill, so
+        // every byte read is initialised even when `block_table.len() < mb`.
         let bt_bytes =
             unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu
             .copy_h2d_async(bt_bytes, meta_base.offset(768), stream)?;
+
+        // Request-scoped LoRA routing (graphed verify). One sequence → one
+        // adapter for all K tokens: a [K]-all-equal buffer at the free +128 gap
+        // (multi-seq layout slot@+256/seq_len@+512/bt@+768, so +128+K*4 ≤ +256
+        // needs K ≤ 32). Uploaded pre-`begin_capture` (same phasing as
+        // positions), so the captured verify graph reads a stable address whose
+        // contents refresh each step. The non-HSS `decode_multi_seq` routes off
+        // this [K] buffer; the HSS `decode_batched` single-token loop reads
+        // index 0 (correct for the uniform buffer). `DevicePtr(0)` (no pool) →
+        // installed-pair fallback.
+        debug_assert!(k <= 32, "verify seq_slot +128 gap holds K ≤ 32");
+        let seq_slot =
+            self.upload_seq_slot_uniform(seq.adapter_slot, k, meta_base.offset(128), stream)?;
 
         let metadata = AttnMetadataDev {
             positions: meta_base,
@@ -149,6 +182,7 @@ impl TransformerModel {
             block_table: meta_base.offset(768),
             max_blocks_per_seq: max_blocks,
             num_seqs: k as u32,
+            seq_slot,
         };
 
         // CUDA graphs cannot capture NCCL all-reduce (disabled for EP).
@@ -179,6 +213,8 @@ impl TransformerModel {
         // the verify eagerly. Zero production impact — only when K2_DIAG is set
         // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
         let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
+        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
@@ -186,7 +222,8 @@ impl TransformerModel {
             // Phase 6.2.c — see decode() for rationale: HSS path's host I/O is
             // illegal under CUDA graph capture.
             && !hss_engaged
-            && !k2_diag_eager;
+            && !k2_diag_eager
+            && !lora_eager;
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
         // id via the static tid2eid table, so the verify forward needs the 2
@@ -201,12 +238,18 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
             token_ids: Some(self.buffers.token_ids()),
+            routed_lora_layers: None, // #30: decode/verify never routes prefill.
+            midchunk_capture: None,
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

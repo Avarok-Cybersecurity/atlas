@@ -8,6 +8,9 @@ pub mod compute;
 pub mod config;
 pub mod dtype;
 pub mod error;
+pub mod numeric;
+pub mod safetensors;
+pub mod scope;
 pub mod target;
 pub mod tensor;
 
@@ -19,6 +22,8 @@ pub mod device;
 
 // CUDA-only modules: rely on `cudarc` and the NVIDIA driver. Gated so the
 // crate compiles on hosts without a CUDA toolchain (e.g. Apple Silicon).
+#[cfg(feature = "cuda")]
+pub mod cuda_host;
 #[cfg(feature = "cuda")]
 pub mod kernel;
 #[cfg(feature = "cuda")]

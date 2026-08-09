@@ -139,3 +139,125 @@ extern "C" __global__ void gdn_verify_fused_conv_kn(
         for (unsigned int i = 0; i < d_conv; i++) state[i] = win[i];
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BATCHED verify conv (`gdn_verify_fused_conv_kn_batched`).
+//
+// Identical math to `gdn_verify_fused_conv_kn`, with a sequence dimension on
+// gridDim.y. Step 1 of batched speculative decoding: today
+// `spec_step.rs:94` calls `decode_verify` ONE SEQUENCE AT A TIME, so MTP at C=n
+// performs n full model forwards, each re-reading ~9.6 GB of weights on an
+// engine that is 87% bandwidth-saturated. That is why MTP measured a 3.4% LOSS
+// at C=2 and HALVED C=4. Batching the verify makes n*(K+1) rows share one
+// weight read.
+//
+// The per-sequence conv windows are independent, so the sequential per-token
+// loop is untouched and the result is bit-identical to n separate launches.
+// ═══════════════════════════════════════════════════════════════════════════
+extern "C" __global__ void gdn_verify_fused_conv_kn_batched(
+    float* __restrict__ conv_state,              // [dim, d_conv] FP32 (in/out)
+    const __nv_bfloat16* __restrict__ new_input, // [K, input_stride] BF16
+    const __nv_bfloat16* __restrict__ weight,    // [dim, d_conv] BF16
+    __nv_bfloat16* __restrict__ output,          // [K, output_stride] BF16
+    float* __restrict__ conv_state_inter,        // [K, inter_stride] FP32 (out, per-token snapshots)
+    unsigned int num_tokens,     // K (17 for DFlash γ=16 verify)
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int qk_channels,    // channels 0..qk_channels-1 get L2 normalized
+    unsigned int head_dim,       // L2 norm group size (128)
+    unsigned int input_stride,   // BF16 elems between positions in new_input
+    unsigned int output_stride,  // BF16 elems between positions in output
+    unsigned int inter_stride,   // FP32 elems between snapshots in conv_state_inter
+    float l2_eps,
+    // ── batched additions ─────────────────────────────────────────────────
+    // One CTA column per sequence: gridDim.y == n_seq. Each sequence carries an
+    // INDEPENDENT conv window, so the per-token sequential loop below is
+    // unchanged — only the base addresses move. This is what lets one launch
+    // verify n sequences instead of n launches each re-reading the weights.
+    unsigned int conv_state_seq_stride,  // FP32 elems between sequences (dim*d_conv)
+    unsigned int input_seq_stride,       // BF16 elems between sequences in new_input
+    unsigned int output_seq_stride,      // BF16 elems between sequences in output
+    unsigned int inter_seq_stride        // FP32 elems between sequences in conv_state_inter
+) {
+    const unsigned int seq = blockIdx.y;
+    conv_state       += (size_t) seq * conv_state_seq_stride;
+    new_input        += (size_t) seq * input_seq_stride;
+    output           += (size_t) seq * output_seq_stride;
+    conv_state_inter += (size_t) seq * inter_seq_stride;
+
+    const unsigned int ch = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int block_start = blockIdx.x * blockDim.x;
+    const bool block_needs_l2 = (block_start < qk_channels);
+    const bool valid = (ch < dim);
+
+    // ── Load this channel's d_conv-element sliding window into registers ──
+    // d_conv is small (4); a fixed-size register window matches the global
+    // shift loop in causal_conv1d_update_l2norm exactly.
+    float win[8]; // d_conv <= 8
+    if (valid) {
+        const float* state = conv_state + ch * d_conv;
+        for (unsigned int i = 0; i < d_conv; i++) win[i] = state[i];
+    }
+
+    const __nv_bfloat16* w = valid ? (weight + ch * d_conv) : nullptr;
+    float wcoef[8];
+    if (valid) {
+        for (unsigned int k = 0; k < d_conv; k++) wcoef[k] = (float)w[k];
+    }
+
+    __shared__ float warp_sums[8];
+
+    // Process the positions sequentially in registers. L2-norm needs
+    // __syncthreads per position, so the loop body mirrors the single-token
+    // kernel exactly.
+    for (unsigned int t = 0; t < num_tokens; t++) {
+        float silu = 0.0f;
+        if (valid) {
+            // Shift window left, append this position's input (== global path).
+            for (unsigned int i = 0; i < d_conv - 1; i++) win[i] = win[i + 1];
+            win[d_conv - 1] = (float)new_input[t * input_stride + ch];
+            // bias == nullptr in production conv1d_update_l2norm.
+            float acc = 0.0f;
+            for (unsigned int k = 0; k < d_conv; k++) acc += win[k] * wcoef[k];
+            float sigmoid_acc = 1.0f / (1.0f + __expf(-acc));
+            silu = acc * sigmoid_acc;
+        }
+
+        if (block_needs_l2) {
+            float sq = valid ? (silu * silu) : 0.0f;
+            const unsigned int warp_id = tid / 32;
+            const unsigned int lane = tid % 32;
+            for (int offset = 16; offset >= 1; offset >>= 1)
+                sq += __shfl_down_sync(0xFFFFFFFF, sq, offset);
+            if (lane == 0) warp_sums[warp_id] = sq;
+            __syncthreads();
+            const unsigned int head_in_block = tid / head_dim;
+            const unsigned int base_warp = head_in_block * (head_dim / 32);
+            if (tid == 0 || tid == head_dim) {
+                float total = warp_sums[base_warp] + warp_sums[base_warp + 1]
+                            + warp_sums[base_warp + 2] + warp_sums[base_warp + 3];
+                warp_sums[base_warp] = rsqrtf(total + l2_eps);
+            }
+            __syncthreads();
+            if (valid) silu *= warp_sums[base_warp];
+            // Close the loop-carried window on warp_sums: the next iteration's
+            // lane-0 partial-sum write must not overtake this read.
+            __syncthreads();
+        }
+
+        if (valid) output[t * output_stride + ch] = __float2bfloat16(silu);
+
+        // Snapshot this position's conv-state (rollback intermediate t).
+        if (valid) {
+            float* snap = conv_state_inter + t * inter_stride + ch * d_conv;
+            for (unsigned int i = 0; i < d_conv; i++) snap[i] = win[i];
+        }
+    }
+
+    // Commit final (post last-position) sliding window to conv_state.
+    if (valid) {
+        float* state = conv_state + ch * d_conv;
+        for (unsigned int i = 0; i < d_conv; i++) state[i] = win[i];
+    }
+}

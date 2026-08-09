@@ -1,0 +1,28 @@
+recipe_version: "2"
+model: Qwen/Qwen3.5-0.8B
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.5-0.8B (upstream BF16) on the Atlas runtime — tiniest member of
+    the qwen3.5 family on a single GB10. No quantization, no MTP. Useful
+    as a tiny-baseline reproducibility target alongside the 27B/35B/122B
+    NVFP4 variants.
+  maintainer: avarok
+  category: chat
+  model_params: 0.8B
+  model_dtype: bf16
+  quantization: none
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 131072
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.5
+  scheduling_policy: slai
+  speculative: false
+  enable_prefix_caching: true
