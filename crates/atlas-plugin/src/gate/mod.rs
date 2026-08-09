@@ -29,7 +29,7 @@ pub mod record;
 pub mod taxon;
 
 /// The PR INTENT taxonomy — what a change is FOR, and the benchmarks that
-/// implies. Distinct from `taxon`, which is derived from paths.
+/// implies. Distinct from [`taxon`], which is derived from paths.
 pub mod pr_taxonomy;
 pub mod telemetry;
 

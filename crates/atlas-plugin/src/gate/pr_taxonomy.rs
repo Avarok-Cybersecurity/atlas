@@ -5,7 +5,7 @@
 //!
 //! # Two taxonomies, and they are not the same thing
 //!
-//! [`super::taxon`] walks `kernels/<hw>/<model>/<quant>/`. It is derived from
+//! [`crate::gate::taxon`] walks `kernels/<hw>/<model>/<quant>/`. It is derived from
 //! PATHS, needs no model, and is the floor for invalidation. This module is
 //! about what a change is FOR — `performance/decode`, `correctness/kv-cache` —
 //! which cannot be read off a directory.
