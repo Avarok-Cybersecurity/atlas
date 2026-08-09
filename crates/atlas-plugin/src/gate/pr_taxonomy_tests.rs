@@ -268,3 +268,64 @@ fn a_replayed_ledger_event_collapses_on_read() {
          re-running a job does not inflate the journey"
     );
 }
+
+// ── matched depth: the stale-segment signal ────────────────────────────────
+
+/// `performance` and `performance/decodes` imply the SAME set — the degrade
+/// rule is right for a gate and invisible to a human. The matched depth is what
+/// tells them apart, so a renamed category is reported rather than silently
+/// costing coverage forever.
+#[test]
+fn matched_depth_distinguishes_a_stale_segment_from_a_real_leaf() {
+    let roots = tree(
+        r#"{ "performance": { "_benches": ["agentic-webserver"],
+                              "decode": { "_benches": ["bfcl-subset"] },
+                              "prefill": {} },
+             "unknown": {} }"#,
+    );
+
+    let full = benches_for_matched(&roots, &["performance".into(), "decode".into()]);
+    assert_eq!(full.1, 2, "both segments matched");
+
+    let stale = benches_for_matched(&roots, &["performance".into(), "decodes".into()]);
+    assert_eq!(stale.1, 1, "the typo must be reported as a partial match");
+    assert_eq!(
+        stale.0,
+        benches_for(&roots, &["performance".into()]),
+        "a stale tail still degrades to the matched prefix's union"
+    );
+
+    // A real leaf is NOT stale: `prefill` matches fully and simply declares
+    // nothing. Conflating the two is what the jq walk did.
+    let leaf = benches_for_matched(&roots, &["performance".into(), "prefill".into()]);
+    assert_eq!(
+        leaf.1, 2,
+        "a benchless leaf is a full match, not a stale one"
+    );
+
+    // And the empty path matches nothing while being perfectly valid.
+    assert_eq!(benches_for_matched(&roots, &[]).1, 0);
+}
+
+/// `benches_for` must stay exactly the first half of `benches_for_matched`, or
+/// the codebase has two walks again — the bug this whole file exists to prevent.
+#[test]
+fn benches_for_is_the_first_half_of_benches_for_matched() {
+    let roots = tree(
+        r#"{ "a": { "_benches": ["bfcl-subset"], "x": { "_benches": ["ttft-warm-gate"] }, "y": {} },
+             "b": {} }"#,
+    );
+    for path in [
+        vec![],
+        vec!["a".to_string()],
+        vec!["a".to_string(), "x".into()],
+        vec!["a".to_string(), "nope".into()],
+        vec!["zzz".to_string()],
+    ] {
+        assert_eq!(
+            benches_for(&roots, &path),
+            benches_for_matched(&roots, &path).0,
+            "the two walks disagreed on {path:?}"
+        );
+    }
+}

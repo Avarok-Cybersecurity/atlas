@@ -184,16 +184,31 @@ fn walk_to<'a>(roots: &'a [Node], path: &[String]) -> Option<&'a [Node]> {
 /// this feeds a gate, and a stale label must degrade to *fewer extra* benches,
 /// never to a crash that takes the view down.
 pub fn benches_for(roots: &[Node], path: &[String]) -> BTreeSet<String> {
+    benches_for_matched(roots, path).0
+}
+
+/// [`benches_for`], plus HOW MANY leading segments actually matched.
+///
+/// The degrade-on-unknown-segment rule above is right for a gate and invisible
+/// to a human: `performance/decodes` and `performance` return the same set, and
+/// nothing says one of them was a typo. Reporting the matched depth lets a
+/// caller warn ("matched 1 of 2 segments") without walking the tree a second
+/// time — and a second walk is exactly how this module acquired its last bug,
+/// when a jq reimplementation of it drifted out of agreement in the *removing*
+/// direction.
+pub fn benches_for_matched(roots: &[Node], path: &[String]) -> (BTreeSet<String>, usize) {
     let mut out = BTreeSet::new();
     let mut level = roots;
+    let mut matched = 0usize;
     for step in path {
         let Some(node) = level.iter().find(|n| &n.name == step) else {
             break;
         };
         out.extend(node.benches.iter().cloned());
         level = &node.children;
+        matched += 1;
     }
-    out
+    (out, matched)
 }
 
 /// Follow every forced (single-child) step from `path` downward.

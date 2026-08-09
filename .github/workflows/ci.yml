@@ -209,6 +209,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      # This job runs TWO cargo binaries (`ledger_append`, `implied_benches`)
+      # and had no cache, so both paid a cold build on every PR. atlas-plugin is
+      # host-only and CUDA-free, so the workflow-level ATLAS_SKIP_BUILD=1 is all
+      # it needs besides a warm target/.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: pr-categorize
       - name: Collect the changed paths
         id: diff
         env:
@@ -359,17 +366,38 @@ jobs:
             --value "$TAXON_PATH" --status "$TAXON_STATUS" || {
               echo "::warning::could not append to the journey ledger"; exit 0; }
 
-          git config user.name  'tbraun96'
-          git config user.email 'tbraun96@users.noreply.github.com'
-          git add governance/ || exit 0
-          git diff --cached --quiet && { echo "ledger unchanged"; exit 0; }
-          git commit -q -m "chore(governance): record PR #$PR_NUMBER classification"
-          # Best-effort: a protected branch, a race with another run, or a fork
-          # PR with no write token must not fail the job. The ledger is
-          # EVIDENCE, not a gate — losing a line costs an audit trail entry,
-          # while failing here would make an advisory job block merges.
-          git push origin "HEAD:${GITHUB_HEAD_REF}" 2>/dev/null \
-            || echo "::notice::ledger line recorded locally; push skipped (no write access or race)"
+          # ★ THE LINE LEAVES BY ARTIFACT, NOT BY PUSH.
+          #
+          # This step used to `git commit` and `git push origin HEAD:$HEAD_REF`.
+          # That was dead THREE ways and had never once succeeded — every run
+          # logged "push skipped" and discarded the line with the runner:
+          #   1. this job has `permissions: contents: read` (deliberately, see
+          #      the job header) so the token cannot push at all;
+          #   2. a fork PR's token is read-only regardless of what we ask for;
+          #   3. the checkout is the `refs/pull/N/merge` ref, so even WITH
+          #      write access the push would put a merge commit carrying base
+          #      content onto the contributor's branch.
+          # Zero `governance/` files have ever been committed, on any branch.
+          #
+          # Granting `contents: write` here is the one thing we must not do:
+          # this job consumes model output derived from an attacker-authored PR
+          # title, and the job header's promise — "a compromised model response
+          # has nowhere to go even in principle" — is exactly that write scope
+          # being absent. So the line leaves as an ARTIFACT, which needs no
+          # write scope and works from forks, and a scheduled job running
+          # DEFAULT-BRANCH code harvests, re-validates and commits it.
+      - name: Hand the ledger line off for harvesting
+        # No write scope needed, and it survives a fork PR. The harvester
+        # re-validates every line and pins the PR number from the run's own API
+        # record rather than trusting artifact content.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: governance-event-pr${{ github.event.pull_request.number }}
+          path: governance/pr-${{ github.event.pull_request.number }}.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Record what it said
         # Every value crosses into the script through `env:`, even though the
         # action guarantees its outputs are closed-set enums and its own fixed
@@ -388,6 +416,25 @@ jobs:
           TAXON_REASON: ${{ steps.path.outputs.reason }}
         run: |
           set -euo pipefail
+          # Resolve the implied set BEFORE opening the summary block, so a
+          # real failure annotates and stops instead of half-writing a table.
+          # Empty stdout means "implies nothing"; a nonzero exit means "could
+          # not tell". Collapsing those two is what let the old walk read clean.
+          if IMPLIED_IDS=$(cargo run --quiet -p atlas-plugin --bin implied_benches -- \
+                             --root . --path "$TAXON_PATH" 2>implied.stderr); then
+            if [ -s implied.stderr ]; then
+              echo "::warning title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
+            fi
+          else
+            # A malformed taxonomy is a repo defect, not weather. This job is
+            # advisory (nothing `needs:` it, it is not a required check), so red
+            # here blocks no merge — it buys a CAUSE one click away.
+            echo "::error title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
+            exit 1
+          fi
+          IMPLIED="${IMPLIED_IDS//$'\n'/, }"
+          IMPLIED="${IMPLIED:-(none)}"
+
           {
             echo "### PR category (advisory — does not gate)"
             echo
@@ -407,16 +454,20 @@ jobs:
             printf '| status | `%s` |\n' "$TAXON_STATUS"
             printf '| reason | %s |\n' "$TAXON_REASON"
             echo
-            # `_benches` unioned along the path — what the INTENT implies. The
-            # tool prints only ids from `.github/pr-taxonomy.json`, which
-            # `pr_taxonomy::validate` pins to registered benchmarks, so no
-            # model-authored string reaches this line.
-            IMPLIED=$(jq -r --arg p "$TAXON_PATH" '
-              [ ($p | split("/")) as $segs
-                | range(0; $segs|length) as $i
-                | getpath($segs[0:$i+1]) | ._benches // [] ]
-              | flatten | unique | join(", ")' .github/pr-taxonomy.json 2>/dev/null)
-            printf '| benchmarks this intent implies | %s |\n' "${IMPLIED:-(none)}"
+            # `_benches` unioned along the path — what the INTENT implies.
+            #
+            # ★ SSOT: computed by the SAME code the gate runs
+            # (`pr_taxonomy::benches_for_matched`), via the `implied_benches`
+            # bin. The jq walk this replaces was a SECOND implementation of that
+            # function and disagreed with it on four shapes — three of them in
+            # the REMOVING direction (`a//b` and `" a / b "` lost benches; a
+            # bare-string `_benches` that `load` hard-rejects, jq read happily).
+            #
+            # It also had no failure rendering at all: this step runs under
+            # `set -euo pipefail`, so jq's exit 5 aborted the step MID-TABLE
+            # with stderr discarded. Now the three outcomes are distinct —
+            # a set, "implies nothing", and a named failure.
+            printf '| benchmarks this intent implies | %s |\n' "$IMPLIED"
             echo
             echo "**Advisory, and additive only.** The required set is computed"
             echo "from the diff by \`gate::coverage\` in Rust. An intent path can"
