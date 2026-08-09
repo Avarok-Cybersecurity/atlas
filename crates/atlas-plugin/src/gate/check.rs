@@ -197,10 +197,43 @@ fn record_still_stands(
 
 /// The changed paths that invalidate `gate` between two commits.
 ///
-/// `None` means the question could not be answered — not an ancestor, or git
-/// itself failed. Every such case is treated as "not covered" by the caller,
-/// keeping the existing fail-closed doctrine: a gate check that cannot see the
-/// history must never read as a pass.
+/// `None` means the question could not be answered — git failed, or one of the
+/// two commits is not in this clone. Every such case is treated as "not
+/// covered" by the caller, keeping the fail-closed doctrine: a gate check that
+/// cannot see the trees must never read as a pass.
+///
+/// # This deliberately does NOT require ancestry
+///
+/// It used to. `merge-base --is-ancestor record_sha head` gated the diff, and
+/// that was wrong in a way that took main down: **Atlas squash-merges.** A
+/// record is written on a PR branch, against a commit on that branch; the
+/// squash lands a brand-new commit on main with a different sha and no parent
+/// link to the branch. Every record the PR paid GPU hours for stops being an
+/// ancestor of anything the instant it merges.
+///
+/// It did exactly that. `.benchmarks/*/2026-08-09-b0be4ba0e6.json` are five
+/// real passing records for #389 — `b0be4ba0e` being the branch's merge of
+/// #417 — and after #389 squash-landed as `dd2ac46d5` the gate reported
+/// "not an ancestor of this commit" for all five. Main went red, and every PR
+/// opened afterwards inherited it and demanded 5 fresh GPU legs to fix a
+/// typo.
+///
+/// Ancestry was never what the check needed. `git diff A B` compares TREES; it
+/// is defined for any two commits and needs no history relationship. The
+/// question a gate record answers is "was the perf-relevant code the same when
+/// this was measured?", and the diff answers exactly that. Ancestry only added
+/// an assumption about the shape of history — one this repo's merge strategy
+/// violates by design.
+///
+/// The obvious worry — "then a record from an unrelated branch could cover
+/// main" — is answered by the diff itself. An unrelated branch differs on the
+/// perf paths and is rejected. If it does NOT differ on them, it measured the
+/// same code, and the record is valid; that is the whole content-not-ancestry
+/// doctrine, and it is why an identical squash lands covered.
+///
+/// The one thing ancestry incidentally caught was a missing commit (a shallow
+/// clone). `git diff` fails outright there, so that case still returns `None`.
+/// The gate job checks out with `fetch-depth: 0`.
 ///
 /// The diff is taken with NO pathspec and filtered in Rust. Two reasons, both
 /// practical: the filter is then unit-testable without a git fixture, and
@@ -214,16 +247,6 @@ pub fn invalidating_paths(
 ) -> Option<Vec<String>> {
     if head == record_sha {
         return Some(Vec::new());
-    }
-    let is_ancestor = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["merge-base", "--is-ancestor", record_sha, head])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !is_ancestor {
-        return None;
     }
     let out = std::process::Command::new("git")
         .arg("-C")
@@ -286,14 +309,30 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
         return GateStatus::Missing(match newest {
             // ★ Name the files that invalidated it. "does not cover this
             // commit" tells an author a gate is open but not what re-opened
-            // it, which turns a 20-second fix into a bisect. `why` is empty
-            // when the record is not an ancestor at all, which the wording
-            // then says outright instead of implying a path list exists.
+            // it, which turns a 20-second fix into a bisect.
+            //
+            // `None` here is the fail-closed arm of `invalidating_paths`: git
+            // could not diff the two trees, which in practice means the record's
+            // commit is not in this clone (a shallow fetch). Say that, rather
+            // than reporting an empty path list as if nothing had changed.
             Some(newest_record) => {
                 let newest = newest_record.git_sha.clone();
-                let why = invalidating_paths(root, sha, &newest, gate).unwrap_or_default();
+                let Some(why) = invalidating_paths(root, sha, &newest, gate) else {
+                    return GateStatus::Missing(format!(
+                        "latest record is for {newest} ({}) — git cannot diff that commit \
+                         against this one; is it in this clone? (the gate job needs \
+                         `fetch-depth: 0`)",
+                        paths[0]
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default()
+                    ));
+                };
                 let because = if why.is_empty() {
-                    "it is not an ancestor of this commit".to_string()
+                    // Reachable only if a record was skipped for a reason other
+                    // than its path diff — today, a closure-hash mismatch that
+                    // `excuses` refused.
+                    "its recorded build inputs do not match this commit".to_string()
                 } else {
                     // Naming the TARGETS as well as the files is the difference
                     // between "a kernel changed" and "this is why you owe a
