@@ -117,6 +117,54 @@ fn insert_tail_sibling_over_a_spilled_entry_hands_back_no_slot() {
     );
 }
 
+/// ★ The SUPERSEDE SWEEP — the site my first six tests did not reach.
+///
+/// `insert_tail` has TWO displacement sites: the sweep that clears this
+/// session's previous tail/sibling, and the overwrite of a matching
+/// `prefix_hash`. `spilled()` builds a NON-tail entry, so every earlier test
+/// falls straight past the sweep into the overwrite. Reverting only the sweep
+/// line left all six green — verified, not assumed.
+///
+/// The sweep is reachable in the DEFAULT configuration: `ATLAS_SSM_TAIL_MIDCHUNK`
+/// is default-ON, so `is_tail` entries exist; `session_aware_victim` will spill
+/// a tail once its lease lapses or its session goes dormant; and the next
+/// `finalize_midchunk_capture` for that session runs the sweep — i.e. every
+/// turn of every multi-turn conversation.
+#[test]
+fn the_tail_supersede_sweep_does_not_hand_back_a_spilled_tail() {
+    // A TAIL entry for session 7, then spilled.
+    let mut idx = index(
+        vec![SnapshotEntry {
+            snapshot_id: 41,
+            session_hash: 7,
+            token_count: 16000,
+            prefix_hash: 0xF1,
+            last_access: 50,
+            tiered: false,
+            is_tail: true,
+            is_tail_sibling: false,
+        }],
+        7,
+    );
+    let TierEvict::Spill { slot: freed, .. } = idx.evict_to_tier(0).expect("a victim exists")
+    else {
+        panic!("an ungated evict must SPILL, not drop");
+    };
+    assert_eq!(freed, 41);
+    assert!(idx.entries[0].tiered, "the victim is now tiered");
+
+    // A NEW tail for the same session at a DIFFERENT prefix: the supersede
+    // sweep removes the old (tiered) one. Its slot was freed at spill time.
+    let displaced = idx.insert_tail(
+        /*ph*/ 0xF2, /*slot*/ 42, /*session*/ 7, /*tok*/ 17000,
+    );
+    assert!(
+        displaced.is_empty(),
+        "the sweep must not hand back slot {freed} — it was freed at spill time, and by now \
+         the pool has handed it to a live fault-in target; got {displaced:?}"
+    );
+}
+
 /// The guard is scoped to TIERED entries only: a resident entry being
 /// overwritten must still hand its live slot back, or that slot leaks.
 /// Without this, "return None" would be a trivially-passing fix that traded

@@ -39,10 +39,29 @@ impl SsmSnapshotIndex {
                 entry.session_hash = session_hash;
                 entry.token_count = token_count;
                 // A fresh HBM save re-homes the prefix: it is resident again.
-                // The tier blob under this key is now unreachable, and is left
-                // to the store's own budget: on every capped arm it is the
-                // coldest thing there, and the next spill of this same prefix
-                // overwrites it in place (`put` replaces any prior value).
+                //
+                // ⚠ The tier blob under this key is now UNREACHABLE AND NOT
+                // RECLAIMED. An earlier version of this comment claimed it was
+                // "left to the store's own budget"; that is false on three of
+                // the four store arms and the claim is withdrawn:
+                //
+                //   * the DEFAULT arm is `MemBlobStore::new(0)` — `cap_bytes
+                //     == 0` means UNBOUNDED (`selectors.rs`, `store.rs`), so
+                //     there is no budget to leave it to;
+                //   * a capped `MemBlobStore` evicts FIFO by INSERTION order,
+                //     not by coldness, so an orphan is not "the coldest thing
+                //     there" under any policy it implements;
+                //   * `ArenaSnapshotStore`/`RdmaSnapshotStore` have NO eviction
+                //     — slots return only via `remove`, so orphans permanently
+                //     consume arena slots and eventually kill the tier.
+                //
+                // Only `UnifiedSnapshotStore` (default OFF) behaves as claimed.
+                // This index layer holds no store handle, so it is structurally
+                // incapable of removing the blob; the two `store.remove` call
+                // sites are both reap paths in `spark-model`. Tracked as a
+                // follow-up — the leak is PRE-EXISTING, but a wrong bound in a
+                // comment is worse than none, because it stops the next reader
+                // looking.
                 entry.tiered = false;
                 // A plain save re-homing this prefix is by definition NOT a
                 // tail. Without this, an overwrite could re-home another
