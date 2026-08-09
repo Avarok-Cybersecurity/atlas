@@ -32,8 +32,23 @@
 //!   --kv-high-precision-layers auto --port 8888
 //! ```
 //!
-//! ★ `--mtp-gate force` is a DETERMINISM pin, and its absence was the root
-//! cause of this gate's intermittent 9/10 on `followed_directions`.
+//! ★★ THIS BLOCK IS DOCUMENTATION. Nothing executes it.
+//!
+//! Under `--pull-request-gate` the serve is built by `bench_selfstart` from the
+//! RECIPE named in `BENCH.toml` — `qwen3.6/qwen3.6-35b-a3b-fp8-bf16head`, which
+//! lives in the separate `atlas-recipes` repo and is honoured verbatim. Editing
+//! the command below changes what a reader believes, not what runs. It is
+//! written down here because it is the shape an operator reproduces by hand,
+//! and it must not drift from the recipe.
+//!
+//! ★ `--mtp-gate force` is a DETERMINISM pin, and its absence is the root cause
+//! of this gate's intermittent 9/10 on `followed_directions`.
+//!
+//! **IT IS NOT YET IN EFFECT.** The recipe carries `speculative: true` and
+//! `mtp_quantization: bf16` and no `mtp_gate` key; `--mtp-gate` is
+//! `Option<String>` with no clap default, so absent means `auto`. Closing this
+//! requires a PR to `atlas-recipes` adding `mtp_gate: force` to that recipe.
+//! Until that lands, the flip described below can still happen.
 //!
 //! In `auto`, the MTP gate is a bandit arbiter that switches MTP<->serial at
 //! runtime on **wall-clock** tok/s EWMAs. Speculation is NOT output-neutral at
