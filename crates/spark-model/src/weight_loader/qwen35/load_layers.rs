@@ -95,7 +95,7 @@ pub(super) fn load_layers(
     // Resolve runtime quantization format from the detected on-disk
     // variant. This determines which kernels are used for
     // decode/prefill/verify.
-    let modelopt_mixed_precision = is_modelopt_mixed_precision(config);
+    let modelopt_mixed_precision = is_holo_modelopt_mixed_precision(config);
     let quant_format = if variant == Nvfp4Variant::Fp8Dequanted {
         QuantFormat::Fp8
     } else {
@@ -987,12 +987,9 @@ fn parse_layer_ranges(spec: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
-/// Modelopt mixed-precision NVFP4 (fp8 experts + NVFP4 FFN). Per-checkpoint quant
-/// property, NOT tied to a model_type label — keyed purely on the quant config so
-/// any Qwen3.5/3.6-family MoE shipping modelopt MIXED_PRECISION is recognized (was
-/// previously also gated on model_type == "holo3_1_moe", excluding siblings).
-fn is_modelopt_mixed_precision(config: &ModelConfig) -> bool {
-    config.quantization_config.as_ref().is_some_and(|qc| {
-        qc.quant_method == "modelopt" && qc.quant_algo.eq_ignore_ascii_case("MIXED_PRECISION")
-    })
+fn is_holo_modelopt_mixed_precision(config: &ModelConfig) -> bool {
+    config.model_type == "holo3_1_moe"
+        && config.quantization_config.as_ref().is_some_and(|qc| {
+            qc.quant_method == "modelopt" && qc.quant_algo.eq_ignore_ascii_case("MIXED_PRECISION")
+        })
 }
