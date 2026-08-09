@@ -76,7 +76,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// Editing these changes what "invalidates" means. Letting them be excluded
 /// would let a change to the rules escape the rules.
 ///
-/// ★ This list held ONE entry and that was not enough. [`GATE_MACHINERY`]
+/// ★ This list held ONE entry and that was not enough. `GATE_MACHINERY`
 /// excludes the whole `crates/atlas-plugin/src/gate` prefix from every gate,
 /// so a PR editing `check.rs` — `record_covers`, `invalidating_paths`,
 /// `check_record`, `compare` — invalidated nothing, and then reported itself
