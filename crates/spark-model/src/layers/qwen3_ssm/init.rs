@@ -307,6 +307,24 @@ impl Qwen3SsmLayer {
                 "gdn_verify_fused_conv_kn",
                 "gdn_verify_fused_conv_kn_batched",
             ),
+            // Exact-verify `_snap` twins (#435): model-shadow staged
+            // (qwen3.6-27b/nvfp4), 0 elsewhere — the exact arm then uses the
+            // parent kernel + copy_d2d snapshots (same bits, more launches).
+            gdn_f32_norm_snap_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_snap",
+                "gated_delta_rule_decode_f32_norm_snap",
+            ),
+            gdn_f32_strided_norm_snap_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_snap",
+                "gated_delta_rule_decode_f32_strided_norm_snap",
+            ),
+            gdn_verify_fused_conv_kn_f32_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_conv_kn_f32",
+                "gdn_verify_fused_conv_kn_f32",
+            ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(

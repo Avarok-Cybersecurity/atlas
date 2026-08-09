@@ -502,6 +502,7 @@ impl Qwen3SsmLayer {
                     gates_buf,
                     conv_out_buf,
                     gdn_out_buf,
+                    normed_out: conv_out_buf, // row0 == 0: bases coincide
                     h_bytes,
                     conv_bytes,
                     qkvz_size,
@@ -570,6 +571,10 @@ impl Qwen3SsmLayer {
                         gates_buf: gates_buf.offset(row0 * nv * 2 * fp32),
                         conv_out_buf: conv_out_buf.offset(row0 * conv_dim * bf16),
                         gdn_out_buf: gdn_out_buf.offset(row0 * value_dim * bf16),
+                        // Normed rows stride value_dim from ROW 0 of the
+                        // phase-8/9 buffer — a conv_dim-scaled offset here
+                        // would land the exact arm's output between rows.
+                        normed_out: conv_out_buf.offset(row0 * value_dim * bf16),
                         h_bytes,
                         conv_bytes,
                         qkvz_size,
@@ -622,6 +627,7 @@ impl Qwen3SsmLayer {
                                 gates_buf: gates_buf.offset(r * nv * 2 * fp32),
                                 conv_out_buf: conv_out_buf.offset(r * conv_dim * bf16),
                                 gdn_out_buf: gdn_out_buf.offset(r * value_dim * bf16),
+                                normed_out: conv_out_buf.offset(r * value_dim * bf16),
                                 h_bytes,
                                 conv_bytes,
                                 qkvz_size,
@@ -651,7 +657,13 @@ impl Qwen3SsmLayer {
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
-        if num_tokens == 2 && self.fused_verify_k2_enabled() {
+        if super::verify_exact_enabled() {
+            // Issue #435 exact arm (phase 5-7 above): the norm is already
+            // applied inside the per-token chain — the SAME fused/unfused arm
+            // sequential decode uses — and the normed rows are already in
+            // `normed_out_buf` at value_dim BF16 stride. Running any norm
+            // here would re-normalize final output with stale gdn_out data.
+        } else if num_tokens == 2 && self.fused_verify_k2_enabled() {
             // STAGE 1: single-launch gated-RMS-norm for BOTH positions (cos==1.0).
             ops::gdn_verify_fused_norm_k2(
                 ctx.gpu,

@@ -201,6 +201,21 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
 
+    /// Restore the WY-chunkwise / fused BF16-conv MTP-verify arms
+    /// (default: off — the verify pass runs the sequential-decode-EXACT
+    /// per-token chain).
+    ///
+    /// Issue #435: at temp 0, spec-on output must equal spec-off output. The
+    /// WY verify arms ran a BF16-output conv where sequential decode runs
+    /// FP32 (h-state relL2 ~8.6e-4 per K=4 window — committed into persistent
+    /// SSM state) plus a ~3.4e-8 chunkwise reordering term. The exact chain
+    /// is the default because output equivalence is a correctness property;
+    /// this flag is the A/B kill switch, not a tuning knob.
+    ///
+    /// No legacy environment variable — new configuration is CLI-only.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub verify_wy: Option<bool>,
+
     /// Mid-chunk SSM tail capture on the prefill path (default: on).
     ///
     /// Captures GDN recurrent + conv state in-pass at the block-floored

@@ -342,6 +342,10 @@ mod tests {
             a.ssm_batched_recurrent.is_none(),
             "ATLAS_SSM_BATCHED_RECURRENT"
         );
+        // #435: absent must stay absent so publish_kernel_flags does not seal
+        // the GDN cell; the resolved default (exact verify) is asserted in
+        // gdn_flags' own tests.
+        assert!(a.verify_wy.is_none(), "--verify-wy");
 
         let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
         assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");
@@ -359,6 +363,12 @@ mod tests {
         // And an explicit off is now expressible, which it was not before.
         let a = parse(&["--gdn-fused-norm", "false"]);
         assert_eq!(a.gdn_fused_norm, Some(false));
+        // #435 A/B kill switch follows the same convention: bare means on
+        // (restore the WY arms), explicit false is expressible.
+        let a = parse(&["--verify-wy"]);
+        assert_eq!(a.verify_wy, Some(true));
+        let a = parse(&["--verify-wy", "false"]);
+        assert_eq!(a.verify_wy, Some(false));
     }
 
     #[test]

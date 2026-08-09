@@ -63,6 +63,13 @@ pub(super) struct ConvGdnArgs {
     pub gates_buf: DevicePtr,
     pub conv_out_buf: DevicePtr,
     pub gdn_out_buf: DevicePtr,
+    /// Final normed-output base for THIS call's rows: the phase-8/9 buffer
+    /// (== conv_out_buf's UN-offset base) advanced by `row0 * value_dim`
+    /// BF16 — NOT by `row0 * conv_dim` like `conv_out_buf`, because phase 9
+    /// reads normed rows at `value_dim` stride from row 0. Only the exact
+    /// verify arm writes through this (its norm runs in-loop); the WY arms
+    /// leave the norm to phase 8, which derives its own destination.
+    pub normed_out: DevicePtr,
     pub h_bytes: usize,
     pub conv_bytes: usize,
     pub qkvz_size: usize,
@@ -285,6 +292,7 @@ impl Qwen3SsmLayer {
             gates_buf,
             conv_out_buf,
             gdn_out_buf,
+            normed_out: _,
             h_bytes,
             conv_bytes,
             qkvz_size,
@@ -301,6 +309,18 @@ impl Qwen3SsmLayer {
             fp32,
             stream,
         } = *args;
+
+        // ── Issue #435 route (a), DEFAULT: the sequential-decode-exact chain
+        // (bitwise-equal to spec-off decode). All K widths. The WY / fused
+        // BF16-conv arms below survive behind `--verify-wy` for A/B; they are
+        // also the fallback under `--ssm-h-dtype f16`, whose FP16 pool the
+        // exact arm's FP32 kernels must never read (verify_exact_enabled()
+        // is false when h_f16 is set). Phase 8 in decode_batched_inner reads
+        // the SAME predicate to skip its norm — the exact arm writes the
+        // final normed rows itself.
+        if super::verify_exact_enabled() {
+            return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
+        }
 
         if num_tokens == 4 {
             // ── K=4 fused path: conv1d+L2norm sequential, GDN WY4 ──

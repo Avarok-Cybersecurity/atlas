@@ -38,9 +38,27 @@ pub struct GdnFlags {
     pub fused_norm: bool,
     /// `--ssm-batched-recurrent`: one strided recurrent launch per batch.
     pub batched_recurrent: bool,
+    /// `--verify-wy`: restore the WY-chunkwise / fused BF16-conv MTP-verify
+    /// arms (the pre-#435 behaviour) for A/B. Default OFF: the verify pass
+    /// runs the EXACT per-token chain that is bitwise-equal to sequential
+    /// decode, because spec-on output equality at temp 0 is a correctness
+    /// property, not a tunable (issue #435, PR1).
+    pub verify_wy: bool,
 }
 
 impl GdnFlags {
+    /// Whether the MTP-verify pass must run the sequential-decode-exact
+    /// conv+GDN chain (issue #435 route (a)).
+    ///
+    /// Pure so it is testable without touching the process-global flags cell.
+    /// `verify_wy` opts back into the WY arms; `h_f16` also disables exact
+    /// mode, because an FP16 h-state is a whole-chain numerics change that is
+    /// not bit-comparable to the FP32 reference in the first place, and the
+    /// exact arm's kernels are FP32 readers (reading the FP16 pool through
+    /// them would be silent garbage, not an error).
+    pub fn verify_exact_active(self) -> bool {
+        !self.verify_wy && !self.h_f16
+    }
     /// The legacy environment reading, used when the CLI never set anything.
     ///
     /// `ATLAS_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
@@ -52,6 +70,9 @@ impl GdnFlags {
             h_f16: std::env::var("ATLAS_SSM_H_FP16").is_ok(),
             fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
             batched_recurrent: std::env::var("ATLAS_SSM_BATCHED_RECURRENT").as_deref() == Ok("1"),
+            // No legacy environment variable on purpose (house rule: CLI flags
+            // or defaults, no new env knobs). Default = exact verify.
+            verify_wy: false,
         }
     }
 }
@@ -84,4 +105,67 @@ pub fn gdn_fused_norm_enabled() -> bool {
 /// `--ssm-batched-recurrent` (legacy `ATLAS_SSM_BATCHED_RECURRENT=1`).
 pub fn ssm_batched_recurrent_enabled() -> bool {
     flags().batched_recurrent
+}
+
+/// `--verify-wy` NOT given (and h-state is FP32): the MTP-verify pass runs
+/// the sequential-decode-exact chain. See [`GdnFlags::verify_exact_active`].
+pub fn verify_exact_enabled() -> bool {
+    flags().verify_exact_active()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GdnFlags;
+
+    const BASE: GdnFlags = GdnFlags {
+        h_f16: false,
+        fused_norm: false,
+        batched_recurrent: false,
+        verify_wy: false,
+    };
+
+    /// POSITIVE: the default flag set (no `--verify-wy`, FP32 h-state) runs
+    /// the exact verify chain — the #435 fix must be ON by default.
+    #[test]
+    fn verify_exact_is_the_default() {
+        assert!(BASE.verify_exact_active(), "default must be exact verify");
+        // Orthogonal flags do not disturb the decision.
+        assert!(
+            GdnFlags {
+                fused_norm: true,
+                batched_recurrent: true,
+                ..BASE
+            }
+            .verify_exact_active()
+        );
+    }
+
+    /// NEGATIVE: each opt-out disables exact mode on its own — `--verify-wy`
+    /// (the A/B kill switch) and `--ssm-h-dtype f16` (whose FP16 pool the
+    /// exact arm's FP32 kernels must never read).
+    #[test]
+    fn verify_wy_and_h_f16_each_disable_exact() {
+        assert!(
+            !GdnFlags {
+                verify_wy: true,
+                ..BASE
+            }
+            .verify_exact_active()
+        );
+        assert!(
+            !GdnFlags {
+                h_f16: true,
+                ..BASE
+            }
+            .verify_exact_active()
+        );
+        assert!(
+            !GdnFlags {
+                verify_wy: true,
+                h_f16: true,
+                ..BASE
+            }
+            .verify_exact_active()
+        );
+    }
 }
