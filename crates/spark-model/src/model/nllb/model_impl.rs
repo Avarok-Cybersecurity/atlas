@@ -159,40 +159,9 @@ impl Model for NllbGpuModel {
         let slot = self.slots.lock().unwrap().claim();
         let kv = NllbSeqKv::new(self.gpu.as_ref(), self.dec_layers, self.cache_rows, self.d)?;
         self.kv.lock().unwrap().insert(slot, kv);
-        Ok(SequenceState {
-            adapter_id: 0,
-            adapter_slot: -1,
-            acquired_adapter_slot: -1,
-            src_lang_id: 0,
-            tgt_lang_id: 0,
-            num_beams: 1,
-            length_penalty: 1.0,
-            early_stopping: false,
-            tokens: Vec::new(),
-            block_table: Vec::new(),
-            seq_len: 0,
-            layer_states: Vec::new(),
-            proposer_state: None,
-            slot_idx: slot,
-            ssm_slot: None,
-            marconi_skip_to: 0,
-            marconi_exact_snap: None,
-            session_hash: 0,
-            mtp_capture_gen: 0,
-            chunked_prefill_meta: None,
-            cached_prefix_tokens: 0,
-            cached_prefix_blocks: 0,
-            prefix_ref_tokens: Vec::new(),
-            prefix_lookup_applied: false,
-            prefix_lookup_skip: false,
-            kv_valid_tokens: 0,
-            last_decode_ckpt_block: 0,
-            prompt_len: 0,
-            collect_prompt_logprobs: None,
-            prompt_logprobs: Vec::new(),
-            disk_block_ids: Vec::new(),
-            disk_last_offloaded_per_layer: Vec::new(),
-        })
+        // All-defaults host-side state; NLLB's KV lives in `self.kv`,
+        // keyed by `slot` (SSOT for the field defaults: `host_only`).
+        Ok(SequenceState::host_only(slot))
     }
 
     fn free_sequence(&self, seq: &mut SequenceState) -> Result<()> {

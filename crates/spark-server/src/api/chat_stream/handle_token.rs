@@ -430,6 +430,13 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
             &mut state.stop_string_emitted_len,
             &mut state.stop_string_triggered,
         );
+        // Entry was gated on `!triggered`, so a flip here is a GENUINE
+        // client stop-sequence match (the watchdog paths set the flag
+        // elsewhere): record it for the wire finish_reason ("stop", per
+        // OpenAI) and cancel generation.
+        if state.stop_string_triggered {
+            state.note_stop_string_match();
+        }
         if delta.is_empty() {
             // Either everything is sitting in the hold-back window
             // (waiting for the next chunk / stream close) or a match

@@ -19,11 +19,11 @@ pub fn emit_token(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
     // Cooperative cancellation from the streaming pipeline. The
-    // stream-side loop guards (Bug-2 name-run cap, F11 within-dedup,
-    // F44 perm-fail, loop-watchdog) flip this flag when they decide
-    // the response should end. Treat it like an EOS: finalise now so
-    // `handle_done` runs with the proper `tool_loop_capped` /
-    // `finish_reason="length"` machinery, instead of letting the
+    // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
+    // perm-fail, loop-watchdog, client stop-sequence match) flip this
+    // flag when they decide the response should end. Treat it like an
+    // EOS: finalise now (lifecycle derives "stop" — budget not hit —
+    // and `handle_done`'s overrides refine it) instead of letting the
     // model keep emitting tokens that just get suppressed.
     if let Some(ref f) = a.cancel_flag
         && f.load(std::sync::atomic::Ordering::Acquire)

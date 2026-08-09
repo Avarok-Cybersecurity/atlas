@@ -186,30 +186,12 @@ pub(super) fn handle_done(
         response_tokens_per_second: tps,
     };
 
-    let fr = if finish_reason == crate::ir::FINISH_REASON_TIMEOUT {
-        // The server-side request deadline cut this response mid-flight.
-        // It outranks every override below: a truncated turn that emitted
-        // a partial tool call would otherwise be reported "tool_calls" and
-        // the client would run a half-parsed call as if it were complete.
-        finish_reason.as_str()
-    } else if state.tool_loop_capped {
-        // A tool-call loop guard (Bug-2 name-run cap, F11 within-dedup,
-        // F5 cross-flush dedup, or F44 perm-fail) forcibly ended the
-        // response. Signal "length" — OpenAI's slot for a truncated
-        // response — so agent clients can break their outer retry
-        // loop. Without this override the response otherwise looks like
-        // a normal "tool_calls" completion (tool calls *were* emitted)
-        // and agents (opencode, etc.) cheerfully run the tools and ask
-        // the model to continue, perpetuating the loop one round at a
-        // time.
-        "length"
-    } else if state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
-        || state.salvaged_tool_call
-    {
-        "tool_calls"
-    } else {
-        finish_reason.as_str()
-    };
+    let fr = resolve_wire_finish_reason(
+        &finish_reason,
+        state.tool_loop_capped,
+        state.detector.as_ref().is_some_and(|d| d.has_tool_calls()) || state.salvaged_tool_call,
+        state.stop_string_matched,
+    );
 
     // Refusal classification.
     let refusal_signal = if state.detector.as_ref().is_none_or(|d| !d.has_tool_calls()) {
@@ -293,4 +275,97 @@ pub(super) fn handle_done(
     }
 
     deltas
+}
+
+/// Stream-layer overrides on top of the scheduler's finish reason.
+/// Pure so the precedence is unit-testable. In order:
+///
+/// 1. `"timeout"` — the server-side request deadline cut this response
+///    mid-flight. It outranks every override below: a truncated turn
+///    that emitted a partial tool call would otherwise be reported
+///    "tool_calls" and the client would run a half-parsed call as if it
+///    were complete.
+/// 2. `tool_loop_capped` → `"length"` — a tool-call loop guard (Bug-2
+///    name-run cap, F11 within-dedup, F5 cross-flush dedup, or F44
+///    perm-fail) forcibly ended the response. Signal "length" — OpenAI's
+///    slot for a truncated response — so agent clients can break their
+///    outer retry loop. Without this override the response otherwise
+///    looks like a normal "tool_calls" completion (tool calls *were*
+///    emitted) and agents (opencode, etc.) cheerfully run the tools and
+///    ask the model to continue, perpetuating the loop one round at a
+///    time. NOTE: this is a deliberate, pre-existing exception to the
+///    scheduler-side invariant that "length" means "budget exhausted";
+///    kept because it is a shipped contract for exactly this doom-loop
+///    class.
+/// 3. parsed/salvaged tool calls → `"tool_calls"`.
+/// 4. `stop_string_matched` → `"stop"` — a client `stop` sequence ended
+///    this response. OpenAI (and vLLM/SGLang/TGI/llama.cpp) report a
+///    stop-sequence stop as "stop"; the scheduler can still say
+///    "length" here when the cooperative cancel landed a step late
+///    (tokens kept decoding with output suppressed and the budget ran
+///    out first).
+/// 5. otherwise the scheduler's reason passes through verbatim.
+fn resolve_wire_finish_reason(
+    scheduler_reason: &str,
+    tool_loop_capped: bool,
+    has_tool_calls: bool,
+    stop_string_matched: bool,
+) -> &str {
+    if scheduler_reason == crate::ir::FINISH_REASON_TIMEOUT {
+        scheduler_reason
+    } else if tool_loop_capped {
+        "length"
+    } else if has_tool_calls {
+        "tool_calls"
+    } else if stop_string_matched {
+        "stop"
+    } else {
+        scheduler_reason
+    }
+}
+
+#[cfg(test)]
+mod wire_finish_reason_tests {
+    use super::resolve_wire_finish_reason;
+    use crate::ir::FINISH_REASON_TIMEOUT;
+
+    #[test]
+    fn stop_string_match_is_stop_not_length() {
+        // The second instance of the "length is a lie" bug: a matched
+        // client stop sequence previously fell through to the
+        // scheduler's reason, which reads "length" whenever the seq
+        // burned to the budget with its output suppressed.
+        assert_eq!(
+            resolve_wire_finish_reason("length", false, false, true),
+            "stop"
+        );
+        // With no match, the scheduler's reason passes through.
+        assert_eq!(
+            resolve_wire_finish_reason("length", false, false, false),
+            "length"
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, false, false),
+            "stop"
+        );
+    }
+
+    #[test]
+    fn timeout_and_tool_overrides_keep_their_rank() {
+        // Shipped contracts, unchanged by this wave.
+        assert_eq!(
+            resolve_wire_finish_reason(FINISH_REASON_TIMEOUT, true, true, true),
+            FINISH_REASON_TIMEOUT
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", true, true, true),
+            "length",
+            "tool-loop cap outranks tool_calls and the stop-string match"
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, true, true),
+            "tool_calls",
+            "parsed tool calls outrank the stop-string override"
+        );
+    }
 }

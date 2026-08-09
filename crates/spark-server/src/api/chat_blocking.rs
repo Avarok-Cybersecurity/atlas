@@ -17,6 +17,7 @@ use crate::AppState;
 use crate::ir;
 use crate::tool_parser;
 
+use super::chat_blocking_choice::{build_choice_message, build_logprobs};
 use super::compact::openai_error_response;
 use super::inference_impl::{extract_thinking, strip_stop_sequences};
 use super::inference_types::{GrammarSpec, InferenceRequest};
@@ -221,6 +222,8 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         );
         choice.index = choice_idx;
         choice.matched_stop = matched_stop;
+        choice.finish_reason =
+            stop_match_corrected(choice.finish_reason, choice.matched_stop.is_some());
         choice.logprobs = build_logprobs(&state, &response);
         all_choices.push(choice);
     }
@@ -290,195 +293,6 @@ fn decode_response_text(
     }
 }
 
-/// Build the assistant message + finish_reason for one choice. Tool
-/// parsing, validation, content-strip + refusal-classifier all live
-/// here.
-///
-/// Deliberately NOT `async`: it awaits nothing, and marking pure CPU work as
-/// async only hides where that work runs. If it ever grows expensive enough to
-/// matter, that becomes a visible decision to move it to the blocking pool
-/// rather than something already buried inside a future.
-#[allow(clippy::too_many_arguments)]
-fn build_choice_message(
-    state: &AppState,
-    req: &crate::ir::ChatRequest,
-    response: &super::inference_types::InferenceResponse,
-    reasoning_content_i: Option<String>,
-    output_text_i: String,
-    tools_active: bool,
-    cwd_hint: Option<&str>,
-    choice_idx: usize,
-) -> ir::Choice {
-    let _ = response; // currently only used for finish_reason.clone() below
-    // Neutral locals — the wire annotations (URL citations) are derived
-    // at encode time by the surfaces that emit them.
-    let mut reasoning_content = reasoning_content_i;
-    let mut msg_content: Option<String> = Some(output_text_i.clone());
-    let mut msg_tool_calls: Option<Vec<tool_parser::ToolCall>> = None;
-    let mut msg_refusal: Option<String> = None;
-    let mut finish_reason_i = response.finish_reason.clone();
-
-    if tools_active {
-        if std::env::var("ATLAS_LOG_TOOL_RAW").as_deref() == Ok("1") {
-            tracing::info!(
-                target: "atlas::tool_debug",
-                "raw pre-parse output (tools_active, choice {choice_idx}): {output_text_i:?}"
-            );
-        }
-        // F7 (2026-05-26): also scan `reasoning_content_i` for tool calls.
-        // When the model emits a `<tool_call>...</tool_call>` block INSIDE
-        // its `<think>...</think>` reasoning, `decode_response_text` splits
-        // at `</think>` and routes the tool call into reasoning_content,
-        // hiding it from the post-`</think>` parser below — the tool call
-        // is silently dropped (matches vLLM #39055 pattern). When found in
-        // reasoning, hoist the calls back into the assistant message and
-        // scrub the residual XML from the reasoning trace so it isn't
-        // double-emitted to the client.
-        let (hoisted_reasoning, hoisted_tool_calls): (Option<String>, Vec<_>) =
-            if let Some(ref rc) = reasoning_content {
-                let (scrubbed, tcs) = tool_parser::parse_tool_calls(rc);
-                (scrubbed, tcs)
-            } else {
-                (None, Vec::new())
-            };
-        if !hoisted_tool_calls.is_empty() {
-            tracing::info!(
-                "F7: hoisted {} tool-call(s) from inside <think> block (would have been silently dropped)",
-                hoisted_tool_calls.len()
-            );
-            reasoning_content = hoisted_reasoning;
-        }
-        let (content, parsed_tool_calls) = tool_parser::parse_tool_calls(&output_text_i);
-        let mut tool_calls_i = hoisted_tool_calls;
-        tool_calls_i.extend(parsed_tool_calls);
-        if !tool_calls_i.is_empty() {
-            let tools_ref = req.tools.clone();
-            tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
-            if state
-                .tool_call_parser
-                .as_ref()
-                .is_some_and(|p| p.wants_typed_arguments())
-            {
-                tool_parser::coerce_all(&mut tool_calls_i, &tools_ref);
-            }
-            if let Some(cwd) = cwd_hint {
-                tool_parser::normalize_paths(&mut tool_calls_i, cwd);
-            }
-            let validated = tool_parser::validate_tool_calls(tool_calls_i, &tools_ref);
-            if !validated.errors.is_empty() {
-                for err in &validated.errors {
-                    tracing::warn!("Tool call validation error: {err}");
-                }
-            }
-            // Strip orphan tool call XML tags + ```lang fences from content
-            // (Qwen3-Coder pattern: emits markdown narration AND structured
-            // tool_call for the same payload).
-            let content = content.map(|mut c| {
-                for tag in &["</parameter>", "</function>", "</tool_call>", "<tool_call>"] {
-                    c = c.replace(tag, "");
-                }
-                while let Some(start) = c.find("<function=") {
-                    let end = c[start..]
-                        .find('>')
-                        .map(|p| start + p + 1)
-                        .unwrap_or(c.len());
-                    c = format!("{}{}", &c[..start], &c[end..]);
-                }
-                while let Some(start) = c.find("```") {
-                    let after_open = start + 3;
-                    let Some(rel_close) = c[after_open..].find("```") else {
-                        break;
-                    };
-                    let close_end = after_open + rel_close + 3;
-                    c = format!("{}{}", &c[..start], &c[close_end..]);
-                }
-                c.trim().to_string()
-            });
-            msg_content = content;
-            if !validated.valid.is_empty() {
-                for tc in &validated.valid {
-                    let p: String = tc.function.arguments.chars().take(120).collect();
-                    let s = ["", "…"][usize::from(tc.function.arguments.len() > p.len())];
-                    tracing::info!("Tool call: {}({p}{s})", tc.function.name);
-                    crate::metrics::TOOL_CALLS_TOTAL.inc();
-                }
-                msg_tool_calls = Some(validated.valid);
-                // A deadline cut outranks "tool_calls": the turn was
-                // truncated, so a call parsed out of it may be partial and
-                // the client must not treat it as a completed tool turn.
-                if finish_reason_i != ir::FINISH_REASON_TIMEOUT {
-                    finish_reason_i = "tool_calls".to_string();
-                }
-            }
-        }
-    }
-
-    // Refusal classifier: when the model's assistant text opens with
-    // a known refusal pattern AND no tool call fired, populate
-    // `refusal` and null out `content` per the OpenAI spec.
-    if msg_tool_calls.is_none()
-        && let Some(content_text) = msg_content.as_deref()
-        && let Some(refusal_sentence) = crate::refusal::detect(content_text)
-    {
-        msg_refusal = Some(refusal_sentence);
-        msg_content = None;
-    }
-
-    // Validated wire tool calls → IR (arguments are serde-normalized
-    // strings from the parser, so the parse here is lossless).
-    let tool_calls: Vec<ir::message::ToolCall> = msg_tool_calls
-        .unwrap_or_default()
-        .into_iter()
-        .map(|tc| ir::message::ToolCall {
-            id: tc.id,
-            name: tc.function.name,
-            arguments: serde_json::from_str(&tc.function.arguments)
-                .unwrap_or_else(|_| serde_json::Value::Object(Default::default())),
-        })
-        .collect();
-
-    ir::Choice {
-        index: choice_idx,
-        content: msg_content,
-        reasoning: reasoning_content,
-        tool_calls,
-        refusal: msg_refusal,
-        finish_reason: ir::FinishReason::from(finish_reason_i.as_str()),
-        matched_stop: None, // caller fills
-        logprobs: None,     // caller fills
-    }
-}
-
-/// Convert internal logprobs to OpenAI `ChoiceLogprobs` format.
-fn build_logprobs(
-    state: &AppState,
-    response: &super::inference_types::InferenceResponse,
-) -> Option<ir::ChoiceLogprobs> {
-    if response.logprobs.is_empty() {
-        return None;
-    }
-    Some(ir::ChoiceLogprobs {
-        content: response
-            .logprobs
-            .iter()
-            .map(|lp| {
-                let token_str = state.tokenizer.decode(&[lp.token_id]).unwrap_or_default();
-                ir::TokenLogprob {
-                    token: token_str,
-                    logprob: lp.logprob,
-                    top: lp
-                        .top
-                        .iter()
-                        .map(|&(tid, lp_val)| {
-                            (state.tokenizer.decode(&[tid]).unwrap_or_default(), lp_val)
-                        })
-                        .collect(),
-                }
-            })
-            .collect(),
-    })
-}
-
 /// Core finalization: usage assembly, metrics, and the rate-limit
 /// true-up. Returns the canonical response IR — wire encoding (plus
 /// `store:`/`--dump` handling) happens in the per-surface encoders.
@@ -532,4 +346,51 @@ fn finalize_response(
         choices: all_choices,
         usage,
     }))
+}
+
+/// OpenAI contract: a response ended by a client stop sequence is
+/// `finish_reason="stop"`, never `"length"`. The blocking path only
+/// detects multi-token stop strings post-hoc (the suffix strip in the
+/// caller), so this corrects exactly the "length" misreport — EOS
+/// already reports "stop", and "timeout"/"tool_calls" keep outranking a
+/// stop match (same precedence as the streaming resolver in
+/// `chat_stream::handle_done::resolve_wire_finish_reason`).
+fn stop_match_corrected(fr: ir::FinishReason, stop_matched: bool) -> ir::FinishReason {
+    if stop_matched && fr == ir::FinishReason::Length {
+        ir::FinishReason::Stop
+    } else {
+        fr
+    }
+}
+
+#[cfg(test)]
+mod stop_match_corrected_tests {
+    use super::stop_match_corrected;
+    use crate::ir::{FINISH_REASON_TIMEOUT, FinishReason};
+
+    #[test]
+    fn matched_stop_corrects_length_to_stop() {
+        assert_eq!(
+            stop_match_corrected(FinishReason::Length, true),
+            FinishReason::Stop
+        );
+    }
+
+    #[test]
+    fn everything_else_passes_through() {
+        // No match ⇒ a real budget stop stays "length".
+        assert_eq!(
+            stop_match_corrected(FinishReason::Length, false),
+            FinishReason::Length
+        );
+        // A match never rewrites tool_calls or the timeout contract.
+        assert_eq!(
+            stop_match_corrected(FinishReason::ToolCalls, true),
+            FinishReason::ToolCalls
+        );
+        assert_eq!(
+            stop_match_corrected(FinishReason::Other(FINISH_REASON_TIMEOUT.into()), true),
+            FinishReason::Other(FINISH_REASON_TIMEOUT.into())
+        );
+    }
 }
