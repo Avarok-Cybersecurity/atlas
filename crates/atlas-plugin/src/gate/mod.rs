@@ -213,6 +213,9 @@ mod fixture_baseline;
 mod coverage_map_tests;
 
 #[cfg(test)]
+#[path = "coverage_promotion_tests.rs"]
+mod coverage_promotion_tests;
+#[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod coverage_tests;
 

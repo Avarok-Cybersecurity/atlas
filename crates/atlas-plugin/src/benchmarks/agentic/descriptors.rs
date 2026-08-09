@@ -9,6 +9,23 @@ use crate::metadata::PluginMetadata;
 const SUMMARY: &str = "N agentic runs: build a working Axum server, then verify it";
 pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
 
+/// ★★ THIS BLOCK IS DOCUMENTATION. Nothing executes it.
+///
+/// Under `--pull-request-gate` the serve is built by `bench_selfstart` from the
+/// RECIPE named in `BENCH.toml` — `qwen3.6/qwen3.6-35b-a3b-fp8-bf16head`, which
+/// lives in the separate `atlas-recipes` repo and is honoured verbatim. Editing
+/// the command below changes what a reader believes, not what runs. It is
+/// written down here because it is the shape an operator reproduces by hand,
+/// and it must not drift from the recipe.
+///
+/// ★ `--mtp-gate force` is a DETERMINISM pin, and its absence is the root cause
+/// of this gate's intermittent 9/10 on `followed_directions`.
+///
+/// **IT IS NOT YET IN EFFECT.** The recipe carries `speculative: true` and
+/// `mtp_quantization: bf16` and no `mtp_gate` key; `--mtp-gate` is
+/// `Option<String>` with no clap default, so absent means `auto`. Closing this
+/// requires a PR to `atlas-recipes` adding `mtp_gate: force` to that recipe.
+/// Until that lands, the flip described below can still happen.
 pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "agentic-webserver",
     name: "Agentic Webserver Test",
