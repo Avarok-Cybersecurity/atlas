@@ -22,6 +22,13 @@
 /// shadow dirs whole-file-replace `common/`, so a fix in one copy is invisible
 /// to the other 28. This is the `shadowed_kernels_null` pattern again.
 ///
+/// ★ THE ORIGINAL COUNT HERE WAS WRONG. It claimed 19-26 stale copies, from a
+/// scan whose `awk` range terminated before the end of the signature and so
+/// read a truncated block. The true figure was 6, of which 4 are now ported;
+/// the 3 that remain are all `common/`, whose kernel body is structurally
+/// different (zero matches for the load pattern) and needs reading, not
+/// scripting. Regenerated with a checker that bounds the signature properly.
+///
 /// ★ This test PINS THE DEBT rather than asserting it is zero. A new kernel
 /// copy without `ldb` fails here; PORTING one requires deleting its line, which
 /// is the direction we want to be easy. Deleting the last line and the list is
@@ -50,24 +57,8 @@ fn w4a16_gemm_t_ldb_drift_is_exactly_the_known_set() {
 
     let known: std::collections::BTreeSet<&str> = [
         "kernels/gb10/common/w4a16_gemm.cu",
-        "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/gemma-4-26b-a4b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/gemma-4-31b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/minimax-m2-229b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/mistral-small-4/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/nemotron-3-nano-30b-a3b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/nemotron-super-120b-a12b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/qwen3.5-122b-a10b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/qwen3.5-27b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/qwen3.5-35b-a3b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/qwen3.5-397b-a17b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/qwen3-next-80b-a3b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/w4a16_gemm.cu",
-        "kernels/gb10/step3p7-flash/nvfp4/w4a16_gemm.cu",
-        "kernels/strix/common/w4a16_gemm.cu",
         "kernels/strix-hip/common/w4a16_gemm.cu",
-        "kernels/strix-hip/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu",
+        "kernels/strix/common/w4a16_gemm.cu",
     ]
     .into_iter()
     .collect();
