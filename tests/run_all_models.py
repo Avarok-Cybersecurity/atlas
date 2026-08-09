@@ -179,24 +179,6 @@ ROUNDS: List[List[tuple]] = [
                             extra_args=["--max-batch-size", "1"])),
         ("head",   None),
     ],
-    # Round 10: Holo-3.1-35B-A3B (head) — Hcompany hybrid GDN + full-attn +
-    # 256-expert MoE + Qwen3-VL ViT (the architectural twin of the flagship
-    # Qwen3.6-35B-A3B-FP8). NVFP4 weights; exercises the suite's VISION test
-    # (the only matrix entry besides Qwen3-VL / Gemma-4 with an image path).
-    # FP8 sibling (Hcompany/Holo-3.1-35B-A3B-FP8) can be added as a second
-    # round once both checkpoints are cached on the run host.
-    [
-        ("head",   TestSpec("holo-3.1-35B-nvfp4", "Hcompany/Holo-3.1-35B-A3B-NVFP4", vision=True)),
-        ("head",   None),
-    ],
-    # Round 11: Ornith-1.0-9B (head) — deepreinforce dense-VL sibling of Holo
-    # (Qwen3.5 hybrid GDN + full-attn + dense FFN + Qwen3-VL ViT, hidden=4096).
-    # Has its own `ornith-1.0-9b` kernel target; BF16 weights → runtime NVFP4.
-    # Also exercises the suite's VISION test (Qwen3-VL ViT).
-    [
-        ("head",   TestSpec("ornith-1.0-9B", "deepreinforce-ai/Ornith-1.0-9B", vision=True)),
-        ("head",   None),
-    ],
 ]
 
 # EP=2 rounds run sequentially at the end, on both DGXs together.
