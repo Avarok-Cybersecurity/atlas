@@ -27,12 +27,36 @@
 //! spark serve Qwen/Qwen3.6-35B-A3B-FP8 \
 //!   --max-seq-len 32768 --max-batch-size 2 --gpu-memory-utilization 0.70 \
 //!   --kv-cache-dtype bf16 --lm-head-dtype bf16 --scheduling-policy slai \
-//!   --speculative --num-drafts 1 --mtp-quantization bf16 \
+//!   --speculative --num-drafts 1 --mtp-quantization bf16 --mtp-gate force \
 //!   --enable-prefix-caching --ssm-cache-slots 256 --ssm-checkpoint-interval 16 \
 //!   --kv-high-precision-layers auto --port 8888
 //! ```
 //!
-//! Two pins that must not drift:
+//! ★ `--mtp-gate force` is a DETERMINISM pin, and its absence was the root
+//! cause of this gate's intermittent 9/10 on `followed_directions`.
+//!
+//! In `auto`, the MTP gate is a bandit arbiter that switches MTP<->serial at
+//! runtime on **wall-clock** tok/s EWMAs. Speculation is NOT output-neutral at
+//! temperature 0 — rollback and SSM-conv restore are inexact, measured at
+//! structural 4.1-nat margins on 2026-07-22 — so a throughput-timed path switch
+//! makes greedy decode depend on how fast the box happened to be. The client
+//! side of this gate is pinned to the bone (temp 0.0, seed 0, constant prompt,
+//! normalized tool output) and none of that helps while the SERVER is choosing
+//! numeric paths by stopwatch.
+//!
+//! Proof it was really happening: two runs of the SAME binary (8b7de2638),
+//! same box, back to back — iteration 9 of the failing run left
+//! `/tmp/agent_server.log` built `--release`, while iteration 9 of the passing
+//! run wrote `/tmp/server.log` built dev. Identical inputs, divergent
+//! trajectories. Roughly one wandering trajectory in ten ends without
+//! evidencing its final directive, which is the 9/10.
+//!
+//! The 2026-07-22 campaign already declared this pin mandatory for gates. This
+//! gate never adopted it. The alternative — widening the threshold to tolerate
+//! the flip — was explicitly rejected: it would convert a determinism bug into
+//! permanent noise the gate can never see through again.
+//!
+//! Two further pins that must not drift:
 //!
 //! * **`--lm-head-dtype bf16` is mandatory.** fp8 and nvfp4 lm-heads pass
 //!   short-prompt coherence but degenerate over this harness's long structured

@@ -455,3 +455,30 @@ fn summarize_paths(paths: &[String]) -> String {
         paths.len() - SHOWN
     )
 }
+
+/// The exit code, as a function of the VERDICTS ALONE.
+///
+/// ★ This signature is the advisory boundary, and it is deliberately narrow.
+///
+/// The intent half — [`super::required::RequiredReport`], the escalation
+/// preview, the classifier's opinion — is about to start being reported next to
+/// these verdicts. Everything reported next to a verdict eventually gets
+/// consulted by something. Making the exit code a function that CANNOT SEE the
+/// advisory data means the separation is enforced by the type checker rather
+/// than by whoever edits the printing loop next.
+///
+/// `atlas-governance`'s own doctrine puts it plainly: the ledger is "advisory,
+/// permanently — adding a ledger read would make [the gate] depend on a file
+/// any job can append to". Flipping that later is a deliberate act that has to
+/// widen THIS signature, which is exactly the review moment it deserves.
+pub fn exit_code(statuses: &BTreeMap<String, GateStatus>) -> i32 {
+    let open = statuses
+        .values()
+        .filter(|s| !matches!(s, GateStatus::Pass))
+        .count();
+    i32::from(open > 0)
+}
+
+#[cfg(test)]
+#[path = "check_tests.rs"]
+mod check_tests;
