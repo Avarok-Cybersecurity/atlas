@@ -243,11 +243,27 @@ jobs:
         # Anonymous api.github.com is rate-limited to 60/hr per IP, shared
         # across the runner fleet. That is why this is best-effort: a 403 here
         # must degrade to "classify without it", never fail the job.
+        env:
+          # Org-scoped read token. `GITHUB_TOKEN` is scoped to THIS repo and is
+          # refused on a sibling, which is why the first live run classified
+          # without recipe context. Empty on fork PRs — hence the anonymous
+          # fallback below, which works because atlas-recipes is public.
+          ORG_READ: ${{ secrets.GH_ORGANIZATION_READ_TOKEN }}
         run: |
           set -uo pipefail
+          API='https://api.github.com/repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1'
+          # Authenticated when the secret exists (5000/hr), anonymous otherwise
+          # (60/hr per IP, shared across the runner fleet). Both are read-only
+          # and neither is required: this is evidence for a classifier, not a
+          # gate input, so it must degrade rather than fail.
+          if [ -n "${ORG_READ:-}" ]; then
+            echo "::add-mask::$ORG_READ"
+            set -- -H "Authorization: Bearer $ORG_READ"
+          else
+            set --
+          fi
           if names=$(curl -sS --max-time 20 --fail \
-                       -H 'Accept: application/vnd.github+json' \
-                       'https://api.github.com/repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1' \
+                       -H 'Accept: application/vnd.github+json' "$@" "$API" \
                      | jq -r '[.tree[]? | select(.path | endswith(".yaml")) | .path] | .[0:60] | join("\n")' \
                        2>/dev/null) && [ -n "$names" ]; then
             printf '%s' "$names" > recipes.txt
