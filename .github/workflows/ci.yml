@@ -228,17 +228,28 @@ jobs:
           { printf 'head<<%s\n' "$d"; cat changed_head.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
       - name: Cross-repo context — which recipes exist
         id: recipes
-        env:
-          GH_TOKEN: ${{ github.token }}
         # The serve recipes are in a DIFFERENT repository, and they determine
         # every gated number (`--kv-cache-dtype` alone is worth -3 to -4% wall
         # in this campaign's own data). A classifier that cannot see them
         # cannot reason about them. Read-only, best-effort, never fatal.
+        #
+        # ★ UNAUTHENTICATED, deliberately, and NOT via `gh api`. `gh` sends
+        # `GITHUB_TOKEN`, which is scoped to THIS repository, so it is REFUSED
+        # on a sibling repo — the first live run fell straight to the notice
+        # branch and classified without recipe context. `atlas-recipes` is
+        # public (`"private": false`), so a plain anonymous GET works and needs
+        # no secret: verified 27 YAMLs, HTTP 200.
+        #
+        # Anonymous api.github.com is rate-limited to 60/hr per IP, shared
+        # across the runner fleet. That is why this is best-effort: a 403 here
+        # must degrade to "classify without it", never fail the job.
         run: |
           set -uo pipefail
-          if names=$(gh api repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1 \
-                       --jq '[.tree[] | select(.path | endswith(".yaml")) | .path] | .[0:60] | join("\n")' \
-                       2>/dev/null); then
+          if names=$(curl -sS --max-time 20 --fail \
+                       -H 'Accept: application/vnd.github+json' \
+                       'https://api.github.com/repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1' \
+                     | jq -r '[.tree[]? | select(.path | endswith(".yaml")) | .path] | .[0:60] | join("\n")' \
+                       2>/dev/null) && [ -n "$names" ]; then
             printf '%s' "$names" > recipes.txt
           else
             : > recipes.txt
