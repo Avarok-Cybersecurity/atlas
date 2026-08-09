@@ -12,6 +12,7 @@ use atlas_plugin::{
     ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, gate,
     history, registry,
 };
+use std::collections::BTreeMap;
 
 use super::bench_args::{BenchmarkArgs, BenchmarkCommand, HistoryArgs, OutputFormat, RunArgs};
 use super::bench_print;
@@ -163,6 +164,7 @@ async fn write_gate_record(
     url: &str,
     model: &str,
     recipe: Option<String>,
+    serve_overrides: BTreeMap<String, String>,
     sha_at_start: String,
     dirty_at_start: Vec<String>,
 ) -> Result<()> {
@@ -210,7 +212,12 @@ async fn write_gate_record(
     let target = TargetEndpoint::new(url, model);
     let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
     let dirty = dirty_at_start;
-    let gate_record = gate::GateRecord::from_run(record, hardware, sha, dirty, recipe)?;
+    let gate_record =
+        gate::GateRecord::from_run(record, hardware, sha, dirty, recipe, serve_overrides)?
+            // What THIS binary's kernels were compiled from. Baked at build
+            // time, so it describes the code that actually ran rather than the
+            // tree as it stands now.
+            .with_closure(atlas_kernels::TARGET_CLOSURES);
     let path = gate::write_record(&root, &gate_record)?;
     eprintln!("gate record written as {}", path.display());
     // Repeated at the end as well as the start: the start-of-run warning has
@@ -287,7 +294,14 @@ async fn run(args: RunArgs) -> Result<i32> {
     // covers the ones that cannot.)
     let store = store()?;
     let served = if args.pull_request_gate {
-        Some(super::bench_selfstart::serve_for(&args.id, args.hardware.as_deref()).await?)
+        Some(
+            super::bench_selfstart::serve_for(
+                &args.id,
+                args.hardware.as_deref(),
+                super::bench_selfstart::parse_serve_overrides(&args.serve_override)?,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -377,12 +391,17 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
+        let serve_overrides = served
+            .as_ref()
+            .map(|s| s.overrides.clone())
+            .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
             recipe,
+            serve_overrides,
             sha_at_start,
             dirty_at_start,
         )

@@ -60,10 +60,18 @@ pub(crate) fn pack_mtp_attn_meta(
 ) -> Result<Vec<u8>> {
     let bt_bytes = block_table.len() * 4;
     let need = MTP_META_HEADER_BYTES + bt_bytes;
+    // ★ The phrase "exceeds meta stride" is LOAD-BEARING, not decoration:
+    // `scheduler/mtp_bootstrap_step.rs` matches it (`msg.contains`) to demote
+    // this one overflow to debug while every other propose failure stays at
+    // ERROR. Reword it and that demotion silently stops matching, which puts a
+    // per-occurrence ERROR back into production logs for a condition that is
+    // expected and recoverable. String-matching an error is fragile and worth
+    // replacing with a typed error, but until then the coupling is real and
+    // documented at both ends.
     ensure!(
         need <= region_bytes,
-        "MTP attention metadata does not fit: needs {need} B for a {}-entry block table, \
-         have {region_bytes} B",
+        "MTP attention metadata exceeds meta stride: needs {need} B for a {}-entry \
+         block table, have {region_bytes} B",
         block_table.len()
     );
 
@@ -112,7 +120,15 @@ mod tests {
         );
         let over = vec![0u32; 449];
         let e = pack_mtp_attn_meta(0, 0, 1, &over, 2048).unwrap_err();
-        assert!(e.to_string().contains("does not fit"), "{e}");
+        // ★ Pins the exact phrase `scheduler/mtp_bootstrap_step.rs` matches to
+        // demote this overflow to debug. Asserting the wording is the point:
+        // without it, a reword here silently restores a per-occurrence ERROR
+        // in production for an expected, recoverable condition — and nothing
+        // else in the tree would catch it.
+        assert!(
+            e.to_string().contains("exceeds meta stride"),
+            "the demotion phrase mtp_bootstrap_step matches must survive: {e}"
+        );
     }
 
     /// A region smaller than the header alone is rejected rather than producing

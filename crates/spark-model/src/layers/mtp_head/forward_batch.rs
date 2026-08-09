@@ -40,7 +40,6 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
-use super::batch_caps::PROPOSE_META_STRIDE;
 use crate::layers::mtp_meta::pack_mtp_attn_meta;
 
 /// Byte offset inside the shared scratch arena where the batched propose
@@ -309,19 +308,31 @@ impl MtpHead {
             while state.block_table.len() < blocks_needed {
                 state.block_table.push(kv_cache.alloc_block()?);
             }
-            let meta_base = self.propose_meta.offset(i * PROPOSE_META_STRIDE);
+            // The stride is sized at construction from max_seq_len (floor 2048
+            // = 448 entries = 7,168 tokens, the 4K-era layout that made 10-20K
+            // agentic contexts fall back permanently — PROGRESS_LOG 5.2/6.17),
+            // so an overflow is only reachable under an
+            // ATLAS_PROPOSE_META_STRIDE override or a sequence past
+            // max_seq_len.
+            let meta_base = self.propose_meta.offset(i * self.propose_meta_stride);
             let block_idx = state.block_table[state.seq_len / bs];
             let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
             // This site's `ensure!(256 + bt_len <= PROPOSE_META_STRIDE)` was the
             // only one of the three MTP metadata packers that had a bound. It
             // now lives in `pack_mtp_attn_meta` so the other two have it too;
-            // the region here is one `propose_meta` stride.
+            // the region here is one `propose_meta` stride — the RUNTIME one,
+            // sized from max_seq_len, not the old compile-time constant. That
+            // is the whole point of the stride fix: a const bound would refuse
+            // exactly the long-context sequences the larger stride exists to
+            // serve. `pack_mtp_attn_meta` raises "exceeds meta stride", which
+            // `mtp_bootstrap_step.rs` matches to demote this to debug — keep
+            // those two strings in sync.
             let meta_buf = pack_mtp_attn_meta(
                 positions[i] as u32,
                 global_slot,
                 (state.seq_len + 1) as i32,
                 &state.block_table,
-                PROPOSE_META_STRIDE,
+                self.propose_meta_stride,
             )?;
             gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
 

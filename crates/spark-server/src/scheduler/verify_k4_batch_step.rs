@@ -301,8 +301,10 @@ pub(super) fn step_verify_k4_batched(
                     // — but a SECOND (fallback) propose on top would append
                     // more rows than the next trim accounts for. Skip
                     // proposing this group this step; the affected sequences
-                    // decode serially next step.
-                    tracing::error!("run_mtp_propose_batched: {e:#}");
+                    // decode serially next step. Meta-stride overflow logs at
+                    // debug, everything else at ERROR (see
+                    // `log_propose_batched_err` in mtp_bootstrap_step.rs).
+                    log_propose_batched_err("run_mtp_propose_batched", &e);
                 }
             }
         }

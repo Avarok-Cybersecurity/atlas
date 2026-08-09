@@ -249,6 +249,15 @@ impl MtpHead {
         let mtp_num_blocks = per_seq_blocks
             .saturating_mul(crate::speculative::mtp_max_seqs())
             .min(main_kv_blocks.max(per_seq_blocks));
+        // Per-sequence `propose_meta` stride, from the SAME block size the
+        // drafter pool uses (so the two cannot drift). The old fixed 2048
+        // capped the block table at 448 entries = 7,168 tokens — sized in
+        // the 4K era; agentic contexts of 10-20K tripped the stride ensure!
+        // every step and made the batched propose permanently fall back to
+        // per-sequence mode (PROGRESS_LOG 5.2/6.17). Floor 2048; override
+        // ATLAS_PROPOSE_META_STRIDE=<bytes>.
+        let propose_meta_stride =
+            super::batch_caps::propose_meta_stride_env(max_seq_len, kv_config.block_size);
         let kv_cache = PagedKvCache::new(kv_config, mtp_num_blocks, gpu)?;
 
         // Extra kernel handles for BF16/FP8 paths
@@ -425,11 +434,12 @@ impl MtpHead {
             argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             argmax_batch_lp_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch_lp"),
             // Drafter attention metadata for the batched propose — a
-            // dedicated 64 KB allocation, never an offset into the shared
-            // scratch arena (see the `propose_meta` field docs).
-            propose_meta: gpu.alloc(
-                super::batch_caps::PROPOSE_META_SEQS * super::batch_caps::PROPOSE_META_STRIDE,
-            )?,
+            // dedicated allocation (32 x stride; 64 KB at the 2048 floor),
+            // never an offset into the shared scratch arena (see the
+            // `propose_meta` field docs). Sized from the dynamic stride so
+            // long-context configs keep the batched propose.
+            propose_meta: gpu.alloc(super::batch_caps::PROPOSE_META_SEQS * propose_meta_stride)?,
+            propose_meta_stride,
             prefill_scratch,
         })
     }

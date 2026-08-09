@@ -41,6 +41,39 @@ pub(super) fn bootstrap_batch_disabled() -> bool {
     *CACHED.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BATCH_BOOTSTRAP").is_some())
 }
 
+/// Log a `run_mtp_propose_batched` failure at the right level. Shared by the
+/// only two callers (this file and `verify_k4_batch_step.rs`).
+///
+/// The Err arm carries BOTH real failures — drafter-pool "KV cache exhausted"
+/// (the capacity signal the mtp_head pool sizing relied on seeing), CUDA
+/// launch/copy errors, "can_propose_batch lied" bugs — which MUST stay at
+/// ERROR, and the deterministic meta-stride overflow: a sequence whose
+/// drafter block table outgrew its `propose_meta` slab. The old fixed 2048
+/// stride = 448 entries = 7,168 tokens was sized in the 4K era; agentic
+/// contexts of 10-20K re-fired it for every group on every step — permanent
+/// ERROR spam for a permanent, known degradation (PROGRESS_LOG 5.2/6.17).
+/// The stride is now computed from `max_seq_len`, so the overflow only
+/// remains reachable under an `ATLAS_PROPOSE_META_STRIDE` override or a
+/// sequence past `max_seq_len`; it logs at DEBUG per occurrence (silent at
+/// the production INFO level, still diagnosable at RUST_LOG=debug — a
+/// once-per-process gate would hide that the degradation is permanent).
+///
+/// Discrimination is a string match on the single producing `ensure!`
+/// ("exceeds meta stride", spark-model mtp_head/forward_batch.rs) rather than
+/// a typed error: a pub error type would couple the scheduler to mtp_head
+/// internals across crates for one message, and the match follows the
+/// existing `{e:#}`-contains precedent (decode_step.rs "KV cache exhausted",
+/// phase_start_prefills.rs "pool exhausted"). Matching the alternate `{e:#}`
+/// form keeps it robust to `.context()` additions upstream.
+pub(super) fn log_propose_batched_err(prefix: &str, e: &anyhow::Error) {
+    let msg = format!("{e:#}");
+    if msg.contains("exceeds meta stride") {
+        tracing::debug!("{prefix}: {msg}");
+    } else {
+        tracing::error!("{prefix}: {msg}");
+    }
+}
+
 /// One batched argmax readback instead of n serialized single-CTA scans:
 /// **ON** by default, disabled by PRESENCE of `ATLAS_NO_MTP_BOOT_ARGMAX`
 /// (house convention — `=0` is NOT off). Read once per process.
@@ -332,8 +365,10 @@ pub(super) fn step_mtp_bootstrap_batched(
                         // Mid-chain failure: `last_num_drafted` tracks exactly
                         // the drafter rows written, so a SECOND propose on top
                         // would append rows the next trim cannot account for.
-                        // Skip these sequences this step.
-                        tracing::error!("batched bootstrap run_mtp_propose_batched: {e:#}");
+                        // Skip these sequences this step. Meta-stride
+                        // overflow logs at debug, everything else at ERROR
+                        // (see `log_propose_batched_err`).
+                        log_propose_batched_err("batched bootstrap run_mtp_propose_batched", &e);
                         for &s in group {
                             done[s] = true;
                         }

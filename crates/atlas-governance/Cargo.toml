@@ -1,0 +1,28 @@
+[package]
+name = "atlas-governance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The PR journey ledger: an append-only record of how a change reached main."
+
+# Host-only and CUDA-free, like atlas-plugin and atlas-tier. Nothing here
+# touches a GPU, so it builds and tests under `ATLAS_SKIP_BUILD=1` in CI with
+# no stubs.
+
+[dependencies]
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# The graph/vector engine the materialised view is built in. Pinned to a rev
+# rather than a version: `interchange` — the logical JSONL dump this crate's
+# canonical format rests on — lands in v0.3.3, and nothing is published to
+# crates.io carrying it yet.
+#
+# ★ `package` is not optional here. The crate publishes as `latticedb-core`
+# (plain `lattice-core` is taken on crates.io by an unrelated project) while
+# its lib target is still `lattice_core`, so `use lattice_core::…` is
+# unchanged. Without this key cargo looks for a package named `lattice-core`
+# inside the repo, finds nothing, and fails to resolve.
+lattice-core = { git = "https://github.com/Avarok-Cybersecurity/lattice-db", rev = "e722d71", package = "latticedb-core" }
+

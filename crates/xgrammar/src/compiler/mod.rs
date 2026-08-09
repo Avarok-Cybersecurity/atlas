@@ -43,8 +43,8 @@
 // SIMPLIFICATIONS vs C++
 // ----------------------
 //  * The grammar-level cache is a `dashmap` keyed by the request
-//    parameters; it has no LRU byte-budget eviction (the C++
-//    `ThreadSafeLRUCache`). `cache_limit_bytes` is recorded and
+//    parameters, LRU-bounded by `cache_limit_bytes` (the C++
+//    `ThreadSafeLRUCache` equivalent, added after issue #368: it was
 //    reported but not enforced — entries are kept until `clear_cache`.
 //  * `compile_structural_tag` delegates the tag-JSON -> `GrammarData`
 //    conversion to the W5 `src/structural_tag/` module.
@@ -65,6 +65,7 @@ mod compile;
 mod compiled_grammar;
 mod compiler;
 mod decompose;
+mod grammar_cache;
 mod mask;
 mod mask_gen;
 mod rule_cache;
