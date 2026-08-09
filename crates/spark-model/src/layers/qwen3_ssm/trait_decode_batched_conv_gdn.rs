@@ -310,14 +310,16 @@ impl Qwen3SsmLayer {
             stream,
         } = *args;
 
-        // ── Issue #435 route (a), DEFAULT: the sequential-decode-exact chain
-        // (bitwise-equal to spec-off decode). All K widths. The WY / fused
-        // BF16-conv arms below survive behind `--verify-wy` for A/B; they are
-        // also the fallback under `--ssm-h-dtype f16`, whose FP16 pool the
-        // exact arm's FP32 kernels must never read (verify_exact_enabled()
-        // is false when h_f16 is set). Phase 8 in decode_batched_inner reads
-        // the SAME predicate to skip its norm — the exact arm writes the
-        // final normed rows itself.
+        // ── Issue #435 route (a), OPT-IN via `--exact-verify`: the
+        // sequential-decode-exact chain (bitwise-equal to spec-off decode).
+        // All K widths. The WY / fused BF16-conv arms below are the DEFAULT —
+        // fast, but NOT bitwise-equal to spec-off (#435's divergence remains
+        // unless the flag is given; measured decode-step cost of exact is
+        // ~+22-36% at the n=8/16/32 rungs). They are also mandatory under
+        // `--ssm-h-dtype f16`, whose FP16 pool the exact arm's FP32 kernels
+        // must never read (verify_exact_enabled() is false when h_f16 is
+        // set). Phase 8 in decode_batched_inner reads the SAME predicate to
+        // skip its norm — the exact arm writes the final normed rows itself.
         if super::verify_exact_enabled() {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }

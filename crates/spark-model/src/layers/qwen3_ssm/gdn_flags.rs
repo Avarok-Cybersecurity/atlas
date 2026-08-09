@@ -38,26 +38,30 @@ pub struct GdnFlags {
     pub fused_norm: bool,
     /// `--ssm-batched-recurrent`: one strided recurrent launch per batch.
     pub batched_recurrent: bool,
-    /// `--verify-wy`: restore the WY-chunkwise / fused BF16-conv MTP-verify
-    /// arms (the pre-#435 behaviour) for A/B. Default OFF: the verify pass
-    /// runs the EXACT per-token chain that is bitwise-equal to sequential
-    /// decode, because spec-on output equality at temp 0 is a correctness
-    /// property, not a tunable (issue #435, PR1).
-    pub verify_wy: bool,
+    /// `--exact-verify`: run the sequential-decode-EXACT per-token MTP-verify
+    /// chain (issue #435 route (a)) instead of the default WY-chunkwise /
+    /// fused BF16-conv arms. OPT-IN, default OFF: by default #435's
+    /// divergence REMAINS — spec-on output is NOT bitwise-equal to spec-off
+    /// at temp 0. The measured decode-step cost of exact (~+22-36% at the
+    /// n=8/16/32 verify rungs) is why; see the flag's help in `serve_args.rs`.
+    pub exact_verify: bool,
 }
 
 impl GdnFlags {
     /// Whether the MTP-verify pass must run the sequential-decode-exact
-    /// conv+GDN chain (issue #435 route (a)).
+    /// conv+GDN chain (issue #435 route (a)). Default FALSE: exact verify is
+    /// opt-in via `--exact-verify`, so with default settings spec-on output
+    /// is NOT bitwise-equal to spec-off (the #435 divergence ships).
     ///
     /// Pure so it is testable without touching the process-global flags cell.
-    /// `verify_wy` opts back into the WY arms; `h_f16` also disables exact
-    /// mode, because an FP16 h-state is a whole-chain numerics change that is
-    /// not bit-comparable to the FP32 reference in the first place, and the
-    /// exact arm's kernels are FP32 readers (reading the FP16 pool through
-    /// them would be silent garbage, not an error).
+    /// `h_f16` forces non-exact even when requested, because an FP16 h-state
+    /// is a whole-chain numerics change that is not bit-comparable to the
+    /// FP32 reference in the first place, and the exact arm's kernels are
+    /// FP32 readers (reading the FP16 pool through them would be silent
+    /// garbage, not an error). CLI validation additionally REJECTS the
+    /// explicit pair, so this clause is defense in depth, not the interface.
     pub fn verify_exact_active(self) -> bool {
-        !self.verify_wy && !self.h_f16
+        self.exact_verify && !self.h_f16
     }
     /// The legacy environment reading, used when the CLI never set anything.
     ///
@@ -71,8 +75,9 @@ impl GdnFlags {
             fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
             batched_recurrent: std::env::var("ATLAS_SSM_BATCHED_RECURRENT").as_deref() == Ok("1"),
             // No legacy environment variable on purpose (house rule: CLI flags
-            // or defaults, no new env knobs). Default = exact verify.
-            verify_wy: false,
+            // or defaults, no new env knobs). Default = the legacy WY arms;
+            // exact verify is CLI-opt-in only (`--exact-verify`).
+            exact_verify: false,
         }
     }
 }
@@ -107,8 +112,10 @@ pub fn ssm_batched_recurrent_enabled() -> bool {
     flags().batched_recurrent
 }
 
-/// `--verify-wy` NOT given (and h-state is FP32): the MTP-verify pass runs
-/// the sequential-decode-exact chain. See [`GdnFlags::verify_exact_active`].
+/// `--exact-verify` given (and h-state is FP32): the MTP-verify pass runs
+/// the sequential-decode-exact chain. FALSE by default — without the flag the
+/// verify pass runs the WY/chunkwise arms and #435's spec-on/spec-off output
+/// divergence remains. See [`GdnFlags::verify_exact_active`].
 pub fn verify_exact_enabled() -> bool {
     flags().verify_exact_active()
 }
@@ -121,17 +128,23 @@ mod tests {
         h_f16: false,
         fused_norm: false,
         batched_recurrent: false,
-        verify_wy: false,
+        exact_verify: false,
     };
 
-    /// POSITIVE: the default flag set (no `--verify-wy`, FP32 h-state) runs
-    /// the exact verify chain — the #435 fix must be ON by default.
+    /// POSITIVE (the default): with no flags the verify pass runs the legacy
+    /// WY/chunkwise arms, NOT the exact chain. Exact verify became OPT-IN
+    /// (every surveyed production engine ships exactness opt-in; its measured
+    /// decode-step cost here is ~+22-36%), so the #435 divergence is the
+    /// documented default behaviour — this test pins that polarity.
     #[test]
-    fn verify_exact_is_the_default() {
-        assert!(BASE.verify_exact_active(), "default must be exact verify");
-        // Orthogonal flags do not disturb the decision.
+    fn legacy_wy_verify_is_the_default() {
         assert!(
-            GdnFlags {
+            !BASE.verify_exact_active(),
+            "default must be the legacy WY arms — exact verify is opt-in"
+        );
+        // Orthogonal flags do not sneak exact mode on.
+        assert!(
+            !GdnFlags {
                 fused_norm: true,
                 batched_recurrent: true,
                 ..BASE
@@ -140,20 +153,47 @@ mod tests {
         );
     }
 
-    /// NEGATIVE: each opt-out disables exact mode on its own — `--verify-wy`
-    /// (the A/B kill switch) and `--ssm-h-dtype f16` (whose FP16 pool the
-    /// exact arm's FP32 kernels must never read).
+    /// POSITIVE (the opt-in): `--exact-verify` selects the exact chain, alone
+    /// and beside the orthogonal GDN flags.
     #[test]
-    fn verify_wy_and_h_f16_each_disable_exact() {
+    fn exact_verify_flag_selects_the_exact_chain() {
         assert!(
-            !GdnFlags {
-                verify_wy: true,
+            GdnFlags {
+                exact_verify: true,
                 ..BASE
             }
             .verify_exact_active()
         );
         assert!(
+            GdnFlags {
+                exact_verify: true,
+                fused_norm: true,
+                batched_recurrent: true,
+                ..BASE
+            }
+            .verify_exact_active()
+        );
+    }
+
+    /// The environment fallback can NEVER turn exact verify on: there is no
+    /// `ATLAS_*` variable for it on purpose (house rule: no new env knobs),
+    /// so a serve that skips `set_from_cli` still defaults to the WY arms.
+    /// Deterministic despite reading the process environment, because only
+    /// the `exact_verify` field is asserted and no variable feeds it.
+    #[test]
+    fn env_fallback_never_enables_exact_verify() {
+        assert!(!GdnFlags::from_env().exact_verify);
+    }
+
+    /// NEGATIVE: an FP16 h-state forces non-exact EVEN WHEN exact was
+    /// requested — the exact arm's FP32 kernels must never read the FP16
+    /// pool. (CLI validation rejects the explicit pair; this is the
+    /// defense-in-depth layer beneath it.)
+    #[test]
+    fn h_f16_forces_non_exact_even_when_requested() {
+        assert!(
             !GdnFlags {
+                exact_verify: true,
                 h_f16: true,
                 ..BASE
             }
@@ -161,7 +201,6 @@ mod tests {
         );
         assert!(
             !GdnFlags {
-                verify_wy: true,
                 h_f16: true,
                 ..BASE
             }

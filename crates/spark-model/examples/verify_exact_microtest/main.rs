@@ -13,8 +13,9 @@
 //! 3. STRIDED (batch=n): per token, one `causal_conv1d_update_l2norm_f32_strided`
 //!    + one `gated_delta_rule_decode_f32_strided_norm_snap` over n sequences —
 //!    each sequence byte-identical to its own golden run.
-//! 4. NEGATIVE CONTROL (the pre-#435 verify, i.e. what `--verify-wy`
-//!    restores): BF16 conv (`causal_conv1d_update_l2norm`) + `gated_delta_rule_wy4`
+//! 4. NEGATIVE CONTROL (the pre-#435 verify — the DEFAULT WY arms; the exact
+//!    chain under test here is the `--exact-verify` OPT-IN):
+//!    BF16 conv (`causal_conv1d_update_l2norm`) + `gated_delta_rule_wy4`
 //!    — the final H MUST DIFFER from golden (measured ~8.6e-4 relL2 on these
 //!    shapes). If it matches, this gate is not exercising the defect and the
 //!    positive legs prove nothing.
@@ -455,7 +456,8 @@ fn main() -> Result<()> {
             all_ok &= ok;
         }
 
-        // NEGATIVE: legacy BF16-conv + wy4 (the --verify-wy path) must differ.
+        // NEGATIVE: legacy BF16-conv + wy4 (the DEFAULT verify path — exact
+        // is the --exact-verify opt-in) must differ.
         let h_legacy = run_legacy_wy4(g, &ks, &inps[0])?;
         let differs = h_legacy != gold.h_after[K - 1];
         println!(

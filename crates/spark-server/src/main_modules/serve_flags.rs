@@ -43,13 +43,13 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     let gdn_from_cli = args.ssm_h_dtype.is_some()
         || args.gdn_fused_norm.is_some()
         || args.ssm_batched_recurrent.is_some()
-        || args.verify_wy.is_some();
+        || args.exact_verify.is_some();
     if gdn_from_cli {
         let flags = spark_model::layers::qwen3_ssm::GdnFlags {
             h_f16: args.ssm_h_dtype.as_deref() == Some("f16"),
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
             batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
-            verify_wy: args.verify_wy.unwrap_or(false),
+            exact_verify: args.exact_verify.unwrap_or(false),
         };
         let in_force = spark_model::layers::qwen3_ssm::gdn_flags::set_from_cli(flags);
         if in_force != flags {
@@ -74,11 +74,13 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
-         verify_wy={} ssm_tail_midchunk={} mtp_gate={}",
+         exact_verify={} ssm_tail_midchunk={} mtp_gate={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
-        gdn.verify_wy,
+        // The RESOLVED decision (h_f16 forces this off), matching the
+        // "echo what is in force" rule the surrounding fields follow.
+        gdn.verify_exact_active(),
         spark_runtime::ssm_tail_midchunk_enabled(),
         if crate::scheduler::levers::mtp_gate_force() {
             "force"

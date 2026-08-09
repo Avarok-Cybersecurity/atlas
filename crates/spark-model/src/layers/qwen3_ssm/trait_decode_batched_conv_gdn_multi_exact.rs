@@ -149,9 +149,10 @@ impl Qwen3SsmLayer {
         static LOGGED: std::sync::Once = std::sync::Once::new();
         LOGGED.call_once(|| {
             tracing::info!(
-                "EXACT batched MTP verify ENGAGED (#435): per-token strided \
-                 conv_f32 + strided fused-norm snap at batch=n (2 launches + n \
-                 conv d2d per position); --verify-wy restores the WY arms"
+                "EXACT batched MTP verify ENGAGED (#435, opt-in --exact-verify): \
+                 per-token strided conv_f32 + strided fused-norm snap at batch=n \
+                 (2 launches + n conv d2d per position); omit the flag for the \
+                 default WY arms"
             );
         });
 
