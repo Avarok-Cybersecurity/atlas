@@ -203,6 +203,14 @@ impl AgenticWebserver {
         if transcript.hit_turn_cap {
             note = format!("turn cap ({}) reached; {note}", self.max_turns);
         }
+        // ★ NAME the unevidenced directives. `directions.met()` renders "5/6"
+        // and nothing recorded WHICH one — so a 9/10 was undiagnosable once the
+        // next run truncated the trajectory. The names were in `steps` the
+        // whole time; only the count was ever surfaced.
+        let missing = directions.missing();
+        if !missing.is_empty() {
+            note = format!("missing: {}; {note}", missing.join(", "));
+        }
         Ok(IterationRow {
             index,
             wall_s,
@@ -297,6 +305,29 @@ impl AgenticWebserver {
             self.rows.iter().filter(|r| r.directions.overall()).count() as f64,
         );
         m.insert("sum_wall_s".to_string(), self.total_wall());
+
+        // ★ Per-directive tallies, so the RECORD can answer "which one failed"
+        // without the trajectory — which the next run of the same index
+        // truncates. `followed_directions` above is all-or-nothing per
+        // iteration; these say how many iterations evidenced each step.
+        //
+        // Gate bounds are opt-in per metric (`BENCH.toml`), so adding keys
+        // cannot tighten or loosen anything on its own: an unbounded metric is
+        // recorded and reported, never compared. That is what makes it safe to
+        // record more than is gated.
+        for (name, _) in self
+            .rows
+            .first()
+            .map(|r| r.directions.steps.clone())
+            .unwrap_or_default()
+        {
+            let met = self
+                .rows
+                .iter()
+                .filter(|r| r.directions.steps.iter().any(|(n, ok)| *n == name && *ok))
+                .count();
+            m.insert(format!("step:{name}"), met as f64);
+        }
         m
     }
 

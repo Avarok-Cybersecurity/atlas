@@ -72,3 +72,34 @@ fn a_failing_verdict_lists_every_reason_not_just_the_first() {
     assert!(reason.contains("webserver_ok") && reason.contains("followed_directions"));
     assert!(reason.contains("Σwall"), "{reason}");
 }
+
+/// ★ A gate that cannot say WHICH directive failed cannot be fixed. The names
+/// lived in `Directions::steps` all along; only the count was ever surfaced,
+/// and the 2026-08-09 investigation into an intermittent 9/10 had to be
+/// reconstructed from a leftover file in /tmp four hours later.
+#[test]
+fn a_failed_iteration_names_the_directives_it_missed() {
+    let d = super::score::Directions {
+        steps: vec![
+            ("built", true),
+            ("ran", true),
+            ("pinged", false),
+            ("tore_down", false),
+        ],
+    };
+    assert_eq!(d.met(), 2);
+    assert!(!d.overall());
+    assert_eq!(
+        d.missing(),
+        vec!["pinged", "tore_down"],
+        "missing() must name them, in declaration order"
+    );
+
+    // A fully-evidenced iteration owes no names — an empty list here is what
+    // keeps the note clean on the passing path.
+    let ok = super::score::Directions {
+        steps: vec![("built", true), ("ran", true)],
+    };
+    assert!(ok.missing().is_empty());
+    assert!(ok.overall());
+}

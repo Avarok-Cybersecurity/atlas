@@ -46,6 +46,21 @@ impl Directions {
     pub fn overall(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|(_, ok)| *ok)
     }
+    /// The steps that were NOT evidenced, in declaration order.
+    ///
+    /// ★ Without this a failure is undiagnosable. The run record stored only
+    /// the COUNT (`"5/6"`) while `steps` carried the names all along, and the
+    /// per-iteration trajectory is truncated by the next run of the same index
+    /// — so the 2026-08-09 investigation into an intermittent 9/10 had to be
+    /// reconstructed from a leftover `/tmp/agent_server.log` four hours later.
+    /// A gate that cannot say WHY it failed is a gate nobody can fix.
+    pub fn missing(&self) -> Vec<&'static str> {
+        self.steps
+            .iter()
+            .filter(|(_, ok)| !*ok)
+            .map(|(name, _)| *name)
+            .collect()
+    }
     pub fn met(&self) -> usize {
         self.steps.iter().filter(|(_, ok)| *ok).count()
     }
