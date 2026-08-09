@@ -211,6 +211,11 @@ mod coverage_map_tests;
 #[path = "coverage_tests.rs"]
 mod coverage_tests;
 
+/// Squash-merge coverage. Split from `coverage_tests.rs` for the 500-LoC cap.
+#[cfg(test)]
+#[path = "coverage_squash_tests.rs"]
+mod coverage_squash_tests;
+
 #[cfg(test)]
 #[path = "dirty_tests.rs"]
 mod dirty_tests;
