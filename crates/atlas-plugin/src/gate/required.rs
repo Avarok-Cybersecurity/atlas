@@ -116,3 +116,112 @@ pub fn parse_category(value: &str) -> Vec<String> {
 #[cfg(test)]
 #[path = "required_tests.rs"]
 mod required_tests;
+
+// ── Where the intent half came from ────────────────────────────────────────
+
+/// An abstention is not an empty answer, and the two must never render alike.
+///
+/// `required_for(changed, &[], roots)` and `required_for(changed, cats, &[])`
+/// both yield an empty intent half. One means "nobody classified this PR",
+/// which is honest; the other means "the taxonomy would not parse", which is a
+/// repo defect. Collapsing them is how a loud failure becomes "implies
+/// nothing" — the same collapse the jq walk made in CI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntentSource {
+    /// No `--pr` supplied — a local run or a push build. Not evaluated.
+    NotRequested,
+    /// The ledger holds no countable classification for this PR. This is the
+    /// steady state until the harvester runs, and it is not an error.
+    NotRecorded { ledger: std::path::PathBuf },
+    /// The ledger or the taxonomy could not be read. NEVER silently mapped to
+    /// an empty set.
+    Degraded { reason: String },
+    Recorded {
+        /// Every descended path recorded for this PR, deduplicated.
+        categories: Vec<Vec<String>>,
+        /// `error`/`abstain` rows. Counted, never treated as intent: an
+        /// endpoint outage must not read as a confident classification, and
+        /// the day the fallback root gains `_benches` it would otherwise
+        /// manufacture GPU spend out of a 429.
+        skipped: usize,
+    },
+}
+
+/// Both halves plus the provenance of the second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequiredReport {
+    pub set: RequiredSet,
+    pub source: IntentSource,
+}
+
+/// Read the classifications recorded for `pr`.
+///
+/// ★ **Every Category row in the file counts, with NO `head_sha` filter.** The
+/// module docs above say "recorded for this head sha"; as an implementation
+/// instruction that is wrong and would zero the intent half forever. The line
+/// recording head X is written by CI and committed as a LATER commit, so it
+/// cannot be present in the tree AT head X — exactly the argument `check.rs`
+/// makes for why a gate record can never be written at its own commit. A
+/// head-filtered read returns the empty set every time, and would look like a
+/// working feature that simply never fires.
+///
+/// Unioning across a PR's older heads is safe by the same monotonicity that
+/// makes unioning across re-runs safe: it can only add.
+pub fn intent_source(root: &std::path::Path, pr: Option<u64>) -> IntentSource {
+    let Some(pr) = pr else {
+        return IntentSource::NotRequested;
+    };
+    let ledger = atlas_governance::ledger::path_for(root, pr);
+    if !ledger.exists() {
+        return IntentSource::NotRecorded { ledger };
+    }
+    let journey = match atlas_governance::ledger::read_all(&ledger) {
+        Ok(j) => j.deduplicated(),
+        // `read_all` hard-errors on a malformed line, which is right for an
+        // auditor. For an advisory consumer, one corrupt byte must not fail the
+        // job — but it must not read as "no intent" either.
+        Err(e) => {
+            return IntentSource::Degraded {
+                reason: format!("{}: {e:#}", ledger.display()),
+            };
+        }
+    };
+
+    let (mut categories, mut skipped) = (Vec::new(), 0usize);
+    for event in &journey.events {
+        let atlas_governance::event::EventKind::Category { value, status } = &event.kind else {
+            continue;
+        };
+        // `ok` and `partial` are opinions; `partial`'s matched prefix carries
+        // real ancestor `_benches` by the union rule. `abstain`/`error` are not.
+        if status != "ok" && status != "partial" {
+            skipped += 1;
+            continue;
+        }
+        let segments = parse_category(value);
+        if !segments.is_empty() && !categories.contains(&segments) {
+            categories.push(segments);
+        }
+    }
+    if categories.is_empty() {
+        return IntentSource::NotRecorded { ledger };
+    }
+    IntentSource::Recorded {
+        categories,
+        skipped,
+    }
+}
+
+/// Assemble the report. Pure: all I/O happened in [`intent_source`] and the
+/// caller's taxonomy load, so every branch here is testable without a
+/// filesystem.
+pub fn report(changed: &[String], source: IntentSource, roots: &[Node]) -> RequiredReport {
+    let categories: &[Vec<String>] = match &source {
+        IntentSource::Recorded { categories, .. } => categories,
+        _ => &[],
+    };
+    RequiredReport {
+        set: required_for(changed, categories, roots),
+        source,
+    }
+}

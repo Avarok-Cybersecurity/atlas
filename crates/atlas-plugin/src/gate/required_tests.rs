@@ -280,3 +280,145 @@ fn a_truncated_path_would_lose_benches() {
         "an empty segment must actually cost benches, or this guard is theatre"
     );
 }
+
+// ── IntentSource: an abstention is not an empty answer ──────────────────────
+
+fn ledger_dir() -> super::super::tests::tempdir::Dir {
+    super::super::tests::tempdir::Dir::new()
+}
+
+fn write_events(root: &std::path::Path, pr: u64, rows: &[(&str, &str, &str)]) {
+    let path = atlas_governance::ledger::path_for(root, pr);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for (i, (run, value, status)) in rows.iter().enumerate() {
+        let e = atlas_governance::event::Event {
+            pr,
+            head_sha: "deadbeef".into(),
+            run_id: (*run).into(),
+            attempt: 1,
+            at: 1_786_280_000 + i as u64,
+            kind: atlas_governance::event::EventKind::Category {
+                value: (*value).into(),
+                status: (*status).into(),
+            },
+        };
+        atlas_governance::ledger::append(&path, &e).unwrap();
+    }
+}
+
+#[test]
+fn no_pr_is_not_requested_and_no_pr_is_not_a_missing_ledger() {
+    let d = ledger_dir();
+    assert_eq!(intent_source(d.path(), None), IntentSource::NotRequested);
+    assert!(matches!(
+        intent_source(d.path(), Some(7)),
+        IntentSource::NotRecorded { .. }
+    ));
+}
+
+/// ★ The one that would silently kill the feature. The ledger line for head X
+/// is committed as a LATER commit, so it can never be in the tree at head X.
+/// A read that filtered on `head_sha` would therefore return empty ALWAYS —
+/// a working-looking feature that never fires. This pins that every row counts.
+#[test]
+fn every_recorded_category_counts_regardless_of_head_sha() {
+    let d = ledger_dir();
+    write_events(
+        d.path(),
+        7,
+        &[
+            ("100", "performance/decode", "ok"),
+            ("101", "correctness/kv-cache", "ok"),
+        ],
+    );
+    let IntentSource::Recorded { categories, .. } = intent_source(d.path(), Some(7)) else {
+        panic!("expected Recorded");
+    };
+    assert_eq!(categories.len(), 2, "both rows must count: {categories:?}");
+}
+
+/// An outage is not a classification. The day the fallback root gains
+/// `_benches`, treating an `error` row as intent would turn a 429 into a GPU
+/// bill.
+#[test]
+fn error_and_abstain_rows_are_counted_but_never_treated_as_intent() {
+    let d = ledger_dir();
+    write_events(
+        d.path(),
+        7,
+        &[
+            ("100", "performance/decode", "ok"),
+            ("101", "unknown", "abstain"),
+            ("102", "unknown", "error"),
+            ("103", "performance", "partial"),
+        ],
+    );
+    let IntentSource::Recorded {
+        categories,
+        skipped,
+    } = intent_source(d.path(), Some(7))
+    else {
+        panic!("expected Recorded");
+    };
+    assert_eq!(skipped, 2, "abstain + error");
+    assert!(
+        categories.contains(&vec!["performance".to_string()]),
+        "a `partial` row is real intent — its matched prefix carries ancestor \
+         _benches by the union rule: {categories:?}"
+    );
+}
+
+/// A ledger holding only abstentions is NOT recorded — it must not read as a
+/// confident empty classification.
+#[test]
+fn a_ledger_of_only_abstentions_reads_as_not_recorded() {
+    let d = ledger_dir();
+    write_events(d.path(), 7, &[("100", "unknown", "error")]);
+    assert!(matches!(
+        intent_source(d.path(), Some(7)),
+        IntentSource::NotRecorded { .. }
+    ));
+}
+
+/// One corrupt byte must not fail an advisory consumer — and must not read as
+/// "no intent" either.
+#[test]
+fn a_malformed_ledger_line_degrades_and_is_distinguishable_from_empty() {
+    let d = ledger_dir();
+    let path = atlas_governance::ledger::path_for(d.path(), 7);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{\"pr\":7,\"head_sha\"\n").unwrap();
+    let got = intent_source(d.path(), Some(7));
+    assert!(
+        matches!(got, IntentSource::Degraded { .. }),
+        "got {got:?} — a corrupt ledger must be Degraded, never NotRecorded"
+    );
+}
+
+/// `report` must carry the provenance through, and a non-Recorded source must
+/// contribute nothing to the intent half.
+#[test]
+fn only_a_recorded_source_contributes_intent() {
+    let roots = real_taxonomy();
+    let changed = vec!["docker/gb10/Dockerfile".to_string()];
+    for source in [
+        IntentSource::NotRequested,
+        IntentSource::NotRecorded { ledger: "x".into() },
+        IntentSource::Degraded {
+            reason: "boom".into(),
+        },
+    ] {
+        let r = report(&changed, source.clone(), &roots);
+        assert!(r.set.by_intent.is_empty(), "{source:?} contributed intent");
+        assert_eq!(r.source, source, "provenance must survive");
+    }
+    let r = report(
+        &changed,
+        IntentSource::Recorded {
+            categories: vec![cat("performance/decode")],
+            skipped: 0,
+        },
+        &roots,
+    );
+    assert!(!r.set.by_intent.is_empty());
+}
