@@ -320,6 +320,23 @@ impl Qwen3SsmLayer {
         // must never read (verify_exact_enabled() is false when h_f16 is
         // set). Phase 8 in decode_batched_inner reads the SAME predicate to
         // skip its norm — the exact arm writes the final normed rows itself.
+        //
+        // OWED (default-divergence mitigation, investigated 2026-08-09, not
+        // implemented — needs GPU-validated kernel twins): the DOMINANT #435
+        // term (~8.6e-4 of the total; the chunkwise reordering term is only
+        // ~3.4e-8) is the BF16 conv-output STORE, not the WY algebra. The
+        // arms below consume `causal_conv1d_update_l2norm` /
+        // `gdn_verify_fused_conv_kn` whose only difference from the `_f32`
+        // twins sequential decode prefers (ssm_forward.rs:222) is
+        // `__float2bfloat16(silu)` at the store; that rounding of k/v is then
+        // committed into the FP32 H state by the WY update. Feeding these
+        // arms FP32 conv rows (the `_f32` conv kernels already exist) and
+        // adding FP32-input twins of the WY family (wy2/wy3/wy4 + resident +
+        // strided) would cut the default divergence ~4 orders of magnitude
+        // for ~1% extra traffic — the WY kernels are bandwidth-bound on H
+        // state (~16 MB/layer/step vs ~120 KB of extra conv-row bytes). It
+        // would NOT make spec-on bitwise-equal to spec-off; only
+        // `--exact-verify` does that.
         if super::verify_exact_enabled() {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
