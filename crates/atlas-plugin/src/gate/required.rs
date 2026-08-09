@@ -9,26 +9,37 @@
 //! bug already found inside `pr_taxonomy`: two implementations of one function,
 //! the Rust half failing in the removing direction.
 //!
-//! # ★ The union is very nearly a no-op today, and pretending otherwise helps
-//! nobody
+//! # ★ Where the union actually bites, corrected
 //!
-//! Two independent reasons, both currently true:
+//! An earlier version of this comment claimed the union was very nearly a
+//! no-op, for two reasons. The first stands: `pr_taxonomy::validate` rejects
+//! any `_benches` id outside [`super::coverage::REQUIRED`], so
+//! `intent ⊆ REQUIRED` for any tree.
 //!
-//! 1. `pr_taxonomy::validate` rejects any `_benches` id that is not in
-//!    [`super::coverage::REQUIRED`], so `intent ⊆ REQUIRED` for *any* tree.
-//! 2. [`super::coverage::PERF_PATHS`] contains a bare `"crates"`, so any code
-//!    change already invalidates all five gates.
+//! **The second was wrong.** It read: "`PERF_PATHS` contains a bare `crates`,
+//! so any code change already invalidates all five gates." It does not.
+//! `GATE_MACHINERY` excludes the whole `crates/atlas-plugin/src/gate` prefix
+//! from **every** gate, and each benchmark driver is excluded from the other
+//! gates — so plenty of `crates/` paths invalidate nothing at all and intent is
+//! their only source of coverage. The union is live inside `crates/` today; it
+//! is not waiting on the closure-hash work.
 //!
-//! So for a code PR the union adds nothing, and `benches_may_only_add` — the
-//! property the design rests on — is true and *vacuous*. It is insurance for a
-//! world that does not exist yet.
+//! It also cited `recipes/` as the live case. **This repo tracks no `recipes/`
+//! files** — they live in the separate `atlas-recipes` repo, and
+//! `invalidating_paths` diffs *this* one, so that path can never appear in a
+//! diff here. The reachable classes are `docker/`, `docs/`, `.github/`,
+//! `scripts/`, `bench/`, `kernels/**/BENCH.toml`, and the excluded `crates/`
+//! paths above. `intent_adds_where_the_paths_are_silent` and
+//! `crates_paths_split_into_fully_covered_and_not_covered_at_all` pin those.
 //!
-//! The one class where it bites today is real and measured: **`recipes/` and
-//! `docker/` invalidate nothing**. A recipe change that alters serve flags
-//! genuinely moves decode wall, `by_path` is empty, and `performance/decode`
-//! adds the legs that would otherwise never run. `the_live_case_is_recipes`
-//! pins exactly that, and `intent_is_redundant_for_a_crates_change` pins the
-//! vacuity so it cannot quietly stop being true.
+//! ★★ **The union is NOT the loop set.** [`super::check::check_gates`] iterates
+//! the five-element `REQUIRED_GATES` constant unconditionally, and
+//! `union() ⊊ REQUIRED_GATES` for most real PRs. Swapping the constant for the
+//! union would *reduce* coverage — an unclassified docs PR would go from five
+//! gates checked to none. The add-only property holds against `by_path`; it
+//! says nothing about the constant. Whatever consumes this must keep the
+//! constant as the loop set and use the union to ESCALATE — to widen what
+//! invalidates a standing record — never to select what gets checked.
 //!
 //! # Why a UNION over classifications, not the newest one
 //!
@@ -76,11 +87,7 @@ impl RequiredSet {
 /// `categories` is every descended path recorded for this head sha, not the
 /// newest — see the module docs. An empty slice is the honest representation of
 /// "not classified", and yields an empty intent half rather than a guess.
-pub fn required_for(
-    changed: &[String],
-    categories: &[Vec<String>],
-    roots: &[Node],
-) -> RequiredSet {
+pub fn required_for(changed: &[String], categories: &[Vec<String>], roots: &[Node]) -> RequiredSet {
     let by_path = super::coverage::invalidated_by(changed.iter().map(String::as_str))
         .into_iter()
         .map(str::to_string)

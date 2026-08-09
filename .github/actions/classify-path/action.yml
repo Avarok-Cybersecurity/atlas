@@ -178,6 +178,11 @@ runs:
         }
 
         # One level. Echoes the chosen key on success, nothing on abstain.
+        # The side channel `ask` reports its failure cause through. A plain
+        # variable cannot: `ask` runs inside `$( )`.
+        ASK_WHY_FILE="$(mktemp)"
+        why() { printf '%s' "$1" > "$ASK_WHY_FILE"; }
+
         ask() {  # $1 = JSON array of options, $2 = path so far (for context)
           local opts="$1" sofar="$2"
           local body resp code payload content candidate picked
@@ -202,33 +207,40 @@ runs:
             }')
           # WHY a level abstained is the difference between "the free tier is
           # rate-limited" and "the model cannot classify this PR" — and the
-          # first live run that abstained mid-descent reported neither. ASK_WHY
-          # carries the cause out to the caller.
+          # first live run that abstained mid-descent reported neither.
+          #
+          # ★ The cause travels through a FILE, not a variable. `ask` is only
+          # ever called as `picked=$(ask ...)`, and a command substitution is a
+          # SUBSHELL: every `ASK_WHY=` assignment in here died with it, so the
+          # caller always read the initializer. Live proof — PR #433's run
+          # logged `abstain (unknown) — could not classify the top level:
+          # unknown`, which is exactly the string this mechanism exists to
+          # replace. A variable cannot cross that boundary; a file can.
+          : > "$ASK_WHY_FILE"
           resp=$(curl -sS --max-time "$INPUT_TIMEOUT" -w '\n%{http_code}' \
             -X POST "$INPUT_ENDPOINT" \
             -H "Authorization: Bearer $INPUT_API_KEY" \
             -H "Content-Type: application/json" \
             -H "X-Title: github-actions-classify-path" \
-            --data-binary "$body" 2>/dev/null) || { ASK_WHY="request failed or timed out"; return 1; }
+            --data-binary "$body" 2>/dev/null) || { why "request failed or timed out"; return 1; }
           code=$(printf '%s' "$resp" | tail -n1)
           payload=$(printf '%s' "$resp" | sed '$d')
           # 429 (rate limited) and 404 (free model id retired) are the two that
           # actually happen, and they are not the model's opinion about the PR.
-          [ "$code" = "200" ] || { ASK_WHY="http $code"; return 1; }
+          [ "$code" = "200" ] || { why "http $code"; return 1; }
           content=$(printf '%s' "$payload" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
-          [ -n "$content" ] || { ASK_WHY="response had no message content"; return 1; }
+          [ -n "$content" ] || { why "response had no message content"; return 1; }
           candidate=$(printf '%s' "$content" | tr -d '\r' | grep -o '{[^{}]*}' | tail -n1)
           picked=$(printf '%s' "$candidate" | jq -r '.category // empty' 2>/dev/null)
-          [ -n "$picked" ] || { ASK_WHY="no {\"category\": ...} object in the reply"; return 1; }
+          [ -n "$picked" ] || { why "no {\"category\": ...} object in the reply"; return 1; }
           # ★ The allowlist check, applied at EVERY level. No model-authored
           # string ever becomes a path segment.
           echo "$opts" | jq -e --arg p "$picked" 'index($p) != null' >/dev/null 2>&1 \
-            || { ASK_WHY="model returned a category outside the allowed set"; return 1; }
+            || { why "model returned a category outside the allowed set"; return 1; }
           printf '%s' "$picked"
         }
 
         PATH_SO_FAR=""
-        ASK_WHY="unknown"
         DEPTH=0
         REASON="classified"
         STATUS=ok
@@ -277,6 +289,12 @@ runs:
             PATH_SO_FAR="${PATH_SO_FAR:+$PATH_SO_FAR/}$picked"
             DEPTH=$((DEPTH + 1))
           else
+            # Recover the cause from the side channel. Empty means `ask`
+            # returned non-zero without recording why, which is a bug in `ask`
+            # rather than a fact about the model — say so, do not print
+            # "unknown" and imply the model had no opinion.
+            ASK_WHY=$(cat "$ASK_WHY_FILE" 2>/dev/null)
+            [ -n "$ASK_WHY" ] || ASK_WHY="ask() failed without recording a cause"
             # A level could not be answered. Keep what we have: a partial path
             # names the question that WAS answered, which beats discarding it.
             if [ "$DEPTH" -eq 0 ]; then

@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The union's tests do two jobs. Most pin behaviour. Two pin *facts about the
-//! current system* that the design is waiting to stop being true —
-//! `intent_is_redundant_for_a_crates_change` and its recipes counterpart. When
-//! those fail, the union has become load-bearing, and that is progress.
+//! The union's tests do two jobs. Most pin behaviour.
+//! `crates_paths_split_into_fully_covered_and_not_covered_at_all` instead pins
+//! a *fact about the current system* — that ordinary engine code owes every
+//! gate while the gate's own machinery owes none. When its first half fails,
+//! `by_path` has narrowed and the union has become load-bearing, which is
+//! progress rather than a regression to undo.
+//!
+//! ★ Every changed path used here must be one THIS repo can actually produce.
+//! An earlier version pinned `recipes/…`, which lives in a different
+//! repository — a test over an unreachable input, proving nothing while reading
+//! as coverage.
 
 use super::*;
 
@@ -23,32 +30,72 @@ fn cat(s: &str) -> Vec<String> {
 
 // ── The live case ──────────────────────────────────────────────────────────
 
-/// ★ **The one place the union is not a no-op today.** `recipes/` is outside
-/// `PERF_PATHS`, so a recipe change invalidates nothing — yet a recipe sets the
-/// serve flags, and those provably move decode wall (the whole GB10 ladder is
-/// flags). Intent is the only thing that can ask for a leg here.
+/// ★ **The live cases, and they must be paths this repo can actually produce.**
+///
+/// This test previously used `recipes/gb10/…yaml` and an audit caught it:
+/// **this repo tracks zero `recipes/` files** — they live in the separate
+/// `atlas-recipes` repo (`ci.yml`), and `invalidating_paths` diffs *this* one.
+/// So the single case pinned as "the" live case was an input the gate can never
+/// observe. A test over an unreachable input proves nothing while reading as
+/// coverage, which is the same failure this whole module exists to prevent.
+///
+/// These are reachable, verified by `git ls-files`.
 #[test]
-fn the_live_case_is_recipes() {
+fn intent_adds_where_the_paths_are_silent() {
     let roots = real_taxonomy();
-    let changed = vec!["recipes/gb10/qwen3.6-27b.yaml".to_string()];
+    for changed in [
+        "docker/gb10/Dockerfile",
+        "scripts/mlperf-edge/kl_coherence_gate.py",
+        "bench/bench_isl_osl.py",
+        "kernels/gb10/qwen3.6-27b/BENCH.toml",
+    ] {
+        let got = required_for(&[changed.to_string()], &[cat("performance/decode")], &roots);
+        assert!(
+            got.by_path.is_empty(),
+            "{changed} was expected off the invalidation floor, got {:?}",
+            got.by_path
+        );
+        assert_eq!(
+            got.intent_only(),
+            ["agentic-webserver", "bfcl-subset", "ttft-warm-gate"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<BTreeSet<String>>(),
+            "{changed}: intent should supply all three, since paths supply none"
+        );
+    }
+}
 
-    let got = required_for(&changed, &[cat("performance/decode")], &roots);
-
+/// ★ **The mutation four rounds of mutation-testing missed.**
+///
+/// Replacing `union()`'s body with `self.by_path.clone()` — deleting the intent
+/// half from the only accessor a gate would ever consume — passed every other
+/// test in this file. `intent_adds_where_the_paths_are_silent` asserts
+/// `intent_only()`, and `intent_can_never_remove_a_path_derived_gate` asserts
+/// only `floor ⊆ union`, which `by_path.clone()` satisfies trivially.
+///
+/// Nothing asserted that the union is ever STRICTLY larger than `by_path`.
+#[test]
+fn union_actually_includes_the_intent_half() {
+    let roots = real_taxonomy();
+    let got = required_for(
+        &["docker/gb10/Dockerfile".to_string()],
+        &[cat("performance/decode")],
+        &roots,
+    );
     assert!(
-        got.by_path.is_empty(),
-        "recipes/ is outside PERF_PATHS; if this fails the floor grew and the \
-         live case moved — re-derive which paths are still uncovered: {:?}",
+        got.union().len() > got.by_path.len(),
+        "union() must be STRICTLY larger than by_path when intent adds; \
+         got union={:?} by_path={:?}",
+        got.union(),
         got.by_path
     );
-    assert_eq!(
-        got.intent_only(),
-        ["agentic-webserver", "bfcl-subset", "ttft-warm-gate"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        "performance (agentic) + performance/decode (bfcl + warm TTFT) should \
-         all be added by intent, since paths ask for nothing"
-    );
+    for bench in &got.by_intent {
+        assert!(
+            got.union().contains(bench),
+            "union() dropped the intent-derived {bench:?}"
+        );
+    }
 }
 
 /// The same change with no classification owes nothing — and that is correct,
@@ -63,33 +110,76 @@ fn an_unclassified_change_gets_no_invented_intent() {
 
 // ── The vacuity tripwires ──────────────────────────────────────────────────
 
-/// ★ **Pins that the union currently adds NOTHING to a code PR**, for the two
-/// independent reasons in the module docs: `_benches ⊆ REQUIRED`, and
-/// `PERF_PATHS` contains a bare `"crates"`.
+/// ★ **`crates/` does NOT uniformly owe every gate, and I claimed it did.**
 ///
-/// **If this test fails, that is very likely GOOD NEWS** — it means `by_path`
-/// narrowed (the closure-hash work landing) and intent can now genuinely add a
-/// leg. Do not "fix" it by widening paths again; re-read the union's docs,
-/// confirm the narrowing was intended, and update this test to describe the new
-/// world.
+/// The module docs originally argued the union was vacuous because
+/// "`PERF_PATHS` contains a bare `crates`, so any code change already
+/// invalidates all five gates". An audit refuted it: `GATE_MACHINERY` excludes
+/// the whole `crates/atlas-plugin/src/gate` prefix from **all five** gates, so
+/// paths under it invalidate nothing and intent is the only source of coverage
+/// there. The original test passed only because it happened to pick
+/// `spark-server/scheduler`, one of the paths where the claim does hold.
+///
+/// Both halves are pinned here so the distinction cannot quietly collapse
+/// again. If the first case ever stops owing all five, `by_path` narrowed —
+/// likely the closure-hash work landing, which is GOOD NEWS. Do not "fix" it by
+/// widening paths; confirm the narrowing was intended and update this test.
 #[test]
-fn intent_is_redundant_for_a_crates_change() {
+fn crates_paths_split_into_fully_covered_and_not_covered_at_all() {
     let roots = real_taxonomy();
-    let changed = vec!["crates/spark-server/src/scheduler/mod.rs".to_string()];
 
-    let got = required_for(&changed, &[cat("performance/scheduling")], &roots);
-
+    // Ordinary engine code: every gate, and intent adds nothing.
+    let engine = required_for(
+        &["crates/spark-server/src/scheduler/mod.rs".to_string()],
+        &[cat("performance/scheduling")],
+        &roots,
+    );
     assert_eq!(
-        got.by_path.len(),
+        engine.by_path.len(),
         super::super::coverage::REQUIRED.len(),
-        "a bare `crates` in PERF_PATHS means every code change owes every gate"
+        "an ordinary crates/ path should owe every gate"
     );
     assert!(
-        got.intent_only().is_empty(),
-        "the union is vacuous for code PRs today; intent added {:?} — if that \
-         is real, read this test's doc comment before changing it",
-        got.intent_only()
+        engine.intent_only().is_empty(),
+        "intent should be redundant here; it added {:?}",
+        engine.intent_only()
     );
+
+    // The gate's own machinery: excluded from all five by GATE_MACHINERY, so
+    // the union is LIVE inside crates/ — not waiting on the closure hash.
+    let machinery = required_for(
+        &["crates/atlas-plugin/src/gate/telemetry.rs".to_string()],
+        &[cat("performance/scheduling")],
+        &roots,
+    );
+    assert!(
+        machinery.by_path.is_empty(),
+        "GATE_MACHINERY excludes crates/atlas-plugin/src/gate from every gate; \
+         got {:?}",
+        machinery.by_path
+    );
+    assert!(
+        !machinery.intent_only().is_empty(),
+        "with no path-derived coverage, intent must be the thing that supplies it"
+    );
+}
+
+/// An empty taxonomy silently yields no intent. The natural wiring —
+/// `load(root).unwrap_or_default()` — would therefore convert a LOUD taxonomy
+/// parse failure (`load` hard-bails on a malformed `_benches`) into "this PR
+/// implies nothing", which is a removal wearing the costume of an answer.
+///
+/// This pins the hazard so the wiring is written to distinguish "not
+/// classified" from "could not read the taxonomy".
+#[test]
+fn an_empty_taxonomy_yields_no_intent_and_must_not_be_mistaken_for_an_answer() {
+    let got = required_for(
+        &["docker/gb10/Dockerfile".to_string()],
+        &[cat("performance/decode")],
+        &[],
+    );
+    assert!(got.by_intent.is_empty());
+    assert!(got.union().is_empty());
 }
 
 // ── The safety property, now over the real union ───────────────────────────
@@ -162,9 +252,18 @@ fn disagreeing_classifications_union_rather_than_last_wins() {
 /// the path — removing benches, from a stray slash.
 #[test]
 fn empty_segments_are_dropped_not_descended_into() {
-    assert_eq!(parse_category("performance//decode"), ["performance", "decode"]);
-    assert_eq!(parse_category("performance/decode/"), ["performance", "decode"]);
-    assert_eq!(parse_category(" performance / decode "), ["performance", "decode"]);
+    assert_eq!(
+        parse_category("performance//decode"),
+        ["performance", "decode"]
+    );
+    assert_eq!(
+        parse_category("performance/decode/"),
+        ["performance", "decode"]
+    );
+    assert_eq!(
+        parse_category(" performance / decode "),
+        ["performance", "decode"]
+    );
     assert!(parse_category("").is_empty());
     assert!(parse_category("///").is_empty());
 }
