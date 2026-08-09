@@ -227,6 +227,28 @@ jobs:
         run: |
           set -euo pipefail
           echo "categorize=$(jq -r '.models.categorize' .github/ai-models.json)" >> "$GITHUB_OUTPUT"
+      # ── The DESCENDING classifier ────────────────────────────────────
+      # Replaces a single flat label. `categorize` picked one of seven
+      # siblings; that is what called a CI-only commit `performance`. This
+      # walks `.github/pr-taxonomy.json` one level at a time, so every
+      # individual decision is 2-6 disjoint options and the allowlist check
+      # applies at each step.
+      #
+      # It also feeds DYNAMIC BENCHMARK SELECTION: the path's `_benches`,
+      # unioned along it, are benchmarks the intent implies. They may only ADD
+      # to what the paths already require — see `gate::pr_taxonomy`.
+      - uses: ./.github/actions/classify-path
+        id: path
+        with:
+          text: |
+            ${{ github.event.pull_request.title }}
+
+            Changed files:
+            ${{ steps.diff.outputs.count }} paths
+          taxonomy: .github/pr-taxonomy.json
+          model: ${{ steps.models.outputs.categorize }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          fallback: unknown
       - uses: ./.github/actions/categorize
         id: cat
         with:
@@ -257,6 +279,10 @@ jobs:
           STATUS: ${{ steps.cat.outputs.status }}
           REASON: ${{ steps.cat.outputs.reason }}
           CHANGED: ${{ steps.diff.outputs.count }}
+          TAXON_PATH: ${{ steps.path.outputs.path }}
+          TAXON_STATUS: ${{ steps.path.outputs.status }}
+          TAXON_DEPTH: ${{ steps.path.outputs.depth }}
+          TAXON_REASON: ${{ steps.path.outputs.reason }}
         run: |
           set -euo pipefail
           {
@@ -269,8 +295,30 @@ jobs:
             printf '| reason | %s |\n' "$REASON"
             printf '| changed paths | %s |\n' "$CHANGED"
             echo
-            echo "The required gate set is computed from the diff by"
-            echo '`gate::coverage`, in Rust, and is not affected by this.'
+            echo "### Taxonomy path (descending)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            printf '| path | `%s` |\n' "$TAXON_PATH"
+            printf '| depth | %s |\n' "$TAXON_DEPTH"
+            printf '| status | `%s` |\n' "$TAXON_STATUS"
+            printf '| reason | %s |\n' "$TAXON_REASON"
+            echo
+            # `_benches` unioned along the path — what the INTENT implies. The
+            # tool prints only ids from `.github/pr-taxonomy.json`, which
+            # `pr_taxonomy::validate` pins to registered benchmarks, so no
+            # model-authored string reaches this line.
+            IMPLIED=$(jq -r --arg p "$TAXON_PATH" '
+              [ ($p | split("/")) as $segs
+                | range(0; $segs|length) as $i
+                | getpath($segs[0:$i+1]) | ._benches // [] ]
+              | flatten | unique | join(", ")' .github/pr-taxonomy.json 2>/dev/null)
+            printf '| benchmarks this intent implies | %s |\n' "${IMPLIED:-(none)}"
+            echo
+            echo "**Advisory, and additive only.** The required set is computed"
+            echo "from the diff by \`gate::coverage\` in Rust. An intent path can"
+            echo "only ADD benchmarks to it, never remove one — so a"
+            echo "misclassification costs GPU minutes, never a missed regression."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Standalone and NON-BLOCKING by design: it reports whether the branch has
