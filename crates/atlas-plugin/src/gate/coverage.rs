@@ -189,6 +189,10 @@ const TTFT_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/agentic",
         "the agentic driver cannot change what a first-token latency probe measures",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change what a first-token latency probe measures",
+    ),
 ];
 
 const BFCL_EXCLUDES: &[Exclusion] = &[
@@ -201,6 +205,10 @@ const BFCL_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/agentic",
         "the agentic driver cannot change a tool-calling accuracy score",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change a tool-calling accuracy score",
+    ),
 ];
 
 const AGENTIC_EXCLUDES: &[Exclusion] = &[
@@ -212,6 +220,30 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/bfcl",
         "the BFCL driver cannot change whether the agent's webserver task succeeds",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change whether the agent's webserver task succeeds",
+    ),
+];
+
+/// What the cross-contamination candidate ignores: gate bookkeeping and the
+/// OTHER benchmark drivers, exactly as a required gate would. Its own driver
+/// directory is deliberately NOT here — a change to the detector re-opens the
+/// detector.
+const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change whether one request's state leaks into another's output",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change whether one request's state leaks into another's output",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change whether one request's state leaks into another's output",
     ),
 ];
 
@@ -261,14 +293,18 @@ pub const REQUIRED: [GateCoverage; 5] = [
 /// renders the result as an explicit debt row. No model is involved and none is
 /// needed: it is a deterministic join between paths and records.
 ///
-/// Empty today, deliberately. `memory-convergence` is the first intended entry
-/// (owner decision: NOT_REQUIRED, then promote once proven) and cannot be
-/// listed until the benchmark exists — a candidate naming an unregistered id
-/// would be a debt row nobody can ever discharge, which is worse than no row.
+/// The first entry is `cross-contamination` (owner pattern: NOT_REQUIRED,
+/// then promote once proven on release cuts). `memory-convergence` is the
+/// next intended entry and cannot be listed until the benchmark exists — a
+/// candidate naming an unregistered id would be a debt row nobody can ever
+/// discharge, which is worse than no row.
 /// `every_promotion_candidate_is_a_registered_benchmark` pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[];
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
+    id: "cross-contamination",
+    excludes: CONTAMINATION_EXCLUDES,
+}];
 
-pub const NOT_REQUIRED: [(&str, &str); 3] = [
+pub const NOT_REQUIRED: [(&str, &str); 4] = [
     (
         "bfcl-full",
         "the unsampled ~3600-sample draw; the two subset gates cover the same code at a \
@@ -281,6 +317,12 @@ pub const NOT_REQUIRED: [(&str, &str); 3] = [
     (
         "serve-matrix",
         "a multi-checkpoint survey used for release notes; it measures breadth, not regression",
+    ),
+    (
+        "cross-contamination",
+        "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
+         and recorded as debt until it has proven itself; a fresh gate that fails on day one \
+         would train people to override it",
     ),
 ];
 

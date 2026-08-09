@@ -62,16 +62,77 @@ fn a_candidate_accrues_debt_exactly_where_its_coverage_says() {
     assert!(!owed("site/index.html"), "site must not");
 }
 
-/// With no candidates registered, a merge owes nothing — and that must be
-/// because the list is empty, not because the join silently returns nothing.
+/// ★ The debt column is LIVE: `cross-contamination` is registered as a
+/// candidate, so a merge touching engine code owes it (positive) and a merge
+/// touching nothing on the boundary owes nothing (negative). This replaces the
+/// empty-list placeholder test, per that test's own instruction.
 #[test]
-fn an_empty_candidate_list_produces_no_debt_and_says_so() {
+fn the_contamination_candidate_accrues_debt_for_engine_changes() {
     assert!(
-        coverage::PROMOTION_CANDIDATES.is_empty(),
-        "once a candidate is registered, update this test — the debt column \
-         becomes live and the telemetry must be checked against a real entry"
+        coverage::PROMOTION_CANDIDATES
+            .iter()
+            .any(|g| g.id == "cross-contamination"),
+        "the cross-contamination candidate must be registered"
     );
-    assert!(coverage::promotion_debt(["crates/spark-server/src/scheduler/mod.rs"]).is_empty());
+    let owed = coverage::promotion_debt(["crates/spark-server/src/scheduler/mod.rs"]);
+    assert!(
+        owed.contains(&"cross-contamination"),
+        "a scheduler change is exactly the kind of edit that can cross-wire \
+         concurrent requests; it must accrue debt, got {owed:?}"
+    );
+    assert!(
+        coverage::promotion_debt(["docs/adr/README.md", "site/index.html"]).is_empty(),
+        "off-boundary paths must owe nothing"
+    );
+}
+
+/// A change to the candidate's OWN driver re-opens the candidate — its
+/// exclusion list must never contain its own directory, or improving the
+/// detector would silently excuse re-proving it.
+#[test]
+fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
+    let owed =
+        coverage::promotion_debt(["crates/atlas-plugin/src/benchmarks/contamination/driver.rs"]);
+    assert!(owed.contains(&"cross-contamination"), "{owed:?}");
+    assert!(
+        coverage::promotion_debt(["crates/atlas-plugin/src/benchmarks/ttft/descriptors.rs"])
+            .is_empty(),
+        "another benchmark's driver cannot change what this detector measures"
+    );
+}
+
+/// Candidate exclusions are held to the same bar as required-gate exclusions:
+/// a written rationale, a prefix that exists, and a prefix that is actually on
+/// the boundary (an off-boundary exclusion is a rule with no effect).
+#[test]
+fn candidate_exclusions_meet_the_required_gate_bar() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root is two levels above the crate")
+        .to_path_buf();
+    for gate in coverage::PROMOTION_CANDIDATES {
+        for ex in gate.excludes {
+            assert!(
+                ex.rationale.len() > 20,
+                "{} excludes {} with no real rationale",
+                gate.id,
+                ex.prefix
+            );
+            assert!(
+                root.join(ex.prefix).exists(),
+                "{} excludes {}, which does not exist",
+                gate.id,
+                ex.prefix
+            );
+            assert!(
+                coverage::on_boundary(ex.prefix),
+                "{} excludes {}, which is off the boundary — the rule does nothing",
+                gate.id,
+                ex.prefix
+            );
+        }
+    }
 }
 
 /// ★ The intent half's coverage policy lives OUTSIDE `PERF_PATHS`, so before it

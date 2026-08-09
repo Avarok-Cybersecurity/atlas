@@ -247,10 +247,16 @@ fn the_promotion_debt_section_is_always_rendered() {
         body.contains("### Promotion-candidate debt"),
         "the debt heading must appear unconditionally"
     );
-    // With the list empty today, it must SAY that rather than render a blank.
+    // The candidate list is live (`cross-contamination`), so the section must
+    // carry the debt table — and a scheduler change is on the candidate's
+    // boundary, so this PR must appear in it as a row.
     assert!(
-        body.contains("nothing can be owed"),
-        "an empty candidate list must be stated, not implied by absence"
+        body.contains("| PR | merged? |"),
+        "a non-empty candidate list must render the debt table"
+    );
+    assert!(
+        body.contains("cross-contamination"),
+        "the scheduler PR owes the contamination candidate and the row must say so"
     );
 }
 
@@ -283,14 +289,17 @@ fn debt_is_derived_from_the_prs_own_paths() {
         },
     ];
     let views = super::views(&root, &prs);
-    // Empty candidate list => both empty. When a candidate is registered this
-    // becomes a real discrimination and the assertion below must be updated.
-    assert!(views.iter().all(|v| v.promotion_debt.is_empty()));
-    assert_eq!(
-        super::coverage::PROMOTION_CANDIDATES.len(),
-        0,
-        "a candidate was registered — update this test to assert #2 owes it \
-         and #1 does not"
+    // The discrimination is real now that `cross-contamination` is a
+    // candidate: the docs PR owes nothing, the engine PR owes the candidate.
+    assert!(
+        views[0].promotion_debt.is_empty(),
+        "a docs-only PR must owe no candidate, got {:?}",
+        views[0].promotion_debt
+    );
+    assert!(
+        views[1].promotion_debt.contains(&"cross-contamination"),
+        "an engine PR must owe the contamination candidate, got {:?}",
+        views[1].promotion_debt
     );
 }
 
