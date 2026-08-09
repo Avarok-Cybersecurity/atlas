@@ -60,6 +60,40 @@ pub(super) mod scratch_repo {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// Create and switch to `name`.
+    pub fn branch(root: &Path, name: &str) {
+        git(root, &["checkout", "-q", "-b", name]);
+    }
+
+    /// Switch back to whatever branch `git init` created. NOT hardcoded to
+    /// `master`/`main`: `init.defaultBranch` is user config, so a hardcoded
+    /// name passes on one machine and fails on the next.
+    pub fn checkout_default(root: &Path, name: &str) {
+        git(root, &["checkout", "-q", name]);
+    }
+
+    /// The current branch name.
+    pub fn current_branch(root: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .expect("git runs");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Whether `a` is an ancestor of `b`. Used only to ASSERT that a fixture
+    /// reproduces the squash shape — the production check no longer asks.
+    pub fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["merge-base", "--is-ancestor", a, b])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
     pub fn commit(root: &Path, file: &str, contents: &str, message: &str) {
         let path = root.join(file);
         if let Some(parent) = path.parent() {
