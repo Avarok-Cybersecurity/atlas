@@ -57,17 +57,19 @@ impl Lcg {
 
 fn alloc_fill_bf16(g: &dyn GpuBackend, n: usize, r: &mut Lcg) -> Result<DevicePtr> {
     let b: Vec<u8> = (0..n)
-        .flat_map(|_| {
-            bf16::from_f64(r.f() * 2.0 - 1.0)
-                .to_bits()
-                .to_le_bytes()
-        })
+        .flat_map(|_| bf16::from_f64(r.f() * 2.0 - 1.0).to_bits().to_le_bytes())
         .collect();
     let p = g.alloc(b.len())?;
     g.copy_h2d(&b, p)?;
     Ok(p)
 }
-fn alloc_fill_f32(g: &dyn GpuBackend, n: usize, lo: f32, hi: f32, r: &mut Lcg) -> Result<DevicePtr> {
+fn alloc_fill_f32(
+    g: &dyn GpuBackend,
+    n: usize,
+    lo: f32,
+    hi: f32,
+    r: &mut Lcg,
+) -> Result<DevicePtr> {
     let b: Vec<u8> = (0..n)
         .flat_map(|_| (lo + (hi - lo) * r.f() as f32).to_le_bytes())
         .collect();
@@ -127,7 +129,12 @@ fn fused_arm(g: &dyn GpuBackend, kit: &Kit, b: &Bufs) -> Result<()> {
                 .arg_f32(1e-6)
                 .launch(0)?;
             if t + 1 < k {
-                g.copy_d2d_async(b.conv_state, b.conv_inter.offset(t * CONV_ST * 4), CONV_ST * 4, 0)?;
+                g.copy_d2d_async(
+                    b.conv_state,
+                    b.conv_inter.offset(t * CONV_ST * 4),
+                    CONV_ST * 4,
+                    0,
+                )?;
             }
         }
     } else {
@@ -146,12 +153,12 @@ fn fused_arm(g: &dyn GpuBackend, kit: &Kit, b: &Bufs) -> Result<()> {
             .arg_u32(KD as u32)
             .arg_u32(CONV_DIM as u32) // input stride (tokens)
             .arg_u32(CONV_DIM as u32) // output stride (tokens)
-            .arg_u32(CONV_ST as u32)  // inter stride (tokens)
+            .arg_u32(CONV_ST as u32) // inter stride (tokens)
             .arg_f32(1e-6)
-            .arg_u32(CONV_ST as u32)          // conv_state seq stride
-            .arg_u32((k * CONV_DIM) as u32)   // input seq stride
-            .arg_u32((k * CONV_DIM) as u32)   // output seq stride
-            .arg_u32((k * CONV_ST) as u32)    // inter seq stride
+            .arg_u32(CONV_ST as u32) // conv_state seq stride
+            .arg_u32((k * CONV_DIM) as u32) // input seq stride
+            .arg_u32((k * CONV_DIM) as u32) // output seq stride
+            .arg_u32((k * CONV_ST) as u32) // inter seq stride
             .launch(0)?;
     }
     // wy{K}: rows (seq-major) — (b*K+T)*qk_stride indexing matches layout.
@@ -274,7 +281,7 @@ fn exact_arm(g: &dyn GpuBackend, kit: &Kit, b: &Bufs, with_d2d: bool) -> Result<
                 .arg_u32(VD as u32)
                 .arg_u32((k * CONV_DIM) as u32) // qk seq stride
                 .arg_u32((k * CONV_DIM) as u32) // v seq stride
-                .arg_u32((k * 2 * NV) as u32)   // gb seq stride
+                .arg_u32((k * 2 * NV) as u32) // gb seq stride
                 .arg_u32((k * VALUE_DIM) as u32) // z seq stride
                 .arg_u32((k * VALUE_DIM) as u32) // out seq stride
                 .arg_f32(1e-6)
@@ -317,16 +324,24 @@ fn main() -> Result<()> {
         conv_b: g.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,
         conv_f: g.kernel("causal_conv1d", "causal_conv1d_update_l2norm_f32")?,
         conv_f_str: g.kernel("causal_conv1d", "causal_conv1d_update_l2norm_f32_strided")?,
-        conv_kn_batched: g.kernel("gdn_verify_fused_conv_kn", "gdn_verify_fused_conv_kn_batched")?,
+        conv_kn_batched: g.kernel(
+            "gdn_verify_fused_conv_kn",
+            "gdn_verify_fused_conv_kn_batched",
+        )?,
         gdn_f32_norm: g.kernel("gated_delta_rule", "gated_delta_rule_decode_f32_norm")?,
-        gdn_f32_str_norm: g.kernel("gated_delta_rule", "gated_delta_rule_decode_f32_strided_norm")?,
+        gdn_f32_str_norm: g.kernel(
+            "gated_delta_rule",
+            "gated_delta_rule_decode_f32_strided_norm",
+        )?,
         wy2: g.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?,
         wy4: g.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
         grms: g.kernel("norm", "gated_rms_norm")?,
     };
     let mut r = Lcg(0xC057);
 
-    println!("K, n, fused_us, exact_us, exact_nod2d_us, delta_pct, conv_b_us, conv_f_us, wy_us, gdnseq_us, d2d_us");
+    println!(
+        "K, n, fused_us, exact_us, exact_nod2d_us, delta_pct, conv_b_us, conv_f_us, wy_us, gdnseq_us, d2d_us"
+    );
     for &k in &[2usize, 4] {
         for &n in &[1usize, 4, 8] {
             let b = Bufs {
@@ -423,7 +438,11 @@ fn main() -> Result<()> {
             let gdnseq_t = time_arm(g, || {
                 for t in 0..k {
                     let ot = b.conv_out_f.offset(t * CONV_DIM * 4);
-                    let kern = if n == 1 { kit.gdn_f32_norm } else { kit.gdn_f32_str_norm };
+                    let kern = if n == 1 {
+                        kit.gdn_f32_norm
+                    } else {
+                        kit.gdn_f32_str_norm
+                    };
                     let mut l = KernelLaunch::new(g, kern)
                         .grid([NV as u32, n as u32, 1])
                         .block([128, 1, 1])

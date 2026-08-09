@@ -198,8 +198,8 @@ fn main() -> Result<()> {
     // memory, small per-token jitter; beta uniform (0,1). CAVEAT: drift
     // horizon depends on this choice — engine-level diff measures reality.
     let run_window = |r: &mut Lcg,
-                          g: &dyn GpuBackend,
-                          detail: bool|
+                      g: &dyn GpuBackend,
+                      detail: bool|
      -> Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
         // Fresh shared inputs.
         let inp: Vec<u8> = (0..K * CONV_DIM)
