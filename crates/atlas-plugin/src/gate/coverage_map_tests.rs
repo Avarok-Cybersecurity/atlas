@@ -466,3 +466,43 @@ fn the_boundary_file_still_wins_over_the_exemption() {
         assert!(coverage::invalidates(gate, BOUNDARY_FILES[0]));
     }
 }
+
+/// ★ The intent half's coverage policy lives OUTSIDE `PERF_PATHS`, so before it
+/// joined [`BOUNDARY_FILES`] a PR could delete every `_benches` line in
+/// `.github/pr-taxonomy.json` and invalidate NOTHING — silently shrinking what
+/// intent adds. That is the lock-whose-key-is-kept-inside-it shape this list
+/// exists to close, left unapplied to the half added later.
+///
+/// This also pins the mechanism the entry depends on: `invalidates` consults
+/// `BOUNDARY_FILES` BEFORE `on_boundary`, so an off-`PERF_PATHS` entry works.
+/// If that order were ever flipped, the entry would silently stop doing
+/// anything and this test is the only thing that would notice.
+#[test]
+fn the_taxonomy_and_the_union_are_on_the_boundary() {
+    for path in [
+        ".github/pr-taxonomy.json",
+        "crates/atlas-plugin/src/gate/required.rs",
+    ] {
+        assert_eq!(
+            coverage::invalidated_by([path]).len(),
+            coverage::REQUIRED.len(),
+            "{path} decides what the gate requires; it must re-open EVERY gate"
+        );
+    }
+
+    // ★ And this is WHY the taxonomy entry is load-bearing rather than
+    // decorative: it is not under any PERF_PATH, so `on_boundary` is false and
+    // the ONLY thing that catches it is `invalidates`' boundary-file check
+    // running FIRST. Flip that order and the entry silently stops working.
+    assert!(
+        !coverage::on_boundary(".github/pr-taxonomy.json"),
+        "the taxonomy is off PERF_PATHS — if that changes, the assertion above \
+         starts passing for a different reason than the one documented"
+    );
+    // `required.rs` is under `crates`, so it would invalidate anyway. Its
+    // BOUNDARY_FILES entry is what makes it invalidate even for gates whose
+    // GATE_MACHINERY exclusion would otherwise forgive the whole gate dir.
+    assert!(coverage::on_boundary(
+        "crates/atlas-plugin/src/gate/required.rs"
+    ));
+}

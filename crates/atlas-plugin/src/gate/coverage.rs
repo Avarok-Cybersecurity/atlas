@@ -90,8 +90,26 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 5] = [
+pub const BOUNDARY_FILES: [&str; 7] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
+    // `required_for` / `union` / `intent_only`: decides what the INTENT half
+    // adds on top of the path-derived floor. Once intent can escalate a gate,
+    // this file decides a verdict by the same criterion as the four below.
+    "crates/atlas-plugin/src/gate/required.rs",
+    // ★ The intent half's `coverage.rs`, and it lives OUTSIDE `PERF_PATHS`
+    // entirely — so before this entry, deleting every `_benches` line in the
+    // taxonomy invalidated nothing at all. That is the same lock-whose-key-is-
+    // -kept-inside-it shape this list was created to close, left unapplied to
+    // the half added later.
+    //
+    // `invalidates` checks BOUNDARY_FILES *before* `on_boundary`, so an
+    // off-PERF_PATHS entry works here; a test pins that.
+    //
+    // ★ THE COST IS REAL: a taxonomy edit now re-opens all five gates (~4h19m
+    // of GPU). That is deliberate. The alternative is that removing a `_benches`
+    // line silently reduces coverage with nothing to notice — and a cheap edit
+    // that quietly weakens the gate is worse than an expensive one that cannot.
+    ".github/pr-taxonomy.json",
     // `record_covers` / `invalidating_paths` / `check_record` / `compare`:
     // decides whether a record stands and whether its numbers pass.
     "crates/atlas-plugin/src/gate/check.rs",
