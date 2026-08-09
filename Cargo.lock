@@ -164,6 +164,7 @@ version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "atlas-closure",
+ "atlas-governance",
  "futures",
  "parking_lot",
  "serde",
