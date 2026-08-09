@@ -39,18 +39,73 @@ use atlas_core::config::ModelConfig;
 
 use super::{MtpHead, MtpQuantization, ProjectionWeight};
 
-/// Bytes of drafter attention metadata per sequence in `propose_meta`.
-/// Layout per sequence i at `propose_meta + i*PROPOSE_META_STRIDE` mirrors
+/// FLOOR for the per-sequence drafter-metadata stride in `propose_meta`.
+/// Layout per sequence i at `propose_meta + i*propose_meta_stride` mirrors
 /// `forward_one`: [0..4) position u32 | [8..16) slot i64 | [16..20) seq_len
-/// i32 | [256..) block table i32[]. 2048 bytes caps the block table at 448
-/// entries (a 4096-token drafter at block size 16 needs 257).
-pub(crate) const PROPOSE_META_STRIDE: usize = 2048;
+/// i32 | [256..) block table i32[].
+///
+/// 2048 was the FIXED stride until PROGRESS_LOG 5.2: it caps the block table
+/// at 448 entries = 7,168 tokens at block size 16 — sized in the 4K era.
+/// Agentic contexts of 10-20K blew past it every step, making the batched
+/// propose permanently fall back to per-sequence mode (PROGRESS_LOG 5.2/6.17).
+/// The stride is now computed per head from `max_seq_len`
+/// ([`propose_meta_stride_bytes`]); this constant survives only as the floor
+/// so the layout can never shrink below what the 2048-era code assumed.
+pub(crate) const PROPOSE_META_STRIDE_FLOOR: usize = 2048;
+
+/// Bytes of the fixed header ahead of the block table in each meta slab.
+pub(crate) const PROPOSE_META_HEADER: usize = 256;
 
 /// Sequences the `propose_meta` allocation is sized for. Matches the batched
 /// verify's 32-slot hidden stash (`VERIFY_WY_TABLE_SEQS`) — the widest chunk
-/// the K-vs-batch ladder can hand a propose since the 32:1 rung. 32 x 2048 =
-/// 64 KB.
+/// the K-vs-batch ladder can hand a propose since the 32:1 rung.
+/// 32 x stride bytes total (stride is dynamic, floor 2048).
 pub(crate) const PROPOSE_META_SEQS: usize = 32;
+
+/// Pure stride computation: header + one i32 block-table entry per KV block a
+/// `max_seq_len`-token drafter sequence can reference, 8-byte aligned, never
+/// below [`PROPOSE_META_STRIDE_FLOOR`].
+///
+/// The `+ 1` mirrors the allocator in `forward_batch_position`
+/// (`blocks_needed = seq_len/bs + 1`): without it, a sequence sitting exactly
+/// at `max_seq_len` needs one more entry than `align8(256 + (max/bs)*4)`
+/// provides and the stride `ensure!` fires at the boundary.
+pub(crate) fn propose_meta_stride_bytes(max_seq_len: usize, kv_block_size: usize) -> usize {
+    let entries = max_seq_len / kv_block_size.max(1) + 1;
+    let raw = PROPOSE_META_HEADER + entries * 4;
+    let aligned = (raw + 7) & !7;
+    aligned.max(PROPOSE_META_STRIDE_FLOOR)
+}
+
+/// Ceiling for the env override. A 1M-token context needs ~262KB of block
+/// table; 16 MiB is far beyond any real stride, and the cap keeps
+/// `PROPOSE_META_SEQS * stride` from overflowing (release wrap would shrink
+/// the alloc while `ensure!` still checks the huge stride — wild offsets).
+pub(crate) const PROPOSE_META_STRIDE_CAP: usize = 1 << 24;
+
+/// Stride actually used for a new head: [`propose_meta_stride_bytes`] unless
+/// `ATLAS_PROPOSE_META_STRIDE=<bytes>` overrides it (kill switch / sizing
+/// experiments). The override is value-parsed; garbage or an empty value is
+/// ignored and falls through to the computed stride. Overrides are 8-byte
+/// aligned up, floored at [`PROPOSE_META_STRIDE_FLOOR`] so a hostile value
+/// cannot shrink the slab below the fixed header layout, and capped at
+/// [`PROPOSE_META_STRIDE_CAP`] so the `16 x stride` allocation cannot
+/// overflow.
+pub(crate) fn propose_meta_stride_env(max_seq_len: usize, kv_block_size: usize) -> usize {
+    if let Ok(v) = std::env::var("ATLAS_PROPOSE_META_STRIDE")
+        && let Ok(bytes) = v.trim().parse::<usize>()
+    {
+        return clamp_stride_override(bytes);
+    }
+    propose_meta_stride_bytes(max_seq_len, kv_block_size)
+}
+
+/// Align-up + floor + cap for an override value; saturating so no input
+/// (including `usize::MAX`) can panic under overflow checks or wrap the
+/// downstream `PROPOSE_META_SEQS * stride` allocation in release.
+pub(crate) fn clamp_stride_override(bytes: usize) -> usize {
+    (bytes.saturating_add(7) & !7).clamp(PROPOSE_META_STRIDE_FLOOR, PROPOSE_META_STRIDE_CAP)
+}
 
 impl MtpHead {
     /// Narrowest resolved `w4a16_gemv_batch{M}` kernel covering `n` rows, or
@@ -135,5 +190,85 @@ impl MtpHead {
         config: &ModelConfig,
     ) -> bool {
         n >= 2 && n <= self.propose_batch_max(buffers, config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn propose_meta_stride_floor_at_4k() {
+        // 4K/16 = 256 blocks (+1) -> 256 + 257*4 = 1284 -> align8 = 1288,
+        // below the 2048-era layout: the floor wins. This is exactly the
+        // config the fixed stride was sized for.
+        assert_eq!(
+            propose_meta_stride_bytes(4096, 16),
+            PROPOSE_META_STRIDE_FLOOR
+        );
+    }
+
+    #[test]
+    fn propose_meta_stride_16k() {
+        // 16K/16 = 1024 (+1) -> 256 + 1025*4 = 4356 -> align8 = 4360. The
+        // old 2048 cap (448 entries = 7,168 tokens) failed this every step.
+        assert_eq!(propose_meta_stride_bytes(16 * 1024, 16), 4360);
+    }
+
+    #[test]
+    fn propose_meta_stride_64k() {
+        // 64K/16 = 4096 (+1) -> 256 + 4097*4 = 16644 -> align8 = 16648.
+        assert_eq!(propose_meta_stride_bytes(64 * 1024, 16), 16648);
+    }
+
+    #[test]
+    fn propose_meta_stride_never_below_floor() {
+        // Tiny contexts (and a degenerate block size) must never shrink the
+        // slab below what the fixed-2048 layout assumed.
+        assert_eq!(propose_meta_stride_bytes(0, 16), PROPOSE_META_STRIDE_FLOOR);
+        assert_eq!(
+            propose_meta_stride_bytes(1024, 16),
+            PROPOSE_META_STRIDE_FLOOR
+        );
+        // block_size 0 is clamped to 1 rather than dividing by zero.
+        assert!(propose_meta_stride_bytes(1024, 0) >= PROPOSE_META_STRIDE_FLOOR);
+    }
+
+    #[test]
+    fn propose_meta_stride_covers_boundary_and_alignment() {
+        // The runtime allocates seq_len/bs + 1 block-table entries; the
+        // stride must cover that at seq_len == max_seq_len, 8-byte aligned.
+        for max in [
+            4096usize,
+            10 * 1024,
+            16 * 1024,
+            20 * 1024,
+            64 * 1024,
+            128 * 1024,
+        ] {
+            let s = propose_meta_stride_bytes(max, 16);
+            assert_eq!(s % 8, 0, "stride {s} not 8-aligned for max={max}");
+            let bt_len = (max / 16 + 1) * 4;
+            assert!(
+                PROPOSE_META_HEADER + bt_len <= s,
+                "stride {s} cannot hold {bt_len}B block table at max={max}"
+            );
+        }
+    }
+
+    #[test]
+    fn stride_override_is_panic_and_overflow_safe() {
+        // Hostile env values must neither panic under overflow checks
+        // (usize::MAX + 7) nor produce a stride whose 16x allocation wraps
+        // in release (2^60-class values shrank the slab while ensure! still
+        // passed — wild device offsets).
+        for hostile in [usize::MAX, 1usize << 60, (1usize << 60) + 2048] {
+            let s = clamp_stride_override(hostile);
+            assert_eq!(s, PROPOSE_META_STRIDE_CAP);
+            assert!(PROPOSE_META_SEQS.checked_mul(s).is_some());
+        }
+        // Zero/small values clamp up to the floor; normal values align up.
+        assert_eq!(clamp_stride_override(0), PROPOSE_META_STRIDE_FLOOR);
+        assert_eq!(clamp_stride_override(4361), 4368);
     }
 }

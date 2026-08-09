@@ -194,6 +194,7 @@ fn served_forever() -> (SelfServed, tokio::sync::oneshot::Receiver<()>) {
     let served = SelfServed {
         target: TargetEndpoint::local(1, "m"),
         recipe_id: "r".to_string(),
+        overrides: Default::default(),
         server: Some(server),
     };
     (served, rx)
@@ -229,4 +230,101 @@ fn a_torn_down_server_is_not_torn_down_twice() {
         let waited = tokio::time::timeout(Duration::from_secs(5), rx).await;
         assert!(matches!(waited, Ok(Err(_))), "{waited:?}");
     });
+}
+
+/// The ordinary case: KEY=VALUE reaches the recipe as an override.
+///
+/// The motivating one, specifically — every gate recipe pins `kv_cache_dtype:
+/// bf16`, so a change to the fp8-KV attention kernel could not be exercised by
+/// any gate at all without this.
+#[test]
+fn a_key_value_pair_becomes_a_recipe_override() {
+    let parsed = parse_serve_overrides(&[
+        "kv_cache_dtype=fp8".to_string(),
+        "fp8_kv_calibration_tokens=512".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.get("kv_cache_dtype").map(String::as_str),
+        Some("fp8")
+    );
+    assert_eq!(
+        parsed.get("fp8_kv_calibration_tokens").map(String::as_str),
+        Some("512")
+    );
+}
+
+/// A value containing `=` keeps it — only the FIRST `=` separates.
+///
+/// Recipe values are rendered into a CLI, and flags whose value carries an `=`
+/// exist. Splitting on every `=` would silently truncate one.
+#[test]
+fn only_the_first_equals_separates() {
+    let parsed = parse_serve_overrides(&["extra_args=--foo=bar".to_string()]).unwrap();
+    assert_eq!(
+        parsed.get("extra_args").map(String::as_str),
+        Some("--foo=bar")
+    );
+}
+
+/// An empty value is a value, not an omission — some recipe keys render as a
+/// bare flag, and `key=` is how you ask for that.
+#[test]
+fn an_empty_value_is_kept() {
+    let parsed = parse_serve_overrides(&["disable_thinking=".to_string()]).unwrap();
+    assert_eq!(parsed.get("disable_thinking").map(String::as_str), Some(""));
+}
+
+/// Missing `=` is refused, and the message shows the shape it wanted.
+///
+/// The alternative — treating a bare word as a flag — would silently accept
+/// `kv_cache_dtype fp8` (two argv words) as a key with no value, and serve the
+/// recipe unchanged while the operator believed otherwise.
+#[test]
+fn a_pair_without_an_equals_is_refused() {
+    let e = parse_serve_overrides(&["kv_cache_dtype".to_string()]).unwrap_err();
+    assert!(e.to_string().contains("KEY=VALUE"), "{e}");
+}
+
+#[test]
+fn an_empty_key_is_refused() {
+    assert!(parse_serve_overrides(&["=fp8".to_string()]).is_err());
+}
+
+/// ★ `port` is refused rather than accepted-and-dropped.
+///
+/// `serve_for` binds a free port and passes its own override, so an operator's
+/// `port` would lose — but losing SILENTLY means the gate serves somewhere the
+/// operator is not looking, and the failure surfaces as a confusing connection
+/// error instead of a sentence explaining it.
+#[test]
+fn overriding_the_port_is_refused_with_a_reason() {
+    let e = parse_serve_overrides(&["port=8888".to_string()]).unwrap_err();
+    let msg = e.to_string();
+    assert!(msg.contains("port"), "{msg}");
+    assert!(
+        msg.contains("free port"),
+        "the refusal must say who owns the port: {msg}"
+    );
+}
+
+/// A repeated key takes the LAST value, matching every other CLI on the box.
+#[test]
+fn a_repeated_key_takes_the_last_value() {
+    let parsed = parse_serve_overrides(&[
+        "kv_cache_dtype=bf16".to_string(),
+        "kv_cache_dtype=fp8".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.get("kv_cache_dtype").map(String::as_str),
+        Some("fp8")
+    );
+}
+
+/// No overrides is the normal case and produces an empty map, which is what
+/// keeps `serve_overrides` absent from an unmodified run's gate record.
+#[test]
+fn no_overrides_is_empty_not_an_error() {
+    assert!(parse_serve_overrides(&[]).unwrap().is_empty());
 }

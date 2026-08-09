@@ -254,12 +254,19 @@ pub struct MtpHead {
     /// dead, batched GEMV fallback unchanged.
     pub(super) w4a16_gemm_t_k: KernelHandle,
     /// Drafter attention metadata for the batched propose:
-    /// `[PROPOSE_META_SEQS, PROPOSE_META_STRIDE]` bytes, one slab per
+    /// `[PROPOSE_META_SEQS, propose_meta_stride]` bytes, one slab per
     /// sequence. A dedicated allocation, NOT an offset into the shared
     /// `scratch` arena — the old fixed `scratch + 49152 + i*2048` layout ran
     /// past the end of a 27B-shaped scratch at n > 8 (silent out-of-range
     /// H2D → sticky CUDA-700, the #110 failure mode).
     propose_meta: DevicePtr,
+    /// Per-sequence stride of `propose_meta`, computed at construction from
+    /// `max_seq_len` (`batch_caps::propose_meta_stride_env`, floor 2048,
+    /// override `ATLAS_PROPOSE_META_STRIDE=<bytes>`). The fixed 2048 capped
+    /// the block table at 448 entries = 7,168 tokens — sized in the 4K era;
+    /// 10-20K agentic contexts made the batched propose fall back
+    /// permanently (PROGRESS_LOG 5.2/6.17).
+    propose_meta_stride: usize,
     /// `argmax_bf16_batch` for the batched-propose per-row argmax (0 when
     /// absent; falls back to the serial per-row scan).
     argmax_batch_k: KernelHandle,

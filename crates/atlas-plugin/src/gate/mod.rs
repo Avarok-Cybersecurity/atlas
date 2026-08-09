@@ -20,8 +20,14 @@
 //!   committed records are checked against this file alone, so the check
 //!   carries no per-box state ([`check`]).
 
+pub mod bench;
 pub mod check;
+pub mod closure;
+pub mod codeowners;
+pub mod coverage;
 pub mod record;
+pub mod taxon;
+pub mod telemetry;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -53,11 +59,11 @@ pub use record::{
 /// bench's `BASELINE.json` pins its own model, and a model mismatch is a hard
 /// fail in `check_record`.
 pub const REQUIRED_GATES: [&str; 5] = [
-    "agentic-webserver",
-    "ttft-warm-gate",
-    "ttft-cold-gate",
-    "bfcl-subset",
-    "bfcl-subset-echolp",
+    coverage::REQUIRED[0].id,
+    coverage::REQUIRED[1].id,
+    coverage::REQUIRED[2].id,
+    coverage::REQUIRED[3].id,
+    coverage::REQUIRED[4].id,
 ];
 
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.
@@ -88,24 +94,11 @@ pub const HARDWARE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Deliberately NOT here: `.benchmarks` (the records and thresholds are the
 /// verdict, not the subject), `bench/` and `scripts/` (developer tooling that
 /// no gate drives), and docs.
-pub const PERF_PATHS: [&str; 7] = [
-    "crates",
-    "kernels",
-    "Cargo.toml",
-    "Cargo.lock",
-    "vendor",
-    "jinja-templates",
-    "rust-toolchain.toml",
-];
+pub use coverage::PERF_PATHS;
 
 /// `.benchmarks/<benchmark_id>` under `root`.
 pub fn gate_dir(root: &Path, benchmark_id: &str) -> PathBuf {
     root.join(".benchmarks").join(benchmark_id)
-}
-
-/// `.benchmarks/<benchmark_id>/BASELINE.json` under `root`.
-pub fn baseline_path(root: &Path, benchmark_id: &str) -> PathBuf {
-    gate_dir(root, benchmark_id).join("BASELINE.json")
 }
 
 /// The short commit id for this working tree. `ATLAS_GATE_SHA` overrides —
@@ -203,10 +196,36 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[path = "tests.rs"]
 mod tests;
 
+/// Split from `tests.rs` for the 500-LoC cap: writing a fixture baseline into
+/// the kernel tree, where the thresholds now live.
+#[cfg(test)]
+#[path = "fixture_baseline.rs"]
+mod fixture_baseline;
+
+/// Split from `coverage_tests.rs` for the 500-LoC cap: the deterministic floor.
+#[cfg(test)]
+#[path = "coverage_map_tests.rs"]
+mod coverage_map_tests;
+
 #[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod coverage_tests;
 
+/// Squash-merge coverage. Split from `coverage_tests.rs` for the 500-LoC cap.
+#[cfg(test)]
+#[path = "coverage_squash_tests.rs"]
+mod coverage_squash_tests;
+
+/// Three holes an adversarial review found. Split for the 500-LoC cap.
+#[cfg(test)]
+#[path = "hardening_tests.rs"]
+mod hardening_tests;
+
 #[cfg(test)]
 #[path = "dirty_tests.rs"]
 mod dirty_tests;
+
+/// Split from `tests.rs` for the 500-LoC cap: `--serve-override` provenance.
+#[cfg(test)]
+#[path = "override_tests.rs"]
+mod override_tests;

@@ -50,6 +50,15 @@ pub struct GateRecord {
     /// what actually determined the config is the recipe, not the flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub served_by: Option<String>,
+    /// Recipe keys the operator changed on the command line for this run.
+    ///
+    /// Empty (and absent from the JSON) means the recipe served exactly as
+    /// pinned. Non-empty means `served_by` alone OVERSTATES the provenance —
+    /// the numbers describe a config that exists in no file, and a reader who
+    /// opened that recipe would be reading the wrong one. That is the same
+    /// failure `served_by` was added to prevent, one level in.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_overrides: BTreeMap<String, String>,
     pub atlas_version: String,
     /// The box that served the model during the run.
     pub hardware: Hardware,
@@ -64,6 +73,14 @@ pub struct GateRecord {
     /// One line a future reader scans before the numbers: what was measured,
     /// what it hit, and anything the verdict or log makes noteworthy.
     pub summary: String,
+    /// What each kernel target compiled to when this was measured.
+    ///
+    /// Lets a later `kernels/`-only diff keep this record for the targets whose
+    /// device code did not change — see [`super::closure`]. Empty (and absent
+    /// from the JSON) is the pre-attestation case and excuses nothing, so
+    /// records written before this existed behave exactly as they did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub closure: super::closure::Attestation,
 }
 
 /// Comparison against one metric's threshold. `min` fails below (scores),
@@ -112,8 +129,11 @@ pub struct HardwareBaseline {
     pub models: BTreeMap<String, ModelBaseline>,
 }
 
-/// The thresholds a benchmark's gate records must meet, committed as
-/// `.benchmarks/<id>/BASELINE.json` beside the records themselves.
+/// The thresholds a benchmark's gate records must meet.
+///
+/// Assembled at read time from every `kernels/<hw>/<model>/BENCH.toml`; see
+/// [`super::bench`] for why they live beside the model rather than in one file
+/// per gate. `.benchmarks/<id>/` still holds the RECORDS.
 ///
 /// Keyed **hardware → model → thresholds** because both axes genuinely move the
 /// numbers. TTFT is box-local by construction — a ceiling measured on one box
@@ -208,10 +228,10 @@ pub fn read_record(path: &Path) -> Result<GateRecord> {
 
 /// Read one committed baseline.
 pub fn read_baseline(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
-    let path = super::baseline_path(root, benchmark_id);
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    // Assembled from every model's `kernels/<hw>/<model>/BENCH.toml` rather
+    // than read from one file. `.benchmarks/<id>/` still holds the RECORDS —
+    // only the thresholds moved, to sit beside the model they describe.
+    super::bench::baseline_for(root, benchmark_id)
 }
 
 impl GateRecord {
@@ -235,6 +255,7 @@ impl GateRecord {
         git_sha: String,
         dirty_paths: Vec<String>,
         served_by: Option<String>,
+        serve_overrides: BTreeMap<String, String>,
     ) -> Result<Self> {
         if git_sha.is_empty() {
             bail!("a gate record needs the commit sha it was measured from");
@@ -254,6 +275,13 @@ impl GateRecord {
         }
         for (k, v) in &record.params {
             params.push(("--param".to_string(), format!("{k}={v}")));
+        }
+        // Reconstructed alongside the rest so `command` stays REPLAYABLE, not
+        // merely descriptive: a self-provisioned run's config is the recipe
+        // plus these, and a command that omitted them would rerun a different
+        // server and quietly disagree with the record it came from.
+        for (k, v) in &serve_overrides {
+            params.push(("--serve-override".to_string(), format!("{k}={v}")));
         }
         if record.benchmark_id == "agentic-webserver" {
             params.push(("--yes".to_string(), String::new()));
@@ -284,6 +312,17 @@ impl GateRecord {
             .unwrap_or_default();
         Ok(Self {
             schema: 1,
+            // Attached afterwards by `with_closure`, unlike `dirty_paths`.
+            //
+            // The asymmetry is deliberate and rests on which direction an
+            // omission fails in. A record missing its dirt OVERSTATES its
+            // provenance — it claims to describe a commit it does not — so the
+            // constructor refuses to build one. A record missing its
+            // attestation merely forfeits the savings: it excuses no future
+            // diff and behaves exactly like every record written before this
+            // existed. Requiring it here would mean threading a repo root
+            // through every caller to buy nothing.
+            closure: Default::default(),
             benchmark_id: record.benchmark_id.clone(),
             benchmark_name: record.benchmark_name.clone(),
             git_sha,
@@ -293,6 +332,7 @@ impl GateRecord {
             params: record.params.clone(),
             command,
             served_by,
+            serve_overrides,
             atlas_version: record.atlas_version.clone(),
             hardware,
             metrics: frame.metrics.clone(),
@@ -301,6 +341,21 @@ impl GateRecord {
             verdict_reason,
             summary: summarize(record),
         })
+    }
+
+    /// Attach what each kernel target in the measuring BINARY compiled from.
+    ///
+    /// `baked` is `atlas_kernels::TARGET_CLOSURES` — computed by the build
+    /// script at the moment the kernels were compiled. It deliberately does not
+    /// recompute from the working tree: doing so would attest to sources that
+    /// may never have been built, which is the staleness this exists to catch.
+    ///
+    /// Unparseable or empty input attaches nothing, which excuses no future
+    /// diff. That is the correct failure: it costs re-runs, not soundness.
+    #[must_use]
+    pub fn with_closure(mut self, baked: &str) -> Self {
+        self.closure = serde_json::from_str(baked).unwrap_or_default();
+        self
     }
 
     /// True when the run's verdict is a PASS. Anything else — FAIL, info, or

@@ -10,6 +10,12 @@ atlas-core = { workspace = true }
 
 [build-dependencies]
 toml = "0.8"
+# The closure hash the gate uses to scope a kernel change. Computed HERE, in
+# the build that produces the binary, so a benchmark record can attest to what
+# the binary was actually compiled from rather than to whatever the tree
+# happened to hold when the record was written.
+atlas-closure = { path = "../atlas-closure" }
+serde_json.workspace = true
 
 # Same crate the build script already pulls, so Cargo.lock is unchanged.
 # `tests/kernel_shadow_detector.rs` reads the `[modules]` and `[shadow_exempt]`
