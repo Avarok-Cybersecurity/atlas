@@ -65,13 +65,9 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Maximum recv buffer size (covers hidden_size * max_batch_tokens * 2 bytes).
-/// Recv buffer for 2-rank send/recv all-reduce.
-/// Must cover the largest all-reduce payload: prefill chunk output.
-/// For 122B (hidden=6144) at max_prefill_tokens=4096:
-///   4096 * 6144 * 2 = 48 MB.
-/// Allocate 64 MB to cover all models with headroom.
-pub(crate) const RECV_BUFFER_SIZE: usize = 64 * 1024 * 1024;
+mod recv_buffer;
+use recv_buffer::ensure_payload_fits;
+pub use recv_buffer::{ALL_REDUCE_DTYPE_BYTES, required_recv_bytes};
 
 /// Timeout threshold for a single synchronous collective operation.
 /// If a broadcast + stream sync takes longer than this, mark the communicator unhealthy.
@@ -93,6 +89,12 @@ pub struct NcclBackend {
     legacy_stream: u64,
     /// Persistent receive buffer for 2-rank send/recv all-reduce.
     recv_buffer: u64,
+    /// Allocated capacity of `recv_buffer`, in bytes (0 when `world_size != 2`).
+    ///
+    /// Every 2-rank all-reduce payload is checked against this before any NCCL
+    /// call or kernel launch. Derived from the configured maximum transfer at
+    /// construction — see [`required_recv_bytes`].
+    recv_capacity: usize,
     /// Handles from ncclCommRegister (deregistered in Drop).
     registered_handles: Mutex<Vec<*mut c_void>>,
     /// Kernel handle for bf16_add_inplace (set via set_add_kernel).
@@ -121,12 +123,18 @@ impl NcclBackend {
     /// Rank 0 listens on `master_addr:master_port`, generates a unique ID,
     /// and sends it to all connecting ranks. All ranks then call
     /// `ncclCommInitRank` which internally synchronizes.
+    /// `recv_capacity` is the largest all-reduce payload this backend will ever
+    /// be asked to carry, in bytes — compute it with [`required_recv_bytes`]
+    /// from the serve configuration. It is only consulted when
+    /// `world_size == 2` (the send/recv fast path); other world sizes reduce
+    /// in-place via `ncclAllReduce` and allocate no receive buffer.
     pub fn new(
         rank: usize,
         world_size: usize,
         master_addr: &str,
         master_port: u16,
         stream: u64,
+        recv_capacity: usize,
     ) -> Result<Self> {
         Self::log_nccl_env_vars();
 
@@ -147,29 +155,34 @@ impl NcclBackend {
         let compute_done_event = nccl::create_event()?;
         let comm_done_event = nccl::create_event()?;
 
-        // Allocate persistent recv buffer for 2-rank send/recv all-reduce.
+        // Allocate persistent recv buffer for 2-rank send/recv all-reduce,
+        // sized to the caller's configured maximum transfer.
         let mut recv_buffer: u64 = 0;
         if world_size == 2 {
-            let status = unsafe { cuMemAlloc_v2(&mut recv_buffer, RECV_BUFFER_SIZE) };
+            if recv_capacity == 0 {
+                anyhow::bail!(
+                    "world_size == 2 requires a non-zero receive-buffer capacity; \
+                     compute it with required_recv_bytes(max_batch_tokens, hidden_size, \
+                     ALL_REDUCE_DTYPE_BYTES)"
+                );
+            }
+            let status = unsafe { cuMemAlloc_v2(&mut recv_buffer, recv_capacity) };
             if status != 0 {
-                anyhow::bail!("cuMemAlloc_v2 for recv_buffer failed: status {status}");
+                anyhow::bail!(
+                    "cuMemAlloc_v2 for recv_buffer ({recv_capacity} bytes) failed: status {status}"
+                );
             }
             // Register recv buffer with NCCL for IB memory caching.
             let mut handle: *mut c_void = ptr::null_mut();
             let result = unsafe {
-                nccl::ncclCommRegister(
-                    comm,
-                    recv_buffer as *mut c_void,
-                    RECV_BUFFER_SIZE,
-                    &mut handle,
-                )
+                nccl::ncclCommRegister(comm, recv_buffer as *mut c_void, recv_capacity, &mut handle)
             };
             if result != NcclResult::Success {
                 tracing::warn!("ncclCommRegister for recv_buffer failed (non-fatal): {result:?}");
             } else {
                 tracing::info!(
                     "Registered recv_buffer ({} KB) with NCCL",
-                    RECV_BUFFER_SIZE / 1024
+                    recv_capacity / 1024
                 );
             }
         }
@@ -183,6 +196,7 @@ impl NcclBackend {
             comm_done_event,
             legacy_stream: stream,
             recv_buffer,
+            recv_capacity: if world_size == 2 { recv_capacity } else { 0 },
             registered_handles: Mutex::new(Vec::new()),
             add_kernel: AtomicU64::new(0),
             unhealthy: AtomicBool::new(false),
@@ -293,7 +307,7 @@ impl NcclBackend {
                 nccl::ncclCommRegister(
                     new_comm,
                     self.recv_buffer as *mut c_void,
-                    RECV_BUFFER_SIZE,
+                    self.recv_capacity,
                     &mut handle,
                 )
             };
@@ -336,10 +350,36 @@ impl NcclBackend {
     /// 2-rank all-reduce using send/recv + local BF16 add.
     ///
     /// For world_size == 2:
-    ///   1. Group send+recv (one RDMA write each direction)
-    ///   2. Local BF16 add: `ptr[i] += recv_buffer[i]`
+    ///   1. Bounds-check the payload against the receive buffer
+    ///   2. Group send+recv (one RDMA write each direction)
+    ///   3. Local BF16 add: `ptr[i] += recv_buffer[i]`
+    ///
+    /// # Capacity invariant
+    ///
+    /// `bytes <= self.recv_capacity`, always. `ncclRecv` writes `bytes` into a
+    /// buffer of exactly `recv_capacity` bytes, so a payload larger than the
+    /// allocation would write past it — device-heap corruption, or
+    /// `CUDA_ERROR_ILLEGAL_ADDRESS` if you are lucky enough for it to be fatal.
+    ///
+    /// The capacity is derived from the configured maximum transfer at
+    /// construction, so in a correctly-configured serve this check never fires.
+    /// It is retained as defense in depth: it is the only thing standing between
+    /// a future caller with a larger payload and a silent out-of-bounds write,
+    /// and the cost of being wrong here is not a bad number, it is corrupted
+    /// memory that looks plausible.
     fn all_reduce_2rank(&self, ptr: u64, bytes: usize, stream: u64) -> Result<()> {
-        let count = bytes / 2; // BF16 element count
+        // Before ncclSend, before ncclRecv, before the add-kernel launch.
+        ensure_payload_fits(bytes, self.recv_capacity, self.rank, self.world_size)?;
+
+        // Nothing to reduce. Return before the kernel launch: `blocks` would be
+        // 0, which cuLaunchKernel rejects with CUDA_ERROR_INVALID_VALUE. Both
+        // ranks reduce the same shape, so this is symmetric and cannot desync
+        // the NCCL group.
+        if bytes == 0 {
+            return Ok(());
+        }
+
+        let count = bytes / ALL_REDUCE_DTYPE_BYTES; // BF16 element count
         let partner = (1 - self.rank) as i32;
         let comm = *self.comm.lock();
 

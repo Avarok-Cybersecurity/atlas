@@ -13,6 +13,12 @@
 
 pub mod tokenizer;
 
+// Reasoning-parser format registry (DeepSeek-R1 `<think>`/`</think>` contract
+// used by DS4F opt-in reasoning mode). Exposed here so the tokenizer unit tests
+// that assert `[reasoning]` registration compile under `--lib`, mirroring the
+// binary crate root. Its only crate dependency is `tokenizer`, already public above.
+pub mod reasoning_parser;
+
 // The three pure modules added in PR 4 (OpenAI compat remaining items) are
 // public here so `cargo test -p spark-server --lib` can exercise their
 // unit tests without needing to build the full binary.

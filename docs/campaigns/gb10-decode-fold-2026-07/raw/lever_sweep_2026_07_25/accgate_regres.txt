@@ -1,0 +1,35 @@
+----------------- Summary -----------------
+Version: 0.1.0
+Git SHA: bf9d12b
+Run config:
+  load_pattern: type=agentic_inference, target_qps=None, target_concurrency=1
+  warmup: enabled=False, n_requests=None, salt=True, drain=False, warmup_random_seed=42
+  scheduler_random_seed: 42
+  dataloader_random_seed: 42
+Total samples issued: 0
+Total samples completed: 0
+Total samples failed: 0
+Duration: N/A
+QPS: N/A
+TPS: N/A
+Accuracy:
+  bfcl_v4::function_calling: 0.8494 (unit=259, repeats=1, total=259, duration=1288.22s)
+    responses: 259/259 scored (0 empty, 0 missing)
+    output tokens (avg/min/max): 102.1/16/1024
+    irrelevance: 100.00%
+    live_irrelevance: 76.47%
+    live_multiple: 90.48%
+    live_parallel: 93.75%
+    live_parallel_multiple: 75.00%
+    live_simple: 100.00%
+    multiple: 96.67%
+    parallel: 83.33%
+    parallel_multiple: 83.33%
+    simple_java: 46.67%
+    simple_javascript: 42.86%
+    simple_python: 95.00%
+  Average: 0.8494
+  OSL tokenization: 0.007s
+
+------------------- Latency Breakdowns -------------------
+----------------- End of Report -----------------

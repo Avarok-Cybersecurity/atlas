@@ -4,37 +4,18 @@
 
 use super::*;
 
-thread_local! {
-    /// Reusable per-sequence dequantised-logits buffer. Hoisted out of the
-    /// per-call `(0..vocab).map(..).collect()` to avoid a ~1 MB (250k vocab)
-    /// heap alloc/free every sequence every decoded token on the host sampling
-    /// path. Always refilled to exactly `vocab_size` elements before use, so
-    /// the `from_raw_parts(.., vocab_size*4)` view stays valid. Restored before
-    /// each return so the next call reuses the capacity.
-    static SEQ_F32_SCRATCH: std::cell::RefCell<Vec<f32>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
+// The reusable FP32 dequant buffer is now `SchedCtx::scratch.seq_f32`.
 
 // B1 (2026-05-26) margin-ratio drift detector moved to
 // `logit_processors::b1_margin` (STEP 5) so the single unified
 // `process_position_logits` fn owns it. It is gated to the FINAL decode
 // position there.
 
+// `ATLAS_FORCE_TEMP_ZERO` is now `SchedLevers::force_temp_zero`, carried on
+// `LogitsContext::sampling`.
+
 /// Process logits for a single active sequence: dequant, adjust, sample, return token + optional logprobs.
 #[allow(clippy::too_many_arguments)]
-/// ATLAS_FORCE_TEMP_ZERO=1 — diagnostic mode that bypasses all drift
-/// mitigation (AM1/A4/B1/C4) and just returns argmax of raw
-/// logits. Used together with VLLM_FORCE_TEMP_ZERO on vLLM for
-/// apples-to-apples layer-cosine comparison.
-pub(crate) fn force_temp_zero_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_FORCE_TEMP_ZERO")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
-
 pub fn process_seq_logits(
     _model: &dyn Model,
     a: &mut ActiveSeq,
@@ -53,7 +34,7 @@ pub fn process_seq_logits(
     // Reuse the per-thread scratch (restored before every return below).
     // `clear` + `extend` of exactly `vocab_size` items rebuilds it in place,
     // preserving capacity and keeping `len() == vocab_size`.
-    let mut f32_logits = SEQ_F32_SCRATCH.with_borrow_mut(std::mem::take);
+    let mut f32_logits = ctx.scratch.seq_f32.borrow_mut().split_off(0);
     f32_logits.clear();
     if logits_fp32 {
         // Direct FP32: 4 bytes/element little-endian.
@@ -147,7 +128,7 @@ pub fn process_seq_logits(
         let logprobs = a
             .top_logprobs
             .map(|k| extract_logprobs_from_f32(&f32_logits, tok, k as usize));
-        SEQ_F32_SCRATCH.with_borrow_mut(|slot| *slot = std::mem::take(&mut f32_logits));
+        *ctx.scratch.seq_f32.borrow_mut() = std::mem::take(&mut f32_logits);
         return (tok, logprobs);
     }
 
@@ -200,8 +181,9 @@ pub fn process_seq_logits(
     // were folded in by `process_position_logits`); the bias field reports
     // `params.logit_bias` (base + A4). This only changes the env-gated dump
     // output, never the emitted token.
-    if super::logit_dump::enabled() {
+    if let Some(sink) = ctx.dumps.logits.as_ref() {
         super::logit_dump::record(
+            sink,
             a.output_tokens.len(),
             a.inside_parameter_body,
             a.param_body_chars_emitted as usize,
@@ -215,6 +197,6 @@ pub fn process_seq_logits(
     let logprobs = a
         .top_logprobs
         .map(|k| extract_logprobs_from_f32(&f32_logits, sampled, k as usize));
-    SEQ_F32_SCRATCH.with_borrow_mut(|slot| *slot = std::mem::take(&mut f32_logits));
+    *ctx.scratch.seq_f32.borrow_mut() = std::mem::take(&mut f32_logits);
     (sampled, logprobs)
 }

@@ -34,6 +34,8 @@ const FORCED_TOKEN_TOP_K: usize = 512;
 /// Wraps a [`GrammarMatcher`] with its own bitmask buffer. The bitmask
 /// is reused across decode steps to avoid re-allocation.
 pub struct GrammarState {
+    /// The run's verify-timing sink.
+    timing: std::sync::Arc<crate::scheduler::mtp_timing::RunTiming>,
     matcher: GrammarMatcher,
     /// Bitmask buffer: `Box<[i32]>` of shape `(1, ceil(vocab_size / 32))`.
     bitmask_data: Box<[i32]>,
@@ -74,6 +76,23 @@ impl GrammarState {
     /// populates a cache — it cannot change matcher behavior — so it is
     /// safe unconditionally.
     pub fn new(compiled: &CompiledGrammar, vocab_size: usize) -> Result<Self, GrammarError> {
+        Self::with_timing(compiled, vocab_size, std::sync::Arc::default())
+    }
+
+    /// Same, with the run's timing sink. The grammar engine records two verify
+    /// phases and has no scheduler context of its own — it is handed the sink
+    /// rather than reaching for a global one.
+    pub fn with_timing(
+        compiled: &CompiledGrammar,
+        vocab_size: usize,
+        timing: std::sync::Arc<crate::scheduler::mtp_timing::RunTiming>,
+    ) -> Result<Self, GrammarError> {
+        let mut state = Self::build(compiled, vocab_size)?;
+        state.timing = timing;
+        Ok(state)
+    }
+
+    fn build(compiled: &CompiledGrammar, vocab_size: usize) -> Result<Self, GrammarError> {
         let matcher = GrammarMatcher::new(
             compiled, None,  // use stop tokens from compiled grammar
             false, // require stop token for proper termination
@@ -94,6 +113,7 @@ impl GrammarState {
         let bitmask_data = allocate_token_bitmask(1, vocab_size);
 
         Ok(Self {
+            timing: std::sync::Arc::default(),
             matcher,
             bitmask_data,
             vocab_size,
@@ -148,10 +168,8 @@ impl GrammarState {
         let filled = self
             .matcher
             .fill_next_token_bitmask(&mut self.bitmask_data, 0, false);
-        crate::scheduler::mtp_timing::record(
-            crate::scheduler::mtp_timing::Phase::GrammarFill,
-            t_fill,
-        );
+        self.timing
+            .record(crate::scheduler::mtp_timing::Phase::GrammarFill, t_fill);
         self.bitmask_valid = true;
         self.bitmask_fill_result = filled;
         filled
@@ -262,7 +280,8 @@ impl GrammarState {
         }
         let t = std::time::Instant::now();
         let forced = self.matcher.forced_from_bitmask(&mut self.bitmask_data, 0);
-        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::ForcedTok, t);
+        self.timing
+            .record(crate::scheduler::mtp_timing::Phase::ForcedTok, t);
         forced
     }
 

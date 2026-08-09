@@ -85,6 +85,50 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+        // ── LoRA delta on o_proj (decode, m=1). attn_out is already
+        // sigmoid-gated by the caller — exactly the tensor HF feeds o_proj.
+        if let Some(ref lw) = self.lora
+            && let Some(ref pair) = lw.o
+        {
+            debug_assert_eq!(pair.k_in, nq * hd);
+            debug_assert_eq!(pair.n_out, h);
+            // Request-scoped routing (see attention_forward.rs). Route this
+            // request's O delta via the bgmv when a per-seq slot + route exist;
+            // else the installed-active-pair path (byte-identical to pre-M2).
+            let seq_slot = ctx
+                .attn_metadata
+                .map(|m| m.seq_slot)
+                .unwrap_or(DevicePtr(0));
+            if seq_slot.0 != 0
+                && let Some(ref route) = lw.o_route
+            {
+                ops::lora_delta::apply_lora_bgmv(
+                    ctx.gpu,
+                    &lw.kernels,
+                    route,
+                    attn_out,
+                    o_out,
+                    seq_slot,
+                    1,
+                    pair.k_in,
+                    pair.n_out,
+                    ctx.buffers.lora_xa(),
+                    stream,
+                )?;
+            } else {
+                ops::lora_delta::apply_lora_delta(
+                    ctx.gpu,
+                    &lw.kernels,
+                    pair,
+                    attn_out,
+                    o_out,
+                    1,
+                    ctx.buffers.lora_xa(),
+                    ctx.buffers.lora_delta(),
+                    stream,
+                )?;
+            }
+        }
         Ok(o_out)
     }
 }

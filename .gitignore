@@ -128,3 +128,7 @@ bench/**/*.jsonl
 bench/**/*.csv
 bench/**/*.pid
 bench/fp8_dgx2_drift/harness/oc
+
+# LoRA MVP: large fp32 reference deltas (regenerate via scripts/reference_deltas.py in seconds)
+test_data/lora-holo-tiny*/reference_deltas.safetensors
+adapters35/

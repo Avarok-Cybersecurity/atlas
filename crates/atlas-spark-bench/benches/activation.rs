@@ -6,21 +6,17 @@
 //! Requires a GPU — skips gracefully if unavailable.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-static SILU_MUL_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// SiLU×Mul: silu_mul_separate(gate, up, output, n)
 /// Grid: (ceil(n/256), 1, 1)  Block: (256, 1, 1)
 fn bench_silu_mul(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &SILU_MUL_FN, "residual_add", "silu_mul_separate");
+    let kernel = gpu::get_kernel(reg, "residual_add", "silu_mul_separate");
 
     let inter_size: u32 = 512;
     let elem_bytes = 2_usize;

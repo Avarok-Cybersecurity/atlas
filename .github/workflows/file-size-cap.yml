@@ -1,6 +1,16 @@
 name: File size cap (≤500 LoC per .rs)
 
+# Read-only: this job only greps the checkout.
+permissions:
+  contents: read
+
 on:
+  # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
+  # were throttled to aid recovery, so pushes stopped creating runs at all --
+  # and with no dispatch trigger there was no way to ask for one. A check that
+  # can only be started by an event you do not control is a check you cannot
+  # get a verdict from when you most need it.
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main, master]
@@ -14,7 +24,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
@@ -41,6 +51,14 @@ jobs:
             # external contributors. Candidate for a `traits/model/mod.rs`
             # split that pulls verify/decode default impls into siblings.
             "crates/spark-model/src/traits/model.rs"
+            # ── PR: LoRA-on-HSS-tier carry-over ──
+            # 502 LoC — `TransformerLayer` trait: the core per-layer interface
+            # (~20 methods spanning decode / prefill / SSM-phase / MoE-transpose,
+            # each with a long arg list + doc). Atomic interface, same rationale
+            # as `traits/model.rs` above. Tipped over 500 by the `as_any_mut`
+            # downcast hook the LoRA install walk needs. Clean split
+            # (SSM-prefill phases -> sibling supertrait) tracked as follow-up.
+            "crates/spark-model/src/layer/transformer_layer.rs"
             # 513 LoC — Gemma-4 weight loader (variant-dispatch family).
             # Already part of a `gemma4/` split; the leftover holds the
             # single-file dispatch entry-point + per-layer-type orchestration.
@@ -62,10 +80,17 @@ jobs:
             # to the sampler context; splitting risks inflating the
             # cross-file pub(super) surface.
             "crates/spark-server/src/scheduler/decode_logits_step.rs"
-            # 516 LoC — startup orchestration (12 phases, all named).
-            # Already heavily split (`serve_phases`, `serve_router`); the
-            # remaining body is the linear bootstrapping sequence.
-            "crates/spark-server/src/main_modules/serve.rs"
+            # 950 LoC — the model-dependent half of startup (phases 1-10),
+            # split OUT of serve.rs so a hot-swap can run it twice. Same
+            # rationale the serve.rs entry carried, and the same code: this is
+            # the linear bootstrapping sequence, already heavily split into
+            # `serve_phases`. Splitting it further needs a context struct
+            # threading ~40 locals between phases, which makes the load order —
+            # the thing that actually matters here — harder to read, not easier.
+            #
+            # serve.rs itself is now 356 LoC and OFF this list: the allow-listed
+            # body shrank from 1260 to 950 by moving, not by growing.
+            "crates/spark-server/src/main_modules/serve_load.rs"
             # 524 LoC — Qwen3 attention layer kernel-handle bootstrap.
             # The TurboQuant+ asymmetric variants extend several existing
             # `match kv_dtype` arms (turbo3 + asym pair members route to
@@ -126,7 +151,6 @@ jobs:
             # Allow-listed to unblock the PR; clean splits tracked as follow-up
             # (per-file Ctx/State or sub-module extraction, Atlas idiom).
             "crates/atlas-kernels/build.rs"
-            "crates/atlas-quant/src/fp8.rs"
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
             "crates/spark-model/src/layers/moe/forward.rs"
@@ -152,6 +176,7 @@ jobs:
             "crates/spark-model/src/layers/qwen3_attention/prefill/cache_skip.rs"
             "crates/spark-model/src/layers/qwen3_attention/prefill/paged.rs"
             "crates/spark-model/src/model/block_mgmt.rs"
+            "crates/spark-model/src/model/impl_a1.rs"
             "crates/spark-model/src/model/impl_a2.rs"
             "crates/spark-model/src/model/ssm_pool.rs"
             "crates/spark-model/src/weight_loader/qwen35/load_layers.rs"
@@ -162,6 +187,12 @@ jobs:
             "crates/spark-server/src/scheduler/emit_step.rs"
             "crates/spark-server/src/scheduler/helpers.rs"
             "crates/spark-server/src/tool_parser/validation.rs"
+            # 510 LoC — prefill-b step: grew by the #283 param_close_pending
+            # field addition. Split tracked as follow-up.
+            "crates/spark-server/src/scheduler/prefill_b_step.rs"
+            # 516 LoC — verify pipeline helpers: grew by the #283
+            # mtp_verify_sample_enabled + dflash helpers. Split tracked as follow-up.
+            "crates/spark-server/src/scheduler/verify_pipeline_helper.rs"
             # ── PR #169 (perf/qwen36-dense-ffn-tc-prefill) carry-over,
             # grown by PR #223 (perf/qwen36-27b-prefill-nvfp4) ──
             # 1507 LoC — dense-FFN forward: multi-arm quantized-FFN dispatch
@@ -246,6 +277,14 @@ jobs:
             # decode dispatchers above; conv/GDN halves were already
             # extracted to trait_decode_batched_conv_gdn.rs. Clean split
             # tracked as follow-up.
+            # 548 LoC — Qwen3.5 linear-attn (SSM) loader arm; grew with the
+            # HeadParallel config-localize + per-rank segmented weight loads
+            # (FP8-dense + NVFP4 builders). Two linear load sequences read
+            # top-to-bottom; clean split tracked as follow-up.
+            "crates/spark-model/src/weight_loader/qwen35/load_layers/linear_attn_arms.rs"
+            # 503 LoC — batched-recurrent GDN decode; marginally over (added the
+            # per-seq SSM out_proj all-reduce for HeadParallel). Back under 500
+            # once the batched/graph paths consolidate. Follow-up.
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched.rs"
             # -- #300/#301 (mixed-precision NVFP4 weights) carry-over --
             # 522 LoC; landed on main 2026-07-12 without an entry, so the
@@ -268,6 +307,63 @@ jobs:
             "crates/spark-model/src/layers/ops/gemm_dense.rs"
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
             "crates/spark-model/src/model/trait_impl/mod.rs"
+            # -- PR #373 (prefix-cache refcount fixes) carry-over --
+            # 505 LoC — paged KV block pool. Sat at 493 (under cap); the two
+            # refcount fixes push it 12 over: `return_evicted_block` must release
+            # only the prefix cache's own ref (force-zeroing freed blocks a live
+            # sequence still held → aliased KV pointer → CUDA-700), and `dec_ref`
+            # is now saturating because `debug_assert` is compiled out in release
+            # with no `overflow-checks`, so a 0-ref decrement wrapped to u32::MAX
+            # and pinned the block forever. Both need their "why" inline — the
+            # bugs are invisible from the code alone. Comments already trimmed
+            # 520 → 505. Single `impl PagedKvCache` (alloc/free/refcount/block IO)
+            # whose ordering is read top-to-bottom, same rationale as the other
+            # compute/state-heavy entries above. Clean split (block IO → sibling)
+            # tracked as follow-up.
+            "crates/spark-runtime/src/kv_cache/paged_impl.rs"
+            # ── Wave-55 integration (perf/enterprise-concurrency-v2 -> main) ──
+            # Thirteen of the fifteen below were ALREADY over the cap on the
+            # branch tip before this merge; two (`model/types.rs`,
+            # `scheduler/mtp_step.rs`) crossed it in the merge itself, from the
+            # union of main's carried-context refactor with the campaign's
+            # multi-sequence work. All fifteen are the enterprise-concurrency
+            # campaign's compute/dispatch surfaces, where the read order IS the
+            # launch order; splitting them mid-campaign is exactly the change
+            # that would have gone unmeasured. Split tracked as follow-up.
+            #
+            # 698 LoC — batched MTP drafter forward (n-row propose).
+            "crates/spark-model/src/layers/mtp_head/forward_batch.rs"
+            # 647 LoC — R-row batched verify forward + graph capture.
+            "crates/spark-model/src/model/trait_impl/verify_e.rs"
+            # 617 LoC — multi-seq decode driver + graph-key selection.
+            "crates/spark-model/src/model/trait_impl/decode_a2.rs"
+            # 596 LoC — batched GDN recurrent decode scan.
+            "crates/spark-model/src/layers/qwen3_ssm/trait_decode_multi_seq/ssm_batched_recurrent.rs"
+            # 545 LoC — quantized weight-map layouts (MMQ SoA + transposed twins).
+            "crates/spark-model/src/weight_map/quantized.rs"
+            # 536 LoC — model-wide type/field surface; grew by the union of
+            # main's `ModelLevers`/`GemmDispatch` carriers with the campaign's
+            # verify-pool and FP16-h-state fields.
+            "crates/spark-model/src/model/types.rs"
+            # 532 LoC — decode phase B (drafter prefill + carry).
+            "crates/spark-model/src/model/trait_impl/decode_b.rs"
+            # 525 LoC — speculative trait impl (propose/verify plumbing).
+            "crates/spark-model/src/model/trait_impl/speculative.rs"
+            # 524 LoC — SSM snapshot capture/restore.
+            "crates/spark-model/src/model/ssm_snapshot.rs"
+            # 522 LoC — speculation mode/width resolution.
+            "crates/spark-model/src/speculative.rs"
+            # 518 LoC — Mamba/SSM op wrappers.
+            "crates/spark-model/src/layers/ops/ssm_mamba.rs"
+            # 513 LoC — dev-only W4A16 BF16-v2 microbench example.
+            "crates/spark-model/examples/w4a16_bf16_v2_microtest.rs"
+            # 509 LoC — scheduler type surface.
+            "crates/spark-server/src/scheduler/types.rs"
+            # 504 LoC — MTP step driver; crossed the cap when the run context
+            # was threaded through the bootstrap/verify dispatch in this merge.
+            "crates/spark-server/src/scheduler/mtp_step.rs"
+            # 502 LoC — /v1/completions handler.
+            "crates/spark-server/src/api/completions.rs"
           )
 
           violations=0

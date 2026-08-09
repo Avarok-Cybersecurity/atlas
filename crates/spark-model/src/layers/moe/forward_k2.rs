@@ -26,12 +26,25 @@ impl MoeLayer {
         // per-token BF16 decode kernels). Otherwise fall back to the per-token
         // BF16 batched path (SSOT: reuses the decode BF16 kernels via
         // forward_batched), which produces the same moe_output()[2,H].
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         let use_bf16_batch2 = self.bf16_gate_weight_ptrs.is_some()
             && self.moe_expert_gate_up_shared_bf16_batch2_k.0 != 0
             && self.moe_expert_silu_down_shared_bf16_batch2_k.0 != 0
             && !is_ep;
         if self.bf16_gate_weight_ptrs.is_some() && !use_bf16_batch2 {
+            return self.forward_batched(input, 2, ctx, stream);
+        }
+        // E8M0 (native MXFP4, per-32 E8M0 scale) routed experts MUST NOT reach the
+        // unified-T batch2 kernel `moe_expert_gate_up_shared_batch2_t`: it is an
+        // NVFP4 kernel that hardcodes GROUP_SIZE=16 and would read `inter·h/16`
+        // scale bytes from the correctly-sized `inter·h/32` E8M0 scale buffer — a
+        // 2× over-read → CUDA_ERROR_ILLEGAL_ADDRESS (it also E4M3-decodes E8M0
+        // scale bytes → garbage even in-bounds). No E8M0 batch2 kernel exists, so
+        // route both verify tokens through the per-token unified-T path
+        // (`forward_batched`), whose `use_t_layout_for_prefill` branch selects the
+        // GS32 `_e8m0` kernel via `e8m0_or` — the same correct path ordinary decode
+        // already uses. Mirrors the BF16 fallback above.
+        if k2_e8m0_needs_per_token(self.experts_scale_kind) {
             return self.forward_batched(input, 2, ctx, stream);
         }
 
@@ -139,6 +152,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        super::union_stats::maybe_sample_expert_union(ctx, indices_dev, 2, top_k as usize, stream);
 
         if k2_diag {
             ctx.gpu
@@ -346,11 +360,7 @@ impl MoeLayer {
             )?;
         } else {
             // NVFP4 batch2 path
-            let batch2_block = if ctx.config.hidden_size >= 3072 {
-                256u32
-            } else {
-                128u32
-            };
+            let batch2_block = batch2_block_width(ctx.config.hidden_size);
             ops::moe_expert_gate_up_shared_batch2(
                 ctx.gpu,
                 self.moe_expert_gate_up_shared_batch2,
@@ -426,7 +436,7 @@ impl MoeLayer {
 
         // EP all-reduce: sum partial outputs for 2 tokens
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, 2 * h as usize * 2)?;
@@ -463,3 +473,28 @@ impl MoeLayer {
         Ok(())
     }
 }
+
+/// Block width for the NVFP4 batch2 MoE GEMVs — 128 (one warp per output pair)
+/// or 256 (two warps joined through smem, which pays off once K is large). This
+/// was inlined at the call site, where it read as a proxy for "is this model's
+/// kernel one of the three 256-wide shadows" and over-fired for every other MoE
+/// model at hidden_size ≥ 3072, launching them twice as wide as their `#define
+/// BLOCK_SIZE 128`. The kernel reads `blockDim.x` now, so this is pure tuning.
+pub(crate) fn batch2_block_width(hidden_size: usize) -> u32 {
+    if hidden_size >= 3072 { 256 } else { 128 }
+}
+
+/// K=2-verify MoE dispatch guard. E8M0 (native MXFP4, per-32 E8M0 scale) routed
+/// experts MUST take the per-token unified-T path (GS32 `_e8m0` kernel via
+/// `e8m0_or`), NOT the GS16 NVFP4 `moe_expert_gate_up_shared_batch2_t` batch2
+/// kernel: that kernel reads `inter·h/16` scale bytes from the correctly-sized
+/// `inter·h/32` E8M0 scale buffer — a 2× over-read → CUDA_ERROR_ILLEGAL_ADDRESS.
+/// Pure decision, unit-tested and wired at the top of `forward_k2`.
+pub(crate) fn k2_e8m0_needs_per_token(scale_kind: crate::weight_map::WeightQuantFormat) -> bool {
+    matches!(scale_kind, crate::weight_map::WeightQuantFormat::Mxfp4E8m0)
+}
+
+// Focused dispatch tests live in a sibling file to keep this file ≤500 LoC.
+#[cfg(test)]
+#[path = "forward_k2_dispatch_tests.rs"]
+mod k2_dispatch_tests;

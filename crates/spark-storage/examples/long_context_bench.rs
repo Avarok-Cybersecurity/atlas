@@ -132,6 +132,7 @@ fn main() -> Result<()> {
         num_kv_heads: NUM_KV_HEADS,
         head_dim: HEAD_DIM,
         block_size: BLOCK_SIZE,
+        model_fp: None,
     };
     let mut hss = HighSpeedSwap::new(&ctx, cfg, model)?;
 

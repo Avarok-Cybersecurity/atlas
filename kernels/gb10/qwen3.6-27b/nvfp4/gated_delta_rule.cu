@@ -893,3 +893,1622 @@ extern "C" __global__ void gated_delta_rule_chunk3(
     }
 }
 
+
+// ────────────────────────────────────────────────────────────
+// Multi-sequence / fused decode kernels — exact piecewise copy of
+// kernels/gb10/common/gated_delta_rule.cu lines 344-956.
+//
+// This file SHADOWS the common one (build.rs collect_cu_files: model
+// files override common by stem), so any kernel that lives only in
+// common is invisible to this model. These four were added to common
+// after this shadow was forked, so the 27B silently lost:
+//   * _f32_strided / _f32_strided_norm — the N-sequence batched
+//     recurrent decode behind ATLAS_SSM_BATCHED_RECURRENT, and
+//   * _f32_norm / _f32_conv_norm — the fused decode variants.
+// Without them try_kernel returned 0 and every concurrent decode fell
+// back to the per-sequence loop.
+// ────────────────────────────────────────────────────────────
+
+#ifndef GDN_MS_HELPERS
+#define GDN_MS_HELPERS
+__device__ __forceinline__ void gdn_unpack_bf16x2(unsigned int packed, float& v0, float& v1) {
+    v0 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(packed & 0xFFFF)));
+    v1 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(packed >> 16)));
+}
+
+__device__ __forceinline__ unsigned int gdn_pack_bf16x2(float v0, float v1) {
+    unsigned int lo = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v0));
+    unsigned int hi = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v1));
+    return lo | (hi << 16);
+}
+
+__device__ __forceinline__ float gdn_warp_reduce_sum(float val) {
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        val += __shfl_xor_sync(0xFFFFFFFF, val, offset);
+    }
+    return val;
+}
+
+// SSM state normalization: clamp per-head h_state norm to prevent
+// catastrophic state explosion on long sequences (Stuffed Mamba, 2024).
+// MAX_STATE_NORM: if ||h[head]||_F > this, scale h down. 0 = disabled.
+//
+// Tuning: 100.0 was too aggressive — at 6K+ tokens with large system prompts,
+// state norms legitimately reach 200-500 and clipping destroys information
+// needed for instruction following. 1000.0 allows natural state growth while
+// still preventing numerical overflow (FP32 max ~ 3.4e38).
+#ifndef SSM_STATE_NORM_ENABLED
+#define SSM_STATE_NORM_ENABLED
+#define SSM_STATE_MAX_NORM 1000.0f
+#endif
+#endif  // GDN_MS_HELPERS
+
+extern "C" __global__ void gated_delta_rule_decode_f32_norm(
+    float* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    const __nv_bfloat16* __restrict__ z_gate,
+    const __nv_bfloat16* __restrict__ norm_weight,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    float eps
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    const float* q_ptr = query + (b * num_k_heads + kh) * k_dim;
+    const float* k_ptr = key + (b * num_k_heads + kh) * k_dim;
+    const float* v_ptr = value + (b * num_v_heads + vh) * v_dim;
+
+    float g_raw = gate[b * num_v_heads + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[b * num_v_heads + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] *= scale;
+            }
+        }
+    }
+    #endif
+
+    const float inv_sqrt_d = rsqrtf((float)k_dim);
+    const float x = q_dot * inv_sqrt_d;
+
+    __shared__ float x_cache[128];
+    x_cache[tid] = x;
+
+    float sum_sq = x * x;
+    sum_sq = gdn_warp_reduce_sum(sum_sq);
+    __shared__ float rms_sums[4];
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+    if (lane_id == 0) rms_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? rms_sums[lane_id] : 0.0f;
+        val = gdn_warp_reduce_sum(val);
+        if (lane_id == 0) rms_sums[0] = val;
+    }
+    __syncthreads();
+
+    const float rms = rsqrtf(rms_sums[0] / (float)v_dim + eps);
+
+    const unsigned int quad_size = v_dim / 4;
+    const unsigned long long* g64 = (const unsigned long long*)(z_gate + vh * v_dim);
+    const unsigned long long* w64 = (const unsigned long long*)norm_weight;
+    unsigned long long* out64 = (unsigned long long*)(output + vh * v_dim);
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x_cache[base];
+        float f1 = x_cache[base + 1];
+        float f2 = x_cache[base + 2];
+        float f3 = x_cache[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        gdn_unpack_bf16x2((unsigned int)wv, w0, w1);
+        gdn_unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        gdn_unpack_bf16x2((unsigned int)gv, g0, g1);
+        gdn_unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = gdn_pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = gdn_pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}
+
+// ============================================================================
+// FUSED conv1d_update_l2norm + recurrence + gated-RMS-norm decode kernel.
+//
+// Collapses the per-seq SSM decode critical-path chain `conv1d_l2norm -> gdn ->
+// gated_norm` (3 dependent kernels) into ONE, shortening the decode dependency
+// chain (decode is GPU-~93%-idle = chain-depth bound; the existing gdn+norm
+// fusion already gave +18% c4). Race-free via a PER-K-HEAD grid: each block owns
+// k-head kh AND its `head_repeat` v-heads, so it conv-updates its own q/k AND v
+// conv_state exclusively (no cross-block conv_state share -> no race).
+//
+// Grid: [num_k_heads, batch].  Block: head_repeat * v_dim threads.
+//   thread tid: which_v = tid / v_dim, vlocal = tid % v_dim, vh = kh*head_repeat+which_v.
+// Requires (validated by the Rust dispatch gate): head_repeat*v_dim == blockDim,
+//   2*k_dim <= blockDim (q+k conv covered one-per-thread), k_dim == v_dim.
+// new_input/conv layout is [Q(num_k_heads*k_dim) | K(...) | V(num_v_heads*v_dim)].
+extern "C" __global__ void gated_delta_rule_decode_f32_conv_norm(
+    float* __restrict__ h_state,
+    float* __restrict__ conv_state,            // [batch, conv_dim, d_conv]
+    const __nv_bfloat16* __restrict__ new_input, // [batch, conv_dim] deint qkvz
+    const __nv_bfloat16* __restrict__ conv_weight, // [conv_dim, d_conv]
+    const float* __restrict__ conv_bias,       // [conv_dim] or null
+    const float* __restrict__ gate,            // [batch, num_v_heads]
+    const float* __restrict__ beta,            // [batch, num_v_heads]
+    const __nv_bfloat16* __restrict__ z_gate,  // [batch, num_v_heads, v_dim]
+    const __nv_bfloat16* __restrict__ norm_weight, // [v_dim]
+    __nv_bfloat16* __restrict__ output,        // [batch, num_v_heads, v_dim]
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int conv_dim,
+    unsigned int d_conv,
+    float l2_eps,
+    float eps
+) {
+    const unsigned int kh = blockIdx.x;
+    const unsigned int b  = blockIdx.y;
+    if (kh >= num_k_heads || b >= batch_size) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int tid     = threadIdx.x;
+    const unsigned int which_v = tid / v_dim;       // 0..head_repeat-1
+    const unsigned int vlocal  = tid % v_dim;       // 0..v_dim-1
+    const unsigned int vh      = kh * head_repeat + which_v;
+    const unsigned int key_dim_total = num_k_heads * k_dim;   // Q block width
+
+    __shared__ float smem_q[128];
+    __shared__ float smem_k[128];
+    __shared__ float warp_sums[8];     // 8 warps for a 256-thread block
+
+    // ---- Step 1: conv1d_update + SiLU for this block's q/k channel (one/thread) ----
+    // tid [0,k_dim) -> q head kh ; tid [k_dim,2*k_dim) -> k head kh.
+    float qk_silu = 0.0f;
+    const bool is_q = (tid < k_dim);
+    const bool is_k = (tid >= k_dim && tid < 2 * k_dim);
+    if (is_q || is_k) {
+        const unsigned int ch = is_q ? (kh * k_dim + tid)
+                                     : (key_dim_total + kh * k_dim + (tid - k_dim));
+        float* state = conv_state + ((unsigned long long)(b * conv_dim + ch)) * d_conv;
+        for (unsigned int i = 0; i < d_conv - 1; i++) state[i] = state[i + 1];
+        state[d_conv - 1] = (float)new_input[b * conv_dim + ch];
+        const __nv_bfloat16* w = conv_weight + (unsigned long long)ch * d_conv;
+        float acc = (conv_bias != nullptr) ? conv_bias[ch] : 0.0f;
+        for (unsigned int k = 0; k < d_conv; k++) acc += state[k] * (float)w[k];
+        qk_silu = acc / (1.0f + __expf(-acc));
+    }
+    // L2-norm q (warps 0-3) and k (warps 4-7) groups separately.
+    {
+        float sq = qk_silu * qk_silu;
+        for (int off = 16; off >= 1; off >>= 1) sq += __shfl_down_sync(0xFFFFFFFF, sq, off);
+        if ((tid & 31) == 0) warp_sums[tid >> 5] = sq;
+        __syncthreads();
+        const unsigned int grp = tid >> 7;   // 0 = q, 1 = k
+        float total = warp_sums[grp * 4 + 0] + warp_sums[grp * 4 + 1]
+                    + warp_sums[grp * 4 + 2] + warp_sums[grp * 4 + 3];
+        float inv = rsqrtf(total + l2_eps);
+        if (is_q) smem_q[tid] = qk_silu * inv;
+        else if (is_k) smem_k[tid - k_dim] = qk_silu * inv;
+    }
+
+    // ---- Step 1b: conv1d_update + SiLU for this thread's V channel (no L2) ----
+    float v_i = 0.0f;
+    {
+        const unsigned int vch = 2 * key_dim_total + vh * v_dim + vlocal;
+        float* state = conv_state + ((unsigned long long)(b * conv_dim + vch)) * d_conv;
+        for (unsigned int i = 0; i < d_conv - 1; i++) state[i] = state[i + 1];
+        state[d_conv - 1] = (float)new_input[b * conv_dim + vch];
+        const __nv_bfloat16* w = conv_weight + (unsigned long long)vch * d_conv;
+        float acc = (conv_bias != nullptr) ? conv_bias[vch] : 0.0f;
+        for (unsigned int k = 0; k < d_conv; k++) acc += state[k] * (float)w[k];
+        v_i = acc / (1.0f + __expf(-acc));
+    }
+    __syncthreads();   // smem_q / smem_k complete before recurrence reads them
+
+    // ---- Step 2: gated-delta recurrence for v-head vh, v_dim index vlocal ----
+    float* H = h_state + ((unsigned long long)(b * num_v_heads + vh)) * k_dim * v_dim;
+    const float g_raw = gate[b * num_v_heads + vh];
+    const float g  = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[b * num_v_heads + vh];
+
+    float hk_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + vlocal];
+        float h1 = H[(j + 1) * v_dim + vlocal];
+        float h2 = H[(j + 2) * v_dim + vlocal];
+        float h3 = H[(j + 3) * v_dim + vlocal];
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+    const float v_new = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = g * H[(j+0)*v_dim+vlocal] + smem_k[j]   * v_new;
+        float h1 = g * H[(j+1)*v_dim+vlocal] + smem_k[j+1] * v_new;
+        float h2 = g * H[(j+2)*v_dim+vlocal] + smem_k[j+2] * v_new;
+        float h3 = g * H[(j+3)*v_dim+vlocal] + smem_k[j+3] * v_new;
+        H[(j+0)*v_dim+vlocal] = h0;
+        H[(j+1)*v_dim+vlocal] = h1;
+        H[(j+2)*v_dim+vlocal] = h2;
+        H[(j+3)*v_dim+vlocal] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+    }
+
+    // ---- State-norm clamp (per v-head; reduce within this which_v group) ----
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = 0.0f;
+        for (unsigned int j = 0; j < k_dim; j++) {
+            float hv = H[j * v_dim + vlocal];
+            local_sq += hv * hv;
+        }
+        for (int off = 16; off >= 1; off >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, off);
+        __syncthreads();   // reuse warp_sums
+        if ((tid & 31) == 0) warp_sums[tid >> 5] = local_sq;
+        __syncthreads();
+        const unsigned int grp = tid >> 7;
+        float head_norm_sq = warp_sums[grp*4+0] + warp_sums[grp*4+1]
+                           + warp_sums[grp*4+2] + warp_sums[grp*4+3];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) H[j * v_dim + vlocal] *= scale;
+        }
+    }
+    #endif
+
+    // ---- Step 3: gated RMS norm (per v-head) -> output ----
+    const float x = q_dot * rsqrtf((float)k_dim);
+    float sum_sq = x * x;
+    for (int off = 16; off >= 1; off >>= 1) sum_sq += __shfl_down_sync(0xFFFFFFFF, sum_sq, off);
+    __syncthreads();   // reuse warp_sums
+    if ((tid & 31) == 0) warp_sums[tid >> 5] = sum_sq;
+    __syncthreads();
+    {
+        const unsigned int grp = tid >> 7;
+        float total = warp_sums[grp*4+0] + warp_sums[grp*4+1]
+                    + warp_sums[grp*4+2] + warp_sums[grp*4+3];
+        const float rms = rsqrtf(total / (float)v_dim + eps);
+        const float zg = (float)z_gate[(unsigned long long)(b * num_v_heads + vh) * v_dim + vlocal];
+        const float wv = (float)norm_weight[vlocal];
+        const float sg = zg / (1.0f + expf(-zg));
+        output[(unsigned long long)(b * num_v_heads + vh) * v_dim + vlocal]
+            = __float2bfloat16(x * rms * wv * sg);
+    }
+}
+
+// FP32 strided decode variant for concurrent decode sequences.
+//
+// Unlike gated_delta_rule_decode_f32, Q/K/V are rows inside a wider
+// per-sequence conv output buffer: [Q | K | V]. The stride arguments let the
+// Rust multi-seq path batch independent sequence slots without repacking QKV.
+extern "C" __global__ void gated_delta_rule_decode_f32_strided(
+    float* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    float* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride,
+    unsigned int out_stride
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    const float* q_ptr = query + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* k_ptr = key + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* v_ptr = value + (unsigned long long)b * v_stride + vh * v_dim;
+
+    float g_raw = gate[(unsigned long long)b * gb_stride + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[(unsigned long long)b * gb_stride + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] *= scale;
+            }
+        }
+    }
+    #endif
+
+    float inv_sqrt_d = rsqrtf((float)k_dim);
+    output[(unsigned long long)b * out_stride + vh * v_dim + tid] = q_dot * inv_sqrt_d;
+}
+
+// FP32 strided decode variant fused with gated RMS norm.
+//
+// Used by the experimental concurrent SSM recurrent path. It keeps the same
+// state-update math as gated_delta_rule_decode_f32_strided but writes the
+// post-norm BF16 output directly, avoiding an FP32 global output row plus N
+// separate gated_rms_norm launches.
+extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm(
+    float* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    const __nv_bfloat16* __restrict__ z_gate,
+    const __nv_bfloat16* __restrict__ norm_weight,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride,
+    unsigned int z_stride,
+    unsigned int out_stride,
+    float eps
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    const float* q_ptr = query + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* k_ptr = key + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* v_ptr = value + (unsigned long long)b * v_stride + vh * v_dim;
+
+    float g_raw = gate[(unsigned long long)b * gb_stride + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[(unsigned long long)b * gb_stride + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] *= scale;
+            }
+        }
+    }
+    #endif
+
+    const float inv_sqrt_d = rsqrtf((float)k_dim);
+    const float x = q_dot * inv_sqrt_d;
+
+    __shared__ float x_cache[128];
+    x_cache[tid] = x;
+
+    float sum_sq = x * x;
+    sum_sq = gdn_warp_reduce_sum(sum_sq);
+    __shared__ float rms_sums[4];
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+    if (lane_id == 0) rms_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? rms_sums[lane_id] : 0.0f;
+        val = gdn_warp_reduce_sum(val);
+        if (lane_id == 0) rms_sums[0] = val;
+    }
+    __syncthreads();
+
+    const float rms = rsqrtf(rms_sums[0] / (float)v_dim + eps);
+
+    const unsigned int quad_size = v_dim / 4;
+    const unsigned long long* g64 = (const unsigned long long*)(
+        z_gate + (unsigned long long)b * z_stride + vh * v_dim
+    );
+    const unsigned long long* w64 = (const unsigned long long*)norm_weight;
+    unsigned long long* out64 = (unsigned long long*)(
+        output + (unsigned long long)b * out_stride + vh * v_dim
+    );
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x_cache[base];
+        float f1 = x_cache[base + 1];
+        float f2 = x_cache[base + 2];
+        float f3 = x_cache[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        gdn_unpack_bf16x2((unsigned int)wv, w0, w1);
+        gdn_unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        gdn_unpack_bf16x2((unsigned int)gv, g0, g1);
+        gdn_unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = gdn_pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = gdn_pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}
+
+// Half-width register retention. 64 floats = 256 B/thread.
+#define GDN_HALF_KD 64
+
+extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm_half(
+    float* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    const __nv_bfloat16* __restrict__ z_gate,
+    const __nv_bfloat16* __restrict__ norm_weight,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride,
+    unsigned int z_stride,
+    unsigned int out_stride,
+    float eps
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    const float* q_ptr = query + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* k_ptr = key + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* v_ptr = value + (unsigned long long)b * v_stride + vh * v_dim;
+
+    float g_raw = gate[(unsigned long long)b * gb_stride + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[(unsigned long long)b * gb_stride + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    // Retain the FIRST GDN_HALF_KD columns so the update re-reads only the rest:
+    // 2R+1W over the state becomes 1.5R+1W (~17% less traffic). At batch 16 the
+    // live state is ~49 MB, past L2, so the re-read partially reaches DRAM.
+    // 256 B/thread, HALF the full-width variant that measured -11.6% e2e purely
+    // from register pressure (its indices were already static).
+    // ★ EVERY hreg index below is a compile-time constant. A runtime index puts
+    //   hreg in LOCAL memory and the variant loses (-4.6% measured that way).
+    float hreg[GDN_HALF_KD];
+    #pragma unroll
+    for (unsigned int j = 0; j < GDN_HALF_KD; j += 4) {
+        hreg[j + 0] = H[(j + 0) * v_dim + tid];
+        hreg[j + 1] = H[(j + 1) * v_dim + tid];
+        hreg[j + 2] = H[(j + 2) * v_dim + tid];
+        hreg[j + 3] = H[(j + 3) * v_dim + tid];
+        hk_dot += hreg[j + 0] * smem_k[j] + hreg[j + 1] * smem_k[j+1]
+                + hreg[j + 2] * smem_k[j+2] + hreg[j + 3] * smem_k[j+3];
+    }
+    #pragma unroll 4
+    for (unsigned int j = GDN_HALF_KD; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    // 2a: retained half — registers, fully unrolled (static indices).
+    #pragma unroll
+    for (unsigned int j = 0; j < GDN_HALF_KD; j += 4) {
+        float h0 = hreg[j + 0];
+        float h1 = hreg[j + 1];
+        float h2 = hreg[j + 2];
+        float h3 = hreg[j + 3];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+    // 2b: remainder — re-read from H. Ascending j across both loops keeps the
+    // q_dot / norm_acc summation order identical to the original, so the
+    // Frobenius bit-identity argument in the two-pass kernel still holds.
+    #pragma unroll 4
+    for (unsigned int j = GDN_HALF_KD; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] *= scale;
+            }
+        }
+    }
+    #endif
+
+    const float inv_sqrt_d = rsqrtf((float)k_dim);
+    const float x = q_dot * inv_sqrt_d;
+
+    __shared__ float x_cache[128];
+    x_cache[tid] = x;
+
+    float sum_sq = x * x;
+    sum_sq = gdn_warp_reduce_sum(sum_sq);
+    __shared__ float rms_sums[4];
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+    if (lane_id == 0) rms_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? rms_sums[lane_id] : 0.0f;
+        val = gdn_warp_reduce_sum(val);
+        if (lane_id == 0) rms_sums[0] = val;
+    }
+    __syncthreads();
+
+    const float rms = rsqrtf(rms_sums[0] / (float)v_dim + eps);
+
+    const unsigned int quad_size = v_dim / 4;
+    const unsigned long long* g64 = (const unsigned long long*)(
+        z_gate + (unsigned long long)b * z_stride + vh * v_dim
+    );
+    const unsigned long long* w64 = (const unsigned long long*)norm_weight;
+    unsigned long long* out64 = (unsigned long long*)(
+        output + (unsigned long long)b * out_stride + vh * v_dim
+    );
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x_cache[base];
+        float f1 = x_cache[base + 1];
+        float f2 = x_cache[base + 2];
+        float f3 = x_cache[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        gdn_unpack_bf16x2((unsigned int)wv, w0, w1);
+        gdn_unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        gdn_unpack_bf16x2((unsigned int)gv, g0, g1);
+        gdn_unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = gdn_pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = gdn_pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}
+
+// ── SRAM-staged full retention twin ───────────────────────────────────────
+// BYTE-IDENTICAL to `gated_delta_rule_decode_f32_strided_norm_half`. The only
+// difference is WHERE the un-retained columns live between the two passes:
+// the parent re-reads them from H in DRAM (1.5R + 1W over the state), this
+// twin stages them in shared memory on the first pass and reads them back
+// from SRAM (1.0R + 1W) — 20% less state traffic on a kernel measured at
+// 264 GB/s, i.e. 97% of GB10's 273 GB/s spec, where only traffic VOLUME can
+// change the time.
+//
+// Why not simply retain more in registers: the parent ALREADY uses 255
+// registers/thread and spills 68 B at GDN_HALF_KD=64 (ptxas, sm_121f).
+// Raising retention converts H re-reads into local-memory spill traffic
+// roughly 1:1 — measured -11.6% e2e at full width. SRAM is the only storage
+// class left that is neither DRAM nor spill.
+//
+// Bit-identity argument: every value the update pass consumes from `smem_h`
+// is the exact float the first pass loaded from H at the same index, and
+// each thread touches only its own `tid` column, so no other thread can
+// observe or perturb it. The write set, the ascending-j iteration order, and
+// therefore the q_dot / norm_acc summation orders are unchanged.
+//
+// PRECONDITION: k_dim == GDN_HALF_KD + GDN_SMEM_KD. Callers must gate on it —
+// the staging buffer is statically sized.
+#define GDN_SMEM_KD (128 - GDN_HALF_KD)
+
+extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm_smem(
+    float* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    const __nv_bfloat16* __restrict__ z_gate,
+    const __nv_bfloat16* __restrict__ norm_weight,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride,
+    unsigned int z_stride,
+    unsigned int out_stride,
+    float eps
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    const float* q_ptr = query + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* k_ptr = key + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* v_ptr = value + (unsigned long long)b * v_stride + vh * v_dim;
+
+    float g_raw = gate[(unsigned long long)b * gb_stride + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[(unsigned long long)b * gb_stride + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+    // The columns the register file cannot hold. Staged HERE on the first
+    // pass so the update pass re-reads them from SRAM instead of DRAM.
+    // [GDN_SMEM_KD][128] = 32 KB; column-major-by-thread so every access is
+    // stride-1 across `tid` and therefore bank-conflict-free.
+    __shared__ float smem_h[GDN_SMEM_KD][128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    // Retain the FIRST GDN_HALF_KD columns so the update re-reads only the rest:
+    // 2R+1W over the state becomes 1.5R+1W (~17% less traffic). At batch 16 the
+    // live state is ~49 MB, past L2, so the re-read partially reaches DRAM.
+    // 256 B/thread, HALF the full-width variant that measured -11.6% e2e purely
+    // from register pressure (its indices were already static).
+    // ★ EVERY hreg index below is a compile-time constant. A runtime index puts
+    //   hreg in LOCAL memory and the variant loses (-4.6% measured that way).
+    float hreg[GDN_HALF_KD];
+    #pragma unroll
+    for (unsigned int j = 0; j < GDN_HALF_KD; j += 4) {
+        hreg[j + 0] = H[(j + 0) * v_dim + tid];
+        hreg[j + 1] = H[(j + 1) * v_dim + tid];
+        hreg[j + 2] = H[(j + 2) * v_dim + tid];
+        hreg[j + 3] = H[(j + 3) * v_dim + tid];
+        hk_dot += hreg[j + 0] * smem_k[j] + hreg[j + 1] * smem_k[j+1]
+                + hreg[j + 2] * smem_k[j+2] + hreg[j + 3] * smem_k[j+3];
+    }
+    #pragma unroll 4
+    for (unsigned int j = GDN_HALF_KD; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + tid];
+        float h1 = H[(j + 1) * v_dim + tid];
+        float h2 = H[(j + 2) * v_dim + tid];
+        float h3 = H[(j + 3) * v_dim + tid];
+        smem_h[j + 0 - GDN_HALF_KD][tid] = h0;
+        smem_h[j + 1 - GDN_HALF_KD][tid] = h1;
+        smem_h[j + 2 - GDN_HALF_KD][tid] = h2;
+        smem_h[j + 3 - GDN_HALF_KD][tid] = h3;
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    // 2a: retained half — registers, fully unrolled (static indices).
+    #pragma unroll
+    for (unsigned int j = 0; j < GDN_HALF_KD; j += 4) {
+        float h0 = hreg[j + 0];
+        float h1 = hreg[j + 1];
+        float h2 = hreg[j + 2];
+        float h3 = hreg[j + 3];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+    // 2b: remainder — re-read from H. Ascending j across both loops keeps the
+    // q_dot / norm_acc summation order identical to the original, so the
+    // Frobenius bit-identity argument in the two-pass kernel still holds.
+    #pragma unroll 4
+    for (unsigned int j = GDN_HALF_KD; j < k_dim; j += 4) {
+        float h0 = smem_h[j + 0 - GDN_HALF_KD][tid];
+        float h1 = smem_h[j + 1 - GDN_HALF_KD][tid];
+        float h2 = smem_h[j + 2 - GDN_HALF_KD][tid];
+        float h3 = smem_h[j + 3 - GDN_HALF_KD][tid];
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = h0;
+        H[(j + 1) * v_dim + tid] = h1;
+        H[(j + 2) * v_dim + tid] = h2;
+        H[(j + 3) * v_dim + tid] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        // Frobenius accumulation from the registers we just stored. The clamp
+        // below used to re-read all of H to get these -- a THIRD full pass over
+        // 3 MB per seq per layer, immediately after writing it. One add at a
+        // time in ascending j keeps the summation order identical to that loop,
+        // so the result is bit-identical, not merely equivalent.
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] *= scale;
+            }
+        }
+    }
+    #endif
+
+    const float inv_sqrt_d = rsqrtf((float)k_dim);
+    const float x = q_dot * inv_sqrt_d;
+
+    __shared__ float x_cache[128];
+    x_cache[tid] = x;
+
+    float sum_sq = x * x;
+    sum_sq = gdn_warp_reduce_sum(sum_sq);
+    __shared__ float rms_sums[4];
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+    if (lane_id == 0) rms_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? rms_sums[lane_id] : 0.0f;
+        val = gdn_warp_reduce_sum(val);
+        if (lane_id == 0) rms_sums[0] = val;
+    }
+    __syncthreads();
+
+    const float rms = rsqrtf(rms_sums[0] / (float)v_dim + eps);
+
+    const unsigned int quad_size = v_dim / 4;
+    const unsigned long long* g64 = (const unsigned long long*)(
+        z_gate + (unsigned long long)b * z_stride + vh * v_dim
+    );
+    const unsigned long long* w64 = (const unsigned long long*)norm_weight;
+    unsigned long long* out64 = (unsigned long long*)(
+        output + (unsigned long long)b * out_stride + vh * v_dim
+    );
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x_cache[base];
+        float f1 = x_cache[base + 1];
+        float f2 = x_cache[base + 2];
+        float f3 = x_cache[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        gdn_unpack_bf16x2((unsigned int)wv, w0, w1);
+        gdn_unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        gdn_unpack_bf16x2((unsigned int)gv, g0, g1);
+        gdn_unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = gdn_pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = gdn_pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}
+
+// ── FP16 h-state twins (ATLAS_SSM_H_FP16) ─────────────────────────────────
+//
+// The GDN decode scan is pure state traffic: at n=128 it moves 2.0 DRAM passes
+// over h and runs at 90% of GB10's row-strided ceiling, so its time is set by
+// the STATE FOOTPRINT and nothing else. Storing h as FP16 instead of FP32
+// halves that footprint and, measured on a replica faithful to the in-serve
+// kernel within 2.4%, halves the time: 187.11 -> 90.73 ms/step at n=128.
+//
+// FP16 (not BF16) because the gate decay `g*h` is unrepresentable when
+// `1-g < ulp/2` — the state stops forgetting. 22.1% of this model's 2304 heads
+// have `1-g` below BF16's 2^-9; only 0.78% fall below FP16's 2^-12. FP16's
+// range is safe by construction: the in-tree per-head Frobenius clamps bound
+// every element at <=1000 (prefill 100, chunk boundary 200, decode
+// SSM_STATE_MAX_NORM 1000) against FP16's 65504 — 65x headroom.
+//
+// These are ADDITIVE twins. They never alias the FP32 kernels above, which
+// remain the only path when ATLAS_SSM_H_FP16 is absent.
+//
+// Arithmetic is FP32 throughout, exactly as in the parents: h is widened on
+// load and narrowed on store (round-to-nearest-even via __float2half), and
+// q_dot / norm_acc accumulate the pre-narrowing FP32 value — which is what
+// vLLM's FLA kernel does with its fp32 `b_h` accumulator.
+
+#include <cuda_fp16.h>
+
+// Half-width register retention, FP16 twin. `hreg` is __half rather than float
+// because every value in it was just loaded FROM FP16 memory — retaining it as
+// __half is bit-lossless AND halves the retention array to 128 B/thread, which
+// is what keeps this kernel off the local-memory stack. ★ Every hreg index is
+// a compile-time constant under the full `#pragma unroll`; a runtime index puts
+// the array in local memory and costs 1.50x (measured).
+
+// Saturating FP16 store for the h-state twins.
+//
+// The per-head Frobenius clamp runs AFTER the update and re-reads H, so it
+// cannot repair an element that already overflowed on store: `inf * scale` is
+// still `inf`, and one `inf` poisons that head's `hk_dot` on the next step and
+// every step after. Saturating at FP16's max keeps the state finite; the norm
+// clamp then scales the head down on the same step, exactly as it does in FP32.
+// Below 65504 this is bit-for-bit `__float2half`, so it changes nothing on the
+// overwhelming majority of elements.
+__device__ __forceinline__ __half gdn_f16_store(float v) {
+#ifdef GDN_F16_OVERFLOW_DIAG
+    if (!(v > -65504.0f && v < 65504.0f)) printf("GDN_F16_SAT %g\n", v);
+#endif
+    return __float2half(fminf(fmaxf(v, -65504.0f), 65504.0f));
+}
+
+// Retention width for the FP16 twin. 48, not the FP32 parent's 64: at 64 the
+// twin needs 255 registers and ptxas spills 72 B, at 48 it needs 236 and the
+// stack frame is ZERO. That is worth more than the extra 16 retained columns,
+// because the re-read those columns would have saved is served by L2 and costs
+// no DRAM traffic (wave 31 measured the 0.5 extra pass to be free). Replica,
+// n=128, 48 layers, cold: 64 -> 90.4 ms, 48 -> 84.1 ms, 32 -> 85.1 ms, against
+// an FP32 control of 183 ms in the same harness.
+#define GDN_F16_HALF_KD 48
+
+extern "C" __global__ void gated_delta_rule_decode_f16_strided_norm_half(
+    __half* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    const __nv_bfloat16* __restrict__ z_gate,
+    const __nv_bfloat16* __restrict__ norm_weight,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride,
+    unsigned int z_stride,
+    unsigned int out_stride,
+    // ★ Per-SEQUENCE stride of the h-state pool, in __half elements. It is NOT
+    // `num_v_heads * k_dim * v_dim`: stage 1 keeps the pool FP32-SIZED (prefill
+    // still writes FP32) and packs the FP16 state into the first half of each
+    // slot, so consecutive slots are 2x the dense FP16 footprint apart. The
+    // FP32 parent can assume dense packing because for it the two coincide.
+    unsigned long long h_seq_stride,
+    float eps
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    __half* H = h_state + (unsigned long long)b * h_seq_stride
+              + (unsigned long long)vh * k_dim * v_dim;
+    const float* q_ptr = query + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* k_ptr = key + (unsigned long long)b * qk_stride + kh * k_dim;
+    const float* v_ptr = value + (unsigned long long)b * v_stride + vh * v_dim;
+
+    float g_raw = gate[(unsigned long long)b * gb_stride + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[(unsigned long long)b * gb_stride + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    // Registers stay FP32: h was just widened on load, so keeping it wide
+    // costs nothing extra and matches the parent's arithmetic exactly.
+    float hreg[GDN_F16_HALF_KD];
+    #pragma unroll
+    for (unsigned int j = 0; j < GDN_F16_HALF_KD; j += 4) {
+        hreg[j + 0] = __half2float(H[(j + 0) * v_dim + tid]);
+        hreg[j + 1] = __half2float(H[(j + 1) * v_dim + tid]);
+        hreg[j + 2] = __half2float(H[(j + 2) * v_dim + tid]);
+        hreg[j + 3] = __half2float(H[(j + 3) * v_dim + tid]);
+        hk_dot += (hreg[j + 0]) * smem_k[j]
+                + (hreg[j + 1]) * smem_k[j+1]
+                + (hreg[j + 2]) * smem_k[j+2]
+                + (hreg[j + 3]) * smem_k[j+3];
+    }
+    #pragma unroll 4
+    for (unsigned int j = GDN_F16_HALF_KD; j < k_dim; j += 4) {
+        float h0 = __half2float(H[(j + 0) * v_dim + tid]);
+        float h1 = __half2float(H[(j + 1) * v_dim + tid]);
+        float h2 = __half2float(H[(j + 2) * v_dim + tid]);
+        float h3 = __half2float(H[(j + 3) * v_dim + tid]);
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    #pragma unroll
+    for (unsigned int j = 0; j < GDN_F16_HALF_KD; j += 4) {
+        float h0 = (hreg[j + 0]);
+        float h1 = (hreg[j + 1]);
+        float h2 = (hreg[j + 2]);
+        float h3 = (hreg[j + 3]);
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = gdn_f16_store(h0);
+        H[(j + 1) * v_dim + tid] = gdn_f16_store(h1);
+        H[(j + 2) * v_dim + tid] = gdn_f16_store(h2);
+        H[(j + 3) * v_dim + tid] = gdn_f16_store(h3);
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+    #pragma unroll 4
+    for (unsigned int j = GDN_F16_HALF_KD; j < k_dim; j += 4) {
+        float h0 = __half2float(H[(j + 0) * v_dim + tid]);
+        float h1 = __half2float(H[(j + 1) * v_dim + tid]);
+        float h2 = __half2float(H[(j + 2) * v_dim + tid]);
+        float h3 = __half2float(H[(j + 3) * v_dim + tid]);
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = gdn_f16_store(h0);
+        H[(j + 1) * v_dim + tid] = gdn_f16_store(h1);
+        H[(j + 2) * v_dim + tid] = gdn_f16_store(h2);
+        H[(j + 3) * v_dim + tid] = gdn_f16_store(h3);
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] = gdn_f16_store(__half2float(H[j * v_dim + tid]) * scale);
+            }
+        }
+    }
+    #endif
+
+    const float inv_sqrt_d = rsqrtf((float)k_dim);
+    const float x = q_dot * inv_sqrt_d;
+
+    __shared__ float x_cache[128];
+    x_cache[tid] = x;
+
+    float sum_sq = x * x;
+    sum_sq = gdn_warp_reduce_sum(sum_sq);
+    __shared__ float rms_sums[4];
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+    if (lane_id == 0) rms_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? rms_sums[lane_id] : 0.0f;
+        val = gdn_warp_reduce_sum(val);
+        if (lane_id == 0) rms_sums[0] = val;
+    }
+    __syncthreads();
+
+    const float rms = rsqrtf(rms_sums[0] / (float)v_dim + eps);
+
+    const unsigned int quad_size = v_dim / 4;
+    const unsigned long long* g64 = (const unsigned long long*)(
+        z_gate + (unsigned long long)b * z_stride + vh * v_dim
+    );
+    const unsigned long long* w64 = (const unsigned long long*)norm_weight;
+    unsigned long long* out64 = (unsigned long long*)(
+        output + (unsigned long long)b * out_stride + vh * v_dim
+    );
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x_cache[base];
+        float f1 = x_cache[base + 1];
+        float f2 = x_cache[base + 2];
+        float f3 = x_cache[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        gdn_unpack_bf16x2((unsigned int)wv, w0, w1);
+        gdn_unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        gdn_unpack_bf16x2((unsigned int)gv, g0, g1);
+        gdn_unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = gdn_pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = gdn_pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}
+
+// FP16 h-state twin of `gated_delta_rule_decode_f32_norm`. This is the
+// per-sequence arm the batched dispatch declines to when n == 1 or when the
+// pool slots are not contiguous in slice order, so it must exist for the FP16
+// pool invariant to hold on EVERY decode step, not just the batched fast path.
+extern "C" __global__ void gated_delta_rule_decode_f16_norm(
+    __half* __restrict__ h_state,
+    const float* __restrict__ query,
+    const float* __restrict__ key,
+    const float* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    const __nv_bfloat16* __restrict__ z_gate,
+    const __nv_bfloat16* __restrict__ norm_weight,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    float eps
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= v_dim) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    __half* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    const float* q_ptr = query + (b * num_k_heads + kh) * k_dim;
+    const float* k_ptr = key + (b * num_k_heads + kh) * k_dim;
+    const float* v_ptr = value + (b * num_v_heads + vh) * v_dim;
+
+    float g_raw = gate[b * num_v_heads + vh];
+    const float g = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[b * num_v_heads + vh];
+
+    __shared__ float smem_k[128];
+    __shared__ float smem_q[128];
+
+    if (tid < k_dim) {
+        smem_k[tid] = k_ptr[tid];
+        smem_q[tid] = q_ptr[tid];
+    }
+    __syncthreads();
+
+    float v_i = v_ptr[tid];
+    float hk_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = __half2float(H[(j + 0) * v_dim + tid]);
+        float h1 = __half2float(H[(j + 1) * v_dim + tid]);
+        float h2 = __half2float(H[(j + 2) * v_dim + tid]);
+        float h3 = __half2float(H[(j + 3) * v_dim + tid]);
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+
+    float v_new_i = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+#ifdef SSM_STATE_NORM_ENABLED
+    float norm_acc = 0.0f;
+#endif
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = __half2float(H[(j + 0) * v_dim + tid]);
+        float h1 = __half2float(H[(j + 1) * v_dim + tid]);
+        float h2 = __half2float(H[(j + 2) * v_dim + tid]);
+        float h3 = __half2float(H[(j + 3) * v_dim + tid]);
+        h0 = g * h0 + smem_k[j]     * v_new_i;
+        h1 = g * h1 + smem_k[j + 1] * v_new_i;
+        h2 = g * h2 + smem_k[j + 2] * v_new_i;
+        h3 = g * h3 + smem_k[j + 3] * v_new_i;
+        H[(j + 0) * v_dim + tid] = gdn_f16_store(h0);
+        H[(j + 1) * v_dim + tid] = gdn_f16_store(h1);
+        H[(j + 2) * v_dim + tid] = gdn_f16_store(h2);
+        H[(j + 3) * v_dim + tid] = gdn_f16_store(h3);
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+#ifdef SSM_STATE_NORM_ENABLED
+        norm_acc += h0 * h0;
+        norm_acc += h1 * h1;
+        norm_acc += h2 * h2;
+        norm_acc += h3 * h3;
+#endif
+    }
+
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = norm_acc;
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, offset);
+        __shared__ float norm_sums[4];
+        if (tid % 32 == 0) norm_sums[tid / 32] = local_sq;
+        __syncthreads();
+        if (tid == 0) {
+            float total = 0.0f;
+            for (int w = 0; w < 4; w++) total += norm_sums[w];
+            norm_sums[0] = total;
+        }
+        __syncthreads();
+        float head_norm_sq = norm_sums[0];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) {
+                H[j * v_dim + tid] = gdn_f16_store(__half2float(H[j * v_dim + tid]) * scale);
+            }
+        }
+    }
+    #endif
+
+    const float inv_sqrt_d = rsqrtf((float)k_dim);
+    const float x = q_dot * inv_sqrt_d;
+
+    __shared__ float x_cache[128];
+    x_cache[tid] = x;
+
+    float sum_sq = x * x;
+    sum_sq = gdn_warp_reduce_sum(sum_sq);
+    __shared__ float rms_sums[4];
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+    if (lane_id == 0) rms_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? rms_sums[lane_id] : 0.0f;
+        val = gdn_warp_reduce_sum(val);
+        if (lane_id == 0) rms_sums[0] = val;
+    }
+    __syncthreads();
+
+    const float rms = rsqrtf(rms_sums[0] / (float)v_dim + eps);
+
+    const unsigned int quad_size = v_dim / 4;
+    const unsigned long long* g64 = (const unsigned long long*)(z_gate + vh * v_dim);
+    const unsigned long long* w64 = (const unsigned long long*)norm_weight;
+    unsigned long long* out64 = (unsigned long long*)(output + vh * v_dim);
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x_cache[base];
+        float f1 = x_cache[base + 1];
+        float f2 = x_cache[base + 2];
+        float f3 = x_cache[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        gdn_unpack_bf16x2((unsigned int)wv, w0, w1);
+        gdn_unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        gdn_unpack_bf16x2((unsigned int)gv, g0, g1);
+        gdn_unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = gdn_pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = gdn_pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}

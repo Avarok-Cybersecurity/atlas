@@ -93,3 +93,66 @@ model_type = "gemma4"
 hidden_size = 2816
 
 [kernel]
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels`. This target
+# runs BF16 weights; every entry below is a quantized-family or
+# shadow-only try_kernel() probe whose fallback resolves. EXCEPT the
+# four [expected_absent.gated_delta_rule] f16 arms — see honesty note.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = "Deep-K p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves: common). Unmeasured for BF16-serving targets."
+w4a16_gemm_t_k64_p3 = "Same family; k64_kernel falls back to required w4a16_gemm_t_k64 (resolves)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; 0-handle gated at dispatch (K64_N64_MAX_WIDE_CTAS)."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; dispatch gated on handle != 0, falls back to resolved w4a16 m128 path."
+w4a16_gemm_t_m128_bf16_v2 = "Pipelined v2 of the above; same gating. Unmeasured."
+int8_gemm_faith2 = """
+INT8-prefill twin (faith2). Only materialized when finalize_int8_load
+finds int8 weights AND the resolved handles — this BF16 checkpoint has
+no int8 path; dispatch gated by handle != 0."""
+int8_gemm_i32acc = "Same int8 family — BF16 checkpoint never materializes it."
+requant_w_nvfp4_int8 = "Int8 weight requant from NVFP4 weights; this checkpoint is BF16, no NVFP4 source weights exist."
+requant_a_bf16_int8 = "Same int8 family — activation requant; gated by the same weight-presence condition."
+
+[expected_absent.w4a4]
+w4a4_gemm = "NVFP4 W4A4 GEMM; BF16 checkpoint has no NVFP4 weights. Fallback resolves through w4a16."
+w4a4_gemm_mfast = "mfast twin shipped only in nemotron-labs-3-puzzle's shadow; same NVFP4-weight gating applies here."
+
+[expected_absent.q4k_mmq]
+atlas_q4k_mmq128_nc = """
+Q4_K FFN MMQ family — finalize_q4k_load requires ALL handles non-zero
+AND ATLAS_FFN_MMQ presence, then requantizes NVFP4 weights to Q4_K.
+This BF16-target's KERNEL set does not ship the module; gate fails on
+handle == 0 and stays on the resolved bf16/dense path."""
+atlas_q4k_mmq128_wc = "Same Q4_K family — gated off for this target (see atlas_q4k_mmq128_nc)."
+atlas_q8_1_quantize_ds4_bf16 = "Same Q4_K family — activation quantizer; gated off."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K weight quantizer for the MMQ family; gated off with the family (see q4k_mmq::atlas_q4k_mmq128_nc)."
+
+[expected_absent.nvfp4_mmq]
+atlas_nvfp4_mmq128_nc = """
+NVFP4 MMQ FFN family. finalize_nvfp4_mmq_load requantizes NVFP4 weights;
+this target runs BF16 so the family is never materialized, and the
+KERNEL set ships no nvfp4_mmq module. Probe is gated by handle != 0."""
+atlas_nvfp4_mmq128_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_mmq16_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_mmq16_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_mmq32_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_mmq32_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_mmq64_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_mmq64_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+atlas_nvfp4_quantize_bf16 = "NVFP4 activation quantizer; gated off with the family."
+atlas_nvfp4_repack = "NVFP4 weight repacker; gated off with the family."
+atlas_nvfp4_silu_mul_scaled = "NVFP4 SiLU epilogue; gated off with the family."
+atlas_nvfp4_silu_mul_quant = "NVFP4 SiLU epilogue (quantized); gated off with the family."
+atlas_nvfp4_scale_bf16 = "NVFP4 scale handler; gated off with the family."
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = "Native-MXFP4 E8M0 variant, shipped only in deepseek-v4-flash. NVFP4 target uses the resolved ptrtable grouped GEMM."
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t variant."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t_k64 variant."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up variant."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up_k64 variant."
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FUSED-FP4 gate_up (Holo-3.1 family); dispatch checks handle != 0 before firing."
+moe_w4a16_fused_gate_up_t_k64_m128 = "M=128 Block-D variant shipped only in minimax-m2-229b; dispatch falls through to M=64."
+moe_w4a16_down_t_k64_fp4 = "FP4 down-projection twin; forward_prefill_routed gates on down_fp4 && handle != 0."

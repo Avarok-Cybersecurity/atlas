@@ -47,6 +47,27 @@ impl TransformerModel {
         tokens.contains(&pad_id)
     }
 
+    /// Whether `--high-speed-swap` has slid this sequence's rolling window, so
+    /// `block_table` no longer parallels the token stream from position 0.
+    ///
+    /// Every prefix-cache insert assumes it does: the radix tree is keyed on the
+    /// token stream from position 0 and files `block_table[i]` on the node for
+    /// token chunk `i`. Once HSS slides (`hss_window_start() > 0`),
+    /// `block_table[0]` no longer holds position 0 — the front of the table holds
+    /// the most RECENT positions — so inserting files a block under a token chunk
+    /// whose KV it does not contain, and a later warm hit reuses the wrong KV as
+    /// if it were a valid prefix.
+    ///
+    /// There is no correct partial insert to fall back on: the tree indexes
+    /// prefixes from the root and what survives in a slid window is a
+    /// mid-sequence suffix, so a slid sequence has nothing cacheable. Skip.
+    ///
+    /// `cache_sequence` and `save_checkpoint`'s boundary insert already guarded
+    /// on this; the prefill-time inserts in `prefill_d`/`finalize_last` did not.
+    pub(super) fn hss_window_slid(&self, seq: &SequenceState) -> bool {
+        seq.hss_window_start() > 0
+    }
+
     /// Free pinned host memory on model destruction.
     pub(super) fn drop_pinned_staging(&self) {
         // SAFETY: Called from Drop, which runs on the owning thread.
@@ -128,6 +149,12 @@ impl TransformerModel {
 
         if comm.rank() == 0 {
             // H2D: copy token bytes to device scratch (synchronous, blocks until done)
+            // SAFETY: `byte_len = n * 4` and `n = tokens.len()` (both bound at the
+            // top of this fn), so the reinterpreted span is exactly
+            // `tokens.len() * size_of::<u32>()` bytes — the whole of `tokens` and
+            // not one byte more. `tokens: &[u32]` is a live shared borrow, so every
+            // byte is initialised and no `&mut` to it can exist. u8 has alignment 1,
+            // so the cast cannot under-align.
             let token_bytes: &[u8] =
                 unsafe { std::slice::from_raw_parts(tokens.as_ptr() as *const u8, byte_len) };
             self.gpu.copy_h2d(token_bytes, dev_buf)?;
@@ -140,6 +167,12 @@ impl TransformerModel {
             // D2H: read received tokens from device
             self.gpu.synchronize(stream)?;
             let mut result = vec![0u32; n];
+            // SAFETY: `result` was just built by `vec![0u32; n]`, so its length is
+            // exactly `n` and every element is initialised; `byte_len = n * 4 =
+            // result.len() * size_of::<u32>()`, so the span is exactly the Vec's
+            // buffer. `result_bytes` is the only reference derived from `result`
+            // while it is live (the next use of `result` is the `Ok(result)` move,
+            // after `result_bytes` is dead), so the `&mut` is unaliased.
             let result_bytes =
                 unsafe { std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, byte_len) };
             self.gpu.copy_d2h(dev_buf, result_bytes)?;
@@ -164,7 +197,14 @@ impl TransformerModel {
             return Ok(val);
         };
         let stream = self.gpu.default_stream();
-        let world = self.config.ep_world_size;
+        // Loop over the ranks of the ACTUAL communicator: under pure TP
+        // (`--tp-size 2 --ep-size 1`) `ep_world_size` is 1 but the comm
+        // spans `tp_world_size` ranks — looping only `0..1` would leave
+        // the head min-reducing over its own value alone (asymmetric
+        // agreement → proc_count mismatch → collective deadlock on a warm
+        // cache-hit divergence). For EP-only and overlapping TP==EP
+        // topologies `max()` is identical to the previous value.
+        let world = self.config.ep_world_size.max(self.config.tp_world_size);
         let mut min_val = val;
         for root in 0..world {
             let v = if comm.rank() == root {
@@ -198,16 +238,38 @@ impl TransformerModel {
     /// var). Disagreement causes the worker to misread the next u32 as a
     /// command code and is the kind of misconfiguration we want to fail
     /// loudly in development — there's no graceful fallback.
+    /// True when the head↔worker command protocol must be live: a
+    /// multi-rank NCCL world exists — EP **or** pure TP. Under
+    /// `--tp-size 2 --ep-size 1` (GDN HeadParallel 2-node) rank>0 still
+    /// runs the command-driven worker loop, so the head MUST emit the
+    /// same wire protocol as EP mode.
+    ///
+    /// Root cause of the 2026-07-03 2-node GDN deadlock: every broadcast
+    /// helper gated on `ep_world_size > 1` alone, so under pure TP the
+    /// head silently dropped ALL commands (prefill cmd + args + decode
+    /// cmds) while `ep_broadcast_tokens` (gated only on `comm`) still
+    /// fired — the rank-1 worker's 4-byte cmd recv paired with the head's
+    /// token-bulk broadcast, read `prompt_tokens[0]` as a decode command,
+    /// decoded (and CUDA-graph-captured) while the head was mid-prefill,
+    /// and both ranks wedged in shape-mismatched collectives (head stuck
+    /// in `sample_first_token` D2H, worker in the next cmd recv, both
+    /// GPUs spinning in NCCL kernels).
+    pub(crate) fn multi_rank_protocol_active(&self) -> bool {
+        self.comm.is_some() && (self.config.ep_world_size > 1 || self.config.tp_world_size > 1)
+    }
+
     pub(super) fn ep_broadcast_seq_and_cmd(&self, seq_id: u32, cmd: u32, v2: bool) -> Result<()> {
-        // No-op unless EP is actually active. The per-seq broadcast helpers
-        // (`ep_broadcast_cmd_for_seq`) are called unconditionally from the
-        // head's prefill / decode / mtp / lifecycle paths, exactly like the
-        // original `ep_broadcast_cmd` which no-ops here via
-        // `ep_broadcast_cmd_dispatch`. Without this guard `ep_broadcast_u32`
-        // panics ("ep_broadcast_u32 without comm") on every single-GPU
-        // generation, since `self.comm` is `None`. (Regression from the EP=2
-        // slot-mux work, which only exercised the 2-rank path.)
-        if !(self.comm.is_some() && self.config.ep_world_size > 1) {
+        // No-op unless a multi-rank worker protocol is active (EP or pure
+        // TP — see `multi_rank_protocol_active`). The per-seq broadcast
+        // helpers (`ep_broadcast_cmd_for_seq`) are called unconditionally
+        // from the head's prefill / decode / mtp / lifecycle paths,
+        // exactly like the original `ep_broadcast_cmd` which no-ops here
+        // via `ep_broadcast_cmd_dispatch`. Without this guard
+        // `ep_broadcast_u32` panics ("ep_broadcast_u32 without comm") on
+        // every single-GPU generation, since `self.comm` is `None`.
+        // (Regression from the EP=2 slot-mux work, which only exercised
+        // the 2-rank path.)
+        if !self.multi_rank_protocol_active() {
             return Ok(());
         }
         if v2 {
@@ -243,7 +305,7 @@ impl TransformerModel {
         seq_ids: &[u32],
         tokens: &[u32],
     ) -> Result<()> {
-        if !(self.comm.is_some() && self.config.ep_world_size > 1) {
+        if !self.multi_rank_protocol_active() {
             return Ok(());
         }
         debug_assert!(

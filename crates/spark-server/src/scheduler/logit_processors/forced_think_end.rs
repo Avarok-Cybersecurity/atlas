@@ -37,7 +37,8 @@ impl LogitsProcessor for ForcedThinkEndInjector {
             .last()
             .copied()
             .and_then(|prev_tok| {
-                crate::scheduler::helpers::boundary_token_mask()
+                ctx.boundary_mask
+                    .clone()
                     .as_deref()
                     .and_then(|m| m.get(prev_tok as usize).copied())
             })

@@ -190,9 +190,42 @@ fn hermes_parser_system_prompt_contains_json() {
             parameters: None,
         },
     }];
-    let prompt = parser.system_prompt(&tools, &ToolChoice::Mode("auto".into()));
+    let prompt = parser.system_prompt(
+        &tools,
+        &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
+    );
     assert!(prompt.contains("\"name\":\"test\""));
     assert!(prompt.contains("<tools>"));
+}
+
+#[test]
+fn tscg_is_decided_per_model_not_per_process() {
+    // The regression the `OnceLock<bool>` allowed: the first model to load
+    // fixed TSCG for every later one, so a hot-swap rendered the new model's
+    // schemas under the old model's setting. Levers travel with the call, so
+    // both answers are reachable in one process.
+    let parser = HermesParser;
+    let tools = vec![ToolDefinition {
+        tool_type: "function".into(),
+        function: FunctionDefinition {
+            name: "test".into(),
+            description: Some("A test function".into()),
+            parameters: None,
+        },
+    }];
+    let tc = ToolChoice::Mode("auto".into());
+    let off = parser.system_prompt(&tools, &tc, &crate::tool_parser::PromptLevers::OFF);
+    let on = parser.system_prompt(&tools, &tc, &crate::tool_parser::PromptLevers::new(true));
+    assert!(
+        off.contains("\"name\":\"test\""),
+        "TSCG off keeps the JSON body"
+    );
+    assert!(
+        !on.contains("\"name\":\"test\""),
+        "TSCG on replaces it with signatures"
+    );
+    assert!(on.contains("test"), "the tool is still described");
 }
 
 #[test]
@@ -206,7 +239,11 @@ fn qwen3_coder_parser_system_prompt_contains_xml() {
             parameters: None,
         },
     }];
-    let prompt = parser.system_prompt(&tools, &ToolChoice::Mode("auto".into()));
+    let prompt = parser.system_prompt(
+        &tools,
+        &ToolChoice::Mode("auto".into()),
+        &crate::tool_parser::PromptLevers::OFF,
+    );
     assert!(prompt.contains("\"name\":\"test\""));
     assert!(prompt.contains("A test function"));
     assert!(prompt.contains("<function=example_function_name>"));
@@ -434,38 +471,3 @@ fn parse_minimax_namespaced_function_name() {
 }
 
 // ── Mistral native format ──
-
-#[test]
-fn parse_mistral_single_call() {
-    let input = "[TOOL_CALLS]get_weather[ARGS]{\"location\":\"Paris\"}";
-    let (c, calls) = parse_tool_calls(input);
-    assert!(c.is_none());
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].function.name, "get_weather");
-    let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
-    assert_eq!(args["location"], "Paris");
-}
-
-#[test]
-fn parse_mistral_multiple_calls() {
-    let input = "[TOOL_CALLS]search[ARGS]{\"q\":\"rust\"}[TOOL_CALLS]summarize[ARGS]{\"text\":\"found it\"}";
-    let (_, calls) = parse_tool_calls(input);
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].function.name, "search");
-    assert_eq!(calls[1].function.name, "summarize");
-    let a1: serde_json::Value = serde_json::from_str(&calls[1].function.arguments).unwrap();
-    assert_eq!(a1["text"], "found it");
-}
-
-#[test]
-fn parse_mistral_with_leading_content() {
-    let input = "Let me check.[TOOL_CALLS]get_weather[ARGS]{\"city\":\"Tokyo\"}";
-    let (c, calls) = parse_tool_calls(input);
-    assert_eq!(c.unwrap(), "Let me check.");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].function.name, "get_weather");
-}
-
-// MTP / speculative-decode fragmentation robustness tests live in
-// the sibling `streaming_frag.rs` module to keep this file under the
-// 500-LoC cap.

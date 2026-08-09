@@ -85,6 +85,19 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
             }
         }
         let raw_value = rest[..val_end].trim();
+        // P0-2 (2026-07-09): when the value ended at a RECOVERY boundary
+        // (next `<parameter=` / `</function>`), a garbled close-reopen
+        // (`</parameter<parameter=` — the model dropped the `>`) leaves the
+        // orphan `</parameter` as the value's tail. Strip it; it is the
+        // model's intended close, not content.
+        let raw_value = if !consumed_close {
+            raw_value
+                .strip_suffix("</parameter")
+                .map(str::trim_end)
+                .unwrap_or(raw_value)
+        } else {
+            raw_value
+        };
         let advanced_to_func_close =
             !consumed_close && val_end < rest.len() && rest[val_end..].starts_with("</function>");
         rest = if consumed_close {

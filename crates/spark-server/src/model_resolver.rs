@@ -7,6 +7,24 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+/// The command that fetches `id` into the HF cache this resolver reads.
+///
+/// One function rather than the same line written at each dead end, because
+/// this advice went stale: `huggingface-cli` was renamed `hf` and REMOVED in
+/// huggingface_hub 1.0, so the message every first-time user hits told them to
+/// run a binary that is not installed. Spelled once, it can only be wrong once.
+///
+/// The old name is still named — a box pinned to a huggingface_hub older than
+/// 1.0 has only `huggingface-cli`, and a reader who typed `hf` and got "command
+/// not found" needs to be told what to type instead, not left guessing.
+fn download_hint(id: &str) -> String {
+    format!(
+        "  hf download {id}\n\
+         (`hf` is the huggingface_hub CLI; before 1.0 it was `huggingface-cli`. \
+         The dashboard's Library downloads into the same cache.)"
+    )
+}
+
 /// Resolve a model specifier to a local directory path.
 ///
 /// Resolution order:
@@ -36,10 +54,10 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
     if !model_cache.is_dir() {
         bail!(
             "Model '{}' not found in HF cache at {}.\n\
-             Download it first:\n  huggingface-cli download {}",
+             Download it first:\n{}",
             model_id,
             cache_root.display(),
-            model_id,
+            download_hint(model_id),
         );
     }
 
@@ -113,20 +131,105 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
     bail!(
         "Snapshot '{}' for {} has no weight files (no model.safetensors / \
          consolidated.safetensors / *.safetensors found in {}). Sibling \
-         snapshots in {} also lack weights — refresh the cache:\n  \
-         huggingface-cli download {} --revision main",
+         snapshots in {} also lack weights — refresh the cache:\n{}",
         snapshot_hash,
         model_id,
         snapshot_dir.display(),
         model_cache.join("snapshots").display(),
-        model_id,
+        download_hint(model_id),
+    );
+}
+
+/// Resolve a LoRA adapter specifier (local path or HF id) to a directory
+/// containing `adapter_config.json`. Mirrors `resolve_model_dir`, but PEFT
+/// adapter repos ship `adapter_config.json` + `adapter_model.safetensors`
+/// and no `config.json`, so the marker checks differ.
+pub fn resolve_adapter_dir(spec: &str, cache_dir: Option<&Path>) -> Result<PathBuf> {
+    let as_path = Path::new(spec);
+    if as_path.is_dir() {
+        if as_path.join("adapter_config.json").exists() {
+            tracing::info!("Adapter path: {} (local directory)", as_path.display());
+            return validate_adapter_dir(as_path.to_path_buf(), spec);
+        }
+        bail!(
+            "Adapter directory {} has no adapter_config.json — not a PEFT adapter",
+            as_path.display(),
+        );
+    }
+
+    let cache_root = resolve_cache_root(cache_dir)?;
+    let dir_name = format!("models--{}", spec.replace('/', "--"));
+    let model_cache = cache_root.join(&dir_name);
+    if !model_cache.is_dir() {
+        bail!(
+            "Adapter '{}' not found in HF cache at {}.\n\
+             Download it first:\n{}",
+            spec,
+            cache_root.display(),
+            download_hint(spec),
+        );
+    }
+
+    let ref_path = model_cache.join("refs/main");
+    let snapshot_hash = std::fs::read_to_string(&ref_path)
+        .with_context(|| {
+            format!(
+                "No default revision for adapter '{}'. Expected refs/main at {}.\n\
+                 The adapter may not have been fully downloaded.",
+                spec,
+                ref_path.display(),
+            )
+        })?
+        .trim()
+        .to_string();
+
+    let snapshot_dir = model_cache.join("snapshots").join(&snapshot_hash);
+    if !snapshot_dir.is_dir() {
+        bail!(
+            "Snapshot directory not found: {}\n\
+             refs/main points to hash '{}' but that snapshot doesn't exist.",
+            snapshot_dir.display(),
+            snapshot_hash,
+        );
+    }
+
+    if !snapshot_dir.join("adapter_config.json").exists() {
+        bail!(
+            "'{}' resolved to {} but it has no adapter_config.json — not a PEFT adapter repo",
+            spec,
+            snapshot_dir.display(),
+        );
+    }
+
+    tracing::info!("Adapter: {} (resolved to {})", spec, snapshot_dir.display());
+    validate_adapter_dir(snapshot_dir, spec)
+}
+
+/// Validate that a resolved adapter directory ships safetensors weights.
+/// `adapter_model.bin` (torch pickle) is rejected by name so the failure
+/// doesn't surface as a confusing missing-weights error two layers deeper.
+fn validate_adapter_dir(dir: PathBuf, spec: &str) -> Result<PathBuf> {
+    if dir.join("adapter_model.safetensors").exists() {
+        return Ok(dir);
+    }
+    if dir.join("adapter_model.bin").exists() {
+        bail!(
+            "Adapter '{}' ships adapter_model.bin (torch pickle) — unsupported. \
+             Re-export with save_pretrained(..., safe_serialization=True).",
+            spec,
+        );
+    }
+    bail!(
+        "Adapter '{}' has no adapter_model.safetensors in {}",
+        spec,
+        dir.display(),
     );
 }
 
 /// True when the directory contains at least one weight file Atlas's
 /// safetensors loader can pick up. Mirrors the heuristic in
 /// `spark-runtime::weights::SafetensorsLoader::load`.
-fn snapshot_has_weights(dir: &Path) -> bool {
+pub(crate) fn snapshot_has_weights(dir: &Path) -> bool {
     let direct = [
         "model.safetensors",
         "model.safetensors.index.json",
@@ -149,7 +252,7 @@ fn snapshot_has_weights(dir: &Path) -> bool {
 
 /// Pick the most-recently-modified snapshot under `snapshots/` that actually
 /// contains weights. Returns `None` if none of the siblings have weights.
-fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
+pub(crate) fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
     let entries: Vec<_> = std::fs::read_dir(snapshots_root)
         .ok()?
         .filter_map(|e| e.ok())
@@ -175,7 +278,7 @@ fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBuf> {
 /// 2. `$HF_HUB_CACHE` env var
 /// 3. `$HF_HOME/hub` env var
 /// 4. `~/.cache/huggingface/hub`
-fn resolve_cache_root(cache_dir: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn resolve_cache_root(cache_dir: Option<&Path>) -> Result<PathBuf> {
     if let Some(dir) = cache_dir {
         return Ok(dir.to_path_buf());
     }
@@ -264,7 +367,10 @@ mod tests {
         let result = resolve_model_dir("nonexistent/model", Some(tmp.path()));
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found in HF cache"));
-        assert!(err.contains("huggingface-cli download"));
+        assert!(err.contains("hf download"), "{err}");
+        // The old name stays NAMED, not recommended: a box on
+        // huggingface_hub < 1.0 has only `huggingface-cli`.
+        assert!(err.contains("huggingface-cli"), "{err}");
     }
 
     #[test]
@@ -331,6 +437,6 @@ mod tests {
             err.contains("no weight files") || err.contains("metadata-only"),
             "expected weight-files error, got: {err}"
         );
-        assert!(err.contains("huggingface-cli download"));
+        assert!(err.contains("hf download"), "{err}");
     }
 }

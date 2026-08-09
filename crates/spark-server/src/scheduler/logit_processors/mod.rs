@@ -19,7 +19,7 @@
 //!    the previous token decoded to mid-word text.
 //! 3. [`post_close::PostCloseThinkMask`] — after `</think>` fires,
 //!    masks `</think>` + `<think>` so the model can't re-enter.
-//! 4. [`tool_during_think::ToolCallDuringThinkingMask`] — masks
+//! 4. [`tool_during_think::ToolCallDuringThinkingMask`] — sched
 //!    `<tool_call>` during thinking; biases it down on tool-loop.
 //! 5. [`forced_think_end::ForcedThinkEndInjector`] — when budget
 //!    + sentence-boundary policy says inject, blanket-mask to `</think>`.
@@ -38,7 +38,6 @@
 //! also downstream.
 
 use crate::scheduler::ActiveSeq;
-use crate::scheduler::decode_logits_seq::force_temp_zero_enabled;
 use crate::scheduler::sample_step::PositionKind;
 use spark_runtime::sampler::{SamplingParams, apply_penalties_and_bias};
 
@@ -59,12 +58,73 @@ mod pipeline_tests;
 /// Per-step environment passed to every processor. Holds tokenizer-
 /// special tokens the pipeline cares about. `Copy` so it threads
 /// through cheaply.
-#[derive(Debug, Clone, Copy)]
-pub struct LogitsContext {
+// No longer `Copy`: the masks are `Arc`s. Cloning one is two refcount
+// bumps, and it is built once per decode step, not per token.
+#[derive(Debug, Clone)]
+pub struct LogitsContext<'a> {
+    /// The run's reusable host decode buffers. Borrowed rather than reached
+    /// through a `thread_local!`, so a buffer cannot outlive the run.
+    pub scratch: &'a crate::scheduler::sched_ctx::DecodeScratch,
+    /// This run's diagnostic file sinks.
+    pub dumps: &'a crate::scheduler::dumps::RunDumps,
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_end_token: Option<u32>,
+    /// `mask[id]` iff token `id` decodes to text ending in a generation
+    /// boundary. Vocab-sized and INDEXED BY TOKEN ID, so it is meaningless
+    /// against a different tokenizer — carried beside the token ids it belongs
+    /// with rather than read from a process-wide static, which could outlive
+    /// the vocabulary that produced it and silently suppress the wrong tokens.
+    pub boundary_mask: Option<std::sync::Arc<[bool]>>,
+    /// `mask[id]` iff token `id` ends mid-word. Same indexing, same hazard.
+    pub mid_word_mask: Option<std::sync::Arc<[bool]>>,
+    /// Sampling levers for this run, carried beside the tokenizer-derived
+    /// values they act on. Built once per decode step from `SchedLevers`.
+    pub sampling: SamplingLevers,
+    /// The run's verify-timing sink. Carried like everything else here, so a
+    /// timing summary covers one model's steps.
+    pub timing: std::sync::Arc<crate::scheduler::mtp_timing::RunTiming>,
+    /// This model's watchdog tunables (MODEL.toml `[behavior]`). The F2
+    /// confidence stages read them, and they are per-model, so they ride the
+    /// same carrier as the token ids and masks.
+    pub watchdog: crate::scheduler::helpers::WatchdogParams,
+    /// The run's speculation and drift counters. Shared, so the B1 gauge
+    /// counts one model's positions rather than the process's.
+    pub stats: std::sync::Arc<crate::scheduler::spec_stats::SpecStats>,
+}
+
+/// The subset of `scheduler::levers::SchedLevers` the pre-sample pipeline
+/// reads.
+///
+/// `LogitsContext` is the carrier that pipeline already receives, so the levers
+/// ride along with it instead of being reached through process globals. `Copy`
+/// keeps building the context per decode step free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SamplingLevers {
+    /// Pure argmax on raw logits — no pipeline, no penalties, no bias.
+    pub force_temp_zero: bool,
+    /// Fast greedy path when a grammar is active.
+    pub fast_greedy_grammar: bool,
+    /// Run the full sample pipeline during MTP verify.
+    pub mtp_verify_sample: bool,
+    /// Fast masked-sampling chat path.
+    pub fast_masked: bool,
+    /// Grammarless verify fast-greedy (the chat sibling of the grammar arm).
+    pub fast_greedy_chat: bool,
+    /// Adaptive-decode diagnostic recording. Suppresses the fast path so the
+    /// full pipeline is observable.
+    pub adadec_diagnostic: bool,
+    /// DFlash masked verify.
+    pub dflash_masked_verify: bool,
+    /// `ATLAS_DISABLE_WATCHDOGS` — every auto-watchdog off. Read by the F2
+    /// and mid-word stages.
+    pub disable_watchdogs: bool,
+    /// Grammar forced-token (Coalescence) fast path. Default-on.
+    pub forced_token_fastpath: bool,
+    /// Thread the sequence's resolved `min_p` into the MTP sample sites
+    /// instead of the historical `0.0` literals. Default-on.
+    pub mtp_minp: bool,
 }
 
 /// Outcome of one [`LogitsProcessor::apply`] call.
@@ -148,7 +208,7 @@ pub fn run_pipeline_with_path(
     // distribution, never mutates. No-op when ATLAS_ADADEC_DIAGNOSTIC is
     // unset. Called directly (not as a pipeline stage) so the caller's
     // path label is preserved byte-identically across both decode paths.
-    adadec_diag::log_step(logits, seq, path);
+    adadec_diag::log_step(ctx.dumps.adadec.as_ref(), logits, seq, path);
     None
 }
 
@@ -192,7 +252,7 @@ pub fn process_position_logits(
     // 1. ATLAS_FORCE_TEMP_ZERO: pure argmax on raw logits — no pipeline, no
     //    penalties, no bias. Eligible on both kinds (the diagnostic's point
     //    is an identical bypass everywhere).
-    if force_temp_zero_enabled() {
+    if ctx.sampling.force_temp_zero {
         let mut best_idx: u32 = 0;
         let mut best_val: f32 = f32::NEG_INFINITY;
         for (j, &v) in logits.iter().enumerate() {
@@ -213,7 +273,7 @@ pub fn process_position_logits(
     // 3. B1 margin observer — FINAL decode position only (risk R6). Reads
     //    the post-mask distribution; never mutates.
     if kind == PositionKind::FinalDecode {
-        b1_margin::observe(logits, seq);
+        b1_margin::observe(logits, seq, &ctx.stats);
     }
 
     // 4. Penalties + bias (incl. A4) on the now-masked logits, using the
@@ -232,7 +292,8 @@ pub fn process_position_logits(
         ),
     );
     if kind == PositionKind::Verify {
-        crate::scheduler::mtp_timing::record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);
+        ctx.timing
+            .record(crate::scheduler::mtp_timing::Phase::Penalties, t_pen);
     }
 
     None

@@ -6,8 +6,6 @@
 // A tokenizer-bound cache that produces `CompiledGrammar`s, avoiding
 // redundant preprocessing of grammars / schemas seen before.
 
-use dashmap::DashMap;
-
 use crate::grammar::functor::{GrammarNormalizer, GrammarOptimizer};
 use crate::grammar::{GrammarData, parse_ebnf};
 use crate::schema::{SchemaConverterOptions, builtin_json_grammar_ebnf, json_schema_to_ebnf};
@@ -16,6 +14,7 @@ use crate::tokenizer::TokenizerInfo;
 
 use super::compile::compile_optimized_grammar;
 use super::compiled_grammar::CompiledGrammar;
+use super::grammar_cache::{GrammarCache, UNLIMITED_BYTES};
 use super::rule_cache::{RuleLevelCache, UNLIMITED_SIZE};
 
 /// An error produced while compiling a grammar, schema or tag.
@@ -63,7 +62,12 @@ pub struct GrammarCompiler {
     max_threads: usize,
     cache_enabled: bool,
     cache_limit_bytes: i64,
-    cache: DashMap<CacheKey, CompiledGrammar>,
+    /// Tier-1 compiled-grammar cache, LRU-bounded by `cache_limit_bytes`.
+    ///
+    /// Was a bare `DashMap` with no eviction: `CacheKey::Schema` is keyed by
+    /// the full tool-schema text, so agentic traffic minted a permanent entry
+    /// per request (~100 MB/min under BFCL; issue #368).
+    cache: GrammarCache<CacheKey>,
     /// Cross-grammar adaptive-token-mask cache (Tier 2, upstream commit
     /// `bfb2a79`). `Some` only when `cache_enabled` — a rule
     /// structurally identical to one compiled for a previous request
@@ -80,9 +84,11 @@ impl GrammarCompiler {
     ///   now lazy (XGrammar-2 JIT), so there is no eager parallel loop
     ///   to bound; the value is recorded but unused. Must be >= 1.
     /// * `cache_enabled` — whether to cache compiled grammars.
-    /// * `cache_limit_bytes` — recorded memory budget; `-1` means
-    ///   unlimited. (Reported by [`Self::cache_limit_bytes`]; this port
-    ///   does not perform LRU eviction — see the module docs.)
+    /// * `cache_limit_bytes` — memory budget, ENFORCED by LRU eviction on
+    ///   both tiers. `-1` means unlimited, which is now an explicit opt-in
+    ///   rather than the serve's default: unbounded was the shape of the leak
+    ///   in issue #368. The budget splits as upstream does — ~1/3 to the
+    ///   rule-level cache, the remaining ~2/3 to this grammar-level one.
     ///
     /// Port of the C++ `GrammarCompiler` constructor.
     pub fn new(
@@ -116,7 +122,12 @@ impl GrammarCompiler {
             max_threads,
             cache_enabled,
             cache_limit_bytes,
-            cache: DashMap::new(),
+            cache: GrammarCache::new(if cache_limit_bytes == -1 {
+                UNLIMITED_BYTES
+            } else {
+                // The ~2/3 complement of the rule cache's `limit - limit/3*2`.
+                (cache_limit_bytes / 3 * 2) as usize
+            }),
             rule_cache,
         }
     }
@@ -143,10 +154,11 @@ impl GrammarCompiler {
             return f();
         }
         if let Some(hit) = self.cache.get(&key) {
-            return hit.clone();
+            return hit;
         }
         let value = f();
-        self.cache.entry(key).or_insert(value).clone()
+        self.cache.insert(key, value.clone());
+        value
     }
 
     /// Compile a grammar from an EBNF string. Port of
@@ -248,11 +260,7 @@ impl GrammarCompiler {
     /// grammars plus the cross-grammar rule-level mask cache. Port of
     /// `GrammarCompiler::GetCacheSizeBytes`.
     pub fn cache_size_bytes(&self) -> i64 {
-        let grammar_bytes: i64 = self
-            .cache
-            .iter()
-            .map(|e| e.value().memory_size_bytes() as i64)
-            .sum();
+        let grammar_bytes = self.cache.resident_bytes() as i64;
         let rule_bytes = self
             .rule_cache
             .as_ref()
