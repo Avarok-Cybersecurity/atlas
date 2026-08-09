@@ -327,6 +327,49 @@ jobs:
           # answer, and "unknown" is the category that claims nothing.
           fallback: unknown
           title: atlas-pr-categorize
+      - name: Append the classifier's opinion to the PR journey ledger
+        # `crates/atlas-governance` shipped with a full event model, a grow-only
+        # Journey, deduplication and 16 tests — and ZERO WRITERS. Nothing had
+        # ever appended a line. This is the first one.
+        #
+        # `EventKind::Category`'s own doc says it is "recorded, never acted
+        # upon … so the observe-only rollout has something to audit". That is
+        # already earning its keep: three live runs on one PR produced
+        # `tooling`, `performance`, `tooling` from the flat classifier while the
+        # descending one held `infrastructure/*` throughout. Neither fact would
+        # exist if the disagreements had not been written down.
+        #
+        # Committed as tbraun96, per the repo's authorship convention.
+        env:
+          TAXON_PATH: ${{ steps.path.outputs.path }}
+          TAXON_STATUS: ${{ steps.path.outputs.status }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # `at` is passed in rather than read from the clock inside the binary:
+          # `Event::identity()` excludes it so a re-run COLLAPSES, and a replay
+          # has to be reproducible for that to mean anything.
+          cargo run --quiet -p atlas-plugin --bin ledger_append -- category \
+            --root . --pr "$PR_NUMBER" --head-sha "$HEAD_SHA" \
+            --run-id "$RUN_ID" --attempt "$ATTEMPT" --at "$(date +%s)" \
+            --value "$TAXON_PATH" --status "$TAXON_STATUS" || {
+              echo "::warning::could not append to the journey ledger"; exit 0; }
+
+          git config user.name  'tbraun96'
+          git config user.email 'tbraun96@users.noreply.github.com'
+          git add governance/ || exit 0
+          git diff --cached --quiet && { echo "ledger unchanged"; exit 0; }
+          git commit -q -m "chore(governance): record PR #$PR_NUMBER classification"
+          # Best-effort: a protected branch, a race with another run, or a fork
+          # PR with no write token must not fail the job. The ledger is
+          # EVIDENCE, not a gate — losing a line costs an audit trail entry,
+          # while failing here would make an advisory job block merges.
+          git push origin "HEAD:${GITHUB_HEAD_REF}" 2>/dev/null \
+            || echo "::notice::ledger line recorded locally; push skipped (no write access or race)"
       - name: Record what it said
         # Every value crosses into the script through `env:`, even though the
         # action guarantees its outputs are closed-set enums and its own fixed

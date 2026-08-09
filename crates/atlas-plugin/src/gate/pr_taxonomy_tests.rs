@@ -230,3 +230,41 @@ fn reserved_keys_are_not_categories() {
     assert_eq!(names, vec!["a", "b"]);
     assert!(roots[0].is_leaf(), "_benches must not count as a child");
 }
+
+/// The ledger is grow-only on disk and DEDUPLICATED ON READ — `Event::identity`
+/// excludes `at`, so a re-run collapses instead of accumulating. Three appends,
+/// one of them a replay with a different timestamp, must read back as two.
+#[test]
+fn a_replayed_ledger_event_collapses_on_read() {
+    let dir = super::super::tests::tempdir::Dir::new();
+    let root = dir.path();
+    let path = atlas_governance::ledger::path_for(root, 433);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let ev = |run: &str, at: u64, value: &str| atlas_governance::event::Event {
+        pr: 433,
+        head_sha: "abc1234567".into(),
+        run_id: run.into(),
+        attempt: 1,
+        at,
+        kind: atlas_governance::event::EventKind::Category {
+            value: value.into(),
+            status: "ok".into(),
+        },
+    };
+    for e in [
+        ev("31300000", 1_786_280_000, "infrastructure/benchmark-gate"),
+        ev("31300001", 1_786_280_100, "tooling"),
+        // Same identity as the first, different clock: a re-run of one job.
+        ev("31300000", 1_786_288_888, "infrastructure/benchmark-gate"),
+    ] {
+        atlas_governance::ledger::append(&path, &e).unwrap();
+    }
+    let raw = atlas_governance::ledger::read_all(&path).unwrap();
+    let deduped = raw.deduplicated();
+    assert_eq!(
+        deduped.events.len(),
+        2,
+        "a replayed event must collapse; identity excludes `at` precisely so that \
+         re-running a job does not inflate the journey"
+    );
+}

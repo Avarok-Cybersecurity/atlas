@@ -12,6 +12,9 @@ description = "Atlas: plugin + benchmark abstraction and registry driven by the 
 # stay buildable (and unit-testable) without CUDA, so the benchmark suite can be
 # reasoned about and tested on any box.
 [dependencies]
+# The journey ledger. `ledger_append` is its FIRST writer — the crate shipped
+# with 16 tests and zero callers.
+atlas-governance = { path = "../atlas-governance" }
 atlas-closure = { path = "../atlas-closure" }
 # BENCH.toml — a model's benchmarks and thresholds, beside the model.
 toml = "0.8"
