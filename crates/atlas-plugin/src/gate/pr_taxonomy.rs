@@ -71,18 +71,33 @@ fn parse_children(value: &serde_json::Value) -> Result<Vec<Node>> {
         if RESERVED.contains(&key.as_str()) {
             continue;
         }
-        let benches = child
-            .get("_benches")
-            .map(|b| {
-                b.as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
+        // ★ STRICT. The first version used `.as_array().unwrap_or_default()`
+        // and `filter_map(as_str)`, so `_benches: "bfcl-subset"` (a bare
+        // string) and `[["x"]]` both parsed as EMPTY here while the ci.yml jq
+        // read them fine. Two implementations of one function that disagreed —
+        // and the Rust half failed in the REMOVING direction, which is exactly
+        // what this module's safety property forbids. A typo must be loud.
+        let benches = match child.get("_benches") {
+            None => Vec::new(),
+            Some(serde_json::Value::Array(items)) => {
+                let mut v = Vec::with_capacity(items.len());
+                for item in items {
+                    match item.as_str() {
+                        Some(s) => v.push(s.to_string()),
+                        None => bail!(
+                            "{key}: _benches contains a non-string entry ({item}). \
+                             A silently-dropped entry removes a benchmark."
+                        ),
+                    }
+                }
+                v
+            }
+            Some(other) => bail!(
+                "{key}: _benches must be an ARRAY of benchmark ids, got {other}. \
+                 A bare string parses as empty here while jq reads it, so the two \
+                 halves would disagree — in the removing direction."
+            ),
+        };
         out.push(Node {
             name: key.clone(),
             benches,

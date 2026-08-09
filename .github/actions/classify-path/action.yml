@@ -30,6 +30,18 @@ inputs:
   text:
     description: The content to classify. Untrusted by assumption.
     required: true
+  context:
+    description: >-
+      Extra evidence for the classifier, appended after `text`. Untrusted by
+      assumption, same as `text` — it is JSON-escaped into the request body,
+      never spliced.
+
+      This exists because a title alone is not evidence. The caller should
+      pass the CHANGED PATHS, and may pass CROSS-REPO context: the serve
+      recipes live in `Avarok-Cybersecurity/atlas-recipes`, and which recipe a
+      change affects is often only visible there.
+    required: false
+    default: ""
   taxonomy:
     description: >-
       Path to the taxonomy JSON, relative to the workspace. Nodes are objects;
@@ -92,6 +104,7 @@ runs:
       # script body — same rule as `actions/categorize`, same reason.
       env:
         INPUT_TEXT: ${{ inputs.text }}
+        INPUT_CONTEXT: ${{ inputs.context }}
         INPUT_TAXONOMY: ${{ inputs.taxonomy }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_API_KEY: ${{ inputs.api-key }}
@@ -103,12 +116,18 @@ runs:
       run: |
         set -uo pipefail
 
+        # Heredoc-delimited, NOT `echo k=v`. A newline in any value would
+        # otherwise forge additional step outputs — and one code path below
+        # (the auto-follow branch) takes a value straight from the taxonomy
+        # file without the allowlist, so "the values are closed-set" is not a
+        # property this function may assume about its own arguments.
         emit() {  # status, path, depth, reason
+          local d="__ATLAS_EOF_$RANDOM$RANDOM"
           {
-            echo "status=$1"
-            echo "path=$2"
-            echo "depth=$3"
-            echo "reason=$4"
+            printf 'status<<%s\n%s\n%s\n' "$d" "$1" "$d"
+            printf 'path<<%s\n%s\n%s\n'   "$d" "$2" "$d"
+            printf 'depth<<%s\n%s\n%s\n'  "$d" "$3" "$d"
+            printf 'reason<<%s\n%s\n%s\n' "$d" "$4" "$d"
           } >> "$GITHUB_OUTPUT"
           echo "classify-path: $1 ($2) — $4"
         }
@@ -142,7 +161,11 @@ runs:
           exit 0
         fi
 
-        TEXT=$(printf '%s' "$INPUT_TEXT" | head -c "$INPUT_MAX_CHARS")
+        # Context after the title: a title is prose the author chose, the
+        # paths are what the change actually is. Truncation applies to the
+        # WHOLE thing so a huge context cannot push the title out.
+        TEXT=$(printf '%s\n\n%s' "$INPUT_TEXT" "$INPUT_CONTEXT" \
+               | head -c "$INPUT_MAX_CHARS")
 
         # `children <jq-path>` — the pickable keys at a node. `_doc`/`_benches`
         # are metadata; offering them would let the model "classify" a PR as
@@ -204,14 +227,39 @@ runs:
 
         while [ "$DEPTH" -lt "$INPUT_MAX_DEPTH" ]; do
           opts=$(children "$PATH_SO_FAR")
-          n=$(printf '%s' "$opts" | jq 'length' 2>/dev/null || echo 0)
+          # `jq 'length'` on EMPTY input prints nothing and exits 0, so
+          # `|| echo 0` never fires and n is "". That made any children()
+          # failure — a malformed node, a jq quirk — indistinguishable from
+          # "reached a leaf", and the run then reported `ok`. Distinguish them.
+          if [ -z "$opts" ]; then
+            emit error "$INPUT_FALLBACK" "$DEPTH" \
+              "could not read the children of \"$PATH_SO_FAR\" (malformed taxonomy?)"
+            exit 0
+          fi
+          n=$(printf '%s' "$opts" | jq 'length' 2>/dev/null)
+          if [ -z "$n" ]; then
+            emit error "$INPUT_FALLBACK" "$DEPTH" "taxonomy node is not an array of keys"
+            exit 0
+          fi
 
           # Leaf: the descent is over and the path is complete.
-          [ "${n:-0}" -eq 0 ] && break
+          [ "$n" -eq 0 ] && break
 
           # A set of one is not a choice — follow it without spending a call.
           if [ "$n" -eq 1 ]; then
             only=$(printf '%s' "$opts" | jq -r '.[0]')
+            # ★ The SAME shape check the model's answers get. This branch never
+            # calls `ask()`, so without this it was the one path where an
+            # arbitrary string from the taxonomy file became a path segment —
+            # and `jq -r` renders \n as a real newline straight into
+            # GITHUB_OUTPUT. `validate()` forbids single-child nodes, but it
+            # runs in a different job that this one does not depend on.
+            case "$only" in
+              *[!a-z0-9-]* | "" )
+                emit error "$INPUT_FALLBACK" "$DEPTH" \
+                  "taxonomy key is not lowercase kebab-case; refusing to use it"
+                exit 0 ;;
+            esac
             PATH_SO_FAR="${PATH_SO_FAR:+$PATH_SO_FAR/}$only"
             DEPTH=$((DEPTH + 1))
             continue

@@ -40,7 +40,7 @@
   "correctness": {
     "_benches": ["bfcl-subset"],
     "numerics": { "_benches": ["bfcl-subset-echolp"] },
-    "loader": {},
+    "loader": { "_benches": ["bfcl-subset-echolp", "ttft-cold-gate"] },
     "tool-calling": { "_benches": ["bfcl-subset-echolp"] },
     "ssm-state": { "_benches": ["ttft-warm-gate"] },
     "kv-cache": { "_benches": ["ttft-warm-gate", "ttft-cold-gate"] },
@@ -49,20 +49,21 @@
 
   "performance": {
     "_benches": ["agentic-webserver"],
-    "decode": { "_benches": ["bfcl-subset"] },
+    "decode": { "_benches": ["bfcl-subset", "ttft-warm-gate"] },
     "prefill": { "_benches": ["ttft-cold-gate", "ttft-warm-gate"] },
     "kernel-dispatch": { "_benches": ["bfcl-subset"] },
-    "memory-traffic": {},
-    "scheduling": {},
+    "memory-traffic": { "_benches": ["bfcl-subset", "ttft-warm-gate"] },
+    "scheduling": { "_benches": ["ttft-warm-gate"] },
     "speculation": { "_benches": ["bfcl-subset"] }
   },
 
   "capability": {
-    "new-model": {},
-    "new-hardware": {},
-    "quantization": { "_benches": ["bfcl-subset"] },
+    "_benches": ["bfcl-subset", "agentic-webserver"],
+    "new-model": { "_benches": ["ttft-cold-gate"] },
+    "new-hardware": { "_benches": ["ttft-cold-gate", "ttft-warm-gate"] },
+    "quantization": { "_benches": ["bfcl-subset-echolp"] },
     "adapters": {},
-    "serving-api": { "_benches": ["agentic-webserver"] }
+    "serving-api": {}
   },
 
   "infrastructure": {

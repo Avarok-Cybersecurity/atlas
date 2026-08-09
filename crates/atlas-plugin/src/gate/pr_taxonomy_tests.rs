@@ -13,6 +13,28 @@ fn tree(json: &str) -> Vec<Node> {
     parse_children(&v).expect("fixture builds")
 }
 
+fn tree_err(json: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(json).expect("fixture parses");
+    parse_children(&v).unwrap_err().to_string()
+}
+
+/// ★ `_benches` as a BARE STRING used to parse as empty here while the ci.yml
+/// jq read it fine — two implementations of one function disagreeing, with the
+/// Rust half failing in the REMOVING direction. A typo must be loud.
+#[test]
+fn a_bare_string_benches_is_rejected_not_silently_dropped() {
+    let err = tree_err(r#"{ "a": { "_benches": "bfcl-subset" }, "b": {} }"#);
+    assert!(err.contains("must be an ARRAY"), "{err}");
+}
+
+#[test]
+fn a_non_string_benches_entry_is_rejected() {
+    let err = tree_err(r#"{ "a": { "_benches": [1, "bfcl-subset"] }, "b": {} }"#);
+    assert!(err.contains("non-string entry"), "{err}");
+    let err = tree_err(r#"{ "a": { "_benches": [["bfcl-subset"]] }, "b": {} }"#);
+    assert!(err.contains("non-string entry"), "{err}");
+}
+
 // ── The real file ──────────────────────────────────────────────────────────
 
 /// The shipped taxonomy loads and satisfies every rule it documents.

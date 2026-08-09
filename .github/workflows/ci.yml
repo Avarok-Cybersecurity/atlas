@@ -222,6 +222,31 @@ jobs:
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt || true
           echo "count=$(wc -l < changed.txt)" >> "$GITHUB_OUTPUT"
           head -c 4000 changed.txt > changed_head.txt
+          # Multi-line output, heredoc-delimited: these are repo paths, and a
+          # path can contain almost anything.
+          d="__ATLAS_DIFF_EOF__"
+          { printf 'head<<%s\n' "$d"; cat changed_head.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
+      - name: Cross-repo context — which recipes exist
+        id: recipes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The serve recipes are in a DIFFERENT repository, and they determine
+        # every gated number (`--kv-cache-dtype` alone is worth -3 to -4% wall
+        # in this campaign's own data). A classifier that cannot see them
+        # cannot reason about them. Read-only, best-effort, never fatal.
+        run: |
+          set -uo pipefail
+          if names=$(gh api repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1 \
+                       --jq '[.tree[] | select(.path | endswith(".yaml")) | .path] | .[0:60] | join("\n")' \
+                       2>/dev/null); then
+            printf '%s' "$names" > recipes.txt
+          else
+            : > recipes.txt
+            echo "::notice::atlas-recipes not readable; classifying without recipe context"
+          fi
+          echo "count=$(wc -l < recipes.txt)" >> "$GITHUB_OUTPUT"
+          d="__ATLAS_RECIPES_EOF__"
+          { printf 'names<<%s\n' "$d"; cat recipes.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
       - name: Read the model id
         id: models
         run: |
@@ -242,9 +267,17 @@ jobs:
         with:
           text: |
             ${{ github.event.pull_request.title }}
+          # ★ The PATHS, not a count. `changed_head.txt` was computed and never
+          # read, so the classifier's entire input was attacker-authored prose
+          # — titling a decode-kernel PR "docs: tidy a comment" was a complete
+          # bypass. Paths are what the change IS.
+          context: |
+            Changed paths (${{ steps.diff.outputs.count }} total):
+            ${{ steps.diff.outputs.head }}
 
-            Changed files:
-            ${{ steps.diff.outputs.count }} paths
+            Serve recipes available in Avarok-Cybersecurity/atlas-recipes
+            (${{ steps.recipes.outputs.count }}):
+            ${{ steps.recipes.outputs.names }}
           taxonomy: .github/pr-taxonomy.json
           model: ${{ steps.models.outputs.categorize }}
           api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
