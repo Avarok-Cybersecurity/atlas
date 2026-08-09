@@ -265,23 +265,34 @@ fn the_row_is_described_by_its_atlas_recipe_when_it_has_a_choice() {
 }
 
 #[test]
-fn an_override_for_a_key_the_recipe_does_not_have_renders_nothing() {
+fn an_override_for_a_key_the_recipe_does_not_have_is_visible_and_unlaunchable() {
     // The form can only produce keys the recipe carries, but the map outlives a
     // rebuild; a stray key must fail loudly rather than be dropped from argv.
+    //
+    // It is now SHOWN rather than suppressed. `argv` stopped rejecting a key
+    // absent from `defaults:` — that is also the shape of a legitimate addition
+    // — so the preview renders the stray flag and the operator can SEE the
+    // thing that is wrong, instead of an empty preview that says only that
+    // something, somewhere, is. Launching still refuses: clap owns the flag
+    // surface and rejects the flag by name.
     let mut s = state(vec![plain()]);
     s.open_cards().expect("cards open");
     s.open_config().expect("form opens");
     s.overrides
         .insert("not_a_setting".into(), "whatever".into());
+    let preview = s
+        .preview_argv()
+        .expect("the stray key is shown, not hidden");
     assert!(
-        s.preview_argv().is_none(),
-        "no argv rather than a silent drop"
+        preview.iter().any(|a| a == "--not-a-setting"),
+        "the operator must be able to see WHICH key is wrong: {preview:?}"
     );
     assert!(
         s.config_recipe()
             .expect("recipe")
             .serve_args(&s.overrides)
-            .is_err()
+            .is_err(),
+        "and it must still be unlaunchable"
     );
 }
 

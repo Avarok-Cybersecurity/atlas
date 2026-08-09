@@ -114,6 +114,29 @@ pub struct RunArgs {
     /// answer "did this pass" — no `~/.atlas` state required.
     #[arg(long)]
     pub pull_request_gate: bool,
+    /// Override one SERVE key from the benchmark's recipe, e.g.
+    /// `--serve-override kv_cache_dtype=fp8`. Repeatable.
+    ///
+    /// Distinct from `--param`, which sets the BENCHMARK's own knobs
+    /// (iterations, max_tokens). This one reaches the recipe that starts the
+    /// server, so it is how you exercise a code path the recipe's pinned
+    /// config never reaches — the case that motivated it: every gate recipe
+    /// pins `kv_cache_dtype: bf16`, so a change to the fp8-KV attention
+    /// kernel could not be measured by any gate at all. Five greens that
+    /// never executed the changed code are worse than no run, because they
+    /// read as evidence.
+    ///
+    /// Keys are recipe `defaults` keys, and `Recipe::argv` REFUSES one that
+    /// is absent there — a typo fails loudly instead of silently measuring
+    /// the unmodified config. `port` is rejected: the gate picks a free port
+    /// and a second opinion about it would race the listener.
+    ///
+    /// ★ Every override is written into the gate record. A record whose
+    /// numbers came from a config other than its recipe's must say so, or it
+    /// is a plausible number attached to the wrong provenance — which is the
+    /// exact failure this whole record format exists to prevent.
+    #[arg(long = "serve-override", value_name = "KEY=VALUE")]
+    pub serve_override: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]

@@ -79,6 +79,8 @@ pub(super) fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> Ru
     }
 }
 
+pub(super) use super::fixture_baseline::write_baseline;
+
 pub(super) fn bfcl_baseline() -> GateBaseline {
     let mut metrics = BTreeMap::new();
     metrics.insert(
@@ -143,11 +145,31 @@ fn the_record_path_is_date_and_sha_and_replaces_a_same_day_rerun() {
 #[test]
 fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
-    assert!(GateRecord::from_run(&record, hw(), String::new(), Vec::new(), None).is_err());
+    assert!(
+        GateRecord::from_run(
+            &record,
+            hw(),
+            String::new(),
+            Vec::new(),
+            None,
+            Default::default()
+        )
+        .is_err()
+    );
 
     let mut running = record.clone();
     running.frame.status = RunStatus::Running;
-    assert!(GateRecord::from_run(&running, hw(), SHA.into(), Vec::new(), None).is_err());
+    assert!(
+        GateRecord::from_run(
+            &running,
+            hw(),
+            SHA.into(),
+            Vec::new(),
+            None,
+            Default::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -160,6 +182,7 @@ fn from_run_reconstructs_the_exact_cli_command() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     let joined = gate.command.join(" ");
@@ -192,6 +215,7 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
+        Default::default(),
     )
     .unwrap();
     let joined = gate.command.join(" ");
@@ -211,7 +235,15 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
 fn the_agentic_bench_needs_yes_in_its_command() {
     let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
+    let gate = GateRecord::from_run(
+        &record,
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     assert!(gate.command.contains(&"--yes".to_string()));
 }
 
@@ -225,7 +257,15 @@ fn a_failed_frame_is_recorded_but_never_passes() {
         ),
         ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
     };
-    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
+    let gate = GateRecord::from_run(
+        &record,
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     assert!(gate.frame_status_failed());
     assert!(!gate.verdict_passes());
 }
@@ -281,6 +321,7 @@ fn check_record_refuses_a_cross_checkpoint_comparison() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     // The baseline knows only another checkpoint, so the record's model does
@@ -310,6 +351,7 @@ fn check_record_refuses_a_cross_hardware_comparison() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     gate.hardware = Hardware {
@@ -332,6 +374,7 @@ fn an_unknown_fingerprint_never_silently_matches() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     gate.hardware = Hardware::unknown();
@@ -350,6 +393,7 @@ fn check_record_scores_every_bound_and_missing_metric() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     let mut metrics = BTreeMap::new();
@@ -389,6 +433,7 @@ fn write_and_read_round_trip_through_the_repo_layout() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     let path = write_record(dir.path(), &gate).unwrap();
@@ -402,7 +447,15 @@ pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) 
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let record = run_record(metrics, Verdict::pass("ok"));
-    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string(), Vec::new(), None).unwrap();
+    let mut gate = GateRecord::from_run(
+        &record,
+        hw(),
+        sha.to_string(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     gate.benchmark_id = id.to_string();
     gate.verdict = Some(verdict.to_string());
     gate.recorded_at = secs;
@@ -415,12 +468,7 @@ fn check_gates_reports_each_required_bench() {
     let root = dir.path();
     for id in REQUIRED_GATES {
         std::fs::create_dir_all(gate_dir(root, id)).unwrap();
-        let baseline = bfcl_baseline();
-        std::fs::write(
-            baseline_path(root, id),
-            serde_json::to_string_pretty(&baseline).unwrap(),
-        )
-        .unwrap();
+        write_baseline(root, id, &bfcl_baseline());
     }
     // Passing record for this sha.
     plant(root, "bfcl-subset", SHA, 1_785_891_382, "PASS");

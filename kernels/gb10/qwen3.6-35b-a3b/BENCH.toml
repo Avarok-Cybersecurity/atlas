@@ -1,0 +1,145 @@
+# Benchmarks for this model, and the thresholds its gate records must meet.
+#
+# Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path and cannot disagree with the
+# contents. Read by `atlas_plugin::gate::bench`.
+#
+# Thresholds are per CHECKPOINT, not per model: two checkpoints of one model
+# can differ by several BFCL points, so they cannot share a bar.
+#
+# This file is deliberately OUTSIDE the closure hash (`taxon::configs` does not
+# list it), so ratcheting a threshold does not invalidate the record that
+# justified the ratchet.
+#
+# `status = "unmeasured"` entries carry NO [benchmarks.metrics] table. Absence
+# is the TODO -- a guessed threshold a run could clear would report PASS for
+# something nobody measured.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "agentic-webserver"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "measured"
+note = """\
+★ HARNESS PORT DONE AND MEASURED; the residual is a THRESHOLD question, not a defect. Four \
+real harness defects were found and fixed (2fcea05b): the warm cargo target dir was never \
+warmed and pointed at the wrong path, so the agent's first `cargo test` cold-built the dep \
+tree and hit the 180 s command timeout; `run_shell` read both pipes to EOF before \
+child.wait(), so any `cargo run &` -- which the prompt invites -- burned the full timeout \
+and returned nothing; `ping()` used a line reader, scoring a live newline-less `pong` as \
+dead; and five followed_directions regexes diverged from followed_directions.py. MEASURED \
+before -> after, same box, N=10 tiers: webserver_ok 3/9/6/7 -> 10 and 8; followed_directions \
+0/6/4/7 -> 9 and 5; Sigma-wall 394-637 s -> 923 and 734 s, with the agent now taking 10-18 \
+turns per run instead of 3-7. One tier reached the full 10/10. REMAINING: 10/10 AND 10/10 is \
+not reachable ON DEMAND. temperature is now 0.3 -- the value the shell harness pins and the \
+one that scored 10/10 there -- so this gate is stochastic by construction. An exact 10-of-10 \
+bar on a stochastic instrument fails a healthy build roughly half the time. OWNER DECISION, \
+deliberately not taken here: either state these bounds as a distribution over k tiers (e.g. \
+best-of-2, or a mean with a floor), or keep the exact bar and accept re-runs. Lowering the \
+counts to today's draw is still the wrong move, which is why they are unchanged. The ENGINE \
+is not in question: the shell harness scored webserver_ok 10/10 and cargo_valid 10/10 on \
+this same binary. || original: Gate A (benchmark-pr skill): N=10 agentic-webserver on the \
+35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s. The two \
+10/10 counts are ABSOLUTE correctness bounds and take no noise. ★ Σwall is DELIBERATELY NOT \
+RATCHETED to the 978.13 s best (PR #388, dgx3): unlike the BFCL scores, tier Σwall carries \
++/-200-300 s of run-to-run noise from single 230-320 s outlier iterations, so a ~978 s \
+ceiling would fail constantly on healthy builds. 1300 s is a BLOWUP DETECTOR, not a perf \
+gate — it cannot see a 5-10% TTFT regression, which is what the two TTFT gates are for. \
+Historical band Σwall 950-1287 s; high-water (fastest) 978.13 s recorded here for reference \
+only. Walls are box-specific: compare like-for-like or not at all. || ★ `iterations` is \
+PINNED at exactly 10, the N the two 10/10 bounds are written for. A count bound alone does \
+not describe the run that produced it: `webserver_ok >= 10` is satisfied by 12 successes out \
+of 20, and Σwall <= 1300 s is satisfied by 5 iterations. Neither is the gate. This adds a \
+threshold, it does not relax one -- the recorded runs all carry iterations 10."""
+
+[benchmarks.metrics.followed_directions]
+min = 10.0
+
+[benchmarks.metrics.iterations]
+min = 10.0
+max = 10.0
+
+[benchmarks.metrics.sum_wall_s]
+max = 1300.0
+
+[benchmarks.metrics.webserver_ok]
+min = 10.0
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "bfcl-subset-echolp"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "measured"
+note = """\
+Gate B. Echolp draw (46/23/12, floor 25, n=1004, seed 42, temp 0) on the 35B MoE. THIS BENCH \
+EXISTS BECAUSE THE 35B HAS NEVER BEEN RUN ON THE GOLDEN n=995 DRAW — every 35B BFCL number \
+on record is this draw, so gating it on the golden one would have meant inventing a \
+threshold. THRESHOLDS ARE THE HIGH-WATER RATCHET, NOT THE LIVE BASELINE: 84.66 / 83.32 is \
+the best ever recorded (2026-07-10 main-438ed09, re-confirmed identically on all 12 subsets \
+2026-07-13 d77bdf84). The live baseline sits lower at 84.06 / 82.06 (2026-07-26 same-box \
+control) and that -0.60/-1.26 gap is UNEXPLAINED — image, box or harness drift, not \
+attributable to any PR. Gating on the high-water rather than the live number is deliberate \
+per owner directive: enforce the best we have ever achieved so the gate cannot silently \
+ratchet downward. CONSEQUENCE TO EXPECT: a run reproducing today's live behaviour will FAIL \
+this gate by ~0.6/1.3 until that drift is explained or the ratchet is consciously lowered \
+with a recorded reason. That is the intended pressure, not a bug — but do not lower it \
+silently. `noise` is the measured +/-0.4 MTP-nondeterminism band. Do NOT score this against \
+the golden draw's numbers: same overall (~87.44 vs 87.45) but normalized differs ~1.8 points \
+purely from category mix. History: 2026-07-10 main-438ed09 84.66/83.32 (high-water); \
+2026-07-13 d77bdf84 84.66/83.32; 2026-07-26 main 22adb23e control 84.06/82.06; 2026-07-26 \
+pr369 de6153f3 83.96/81.96; 2026-08-03 PR #388 Gate B 84.26/82.15 n=1004. The draw is PINNED \
+at n=1004: a score from a different draw is not comparable to these thresholds, and the \
+sample count is the only thing that reveals it after the fact, so it is gated exactly rather \
+than merely recorded."""
+
+[benchmarks.metrics.normalized_single_turn_score]
+min = 83.32
+noise = 0.4
+
+[benchmarks.metrics.overall_accuracy]
+min = 84.66
+noise = 0.4
+
+[benchmarks.metrics.samples]
+min = 1004
+max = 1004
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "ttft-cold-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "measured"
+note = """\
+Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
+recipe) × the gate limits: median 1677.93 ms × +3% and p90 4580.73 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it."""
+
+[benchmarks.metrics.median_ms]
+max = 1728.27
+
+[benchmarks.metrics.p90_ms]
+max = 4809.76
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "ttft-warm-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "measured"
+note = """\
+Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
+recipe) × the gate limits: median 1599.98 ms × +3% and p90 4585.18 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it."""
+
+[benchmarks.metrics.median_ms]
+max = 1647.98
+
+[benchmarks.metrics.p90_ms]
+max = 4814.44

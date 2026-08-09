@@ -89,11 +89,7 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
     std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
+    write_baseline(root, "bfcl-subset", &bfcl_baseline());
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
 
@@ -103,6 +99,7 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
         SHA.into(),
         vec!["crates/spark-model/src/layers/gdn.rs".to_string()],
         None,
+        Default::default(),
     )
     .unwrap();
     gate.recorded_at = 1_785_891_382;
@@ -134,6 +131,7 @@ fn the_field_is_absent_when_clean_and_optional_when_reading() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     let json = serde_json::to_string(&gate).unwrap();

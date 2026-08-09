@@ -178,6 +178,18 @@ impl QuantizedWeight {
         })
     }
 
+    /// Resolve the `transpose_u8` GPU kernel for the load-time transpose
+    /// paths, or `None` to use the host byte-loop fallback. `None` when the
+    /// target's kernel set lacks it, or when `ATLAS_HOST_TRANSPOSE=1` forces
+    /// the host path (parity/debug kill switch).
+    fn host_transpose_kernel(gpu: &dyn GpuBackend) -> Option<spark_runtime::gpu::KernelHandle> {
+        if std::env::var("ATLAS_HOST_TRANSPOSE").as_deref() == Ok("1") {
+            return None;
+        }
+        let k = crate::layers::try_kernel(gpu, "transpose_u8", "transpose_u8");
+        (k.0 != 0).then_some(k)
+    }
+
     /// Transpose weight layout from [N, K/2] to [K/2, N] for coalesced GEMM reads.
     ///
     /// Also transposes scale from [N, K/GROUP_SIZE] to [K/GROUP_SIZE, N].
@@ -205,9 +217,46 @@ impl QuantizedWeight {
         group_size: usize,
     ) -> Result<QuantizedWeight> {
         let half_k = k / 2;
+        let num_groups = k / group_size;
+        let packed_size = n * half_k;
+        let scale_size = n * num_groups;
+
+        // GPU path: two transpose_u8 launches instead of D2H -> host
+        // O(N*K) byte loop -> H2D (the cold-load host bounce; ~13.6 GB at
+        // 27B). ATLAS_HOST_TRANSPOSE=1 forces the host path (parity/debug);
+        // targets without the kernel fall back to it silently.
+        if let Some(tk) = Self::host_transpose_kernel(gpu) {
+            let new_weight = gpu.alloc(packed_size)?;
+            let new_scale = gpu.alloc(scale_size)?;
+            crate::layers::ops::transpose_u8(
+                gpu,
+                tk,
+                self.weight,
+                new_weight,
+                n as u32,
+                half_k as u32,
+                0,
+            )?;
+            crate::layers::ops::transpose_u8(
+                gpu,
+                tk,
+                self.weight_scale,
+                new_scale,
+                n as u32,
+                num_groups as u32,
+                0,
+            )?;
+            gpu.synchronize(0)?;
+            return Ok(QuantizedWeight {
+                weight: new_weight,
+                weight_scale: new_scale,
+                weight_scale_2: self.weight_scale_2,
+                input_scale: self.input_scale,
+                weight_scale_2_vec: self.weight_scale_2_vec,
+            });
+        }
 
         // Transpose B_packed: [N, K/2] → [K/2, N] into a NEW GPU allocation.
-        let packed_size = n * half_k;
         let mut buf = vec![0u8; packed_size];
         gpu.copy_d2h(self.weight, &mut buf)?;
         let mut t_buf = vec![0u8; packed_size];
@@ -220,8 +269,6 @@ impl QuantizedWeight {
         gpu.copy_h2d(&t_buf, new_weight)?;
 
         // Transpose B_scale: [N, K/group_size] → [K/group_size, N] into a NEW allocation.
-        let num_groups = k / group_size;
-        let scale_size = n * num_groups;
         let mut sbuf = vec![0u8; scale_size];
         gpu.copy_d2h(self.weight_scale, &mut sbuf)?;
         let mut st_buf = vec![0u8; scale_size];
@@ -317,6 +364,62 @@ impl QuantizedWeight {
             stride >= n_total,
             "transpose_impl: stride {stride} < n_total {n_total}"
         );
+
+        // GPU path: per part, one transpose_u8 launch into a contiguous
+        // [half_k, n] temp, then ONE pitched 2D copy into the strided dest
+        // column window (cudaMemcpy2DAsync on the CUDA backend). Replaces
+        // the D2H -> host O(N*K) byte loop -> H2D cold-load bounce. Pad
+        // columns `n_total..stride` are zeroed by the memset up front,
+        // matching the host path's zeroed staging vec.
+        if let Some(tk) = Self::host_transpose_kernel(gpu) {
+            let new_weight = gpu.alloc(stride * half_k)?;
+            let new_scale = gpu.alloc(stride * num_groups)?;
+            if stride > n_total {
+                gpu.memset(new_weight, 0, stride * half_k)?;
+                gpu.memset(new_scale, 0, stride * num_groups)?;
+            }
+            let mut temps: Vec<DevicePtr> = Vec::with_capacity(parts.len() * 2);
+            let mut n_off = 0usize;
+            for (w, n) in parts {
+                let n = *n;
+                let t_w = gpu.alloc(n * half_k)?;
+                crate::layers::ops::transpose_u8(
+                    gpu,
+                    tk,
+                    w.weight,
+                    t_w,
+                    n as u32,
+                    half_k as u32,
+                    0,
+                )?;
+                gpu.copy_d2d_2d_async(t_w, n, new_weight.offset(n_off), stride, n, half_k, 0)?;
+                let t_s = gpu.alloc(n * num_groups)?;
+                crate::layers::ops::transpose_u8(
+                    gpu,
+                    tk,
+                    w.weight_scale,
+                    t_s,
+                    n as u32,
+                    num_groups as u32,
+                    0,
+                )?;
+                gpu.copy_d2d_2d_async(t_s, n, new_scale.offset(n_off), stride, n, num_groups, 0)?;
+                temps.push(t_w);
+                temps.push(t_s);
+                n_off += n;
+            }
+            gpu.synchronize(0)?;
+            for t in temps {
+                gpu.free(t)?;
+            }
+            return Ok(QuantizedWeight {
+                weight: new_weight,
+                weight_scale: new_scale,
+                weight_scale_2: first.weight_scale_2,
+                input_scale: first.input_scale,
+                weight_scale_2_vec: first.weight_scale_2_vec,
+            });
+        }
 
         let mut t_buf = vec![0u8; stride * half_k];
         let mut st_buf = vec![0u8; stride * num_groups];

@@ -49,6 +49,7 @@
 # Part VI — The Project
 
 - [Contributing](./project/contributing.md)
+- [The Merge Lattice](./project/merge-lattice.md)
 - [Security Policy](./project/security.md)
 - [Release Notes](./project/releases.md)
 

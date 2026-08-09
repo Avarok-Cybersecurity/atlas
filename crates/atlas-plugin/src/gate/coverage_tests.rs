@@ -12,6 +12,19 @@ use super::*;
 use crate::result::{RunStatus, Verdict};
 use std::collections::BTreeMap;
 
+/// A gate that excludes nothing.
+///
+/// These tests are about the boundary and git ancestry, not about any one
+/// gate's exclusions, so they use the strictest possible coverage: everything
+/// on the boundary invalidates. Using a real gate here would couple ancestry
+/// tests to whichever exclusions that gate happens to carry today.
+pub(super) fn any_gate() -> super::coverage::GateCoverage {
+    super::coverage::GateCoverage {
+        id: "test-strictest",
+        excludes: &[],
+    }
+}
+
 pub(super) mod scratch_repo {
     use std::path::Path;
     use std::process::Command;
@@ -47,6 +60,40 @@ pub(super) mod scratch_repo {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// Create and switch to `name`.
+    pub fn branch(root: &Path, name: &str) {
+        git(root, &["checkout", "-q", "-b", name]);
+    }
+
+    /// Switch back to whatever branch `git init` created. NOT hardcoded to
+    /// `master`/`main`: `init.defaultBranch` is user config, so a hardcoded
+    /// name passes on one machine and fails on the next.
+    pub fn checkout_default(root: &Path, name: &str) {
+        git(root, &["checkout", "-q", name]);
+    }
+
+    /// The current branch name.
+    pub fn current_branch(root: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .expect("git runs");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Whether `a` is an ancestor of `b`. Used only to ASSERT that a fixture
+    /// reproduces the squash shape — the production check no longer asks.
+    pub fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["merge-base", "--is-ancestor", a, b])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
     pub fn commit(root: &Path, file: &str, contents: &str, message: &str) {
         let path = root.join(file);
         if let Some(parent) = path.parent() {
@@ -63,16 +110,19 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
     scratch_repo::init(root);
-    let sha_a = scratch_repo::head(root);
 
+    // Committed BEFORE sha_a. `write_baseline` now scaffolds a small kernel
+    // tree (HARDWARE.toml, MODEL.toml, BENCH.toml) because that is where the
+    // thresholds live, and `kernels/` is a boundary path — left uncommitted,
+    // the next `git add .` would sweep the scaffolding into the commit under
+    // test and this would be measuring the fixture rather than the policy.
     for id in REQUIRED_GATES {
         std::fs::create_dir_all(gate_dir(root, id)).unwrap();
-        std::fs::write(
-            baseline_path(root, id),
-            serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-        )
-        .unwrap();
+        write_baseline(root, id, &bfcl_baseline());
     }
+    scratch_repo::commit(root, "docs/seed.md", "seed", "baseline fixtures");
+    let sha_a = scratch_repo::head(root);
+
     for id in REQUIRED_GATES {
         plant(root, id, &sha_a, 1_785_891_382, "PASS");
     }
@@ -81,7 +131,7 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     scratch_repo::commit(root, "docs/notes.md", "hello", "docs only");
     let sha_b = scratch_repo::head(root);
     assert!(
-        record_covers(root, &sha_b, &sha_a),
+        record_covers(root, &sha_b, &sha_a, &any_gate()),
         "docs-only diff is inert"
     );
     let gates = check_gates(root, &sha_b);
@@ -97,7 +147,7 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     scratch_repo::commit(root, "crates/x.rs", "// code", "touch a crate");
     let sha_c = scratch_repo::head(root);
     assert!(
-        !record_covers(root, &sha_c, &sha_a),
+        !record_covers(root, &sha_c, &sha_a, &any_gate()),
         "crates/ diff invalidates"
     );
     let gates = check_gates(root, &sha_c);
@@ -137,11 +187,7 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     let head = scratch_repo::head(root);
 
     std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
+    write_baseline(root, "bfcl-subset", &bfcl_baseline());
 
     // Same UTC day for both, so only the within-day tie is under test. The
     // PASS is the EARLIER measurement and gets the lexically GREATER sha —
@@ -162,8 +208,8 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     );
     // Both records cover head — only docs changed — so the ordering alone
     // decides the verdict.
-    assert!(record_covers(root, &head, earlier_pass));
-    assert!(record_covers(root, &head, later_fail));
+    assert!(record_covers(root, &head, earlier_pass, &any_gate()));
+    assert!(record_covers(root, &head, later_fail, &any_gate()));
     match &check_gates(root, &head)["bfcl-subset"] {
         GateStatus::Fail(reasons) => assert!(
             reasons.iter().any(|r| r.contains("not PASS")),
@@ -213,12 +259,12 @@ fn a_prompt_template_or_toolchain_change_invalidates_an_earlier_record() {
         let before = scratch_repo::head(root);
         scratch_repo::commit(root, "docs/n.md", "inert", "docs only");
         assert!(
-            record_covers(root, &scratch_repo::head(root), &before),
+            record_covers(root, &scratch_repo::head(root), &before, &any_gate()),
             "a docs commit must stay inert"
         );
         scratch_repo::commit(root, file, contents, "change what gets measured");
         assert!(
-            !record_covers(root, &scratch_repo::head(root), &before),
+            !record_covers(root, &scratch_repo::head(root), &before, &any_gate()),
             "{file} changes what a run measures, so an earlier record cannot speak for head"
         );
     }
@@ -237,6 +283,7 @@ fn a_baseline_entry_with_no_thresholds_is_not_a_pass() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     let problems = check_record(&gate, &baseline_for(MODEL, BTreeMap::new())).expect("refused");
@@ -252,16 +299,20 @@ fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
     std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    std::fs::write(
-        baseline_path(root, "bfcl-subset"),
-        serde_json::to_string_pretty(&bfcl_baseline()).unwrap(),
-    )
-    .unwrap();
+    write_baseline(root, "bfcl-subset", &bfcl_baseline());
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
     record.frame = frame(RunStatus::Failed, metrics, Verdict::fail("scoring crashed"));
-    let mut gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
+    let mut gate = GateRecord::from_run(
+        &record,
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     gate.recorded_at = 1_785_891_382;
     write_record(root, &gate).unwrap();
 
@@ -282,6 +333,7 @@ fn the_summary_names_the_model_the_numbers_and_the_verdict() {
         SHA.into(),
         Vec::new(),
         None,
+        Default::default(),
     )
     .unwrap();
     assert!(gate.summary.contains(MODEL), "{}", gate.summary);
@@ -392,9 +444,9 @@ fn every_committed_baseline_parses_resolves_and_is_checkable() {
         .to_path_buf();
 
     for id in REQUIRED_GATES {
-        let path = baseline_path(&root, id);
-        assert!(path.is_file(), "{id}: {} is missing", path.display());
-
+        // No per-gate file to stat any more: the thresholds are assembled
+        // from every model's BENCH.toml, so "it loads and has entries" IS the
+        // existence check.
         let baseline = read_baseline(&root, id)
             .unwrap_or_else(|e| panic!("{id}: committed baseline does not load: {e:#}"));
         assert_eq!(baseline.schema, 2, "{id}: unexpected schema version");
