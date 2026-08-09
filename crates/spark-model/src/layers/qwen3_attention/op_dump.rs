@@ -79,6 +79,11 @@ pub(crate) fn dump_bf16(
     };
     gpu.synchronize(stream)?;
     let mut buf = vec![0u16; n_elements];
+    // SAFETY: `buf` is `vec![0u16; n_elements]` on the line above, so
+    // `buf.len() == n_elements` and `n_elements * 2 == buf.len() *
+    // size_of::<u16>()` — the span is exactly the Vec's buffer, all of it
+    // zero-initialised. `bytes` is the sole reference derived from `buf` while it
+    // is live: it is dead after the `copy_d2h` below, before `buf.iter()` runs.
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 2) };
     gpu.copy_d2h(ptr.offset(byte_offset), bytes)?;
@@ -114,6 +119,11 @@ pub(crate) fn dump_f32(
     };
     gpu.synchronize(stream)?;
     let mut buf = vec![0f32; n_elements];
+    // SAFETY: `buf` is `vec![0f32; n_elements]` on the line above, so
+    // `buf.len() == n_elements` and `n_elements * 4 == buf.len() *
+    // size_of::<f32>()` — the span is exactly the Vec's buffer, all of it
+    // zero-initialised. `bytes` is the sole reference derived from `buf` while it
+    // is live: it is dead after the `copy_d2h` below, before `buf.iter()` runs.
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 4) };
     gpu.copy_d2h(ptr.offset(byte_offset), bytes)?;

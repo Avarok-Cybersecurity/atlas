@@ -133,69 +133,32 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
     }
 
     let buf = gpu.alloc(total * 2)?;
+    // SAFETY: `bf16_out` is `vec![0u16; total]`, so `bf16_out.len() == total` and
+    // every element is initialised (zeroed at construction, then overwritten by the
+    // `group`/`elem` dequant loop above). `total * 2 == bf16_out.len() *
+    // size_of::<u16>()`, so the span is exactly the Vec's buffer. Shared borrow
+    // only; `buf` was allocated at `total * 2` bytes so the H2D destination matches.
     let bf16_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(bf16_out.as_ptr() as *const u8, total * 2) };
     gpu.copy_h2d(bf16_bytes, buf)?;
     Ok(DenseWeight { weight: buf })
 }
 
-/// FP8 E4M3 → f32 lookup table (256 entries, one per byte value).
+/// FP8 E4M3 decode and the f32 → BF16 cast live in `atlas_core::numeric`.
 ///
-/// OCP FP8 E4M3FN format: sign(1) | exponent(4) | mantissa(3), bias=7.
-/// Special values: 0x7F / 0xFF = NaN (no infinities).
-/// Max finite: ±448.0 (exp=15, mant=6).
-///
-/// Generated at compile time — eliminates all branching from the hot dequant loop.
-pub(super) static FP8_E4M3_LUT: [f32; 256] = {
-    let mut table = [0.0f32; 256];
-    let mut i: u32 = 0;
-    while i < 256 {
-        let bits = i as u8;
-        let sign = (bits >> 7) & 1;
-        let exp = (bits >> 3) & 0x0F;
-        let mantissa = bits & 0x07;
-
-        // NaN: exp=15, mantissa=7
-        // We store 0.0 for NaN entries — NaN weights should not appear in practice,
-        // and 0.0 is safer than propagating NaN through the dequant pipeline.
-        let val = if exp == 0 && mantissa == 0 {
-            0.0f32
-        } else if exp == 0x0F && mantissa == 0x07 {
-            0.0f32
-        } else if exp == 0 {
-            // Subnormal: 2^(-6) * (mantissa / 8)
-            // 2^(-6) = 0.015625, /8 = 0.001953125 per mantissa unit
-            (mantissa as f32) * (0.015625f32 / 8.0)
-        } else {
-            // Normal: 2^(exp-7) * (1 + mantissa/8)
-            // Use bit manipulation to construct f32 directly:
-            //   f32 exponent = fp8_exp - 7 + 127 = fp8_exp + 120
-            //   f32 mantissa = fp8_mant << 20  (3 bits → 23 bits, left-aligned)
-            let f32_exp = (exp as u32 + 120) << 23;
-            let f32_mant = (mantissa as u32) << 20;
-            f32::from_bits(f32_exp | f32_mant)
-        };
-
-        table[i as usize] = if sign == 1 { -val } else { val };
-        i += 1;
-    }
-    table
-};
-
-/// Convert FP8 E4M3 byte to f32 via LUT (branchless, single array lookup).
-/// Kept (allow dead_code) as the SSOT CPU reference for the FP8 E4M3 decode now
-/// that `dequant_nvfp4_to_bf16` runs on the GPU (`dequant_nvfp4_bf16.cu`).
-#[inline(always)]
-#[allow(dead_code)]
-pub(super) fn fp8_e4m3_to_f32(bits: u8) -> f32 {
-    FP8_E4M3_LUT[bits as usize]
-}
+/// They used to live here AND in `atlas-quant/src/fp8.rs`, with the
+/// byte-exactness tests attached to the copy that had zero dependents and
+/// therefore never ran on any serving path. Both crates already depended
+/// on `atlas-core`, so the arithmetic moved down there together with the
+/// RNE and PyTorch-parity vectors. Re-exported under the old names so
+/// every call site in this module is unchanged.
+pub(super) use atlas_core::numeric::{FP8_E4M3_LUT, f32_to_bf16, fp8_e4m3_to_f32};
 
 /// FP8 E8M0 → f32 lookup table (256 entries).
 ///
 /// E8M0 format: unsigned 8-bit exponent, 0 mantissa, bias=127.
 /// Value = 2^(exp - 127). exp=0 → 0, exp=255 → NaN (stored as 0.0).
-static FP8_E8M0_LUT: [f32; 256] = {
+const FP8_E8M0_LUT: [f32; 256] = {
     let mut table = [0.0f32; 256];
     let mut i: u32 = 0;
     while i < 256 {
@@ -216,43 +179,6 @@ static FP8_E8M0_LUT: [f32; 256] = {
 #[inline(always)]
 pub(super) fn fp8_e8m0_to_f32(bits: u8) -> f32 {
     FP8_E8M0_LUT[bits as usize]
-}
-
-/// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
-///
-/// SSOT-paired with `atlas_quant::fp8::f32_to_bf16`: both implement the
-/// same RNE algorithm and must stay byte-identical to PyTorch's
-/// `torch.float32 -> torch.bfloat16` cast. The CUDA-side mirror is
-/// `__float2bfloat16_rn` in
-/// `kernels/gb10/common/moe_fp8_grouped_gemm.cu`.
-///
-/// Phase 2b (Atlas FP8 dequant audit, 2026-05-24): replaced the
-/// truncation `(bits >> 16) as u16` with proper ties-to-even rounding.
-/// Phase 2a measurement showed Atlas-vs-canonical-dequant mean cos =
-/// 0.969 driven primarily by this rounding bias accumulating across
-/// 31745 dequanted tensors of Qwen3.6-35B-FP8.
-///
-/// Called by `dequant_fp8_blockscaled_to_bf16` (load-time shared-expert
-/// dequant) AND `dequant_nvfp4_to_bf16` (NVFP4 -> BF16 path), so the
-/// fix applies uniformly across all quantization formats that route
-/// through this helper.
-#[inline(always)]
-pub(super) fn f32_to_bf16(val: f32) -> u16 {
-    // Phase 2c day-2 bisect: ATLAS_DISABLE_RNE=1 reverts the Phase 2b
-    // round-to-nearest-even patch back to truncation. Used to isolate
-    // whether RNE accounts for the observed cosine regression vs the
-    // May 23 rne baseline.
-    if std::env::var("ATLAS_DISABLE_RNE").is_ok() {
-        return (val.to_bits() >> 16) as u16;
-    }
-    let bits = val.to_bits();
-    if val.is_nan() {
-        let sign = ((bits >> 16) & 0x8000) as u16;
-        return sign | 0x7FC0;
-    }
-    let lsb = (bits >> 16) & 1;
-    let rounding_bias = 0x7FFFu32 + lsb;
-    (bits.wrapping_add(rounding_bias) >> 16) as u16
 }
 
 /// Load dense FFN weights (gate_proj, up_proj, down_proj) as NVFP4.

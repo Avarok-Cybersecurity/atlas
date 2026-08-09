@@ -36,6 +36,9 @@ impl TransformerModel {
         // reads this metadata, so skip the upload entirely in HSS mode.
         if upload_start < current_blocks && seq.hss_window_start() == 0 {
             let new_blocks = &seq.block_table[upload_start..];
+            // SAFETY: the length is `size_of_val(new_blocks)` — derived from the
+            // slice itself, so it can never exceed it — over a live `&[u32]`
+            // sub-slice of `seq.block_table`.
             let bt_bytes = unsafe {
                 std::slice::from_raw_parts(
                     new_blocks.as_ptr() as *const u8,
@@ -52,6 +55,8 @@ impl TransformerModel {
         }
 
         let seq_len_val = (proc_start + proc_count) as u32;
+        // SAFETY: exactly `size_of::<u32>()` bytes over the live, fully
+        // initialised `seq_len_val` local on the line above.
         let seq_len_bytes = unsafe {
             std::slice::from_raw_parts(
                 &seq_len_val as *const u32 as *const u8,

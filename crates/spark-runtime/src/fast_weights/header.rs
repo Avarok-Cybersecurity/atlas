@@ -98,6 +98,7 @@ pub(super) fn resolve_shards(
 /// are relative to the start of the data section; we convert to absolute file
 /// offsets up-front so downstream callers only need the fd.
 pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
+    let file_len = file.metadata()?.len();
     let mut size_buf = [0u8; 8];
     file.read_exact(&mut size_buf)?;
     let header_size = u64::from_le_bytes(size_buf) as usize;
@@ -146,19 +147,22 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
                     .collect()
             })
             .unwrap_or_default();
-        let offsets = info["data_offsets"]
-            .as_array()
-            .context("tensor missing data_offsets")?;
-        let rel_start = offsets[0].as_u64().context("bad data_offsets[0]")?;
-        let rel_end = offsets[1].as_u64().context("bad data_offsets[1]")?;
-        let len = (rel_end - rel_start) as usize;
+        // Shared with the RDMA manifest builder: a reversed or past-EOF
+        // `data_offsets` pair is rejected here rather than wrapping into a
+        // `u64::MAX`-ish `len` that becomes a pread window below.
+        let span = atlas_core::safetensors::tensor_span(
+            name,
+            &info["data_offsets"],
+            data_start,
+            file_len,
+        )?;
         out.push(TensorMeta {
             name: name.clone(),
             dtype,
             from_f16,
             shape,
-            abs_offset: data_start + rel_start,
-            len,
+            abs_offset: span.abs_offset,
+            len: span.len as usize,
         });
     }
     // Sort by offset so the reader does sequential disk access.

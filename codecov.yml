@@ -1,0 +1,97 @@
+# Codecov configuration for Atlas.
+#
+# Produced by .github/workflows/coverage.yml, which runs
+# `scripts/coverage.sh` (cargo-llvm-cov -> lcov.info) on a GPU-free
+# ubuntu-latest runner. Read that script first: it is the SSOT for WHICH
+# files are measured, and this file's `ignore:` list only mirrors it so the
+# Codecov UI agrees with the CI summary.
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # Don't post a comment until CI has finished, so a coverage delta is never
+    # attributed to a build that later failed.
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  # Sets the red...green scale in the UI only; it is NOT a gate.
+  range: "30...80"
+
+  status:
+    # ─────────────────────────────────────────────────────────────────────
+    # BOTH STATUSES ENFORCE. The policy is that coverage goes UP per PR, so
+    # a status that cannot fail does not express it.
+    #
+    # These were `informational: true` behind a staged plan ("watch patch
+    # coverage for three weeks, then turn it on"). That plan could never have
+    # completed: no report had ever reached Codecov. Every upload was rejected
+    # with HTTP 400 "Token required - not valid tokenless upload" while the
+    # workflow's `fail_ci_if_error: false` swallowed it, so the observation
+    # window the plan waited on was never going to open. The token now exists
+    # as an org secret and the upload step fails loudly, so the numbers start
+    # arriving; the flags are flipped in the same change rather than left
+    # waiting on a condition that had no way to arrive.
+    #
+    # NEITHER IS A REQUIRED CHECK on `main` (branch protection requires fmt,
+    # clippy, test, typos, SPDX headers, the LoC cap and the CLA). So these
+    # report red on a PR that loses coverage without wedging the merge button.
+    # Add them to branch protection when the numbers have settled and you want
+    # them blocking.
+    #
+    # ★ The first PRs after this lands are the calibration. If `patch` at 70%
+    # proves to be the wrong number for this codebase, MOVE THE NUMBER and say
+    # why — do not go back to `informational`, which is how it got stuck for
+    # this long.
+    # ─────────────────────────────────────────────────────────────────────
+    project:
+      default:
+        # "Don't regress by more than a point" — self-calibrating, so it is
+        # meaningful from the very first report rather than needing a baseline
+        # someone has to pick. Codecov passes this when no base report exists,
+        # which is exactly the bootstrap case.
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        # New code is the only coverage a PR author actually controls, so this
+        # is the status that carries the "coverage increases" policy. Kernel
+        # dispatch that cannot run on a CPU runner is excluded by `ignore:`
+        # below, so a patch here is code that genuinely can be tested.
+        target: 70%
+
+comment:
+  layout: "condensed_header, diff, files, components"
+  behavior: default
+  # No comment on PRs that change no measured file (kernel-only / docs-only
+  # diffs are common here).
+  require_changes: true
+
+# Inline PR annotations off: a kernel-dispatch file legitimately shows as
+# uncovered, and annotating every such line buries real review comments.
+github_checks:
+  annotations: false
+
+# Mirrors the --ignore-filename-regex in scripts/coverage.sh. If you change
+# one, change the other — a mismatch shows up as files present in the Codecov
+# UI that the CI summary never counted.
+ignore:
+  - "vendor/**"                              # vendored cudarc (upstream)
+  - "target/**"                              # build-script output (generated PTX)
+  - "**/build.rs"                            # build scripts, not under test
+  - "crates/atlas-kernels/**"                # entirely build.rs-generated PTX constants
+  - "crates/cufile-sys/**"                   # raw dlopen FFI to libcufile (GDS)
+  - "crates/spark-comm/**"                   # raw FFI to libnccl (stubbed in CI)
+  - "crates/atlas-rdma/src/verbs.rs"         # ibverbs FFI; cfg'd out under ATLAS_SKIP_BUILD
+  - "crates/spark-model/src/layers/ops/**"   # thin KernelLaunch wrappers, one CUDA launch each
+  - "**/tests/**"                            # test code, not product code
+  - "**/benches/**"                          # criterion harnesses (GPU-only)
+  - "**/examples/**"                         # dev-only GB10 harnesses
+  # Non-Rust trees Codecov would otherwise list as 0%.
+  - "kernels/**"
+  - "cuda_kernels/**"
+  - "book/**"
+  - "site/**"
+  - "scripts/**"
+  - "tests/**"

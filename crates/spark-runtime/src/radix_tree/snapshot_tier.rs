@@ -139,4 +139,33 @@ impl SsmSnapshotIndex {
         }
         false
     }
+
+    /// **Reap** a TIERED entry whose blob is gone (see
+    /// `PrefixCache::forget_snapshot_tier_key`): the failed-fault-in twin of
+    /// [`Self::promote`]. Without it the entry keeps advertising a dead tier
+    /// key and every warm turn re-runs `spill a live 66 MB victim → allocate a
+    /// slot → miss → free`, which under the disk cap evicts one more record and
+    /// manufactures the very pressure that dropped the blob.
+    ///
+    /// No-op — returning `false` — for an unknown key or a RESIDENT entry:
+    /// `tiered == false` means `snapshot_id` is a live pool slot, and unlike
+    /// `evict_lru`/`insert_tail` this path has no caller to hand it back to, so
+    /// removing one would leak it permanently. That guard also makes the
+    /// promote-then-reap race a clean no-op.
+    ///
+    /// Does NOT touch `evictions_since_lookup` or `stats.evictions`: a reap
+    /// frees no slot and applies no pressure to the live session's restore
+    /// point, so counting it would shorten the tail lease for no reason.
+    pub(super) fn forget_tiered(&mut self, prefix_hash: u64) -> bool {
+        let Some(idx) = self
+            .entries
+            .iter()
+            .position(|e| e.prefix_hash == prefix_hash && e.tiered)
+        else {
+            return false;
+        };
+        self.entries.swap_remove(idx);
+        self.stats.tier_reaps += 1;
+        true
+    }
 }

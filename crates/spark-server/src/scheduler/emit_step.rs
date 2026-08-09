@@ -12,7 +12,12 @@ use super::*;
 ///
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
-pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::TokenLogprobs>) {
+pub fn emit_token(
+    a: &mut ActiveSeq,
+    tok: u32,
+    logprobs: Option<crate::api::TokenLogprobs>,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+) {
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side loop guards (Bug-2 name-run cap, F11 within-dedup,
     // F44 perm-fail, loop-watchdog) flip this flag when they decide
@@ -38,7 +43,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // (`user` / `assistant` — regular tokens) would stream to the client,
     // poisoning its context and causing the observed multi-turn drift /
     // "file was corrupted" hallucinations in opencode.
-    if let Some(ims) = im_start_hard_stop()
+    if let Some(ims) = sched.limits.im_start_hard_stop
         && tok == ims
     {
         // Push the hard-stop token to output_tokens so lifecycle.rs reports
@@ -64,7 +69,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // never generate this control token; if it does (post-tool-call runaway), end
     // the turn. Mirrors the <|im_start|> hard stop above.
     if tool_response_stop_enabled()
-        && let Some(trs) = tool_response_hard_stop()
+        && let Some(trs) = sched.limits.tool_response_hard_stop
         && tok == trs
     {
         a.output_tokens.push(tok);
@@ -264,8 +269,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         use crate::scheduler::helpers::{
             CONTENT_LOOP_CHECK_STRIDE, CONTENT_LOOP_MIN_TOKENS, CONTENT_LOOP_PERIOD_MAX,
             CONTENT_LOOP_PERIOD_MIN, detect_content_token_loop_normalized_with,
-            detect_content_token_loop_with, disable_watchdogs, enable_loop_watchdog,
-            numeric_token_mask,
+            detect_content_token_loop_with,
         };
         a.content_tokens = a.content_tokens.saturating_add(1);
         // F1 (2026-06-02): unconditional per-generation post-think content
@@ -275,24 +279,24 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         // requests are ever capped (plain chat attaches no grammar and is
         // never truncated). Default 100_000 (`MAX_POST_THINK_CONTENT_TOKENS`)
         // = no-op; Qwen3.6-35B-A3B-FP8 sets 1536 in MODEL.toml.
-        if !disable_watchdogs()
+        if !sched.levers.disable_watchdogs
             && a.grammar_state.is_some()
-            && a.content_tokens > watchdog_params().max_post_think_content_tokens
+            && a.content_tokens > sched.watchdog.max_post_think_content_tokens
         {
             tracing::warn!(
                 content_tokens = a.content_tokens,
-                max = watchdog_params().max_post_think_content_tokens,
+                max = sched.watchdog.max_post_think_content_tokens,
                 "post-think content cap exceeded in MTP/emit path; ending response (tool-active request would otherwise burn to max_tokens)"
             );
             a.finished = true;
         }
-        if !disable_watchdogs()
-            && enable_loop_watchdog()
+        if !sched.levers.disable_watchdogs
+            && sched.levers.loop_watchdog()
             && !a.inside_tool_body
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
             && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
-                || numeric_token_mask().as_deref().is_some_and(|m| {
+                || sched.masks.numeric.as_deref().is_some_and(|m| {
                     detect_content_token_loop_normalized_with(
                         &a.output_tokens,
                         m,
@@ -331,9 +335,9 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         // prefill, survives a graceful grammar disengage) instead of
         // `grammar_state.is_some()` — otherwise a disengaged tool turn on
         // the MTP path wanders to `max_tokens` with the budget inert.
-        if !disable_watchdogs() && !a.inside_tool_body && a.tool_request {
+        if !sched.levers.disable_watchdogs && !a.inside_tool_body && a.tool_request {
             a.prose_tokens_since_last_tool = a.prose_tokens_since_last_tool.saturating_add(1);
-            let max_prose = watchdog_params().max_inter_tool_prose;
+            let max_prose = sched.watchdog.max_inter_tool_prose;
             if a.prose_tokens_since_last_tool > max_prose {
                 tracing::warn!(
                     prose_tokens = a.prose_tokens_since_last_tool,
@@ -407,7 +411,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
     // (twin of the non-MTP guard in `decode_logits_step`), so the MTP/emit path
     // also cannot run KV past the context ceiling. No-op when `max_seq_len` is
     // unset (0) or not yet reached.
-    if a.remaining == 0 || seqlen_force_stop(a.seq.seq_len, max_seq_len_ceiling()) {
+    if a.remaining == 0 || seqlen_force_stop(a.seq.seq_len, sched.limits.max_seq_len) {
         // #144: before the hard length-stop, if a grammar is active and the
         // stop token is not legal at the current position (e.g. mid JSON
         // string), emit the shortest grammar-legal close so the truncated
@@ -417,7 +421,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             "emit_token: remaining={}, seq_len={}, max_seq_len={}, output_tokens={}, thinking_tokens={}",
             a.remaining,
             a.seq.seq_len,
-            max_seq_len_ceiling(),
+            sched.limits.max_seq_len,
             a.output_tokens.len(),
             a.thinking_tokens
         );

@@ -14,6 +14,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use spark_runtime::prefix_cache::TierEvict;
 
 use super::ssm_snapshot::SsmSnapshotPool;
+use super::ssm_snapshot_faultin::{log_spill_gate_skip, retire_refused_spill};
 use super::ssm_spill_gate::spill_min_tokens;
 
 /// One-shot latch for the "this is the new spill shape" info line. Steady state
@@ -68,16 +69,122 @@ impl SsmSnapshotPool {
         let evict = prefix_cache.evict_snapshot_to_tier(spill_min_tokens())?;
         if let TierEvict::Spill { slot, key, .. } = evict {
             let stream = gpu.default_stream();
-            if let Err(e) = self.spill_slot(slot, key, store, gpu, stream) {
-                tracing::warn!(
-                    "SSM spill during fault-in acquire failed ({e:#}); freeing slot anyway"
-                );
+            match self.spill_slot(slot, key, store, gpu, stream) {
+                Ok(true) => {}
+                Ok(false) => retire_refused_spill(prefix_cache, store, key),
+                Err(e) => tracing::warn!(
+                    "SSM spill during fault-in acquire failed ({e:#}); freeing slot anyway, \
+                     key {key} RETAINED (an error is not evidence of absence)"
+                ),
             }
         } else {
             log_spill_gate_skip(&evict);
         }
         self.free(evict.slot());
         self.try_pop_free_slot()
+    }
+
+    /// One warm-turn fault-in cycle for a TIERED anchor: acquire a slot
+    /// (spilling a live victim when the pool is full), read the blob back, and
+    /// on success re-home the index entry onto the fresh slot and re-tag its
+    /// session. `None` means nothing was restored and the caller recomputes.
+    ///
+    /// Lives on the pool rather than inline in
+    /// `TransformerModel::try_fault_in_ssm_snapshot` because this is the ONLY
+    /// place that observes a tier MISS while still holding both the prefix
+    /// cache and the store — i.e. the only place that can ever retire a stale
+    /// tier key — and a `TransformerModel` cannot be built without a GPU. As a
+    /// pool method the whole cycle is reachable from a CPU-only test
+    /// (`MockGpuBackend` + `RadixTree` + `MemBlobStore`), which is what pins
+    /// the miss-arm behaviour. The caller keeps the gates (resident-hit,
+    /// tier-store-present, `ATLAS_SSM_FAULT_MIN_TOKENS` depth); this owns the
+    /// acquire → fault → promote/miss sequence.
+    pub(in crate::model) fn fault_in_for_key(
+        &self,
+        prefix_cache: &dyn spark_runtime::prefix_cache::PrefixCache,
+        store: &dyn super::ssm_tier::SnapshotBlobStore,
+        gpu: &dyn GpuBackend,
+        key: u64,
+        session_hash: u64,
+        depth: usize,
+        stream: u64,
+    ) -> Option<usize> {
+        // `acquire_or_spill_slot` spills a resident victim to make room when the
+        // pool is full, so a warm hit isn't lost to a busy pool; `None` only if
+        // every slot is mid-flight.
+        let slot = self.acquire_or_spill_slot(prefix_cache, store, gpu)?;
+        match self.fault_in_slot(slot, key, store, gpu, stream) {
+            Ok(true) => {
+                // A `false` here means no index entry owns this key any more,
+                // so the slot we are about to hand back is referenced by
+                // nothing — harmless this turn (the caller uses it, then frees
+                // it), but it means the bytes we just restored will never be
+                // found again. Worth seeing: the reap below is what makes this
+                // newly reachable at all.
+                if !prefix_cache.promote_snapshot(key, slot) {
+                    tracing::warn!(
+                        "SSM tier fault-in restored key {key} but no index entry accepted the \
+                         promotion — this prefix will recompute next turn"
+                    );
+                }
+                // Re-home the session owner onto the fresh slot. Without this
+                // the slot is untagged (or carries a spill victim's stale tag)
+                // and the `session_matches` gate at the call site rejects the
+                // just-faulted state → full recompute. `lookup`/`lookup_tiered`
+                // already filtered by session, so `session_hash` is the
+                // rightful owner.
+                self.tag_session(slot, session_hash);
+                tracing::info!(
+                    "SSM tier fault-in: restored spilled snapshot at token {depth} into slot {slot}"
+                );
+                Some(slot)
+            }
+            // MISS: the store reported no bytes for this key — under
+            // `ATLAS_SSM_TIER_DISK_GB` that is `make_disk_room` having unmapped
+            // it. RETIRE the index entry so this prefix recomputes ONCE, rather
+            // than re-running this whole doomed cycle (spill a LIVE 66 MB
+            // snapshot D2H → allocate a slot → miss → free) on every warm turn,
+            // each doomed spill evicting one more tier record: the cap's own
+            // pressure would otherwise keep manufacturing more cap pressure.
+            Ok(false) => {
+                self.free(slot);
+                // Ordering is load-bearing: index FIRST (under its lock), store
+                // second, store GATED on the index result. Only after we really
+                // removed a TIERED entry may the blob go — if it came back
+                // resident meanwhile (a concurrent promote), the bytes may
+                // belong to a live entry again and must survive.
+                if prefix_cache.forget_snapshot_tier_key(key) {
+                    // On the cap path this is a no-op (the key is already
+                    // unmapped), but `get` also reports a miss for a LENGTH
+                    // MISMATCH while KEEPING the record — without this that
+                    // blob would be unreachable forever yet still consume
+                    // ATLAS_SSM_TIER_DISK_GB budget.
+                    store.remove(key);
+                    tracing::info!(
+                        "SSM tier reap: no blob for key {key} (depth {depth} tok) — retired the \
+                         index entry; this prefix now recomputes once instead of re-spilling a \
+                         live snapshot every turn. Sustained reaps mean ATLAS_SSM_TIER_DISK_GB \
+                         is undersized for the working set."
+                    );
+                }
+                None
+            }
+            // ERROR: NOT proof the blob is gone. A failed record read leaves it
+            // on disk and still mapped (`Residency` restores `disk_lru` and
+            // returns Err), and `acquire`/`synchronize`/`scatter` all fail
+            // AFTER the key lookup. Reaping here would destroy a live 66 MB
+            // snapshot to save one retry; keeping the key costs one wasted
+            // cycle, and the miss arm above is the backstop that retires it for
+            // good once absence is actually proven.
+            Err(e) => {
+                self.free(slot);
+                tracing::warn!(
+                    "SSM tier fault-in failed ({e:#}); key {key} RETAINED (an error is not \
+                     evidence of absence) — recomputing this turn, will retry next turn"
+                );
+                None
+            }
+        }
     }
 
     /// Bytes in one slot's full spill blob: every SSM layer's `h` + `conv`
@@ -147,6 +254,40 @@ impl SsmSnapshotPool {
         gpu.synchronize(stream)?;
         gather?;
         let t_put = std::time::Instant::now();
+        // `store.put` is now ~93% of a ~19 ms spill: a single-threaded host
+        // memcpy of the 66,846,720 B blob into the tier's arena slot. A
+        // `put_with(key, |slot: &mut [u8]| …)` API letting the D2H land
+        // STRAIGHT in that slot was analysed and **REJECTED** — do not
+        // re-litigate without new measurements:
+        //   * It trades away the PINNED destination. `VecSlotArena::buf` is an
+        //     ordinary heap `Vec` and `atlas-tier`'s dependency budget forbids
+        //     GPU/RDMA deps, so it can never pin. Pinned, this 60-chunk gather
+        //     is 1.38-1.42 ms; the ~28 ms pageable figure is INFERRED from the
+        //     old H2D path, which also paid a fresh alloc + zero-fill, so it
+        //     OVERSTATES the pure pinned-vs-pageable delta — it is not a
+        //     like-for-like measurement. Even so the trade is buy back
+        //     ~17-19 ms of memcpy, pay back an unmeasured pageable penalty:
+        //     net ≈ zero at best. This bullet alone is NOT decisive; the two
+        //     below are structural and each sufficient on its own.
+        //   * Only 2 of the 4 production `SnapshotBlobStore` implementors could
+        //     support it (`MemBlobStore`, and `UnifiedSnapshotStore` only over
+        //     `VecSlotArena`); RDMA/paging have no host-addressable slot, and
+        //     even the supportable arm needs a new borrow-out method on
+        //     `SlotArena` (which exposes only read_slot/write_slot). So it
+        //     needs a permanent capability branch through the one
+        //     correctness-critical D2H in the tier.
+        //   * It would hold the residency `Mutex` across the caller's 60
+        //     enqueues + stream sync — flag-ON blocker #1 in `ssm_tier/unified`.
+        // Pinning the arena from THIS crate with `cuMemHostRegister` (no
+        // `atlas-tier` dep) is the obvious escape and is also rejected: the
+        // default hot arena is 64 x 66,846,720 B ~= 4.3 GB, and page-locking
+        // that on a UMA box costs far more than the ~17 ms it saves.
+        // Likely the real cost here is FIRST TOUCH, not memcpy bandwidth:
+        // 66,846,720 B = 16,320 fresh 4 KiB pages ≈ 16 ms of minor faults, and
+        // with the default 64 slots every measured put landed in a never-written
+        // slot. If so this decays to ~0 in steady state with no code at all.
+        // Measure that (put wall time vs put ordinal 1..128) before touching
+        // the trait.
         let r = store.put(key, blob)?;
         if timing {
             tracing::info!(
@@ -189,7 +330,16 @@ impl SsmSnapshotPool {
 
     /// Enqueue the per-layer H2D chunks of `blob` into `snap_slot`. Enqueue
     /// only — the caller owns the single trailing `synchronize`.
-    fn scatter_async(
+    ///
+    /// `blob` is the `SpillStaging` buffer, which IS page-locked when the box
+    /// allows it, so these copies are genuinely asynchronous and the bytes are
+    /// read after each call returns. That is exactly the contract
+    /// `copy_h2d_async_retained` names: the caller holds the `StagingGuard`
+    /// across the whole scatter and synchronises before releasing it. Using the
+    /// transient `copy_h2d_async` here would be correct but would reintroduce
+    /// one stream drain per chunk — the ~400 ms shape this path exists to
+    /// escape.
+    pub(super) fn scatter_async(
         &self,
         snap_slot: usize,
         blob: &[u8],
@@ -199,12 +349,12 @@ impl SsmSnapshotPool {
         let per_layer = self.h_bytes + self.conv_bytes;
         for i in 0..self.num_ssm_layers {
             let off = i * per_layer;
-            gpu.copy_h2d_async(
+            gpu.copy_h2d_async_retained(
                 &blob[off..off + self.h_bytes],
                 self.h_snapshots[i].offset(snap_slot * self.h_bytes),
                 stream,
             )?;
-            gpu.copy_h2d_async(
+            gpu.copy_h2d_async_retained(
                 &blob[off + self.h_bytes..off + per_layer],
                 self.conv_snapshots[i].offset(snap_slot * self.conv_bytes),
                 stream,
@@ -225,140 +375,4 @@ impl SsmSnapshotPool {
             2 * self.num_ssm_layers,
         );
     }
-
-    /// **Fault in** a spilled snapshot for `key` into Marconi slot `snap_slot`:
-    /// fetch the host blob and scatter it H2D back into the slot's per-layer
-    /// `(h,conv)` chunks. Returns `false` if the tier has no blob for `key`
-    /// (caller recomputes) — the correct miss degradation.
-    ///
-    /// Shares `spill_slot`'s reusable page-locked staging buffer: this path was
-    /// already async+one-sync, but it re-allocated, zeroed and first-touched a
-    /// fresh 66 MB `Vec` per fault-in, and a pageable destination keeps
-    /// `cuMemcpyHtoDAsync_v2` off the DMA fast path. Sharing is safe because
-    /// the model is single-threaded post-construction and
-    /// `acquire_or_spill_slot → spill_slot → (return) → fault_in_slot` is
-    /// sequential, never nested; the staging `Mutex` makes that a checked
-    /// invariant rather than a comment.
-    ///
-    /// A trailing `synchronize(stream)` guarantees the H2D scatter has
-    /// committed before the caller issues a `restore` (D2D slot→main pool) that
-    /// reads this slot — the write-direction half of the ordering hazard.
-    pub(super) fn fault_in_slot(
-        &self,
-        snap_slot: usize,
-        key: u64,
-        store: &dyn super::ssm_tier::SnapshotBlobStore,
-        gpu: &dyn GpuBackend,
-        stream: u64,
-    ) -> Result<bool> {
-        if !self.is_enabled() {
-            return Ok(false);
-        }
-        let timing = std::env::var_os("ATLAS_SSM_TIER_TIMING").is_some();
-        let t0 = std::time::Instant::now();
-        let bytes = self.spill_blob_bytes();
-        let mut guard = self.spill_staging.acquire(gpu, bytes)?;
-        let kind = guard.kind();
-        let blob = guard.as_mut_slice();
-        let hit = store.get(key, blob)?;
-        let get_us = t0.elapsed().as_micros();
-        if !hit {
-            return Ok(false);
-        }
-        let scatter = self.scatter_async(snap_slot, blob, gpu, stream);
-        // Commit before the caller's restore reads the slot — and, as in
-        // `spill_slot`, before the shared staging buffer can be re-acquired
-        // while enqueued chunks are still reading it.
-        gpu.synchronize(stream)?;
-        scatter?;
-        if timing {
-            tracing::info!(
-                "SSM fault-in: {} B  store.get(RDMA read)={}us  scatter+sync={}us  total={}us  \
-                 staging={}",
-                bytes,
-                get_us,
-                t0.elapsed().as_micros() - get_us,
-                t0.elapsed().as_micros(),
-                kind,
-            );
-        }
-        Ok(true)
-    }
-
-    /// Try to reclaim a snapshot slot by evicting a snapshot from the prefix
-    /// cache's snapshot index. Snapshots are decoupled from tree nodes, so this
-    /// directly frees a slot without evicting KV blocks.
-    ///
-    /// Phase 1b: when `tier` is `Some` (`ATLAS_SSM_TIER`), a victim deep enough
-    /// to repay the spill cost is **spilled** — its bytes moved to the tier and
-    /// its index entry kept (findable), so a warm turn faults it back instead of
-    /// recomputing — before the slot is freed for reuse. A victim below
-    /// `ATLAS_SSM_SPILL_MIN_TOKENS` is dropped instead (see
-    /// [`super::ssm_spill_gate`]). When `tier` is `None` the victim is dropped
-    /// exactly as before (byte-identical default path). Returns whether a slot
-    /// was reclaimed.
-    pub(super) fn reclaim_from_cache(
-        &self,
-        prefix_cache: &dyn spark_runtime::prefix_cache::PrefixCache,
-        _kv_cache: &mut PagedKvCache,
-        tier: Option<&dyn super::ssm_tier::SnapshotBlobStore>,
-        gpu: &dyn GpuBackend,
-    ) -> bool {
-        if let Some(store) = tier {
-            // Spill-not-drop. Marconi saves are enqueued on the default stream,
-            // so draining it inside `spill_slot` guarantees we never D2H a
-            // half-written victim slot (the read half of the ordering hazard).
-            let Some(evict) = prefix_cache.evict_snapshot_to_tier(spill_min_tokens()) else {
-                return false;
-            };
-            match evict {
-                TierEvict::Spill { slot, key, .. } => {
-                    let stream = gpu.default_stream();
-                    match self.spill_slot(slot, key, store, gpu, stream) {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            // Unbounded tier never rejects; a bounded one could. The
-                            // entry is now marked tiered but holds no bytes → a later
-                            // fault-in cleanly misses (recompute). Bounded-tier
-                            // drop-on-reject is a follow-up.
-                            tracing::warn!(
-                                "SSM spill tier refused a blob; entry will miss on fault-in"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "SSM spill failed ({e:#}); freeing slot, entry will miss"
-                            );
-                        }
-                    }
-                }
-                TierEvict::Drop { .. } => log_spill_gate_skip(&evict),
-            }
-            self.free(evict.slot()); // slot reusable regardless of the arm taken
-            return true;
-        }
-        if let Some(snap) = prefix_cache.evict_snapshot_lru() {
-            self.free(snap);
-            true
-        } else {
-            false
-        }
-    }
 }
-
-/// The spill-side twin of `ssm_fault_in`'s gate log, worded alike so both
-/// halves of the cost model read the same way.
-fn log_spill_gate_skip(evict: &TierEvict) {
-    if let TierEvict::Drop { depth, .. } = *evict {
-        tracing::info!(
-            "SSM spill SKIPPED (cost gate): victim depth {depth} < \
-             ATLAS_SSM_SPILL_MIN_TOKENS={} — dropped instead; a ~45ms spill cannot repay \
-             {depth} tokens of prefill",
-            spill_min_tokens(),
-        );
-    }
-}
-
-#[cfg(test)]
-#[path = "ssm_snapshot_spill_tests.rs"]
-mod tier_tests;

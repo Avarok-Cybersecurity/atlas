@@ -134,38 +134,20 @@ impl TransformerModel {
             return None;
         }
 
-        // `acquire_or_spill_slot` spills a resident victim to make room when the
-        // pool is full, so a warm hit isn't lost to a busy pool; `None` only if
-        // every slot is mid-flight.
-        let slot = self.ssm_snapshots.acquire_or_spill_slot(
+        // The acquire → fault → promote/miss cycle lives on the pool
+        // (`fault_in_for_key`) so it is reachable without a GPU: a
+        // `TransformerModel` needs real weights, a `SsmSnapshotPool` needs only
+        // a `GpuBackend`. Behaviour is unchanged — this is the same sequence,
+        // one indirection down.
+        self.ssm_snapshots.fault_in_for_key(
             self.prefix_cache.as_ref(),
             store,
             self.gpu.as_ref(),
-        )?;
-        match self
-            .ssm_snapshots
-            .fault_in_slot(slot, key, store, self.gpu.as_ref(), stream)
-        {
-            Ok(true) => {
-                self.prefix_cache.promote_snapshot(key, slot);
-                // Re-home the session owner onto the fresh slot. Without this
-                // the slot is untagged (or carries a spill victim's stale tag)
-                // and the `session_matches` gate at the call site rejects the
-                // just-faulted state → full recompute. `lookup`/`lookup_tiered`
-                // already filtered by session, so `session_hash` is the
-                // rightful owner.
-                self.ssm_snapshots.tag_session(slot, session_hash);
-                tracing::info!(
-                    "SSM tier fault-in: restored spilled snapshot at token {depth} into slot {slot}"
-                );
-                Some(slot)
-            }
-            // Miss (blob gone) or error: return the slot, recompute.
-            _ => {
-                self.ssm_snapshots.free(slot);
-                None
-            }
-        }
+            key,
+            session_hash,
+            depth,
+            stream,
+        )
     }
 }
 

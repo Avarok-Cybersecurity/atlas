@@ -14,6 +14,7 @@ pub struct MockAlloc {
 
 /// Records kernel launches and memory operations for test assertions.
 pub struct MockGpuBackend {
+    op_cache: crate::op_cache::OpCache,
     allocs: Mutex<HashMap<u64, MockAlloc>>,
     next_ptr: Mutex<u64>,
     launches: Mutex<Vec<MockLaunch>>,
@@ -43,6 +44,7 @@ impl Default for MockGpuBackend {
 impl MockGpuBackend {
     pub fn new() -> Self {
         Self {
+            op_cache: crate::op_cache::OpCache::new(),
             allocs: Mutex::new(HashMap::new()),
             next_ptr: Mutex::new(0x1000_0000),
             launches: Mutex::new(Vec::new()),
@@ -113,6 +115,10 @@ fn find_alloc_mut(
 }
 
 impl GpuBackend for MockGpuBackend {
+    fn op_cache(&self) -> &crate::op_cache::OpCache {
+        &self.op_cache
+    }
+
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
         let mut next = self.next_ptr.lock();
         let ptr = *next;
@@ -199,6 +205,7 @@ impl GpuBackend for MockGpuBackend {
         0
     }
 
+    #[track_caller]
     fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
         Ok(KernelHandle(0xDEAD))
     }
@@ -231,6 +238,13 @@ impl GpuBackend for MockGpuBackend {
 
     fn total_memory(&self) -> Result<usize> {
         Ok(128 * 1024 * 1024 * 1024) // 128 GB
+    }
+
+    fn sm_count(&self) -> Result<u32> {
+        // Rationale (PCND): tests that exercise occupancy-gated dispatch need
+        // SOME machine width; 48 is the GB10 value the model targets, chosen
+        // so mock runs take the same branch production does.
+        Ok(48)
     }
 
     fn free_memory(&self) -> Result<usize> {

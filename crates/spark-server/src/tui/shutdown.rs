@@ -22,15 +22,55 @@ use std::time::Duration;
 
 use tokio::sync::{Notify, oneshot};
 
-static REQUESTED: AtomicBool = AtomicBool::new(false);
-
-fn notify() -> &'static Notify {
-    static N: OnceLock<Notify> = OnceLock::new();
-    N.get_or_init(Notify::new)
+/// Where the process is in its shutdown sequence.
+///
+/// One object rather than two loose flags: they are read together on every
+/// path that decides HOW to shut down (the startup escape applies only while
+/// `in_startup`), and a value set without the other is a state that does not
+/// exist. Plain atomics, no lock — a signal handler reads them.
+struct Phase {
+    /// Set once a shutdown has been requested, from any trigger.
+    requested: AtomicBool,
+    /// Whether a request should still take the startup escape. Cleared when
+    /// the accept loop takes over.
+    in_startup: AtomicBool,
 }
 
-/// Startup escape hatch: the sending half of `main`'s one-shot, held so that
-/// whichever trigger fires FIRST takes it and the rest are no-ops.
+// STATIC, DELIBERATELY — process lifecycle. A shutdown request is a property of
+// the PROCESS, and the things that raise one (a signal handler, the panic hook,
+// a key event in the TUI thread, `/quit`) run in contexts that cannot be handed
+// a carrier. A signal handler in particular may only touch process-global
+// state.
+static PHASE: Phase = Phase {
+    requested: AtomicBool::new(false),
+    in_startup: AtomicBool::new(true),
+};
+
+/// The two channels a shutdown travels over: the wakeup for whoever is
+/// awaiting it, and the startup escape hatch. One object because they are the
+/// same decision seen from two phases — `Phase::in_startup` picks which one a
+/// request takes.
+#[derive(Default)]
+struct Channels {
+    notify: Notify,
+    escape: std::sync::Mutex<Option<oneshot::Sender<&'static str>>>,
+}
+
+// Lazily built, unlike `PHASE`: `Notify` has no const constructor. Nothing in
+// a signal handler touches this — the handler sets `PHASE.requested` and the
+// async side does the waking.
+static CHANNELS: OnceLock<Channels> = OnceLock::new();
+
+fn channels() -> &'static Channels {
+    CHANNELS.get_or_init(Channels::default)
+}
+
+fn notify() -> &'static Notify {
+    &channels().notify
+}
+
+/// The startup escape hatch: the sending half of `main`'s one-shot, held so
+/// that whichever trigger fires FIRST takes it and the rest are no-ops.
 ///
 /// `serve()` is `async` but never awaits between the banner and the accept loop
 /// — startup is one blocking sequence (weight load, KV alloc, kernel audit). So
@@ -42,17 +82,9 @@ fn notify() -> &'static Notify {
 /// It is DISARMED by [`disarm_startup_escape`] the moment the accept loop takes
 /// over. After that a shutdown must go through the graceful path below, or a
 /// Ctrl+C on a live server would exit while requests were still in flight.
-static STARTUP_ESCAPE: OnceLock<std::sync::Mutex<Option<oneshot::Sender<&'static str>>>> =
-    OnceLock::new();
-
 fn escape() -> &'static std::sync::Mutex<Option<oneshot::Sender<&'static str>>> {
-    STARTUP_ESCAPE.get_or_init(|| std::sync::Mutex::new(None))
+    &channels().escape
 }
-
-/// Whether a shutdown request should still take the startup escape. Cleared when
-/// the accept loop takes over; the SENDER itself is deliberately kept alive (see
-/// [`disarm_startup_escape`]).
-static IN_STARTUP: AtomicBool = AtomicBool::new(true);
 
 /// Arm the startup escape with `main`'s sender. Called once, before `serve()`.
 pub fn arm_startup_escape(tx: oneshot::Sender<&'static str>) {
@@ -69,12 +101,12 @@ pub fn arm_startup_escape(tx: oneshot::Sender<&'static str>) {
 /// Parking the sender here for the life of the process means the channel simply
 /// never closes and there is no such edge to get wrong.
 pub fn disarm_startup_escape() {
-    IN_STARTUP.store(false, Ordering::SeqCst);
+    PHASE.in_startup.store(false, Ordering::SeqCst);
 }
 
 /// Request a clean shutdown. Idempotent; safe from any thread.
 pub fn request(reason: &'static str) {
-    if !REQUESTED.swap(true, Ordering::SeqCst) {
+    if !PHASE.requested.swap(true, Ordering::SeqCst) {
         tracing::info!("Shutdown requested ({reason}) — draining in-flight requests");
     }
     // Still in startup? Hand the reason to main's select! and let it unwind
@@ -82,7 +114,7 @@ pub fn request(reason: &'static str) {
     // the first trigger sends, and the process is on its way out. Once the accept
     // loop owns shutdown the sender stays parked and untouched, so the channel
     // never closes and the notification below is what does the work.
-    if IN_STARTUP.load(Ordering::SeqCst)
+    if PHASE.in_startup.load(Ordering::SeqCst)
         && let Ok(mut slot) = escape().lock()
         && let Some(tx) = slot.take()
     {
@@ -93,7 +125,7 @@ pub fn request(reason: &'static str) {
 
 /// Has shutdown been requested?
 pub fn requested() -> bool {
-    REQUESTED.load(Ordering::SeqCst)
+    PHASE.requested.load(Ordering::SeqCst)
 }
 
 /// Resolve when shutdown is requested (immediately if it already was).
@@ -163,3 +195,7 @@ pub async fn drain_in_flight(grace: Duration) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+#[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod tests;

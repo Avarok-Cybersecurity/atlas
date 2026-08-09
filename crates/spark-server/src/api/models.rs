@@ -11,13 +11,22 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 
-use crate::AppState;
 use crate::openai::{ModelInfo, ModelListResponse};
 
 use super::compact::openai_error_response;
 
 /// GET /v1/models
-pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListResponse> {
+pub async fn list_models(
+    State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
+) -> Json<ModelListResponse> {
+    // An empty list is the honest answer before a model is chosen — better than
+    // 503, because the endpoint itself is working and the answer is "none".
+    let Some(state) = host.current() else {
+        return Json(ModelListResponse {
+            object: "list".to_string(),
+            data: Vec::new(),
+        });
+    };
     // #22 hardening: bound the advertised set so the pre-sized allocation can
     // never be driven large. adapter_names is startup-bounded by --max-loras
     // today, but capping keeps the allocation independent of that (and clears the
@@ -67,9 +76,27 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListRe
 
 /// GET /v1/models/{model_id} — retrieve a single model (OpenAI SDK `client.models.retrieve()`).
 pub async fn get_model(
-    State(state): State<Arc<AppState>>,
+    State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
     axum::extract::Path(model_id): axum::extract::Path<String>,
 ) -> Response {
+    // An empty list is the honest answer before a model is chosen — better than
+    // 503, because the endpoint itself is working and the answer is "none".
+    let Some(state) = host.current() else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": {
+                    "message": crate::error_hints::message_with_hint(
+                        "no model is loaded",
+                        "model_not_loaded",
+                    ),
+                    "type": "model_not_loaded",
+                    "hint": crate::error_hints::hint_for("model_not_loaded"),
+                }
+            })),
+        )
+            .into_response();
+    };
     // Any resident adapter is a routable model id (M2): `models.retrieve(name)`
     // must succeed for every adapter advertised by /v1/models, not just slot 0.
     let known = model_id == state.model_name

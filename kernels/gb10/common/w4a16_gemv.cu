@@ -609,6 +609,25 @@ extern "C" __global__ void w4a16_gemv_batch16(
     w4a16_gemv_batchm_impl<16>(A, B_packed, B_scale, scale2, C, M, N, K);
 }
 
+// M<=32 (native-bs32 batched propose, n=17..32) — same M-guarded template.
+// Exists so the n=32 MTP re-propose reads the drafter LM head ONCE instead
+// of two chunked batch16 sweeps (the measured 2 x 13.5 ms propose in the
+// wave-10 K=2 step timing). acc[32] + smem[32][8] doubles batch16's
+// per-thread state; the kernel is DRAM-bound on the shared weight read at
+// grid ceil(N/4), so occupancy loss is secondary to halving weight traffic.
+extern "C" __global__ void w4a16_gemv_batch32(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<32>(A, B_packed, B_scale, scale2, C, M, N, K);
+}
+
 // ============================================================
 // W4A16 GEMV with inline Q/Gate deinterleave on output write
 // ============================================================

@@ -119,7 +119,10 @@ struct Nvfp4Weight {
 /// Build a random NVFP4 weight [N, K] directly in packed form, then derive the
 /// transposed layout with the EXACT loop from `transpose_for_gemm`.
 fn gen_weight(rng: &mut Rng, n: usize, k: usize) -> Nvfp4Weight {
-    assert!(k % GROUP_SIZE == 0, "K must be a multiple of {GROUP_SIZE}");
+    assert!(
+        k.is_multiple_of(GROUP_SIZE),
+        "K must be a multiple of {GROUP_SIZE}"
+    );
     let half_k = k / 2;
     let num_groups = k / GROUP_SIZE;
     let mut packed_nt = vec![0u8; n * half_k];
@@ -212,6 +215,12 @@ fn compare(a: &[u16], b: &[u16]) -> Stats {
 struct ShapeResult {
     /// base `w4a16_gemm` vs v2 (`w4a16_gemm_t_m128_bf16_v2`).
     base_vs_v2: Stats,
+    /// crush v1 (`w4a16::w4a16_gemm_t_m128`) vs crush v2
+    /// (`w4a16_v2::w4a16_gemm_t_m128_v2`) — MUST be 100% bit-identical when
+    /// both are present: v2 only parallelizes the two M-chunks across 8
+    /// warps; per-output math and accumulation order are unchanged. None
+    /// when the target ships no v2 (the legs are skipped).
+    crush_v1_vs_v2: Option<Stats>,
     /// v1 (`w4a16_gemm_t_m128_bf16`) vs v2 — MUST be 100% bit-identical: v2 only
     /// reschedules the pipeline, the MMA instruction sequence (and thus the
     /// per-output FP32 accumulation order) is unchanged.
@@ -225,6 +234,8 @@ fn run_shape(
     base_h: spark_runtime::gpu::KernelHandle,
     bf16_h: spark_runtime::gpu::KernelHandle,
     v2_h: spark_runtime::gpu::KernelHandle,
+    crush1_h: spark_runtime::gpu::KernelHandle,
+    crush2_h: spark_runtime::gpu::KernelHandle,
     seed: u64,
     m: usize,
     n: usize,
@@ -290,7 +301,10 @@ fn run_shape(
         .arg_u32(k as u32)
         .launch(stream)?;
 
-    // ── w4a16_gemm_t_m128_bf16_v2: SAME launch config + weight layout as v1 ──
+    // ── w4a16_gemm_t_m128_bf16_v2: SAME launch config + weight layout as v1,
+    // PLUS the 9th `ldb` param (transposed-B row stride; == N here, the twin is
+    // unpadded). Omitting it is UB: cuLaunchKernel reads past the end of the
+    // param array for the missing arg. ──
     KernelLaunch::new(gpu, v2_h)
         .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
         .block([128, 1, 1])
@@ -302,7 +316,43 @@ fn run_shape(
         .arg_u32(m as u32)
         .arg_u32(n as u32)
         .arg_u32(k as u32)
+        .arg_u32(n as u32)
         .launch(stream)?;
+
+    // ── crush v1 vs crush v2 (both 8-arg; FP8-E4M3 activation crush) ──
+    // Same transposed weights; the pair is gated on BIT-IDENTITY to each
+    // other, not on closeness to base (the crush is lossy by design).
+    let (c_crush1, c_crush2) = if crush1_h.0 != 0 && crush2_h.0 != 0 {
+        let c1 = gpu.alloc(m * n * 2)?;
+        let c2 = gpu.alloc(m * n * 2)?;
+        KernelLaunch::new(gpu, crush1_h)
+            .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
+            .block([128, 1, 1])
+            .arg_ptr(a_ptr)
+            .arg_ptr(packed_t)
+            .arg_ptr(scale_t)
+            .arg_f32(w.scale2)
+            .arg_ptr(c1)
+            .arg_u32(m as u32)
+            .arg_u32(n as u32)
+            .arg_u32(k as u32)
+            .launch(stream)?;
+        KernelLaunch::new(gpu, crush2_h)
+            .grid([n.div_ceil(128) as u32, m.div_ceil(128) as u32, 1])
+            .block([256, 1, 1])
+            .arg_ptr(a_ptr)
+            .arg_ptr(packed_t)
+            .arg_ptr(scale_t)
+            .arg_f32(w.scale2)
+            .arg_ptr(c2)
+            .arg_u32(m as u32)
+            .arg_u32(n as u32)
+            .arg_u32(k as u32)
+            .launch(stream)?;
+        (Some(c1), Some(c2))
+    } else {
+        (None, None)
+    };
 
     gpu.synchronize(stream)?;
 
@@ -330,6 +380,23 @@ fn run_shape(
 
     let base_vs_v2 = compare(&out_base, &out_v2);
     let v1_vs_v2 = compare(&out_bf16, &out_v2);
+    let crush_v1_vs_v2 = if let (Some(c1), Some(c2)) = (c_crush1, c_crush2) {
+        let mut raw1 = vec![0u8; m * n * 2];
+        let mut raw2 = vec![0u8; m * n * 2];
+        gpu.copy_d2h(c1, &mut raw1)?;
+        gpu.copy_d2h(c2, &mut raw2)?;
+        let o1 = to_u16(&raw1);
+        let o2 = to_u16(&raw2);
+        let nz1 = o1.iter().filter(|&&x| x != 0).count();
+        if nz1 == 0 {
+            bail!("dead crush-v1 output (M={m} N={n} K={k})");
+        }
+        let _ = gpu.free(c1);
+        let _ = gpu.free(c2);
+        Some(compare(&o1, &o2))
+    } else {
+        None
+    };
 
     // Free per-shape allocations (the harness is short-lived but be tidy).
     for p in [
@@ -341,6 +408,7 @@ fn run_shape(
     Ok(ShapeResult {
         base_vs_v2,
         v1_vs_v2,
+        crush_v1_vs_v2,
     })
 }
 
@@ -361,6 +429,16 @@ fn main() -> Result<()> {
     let base_h = gpu.kernel("w4a16", "w4a16_gemm")?;
     let bf16_h = gpu.kernel("w4a16", "w4a16_gemm_t_m128_bf16")?;
     let v2_h = gpu.kernel("w4a16", "w4a16_gemm_t_m128_bf16_v2")?;
+    // Crush pair (FP8-E4M3 activation crush): v1 always present; v2 only on
+    // targets whose kernel set ships module w4a16_v2 (minimax, step3p7, and
+    // the qwen3.6-27b port). Gate: BIT-IDENTICAL to each other.
+    let crush1_h = gpu.kernel("w4a16", "w4a16_gemm_t_m128")?;
+    let crush2_h = gpu
+        .kernel("w4a16_v2", "w4a16_gemm_t_m128_v2")
+        .unwrap_or(spark_runtime::gpu::KernelHandle(0));
+    if crush2_h.0 == 0 {
+        println!("NOTE: w4a16_v2::w4a16_gemm_t_m128_v2 absent — crush v1/v2 legs SKIPPED\n");
+    }
 
     // (label, M, N, K). Prefill gate/up/down + M-tile-boundary + K-tail edges.
     let shapes: &[(&str, usize, usize, usize)] = &[
@@ -388,22 +466,34 @@ fn main() -> Result<()> {
 
     let mut all_pass = true;
     for &(label, m, n, k) in shapes {
-        let r = run_shape(gpu, stream, base_h, bf16_h, v2_h, seed, m, n, k)?;
+        let r = run_shape(
+            gpu, stream, base_h, bf16_h, v2_h, crush1_h, crush2_h, seed, m, n, k,
+        )?;
         let bv = &r.base_vs_v2;
         let v12 = &r.v1_vs_v2;
         // v2 must match base in cosine (reassociation-equivalent), AND be
         // byte-for-byte identical to v1 (it only reschedules the pipeline).
+        let crush_ok = match &r.crush_v1_vs_v2 {
+            Some(c) => c.frac_bit_identical >= 0.999_999,
+            None => true, // legs skipped: no v2 on this target
+        };
         let pass = bv.cosine >= COSINE_GATE
             && bv.cosine.is_finite()
-            && v12.frac_bit_identical >= 0.999_999;
+            && v12.frac_bit_identical >= 0.999_999
+            && crush_ok;
         all_pass &= pass;
+        let crush_col = match &r.crush_v1_vs_v2 {
+            Some(c) => format!("{:>8.3}%", c.frac_bit_identical * 100.0),
+            None => "   skip".to_string(),
+        };
         println!(
-            "{label:<12} {m:>6} {n:>6} {k:>6} | {:>10.6} {:>10.3e} {:>8.3}% | {:>10.6} {:>8.3}%  {}",
+            "{label:<12} {m:>6} {n:>6} {k:>6} | {:>10.6} {:>10.3e} {:>8.3}% | {:>10.6} {:>8.3}% | crush {} {}",
             bv.cosine,
             bv.max_abs,
             bv.frac_bit_identical * 100.0,
             v12.cosine,
             v12.frac_bit_identical * 100.0,
+            crush_col,
             if pass { "PASS" } else { "FAIL" },
         );
     }

@@ -69,3 +69,66 @@ fp8_kv_calibration_tokens = 256
 
 [kernel]
 moe_gate_shmem_bytes = 8192   # dim(4096) * sizeof(bf16)
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels` (21 lookups).
+# Mistral-Small-4 is the only current MLA model besides DeepSeek-V4-Flash
+# (kv_lora_rank=256), so it probes the MLA families; most of them ship
+# only in the deepseek-v4-flash PTX set. Every entry's fallback resolves.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = "3-deep p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves). Unmeasured for this target."
+w4a16_gemm_t_k64_p3 = "Same family; k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; 0-handle, dispatch gated on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; gated on handle != 0, falls back through the resolved w4a16 path."
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = "Shipped only in nemotron-labs-3-puzzle's shadow; dispatch falls back to w4a4_gemm (resolves). Unmeasured."
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = "Native-MXFP4 E8M0 variant, shipped only in deepseek-v4-flash. NVFP4 target uses the resolved ptrtable grouped GEMM."
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t variant."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t_k64 variant."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up variant."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up_k64 variant."
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FUSED-FP4 gate_up (Holo-3.1 family); dispatch checks handle != 0 before firing."
+moe_w4a16_fused_gate_up_t_k64_m128 = "M=128 Block-D variant shipped only in minimax-m2-229b; dispatch falls through to M=64."
+moe_w4a16_down_t_k64_fp4 = "FP4 down-projection twin; forward_prefill_routed gates on down_fp4 && handle != 0."
+
+[expected_absent.mla_paged_decode]
+mla_paged_decode_nvfp4 = """
+DeepSeek-V4-Flash's compressed 576-dim MLA decode arm. Fires only under
+KvCacheDtype::Nvfp4 with an MLA-rope config (run_paged_decode.rs:53);
+this model REQUIRES bf16 KV (the FP8/NVFP4 KV breaks the MLA latent —
+deployment guide), and the kernel ships only in deepseek-v4-flash's PTX
+set. Unreachable as served."""
+
+[expected_absent.mla_paged_decode_fp8]
+mla_paged_decode_fp8 = "Same family — the FP8-KV V4-Flash arm; unreachable for the same bf16-KV reason."
+
+[expected_absent.inferspark_prefill_512]
+inferspark_prefill_512 = """
+HDIM>256 prefill arm; dispatch gated on head_dim > 256
+(paged_attn.rs:107, paged_mla.rs:258) and this model's head_dim is 128.
+Probe issued because MLA sets wide_head_dim (kv_lora_rank > 0), a
+superset gate by design."""
+
+[expected_absent.paged_decode_attn_512]
+paged_decode_attn = "Same HDIM>256 family; gated on head_dim > 256, this model's head_dim is 128."
+
+[expected_absent.rope]
+rope_forward_strided = """
+Whole-file shadow drift (lesson 15): this target's rope.cu shadow defines
+only rope_forward and rope_forward_yarn, dropping common's strided arm.
+Dispatch gates on handle != 0 and falls back to rope_forward (resolves).
+The strided arm MAY be a win at n > 1 — UNMEASURED, candidate to port
+from common, not a confirmed loss."""
+rope_forward_proportional = """
+Dispatch guard is `self.rope_proportional && handle != 0`; the flag
+defaults false at construction (init.rs:121) and only the Gemma-4
+loader ever enables it (gemma4/loader_a.rs:464) — never for Mistral, so
+this lookup cannot fire for this architecture."""
+rope_forward_yarn_interleaved = """
+GPT-J-interleaved YaRN arm for DeepSeek-V4 MLA rope sites
+(attention_forward_v4.rs / paged_v4.rs) — V4-family paths this model
+does not execute; ships only in deepseek-v4-flash's tree."""
+rope_forward_yarn_interleaved_inv = "Same V4-Flash interleaved-YaRN family; not on any path this model executes."

@@ -332,3 +332,127 @@ mod from_str_tests {
         }
     }
 }
+
+/// Resolve the weight-key prefix a nested (multimodal) checkpoint uses.
+///
+/// Lives here rather than in the server because it depends only on the store
+/// and the config, and BOTH the serve path and the integration harness need it:
+/// a nested checkpoint stores `model.language_model.layers.0.…`, and a caller
+/// that skips this step fails with "Weight 'model.layers.0.input_layernorm.
+/// weight' not found in store" after a full weight load. Keeping one copy is
+/// what stops the test from accepting a different set of checkpoints than
+/// production does.
+pub fn auto_detect_weight_prefix(
+    store: &WeightStore,
+    config: &mut atlas_core::config::ModelConfig,
+) {
+    if config.weight_prefix.is_empty() && config.nested_config {
+        config.weight_prefix = if store.contains("language_model.model.embed_tokens.weight") {
+            "language_model.model".to_string()
+        } else if store.contains("model.language_model.embed_tokens.weight") {
+            "model.language_model".to_string()
+        } else {
+            let scanned = store
+                .names()
+                .find(|k| k.contains(".layers.0."))
+                .and_then(|k| k.split(".layers.0.").next())
+                .map(|s| s.to_string());
+            if let Some(ref prefix) = scanned {
+                tracing::info!("Auto-detected weight prefix: '{prefix}'");
+            }
+            scanned.unwrap_or_else(|| "model".to_string())
+        };
+    }
+    if !config.weight_prefix.is_empty() {
+        tracing::info!("Weight prefix: {}", config.weight_prefix);
+    }
+}
+
+/// Release every weight tensor.
+///
+/// Safe to free per-entry because the loaders allocate per-tensor: the fast
+/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
+/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
+/// a shared block into this map. (Fused per-expert views DO exist — see
+/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
+/// the fused allocation, not here, so this cannot double-free them.)
+impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
+    fn label(&self) -> &'static str {
+        "weight store"
+    }
+
+    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        // `drain` rather than iterate: the map must not be left holding
+        // pointers to memory that is gone, and it makes this idempotent.
+        for (name, tensor) in self.weights.drain() {
+            if let Err(e) = gpu.free(tensor.ptr)
+                && first_error.is_none()
+            {
+                first_error = Some(e.context(format!("freeing weight {name}")));
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod teardown_tests {
+    use super::*;
+    use crate::gpu::mock::MockGpuBackend;
+    use atlas_core::scope::{ModelResource, Teardown};
+    use std::collections::HashMap;
+
+    fn store_with(gpu: &dyn GpuBackend, n: usize) -> WeightStore {
+        let mut map = HashMap::new();
+        for i in 0..n {
+            map.insert(
+                format!("w{i}"),
+                WeightTensor {
+                    ptr: gpu.alloc(1024).expect("alloc"),
+                    shape: vec![16, 16],
+                    dtype: WeightDtype::BF16,
+                },
+            );
+        }
+        WeightStore::from_map(map)
+    }
+
+    #[test]
+    fn releasing_frees_every_tensor() {
+        let gpu = MockGpuBackend::new();
+        let mut store = store_with(&gpu, 8);
+        assert_eq!(gpu.alloc_count(), 8);
+        store.release(&gpu).expect("released");
+        assert_eq!(gpu.alloc_count(), 0, "every weight was freed");
+        assert_eq!(store.len(), 0, "and the map does not hold dead pointers");
+    }
+
+    /// The contract says idempotent: the host calls it, and a `Drop` backstop
+    /// may call it again. A second call must not double-free.
+    #[test]
+    fn releasing_twice_is_harmless() {
+        let gpu = MockGpuBackend::new();
+        let mut store = store_with(&gpu, 4);
+        store.release(&gpu).expect("first");
+        store.release(&gpu).expect("second");
+        assert_eq!(gpu.alloc_count(), 0);
+    }
+
+    /// Reverse order, and one failure does not abandon the rest — the whole
+    /// reason `Teardown` exists rather than `Drop`.
+    #[test]
+    fn teardown_releases_in_reverse_registration_order() {
+        let gpu = MockGpuBackend::new();
+        let mut teardown: Teardown<dyn GpuBackend> = Teardown::new();
+        teardown.push(Box::new(store_with(&gpu, 3)));
+        teardown.push(Box::new(store_with(&gpu, 5)));
+        assert_eq!(gpu.alloc_count(), 8);
+        teardown.release_all(&gpu).expect("released");
+        assert_eq!(gpu.alloc_count(), 0);
+        assert!(teardown.is_empty());
+    }
+}

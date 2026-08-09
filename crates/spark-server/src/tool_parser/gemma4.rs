@@ -27,7 +27,12 @@ impl ToolCallParser for Gemma4Parser {
         true
     }
 
-    fn system_prompt(&self, _tools: &[ToolDefinition], _tool_choice: &ToolChoice) -> String {
+    fn system_prompt(
+        &self,
+        _tools: &[ToolDefinition],
+        _tool_choice: &ToolChoice,
+        _levers: &super::PromptLevers,
+    ) -> String {
         // Tool definitions are handled by the gemma4.jinja template natively.
         String::new()
     }

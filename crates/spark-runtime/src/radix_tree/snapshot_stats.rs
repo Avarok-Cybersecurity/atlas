@@ -31,4 +31,13 @@ pub(super) struct SnapshotStats {
     pub tier_hits: u64,
     /// Phase 1b: tier entries faulted back into HBM via `promote`.
     pub tier_fault_ins: u64,
+    /// Phase 1b: tier entries RETIRED by `forget_tiered` because their blob was
+    /// gone (the disk cap dropped it, or the spill was refused). Without this
+    /// counter the stale-key thrash — one live-snapshot spill burned per warm
+    /// turn to rediscover the same dead key — is invisible in the very line
+    /// built to observe this tier. Reconciliation:
+    /// `tier_spills − tier_fault_ins − tier_reaps` = tiered entries still
+    /// outstanding; `tier_reaps` climbing steadily means
+    /// `ATLAS_SSM_TIER_DISK_GB` is undersized for the working set.
+    pub tier_reaps: u64,
 }

@@ -94,6 +94,7 @@ pub(super) fn build_msg_entries(
     vision_max_pixels: Option<usize>,
     input: &[Message],
     tools_active: bool,
+    levers: &super::levers::ChatLevers,
 ) -> Result<BuildOut, Response> {
     let mut messages: Vec<MsgEntry> = Vec::with_capacity(input.len());
     let mut all_images: Vec<String> = Vec::new();
@@ -344,8 +345,11 @@ pub(super) fn build_msg_entries(
     // tool response (what the model reads just before its next action). Gated
     // by ATLAS_BASH_WANDER_WATCHDOG (PCND, default-off).
     if tools_active
-        && let Some(hint) =
-            crate::hint_injector::bash_wander_hint(total_tool_calls, productive_tool_calls)
+        && let Some(hint) = crate::hint_injector::bash_wander_hint(
+            total_tool_calls,
+            productive_tool_calls,
+            levers.bash_wander,
+        )
         && let Some(last_tool) = messages.iter_mut().rev().find(|e| e.role == "tool")
     {
         last_tool.content.push_str(&hint);

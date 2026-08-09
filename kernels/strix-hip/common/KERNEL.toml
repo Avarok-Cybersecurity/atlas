@@ -1,6 +1,38 @@
 [build]
 extra_nvcc_flags = ["--fmad=false"]
 
+# Kernels a model shadow may omit WITHOUT that being shadow drift.
+# Keyed by MODULE name (post-`[modules]` mapping) → list of entry points,
+# i.e. exactly the `module::kernel` strings the build warning and the startup
+# audit print.
+#
+# SCOPE — this suppresses the shadow-drop BUILD WARNING only. Exempt pairs stay
+# in `TargetPtxSet::shadowed_dropped`, so the startup gate
+# (`kernel_audit::classify_failures`) still hard-errors if a model's dispatch
+# ever actually asks for one. An entry here can quiet build-log noise; it can
+# NOT let a genuinely-missing kernel boot. That split is deliberate: the audit
+# must stay fail-closed.
+#
+# Both entries are the same two SUPERSEDED entry points gb10 and strix already
+# declare, with the same reasons — this hardware set was simply never given the
+# block, so its two model shadows reported drift that its siblings did not.
+# Found by `atlas-kernels/tests/kernel_shadow_detector.rs`, which compares every
+# hardware set the same way.
+#
+#   w4a16::w4a16_dequant
+#       Standalone dequant helper. Zero callers repo-wide (no `.kernel(...)`
+#       or `try_kernel` site in any crate). No model shadow has ever carried it.
+#
+#   moe_w4a16::moe_w4a16_grouped_gemm
+#       The original expert-offsets grouped GEMM, replaced everywhere by the
+#       `_ptrtable` family (`..._ptrtable`, `..._ptrtable_t`, `..._ptrtable_t_k64`
+#       and their `_e8m0` twins), which every model shadow implements. The only
+#       remaining reference is `atlas-spark-bench/benches/moe.rs`, a benchmark —
+#       no production dispatch path resolves it.
+[shadow_exempt]
+w4a16 = ["w4a16_dequant"]
+moe_w4a16 = ["moe_w4a16_grouped_gemm"]
+
 # File stem → module name overrides.
 # Any .cu file not listed here uses its file stem as the module name.
 [modules]
@@ -28,3 +60,21 @@ inferspark_prefill_paged_fp8 = "prefill_paged_fp8"
 inferspark_prefill_paged_nvfp4 = "prefill_paged_nvfp4"
 inferspark_prefill_fp8kv = "prefill_fp8kv"
 nemotron_moe_prefill = "nemotron_moe_prefill"
+
+# ── Hoisted from the model KERNEL.tomls (2026-08-03) ──
+# These five renames lived ONLY in the model tomls that happened to repeat them.
+# A `[modules]` rename is what makes the compiled module name match the
+# hardcoded name the dispatch asks for, so a target that did not repeat the
+# rename registered the kernel under its RAW STEM and the lookup could never
+# match. SSOT: declare the rename ONCE here; common/ parses first as the base
+# and a model toml may still override per key if it ever needs to.
+#
+# NOT hoisted, deliberately: the `paged_decode_attn_turbo{2,3,4,8}*` stems. The
+# turbo KV-cache dtypes are EXPERIMENTAL and are not built for every target —
+# see `init_kernel_dispatch.rs`. Hoisting their renames would make a lookup
+# resolve on targets that were never validated for them.
+mamba2_ssm_decode = "mamba2_ssm"
+moe_expert_relu2_down_shared = "moe_relu2_fused"
+moe_topk_sigmoid = "moe_topk_sig"
+moe_topk_sqrtsoftplus = "moe_topk_sqrt"
+relu_squared = "relu2"

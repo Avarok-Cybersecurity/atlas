@@ -156,35 +156,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tracing_subscriber::layer::SubscriberExt;
-
-    #[test]
-    fn decodes_progress_events_and_ignores_others() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let sub = tracing_subscriber::registry().with(ProgressCaptureLayer::new(tx));
-        tracing::subscriber::with_default(sub, || {
-            spark_runtime::progress::phase(3, "gpu init");
-            spark_runtime::progress::shard_start(2, 26, "model-00002.safetensors");
-            tracing::info!("an ordinary log line");
-            spark_runtime::progress::ready(8888);
-        });
-        let got: Vec<ProgressEvent> = rx.try_iter().collect();
-        assert_eq!(
-            got,
-            vec![
-                ProgressEvent::Phase {
-                    phase: 3,
-                    name: "gpu init".into()
-                },
-                ProgressEvent::ShardStart {
-                    shard: 2,
-                    total: 26,
-                    name: "model-00002.safetensors".into()
-                },
-                ProgressEvent::Ready { port: 8888 },
-            ]
-        );
-    }
-}
+#[path = "capture_layer_tests.rs"]
+mod tests;

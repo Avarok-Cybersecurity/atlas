@@ -100,7 +100,7 @@ fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) 
     gpu.copy_d2h(qw.weight_scale, &mut s)?;
     std::fs::write("/tmp/atlas_expert0_w1_weight.bin", &w)?;
     std::fs::write("/tmp/atlas_expert0_w1_scale.bin", &s)?;
-    eprintln!(
+    tracing::info!(
         "ATLAS_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/atlas_expert0_w1_*.bin",
         w.len(),
         s.len()
