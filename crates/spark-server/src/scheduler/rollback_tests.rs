@@ -251,5 +251,9 @@ fn rom_head_absent_by_default() {
     // Without `set_rom_head`, the accessor must return None so callers
     // fall back to the F2 confidence heuristic. (Process-global OnceLock;
     // this test does not install a head.)
-    assert!(super::rom_head().is_none());
+    assert!(
+        crate::scheduler::sched_ctx::SchedCtx::for_test()
+            .rom_head
+            .is_none()
+    );
 }

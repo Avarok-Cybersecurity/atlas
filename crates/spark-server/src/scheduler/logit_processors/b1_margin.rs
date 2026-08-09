@@ -23,10 +23,13 @@ const B1_SUMMARY_PERIOD: u64 = 100;
 /// Below this top1−top2 gap (logprobs) a position is "low margin".
 const LOW_MARGIN_THRESHOLD: f32 = 1.5;
 
-static B1_LOW_MARGIN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn record_low_margin(margin: f32, top1: u32, top2: u32) {
-    let n = B1_LOW_MARGIN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+fn record_low_margin(
+    margin: f32,
+    top1: u32,
+    top2: u32,
+    stats: &crate::scheduler::spec_stats::SpecStats,
+) {
+    let n = crate::scheduler::spec_stats::bump(&stats.b1_low_margin) + 1;
     // Per-event trace — TRACE level by design (23.7% of long-ctx positions
     // trip this; INFO would spam). Power-user diagnostic:
     // `RUST_LOG=spark::scheduler::logit_processors::b1_margin=trace`.
@@ -44,7 +47,11 @@ fn record_low_margin(margin: f32, top1: u32, top2: u32) {
 /// Observe the top-1/top-2 margin of the (post-grammar-mask) distribution
 /// and record a low-margin firing when inside a parameter body with chars
 /// already emitted. Pure observability — `logits` is read, never written.
-pub(super) fn observe(logits: &[f32], a: &ActiveSeq) {
+pub(super) fn observe(
+    logits: &[f32],
+    a: &ActiveSeq,
+    stats: &crate::scheduler::spec_stats::SpecStats,
+) {
     // Single O(V) scan for top-1 and top-2 (pre-penalty, pre-bias) — same
     // scan the inline B1 block ran.
     let (top1_idx, top1_val, top2_idx, top2_val) = {
@@ -69,6 +76,6 @@ pub(super) fn observe(logits: &[f32], a: &ActiveSeq) {
     let low_margin_in_body =
         a.inside_parameter_body && a.param_body_chars_emitted > 0 && margin < LOW_MARGIN_THRESHOLD;
     if low_margin_in_body {
-        record_low_margin(margin, top1_idx, top2_idx);
+        record_low_margin(margin, top1_idx, top2_idx, stats);
     }
 }

@@ -82,11 +82,17 @@ pub(super) fn build_mtp_proposer(
     mtp_weights: Vec<MtpWeights>,
     embed_tokens: DenseWeight,
     lm_head_nvfp4: Option<QuantizedWeight>,
+    // Padded transposed twin of the SHARED main head for the batched-propose
+    // tile GEMM; `Some` only when the drafter head IS the main head (caller
+    // guarantees it — see `draft_lm_head_nvfp4_t` in impl_a1.rs).
+    lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     mtp_quant: crate::layers::MtpQuantization,
     mtp_vocab_size: u32,
     max_seq_len: usize,
+    main_kv_blocks: usize,
+    levers: &crate::layers::ops::ModelLevers,
 ) -> Option<Arc<dyn DraftProposer>> {
     if !use_speculative {
         if !mtp_weights.is_empty() {
@@ -114,11 +120,14 @@ pub(super) fn build_mtp_proposer(
             mtp_wts,
             embed_tokens,
             lm_nvfp4,
+            lm_head_nvfp4_t,
             config,
             gpu,
             mtp_quant,
             mtp_vocab_size,
             max_seq_len,
+            main_kv_blocks,
+            levers,
         )
     };
     if mtp_weights.len() == 1 {
@@ -147,5 +156,26 @@ pub(super) fn build_mtp_proposer(
                 None
             }
         }
+    }
+}
+
+/// Build the optional SSM snapshot spill tier for `TransformerModel::new`,
+/// hoisted 1:1 to keep `impl_a1.rs` under the 500-LoC cap. Returns `None`
+/// (the byte-identical default) unless `ATLAS_SSM_TIER` is set on a recurrent
+/// model; otherwise selects the env-driven backend keyed by the model
+/// fingerprint (so different models sharing one peer can't collide).
+///
+/// `blob_bytes` MUST be `SsmSnapshotPool::spill_blob_bytes()` so the tier's
+/// fixed blob sizing matches the spill/fault-in gathers.
+pub(super) fn build_ssm_tier_store(
+    config: &ModelConfig,
+    blob_bytes: usize,
+    num_ssm_layers: usize,
+) -> Result<Option<Arc<dyn super::ssm_tier::SnapshotBlobStore>>> {
+    if super::ssm_tier::ssm_tier_enabled() && num_ssm_layers > 0 {
+        let fp = super::ssm_tier::ModelFingerprint::derive(config, blob_bytes)?;
+        Ok(Some(super::ssm_tier::build_tier_store(fp, blob_bytes)?))
+    } else {
+        Ok(None)
     }
 }

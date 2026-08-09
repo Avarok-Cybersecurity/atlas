@@ -7,6 +7,7 @@ use spark_runtime::gpu::DevicePtr;
 
 use super::{MtpHead, MtpProposerState, MtpQuantization, ProjectionWeight};
 use crate::layer::ForwardContext;
+use crate::layers::mtp_meta::{MTP_META_OFFSET, pack_mtp_attn_meta};
 use crate::layers::ops;
 
 /// MTP-debug (ATLAS_MTP_DEBUG_NORMS=1): L2 norm of a BF16 GPU buffer, for
@@ -244,26 +245,26 @@ impl MtpHead {
             state.block_table.push(kv_cache.alloc_block()?);
         }
 
-        let meta_base = ctx.buffers.scratch().offset(49152); // after target metadata
+        let meta_base = ctx.buffers.scratch().offset(MTP_META_OFFSET); // after target metadata
         let max_blocks = state.block_table.len() as u32;
 
         // Batch all metadata into a single H2D copy (saves 3 CUDA API calls).
         let block_idx = state.block_table[state.seq_len / bs];
         let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
         let actual_seq_len = (state.seq_len + 1) as i32;
-        let bt_len = state.block_table.len() * 4;
 
-        // Dynamic metadata buffer: 256 bytes header + block table.
-        // Fixed 512-byte buffer overflows when seq_len > ~2000 (block table > 256 bytes).
-        let meta_size = 256 + bt_len;
-        let mut meta_buf = vec![0u8; meta_size];
-        meta_buf[0..4].copy_from_slice(&(position as u32).to_le_bytes());
-        meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
-        meta_buf[16..20].copy_from_slice(&actual_seq_len.to_le_bytes());
-        // Block table values are always < 2^31 (block indices), so u32 → i32 is lossless.
-        let bt_bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(state.block_table.as_ptr() as *const u8, bt_len) };
-        meta_buf[256..256 + bt_len].copy_from_slice(bt_bytes);
+        // The slab grows with the block table, i.e. with the context length, so
+        // the destination bound is the tail of the shared scratch arena past
+        // `MTP_META_OFFSET`. `pack_mtp_attn_meta` refuses up front rather than
+        // letting a long context write past the arena — this call site had no
+        // bound at all before, while its batched twin `propose_batch` did.
+        let meta_buf = pack_mtp_attn_meta(
+            position as u32,
+            global_slot,
+            actual_seq_len,
+            &state.block_table,
+            ctx.buffers.scratch_bytes().saturating_sub(MTP_META_OFFSET),
+        )?;
         ctx.gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
 
         // RoPE
@@ -490,6 +491,81 @@ impl MtpHead {
             );
         }
 
+        // 13a. Drafter chain confidence (ATLAS_MTP_DRAFT_CONF > 0):
+        // observational only — token selection below is untouched. D2H the
+        // BF16 logits (~200 us, the same cost the grammar-masked path pays)
+        // and fold this draft's top-1 softmax prob into the propose-scoped
+        // running MIN (`last_conf_bits`, reset by `propose`). The clamp that
+        // acts on it lives in `run_mtp_propose_inner`.
+        if crate::speculative::draft_conf_tau() > 0.0 {
+            let vocab = v as usize;
+            let mut bf16_buf = vec![0u8; vocab * 2];
+            if ctx.gpu.copy_d2h(logits, &mut bf16_buf).is_ok() {
+                let mut max = f32::NEG_INFINITY;
+                for i in 0..vocab {
+                    let hi = u16::from_le_bytes([bf16_buf[2 * i], bf16_buf[2 * i + 1]]);
+                    let x = f32::from_bits((hi as u32) << 16);
+                    if x > max {
+                        max = x;
+                    }
+                }
+                let mut denom = 0.0f64;
+                for i in 0..vocab {
+                    let hi = u16::from_le_bytes([bf16_buf[2 * i], bf16_buf[2 * i + 1]]);
+                    let x = f32::from_bits((hi as u32) << 16);
+                    denom += ((x - max) as f64).exp();
+                }
+                let top1 = (1.0 / denom.max(1.0)) as f32; // exp(max-max)=1 over Z
+                let cur = f32::from_bits(
+                    self.last_conf_bits
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+                if top1 < cur {
+                    self.last_conf_bits
+                        .store(top1.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        // 13b. Shadow top-k (ATLAS_MTP_SHADOW_TOPK=k): observational only.
+        // Logs this position's top-k candidate ids + softmax probs so an
+        // offline join against the verify steps' SHADOW_TGT lines yields
+        // per-depth conditional top-k coverage (tree-spec Phase 0 gate).
+        let shadow_k = ctx.levers.shadow_topk;
+        if shadow_k > 0 {
+            let vocab = v as usize;
+            let mut bf16_buf = vec![0u8; vocab * 2];
+            if ctx.gpu.copy_d2h(logits, &mut bf16_buf).is_ok() {
+                let at = |i: usize| -> f32 {
+                    let hi = u16::from_le_bytes([bf16_buf[2 * i], bf16_buf[2 * i + 1]]);
+                    f32::from_bits((hi as u32) << 16)
+                };
+                // Single pass keeping k maxima (k ≤ 8): insertion into a
+                // small sorted array beats a full-vocab sort at this size.
+                let mut top: Vec<(f32, usize)> = Vec::with_capacity(shadow_k + 1);
+                for i in 0..vocab {
+                    let x = at(i);
+                    if top.len() < shadow_k || x > top.last().map(|t| t.0).unwrap_or(f32::MIN) {
+                        let pos = top.partition_point(|t| t.0 >= x);
+                        top.insert(pos, (x, i));
+                        top.truncate(shadow_k);
+                    }
+                }
+                // Softmax denominator over the full vocab (stable: max-shift).
+                let max = top.first().map(|t| t.0).unwrap_or(0.0);
+                let mut denom = 0.0f64;
+                for i in 0..vocab {
+                    denom += ((at(i) - max) as f64).exp();
+                }
+                let ids: Vec<usize> = top.iter().map(|t| t.1).collect();
+                let probs: Vec<f32> = top
+                    .iter()
+                    .map(|t| (((t.0 - max) as f64).exp() / denom.max(1e-30)) as f32)
+                    .collect();
+                tracing::info!("SHADOW_TOPK pos={position} ids={ids:?} probs={probs:?}");
+            }
+        }
+
         // 13. Argmax
         let out_ptr = ctx.buffers.scratch();
 
@@ -602,6 +678,9 @@ impl MtpHead {
         };
 
         state.seq_len += 1;
+        // Pair-key bookkeeping (ATLAS_MTP_CATCHUP gap detection): this call
+        // wrote the pair for sequence key `position - 1` at the row above.
+        state.last_pair_key = Some(position.saturating_sub(1));
         Ok(token_id)
     }
 }

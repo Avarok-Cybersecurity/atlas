@@ -1,0 +1,46 @@
+recipe_version: "2"
+model: Qwen/Qwen3.6-35B-A3B-FP8
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-35B-A3B (qwen3_5_moe) native FP8 on Atlas — the SAFE FLAGSHIP
+    default. bf16 lm-head (full-precision 248K-vocab logit projection) and
+    bf16 KV at the 32K agentic operating point. This is the configuration
+    verified at 10/10 on the opencode webserver_ok harness (N=10, 2026-06-07)
+    with the tightest wall distribution (Σ 1331s / mean 133s, min 86 / max 223,
+    zero 360s cap-riders) and 10/10 followed_directions (process fidelity).
+
+    lm-head dtype A/B (measured 2026-06-07, N=10 each, same flags):
+      bf16  : ws_ok 10/10  followed_dirs 10/10  Σwall 1331s  ← THIS recipe
+      nvfp4 : ws_ok 10/10  followed_dirs 10/10  Σwall 1380s  (see -nvfp4head sibling)
+      fp8   : ws_ok 10/10  followed_dirs  9/10  Σwall 2038s  (2 cap-riders — NOT shipped)
+    bf16 is the safest default; nvfp4-head is a near-neutral-wall, lower-VRAM
+    sibling. The earlier "lm-head quant collapses quality" claim was opencode
+    harness-hang contamination, fully retracted.
+  maintainer: avarok
+  category: agent
+  model_params: 35B
+  model_dtype: fp8
+  quantization: fp8
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  # 32K agentic operating point. bf16 KV is faster (~2-3%) AND higher quality
+  # than calibrated fp8 KV at <=32K (fp8 KV is a memory-only lever for ~128K);
+  # measured 2026-06-06. Claude Code needs >=16K for tool use.
+  max_model_len: 32768
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.90
+  scheduling_policy: slai
+  speculative: true
+  mtp_quantization: bf16
+  enable_prefix_caching: true
+  # bf16 lm-head: the 248K-vocab projection stays full-precision (the single
+  # largest per-token weight read). Argmax over the vocab is exact — no flips.
+  lm_head_dtype: bf16
+  kv_high_precision_layers: auto

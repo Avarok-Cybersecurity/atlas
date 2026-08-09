@@ -24,6 +24,20 @@ impl MoeLayer {
         if self.bf16_gate_weight_ptrs.is_some() {
             return self.forward_batched(input, 3, ctx, stream);
         }
+        // E8M0 (native MXFP4, per-32 E8M0 scale) routed experts MUST NOT reach
+        // the unified-T batch3 kernel `moe_expert_gate_up_shared_batch3_t`: like
+        // its K=2 twin it is an NVFP4 kernel that hardcodes GROUP_SIZE=16 and
+        // would read `inter·h/16` scale bytes from the correctly-sized
+        // `inter·h/32` E8M0 scale buffer — a 2× over-read →
+        // CUDA_ERROR_ILLEGAL_ADDRESS (it also E4M3-decodes E8M0 scale bytes →
+        // garbage even in-bounds). No E8M0 batch3 kernel exists, so route all 3
+        // verify tokens through the per-token unified-T path (`forward_batched`),
+        // whose `use_t_layout_for_prefill` branch selects the GS32 `_e8m0`
+        // kernel via `e8m0_or` — the same correct path ordinary decode already
+        // uses. Mirrors the K=2 guard at the top of `forward_k2`.
+        if k3_e8m0_needs_per_token(self.experts_scale_kind) {
+            return self.forward_batched(input, 3, ctx, stream);
+        }
 
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.moe_intermediate_size as u32;
@@ -94,6 +108,8 @@ impl MoeLayer {
             )?;
         }
 
+        super::union_stats::maybe_sample_expert_union(ctx, indices_dev, 3, top_k as usize, stream);
+
         // 3-5. Fused expert dispatch for 3 tokens
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
@@ -103,7 +119,7 @@ impl MoeLayer {
         let shared_down_out = ctx.buffers.attn_output();
         let output = ctx.buffers.moe_output();
 
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
 
         if let (Some(gp), Some(up), Some(dp), Some(sh)) = (
             &self.fp8_gate_weight_ptrs,
@@ -299,7 +315,7 @@ impl MoeLayer {
 
         // EP all-reduce: sum partial outputs for 3 tokens
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, 3 * h as usize * 2)?;
@@ -336,3 +352,19 @@ impl MoeLayer {
         Ok(())
     }
 }
+
+/// K=3-verify MoE dispatch guard — the K=3 twin of `k2_e8m0_needs_per_token`
+/// (`forward_k2.rs`). E8M0 (native MXFP4, per-32 E8M0 scale) routed experts
+/// MUST take the per-token unified-T path (GS32 `_e8m0` kernel via `e8m0_or`),
+/// NOT the GS16 NVFP4 `moe_expert_gate_up_shared_batch3_t` batch3 kernel: that
+/// kernel reads `inter·h/16` scale bytes from the correctly-sized `inter·h/32`
+/// E8M0 scale buffer — a 2× over-read → CUDA_ERROR_ILLEGAL_ADDRESS.
+/// Pure decision, unit-tested and wired at the top of `forward_k3`.
+pub(crate) fn k3_e8m0_needs_per_token(scale_kind: crate::weight_map::WeightQuantFormat) -> bool {
+    matches!(scale_kind, crate::weight_map::WeightQuantFormat::Mxfp4E8m0)
+}
+
+// Focused dispatch tests live in a sibling file (same pattern as forward_k2).
+#[cfg(test)]
+#[path = "forward_k3_dispatch_tests.rs"]
+mod k3_dispatch_tests;

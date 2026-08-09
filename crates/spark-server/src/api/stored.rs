@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::ProcessState;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -11,7 +12,7 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::chat_stream::chat_completions_stream;
+use super::chat_stream::run_chat_stream;
 use super::responses_stream::responses_endpoint_stream;
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
@@ -42,37 +43,37 @@ use super::strip::strip_thinking_tags;
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::inference_types::*;
 use super::sanitizer::*;
-
-pub(super) fn extract_assistant_incoming_message(
-    chat: &serde_json::Value,
+/// Build the assistant transcript turn from the canonical response IR
+/// (for `previous_response_id` resume storage).
+pub(super) fn assistant_incoming_from_ir(
+    chat: &crate::ir::ChatResponse,
 ) -> Option<crate::openai::IncomingMessage> {
-    let choice = chat
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())?;
-    let msg = choice.get("message")?;
-    let text = msg
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let tool_calls = msg.get("tool_calls").and_then(|tc| {
-        serde_json::from_value::<Vec<tool_parser::IncomingToolCall>>(tc.clone()).ok()
-    });
+    let choice = chat.choices.first()?;
+    let tool_calls: Vec<tool_parser::IncomingToolCall> = choice
+        .tool_calls
+        .iter()
+        .map(|tc| tool_parser::IncomingToolCall {
+            id: Some(tc.id.clone()),
+            function: tool_parser::IncomingFunction {
+                name: tc.name.clone(),
+                arguments: tc.arguments.to_string(),
+            },
+        })
+        .collect();
     Some(crate::openai::IncomingMessage {
         role: "assistant".to_string(),
         content: crate::openai::ParsedContent {
-            text,
+            text: choice.content.clone().unwrap_or_default(),
             images: Vec::new(),
         },
-        tool_calls,
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
         tool_call_id: None,
         name: None,
-        reasoning_content: msg
-            .get("reasoning_content")
-            .or_else(|| msg.get("reasoning"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
+        reasoning_content: choice.reasoning.clone(),
     })
 }
 
@@ -82,10 +83,10 @@ pub(super) fn extract_assistant_incoming_message(
 /// completion, this endpoint returns the stored body verbatim. Otherwise
 /// 404 with a clear error so Helicone/Langfuse-style clients fall back.
 pub async fn get_stored_completion(
-    State(state): State<Arc<AppState>>,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    match state
+    match process
         .response_store
         .get(&id, crate::response_store::StoredKind::ChatCompletion)
     {
@@ -109,10 +110,10 @@ pub async fn get_stored_completion(
 
 /// GET /v1/responses/{id} — retrieve a stored Response body.
 pub async fn get_stored_response(
-    State(state): State<Arc<AppState>>,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    match state
+    match process
         .response_store
         .get(&id, crate::response_store::StoredKind::Response)
     {
@@ -132,10 +133,10 @@ pub async fn get_stored_response(
 /// 404 on miss. Deletion removes the entry from the in-memory LRU and,
 /// when the filesystem backend is active, unlinks the `<id>.json` file.
 pub async fn delete_stored_response(
-    State(state): State<Arc<AppState>>,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    let existed = state
+    let existed = process
         .response_store
         .delete(&id, crate::response_store::StoredKind::Response);
     if existed {
@@ -164,11 +165,11 @@ pub async fn delete_stored_response(
 /// list — the whole transcript fits in a single page for any realistic
 /// multi-turn conversation.
 pub async fn list_response_input_items(
-    State(state): State<Arc<AppState>>,
+    ProcessState(process): ProcessState,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(entry) = state
+    let Some(entry) = process
         .response_store
         .get(&id, crate::response_store::StoredKind::Response)
     else {

@@ -11,6 +11,10 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::{FfnComponent, Qwen3SsmLayer};
+use crate::tp_shard::{
+    TpGdnDims, shard_gdn_ba_rows, shard_gdn_conv_rows, shard_gdn_out_proj_row_parallel,
+    shard_gdn_qkvz_rows, shard_gdn_value_vector,
+};
 use crate::weight_map::{
     DenseWeight, Fp8Weight, Nvfp4Variant, QuantizedWeight, SsmWeights, WeightQuantFormat,
     dense_auto, dense_f32_safe, dense_keep_f32, gpu_concat_rows, interleave_ba,
@@ -130,6 +134,18 @@ pub(super) fn build_linear_attention_fp8(
     post_attn_norm: DenseWeight,
     ffn: FfnComponent,
 ) -> Result<Box<dyn TransformerLayer>> {
+    // GDN HeadParallel MVP: BF16 + NVFP4 only. Native block-scaled FP8 SSM
+    // slicing (per-128-row block scales split on the head axis) is deferred —
+    // slicing rows mid-block would corrupt the scale association. Fail loudly
+    // rather than ship wrong FP8 scale slicing.
+    ensure!(
+        config.tp_world_size.max(1) == 1,
+        "Native block-scaled FP8 SSM (linear_attn) supports TP=1 only (got tp={}); \
+         GDN HeadParallel FP8 scale slicing is deferred. Use the NVFP4 decode path \
+         (ATLAS_HOLO_FP4_PROJ_DECODE=1) or run --tp-size 1 for FP8.",
+        config.tp_world_size,
+    );
+
     let p = format!("{lp}.linear_attn");
     tracing::info!("Layer {layer_idx}: loading SSM FP8 native (block-scaled decode + prefill)");
 
@@ -203,22 +219,30 @@ pub(super) fn build_linear_attention_dense_bf16(
     post_attn_norm: DenseWeight,
     ffn: FfnComponent,
 ) -> Result<Box<dyn TransformerLayer>> {
-    ensure!(
-        config.tp_world_size.max(1) == 1,
-        "BF16 dense SSM supports TP=1 only (got tp={})",
-        config.tp_world_size,
+    // GDN HeadParallel: `config` already holds per-rank-LOCAL linear head
+    // counts (topology.rs divided them by tp_size). `TpGdnDims::from_config`
+    // multiplies back up to the full pre-shard sizes the on-disk weights use;
+    // the slicers below cut each rank's contiguous head range. For tp=1 every
+    // slicer returns the source pointer untouched → byte-identical fast path.
+    let tp_size = config.tp_world_size.max(1);
+    let dims = TpGdnDims::from_config(config);
+    tracing::info!(
+        "Layer {layer_idx}: loading SSM FP8 projections as BF16 dense \
+         (tp={tp_size}, local_nk={}, local_nv={})",
+        dims.local_nk,
+        dims.local_nv,
     );
-    tracing::info!("Layer {layer_idx}: loading SSM FP8 projections as BF16 dense");
 
     let ssm35 = load_ssm_qwen35(store, lp, gpu, variant)?;
 
-    let qkv_rows = config.ssm_qkv_size();
-    let z_rows = config.ssm_z_size();
-    let qkvz_dense = gpu_concat_rows(
+    // Concat FULL [Q|K|V] || [Z] (on-disk sizes) then SEGMENT-slice to this
+    // rank's heads (Q/K/V/Z sliced independently, re-packed local — a naive
+    // "first half of QKVZ" split is WRONG).
+    let qkvz_full = gpu_concat_rows(
         &ssm35.in_proj_qkv,
-        qkv_rows,
+        dims.full_conv_dim(),
         &ssm35.in_proj_z,
-        z_rows,
+        dims.full_value_dim(),
         h,
         gpu,
     )?;
@@ -229,29 +253,54 @@ pub(super) fn build_linear_attention_dense_bf16(
     // ~30 GDN layers ≈ 1.5 GB. Free them here — identical numerics.
     let _ = gpu.free(ssm35.in_proj_qkv.weight);
     let _ = gpu.free(ssm35.in_proj_z.weight);
+    let (qkvz_ptr, _, _) = shard_gdn_qkvz_rows(qkvz_full.weight, &dims, gpu)?;
+    if tp_size > 1 {
+        let _ = gpu.free(qkvz_full.weight);
+    }
+    let qkvz_dense = DenseWeight { weight: qkvz_ptr };
 
-    let nv = config.linear_num_value_heads;
-    let nk = config.linear_num_key_heads;
-    let ba_dense = interleave_ba(
+    // BA: interleave FULL heads (per-group β/α) then slice to local heads —
+    // the rank boundary always lands on a key-head group boundary.
+    let ba_full = interleave_ba(
         &DenseWeight {
             weight: ssm35.in_proj_a.weight,
         },
         &DenseWeight {
             weight: ssm35.in_proj_b.weight,
         },
-        nv,
-        nk,
+        dims.full_nv,
+        dims.full_nk,
         h,
         gpu,
     )?;
+    let (ba_ptr, _, _) = shard_gdn_ba_rows(ba_full.weight, &dims, gpu)?;
+    if tp_size > 1 {
+        let _ = gpu.free(ba_full.weight);
+    }
+    let ba_dense = DenseWeight { weight: ba_ptr };
+
+    // conv1d (per-QKV-channel filter), a_log/dt_bias (per value head, FP32),
+    // norm (per value_dim, BF16), out_proj (row-parallel on value_dim).
+    let d_conv = config.linear_conv_kernel_dim;
+    let (conv_ptr, _, _) = shard_gdn_conv_rows(ssm35.conv1d.weight, &dims, d_conv, gpu)?;
+    let (a_log_ptr, _) = shard_gdn_value_vector(ssm35.a_log.weight, &dims, 1, 4, gpu)?;
+    let (dt_bias_ptr, _) = shard_gdn_value_vector(ssm35.dt_bias.weight, &dims, 1, 4, gpu)?;
+    // norm.weight is the gated-RMSNorm gain over the value HEAD-DIM ([vd]),
+    // SHARED across all value heads — REPLICATE under HeadParallel. (a_log/dt_bias
+    // above ARE per-head [nv] scalars, so they slice; slicing norm on the head
+    // axis read past the [vd] buffer → cuMemcpyDtoDAsync INVALID_VALUE at load.)
+    let norm_ptr = ssm35.norm.weight;
+    let (out_proj_ptr, _, _) = shard_gdn_out_proj_row_parallel(ssm35.out_proj.weight, &dims, gpu)?;
 
     let ssm = SsmWeights {
         in_proj_qkvz: qkvz_dense,
         in_proj_ba: ba_dense,
-        conv1d: ssm35.conv1d,
-        a_log: ssm35.a_log,
-        dt_bias: ssm35.dt_bias,
-        norm: ssm35.norm,
+        conv1d: DenseWeight { weight: conv_ptr },
+        a_log: DenseWeight { weight: a_log_ptr },
+        dt_bias: DenseWeight {
+            weight: dt_bias_ptr,
+        },
+        norm: DenseWeight { weight: norm_ptr },
         out_proj: QuantizedWeight::null(),
     };
 
@@ -266,14 +315,19 @@ pub(super) fn build_linear_attention_dense_bf16(
         config,
         gpu,
     )?;
-    layer.out_proj_dense = Some(ssm35.out_proj);
+    layer.out_proj_dense = Some(DenseWeight {
+        weight: out_proj_ptr,
+    });
     // Decode-only FP8 SSM overlay (ATLAS_HOLO_FP8_SSM_DECODE=1): install the
     // on-disk block-scaled FP8 QKVZ/out_proj so DECODE runs through
     // w8a16_gemv / w8a16_gemm (half the BF16 weight bandwidth — SSM weights
     // are the bulk of the per-step fixed decode cost), while PREFILL keeps the
     // stable BF16 dense path (sidesteps the native-FP8 FLA-prefill crash at
     // layer 36). Costs ~25 MB/GDN layer extra (BF16 kept for prefill).
-    if std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
+    // The FP8 decode overlay loads FULL (unsliced) block-scaled FP8 weights;
+    // its per-128-row scale slicing is deferred (same reason as the native-FP8
+    // path). Skip under TP>1 so the sharded BF16 path stays correct.
+    if tp_size == 1 && std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
         let p = format!("{lp}.linear_attn");
         let (qkvz_fp8, out_fp8) = load_ssm_fp8_decode_weights(layer_idx, store, &p, gpu, h)?;
         layer.set_fp8_decode_weights(Some(qkvz_fp8), Some(out_fp8));
@@ -297,34 +351,76 @@ pub(super) fn build_linear_attention_nvfp4(
     post_attn_norm: DenseWeight,
     ffn: FfnComponent,
 ) -> Result<Box<dyn TransformerLayer>> {
+    // GDN HeadParallel: `config` holds per-rank-LOCAL linear head counts.
+    // Slice each SSM projection to this rank's head range on the dense/BF16
+    // intermediate BEFORE quantizing to NVFP4 (dequant→slice→requant is the
+    // safe path — no NVFP4 packed-buffer surgery). For tp=1 the slicers return
+    // the source pointer untouched → byte-identical fast path.
+    let tp_size = config.tp_world_size.max(1);
+    let dims = TpGdnDims::from_config(config);
+
     let ssm35 = load_ssm_qwen35(store, lp, gpu, variant)?;
 
-    let qkv_rows = config.ssm_qkv_size();
-    let z_rows = config.ssm_z_size();
-    let qkvz_dense = gpu_concat_rows(
+    // Concat FULL [Q|K|V] || [Z] then SEGMENT-slice to local heads.
+    let qkvz_full = gpu_concat_rows(
         &ssm35.in_proj_qkv,
-        qkv_rows,
+        dims.full_conv_dim(),
         &ssm35.in_proj_z,
-        z_rows,
+        dims.full_value_dim(),
         h,
         gpu,
     )?;
+    let (qkvz_ptr, _, _) = shard_gdn_qkvz_rows(qkvz_full.weight, &dims, gpu)?;
+    if tp_size > 1 {
+        let _ = gpu.free(qkvz_full.weight);
+    }
+    let qkvz_dense = DenseWeight { weight: qkvz_ptr };
 
-    let nv = config.linear_num_value_heads;
-    let nk = config.linear_num_key_heads;
-    let ba_dense = interleave_ba(
+    // BA: interleave FULL heads then slice to local (group-aligned).
+    let ba_full = interleave_ba(
         &DenseWeight {
             weight: ssm35.in_proj_a.weight,
         },
         &DenseWeight {
             weight: ssm35.in_proj_b.weight,
         },
-        nv,
-        nk,
+        dims.full_nv,
+        dims.full_nk,
         h,
         gpu,
     )?;
+    let (ba_ptr, _, _) = shard_gdn_ba_rows(ba_full.weight, &dims, gpu)?;
+    if tp_size > 1 {
+        let _ = gpu.free(ba_full.weight);
+    }
+    let ba_dense = DenseWeight { weight: ba_ptr };
 
+    // conv1d / a_log / dt_bias / norm sliced to local heads (stay dense/FP32).
+    let d_conv = config.linear_conv_kernel_dim;
+    let (conv_ptr, _, _) = shard_gdn_conv_rows(ssm35.conv1d.weight, &dims, d_conv, gpu)?;
+    let (a_log_ptr, _) = shard_gdn_value_vector(ssm35.a_log.weight, &dims, 1, 4, gpu)?;
+    let (dt_bias_ptr, _) = shard_gdn_value_vector(ssm35.dt_bias.weight, &dims, 1, 4, gpu)?;
+    // norm.weight is the gated-RMSNorm gain over the value HEAD-DIM ([vd]),
+    // SHARED across all value heads — REPLICATE under HeadParallel. (a_log/dt_bias
+    // above ARE per-head [nv] scalars, so they slice; slicing norm on the head
+    // axis read past the [vd] buffer → cuMemcpyDtoDAsync INVALID_VALUE at load.)
+    let norm_ptr = ssm35.norm.weight;
+    let conv1d_local = DenseWeight { weight: conv_ptr };
+    let a_log_local = DenseWeight { weight: a_log_ptr };
+    let dt_bias_local = DenseWeight {
+        weight: dt_bias_ptr,
+    };
+    let norm_local = DenseWeight { weight: norm_ptr };
+
+    // out_proj is row-parallel: slice its input (value_dim) to local, then
+    // quantize the LOCAL [h, local_value_dim] weight.
+    let (out_proj_ptr, _, _) = shard_gdn_out_proj_row_parallel(ssm35.out_proj.weight, &dims, gpu)?;
+    let out_proj_local = DenseWeight {
+        weight: out_proj_ptr,
+    };
+
+    // All sizes below are LOCAL (config was TP-divided at load).
+    let nv = config.linear_num_value_heads;
     let qkvz_size = config.ssm_qkvz_size();
     let qkvz_nvfp4 =
         quantize_to_nvfp4(&qkvz_dense, qkvz_size, h, gpu, absmax_k, quantize_k, stream)?;
@@ -333,7 +429,7 @@ pub(super) fn build_linear_attention_nvfp4(
 
     let value_dim = nv * config.linear_value_head_dim;
     let out_proj_nvfp4 = quantize_to_nvfp4(
-        &ssm35.out_proj,
+        &out_proj_local,
         h,
         value_dim,
         gpu,
@@ -379,7 +475,7 @@ pub(super) fn build_linear_attention_nvfp4(
         crate::layers::ops::bf16_to_fp8(
             gpu,
             b2f_k,
-            ssm35.out_proj.weight,
+            out_proj_local.weight,
             out_fp8,
             out_total,
             stream,
@@ -393,10 +489,10 @@ pub(super) fn build_linear_attention_nvfp4(
     let ssm = SsmWeights {
         in_proj_qkvz: qkvz_dense,
         in_proj_ba: ba_dense,
-        conv1d: ssm35.conv1d,
-        a_log: ssm35.a_log,
-        dt_bias: ssm35.dt_bias,
-        norm: ssm35.norm,
+        conv1d: conv1d_local,
+        a_log: a_log_local,
+        dt_bias: dt_bias_local,
+        norm: norm_local,
         out_proj: out_proj_nvfp4,
     };
 
@@ -439,10 +535,11 @@ pub(super) fn build_linear_attention_nvfp4(
         std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
         Some("1")
     ) {
-        // ssm35.out_proj weight is BF16 on GPU (from load_ssm_qwen35 →
-        // dense_auto on Fp8Dequanted variant). It's a separate buffer
-        // from out_proj_nvfp4 / out_proj_fp8_prefill. Set as dense path.
-        layer.out_proj_dense = Some(ssm35.out_proj);
+        // out_proj_local weight is BF16 on GPU (from load_ssm_qwen35 →
+        // dense_auto on Fp8Dequanted variant, sliced to this rank's value
+        // heads). It's a separate buffer from out_proj_nvfp4 /
+        // out_proj_fp8_prefill. Set as dense path.
+        layer.out_proj_dense = Some(out_proj_local);
         tracing::info!(
             "SSM[{lp}] ATLAS_GDN_BF16_WEIGHTS: out_proj routed through BF16 dense_gemm (overrides FP8/NVFP4)"
         );

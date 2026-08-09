@@ -1,0 +1,39 @@
+recipe_version: "2"
+model: mistralai/Mistral-Small-4-119B-2603-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Mistral-Small-4-119B — MLA (Multi-head Latent Attention,
+    `kv_lora_rank=256`, `qk_nope_head_dim=64`, `qk_rope_head_dim=64`,
+    `v_head_dim=128`) + 128 experts top-4 + 1 shared expert. ~33 tok/s
+    decode per the Atlas performance table.
+
+    Hard production constraints from the Atlas Mistral bring-up
+    (alpha-2.8 onward, two RoPE bugs fixed 2026-04-10):
+      * **MUST use `kv_cache_dtype: bf16`** — FP8/NVFP4 KV with the
+        default scale destroys the MLA compressed latent. The Atlas
+        2.8 release announcement called this out explicitly.
+      * MLA needs a `zero_all` before every decode step (gated
+        internally on `kv_lora_rank > 0`); CUDA graphs are suppressed
+        on this model because the memset is captured and throws on
+        replay. No tuning required from the user.
+
+    Known limitation: symbolic math ("2+2") less reliable than word
+    math ("two plus two") — model quirk.
+  maintainer: avarok
+  category: agent
+  model_params: 119B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 8192
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai

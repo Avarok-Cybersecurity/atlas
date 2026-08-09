@@ -1,0 +1,80 @@
+recipe_version: "2"
+model: Qwen/Qwen3.6-27B-FP8
+runtime: atlas
+# :dev, NOT :latest — load-bearing, see description. On :latest this model
+# serves at 5 tok/s no matter what num_drafts says (MTP buys nothing there).
+container: avarok/atlas-gb10:dev
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-27B (dense, native FP8) on the Atlas runtime, with the
+    upstream-bundled MTP draft head (mtp.safetensors, FP8 e4m3 linear +
+    BF16 norms) enabled at K=1. KV stays BF16 (FP8/NVFP4 KV breaks dense
+    attention — request timeouts + CUDA graph thrash). max_model_len
+    capped at 60_000 so the full spark-arena-v2 concurrency=10 sweep fits
+    in the KV pool on a single GB10; cells at depth=65535/100000 in
+    spark-arena-v2 will be skipped because they exceed max_model_len. Use
+    --tp 2 / EP=2 to get the full long-context sweep.
+
+    TWO settings here are load-bearing and BOTH are required to get more
+    than 5 tok/s: `num_drafts: 1` and `container: :dev`. Either one alone
+    gives you 5. Measured on a GB10, N=10, single sequence, 400-token
+    greedy generation (2026-07-12):
+
+      image      no-spec    K=1      K=2
+      :dev        5.0      15.6      5.0     <-- use this, at K=1
+      :latest     4.9       5.0       -
+
+    So the earlier "too slow to complete the benchmark" report had two
+    causes stacked: this recipe implied K=2, AND it pinned :latest. At
+    5 tok/s a long spark-arena sweep never finishes.
+
+    Note what the table says: on :latest, MTP buys NOTHING (5.0 with or
+    without it) — the speculative machinery is present but the win is not.
+    The 3x lives entirely in :dev.
+
+    And the 3x is NOT ordinary speculation — K=1 accepts at most 2 tokens
+    per step, a 2x ceiling. Dense-FP8 DECODE is the real bottleneck: it
+    runs the unfused per-projection `w8a16_gemv` path and is badly
+    memory-bound. At K=1 each step verifies 2 tokens and so routes through
+    the batched tensor-core `w8a16_gemm` instead — the step yields ~2
+    tokens AND costs less per token, which is how it clears the 2x
+    ceiling. K=2's deeper verify overhead outweighs its acceptance and
+    collapses back to the GEMV-bound rate.
+
+    Implication: 15.6 tok/s is a kernel artifact, not a model ceiling. A
+    fused FP8 dual-GEMV decode kernel would raise the no-spec floor and
+    change every number in that table. Do not read 15.6 as "this model's
+    speed".
+  maintainer: avarok
+  category: chat
+  model_params: 27B
+  model_dtype: fp8
+  quantization: fp8
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  # 60k, not 262144: the full spark-arena-v2 concurrency=10 sweep has to
+  # fit in the KV pool on a single GB10. At 262144 the pool is oversized,
+  # the sweep never completes, and the benchmark stalls out.
+  max_model_len: 60000
+  max_batch_size: 2
+  max_num_seqs: 2
+  # bf16, NOT fp8: FP8/NVFP4 KV breaks dense attention on this model —
+  # request timeouts + CUDA-graph thrash. (`kv_high_precision_layers` is
+  # an fp8-KV knob and is intentionally absent.)
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  speculative: true
+  # K=1, MEASURED (see description): 15.6 tok/s vs 5.0 at K=2 vs 4.9
+  # no-spec, N=10. K=2 is a 3x REGRESSION here — do not raise it.
+  # `speculative: true` alone does not pin a depth; it falls back to
+  # MODEL.toml's default_num_drafts.
+  num_drafts: 1
+  mtp_quantization: bf16
+  enable_prefix_caching: true
+  oom_guard_mb: 1024

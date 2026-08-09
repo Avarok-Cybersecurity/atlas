@@ -175,6 +175,15 @@ pub struct ModelConfig {
     /// instead of full `[hidden_size]`. Absent for Nano 30B.
     #[serde(default)]
     pub moe_latent_size: usize,
+    /// Per-layer MoE intermediate sizes (Nemotron-H Puzzle heterogeneous channel
+    /// pruning). Length == `num_hidden_layers`; 0 for non-MoE layers. Empty =
+    /// fall back to scalar `moe_intermediate_size` for every MoE layer.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub moe_intermediate_sizes: Vec<usize>,
+    /// Per-layer top-K expert counts (Puzzle). Same layout as
+    /// `moe_intermediate_sizes`. Empty = use scalar `num_experts_per_tok`.
+    #[serde(default, skip_deserializing, skip_serializing)]
+    pub num_experts_per_toks: Vec<usize>,
 
     // ── MLA (Multi-head Latent Attention) — Mistral Small 4 / DeepSeek-V2+ ──
     /// KV latent dimension for compressed cache. 0 = standard attention (no MLA).
@@ -306,6 +315,18 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub weight_prefix: String,
 
+    /// `--profile`: skip CUDA graphs, sync and time each layer.
+    ///
+    /// Carried here rather than through `ATLAS_PROFILE`, which `serve.rs` used
+    /// to `set_var` at runtime under a `// SAFETY: called before any threads
+    /// are spawned` comment that was **already false** — the tokio pool, the
+    /// startup blocking thread, the signal listener, the TUI thread and the
+    /// OOM watchdog all exist by then, and a concurrent `getenv` during
+    /// `setenv` is UB. A field on the config the model already receives has
+    /// none of that hazard.
+    #[serde(skip)]
+    pub profile: bool,
+
     // ── Expert Parallelism (set at runtime, not from config.json) ──
     #[serde(skip)]
     pub ep_rank: usize,
@@ -382,6 +403,14 @@ pub struct ModelConfig {
     /// is what the drafter's `fc` projection expects.
     #[serde(default)]
     pub dflash_capture_layers: Vec<usize>,
+
+    /// LoRA adapter rank ceiling (`--max-lora-rank`). `0` = LoRA disabled.
+    /// Set programmatically before model build (never parsed from the HF
+    /// `config.json`); the only consumer is `BufferSizes`, which sizes the
+    /// adapter delta scratch from it. `adapter_*` naming avoids the MLA
+    /// `*lora_rank` collision (`config.rs:182-207`).
+    #[serde(default)]
+    pub adapter_max_rank: usize,
 }
 
 /// Advertised weight-quantization layout, as declared in the HF
@@ -484,10 +513,13 @@ mod parsers;
 mod tests;
 
 pub use dispatch::parse_config;
+pub use parsers::{
+    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, parse_mistral_params,
+    parse_peft_adapter_config, parse_quantization_config,
+};
 pub(crate) use parsers::{
     parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
 };
-pub use parsers::{parse_mistral_params, parse_quantization_config};
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
     if config.quantization_config.is_none() {

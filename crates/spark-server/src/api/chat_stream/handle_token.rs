@@ -4,13 +4,11 @@
 // streaming `flat_map` closure (originally ~672 LoC at the top of the
 // `chat_stream::chat_completions_stream` body).
 //
-// Returns the SSE events produced for this single token. Callers
-// invoke `futures::stream::iter(...)` on the result to feed the
-// `flat_map` output stream.
+// Returns the neutral stream deltas produced for this single token.
+// The caller encodes them into wire SSE events at the surface seam
+// (`openai::delta_to_chunk_events`).
 
-use axum::response::sse::Event;
-
-use crate::openai::ChatCompletionChunk;
+use crate::ir::StreamDelta;
 use crate::tool_parser;
 
 use super::super::sanitizer::sanitize_content_chunk;
@@ -25,7 +23,7 @@ use super::tool_handlers::{
     handle_tool_call_end, handle_tool_call_start,
 };
 
-type SseVec = Vec<Result<Event, std::convert::Infallible>>;
+type DeltaVec = Vec<StreamDelta>;
 
 /// Maximum consecutive tokens the stream may spend with
 /// `state.suppressing_param_leak == true` (sanitizer holding content
@@ -67,7 +65,7 @@ pub(super) fn strip_bare_role_literal(delta: &mut String, inside_tool_call: bool
     }
 }
 
-/// Process one token. Returns the SSE events to forward to the
+/// Process one token. Returns the stream deltas to forward to the
 /// client (empty `Vec` is valid).
 ///
 /// Thin wrapper around [`handle_token_inner`] that runs the
@@ -78,7 +76,7 @@ pub(super) fn strip_bare_role_literal(delta: &mut String, inside_tool_call: bool
 /// at the end of the body would only fire when the natural fall-
 /// through is taken, leaving the doom-loop case (long suppressed
 /// stream of orphan `<tool_call>` openers) uncaught.
-pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> SseVec {
+pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> DeltaVec {
     let result = handle_token_inner(state, ctx, tok);
 
     // Orphan-suppression streak watchdog. The sanitizer flips
@@ -107,8 +105,8 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
     result
 }
 
-fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> SseVec {
-    let mut sse_events: SseVec = Vec::new();
+fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> DeltaVec {
+    let mut deltas: DeltaVec = Vec::new();
     state.all_toks.push(tok);
     // One push per call == one sampled token == one increment of
     // `usage.completion_tokens`. Drained onto the next client-visible
@@ -142,14 +140,10 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                     // are legitimate `\n   ` indents that the model emitted;
                     // dropping them would lose chars permanently.
                     if !residual.is_empty() {
-                        let chunk = ChatCompletionChunk::reasoning_chunk(
-                            &ctx.model,
-                            &ctx.id,
-                            residual.to_string(),
-                        )
-                        .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-                        let json = serde_json::to_string(&chunk).unwrap_or_default();
-                        sse_events.push(Ok(Event::default().data(json)));
+                        deltas.push(StreamDelta::Reasoning {
+                            text: residual.to_string(),
+                            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+                        });
                     }
                 }
             }
@@ -163,9 +157,10 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                 // Whitespace-only tail can be a real trailing `\n   ` indent
                 // — emit anything non-empty so byte boundaries align.
                 if !tail.is_empty() {
-                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
-                    let json = serde_json::to_string(&chunk).unwrap_or_default();
-                    sse_events.push(Ok(axum::response::sse::Event::default().data(json)));
+                    deltas.push(StreamDelta::Reasoning {
+                        text: tail,
+                        token_ids: Vec::new(),
+                    });
                 }
             }
             // Reset tool detector to clear any thinking-era tag fragments.
@@ -177,7 +172,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             state.content_decoded.clear();
             state.detok_prefix_offset = 0;
             state.detok_read_offset = 0;
-            return sse_events;
+            return deltas;
         }
         // Still in thinking — accumulate but don't emit as content
         if ctx.enable_thinking {
@@ -189,7 +184,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             // guard catches the in-flight token race so the next
             // opener never reaches the client.
             if state.reasoning_xml_leak_detected {
-                return sse_events;
+                return deltas;
             }
             // Open thinking: emit as reasoning_content. Incrementally extend
             // the stable decoded text instead of re-decoding all_toks (O(n²)).
@@ -302,7 +297,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                             tail = %tail,
                             "in-think tool-call leak detected; cancelling sequence (finish_reason will be \"length\")"
                         );
-                        return sse_events;
+                        return deltas;
                     }
                 }
                 // F19: final structured sanitisation pass catches
@@ -325,14 +320,14 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                 // non-streaming response on temp=0 seed=42 (live A/B
                 // 2026-05-25). Drop only TRULY empty chunks.
                 if !cleaned.is_empty() {
-                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned)
-                        .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-                    let json = serde_json::to_string(&chunk).unwrap_or_default();
-                    sse_events.push(Ok(Event::default().data(json)));
+                    deltas.push(StreamDelta::Reasoning {
+                        text: cleaned,
+                        token_ids: state.take_ids_if(ctx.req_return_token_ids),
+                    });
                 }
             }
         }
-        return sse_events;
+        return deltas;
     }
 
     // ── Content phase: full-decode + slice (matches reasoning path) ──
@@ -373,7 +368,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
         state.emitted = stable_end;
         raw
     } else {
-        return sse_events;
+        return deltas;
     };
     // Retire the lazy `content_decoder` field — kept in StreamState
     // only to avoid a wider state-struct migration. The HF decoder is
@@ -418,7 +413,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
     }
 
     if delta.is_empty() {
-        return sse_events;
+        return deltas;
     }
 
     // Multi-token stop sequences via string matching, with a vLLM-style
@@ -439,18 +434,18 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             // Either everything is sitting in the hold-back window
             // (waiting for the next chunk / stream close) or a match
             // already truncated the emittable bytes to nothing.
-            return sse_events;
+            return deltas;
         }
     }
 
     if state.stop_string_triggered {
         if !delta.is_empty() {
-            let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta)
-                .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-            let json = serde_json::to_string(&chunk).unwrap_or_default();
-            sse_events.push(Ok(Event::default().data(json)));
+            deltas.push(StreamDelta::Content {
+                text: delta,
+                token_ids: state.take_ids_if(ctx.req_return_token_ids),
+            });
         }
-        return sse_events;
+        return deltas;
     }
 
     // Fork: detector-active vs pure-content path.
@@ -466,25 +461,25 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             match output {
                 tool_parser::DetectorOutput::Content(text) => {
                     if let Some(events_out) = detector_content_arm(state, ctx, &text) {
-                        sse_events.extend(events_out);
-                        return sse_events;
+                        deltas.extend(events_out);
+                        return deltas;
                     }
                 }
                 tool_parser::DetectorOutput::ToolCall(mut tc, tc_idx) => {
-                    handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut sse_events);
+                    handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallStart {
                     id: tc_id,
                     name,
                     idx,
                 } => {
-                    handle_tool_call_start(state, ctx, tc_id, name, idx, &mut sse_events);
+                    handle_tool_call_start(state, ctx, tc_id, name, idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallDelta { args, idx } => {
-                    handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
+                    handle_tool_call_delta(state, ctx, args, idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallArgsFragment { fragment, idx } => {
-                    handle_tool_call_args_fragment(state, ctx, fragment, idx, &mut sse_events);
+                    handle_tool_call_args_fragment(state, ctx, fragment, idx, &mut deltas);
                 }
                 tool_parser::DetectorOutput::ToolCallEnd { idx } => {
                     handle_tool_call_end(state, ctx, idx);
@@ -500,20 +495,20 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             &ctx.leak_markers,
         );
         if let Some(events_out) = process_detector_content(state, ctx, &sanitized) {
-            sse_events.extend(events_out);
-            return sse_events;
+            deltas.extend(events_out);
+            return deltas;
         }
         // process_detector_content does NOT pre-sanitize when called
         // from the no-detector branch — but the sanitizer was already
         // run above, so the helper's branch handling matches.
     }
 
-    sse_events
+    deltas
 }
 
 /// Common processing for a sanitized content chunk: SimHash semantic
 /// guard, token-level loop watchdog, salvage on trip, otherwise
-/// emit a `content_chunk`. Returns `Some(events)` when the watchdog
+/// emit a `Content` delta. Returns `Some(deltas)` when the watchdog
 /// fired (caller must short-circuit), else `None` (caller continues).
 ///
 /// Note: when called from the detector-active branch, `sanitized`
@@ -524,7 +519,7 @@ fn process_detector_content(
     state: &mut StreamState,
     ctx: &StreamCtx,
     sanitized_or_raw: &str,
-) -> Option<SseVec> {
+) -> Option<DeltaVec> {
     // From the detector-active branch the input is the Content(text)
     // payload that still needs sanitization. From the no-detector
     // branch the input is already sanitized. Distinguish via a thin
@@ -573,6 +568,11 @@ fn process_detector_content(
         }
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;
+        state.guard_stop = Some(if semantic_trip {
+            "simhash_semantic_loop"
+        } else {
+            "token_loop_watchdog"
+        });
         state
             .cancel_flag
             .store(true, std::sync::atomic::Ordering::Release);
@@ -580,25 +580,25 @@ fn process_detector_content(
         // Watchdog fired: short-circuit the stream with no further
         // content. The model emitted a degenerate loop; we end the
         // response here rather than salvaging a synthetic tool call.
-        return Some(SseVec::new());
+        return Some(DeltaVec::new());
     }
 
     if !sanitized.is_empty() {
         if state.refusal_scan_buf.len() < 16_384 {
             state.refusal_scan_buf.push_str(sanitized);
         }
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string())
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        let json = serde_json::to_string(&chunk).unwrap_or_default();
-        let events: SseVec = vec![Ok(Event::default().data(json))];
-        return Some(events);
+        let out: DeltaVec = vec![StreamDelta::Content {
+            text: sanitized.to_string(),
+            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+        }];
+        return Some(out);
     }
     None
 }
 
 /// Detector-active branch's `Content(text)` arm: sanitize first,
 /// then run the shared semantic/token watchdog + emit pipeline.
-fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) -> Option<SseVec> {
+fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) -> Option<DeltaVec> {
     let sanitized = sanitize_content_chunk(
         text,
         &mut state.tag_scan_buf,

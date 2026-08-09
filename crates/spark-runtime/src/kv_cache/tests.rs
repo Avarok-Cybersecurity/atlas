@@ -150,6 +150,34 @@ fn test_return_evicted_block() {
 }
 
 #[test]
+fn return_evicted_block_keeps_shared_block_alive() {
+    // Regression: a block shared between the prefix cache (its "+1" ref) and a
+    // live sequence's block_table (ref==2) must NOT be freed when the radix node
+    // is evicted — force-zeroing here aliased a still-live block into a new
+    // prefill and produced CUDA_ERROR_ILLEGAL_ADDRESS (700). Eviction releases
+    // exactly one ref.
+    let gpu = MockGpuBackend::new();
+    let mut cache = PagedKvCache::new(test_config(), 2, &gpu).unwrap();
+
+    let b0 = cache.alloc_block().unwrap(); // ref 1 (the owner sequence)
+    cache.inc_ref(b0); // ref 2 (the prefix cache now also holds it)
+    assert_eq!(cache.ref_count(b0), 2);
+    let free_before = cache.num_free_blocks();
+
+    cache.return_evicted_block(b0); // evict the radix node → release ONE ref
+    assert_eq!(cache.ref_count(b0), 1, "still referenced by the owner seq");
+    assert_eq!(
+        cache.num_free_blocks(),
+        free_before,
+        "a still-live block must not return to the free list"
+    );
+
+    cache.return_evicted_block(b0); // owner frees it → last ref
+    assert_eq!(cache.ref_count(b0), 0);
+    assert_eq!(cache.num_free_blocks(), free_before + 1);
+}
+
+#[test]
 fn test_read_write_block_roundtrip() {
     let gpu = MockGpuBackend::new();
     let mut cache = PagedKvCache::new(test_config(), 4, &gpu).unwrap();

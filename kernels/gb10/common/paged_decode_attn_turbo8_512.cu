@@ -41,6 +41,11 @@
 #define WARP_SIZE 32
 // HDIM=512 variant for Gemma-4 full-attention layers
 #undef HDIM
+// This kernel is a hard-coded HDIM=512 variant: the per-model KERNEL.toml
+// -DHDIM=<n> flag (meant for the generic attention kernels) must not leak in
+// here. Explicit #undef keeps the historical file-wins semantics and silences
+// the strict build's macro-redefinition error.
+#undef HDIM
 #define HDIM 512
 #define VEC_BF16 (HDIM / WARP_SIZE)
 #define VEC_U32  (HDIM / (WARP_SIZE * 2))

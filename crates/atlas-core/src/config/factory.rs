@@ -9,6 +9,7 @@ use super::{LayerType, ModelConfig, QuantizationConfig};
 impl ModelConfig {
     pub fn qwen3_next_80b_nvfp4() -> Self {
         Self {
+            profile: false,
             hidden_size: 2048,
             num_hidden_layers: 48,
             intermediate_size: 5120,
@@ -68,6 +69,8 @@ impl ModelConfig {
             moe_shared_expert_intermediate_size: 0,
             routed_scaling_factor: 1.0,
             moe_latent_size: 0,
+            moe_intermediate_sizes: Vec::new(),
+            num_experts_per_toks: Vec::new(),
             vision: None,
             quantization_config: None,
             attn_gated: true,
@@ -107,6 +110,7 @@ impl ModelConfig {
             mtp_transformer_layers: 0,
             rotary_dim: 0,
             dflash_capture_layers: Vec::new(),
+            adapter_max_rank: 0,
         }
     }
 }

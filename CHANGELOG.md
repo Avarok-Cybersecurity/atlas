@@ -11,6 +11,23 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- `spark benchmark <list|run|history>` — the dashboard's benchmark suite as a
+  headless subcommand, driving the same executor. Machine-readable output on
+  stdout, progress on stderr; exit codes separate a broken harness (1) from a
+  failed gate (2).
+- `--version`, sourced from the packaged version so a build cannot report a
+  version it was not packaged as.
+
+### Fixed
+- **Benchmark runs no longer overwrite each other.** History files were named by
+  whole seconds, so two runs of the same benchmark within the same second
+  silently destroyed the first. Records are now keyed by nanosecond with an
+  explicit collision guard.
+- Run history records the parameters, target, source and version alongside the
+  result. Previously only the result was stored, so a number could not be
+  attributed to a configuration or reproduced. Pre-existing files still load.
+
+### Added
 
 - DeepSeek-V4-Flash support on GB10: native MXFP4 (E8M0) routed-expert
   loading (transcode-free — no MXFP4→BF16→NVFP4 double-quant) plus the

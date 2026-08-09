@@ -13,6 +13,27 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
+/// Largest `top_k` the sigmoid routing kernels can hold.
+///
+/// `moe_topk_sigmoid` stages the running top-K in `__shared__ float
+/// s_top_vals[MAX_TOP_K]` / `s_top_idxs[MAX_TOP_K]`, so a larger `top_k` walks
+/// off the end of those arrays and into the shared block that follows them.
+/// Nothing on the device can report that; the arrays are sized at compile time
+/// and the selection loop was bounded by the expert count, not by the array.
+///
+/// The authoritative value is `#define MAX_TOP_K` in
+/// `kernels/gb10/common/moe_topk_sigmoid.cu`. This mirror is pinned to it by
+/// `tests/moe_topk_sigmoid_bounds.rs`, which also fails if a model directory
+/// reintroduces a shadow copy of that kernel with a different cap — the drift
+/// that had the two Nemotron shadows capped at 24 against a common file of 32.
+pub const MOE_TOPK_SIGMOID_MAX_TOP_K: usize = 32;
+
+/// Largest `num_experts` the sigmoid routing kernels can hold, from
+/// `#define MAX_EXPERTS` in the same file. Beyond it the kernel silently
+/// considers only the first `MAX_EXPERTS` experts (`actual_n` is a `min`), so
+/// routing stays memory-safe but stops matching the checkpoint.
+pub const MOE_TOPK_SIGMOID_MAX_EXPERTS: usize = 512;
+
 /// GPU-side MoE top-K softmax.
 ///
 /// Finds top-K experts from BF16 gate logits, computes softmax weights.

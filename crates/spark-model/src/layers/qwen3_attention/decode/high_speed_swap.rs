@@ -191,6 +191,27 @@ impl Qwen3AttentionLayer {
                     // copy_d2h_on_stream: orders the D2H after WHT+reshape_and_cache
                     // on the production stream. copy_d2h would race (default-stream
                     // sync only) and read torn bytes — Turbo8 race fix, 2026-04-28.
+                    //
+                    // The BF16 arm streams device bytes straight into the bf16 host
+                    // Vec, so the device-side block stride must equal the host span.
+                    // Every other arm reads `layer_block_bytes` explicitly; this one
+                    // asserts the equality it assumes instead.
+                    debug_assert_eq!(
+                        layer_block_bytes,
+                        block_floats * 2,
+                        "BF16 KV block stride must equal bs*nkv*hd*2 (layer {})",
+                        self.attn_layer_idx
+                    );
+                    // SAFETY: `k_host`/`v_host` are `vec![bf16; block_floats]` built a
+                    // few lines above, so each has len exactly `block_floats` and
+                    // `size_of::<half::bf16>() == 2` ⇒ `block_floats * 2` is exactly
+                    // `len * size_of::<elem>()` bytes — the whole allocation, no more.
+                    // Both Vecs are fully initialised (`vec![bf16::from_f32(0.0); n]`).
+                    // The two `&mut` spans cover disjoint allocations, each is the only
+                    // live reference to its Vec for the duration of its call, and
+                    // `copy_d2h_on_stream` drains `stream` before returning, so neither
+                    // outlives an in-flight DMA (the `&k_host`/`&v_host` shared borrows
+                    // in the `offload_block_*` calls below run strictly after).
                     ctx.gpu.copy_d2h_on_stream(
                         spark_runtime::gpu::DevicePtr(k_block_dev),
                         unsafe {

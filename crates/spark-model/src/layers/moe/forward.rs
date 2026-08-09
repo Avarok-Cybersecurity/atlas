@@ -49,9 +49,7 @@ impl MoeLayer {
                 == Some("1")
         {
             // One-time per-process log so we can verify the env-gated route is hit.
-            static LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if ctx.stats.once("log:moe_route") {
                 tracing::info!(
                     "FRANKENSTEIN: routing DFlash capture-layer MoE decode through forward_prefill(M=1) (one-time log)"
                 );
@@ -513,7 +511,7 @@ impl MoeLayer {
         // times. Solution: pass NULL shared_out for EP, all-reduce the routed sum,
         // then add shared_out once after all-reduce.
         let output = ctx.buffers.moe_output();
-        let is_ep = ctx.comm.is_some_and(|c| c.world_size() > 1);
+        let is_ep = ctx.comm.is_some() && ctx.config.ep_world_size > 1;
         let shared_for_blend = if is_ep && !shared_out.is_null() {
             // EP: exclude shared expert from blend (will add after all-reduce).
             // Zero a temp buffer to pass as shared_out (kernel reads it even with NULL gate).
@@ -544,7 +542,7 @@ impl MoeLayer {
         // Each rank only computed its local experts (remote → zero), so
         // SUM gives the correct global result.
         if let Some(comm) = ctx.comm
-            && comm.world_size() > 1
+            && ctx.config.ep_world_size > 1
         {
             if ctx.graph_capture {
                 comm.all_reduce(output.0, h as usize * 2)?;

@@ -1,0 +1,97 @@
+name: Conflict label
+
+# A CONFLICTING PR's green checks are NOT REAL — and nothing said so.
+#
+# GitHub does not run the merge-commit workflows for a PR it cannot merge. The
+# checks that already ran stay pinned to whatever commit they last ran against,
+# so the PR keeps displaying green ticks that describe a tree nobody will merge.
+# Reviewers read that as "CI passes".
+#
+# It is not rare here. A dry run of this exact query on 2026-08-09 found
+# THIRTEEN open PRs CONFLICTING — #391 #381 #352 #350 #335 #334 #330 #296 #284
+# #230 #207 #187 #162 — every one of them showing green ticks. Four more
+# (#266 #332 #373 #375) were closed that day, also conflicting, also green,
+# and three of those had been reviewed on the strength of it.
+#
+# `label` needs `pull-requests: write`, which is more than the read-only
+# telemetry job takes. That is the cost of writing to the PR list instead of
+# to a comment nobody opens; it is scoped to this one job and nothing else in
+# the file gets a token.
+#
+# So: label it. A label shows up in the PR LIST, which is where the misreading
+# happens; a comment does not. One `needs-rebase` label, added when conflicting
+# and REMOVED when it clears, so the signal cannot go stale in the direction
+# that matters.
+#
+# Advisory, like `pr-telemetry`. This blocks nothing — a PR can be conflicting
+# for entirely good reasons mid-work. It only removes the false green.
+
+on:
+  schedule:
+    # Offset from pr-telemetry's :17 so the two do not contend for the API.
+    - cron: "43 */4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pr-conflict-label
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  label:
+    name: Mark conflicting PRs
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Label or unlabel by mergeable state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          LABEL='needs-rebase'
+
+          # Create it if absent rather than requiring manual setup — the label
+          # does not exist in this repo today, and a workflow whose first run
+          # fails on a missing prerequisite is a workflow nobody adopts.
+          # `--force` makes this idempotent: it updates in place if present.
+          gh label create "$LABEL" --repo "$REPO" --force \
+            --color 'D93F0B' \
+            --description 'Conflicts with main — its green checks are NOT real (GitHub skips merge-commit workflows)' \
+            || echo "::warning::could not ensure the '$LABEL' label exists"
+
+          # `mergeable` is computed ASYNCHRONOUSLY by GitHub. A PR that has not
+          # been polled since its last push reports UNKNOWN, which means "ask
+          # again", not "fine" — so UNKNOWN is skipped rather than treated as
+          # either state. It resolves on the next run four hours later.
+          gh pr list --repo "$REPO" --state open --limit 100 \
+            --json number,mergeable,labels \
+            --jq '.[] | [.number, .mergeable, ([.labels[].name] | index("'"$LABEL"'") != null)] | @tsv' \
+          | while IFS=$'\t' read -r num state labelled; do
+              case "$state" in
+                CONFLICTING)
+                  if [ "$labelled" = "false" ]; then
+                    echo "#$num is CONFLICTING -> labelling"
+                    gh pr edit "$num" --repo "$REPO" --add-label "$LABEL" \
+                      || echo "::warning::could not label #$num (does the '$LABEL' label exist?)"
+                  else
+                    echo "#$num still CONFLICTING (already labelled)"
+                  fi
+                  ;;
+                MERGEABLE)
+                  # Removing matters more than adding: a stale `needs-rebase` on
+                  # a PR that has since been rebased is the same class of lie
+                  # this workflow exists to remove, pointing the other way.
+                  if [ "$labelled" = "true" ]; then
+                    echo "#$num is MERGEABLE again -> unlabelling"
+                    gh pr edit "$num" --repo "$REPO" --remove-label "$LABEL" \
+                      || echo "::warning::could not unlabel #$num"
+                  fi
+                  ;;
+                *)
+                  echo "#$num: mergeable=$state — not yet computed, skipping"
+                  ;;
+              esac
+            done
