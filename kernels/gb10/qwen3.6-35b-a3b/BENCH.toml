@@ -62,7 +62,12 @@ min = 10.0
 max = 10.0
 
 [benchmarks.metrics.sum_wall_s]
-max = 1300.0
+# Tightened 1300 -> 1000 on 2026-08-09. Two back-to-back N=10 tiers on one
+# binary measured 733.8 s and 782.9 s, and the historical range sits at
+# 600-800 s. A 1300 s ceiling therefore sat ~60% above anything ever observed:
+# it could only ever have caught a blowup, never a regression. 1000 s keeps
+# ~25% headroom over the slowest measured tier.
+max = 1000.0
 
 [benchmarks.metrics.webserver_ok]
 min = 10.0

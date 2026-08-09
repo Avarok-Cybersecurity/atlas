@@ -335,12 +335,16 @@ impl Benchmark for AgenticWebserver {
             ParamSpec::new(
                 "wall_budget_s",
                 "Σ wall budget",
-                "Total agent seconds across all iterations before the gate fails.",
+                "Total agent seconds across all iterations before the gate fails. \
+                 1000 s, tightened from 1300 on 2026-08-09: measured tiers on the \
+                 35B flagship land at 600-800 s (734 and 783 back-to-back on one \
+                 binary), so 1300 left ~60% headroom above the observed range and \
+                 could not have caught anything short of a blowup.",
                 ParamKind::Float {
                     min: 1.0,
                     max: 100_000.0,
                 },
-                ParamValue::Float(1300.0),
+                ParamValue::Float(1000.0),
             ),
             ParamSpec::new(
                 "max_turns",

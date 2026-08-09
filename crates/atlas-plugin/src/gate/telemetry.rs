@@ -45,6 +45,15 @@ pub struct PrFacts {
     pub author: String,
     #[serde(default)]
     pub draft: bool,
+    /// True once this PR has landed on the default branch.
+    ///
+    /// ★ Promotion debt outlives the merge. A PR that a promotion-candidate
+    /// gate wanted to see, merged without it, is not a warning any more — it is
+    /// coverage this repository has already gone without, and it stays on the
+    /// books until a record discharges it. CLOSED PRs carry no debt: nothing
+    /// shipped, so nothing is owed.
+    #[serde(default)]
+    pub merged: bool,
     /// Repo-relative paths this PR changes.
     #[serde(default)]
     pub changed_paths: Vec<String>,
@@ -222,14 +231,18 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
              Each row is coverage this repository chose not to buy — recorded so \
              the choice stays visible rather than becoming an assumption.\n\n",
         );
-        out.push_str("| PR | title | gates that wanted to run |\n|---|---|---|\n");
+        out.push_str("| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n");
         if owing.is_empty() {
-            out.push_str("| — | _no open PR touches a promotion candidate's paths_ | — |\n");
+            out.push_str("| — | — | _no tracked PR touches a promotion candidate's paths_ | — |\n");
         }
         for v in owing {
             out.push_str(&format!(
-                "| #{} | {} | {} |\n",
+                "| #{} | {} | {} | {} |\n",
                 v.facts.number,
+                // Merged debt is ACCRUED — the coverage was skipped and the code
+                // shipped. Open debt is still a warning. The column is what makes
+                // those two different rows instead of one undifferentiated list.
+                if v.facts.merged { "**yes**" } else { "not yet" },
                 escape(&v.facts.title),
                 v.promotion_debt.join(", ")
             ));

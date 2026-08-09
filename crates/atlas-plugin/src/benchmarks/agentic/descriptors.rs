@@ -21,7 +21,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     duration_hint: "~5 min per iteration",
     updated: "2026-07-31",
     needs_confirmation: true,
-    // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1300 s) were
+    // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1000 s) were
     // measured on the 35B MoE flagship and mean nothing against another
     // checkpoint. FP8 and NVFP4 are both the same family and both valid.
     intended_for: Some(crate::benchmark::ModelExpectation {

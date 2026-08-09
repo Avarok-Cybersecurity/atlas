@@ -21,7 +21,7 @@ fn defaults_are_the_gate_a_tier() {
     let b = AgenticWebserver::default();
     let v = ParamValues::defaults(&b.parameters());
     assert_eq!(v.usize("iterations").unwrap(), 10);
-    assert_eq!(v.float("wall_budget_s").unwrap(), 1300.0);
+    assert_eq!(v.float("wall_budget_s").unwrap(), 1000.0);
 }
 
 fn with_rows(rows: Vec<IterationRow>, budget: f64) -> AgenticWebserver {

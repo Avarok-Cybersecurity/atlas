@@ -44,8 +44,22 @@ jobs:
           # Draft PRs are included deliberately: a draft still tells you which
           # targets are about to be contended, which is the thing this view is
           # for. It is labelled as a draft in the table.
-          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            --jq '[.[] | {number, title, author: .user.login, draft}]' > prs.json
+          # ★ OPEN **and** MERGED, never CLOSED. Promotion debt outlives the
+          # merge: a PR that a candidate gate wanted to see, merged without it,
+          # is coverage this repo has already gone without and stays on the
+          # books. A PR that was closed shipped nothing, so it owes nothing —
+          # including it would inflate the ledger with debts that cannot exist.
+          #
+          # The API has no "merged" state: merged PRs come back as `closed`
+          # with `merged_at` set, so the filter is on `merged_at`, not `state`.
+          # Bounded to the most recent 200 by update time — the full history
+          # would grow without limit and the debt that matters is recent.
+          gh api "repos/$REPO/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+            --paginate --jq '[.[]
+              | select(.state == "open" or .merged_at != null)
+              | {number, title, author: .user.login, draft,
+                 merged: (.merged_at != null)}]' \
+            | jq -s -c '[.[][]] | .[0:200]' > prs.json
 
           # Changed paths need a second call per PR — the list endpoint does
           # not carry them. Paginated in full rather than capped: a truncated
