@@ -278,6 +278,39 @@ pub fn check_gates(root: &Path, sha: &str) -> BTreeMap<String, GateStatus> {
     out
 }
 
+/// Does this record actually belong to the gate whose directory it sits in?
+///
+/// Records were located by DIRECTORY and their own `benchmark_id` was never
+/// read back. Nothing stopped one gate's record from satisfying another's, and
+/// two of the five gates make that a one-command forgery:
+/// `ttft-warm-gate` and `ttft-cold-gate` share a checkpoint, a hardware key and
+/// their metric names (`median_ms`, `p90_ms`). On `main` today the committed
+/// WARM record reads 1562.58 / 4478.42 against the COLD ceilings of
+/// 1728.27 / 4809.76 — so `cp` one file into the other directory turns the cold
+/// gate green with no cold leg ever run.
+///
+/// That is the worst possible pair to be able to confuse: cold-TTFT is the only
+/// leg that sees a cold-LOAD regression, and #389 — the change this gate was
+/// built alongside — is "GPU-transpose quantized weights at cold load".
+///
+/// It also needs no malice. Both records are produced minutes apart in one
+/// session with near-identical filenames.
+///
+/// Mismatches are SKIPPED, not failed: a stray file in a directory should leave
+/// the gate reading "no covering record" (which is true and actionable), not
+/// manufacture a hard failure from someone else's passing run.
+fn record_is_for(record: &GateRecord, benchmark_id: &str, path: &Path) -> bool {
+    if record.benchmark_id == benchmark_id {
+        return true;
+    }
+    tracing::warn!(
+        "ignoring {}: it is a `{}` record sitting in the `{benchmark_id}` directory",
+        path.display(),
+        record.benchmark_id,
+    );
+    false
+}
+
 fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     let Some(gate) = super::coverage::find(benchmark_id) else {
         // Unreachable through `check_gates`, which iterates the coverage table
@@ -298,6 +331,7 @@ fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
     let mut covered: Option<GateRecord> = None;
     for path in &paths {
         if let Ok(record) = read_record(path)
+            && record_is_for(&record, benchmark_id, path)
             && record_still_stands(root, sha, &record, gate)
         {
             covered = Some(record);

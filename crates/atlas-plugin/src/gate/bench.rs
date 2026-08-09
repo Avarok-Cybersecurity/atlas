@@ -118,6 +118,7 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
                     entry.checkpoint
                 );
             }
+            validate_noise(&path, &entry)?;
             out.push((
                 taxon::Target {
                     hardware: target.hardware.clone(),
@@ -214,3 +215,67 @@ pub fn baseline_for(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
 #[cfg(test)]
 #[path = "bench_tests.rs"]
 mod bench_tests;
+
+/// The largest slack a `noise` allowance may claim, as a fraction of the bound
+/// it is applied to.
+///
+/// `noise` widens a threshold at compare time (`check::compare`) and had no
+/// upper limit at all. `noise = 1000.0` on a floor of 87.44 turns that gate
+/// green against any record already in the tree — and it reads like a
+/// measurement annotation, not a threshold change, which makes it the most
+/// review-invisible way to defeat the gate. Every value in the tree today is
+/// 0.4 against floors of 83-89, i.e. ~0.46%.
+const MAX_NOISE_FRACTION: f64 = 0.05;
+
+/// `noise` must be a small, non-negative, finite slack — and must never be
+/// applied to an EXACT pin.
+///
+/// The exact-pin rule is the load-bearing half. `min == max` is how the BFCL
+/// draw size is pinned (`samples` = 995 / 1004), and that pin exists precisely
+/// to catch a silently-changed draw — a different category mix moves
+/// `normalized_single_turn_score` by ~1.8 points while leaving
+/// `overall_accuracy` in the same place, which is exactly what makes crossing
+/// draws impossible to spot after the fact. `check::compare` applies `noise` to
+/// the two-sided arm as well, so a `noise` on `samples` would silently disable
+/// the guard.
+fn validate_noise(path: &std::path::Path, entry: &BenchEntry) -> Result<()> {
+    let Some(metrics) = entry.metrics.as_ref() else {
+        return Ok(());
+    };
+    for (name, bound) in metrics {
+        let Some(noise) = bound.noise else { continue };
+        if !noise.is_finite() || noise < 0.0 {
+            bail!(
+                "{}: {} / {} metric {name}: noise must be finite and non-negative, got {noise}",
+                path.display(),
+                entry.gate,
+                entry.checkpoint,
+            );
+        }
+        if bound.min.is_some() && bound.min == bound.max {
+            bail!(
+                "{}: {} / {} metric {name} is an EXACT pin (min == max == {:?}) and carries \
+                 noise {noise}. Noise on a pin disables it — and a pin is used for things like \
+                 the BFCL draw size, where a changed draw is undetectable after the fact.",
+                path.display(),
+                entry.gate,
+                entry.checkpoint,
+                bound.min,
+            );
+        }
+        let magnitude = bound.min.or(bound.max).unwrap_or(0.0).abs();
+        let cap = magnitude * MAX_NOISE_FRACTION;
+        if magnitude > 0.0 && noise > cap {
+            bail!(
+                "{}: {} / {} metric {name}: noise {noise} exceeds {:.0}% of the bound \
+                 ({magnitude}) — that is a threshold change wearing a measurement-noise \
+                 label. Move the bound instead, so the ratchet is visible in review.",
+                path.display(),
+                entry.gate,
+                entry.checkpoint,
+                MAX_NOISE_FRACTION * 100.0,
+            );
+        }
+    }
+    Ok(())
+}

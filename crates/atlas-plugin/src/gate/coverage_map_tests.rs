@@ -312,17 +312,21 @@ fn a_driver_change_invalidates_only_its_own_gate() {
     assert!(!hit.contains(&"agentic-webserver"), "{hit:?}");
 }
 
-/// Gate bookkeeping does not re-open GPU measurements — the change that
+/// Gate BOOKKEEPING does not re-open GPU measurements — the change that
 /// motivated this whole module.
+///
+/// Note what is NOT in this list any more: `check.rs`. See the test below.
 #[test]
-fn gate_machinery_changes_cost_no_gpu_hours() {
+fn gate_bookkeeping_changes_cost_no_gpu_hours() {
     let hit = coverage::invalidated_by([
-        "crates/atlas-plugin/src/gate/check.rs",
         "crates/atlas-plugin/src/gate/record.rs",
+        "crates/atlas-plugin/src/gate/telemetry.rs",
+        "crates/atlas-plugin/src/gate/codeowners.rs",
     ]);
     assert!(
         hit.is_empty(),
-        "gate bookkeeping should not re-open any gate, got {hit:?}"
+        "record IO, telemetry rendering and CODEOWNERS parsing cannot move a \
+         measurement; they should not re-open any gate, got {hit:?}"
     );
 }
 

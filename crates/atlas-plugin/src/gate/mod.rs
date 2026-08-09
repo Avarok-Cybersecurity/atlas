@@ -216,6 +216,11 @@ mod coverage_tests;
 #[path = "coverage_squash_tests.rs"]
 mod coverage_squash_tests;
 
+/// Three holes an adversarial review found. Split for the 500-LoC cap.
+#[cfg(test)]
+#[path = "hardening_tests.rs"]
+mod hardening_tests;
+
 #[cfg(test)]
 #[path = "dirty_tests.rs"]
 mod dirty_tests;

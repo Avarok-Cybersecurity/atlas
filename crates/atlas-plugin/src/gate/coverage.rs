@@ -75,7 +75,35 @@ pub const PERF_PATHS: [&str; 8] = [
 ///
 /// Editing these changes what "invalidates" means. Letting them be excluded
 /// would let a change to the rules escape the rules.
-pub const BOUNDARY_FILES: [&str; 1] = ["crates/atlas-plugin/src/gate/coverage.rs"];
+///
+/// ★ This list held ONE entry and that was not enough. [`GATE_MACHINERY`]
+/// excludes the whole `crates/atlas-plugin/src/gate` prefix from every gate,
+/// so a PR editing `check.rs` — `record_covers`, `invalidating_paths`,
+/// `check_record`, `compare` — invalidated nothing, and then reported itself
+/// covered BY ITS OWN NEW LOGIC. `coverage.rs` alone was "a lock whose key is
+/// kept inside it" with the key moved one room over.
+///
+/// It was not theoretical: PR #420 rewrote `record_covers` and the gate listed
+/// only an unrelated `atlas-kernels` file as invalidating. It read red purely
+/// by accident.
+///
+/// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
+/// still covers the rest of the directory — record IO, telemetry rendering,
+/// the CODEOWNERS parser — where the exclusion's argument does hold.
+pub const BOUNDARY_FILES: [&str; 5] = [
+    "crates/atlas-plugin/src/gate/coverage.rs",
+    // `record_covers` / `invalidating_paths` / `check_record` / `compare`:
+    // decides whether a record stands and whether its numbers pass.
+    "crates/atlas-plugin/src/gate/check.rs",
+    // `excuses` / `changed_targets`: decides which invalidating paths are
+    // forgiven by the closure hash.
+    "crates/atlas-plugin/src/gate/closure.rs",
+    // `sources` / `configs` / `affected`: decides which targets a kernel edit
+    // reaches, i.e. the input to `excuses`.
+    "crates/atlas-plugin/src/gate/taxon.rs",
+    // `baseline_for`: decides WHICH thresholds a record is judged against.
+    "crates/atlas-plugin/src/gate/bench.rs",
+];
 
 /// Basenames under `kernels/` that are read by the gate and compiled by nothing.
 ///
