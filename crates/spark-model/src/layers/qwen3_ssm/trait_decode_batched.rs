@@ -183,6 +183,50 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
+        } else if num_tokens > 4
+            && (self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0)
+            && let Some(ref fp8) = self.qkvz_fp8w
+        {
+            // Batched MTP verify at R = Σ ks > 4 on native-FP8-GDN checkpoints
+            // (e.g. nvidia/Qwen3.6-27B-NVFP4): `qkvz_fp8w` is the ONLY live
+            // QKVZ weight — the dense, NVFP4 and single-scale-FP8 slots are
+            // all NULL/None (qwen35_dense.rs native-FP8 GDN arm) — and the
+            // fp8w arm above stops at 4 because `w8a16_gemv_batch4` is an
+            // M<=4 kernel. Without this arm the dispatch fell through to
+            // `dense_gemm` on the NULL dense slot: CUDA_ERROR_ILLEGAL_ADDRESS
+            // on the FIRST n>=2 batched verify (ks=[4,3] ⇒ R=7), a sticky
+            // context loss that 503s the whole serve. Third instance of this
+            // NULL-slot dispatch-gap class (see the 2..=4 arm's history);
+            // route through the SAME block-scaled W8A16 GEMM the SSM prefill
+            // path uses (`trait_prefill_proj.rs` — pipelined twin preferred,
+            // bit-identical to `w8a16_gemm`).
+            if self.w8a16_gemm_pipelined_k.0 != 0 {
+                ops::w8a16_gemm_pipelined(
+                    ctx.gpu,
+                    self.w8a16_gemm_pipelined_k,
+                    normed,
+                    fp8.weight,
+                    fp8.row_scale,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w8a16_gemm(
+                    ctx.gpu,
+                    self.w8a16_gemm_k,
+                    normed,
+                    fp8.weight,
+                    fp8.row_scale,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
         } else if num_tokens == 4 {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                 ops::w4a16_gemv_batchm(
@@ -347,6 +391,20 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else {
+            // Fail fast: launching `dense_gemm` on a NULL weight is a device
+            // ILLEGAL_ADDRESS that destroys the CUDA context for every live
+            // request (sticky 700). A checkpoint whose QKVZ ships only in a
+            // form this dispatch has no arm for must error per-request, not
+            // kill the serve.
+            anyhow::ensure!(
+                !self.ssm.in_proj_qkvz.weight.is_null(),
+                "batched GDN QKVZ dispatch: no usable weight for num_tokens={num_tokens} \
+                 (dense slot NULL; fp8w={}, nvfp4={}, gemm kernels pipelined/base: {:#x}/{:#x})",
+                self.qkvz_fp8w.is_some(),
+                self.qkvz_nvfp4.is_some(),
+                self.w8a16_gemm_pipelined_k.0,
+                self.w8a16_gemm_k.0,
+            );
             ops::dense_gemm(
                 ctx.gpu,
                 self.dense_gemm_k,
@@ -800,12 +858,54 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )?;
-        } else if num_tokens > 8 && self.out_proj_nvfp4_t.is_some() && {
-            // Kill switch, PRESENCE check per house convention (`=0` is NOT
-            // off), cached once.
-            static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            !*OFF.get_or_init(|| std::env::var("ATLAS_NO_VERIFY_OUTPROJ_TGEMM").is_ok())
-        } {
+        } else if num_tokens > 4
+            && (self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0)
+            && let Some(ref fp8) = self.out_proj_fp8w
+        {
+            // Batched MTP verify at R = Σ ks > 4 on native-FP8-GDN
+            // checkpoints: `out_proj_fp8w` is the ONLY live out_proj weight
+            // (dense/NVFP4 slots NULL — qwen35_dense.rs native-FP8 GDN arm)
+            // and the fp8w arm above stops at 4. Without this arm the
+            // dispatch fell through to `w4a16_gemm` on the null
+            // `ssm.out_proj` — the out_proj half of the same
+            // CUDA_ERROR_ILLEGAL_ADDRESS the QKVZ dispatch above hits first.
+            // Same block-scaled W8A16 GEMM pair as the prefill path.
+            if self.w8a16_gemm_pipelined_k.0 != 0 {
+                ops::w8a16_gemm_pipelined(
+                    ctx.gpu,
+                    self.w8a16_gemm_pipelined_k,
+                    normed_out_buf,
+                    fp8.weight,
+                    fp8.row_scale,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w8a16_gemm(
+                    ctx.gpu,
+                    self.w8a16_gemm_k,
+                    normed_out_buf,
+                    fp8.weight,
+                    fp8.row_scale,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            }
+        } else if num_tokens > 8
+            && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
+            && {
+                // Kill switch, PRESENCE check per house convention (`=0` is NOT
+                // off), cached once.
+                static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                !*OFF.get_or_init(|| std::env::var("ATLAS_NO_VERIFY_OUTPROJ_TGEMM").is_ok())
+            }
+        {
             // M > 8 (batched K=4 verify, R = n*4 rows; DFlash wide verify):
             // the pre-dequanted FP8 prefill arm below reads 2x the weight
             // bytes of NVFP4 — bandwidth-bound at this M, measured 379 us
@@ -816,7 +916,6 @@ impl Qwen3SsmLayer {
             // (`deep_k_gemm`). BF16 activations (vs the FP8 arm's e4m3
             // downcast) — equal-or-better numerics, not byte-identical.
             // Kill switch ATLAS_NO_VERIFY_OUTPROJ_TGEMM (PRESENCE check).
-            let nvfp4_t = self.out_proj_nvfp4_t.as_ref().unwrap();
             ops::w4a16_gemm_n128(
                 ctx.gpu,
                 self.deep_k_gemm(value_dim as u32),
@@ -904,6 +1003,17 @@ impl Qwen3SsmLayer {
                 )?;
             }
         } else {
+            // Fail fast: a null out_proj here is the same sticky-700 context
+            // killer as the QKVZ dense arm above — refuse per-request instead.
+            anyhow::ensure!(
+                !self.ssm.out_proj.weight.is_null(),
+                "batched GDN out_proj dispatch: no usable weight for num_tokens={num_tokens} \
+                 (quant slot NULL; fp8w={}, dense={}, gemm kernels pipelined/base: {:#x}/{:#x})",
+                self.out_proj_fp8w.is_some(),
+                self.out_proj_dense.is_some(),
+                self.w8a16_gemm_pipelined_k.0,
+                self.w8a16_gemm_k.0,
+            );
             ops::w4a16_gemm(
                 ctx.gpu,
                 self.w4a16_gemm_k,
