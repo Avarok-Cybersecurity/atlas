@@ -96,13 +96,20 @@ fn timeout_unchanged_and_still_outranks_everything() {
 }
 
 #[test]
-fn guard_cuts_report_stop_not_length() {
-    // Replaces `other_guards_keep_their_token_derived_reason`, which
-    // asserted fuzzy_repetition + non-EOS ⇒ "length" — that expectation
-    // ENCODED the bug: the guard deliberately ended generation with
-    // budget left, and "length" told agent clients to raise the limit
-    // and retry into the same guard. Per the OpenAI contract (and
-    // vLLM/SGLang/TGI/llama.cpp), "length" is reserved for the budget.
+fn guard_cuts_report_length_because_the_model_did_not_finish() {
+    // POSITIVE case. A guard cut is a server-side truncation: the model
+    // was still mid-output. `"length"` is the OpenAI-spec slot for
+    // "forcibly truncated" and is what every client's truncation handling
+    // keys on (openai-python `LengthFinishReasonError`, aider's
+    // continuation, Instructor, pydantic-ai).
+    //
+    // ★ This assertion was briefly INVERTED to `"stop"`, and that shipped
+    // a measured regression: the agentic gate fell to 8/10 then 4/10
+    // followed_directions because its `was_cut_off()` stopped firing and
+    // runs ended at 3-10 turns instead of the 12-22 a recovery needs.
+    // `"stop"` claims the model finished; for a mid-sentence repetition
+    // cut that is false, and every client action keyed on it (accept,
+    // validate, commit, end the run) is then wrong. Do not re-invert.
     for guard in [
         "fuzzy_repetition",
         "inter_tool_prose_budget",
@@ -110,12 +117,33 @@ fn guard_cuts_report_stop_not_length() {
         "simhash_semantic_loop",
         "token_loop_watchdog",
     ] {
-        assert_eq!(derive(Some(guard), Some(42), 100), "stop", "guard={guard}");
-        // A guard trip on the exact step the budget ran out keeps the
-        // guard's reason: precedence is deterministic, and "stop" is
-        // the safer signal for agent retry loops.
-        assert_eq!(derive(Some(guard), Some(42), 0), "stop", "guard={guard}");
+        assert_eq!(
+            derive(Some(guard), Some(42), 100),
+            "length",
+            "guard={guard}"
+        );
+        // A guard trip on the exact step the budget ran out is still a
+        // truncation, and both paths agree — precedence is deterministic.
+        assert_eq!(derive(Some(guard), Some(42), 0), "length", "guard={guard}");
     }
+}
+
+#[test]
+fn non_truncating_stops_are_not_relabelled_as_length() {
+    // NEGATIVE case, and the whole point of the original fix: `"length"`
+    // must NOT become a catch-all again. The bug this replaced derived it
+    // from "the last token wasn't EOS", sweeping in early finalizes and
+    // client cancels that are not truncations at all.
+    //
+    // No guard, budget left (client cancel / dropped receiver / drain):
+    // generation stopped, nothing was truncated ⇒ "stop", never "length".
+    assert_eq!(derive(None, Some(42), 100), "stop");
+    // And the timeout guard keeps its own distinct reason rather than
+    // collapsing into the truncation bucket.
+    assert_eq!(
+        derive(Some(GUARD_STOP_REQUEST_TIMEOUT), Some(42), 100),
+        FINISH_REASON_TIMEOUT
+    );
 }
 
 #[test]
@@ -428,6 +456,10 @@ fn call_site_passes_the_real_guard() {
     // `a.guard_stop` reaches the decision.
     let (a, rx) = test_seq(vec![5, 6, 42], 3, Some(GUARD_STOP_REQUEST_TIMEOUT), 10);
     assert_eq!(finish_and_recv(a, rx).finish_reason, FINISH_REASON_TIMEOUT);
+    // And a degeneration guard reaches the response as "length" — the
+    // truncation signal. Asserted at the CALL SITE, not just over the pure
+    // function, because that is where the wire value the client actually
+    // receives is decided.
     let (a, rx) = test_seq(vec![5, 6, 42], 3, Some("fuzzy_repetition"), 10);
-    assert_eq!(finish_and_recv(a, rx).finish_reason, "stop");
+    assert_eq!(finish_and_recv(a, rx).finish_reason, "length");
 }

@@ -8,40 +8,78 @@ use super::*;
 /// to the wire `finish_reason`. Do not map guard names to wire reasons
 /// anywhere else.
 ///
-/// Every non-timeout guard reports `"stop"`: the guard deliberately ended
-/// generation, the token budget was NOT hit, and OpenAI's closed enum
-/// {stop, length, tool_calls, content_filter} has no truer slot. The
-/// guard's NAME still reaches diagnostics unchanged via
-/// `StreamEvent::Done.guard_stop` and the --dump body.
+/// Every non-timeout guard reports `"length"`: the server ended the
+/// response with the model UNFINISHED. Neither enum slot is literally
+/// true — the budget was not hit either — so the choice is decided by
+/// which lie clients handle safely.
+///
+/// `"stop"` asserts "the model said what it wanted". For a mid-sentence
+/// repetition cut that is affirmatively false, and every client behaviour
+/// keyed on `"stop"` is then the WRONG action: accept, validate, commit,
+/// end the agent run. `"length"` asserts only "incomplete, serving side
+/// cut it, do not treat as final" — true in every part clients act on,
+/// and its handlers are all safe: `openai-python` raises
+/// `LengthFinishReasonError` instead of parsing truncated JSON, aider
+/// skips the auto-commit, Instructor raises `IncompleteOutputException`,
+/// pydantic-ai raises rather than accepting a half tool call.
+///
+/// The failure modes are asymmetric. A false `"length"` costs a bounded,
+/// VISIBLE retry (agents cap them). A false `"stop"` is unbounded and
+/// INVISIBLE: degenerate output silently banked as a finished answer.
+/// Measured — relabelling these guards to `"stop"` cost 2/10 then 6/10
+/// episodes of the agentic gate, because the harness stopped recognising
+/// truncation and ended runs at 3-10 turns instead of the 12-22 a
+/// recovery takes.
+///
+/// This also matches the ecosystem. On every engine WITHOUT a
+/// degeneration guard (SGLang, TGI, llama.cpp, vLLM by default) the same
+/// loop simply runs to the budget and reports `"length"`; our guard is an
+/// early, smarter budget, so `"length"` preserves parity. No engine maps a
+/// quality cut to `"stop"` by design — vLLM minted a distinct value
+/// (`"repetition"`) rather than overload it.
+///
+/// ★ And it removes an internal contradiction: `tool_loop_capped` already
+/// ships `"length"` (see `api::chat_stream::handle_done`) on exactly this
+/// reasoning — `"length"` is the OpenAI-spec slot for "forcibly truncated"
+/// and gives agents a clean hook to break their outer loop. The same
+/// argument covers `fuzzy_repetition`, `tool_envelope_stuck`,
+/// `inter_tool_prose_budget` and the simhash trip.
 ///
 /// Considered alternative: putting the guard name on the wire the way
 /// vLLM ships "repetition"/"abort". Rejected — typed clients hard-fail on
-/// unknown variants (Rust `async-openai` fails deserialization outright;
-/// pydantic-ai raised on OpenRouter's non-standard "error"), and our one
-/// deliberate exception, `"timeout"`, already carries that documented
-/// risk (see `ir::FINISH_REASON_TIMEOUT`). If a future guard warrants a
-/// distinct wire reason, add its arm HERE with its rationale.
+/// unknown enum VALUES (Rust `async-openai` fails deserialization
+/// outright; pydantic-ai raised on OpenRouter's non-standard "error"),
+/// and our one deliberate exception, `"timeout"`, already carries that
+/// documented risk (see `ir::FINISH_REASON_TIMEOUT`). The guard's NAME
+/// reaches diagnostics via `StreamEvent::Done.guard_stop` and the --dump
+/// body; the right home for it on the wire is an extension FIELD (unknown
+/// fields are ignored by every SDK, cf. vLLM's `stop_reason`), which is
+/// follow-up work, not a reason to keep lying in the enum.
 fn guard_stop_wire_reason(guard: &'static str) -> &'static str {
     match guard {
         // Defensive: the deadline guard is intercepted before the
         // token-derived checks (see `derive_finish_reason`), so this arm
         // is normally unreachable — kept so the mapping is total.
         GUARD_STOP_REQUEST_TIMEOUT => crate::ir::FINISH_REASON_TIMEOUT,
-        _ => "stop",
+        _ => "length",
     }
 }
 
 /// Derive the wire finish reason for a completed sequence.
 ///
-/// INVARIANT: `"length"` means exactly "the token budget was exhausted" —
-/// the `max_tokens` countdown (`remaining == 0`) or the served context
-/// ceiling — decided by `helpers::hard_ceiling_hit`, the same predicate
-/// that force-stops decode. It is NOT a fallback. OpenAI's contract
-/// (mirrored by vLLM/SGLang/TGI/llama.cpp) is that `"length"` tells the
-/// client "raise the limit / continue and retry"; reporting it for a
-/// guard-cut or client-cancelled response sends agent clients (aider,
-/// opencode, hermes-agent) into retries that re-trigger the same cut
+/// INVARIANT: `"length"` means "the SERVER ended the response with the
+/// model unfinished" — the token budget was exhausted (`hard_ceiling_hit`:
+/// the `max_tokens` countdown or the served context ceiling) OR a guard
+/// cut it short. `"stop"` means the MODEL finished: it sampled EOS or a
+/// stop sequence. That is the distinction clients act on, and it is the
+/// one worth keeping exact.
+///
+/// It is still NOT a catch-all. The bug this replaced derived `"length"`
+/// from "the last token wasn't EOS", which swept in stop-string matches,
+/// client cancels and early finalizes — none of which are truncations
 /// (observed live: `Done: 573 tokens (length)` under max_new_tokens=1024).
+/// Those now correctly report `"stop"`; only budget exhaustion and guard
+/// cuts report `"length"`.
 ///
 /// Precedence:
 ///   1. the server-side deadline → `"timeout"` — a truncation must never
