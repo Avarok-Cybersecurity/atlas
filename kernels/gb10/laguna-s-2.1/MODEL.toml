@@ -120,3 +120,77 @@ hidden_size = 3072
 
 [kernel]
 moe_gate_shmem_bytes = 6144
+
+# Harvested 2026-08-09 from `spark serve --check-kernels` (35 lookups) on the
+# post-#388 fail-closed audit. All are try_kernel() probes; every fallback
+# path the dispatch reaches resolves on this target (this checkpoint served
+# at full speed on the pre-audit builds these probes were written against).
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
+E8M0-scale twin; forward_k2/k3 gate on handle != 0 plus the checkpoint's
+scale format, and fall back to the non-e8m0 ptrtable kernels compiled in
+this target's own moe_w4a16_grouped_gemm.cu. Laguna ships FP8 scales,
+never E8M0."""
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same family — transposed twin; non-e8m0 sibling resolves here."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same family — k64 twin; non-e8m0 sibling resolves here."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same family — fused gate/up twin; non-e8m0 sibling resolves here."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same family — fused k64 twin; non-e8m0 sibling resolves here."
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FP4-scale twin of the fused k64 kernel; scale-format-gated like the e8m0 twins; the plain sibling resolves from this target's moe_w4a16_grouped_gemm.cu."
+moe_w4a16_down_t_k64_fp4 = "FP4-scale down-projection twin; scale-format-gated; plain sibling resolves here."
+
+
+[expected_absent.nvfp4_mmq]
+atlas_nvfp4_mmq128_nc = """
+Keep-packed NVFP4 MMQ family (dense-FFN prefill for runtime-quantized
+GGUF/BF16 checkpoints). DenseFfnLayer probes the whole family and gates
+every dispatch on handle != 0; Laguna's single dense FFN (layer 0) loads
+from safetensors NVFP4 and takes the w4a16/dense arms, which resolve from
+this target's own w4a16_gemm.cu. UNMEASURED here — candidate, not loss."""
+atlas_nvfp4_mmq128_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq16_nc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq16_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq32_nc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq32_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq64_nc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq64_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_quantize_bf16 = "MMQ-family activation quantizer; only reached from the MMQ arms above."
+atlas_nvfp4_repack = "MMQ-family weight repacker; only reached from the MMQ arms above."
+atlas_nvfp4_scale_bf16 = "MMQ-family scale conversion; only reached from the MMQ arms above."
+atlas_nvfp4_silu_mul_quant = "MMQ-family fused epilogue; only reached from the MMQ arms above."
+atlas_nvfp4_silu_mul_scaled = "MMQ-family fused epilogue; only reached from the MMQ arms above."
+
+[expected_absent.w4a16]
+int8_gemm_faith2 = "Int8 requant experiment probed by dense_ffn; handle-gated, w4a16 arm resolves."
+int8_gemm_i32acc = "Same family; handle-gated."
+requant_a_bf16_int8 = "Same family — activation requant; only reached from the int8 arms above."
+requant_w_nvfp4_int8 = "Same family — weight requant; only reached from the int8 arms above."
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+dense_ffn probes it, falls back to w4a16_gemm_t (resolves from this
+target's w4a16_gemm.cu). UNMEASURED for this target — candidate, not
+loss."""
+w4a16_gemm_t_k64_p3 = "Same family; falls back to the resolved w4a16_gemm_t_k64."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; qwen3_attention::init returns 0-handle, dispatch gates on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; handle-gated, falls back through the resolved w4a16 path."
+w4a16_gemm_t_m128_bf16_v2 = "Same family — v2 twin; handle-gated."
+
+[expected_absent.w4a4]
+w4a4_gemm = """
+Direct FP4-activation GEMM probed by dense_ffn; opt-in path
+(ATLAS_ATTN_W4A4-family), handle-gated, never default-dispatched."""
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b. qwen3_attention::init
+probes it; opt-in, handle-gated. UNMEASURED."""
+
+[expected_absent.q4k_mmq]
+atlas_q4k_mmq128_nc = """
+Q4_K keep-packed MMQ (dense-FFN prefill for GGUF Q4_K checkpoints).
+DenseFfnLayer probes the family and gates every dispatch on handle != 0;
+a safetensors NVFP4 checkpoint never installs packed-Q4K weights, so the
+arm is unreachable here."""
+atlas_q4k_mmq128_wc = "Same family — unreachable without packed-Q4K weights."
+atlas_q8_1_quantize_ds4_bf16 = "MMQ-family activation quantizer; only reached from the Q4K MMQ arms above."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K runtime quantizer probed by dense_ffn for GGUF paths; handle-gated, unreachable here."
