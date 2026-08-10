@@ -38,6 +38,21 @@ impl TransformerModel {
         kv_cache: &mut PagedKvCache,
         stream: u64,
     ) -> Result<AttnMetadataDev> {
+        // Fixed-stride metadata gaps, DERIVED from the serve max_batch_size
+        // (`buffers.decode_meta()`, rows = max(32, bs)): positions u32
+        // [0,4R), LoRA seq_slot [4R,8R), slots i64 [8R,16R), seq_lens
+        // [16R,20R), block table at +24R with R rows. At R=32 this is the
+        // legacy 0/128/256/512/768 layout byte-for-byte, so every bs<=32
+        // boot is byte-identical. padded_n above R would silently corrupt
+        // the slots region — the derived ceiling check keeps aacd29cb's
+        // safety intent.
+        let lay = self.buffers.decode_meta();
+        anyhow::ensure!(
+            padded_n <= lay.rows(),
+            "upload_batch_metadata_fixed: padded_n={padded_n} exceeds the {}-row \
+             derived metadata layout (rows = max(32, --max-batch-size))",
+            lay.rows()
+        );
         let n = seqs.len();
         let block_size = kv_cache.block_size();
         let max_blocks = self.max_blocks_per_seq;
@@ -106,27 +121,25 @@ impl TransformerModel {
 
         self.gpu.copy_h2d_async(&pos_bytes, meta_base, stream)?;
         self.gpu
-            .copy_h2d_async(&slot_bytes, meta_base.offset(256), stream)?;
+            .copy_h2d_async(&slot_bytes, meta_base.offset(lay.slots_off()), stream)?;
         self.gpu
-            .copy_h2d_async(&sl_bytes, meta_base.offset(512), stream)?;
+            .copy_h2d_async(&sl_bytes, meta_base.offset(lay.seq_lens_off()), stream)?;
         self.gpu
-            .copy_h2d_async(&bt_bytes, meta_base.offset(768), stream)?;
+            .copy_h2d_async(&bt_bytes, meta_base.offset(lay.block_table_off()), stream)?;
 
-        // M2 per-request LoRA routing: upload the per-seq adapter-slot buffer to
-        // the metadata gap at meta_base+128. With moe_row_adapter relocated to its
-        // own buffer, seq_slot owns the full +128..+256 i32 range (32 rows);
-        // positions occupy +0..+128 and slots begin at +256 — so +128 never
-        // overlaps up to padded_n=32. Fixed address, per-step contents →
-        // graph-safe. `DevicePtr(0)` when no adapter is resident (the bgmv apply
-        // sites then no-op).
-        let seq_slot = self.upload_seq_slots(seqs, padded_n, meta_base.offset(128), stream)?;
+        // M2 per-request LoRA routing: upload the per-seq adapter-slot buffer
+        // to the dedicated gap at meta_base+seq_slot_off (positions occupy
+        // [0,4R) exactly; slots begin at 8R — never overlaps by construction).
+        // Fixed address, per-step contents → graph-safe. `DevicePtr(0)` when
+        // no adapter is resident (the bgmv apply sites then no-op).
+        let seq_slot =
+            self.upload_seq_slots(seqs, padded_n, meta_base.offset(lay.seq_slot_off()), stream)?;
         // SOLID Incr-4: the batched-decode MoE per-row fold map, in its own
-        // dedicated persistent buffer `self.moe_row_adapter_buf` (alloc'd once at
-        // init — NO LONGER the +160 metadata gap, which frees seq_slot to reclaim
-        // +128..+256 and lifts the concurrent-LoRA decode cap from 8 to 32). Fixed
-        // address, per-step contents → graph-safe + route-agnostic. `DevicePtr(0)`
-        // when no adapter is resident (the MoE fold hooks then take the
-        // request-granularity gate). Distinct from `seq_slot` (MoE `-1 = base`).
+        // dedicated persistent buffer `self.moe_row_adapter_buf` (alloc'd once
+        // at init — NOT a metadata gap, so it composes with the derived
+        // MetaLayout untouched). Fixed address, per-step contents → graph-safe
+        // + route-agnostic. `DevicePtr(0)` when no adapter is resident (the MoE
+        // fold hooks then take the request-granularity gate).
         let moe_row_adapter =
             self.upload_moe_row_adapter(seqs, padded_n, self.moe_row_adapter_buf, stream)?;
 
@@ -134,9 +147,9 @@ impl TransformerModel {
             positions: meta_base,
             positions_h: meta_base,
             positions_w: meta_base,
-            slot: meta_base.offset(256),
-            seq_len: meta_base.offset(512),
-            block_table: meta_base.offset(768),
+            slot: meta_base.offset(lay.slots_off()),
+            seq_len: meta_base.offset(lay.seq_lens_off()),
+            block_table: meta_base.offset(lay.block_table_off()),
             max_blocks_per_seq: max_blocks,
             num_seqs: padded_n as u32,
             seq_slot,
@@ -274,9 +287,10 @@ impl TransformerModel {
 
     /// Upload batch metadata to a caller-specified device address.
     ///
-    /// Same layout as `upload_batch_metadata_fixed` (positions at +0, slots
-    /// at +256, seq_lens at +512, block_table at +768) but writes to
-    /// `meta_base` instead of the hardcoded `scratch+32768`. Used by the
+    /// Same DERIVED layout as `upload_batch_metadata_fixed` (positions at +0,
+    /// slots at +8R, seq_lens at +16R, block_table at +24R; R = decode-meta
+    /// rows) but writes to `meta_base` instead of the hardcoded
+    /// `scratch+32768`. Used by the
     /// fused `mixed_forward` to place decode metadata at a non-conflicting
     /// offset within the scratch buffer.
     pub(super) fn upload_batch_metadata_at(
@@ -290,6 +304,15 @@ impl TransformerModel {
         let n = seqs.len();
         let block_size = kv_cache.block_size();
         let max_blocks = self.max_blocks_per_seq;
+
+        // Same derived layout + ceiling as upload_batch_metadata_fixed.
+        let lay = self.buffers.decode_meta();
+        anyhow::ensure!(
+            padded_n <= lay.rows(),
+            "upload_batch_metadata_at: padded_n={padded_n} exceeds the {}-row \
+             derived metadata layout (rows = max(32, --max-batch-size))",
+            lay.rows()
+        );
 
         let mut positions = Vec::with_capacity(padded_n);
         let mut slots = Vec::with_capacity(padded_n);
@@ -338,16 +361,18 @@ impl TransformerModel {
 
         self.gpu.copy_h2d_async(&pos_bytes, meta_base, stream)?;
         self.gpu
-            .copy_h2d_async(&slot_bytes, meta_base.offset(256), stream)?;
+            .copy_h2d_async(&slot_bytes, meta_base.offset(lay.slots_off()), stream)?;
         self.gpu
-            .copy_h2d_async(&sl_bytes, meta_base.offset(512), stream)?;
+            .copy_h2d_async(&sl_bytes, meta_base.offset(lay.seq_lens_off()), stream)?;
         self.gpu
-            .copy_h2d_async(&bt_bytes, meta_base.offset(768), stream)?;
+            .copy_h2d_async(&bt_bytes, meta_base.offset(lay.block_table_off()), stream)?;
 
-        // Per-request routing slots at the +128 gap (see upload_batch_metadata_fixed).
-        let seq_slot = self.upload_seq_slots(seqs, padded_n, meta_base.offset(128), stream)?;
+        // Per-request routing slots at the derived seq_slot gap (see
+        // upload_batch_metadata_fixed).
+        let seq_slot =
+            self.upload_seq_slots(seqs, padded_n, meta_base.offset(lay.seq_slot_off()), stream)?;
         // SOLID Incr-4 batched-decode MoE per-row fold map in the dedicated
-        // moe_row_adapter_buf (fixed address, not the +160 gap).
+        // moe_row_adapter_buf (fixed address, not a metadata gap).
         let moe_row_adapter =
             self.upload_moe_row_adapter(seqs, padded_n, self.moe_row_adapter_buf, stream)?;
 
@@ -355,9 +380,9 @@ impl TransformerModel {
             positions: meta_base,
             positions_h: meta_base,
             positions_w: meta_base,
-            slot: meta_base.offset(256),
-            seq_len: meta_base.offset(512),
-            block_table: meta_base.offset(768),
+            slot: meta_base.offset(lay.slots_off()),
+            seq_len: meta_base.offset(lay.seq_lens_off()),
+            block_table: meta_base.offset(lay.block_table_off()),
             max_blocks_per_seq: max_blocks,
             num_seqs: padded_n as u32,
             seq_slot,
@@ -424,6 +449,10 @@ impl TransformerModel {
                 buffers: ctx.buffers,
                 gpu: ctx.gpu,
                 config: ctx.config,
+                dispatch: ctx.dispatch,
+                derived: ctx.derived,
+                levers: ctx.levers,
+                stats: ctx.stats,
                 attn_metadata: ctx.attn_metadata,
                 profile: false,
                 comm: ctx.comm,
@@ -571,6 +600,7 @@ impl TransformerModel {
             self.prefix_cache.as_ref(),
             self.gpu.as_ref(),
             stream,
+            self.levers.kv_poison,
         )?;
 
         let meta_base = self.buffers.scratch().offset(32768);
@@ -592,6 +622,11 @@ impl TransformerModel {
             .copy_h2d_async(&actual_seq_len.to_le_bytes(), meta_base.offset(16), stream)?;
 
         let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+        // SAFETY: the length is read back off `bt_i32` itself, so the span is
+        // exactly `bt_i32.len() * size_of::<i32>()` bytes. `collect()` on the line
+        // above initialises every one of those elements (a `collect` Vec has
+        // len == the number of items yielded, never a with_capacity gap), and
+        // `bt_i32` is only ever shared-borrowed here.
         let bt_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4) };
         self.gpu
@@ -623,6 +658,10 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(attn_metadata),
             profile: false,
             comm: self.comm_ref(),

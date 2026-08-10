@@ -92,6 +92,7 @@ pub(crate) async fn run_chat_stream(
     req_return_token_ids: bool,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
+    active_guard: crate::metrics::ActiveRequestGuard,
 ) -> Result<crate::ir::DeltaStream, (StatusCode, String)> {
     // Channel capacity sized for ~30s of decode at 50 tok/s. The previous
     // 64-slot buffer would fill in <2s under any HTTP-flush stall and silently
@@ -231,6 +232,7 @@ pub(crate) async fn run_chat_stream(
         grammar_spec: grammar_spec_for_retry,
         max_tokens,
         timeout_at,
+        _active_guard: active_guard,
     };
 
     let mut stream_state = StreamState::new(

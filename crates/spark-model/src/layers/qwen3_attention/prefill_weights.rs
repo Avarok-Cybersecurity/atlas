@@ -19,6 +19,7 @@ impl Qwen3AttentionLayer {
     pub(crate) fn w4a16_gemm_m128_dispatch(
         &self,
         gpu: &dyn GpuBackend,
+        dispatch: &crate::layers::ops::GemmDispatch,
         input: DevicePtr,
         weight: &crate::weight_map::QuantizedWeight,
         output: DevicePtr,
@@ -27,26 +28,20 @@ impl Qwen3AttentionLayer {
         k: u32,
         stream: u64,
     ) -> anyhow::Result<()> {
-        // ATLAS_W4A16_VARIANT env: "v1", "v2", "v3" — overrides auto.
-        // Default: v2 (3 CTAs/SM, 8 warps). v3 (K_STEP=64, 1 CTA/SM) is
-        // slower in practice; keep it available for A/B but don't default.
-        static VARIANT: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-        let v =
-            *VARIANT.get_or_init(
-                || match std::env::var("ATLAS_W4A16_VARIANT").ok().as_deref() {
-                    Some("v1") => 1,
-                    Some("v2") => 2,
-                    Some("v3") => 3,
-                    _ => 0, // auto (prefer v2)
-                },
-            );
+        // ATLAS_W4A16_VARIANT: "v1"/"v2"/"v3" pin a kernel; 0 = auto (v2 — 3
+        // CTAs/SM, 8 warps; v3 with K_STEP=64 is slower in practice, kept for
+        // A/B). Resolved once per model into `GemmDispatch`, which the forward
+        // pass already carries.
+        let v = dispatch.w4a16_variant;
         // LOSSLESS opt-in: route QKV/o projection prefill through the BF16-TC
         // kernel (FP4→BF16 dequant + BF16 MMA, bit-identical to base w4a16_gemm)
         // instead of the default t_m128 which crushes activations to FP8 E4M3.
         // Gated by ATLAS_BF16_TC_PROJ (default off → unchanged). Removes the
         // FP8 prefill perturbation on the attention projections.
-        static BF16_PROJ: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let bf16_proj = *BF16_PROJ.get_or_init(|| std::env::var_os("ATLAS_BF16_TC_PROJ").is_some());
+        // Load-time weight prep runs before any `TransformerModel` exists to
+        // carry the levers, so this resolves at the point of use. The
+        // interpretation stays SSOT in `ModelLevers`.
+        let bf16_proj = crate::layers::ops::ModelLevers::from_env().bf16_tc_proj;
         if bf16_proj && self.w4a16_gemm_t_m128_bf16_k.0 != 0 {
             return crate::layers::ops::w4a16_gemm_n128_m128_bf16(
                 gpu,
@@ -114,6 +109,12 @@ impl Qwen3AttentionLayer {
         self.o_nvfp4_t = o_nvfp4_t;
     }
 
+    /// Install the fused [q|k|v] transposed twin. Separate from
+    /// `set_prefill_weights` so the fused path is opt-in per loader and the
+    /// separate twins stay available as the fallback.
+    pub fn set_fused_qkv_prefill_weight(&mut self, qkv_nvfp4_t: Option<QuantizedWeight>) {
+        self.qkv_nvfp4_t = qkv_nvfp4_t;
+    }
     /// Set native FP8 checkpoint weights for the `w8a16_gemv` decode path.
     ///
     /// The block-scaled FP8 weights stored here (weight + per-128 `row_scale`)
@@ -196,7 +197,11 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> anyhow::Result<()> {
-        if crate::layers::ops::cutlass_nvfp4_gemm_enabled() {
+        // Load-time decision, taken in the weight loader before any
+        // `TransformerModel` exists to carry the config. Resolved at the point
+        // of use rather than cached in a static: the resolution logic stays
+        // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
+        if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
             tracing::info!(
                 "Skipping attention FP8 prefill transposes because ATLAS_CUTLASS_NVFP4_GEMM=1"
             );
@@ -240,7 +245,11 @@ impl Qwen3AttentionLayer {
         // them (decode attention uses its own weights), so they'd be allocated
         // at load and never used. Skip them — saves ~260MB and a wasted per-
         // prefill BF16->FP8 activation conversion. Mirrors transpose_fp8_for_prefill.
-        if crate::layers::ops::cutlass_nvfp4_gemm_enabled() {
+        // Load-time decision, taken in the weight loader before any
+        // `TransformerModel` exists to carry the config. Resolved at the point
+        // of use rather than cached in a static: the resolution logic stays
+        // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
+        if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
             tracing::info!(
                 "Skipping attention FP8 prefill predequant because ATLAS_CUTLASS_NVFP4_GEMM=1"
             );

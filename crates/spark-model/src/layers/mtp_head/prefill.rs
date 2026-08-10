@@ -96,14 +96,18 @@ impl MtpHead {
                 (fc, k, v)
             }
             _ => {
-                static WARNED: std::sync::Once = std::sync::Once::new();
-                WARNED.call_once(|| {
+                // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+                // value — the message is rebuilt from the arguments every call — so a
+                // stale entry cannot produce a wrong answer, only a suppressed duplicate
+                // line after a model swap. Scoping it would thread a logging concern
+                // through the call path to prevent one repeated INFO line.
+                if ctx.stats.once("log:mtp_prefill_unsupported") {
                     tracing::warn!(
                         "MTP drafter context: the batched drafter prefill supports \
                          the BF16 MTP head (--mtp-quantization bf16) with BF16 KV \
                          only; continuing WITHOUT drafter context prefill."
                     );
-                });
+                }
                 return Ok(0);
             }
         };
@@ -277,6 +281,11 @@ impl MtpHead {
             // 6. RoPE positions pos_base+r and KV slots row_base+r, uploaded
             //    per chunk (decoupled — see fn docs).
             let positions: Vec<u32> = (0..c).map(|r| (pos_base + done + r) as u32).collect();
+            // SAFETY: `positions` is `(0..c).map(..).collect()`, so its len is exactly
+            // `c` and all `c` elements are initialised — `collect` on an ExactSizeIterator
+            // yields len == item count, never a `with_capacity` gap. `c * 4 ==
+            // positions.len() * size_of::<u32>()`, so the span is exactly the Vec's
+            // buffer. Shared borrow only.
             let pos_bytes =
                 unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, c * 4) };
             ctx.gpu.copy_h2d_async(pos_bytes, scratch.pos_dev, stream)?;
@@ -286,6 +295,10 @@ impl MtpHead {
                     (mtp_state.block_table[i / bs] as i64) * (bs as i64) + (i % bs) as i64
                 })
                 .collect();
+            // SAFETY: `slots` is `(0..c).map(..).collect::<Vec<i64>>()`, so its len is
+            // exactly `c` with all `c` elements initialised, and `c * 8 ==
+            // slots.len() * size_of::<i64>()` — the span is exactly the Vec's buffer.
+            // Shared borrow only.
             let slot_bytes =
                 unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, c * 8) };
             ctx.gpu

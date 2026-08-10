@@ -4,13 +4,14 @@
 
 use super::*;
 
+// The AtomicU64 counters that lived here are now `SchedCtx::stats`
+// (`scheduler::spec_stats::SpecStats`), so a run's acceptance rate describes
+// the model that produced it rather than blending two across a swap.
+
 // Periodic accept-distribution summary (P4, 2026-05-24). K=3 has
 // three outcomes (0/1/2 drafts accepted) so we track three counters
 // and emit a summary line every K3_SUMMARY_PERIOD verify steps.
 const K3_SUMMARY_PERIOD: u64 = 100;
-static K3_ACCEPT_2: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K3_ACCEPT_1: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K3_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // UNCONDITIONAL per-position draft-match counters (2026-07-21).
 //
@@ -29,30 +30,59 @@ static K3_ACCEPT_0: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 // target's argmax GIVEN `drafts[0]` as the preceding token, so when draft 1
 // was wrong this measures the drafter on a counterfactual context — which is
 // exactly the comparison we want (same position, unbiased sample of contexts).
-static K3_STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K3_D1_MATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K3_D2_MATCH_UNCOND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K3_D2_MATCH_COND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[inline]
-fn k3_record_positional(d1_match: bool, d2_match: bool, seq_len: usize) {
-    K3_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+fn k3_record_positional(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    d1_match: bool,
+    d2_match: bool,
+    seq_len: usize,
+) {
+    sched
+        .stats
+        .k3_steps
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if d1_match {
-        K3_D1_MATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        sched
+            .stats
+            .k3_d1_match
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if d2_match {
-            K3_D2_MATCH_COND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            sched
+                .stats
+                .k3_d2_match_cond
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
     if d2_match {
-        K3_D2_MATCH_UNCOND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        sched
+            .stats
+            .k3_d2_match_uncond
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    if K3_STEPS.load(std::sync::atomic::Ordering::Relaxed) >= K3_SUMMARY_PERIOD {
-        let steps = K3_STEPS
+    if sched
+        .stats
+        .k3_steps
+        .load(std::sync::atomic::Ordering::Relaxed)
+        >= K3_SUMMARY_PERIOD
+    {
+        let steps = sched
+            .stats
+            .k3_steps
             .swap(0, std::sync::atomic::Ordering::Relaxed)
             .max(1);
-        let d1 = K3_D1_MATCH.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d2u = K3_D2_MATCH_UNCOND.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d2c = K3_D2_MATCH_COND.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d1 = sched
+            .stats
+            .k3_d1_match
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2u = sched
+            .stats
+            .k3_d2_match_uncond
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let d2c = sched
+            .stats
+            .k3_d2_match_cond
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
         let p1 = (d1 as f64) / (steps as f64);
         let p2_uncond = (d2u as f64) / (steps as f64);
         let p2_cond = if d1 > 0 {
@@ -70,20 +100,24 @@ fn k3_record_positional(d1_match: bool, d2_match: bool, seq_len: usize) {
 }
 
 #[inline]
-fn k3_record_outcome(num_accepted: usize, seq_len: usize) {
+fn k3_record_outcome(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    num_accepted: usize,
+    seq_len: usize,
+) {
     let counter = match num_accepted {
-        2 => &K3_ACCEPT_2,
-        1 => &K3_ACCEPT_1,
-        _ => &K3_ACCEPT_0,
+        2 => &sched.stats.k3_accept[2],
+        1 => &sched.stats.k3_accept[1],
+        _ => &sched.stats.k3_accept[0],
     };
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let total = K3_ACCEPT_2.load(std::sync::atomic::Ordering::Relaxed)
-        + K3_ACCEPT_1.load(std::sync::atomic::Ordering::Relaxed)
-        + K3_ACCEPT_0.load(std::sync::atomic::Ordering::Relaxed);
+    let total = sched.stats.k3_accept[2].load(std::sync::atomic::Ordering::Relaxed)
+        + sched.stats.k3_accept[1].load(std::sync::atomic::Ordering::Relaxed)
+        + sched.stats.k3_accept[0].load(std::sync::atomic::Ordering::Relaxed);
     if total >= K3_SUMMARY_PERIOD {
-        let a2 = K3_ACCEPT_2.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a1 = K3_ACCEPT_1.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a0 = K3_ACCEPT_0.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a2 = sched.stats.k3_accept[2].swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a1 = sched.stats.k3_accept[1].swap(0, std::sync::atomic::Ordering::Relaxed);
+        let a0 = sched.stats.k3_accept[0].swap(0, std::sync::atomic::Ordering::Relaxed);
         let total = (a2 + a1 + a0).max(1);
         let mean = (2 * a2 + a1) as f64 / total as f64;
         tracing::info!(
@@ -100,6 +134,7 @@ fn k3_record_outcome(num_accepted: usize, seq_len: usize) {
 pub fn step_verify_k3(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
@@ -160,9 +195,7 @@ pub fn step_verify_k3(
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
 
-    let (v0, v1, v2) = if dflash_verify_raw_argmax
-        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
-    {
+    let (v0, v1, v2) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
         // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD)
         // basis so verifier/drafter judge identically. No rep_pen/DRY here.
         (v0_argmax, v1_argmax, v2_argmax)
@@ -173,6 +206,7 @@ pub fn step_verify_k3(
             &[v0_argmax, v1_argmax, v2_argmax],
             a,
             verify_ctx,
+            0,
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),
@@ -192,7 +226,7 @@ pub fn step_verify_k3(
     // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
     // `base` is seq_len at step entry = the propose-time position of draft 0.
-    if spark_model::speculative::shadow_topk() > 0 {
+    if sched.levers.shadow_topk > 0 {
         tracing::info!(
             "SHADOW_TGT base={shadow_base} v=[{v0},{v1},{v2}] drafts=[{},{}]",
             drafts[0],
@@ -203,7 +237,7 @@ pub fn step_verify_k3(
     // Unconditional per-position draft match — scored BEFORE the accept chain
     // short-circuits, so position 2 is measured on every step, not only on the
     // steps where position 1 happened to succeed.
-    k3_record_positional(drafts[0] == v0, drafts[1] == v1, a.seq.seq_len);
+    k3_record_positional(sched, drafts[0] == v0, drafts[1] == v1, a.seq.seq_len);
 
     // ATLAS_MTP_REFEED_ACCEPTED: ring the TARGET's true hidden for every
     // accepted position so the next propose's catch-up feed can rebuild the
@@ -257,7 +291,7 @@ pub fn step_verify_k3(
 
     // Extract logprobs from verify logits buffer (K=3 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
-        extract_verify_logprobs(model, &[v0, v1, v2], top_logprobs)
+        extract_verify_logprobs(model, &[v0, v1, v2], top_logprobs, 0)
     } else {
         Vec::new()
     };
@@ -283,12 +317,12 @@ pub fn step_verify_k3(
     );
 
     if num_accepted == 2 {
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
         if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned());
+            emit_token(a, drafts[1], verify_lps.get(1).cloned(), sched);
         }
         if !a.finished {
-            emit_token(a, v2, verify_lps.get(2).cloned());
+            emit_token(a, v2, verify_lps.get(2).cloned(), sched);
         }
         if a.finished {
             return;
@@ -332,7 +366,7 @@ pub fn step_verify_k3(
             "K3 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k3_record_outcome(2, a.seq.seq_len);
+        k3_record_outcome(sched, 2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
@@ -346,9 +380,9 @@ pub fn step_verify_k3(
             a.finished = true;
             return;
         }
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
         if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned());
+            emit_token(a, v1, verify_lps.get(1).cloned(), sched);
         }
         if a.finished {
             return;
@@ -379,7 +413,7 @@ pub fn step_verify_k3(
             "K3 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k3_record_outcome(1, a.seq.seq_len);
+        k3_record_outcome(sched, 1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
@@ -394,7 +428,7 @@ pub fn step_verify_k3(
             a.finished = true;
             return;
         }
-        emit_token(a, v0, verify_lps.first().cloned());
+        emit_token(a, v0, verify_lps.first().cloned(), sched);
         if a.finished {
             return;
         }
@@ -424,6 +458,6 @@ pub fn step_verify_k3(
             "K3 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k3_record_outcome(0, a.seq.seq_len);
+        k3_record_outcome(sched, 0, a.seq.seq_len);
     }
 }

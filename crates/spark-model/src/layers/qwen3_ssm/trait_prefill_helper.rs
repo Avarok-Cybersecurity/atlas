@@ -58,12 +58,12 @@ impl Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
-        if ops::cutlass_nvfp4_ssm_out_enabled()
+        if ctx.dispatch.cutlass_nvfp4_ssm_out
             && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
         {
-            ops::log_cutlass_nvfp4_route("ssm_out_nvfp4", k, h as u32, value_dim as u32);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "ssm_out_nvfp4", k, h as u32, value_dim as u32);
             ops::cutlass_nvfp4_proj(
-                ctx.gpu,
+                ctx,
                 normed_out_buf,
                 nvfp4_t,
                 out_proj_buf,
@@ -72,12 +72,12 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )
-        } else if ops::cutlass_nvfp4_ssm_out_enabled()
+        } else if ctx.dispatch.cutlass_nvfp4_ssm_out
             && let Some(ref fp8w) = self.out_proj_fp8w
         {
-            ops::log_cutlass_nvfp4_route("ssm_out_fp8pack", k, h as u32, value_dim as u32);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "ssm_out_fp8pack", k, h as u32, value_dim as u32);
             ops::cutlass_nvfp4_proj_from_fp8(
-                ctx.gpu,
+                ctx,
                 normed_out_buf,
                 fp8w,
                 out_proj_buf,

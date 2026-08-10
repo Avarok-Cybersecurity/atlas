@@ -45,6 +45,11 @@ impl TransformerModel {
         // instead of chunk_len individual D2D copies.
         {
             let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
+            // SAFETY: `chunk_tokens` is sliced on the line above with an END
+            // bound of `chunk_start + chunk_len`, so its length IS `chunk_len`
+            // (an out-of-range chunk panics in that slice index first) and the
+            // byte length is `chunk_tokens.len() * size_of::<u32>()` over a live
+            // `&[u32]`.
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(chunk_tokens.as_ptr() as *const u8, chunk_len * 4)
             };

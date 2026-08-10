@@ -1,6 +1,6 @@
 [package]
 name = "spark-storage"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas: high-speed NVMe-backed KV cache offload (cuFile/GDS + io_uring)"
@@ -19,6 +19,11 @@ metal = []
 
 [dependencies]
 cufile-sys = { path = "../cufile-sys" }
+# Only for `atlas_core::safetensors` — the shared `data_offsets` validation the
+# weight-peer manifest builder and `spark_runtime::fast_weights` must agree on.
+# `default-features = false` drops atlas-core's cuda default so a lean
+# (non-CUDA) peer build doesn't pull cudarc in through this edge.
+atlas-core = { workspace = true, default-features = false }
 atlas-tier = { workspace = true }
 atlas-rdma = { workspace = true }
 # Only for the cuda-gated RDMA weight loader (see the `cuda` feature note). The

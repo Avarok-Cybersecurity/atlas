@@ -90,6 +90,7 @@ impl TransformerModel {
                 self.prefix_cache.as_ref(),
                 self.gpu.as_ref(),
                 stream,
+                self.levers.kv_poison,
             )?;
         }
 
@@ -99,6 +100,11 @@ impl TransformerModel {
 
         // Positions: [seq_len, seq_len+1, ..., seq_len+m-1]
         let positions: Vec<u32> = (0..m).map(|t| (seq.seq_len + t) as u32).collect();
+        // SAFETY: `positions` is `(0..m).map(..).collect()` on the line above,
+        // so `positions.len() == m` exactly and `m * 4 == size_of_val(&
+        // positions[..])`. `m` is `tokens.len()` (line 63), not an
+        // independently-derived count, so the two cannot drift. All `m`
+        // elements are written by the collect; `u32` is POD.
         let pos_bytes =
             unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, m * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
@@ -112,6 +118,10 @@ impl TransformerModel {
             let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
+        // SAFETY: `slots` is `vec![0i64; m]`, so its LEN (not just capacity)
+        // is `m` and every element is zero-initialised before the `for t in
+        // 0..m` loop overwrites it — `m * 8 == size_of_val(&slots[..])`, with
+        // no read past `len` into uninitialised spare capacity.
         let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, m * 8) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
@@ -119,6 +129,10 @@ impl TransformerModel {
         // Seq-lens for multi-seq attention (staggered: row t sees seq_len+t
         // prior keys). Mirrors verify_b.rs / verify_c.rs convention.
         let seq_lens_meta: Vec<i32> = (0..m).map(|t| (seq.seq_len + t + 1) as i32).collect();
+        // SAFETY: `seq_lens_meta` is `(0..m).map(..).collect()` on the line
+        // above, so its len is `m` and `m * 4 == size_of_val(&
+        // seq_lens_meta[..])`; all `m` elements are initialised by the
+        // collect. `i32` is POD.
         let sl_bytes =
             unsafe { std::slice::from_raw_parts(seq_lens_meta.as_ptr() as *const u8, m * 4) };
         self.gpu
@@ -140,6 +154,13 @@ impl TransformerModel {
                 bt_buf[row * mb + j] = block as i32;
             }
         }
+        // SAFETY: `bt_buf.len() == needed` in BOTH arms of the `if needed <=
+        // 1024` above — the stack arm slices `bt_buf_stack[..needed]`, the
+        // heap arm is `vec![0i32; needed]` whose LEN (not just capacity) is
+        // `needed`. So `needed * 4 == size_of_val(bt_buf)`; the read never
+        // reaches a `Vec`'s uninitialised spare capacity. Both arms are
+        // zero-initialised before the `for row in 0..m` fill, so every byte
+        // is initialised even when `block_table.len() < mb`.
         let bt_bytes =
             unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu
@@ -179,7 +200,7 @@ impl TransformerModel {
 
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
-        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
@@ -191,6 +212,10 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),

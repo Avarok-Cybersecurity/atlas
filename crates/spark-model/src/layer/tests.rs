@@ -18,6 +18,7 @@ fn test_ssm_layer_state_downcast() {
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        h_is_f16: false,
     });
     let ssm = state.as_any().downcast_ref::<SsmLayerState>().unwrap();
     assert_eq!(ssm.h_state.0, 0x1000);
@@ -33,6 +34,7 @@ fn test_ssm_layer_state_mut() {
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        h_is_f16: false,
     });
     let ssm = state.as_any_mut().downcast_mut::<SsmLayerState>().unwrap();
     ssm.h_state = DevicePtr(0x3000);
@@ -45,9 +47,19 @@ fn test_forward_context_lifetime() {
 
     let config = ModelConfig::qwen3_next_80b_nvfp4();
     let gpu = MockGpuBackend::new();
-    let buffers = BufferArena::new(&config, 1, 4096, 16, &gpu).unwrap();
+    let buffers = BufferArena::new(&config, 1, 4096, 16, 1, &gpu).unwrap();
 
+    // A test can now state the dispatch it wants instead of mutating the
+    // process environment — the point of carrying it rather than caching it.
+    let dispatch = crate::layers::ops::GemmDispatch::defaults();
+    let derived = crate::layers::ops::DerivedWeights::new();
+    let levers = crate::layers::ops::ModelLevers::defaults();
+    let stats = crate::layers::ops::ModelStats::new();
     let ctx = ForwardContext {
+        dispatch: &dispatch,
+        derived: &derived,
+        levers: &levers,
+        stats: &stats,
         buffers: &buffers,
         gpu: &gpu,
         config: &config,

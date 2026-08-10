@@ -6,23 +6,17 @@
 //! Requires a GPU — skips gracefully if unavailable.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-static RMS_NORM_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-static GATED_RMS_NORM_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-static RESIDUAL_ADD_RMS_NORM_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// RMS norm kernel: rms_norm(input, weight, output, hidden_size, eps)
 /// Grid: (num_tokens, 1, 1)  Block: (min(hidden_size, 1024), 1, 1)
 fn bench_rms_norm(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &RMS_NORM_FN, "norm", "rms_norm");
+    let kernel = gpu::get_kernel(reg, "norm", "rms_norm");
 
     let hidden_size: u32 = 2048;
     let eps: f32 = 1e-6;
@@ -80,7 +74,7 @@ fn bench_rms_norm(c: &mut Criterion) {
 fn bench_gated_rms_norm(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &GATED_RMS_NORM_FN, "norm", "gated_rms_norm");
+    let kernel = gpu::get_kernel(reg, "norm", "gated_rms_norm");
 
     let eps: f32 = 1e-6;
     let batch: u32 = 1;
@@ -149,12 +143,7 @@ fn bench_gated_rms_norm(c: &mut Criterion) {
 fn bench_residual_add_rms_norm(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(
-        reg,
-        &RESIDUAL_ADD_RMS_NORM_FN,
-        "norm",
-        "residual_add_rms_norm",
-    );
+    let kernel = gpu::get_kernel(reg, "norm", "residual_add_rms_norm");
 
     // MiniMax M2.7 hidden=4096 (per-rank under TP=2 = 4096 total since hidden
     // is full-replicated, only attention/MLP weight tiles are sharded).

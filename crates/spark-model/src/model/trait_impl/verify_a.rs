@@ -79,6 +79,7 @@ impl TransformerModel {
                         self.prefix_cache.as_ref(),
                         self.gpu.as_ref(),
                         stream,
+                        self.levers.kv_poison,
                     )?;
 
                     // Upload per-token attention metadata
@@ -103,6 +104,12 @@ impl TransformerModel {
                         stream,
                     )?;
                     let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+                    // SAFETY: the length is derived from the source itself —
+                    // `bt_i32.len() * 4 == size_of_val(&bt_i32[..])` — and
+                    // `bt_i32` is a fresh `collect()` on the line above, so
+                    // all `len` elements are initialised and nothing past
+                    // `len` (the `Vec`'s spare capacity) is read. `i32` is
+                    // POD, and `bt_i32` outlives the H2D enqueue below.
                     let bt_bytes: &[u8] = unsafe {
                         std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4)
                     };
@@ -138,6 +145,10 @@ impl TransformerModel {
                         buffers: &self.buffers,
                         gpu: self.gpu.as_ref(),
                         config: &self.config,
+                        dispatch: &self.dispatch,
+                        derived: &self.derived,
+                        levers: &self.levers,
+                        stats: &self.stats,
                         attn_metadata: Some(attn_metadata),
                         profile: false,
                         comm: self.comm_ref(),
@@ -170,6 +181,10 @@ impl TransformerModel {
                     buffers: &self.buffers,
                     gpu: self.gpu.as_ref(),
                     config: &self.config,
+                    dispatch: &self.dispatch,
+                    derived: &self.derived,
+                    levers: &self.levers,
+                    stats: &self.stats,
                     attn_metadata: None,
                     profile: false,
                     comm: self.comm_ref(),

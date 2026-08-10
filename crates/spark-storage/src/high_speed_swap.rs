@@ -235,6 +235,13 @@ mod impl_more;
 // explicit drop via `take_local`).
 
 use std::cell::RefCell;
+// THREAD-LOCAL, DELIBERATELY. The orchestrator owns HBM allocations bound to
+// ONE thread's CUDA stream, so it is not shareable across threads and cannot
+// be an `Arc` on a shared context. `install_local` is called on the scheduler
+// thread and `with_local` reads it from the per-layer attention code far down
+// the same call stack; the alternative is threading it through every layer
+// signature to reach one thread's own state. Cleanup is thread exit or an
+// explicit `take_local`, which a model teardown calls.
 thread_local! {
     static LOCAL: RefCell<Option<HighSpeedSwap>> = const { RefCell::new(None) };
 }

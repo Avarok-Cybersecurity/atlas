@@ -739,3 +739,29 @@ fn test_parse_nllb_rejects_missing_required_dimension() {
         "{err}"
     );
 }
+
+#[test]
+fn test_num_attention_layers_counts_sliding_attention() {
+    // Step 3.7 is the only model emitting SlidingAttention layer types
+    // (12 full + 33 sliding over 45 hidden layers, pattern: full every 4th).
+    // Sliding-attention layers write the paged KV cache like full-attention
+    // ones, so num_attention_layers() must count both — the KV pool,
+    // attn_layer_dtypes sizing and loader layer_kv_dtypes indexing all rely
+    // on it. Counting full-only undersized the dtype vec and panicked the
+    // Step loader at layer 13 (index out of bounds: len 12, index 12).
+    let mut layer_types = vec![LayerType::SlidingAttention; 45];
+    for full in (0..45).step_by(4) {
+        layer_types[full] = LayerType::FullAttention;
+    }
+    let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    cfg.num_hidden_layers = 45;
+    cfg.layer_types = layer_types;
+
+    assert_eq!(cfg.num_attention_layers(), 45);
+    assert_eq!(cfg.num_ssm_layers(), 0);
+    assert!(!cfg.has_recurrent_state());
+    assert_eq!(cfg.layer_type(0), LayerType::FullAttention);
+    assert_eq!(cfg.layer_type(1), LayerType::SlidingAttention);
+    assert_eq!(cfg.layer_type(43), LayerType::SlidingAttention);
+    assert_eq!(cfg.layer_type(44), LayerType::FullAttention);
+}

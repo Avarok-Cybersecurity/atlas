@@ -6,23 +6,23 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use axum::Router;
 use axum::routing::{get, post};
 
 use crate::anthropic;
 use crate::api;
-use crate::main_modules::AppState;
 use crate::main_modules::middleware::{
     openai_observability_middleware, rate_limit_middleware, require_auth_middleware,
 };
 
 pub(crate) async fn build_and_serve(
-    state: Arc<AppState>,
-    model_ready: Arc<std::sync::atomic::AtomicBool>,
+    host: Arc<crate::main_modules::model_host::ModelHost>,
     bind: &str,
     port: u16,
 ) -> Result<()> {
+    spark_runtime::progress::phase(10, "router");
+    host.set_bound(bind.to_string(), port);
     let cors = tower_http::cors::CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
         .allow_methods([
@@ -104,6 +104,7 @@ pub(crate) async fn build_and_serve(
         .route("/v1/moderations", post(api::moderations_stub))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
+        .route("/hardware", get(api::hardware))
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))
@@ -118,21 +119,26 @@ pub(crate) async fn build_and_serve(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),
         ))
+        // The HOST, not a bound AppState. Binding one here is what deadlocked
+        // the first live swap: the clone kept `request_tx` open, the scheduler
+        // never drained, and the join never returned.
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            host.clone(),
             rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            host.clone(),
             require_auth_middleware,
         ))
         .layer(axum::middleware::from_fn(openai_observability_middleware))
+        .layer(axum::middleware::from_fn(
+            crate::main_modules::byte_count::byte_count_middleware,
+        ))
         .layer(cors)
         .layer(catch_panic)
-        .with_state(state);
+        .with_state(host.clone());
 
     // Model loaded, scheduler running — mark as ready.
-    model_ready.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let addr = format!("{bind}:{port}");
     if bind == "0.0.0.0" {
@@ -153,8 +159,17 @@ pub(crate) async fn build_and_serve(
              --auth-tokens-file for non-trusted networks."
         );
     }
+    // BIND FIRST, then say so. Announcing the address and marking the phase
+    // before the bind meant a port conflict — the most common startup failure,
+    // and likelier now that a previous server may still hold the socket —
+    // printed "Listening on 127.0.0.1:8888" immediately above "Address already
+    // in use", with the dashboard's checklist showing that phase complete.
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
     tracing::info!("Listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    spark_runtime::progress::phase(11, "listening");
+    spark_runtime::progress::ready(port);
     serve_with_header_timeout(listener, app).await
 }
 
@@ -186,8 +201,24 @@ async fn serve_with_header_timeout(
 
     let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
+    // Startup is over: shutdown now means "stop accepting and drain in-flight
+    // requests", so main's startup escape must no longer short-circuit it.
+    crate::tui::shutdown::disarm_startup_escape();
+
     loop {
-        let (socket, peer_addr) = match listener.accept().await {
+        let accepted = tokio::select! {
+            conn = listener.accept() => conn,
+            _ = crate::tui::shutdown::wait() => {
+                // Clean shutdown: stop accepting, give in-flight requests a
+                // bounded grace to finish, then return so `serve()` unwinds
+                // normally (Drop impls: terminal restore, tee flush).
+                crate::tui::shutdown::drain_in_flight(std::time::Duration::from_secs(15)).await;
+                crate::tui::init::flush_tee();
+                tracing::info!("Shutdown complete");
+                return Ok(());
+            }
+        };
+        let (socket, peer_addr) = match accepted {
             Ok(conn) => conn,
             Err(e) => {
                 // Transient accept errors (fd exhaustion, RST races) must not

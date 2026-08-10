@@ -151,8 +151,7 @@ impl TransformerModel {
             // pool tables are load-time-fixed), so decode graphs STAY captured
             // under routing. Equating slots.len()>1 with eager here would throw
             // away the entire point of batched routing.
-            self.lora_rotatable =
-                crate::lora::lora_rotate_env() || crate::lora::lora_peer_env().is_some();
+            self.lora_rotatable = self.levers.lora_rotate || crate::lora::lora_peer_env().is_some();
             let kernels = ops::lora_delta::LoraKernels::new(self.gpu.as_ref())?;
             // Clone the active slot's pairs (small; LoraPair is Copy) so the
             // install walk can hold a shared borrow while it &mut-borrows
@@ -397,8 +396,9 @@ impl TransformerModel {
             "batch_decode_graph",
             self.batch_decode_graphs
                 .lock()
+                .0
                 .drain()
-                .map(|(_, g)| g)
+                .map(|(_, (g, _))| g)
                 .collect(),
         );
         drain(

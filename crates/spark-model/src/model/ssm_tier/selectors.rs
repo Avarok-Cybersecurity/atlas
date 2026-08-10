@@ -6,7 +6,10 @@
 use anyhow::{Result, bail};
 
 use super::fingerprint::{ModelFingerprint, resolve_decode_ns, resolve_swap_ns};
-use super::unified::{TransportSlotArena, build_unified_swap, unified_hot_slots};
+use super::unified::{
+    DISK_GB_VAR, TransportSlotArena, build_unified_swap, disk_gb_requested, log_unified_tier,
+    ssm_tier_disk_slots, unified_hot_slots,
+};
 use super::{
     ArenaSnapshotStore, FileSnapshotArena, MemBlobStore, PagingSnapshotStore, RdmaSnapshotStore,
     SnapshotBlobStore, UnifiedSnapshotStore, ssm_tier_unified,
@@ -26,14 +29,30 @@ pub(crate) fn ssm_tier_enabled() -> bool {
 /// optional, never a hard model-init error. With `ATLAS_SSM_RDMA_TIER` unset the
 /// result is exactly `MemBlobStore::new(0)` as before ⇒ byte-identical.
 ///
-/// `Err` is reserved for CONFIG errors (a bad `ATLAS_SSM_SWAP_NS` override —
-/// PCND fail-fast, resolved BEFORE any connect attempt); connectivity failures
-/// keep the non-fatal fallback chain paging → bounded RDMA → host-RAM.
+/// `ATLAS_SSM_TIER_DISK_GB` bounds the UNIFIED arms' swap file (see
+/// [`ssm_tier_disk_slots`]); unset = unbounded = today's behavior. It is inert
+/// on every other arm: the legacy stores have no disk tier, and under
+/// `ATLAS_SSM_SWAP=1` the PEER owns residency and applies its own
+/// `--swap-cap-gb` budget instead.
+///
+/// `Err` is reserved for CONFIG errors (a bad `ATLAS_SSM_SWAP_NS` override or
+/// `ATLAS_SSM_TIER_DISK_GB` — PCND fail-fast, resolved BEFORE any connect
+/// attempt); connectivity failures keep the non-fatal fallback chain paging →
+/// bounded RDMA → host-RAM.
 pub(crate) fn build_tier_store(
     fp: ModelFingerprint,
     blob_bytes: usize,
 ) -> Result<std::sync::Arc<dyn SnapshotBlobStore>> {
     use std::sync::Arc;
+    // An operator who sets a 32 GiB budget, gets the legacy MemBlobStore and
+    // believes they are protected is worse off than one who set nothing: the
+    // cap only exists on the unified arms.
+    if disk_gb_requested() && !ssm_tier_unified() {
+        tracing::warn!(
+            "{DISK_GB_VAR} is set but ATLAS_SSM_TIER_UNIFIED is not — the disk budget is \
+             INERT (the legacy spill stores have no disk tier to bound)"
+        );
+    }
     if let Some(peer) = std::env::var("ATLAS_SSM_RDMA_TIER")
         .ok()
         .filter(|s| !s.is_empty())
@@ -87,12 +106,18 @@ pub(crate) fn build_tier_store(
                         slot_bytes: blob_bytes,
                         num_slots: slots,
                     });
-                    let swap = build_unified_swap(blob_bytes, "marconi-rdma");
-                    match UnifiedSnapshotStore::new(hot, swap, blob_bytes) {
+                    let (swap, backing) = build_unified_swap(blob_bytes, "marconi-rdma");
+                    // Config error (not connectivity) → propagate, don't fall
+                    // back: a rejected budget must never degrade to unbounded.
+                    let max_disk_slots = ssm_tier_disk_slots(blob_bytes)?;
+                    match UnifiedSnapshotStore::new_capped(hot, swap, blob_bytes, max_disk_slots) {
                         Ok(s) => {
-                            tracing::info!(
-                                "SSM spill tier = UNIFIED residency over RDMA peer {peer} \
-                                 ({slots} hot slots × {blob_bytes} B, LRU spill, never rejects)"
+                            log_unified_tier(
+                                &format!("over RDMA peer {peer}"),
+                                slots,
+                                blob_bytes,
+                                max_disk_slots,
+                                backing,
                             );
                             return Ok(Arc::new(s));
                         }
@@ -128,12 +153,16 @@ pub(crate) fn build_tier_store(
         // store, the hot arena is allocated up front (slots × blob_bytes).
         let hot_slots = unified_hot_slots();
         let hot = Box::new(atlas_tier::VecSlotArena::new(blob_bytes, hot_slots));
-        let swap = build_unified_swap(blob_bytes, "marconi-host");
-        match UnifiedSnapshotStore::new(hot, swap, blob_bytes) {
+        let (swap, backing) = build_unified_swap(blob_bytes, "marconi-host");
+        let max_disk_slots = ssm_tier_disk_slots(blob_bytes)?;
+        match UnifiedSnapshotStore::new_capped(hot, swap, blob_bytes, max_disk_slots) {
             Ok(s) => {
-                tracing::info!(
-                    "SSM spill tier = UNIFIED residency in host RAM ({hot_slots} hot slots × \
-                     {blob_bytes} B, LRU spill, never rejects)"
+                log_unified_tier(
+                    "in host RAM",
+                    hot_slots,
+                    blob_bytes,
+                    max_disk_slots,
+                    backing,
                 );
                 return Ok(Arc::new(s));
             }
@@ -152,6 +181,15 @@ pub(crate) fn build_tier_store(
 /// miss→recompute). `min_slots` = `(ring_slots − hot_lanes) × max_batch_size` is
 /// the worst-case cold residency; the local NVMe arena is sized ≥ that and its
 /// undersizing is a preflight ERROR, never a warn.
+///
+/// THE ASYMMETRY WITH `build_tier_store`: the Marconi tier accepts
+/// `ATLAS_SSM_TIER_DISK_GB` because a dropped blob there is a clean miss →
+/// recompute (`ssm_snapshot_spill.rs` `fault_in_slot`, "the correct miss
+/// degradation"); this tier can NEVER be capped, because a dropped blob is a
+/// lost rollback target = corrupt restore. The enforcement is the constructor
+/// split itself — this arm calls [`UnifiedSnapshotStore::new`] (uncapped by
+/// construction) and must never be moved to `new_capped`; `uncapped_new_never_drops`
+/// in unified_tests is the tripwire.
 ///
 /// Selection (`ATLAS_SSM_DECODE_TIER`):
 ///   - `nvme` + `ATLAS_SSM_DECODE_NVME_DIR=<dir>` → [`FileSnapshotArena`] behind
@@ -178,9 +216,14 @@ pub(crate) fn build_decode_tier_store(
                 })?;
             if ssm_tier_unified() && blob_bytes > 0 && blob_bytes.is_multiple_of(4096) {
                 // §4 unification: a RAM hot cache over the lifted O_DIRECT swap
-                // file. The uncapped disk tier (max_disk_slots = 0) makes
-                // NON-DROPPING hold BY CONSTRUCTION instead of by arena sizing
-                // — a decode rollback target can never be refused or dropped.
+                // file. `new` (uncapped, max_disk_slots = 0) makes NON-DROPPING
+                // hold BY CONSTRUCTION instead of by arena sizing — a decode
+                // rollback target can never be refused or dropped. Deliberately
+                // NOT `new_capped`: ATLAS_SSM_TIER_DISK_GB bounds the Marconi
+                // tier only, where a drop degrades to recompute. Here it would
+                // let make_disk_room silently discard a live rollback target,
+                // i.e. corrupt a restore, so this arm's swap file stays
+                // unbounded and must be sized by the operator's NVMe dir.
                 std::fs::create_dir_all(&dir)?;
                 let path = std::path::Path::new(&dir)
                     .join(format!("atlas-decode-ring.{}.swap", std::process::id()));

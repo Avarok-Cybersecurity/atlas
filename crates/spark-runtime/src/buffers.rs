@@ -10,8 +10,10 @@ use anyhow::Result;
 use atlas_core::config::ModelConfig;
 
 mod accessors;
+pub mod decode_meta;
 mod sizes;
 mod sizes_q12;
+pub use decode_meta::{DECODE_META_MAX_ROWS, DECODE_META_MIN_ROWS, DecodeMetaLayout};
 pub use sizes::BufferSizes;
 pub use sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
@@ -116,6 +118,10 @@ pub struct BufferArena {
     lora_seq_slot: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
+    /// Derived batched-decode metadata layout (rows = max(32, serve
+    /// max_batch_size)); byte-identical to the legacy fixed 32-row gaps for
+    /// every bs <= 32. SSOT consumed by `upload_batch_metadata_fixed`/`_at`.
+    decode_meta: DecodeMetaLayout,
     /// Sizes in bytes for each buffer (for debug/logging).
     sizes: BufferSizes,
 }
@@ -127,9 +133,17 @@ impl BufferArena {
         max_batch_tokens: usize,
         max_seq_len: usize,
         kv_block_size: usize,
+        max_batch_size: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
-        let sizes = BufferSizes::from_config(config, max_batch_tokens, max_seq_len, kv_block_size);
+        let decode_meta = DecodeMetaLayout::for_max_batch_size(max_batch_size);
+        let sizes = BufferSizes::from_config(
+            config,
+            max_batch_tokens,
+            max_seq_len,
+            kv_block_size,
+            max_batch_size,
+        );
 
         let hidden_states = gpu.alloc(sizes.hidden_states)?;
         let residual = gpu.alloc(sizes.residual)?;
@@ -263,8 +277,160 @@ impl BufferArena {
             lora_hact,
             lora_seq_slot,
             max_batch_tokens,
+            decode_meta,
             sizes,
         })
+    }
+}
+
+/// Release every buffer this arena owns.
+///
+/// The destructure below is **exhaustive on purpose — no `..`**. A buffer added
+/// to `BufferArena` without a matching free is a leak that only shows up as the
+/// next model failing to fit, so the compiler is made to refuse the addition
+/// instead. If this line stops compiling, the fix is to free the new field, not
+/// to add a wildcard.
+impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
+    fn label(&self) -> &'static str {
+        "buffer arena"
+    }
+
+    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
+        let Self {
+            // Not allocations — named rather than wildcarded so the
+            // exhaustiveness check above keeps its teeth.
+            sizes: _,
+            max_batch_tokens: _,
+            // Layout, not an allocation — derived from `--max-batch-size`.
+            decode_meta: _,
+            hidden_states,
+            residual,
+            norm_output,
+            qkv_output,
+            attn_output,
+            gate_logits,
+            gate_logits_f32,
+            moe_router_in_f32,
+            moe_output,
+            logits,
+            ssm_qkvz,
+            ssm_ba,
+            ssm_deinterleaved,
+            ssm_gates,
+            ssm_conv_out_f32,
+            scratch,
+            expert_gate_out,
+            expert_up_out,
+            expert_down_out,
+            splitk_workspace,
+            o_latent,
+            norm_unit_w,
+            hc_streams,
+            hc_post,
+            hc_comb,
+            gdn_fla_scratch,
+            ssd_scratch,
+            token_ids,
+            ffn_act_q8,
+            ffn_act_a,
+            ffn_act_scale,
+            fp8_act,
+            fp8_act_scale,
+            lora_xa,
+            lora_delta,
+            lora_hact,
+            lora_seq_slot,
+        } = self;
+        // Every pointer, then NULL it: `release` must be idempotent because a
+        // `Drop` backstop may call it again, and `free` already no-ops on NULL.
+        let owned = [
+            *hidden_states,
+            *residual,
+            *norm_output,
+            *qkv_output,
+            *attn_output,
+            *gate_logits,
+            *gate_logits_f32,
+            *moe_router_in_f32,
+            *moe_output,
+            *logits,
+            *ssm_qkvz,
+            *ssm_ba,
+            *ssm_deinterleaved,
+            *ssm_gates,
+            *ssm_conv_out_f32,
+            *scratch,
+            *expert_gate_out,
+            *expert_up_out,
+            *expert_down_out,
+            *splitk_workspace,
+            *o_latent,
+            *norm_unit_w,
+            *hc_streams,
+            *hc_post,
+            *hc_comb,
+            *gdn_fla_scratch,
+            *ssd_scratch,
+            *token_ids,
+            *ffn_act_q8,
+            *ffn_act_a,
+            *ffn_act_scale,
+            *fp8_act,
+            *fp8_act_scale,
+            *lora_xa,
+            *lora_delta,
+            *lora_hact,
+            *lora_seq_slot,
+        ];
+        let mut first_error = None;
+        for ptr in owned {
+            if let Err(e) = gpu.free(ptr)
+                && first_error.is_none()
+            {
+                first_error = Some(e);
+            }
+        }
+        *hidden_states = DevicePtr::NULL;
+        *residual = DevicePtr::NULL;
+        *norm_output = DevicePtr::NULL;
+        *qkv_output = DevicePtr::NULL;
+        *attn_output = DevicePtr::NULL;
+        *gate_logits = DevicePtr::NULL;
+        *gate_logits_f32 = DevicePtr::NULL;
+        *moe_router_in_f32 = DevicePtr::NULL;
+        *moe_output = DevicePtr::NULL;
+        *logits = DevicePtr::NULL;
+        *ssm_qkvz = DevicePtr::NULL;
+        *ssm_ba = DevicePtr::NULL;
+        *ssm_deinterleaved = DevicePtr::NULL;
+        *ssm_gates = DevicePtr::NULL;
+        *ssm_conv_out_f32 = DevicePtr::NULL;
+        *scratch = DevicePtr::NULL;
+        *expert_gate_out = DevicePtr::NULL;
+        *expert_up_out = DevicePtr::NULL;
+        *expert_down_out = DevicePtr::NULL;
+        *splitk_workspace = DevicePtr::NULL;
+        *o_latent = DevicePtr::NULL;
+        *norm_unit_w = DevicePtr::NULL;
+        *hc_streams = DevicePtr::NULL;
+        *hc_post = DevicePtr::NULL;
+        *hc_comb = DevicePtr::NULL;
+        *gdn_fla_scratch = DevicePtr::NULL;
+        *ssd_scratch = DevicePtr::NULL;
+        *token_ids = DevicePtr::NULL;
+        *ffn_act_q8 = DevicePtr::NULL;
+        *ffn_act_a = DevicePtr::NULL;
+        *ffn_act_scale = DevicePtr::NULL;
+        *fp8_act = DevicePtr::NULL;
+        *fp8_act_scale = DevicePtr::NULL;
+        *lora_xa = DevicePtr::NULL;
+        *lora_delta = DevicePtr::NULL;
+        *lora_hact = DevicePtr::NULL;
+        *lora_seq_slot = DevicePtr::NULL;
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 

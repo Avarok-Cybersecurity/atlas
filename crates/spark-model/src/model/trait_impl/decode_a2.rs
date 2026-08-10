@@ -20,6 +20,26 @@ use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
+/// Multi-seq decode CUDA graphs: **ON by default**, disabled by
+/// `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// presence-checked flags here are ENABLED by `=0`. Read once per process.
+fn multiseq_graphs_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
+}
+
+/// Batched-GEMV decode lm_head: **ON by default**, disabled by
+/// `ATLAS_NO_LM_HEAD_BATCH_GEMV=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name, not a presence check — presence
+/// flags in this codebase are ENABLED by `=0`. Read once; this is a per-step site.
+fn lm_head_batch_gemv_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_LM_HEAD_BATCH_GEMV").as_deref() != Ok("1"))
+}
+
 impl TransformerModel {
     pub(super) fn decode_batch_dispatch(
         &self,
@@ -29,10 +49,16 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         let n = tokens.len();
         assert_eq!(n, seqs.len(), "tokens.len() must equal seqs.len()");
+        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // once, HERE — outside the CUDA-graph region. No-op without the flag.
+        for s in seqs.iter_mut() {
+            self.ssm_h_to_f16_dispatch(s)?;
+        }
 
-        // Single-sequence: delegate to decode() which uses CUDA graphs.
-        // decode_batch disables graphs for n≥2 (SSM state pointer staleness),
-        // but n=1 is safe and benefits from graph replay (2x throughput).
+        // Single-sequence: delegate to decode() which uses its own slot-keyed
+        // graph cache. (Stale comment removed: n>=2 is ALSO graphed — see the
+        // slot-vector-keyed `batch_decode_graphs` in decode_batch_compute_main,
+        // default-ON since 2026-07-27.)
         //
         // Broadcast the seq_id preamble + cmd here (rather than in the
         // scheduler) so the EP n>1 branch below can interleave broadcasts
@@ -141,6 +167,11 @@ impl TransformerModel {
         _stream: u64,
     ) -> Result<DevicePtr> {
         let n = tokens.len();
+        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // once, HERE — outside the CUDA-graph region. No-op without the flag.
+        for s in seqs.iter_mut() {
+            self.ssm_h_to_f16_dispatch(s)?;
+        }
         if std::env::var("ATLAS_DECODE_BATCH_LOG").ok().as_deref() == Some("1") {
             let slots: Vec<i64> = seqs
                 .iter()
@@ -164,27 +195,9 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let residual = self.buffers.residual();
 
-        // Graph decision, computed BEFORE padded_n so eager can drop pad lanes.
-        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
-        let lora_eager = self.lora.is_some() && crate::lora::lora_eager_env();
-        let use_graphs = !ms_profile
-            && !lora_eager
-            && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
-                .ok()
-                .as_deref()
-                == Some("1");
-
-        // Graph key / capture bucket (must stay stable across replays).
-        let padded_n = [2, 4, 8].iter().copied().find(|&s| s >= n).unwrap_or(n);
-
-        // Eager (graphs off, single-rank) runs EXACTLY n lanes, dropping wasted
-        // compute on dummy padded lanes at C=3,5,6,7. EP/graphs keep padded_n
-        // (EP: per-token NCCL all_reduce count must match across ranks).
-        let eff_n = if !use_graphs && self.comm.is_none() {
-            n
-        } else {
-            padded_n
-        };
+        // Pad to the nearest captured graph size — SSOT ladder in
+        // `traits::padded_batch_n` (now includes 12 and 16 for the C-sweep).
+        let padded_n = crate::traits::padded_batch_n(n);
 
         // ── Phase 1: Pre-graph (runs every step, NOT captured) ──
 
@@ -193,8 +206,8 @@ impl TransformerModel {
             self.embed(tok, hidden.offset(i * h * fp32), stream)?;
         }
 
-        // 1b. Zero padding hidden[n..eff_n) — empty (no-op) on the eager path.
-        for i in n..eff_n {
+        // 1b. Zero padding hidden[n..padded_n)
+        for i in n..padded_n {
             self.gpu.memset(hidden.offset(i * h * fp32), 0, h * fp32)?;
         }
 
@@ -210,34 +223,44 @@ impl TransformerModel {
                 self.prefix_cache.as_ref(),
                 self.gpu.as_ref(),
                 stream,
+                self.levers.kv_poison,
             )?;
         }
 
         // 1d. Upload metadata with fixed stride (active + padding)
-        let metadata = self.upload_batch_metadata_fixed(seqs, eff_n, &mut kv_cache, stream)?;
+        let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
 
         // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
         //
-        // The historical concern was that SSM h_state/conv_state pointers get
-        // baked into per-seq kernel args at capture, going stale when batch
-        // composition changes. That does NOT happen here: the scheduler holds
-        // the invariant that active sequences occupy contiguous SSM pool slots
-        // [0..n) in batch order (compact_sequence migrates survivors), verified
-        // empirically (slots always == [0,1,..,n-1]). So position i's state is
-        // ALWAYS at pool_base + i*stride — a fixed address baked correctly at
-        // capture; replay reads whatever sequence currently occupies slot i.
-        // Pad positions use the fixed dummy slot. Attention metadata, KV block
-        // tables, embed, and all scratch buffers are at fixed device addresses
-        // refreshed every step BEFORE replay. So a graph keyed by padded_n is
-        // valid across replays. This is the dominant lever for n>=2 decode
-        // (eliminates ~1500 kernel launches/step). Opt-in until soaked; flip
-        // the default once validated. Verify correctness with the needle test.
-        // (use_graphs is computed above, before padded_n, so eager picks eff_n=n.)
+        // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
+        // capture, so the cache is keyed by the per-row SSM slot VECTOR — see
+        // `decode_graph_key.rs` for why the former `padded_n` key was unsound.
+        // Everything else captured (metadata, block tables, embed, scratch) is
+        // a fixed address refreshed every step BEFORE replay. This is the
+        // dominant lever for n>=2 decode (eliminates ~1500 launches/step).
+        //
+        // DEFAULT-ON since 2026-07-27; disable with
+        // ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
+        // retired: `decode_graph_key.rs`.
+        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
+        // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
+        // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
+        let lora_eager = self.lora.is_some() && self.levers.lora_eager;
+        let graph_key = if !ms_profile && !lora_eager && multiseq_graphs_enabled() {
+            self.batch_decode_graph_key(&*seqs, padded_n)
+        } else {
+            None
+        };
+        let use_graphs = graph_key.is_some();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(metadata),
             profile: false,
             comm: self.comm_ref(),
@@ -246,12 +269,7 @@ impl TransformerModel {
             token_ids: None,
             routed_lora_layers: None, // #30: batched decode never routes prefill.
             midchunk_capture: None,
-            moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
         };
-
-        // SOLID Incr-4: refuse a non-active-adapter row before graph lookup so
-        // the captured padded_n graph stays route-agnostic (see the helper).
-        self.reject_decode_moe_refuse(&ctx, "batched decode")?;
 
         // ── Phase 2: CUDA graph lookup / capture ──
         let mut graphs = if use_graphs {
@@ -260,9 +278,20 @@ impl TransformerModel {
             None
         };
 
-        if let Some(ref graphs) = graphs
-            && let Some(&graph) = graphs.get(&padded_n)
-        {
+        // LRU touch on hit: bump the tick so eviction always removes the
+        // least-recently-replayed slot vector.
+        let cached = match (&mut graphs, &graph_key) {
+            (Some(g), Some(key)) => {
+                g.1 += 1;
+                let tick = g.1;
+                g.0.get_mut(key).map(|e| {
+                    e.1 = tick;
+                    e.0
+                })
+            }
+            _ => None,
+        };
+        if let Some(graph) = cached {
             // Graph exists — replay (kernels use updated metadata + SSM pool addresses)
             if graph.0 != 0 {
                 self.gpu.launch_graph(graph, stream)?;
@@ -276,12 +305,12 @@ impl TransformerModel {
             return Ok(self.decode_logits_ptr());
         }
         {
-            // First time for this padded_n — capture a new graph (or run eagerly).
-            // Layer states for eff_n lanes (== n eager: no dummy lanes built).
-            let seq_lens: Vec<usize> = (0..eff_n)
+            // First time for this padded_n — capture a new graph (or run eagerly for EP).
+            // Build layer states for all padded_n sequences (real + dummy padding).
+            let seq_lens: Vec<usize> = (0..padded_n)
                 .map(|i| if i < n { seqs[i].seq_len } else { 0 })
                 .collect();
-            let block_tables: Vec<Vec<u32>> = (0..eff_n)
+            let block_tables: Vec<Vec<u32>> = (0..padded_n)
                 .map(|i| {
                     if i < n {
                         seqs[i].block_table.clone()
@@ -303,7 +332,7 @@ impl TransformerModel {
             // scheduler invariant ("active occupies contiguous slots
             // [0..n)") ever drifts.
             let dummy_ssm_slot = self.ssm_pool.dummy_slot();
-            for _pad_pos in n..eff_n {
+            for _pad_pos in n..padded_n {
                 let mut dummy: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
                 let mut ssm_idx = 0usize;
                 for (li, layer) in self.layers.iter().enumerate() {
@@ -315,6 +344,10 @@ impl TransformerModel {
                             conv_state_checkpoint: None,
                             h_state_intermediates: Vec::new(),
                             conv_state_intermediates: Vec::new(),
+                            // Padding rows point at the write-only dummy slot;
+                            // tag them with the active mode so the decode mixer
+                            // does not re-convert scratch on every single step.
+                            h_is_f16: crate::layers::qwen3_ssm::ssm_h_fp16_enabled(),
                         }));
                         ssm_idx += 1;
                     } else {
@@ -332,15 +365,15 @@ impl TransformerModel {
             // hidden values for each seq after each layer to localize where
             // pos>=1 diverges from pos 0 in concurrent batched decode.
             let conc_hsd = std::env::var("ATLAS_CONC_HSD").is_ok_and(|v| v == "1" || v == "true")
-                && eff_n >= 2
+                && padded_n >= 2
                 && self.comm.is_none();
             let dump_hidden = |label: &str, stream: u64| -> Result<()> {
                 if !conc_hsd {
                     return Ok(());
                 }
                 self.gpu.synchronize(stream)?;
-                let mut bufs: Vec<Vec<f32>> = Vec::with_capacity(eff_n);
-                for i in 0..eff_n {
+                let mut bufs: Vec<Vec<f32>> = Vec::with_capacity(padded_n);
+                for i in 0..padded_n {
                     let mut buf = vec![0u8; 4 * 4]; // 4 FP32 values
                     let _ = self.gpu.copy_d2h(hidden.offset(i * h * fp32), &mut buf);
                     let vals: Vec<f32> = buf
@@ -360,7 +393,7 @@ impl TransformerModel {
 
             dump_hidden("post_embed", stream)?;
 
-            // Layer loop for eff_n sequences (== padded_n under graphs, == n eager)
+            // Layer loop for padded_n sequences
             let mut ssm_us: u128 = 0;
             let mut attn_us: u128 = 0;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -374,7 +407,7 @@ impl TransformerModel {
                 layer.decode_multi_seq(
                     hidden,
                     residual,
-                    eff_n,
+                    padded_n,
                     &mut layer_state_refs,
                     &mut kv_cache,
                     &seq_lens,
@@ -404,7 +437,7 @@ impl TransformerModel {
                 None
             };
 
-            // Final norm [eff_n, H]
+            // Final norm [padded_n, H]
             let normed = self.buffers.norm_output();
             ops::rms_norm(
                 self.gpu.as_ref(),
@@ -412,13 +445,13 @@ impl TransformerModel {
                 hidden,
                 &self.final_norm,
                 normed,
-                eff_n as u32,
+                padded_n as u32,
                 h as u32,
                 self.config.rms_norm_eps as f32,
                 stream,
             )?;
 
-            // LM head: ONE batched [eff_n, vocab] GEMM so the ~254 MB
+            // LM head: ONE batched [padded_n, vocab] GEMM so the ~254 MB
             // vocab weight is read ONCE per step instead of once per sequence
             // (the per-row GEMV loop re-read it N times — a major C>=2 cost:
             // ~N×254 MB/step). nvfp4/dense are batched here; FP8 single-scale
@@ -427,7 +460,7 @@ impl TransformerModel {
             let logits = self.buffers.logits();
             let v = self.config.vocab_size;
             if let Some(ref fp8) = self.lm_head_fp8 {
-                for i in 0..eff_n {
+                for i in 0..padded_n {
                     ops::dense_gemv_fp8w(
                         self.gpu.as_ref(),
                         self.dense_gemv_fp8w_kernel,
@@ -440,17 +473,91 @@ impl TransformerModel {
                     )?;
                 }
             } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                ops::w4a16_gemm(
-                    self.gpu.as_ref(),
-                    self.w4a16_gemm_kernel,
-                    normed,
-                    nvfp4,
-                    logits,
-                    eff_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
+                // Batched GEMV for the decode head. The base M64-tile
+                // `w4a16_gemm` below wastes most of its MMA tile here: at
+                // padded_n=16 only 16 of 64 tile-rows carry data, and the same
+                // nsys note the verify path records (impl_a3.rs) measured it at
+                // 19.3 ms on this [248320, 5120] NVFP4 head vs ~2.5 ms for the
+                // batched GEMV streaming the same 636 MB once. That cost is
+                // FLAT in n, so it sits in the fixed term at every batch size.
+                //
+                // Tier by padded_n exactly as the SSM mixer does: batch4 (M<=4)
+                // / batch8 (M<=8) / batch16 (M<=16). A 0-handle on any tier
+                // falls through to the GEMM, so targets lacking the kernel are
+                // unaffected.
+                // Tile GEMM at padded_n >= 5 over the PADDED transposed twin.
+                // padded_n <= 4 stays on the GEMV, which measures 3174 us =
+                // 226 GB/s = 98.3% of the memory roofline on this shape and is
+                // therefore unimprovable; the tile GEMM LOSES there.
+                if padded_n >= 5
+                    && self.w4a16_gemm_t_bf16_kernel.0 != 0
+                    && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
+                {
+                    // LOSSLESS path: BF16 MMA, no activation downcast.
+                    ops::w4a16_gemm_n128_m128_bf16_ldb(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemm_t_bf16_kernel,
+                        normed,
+                        nvfp4_t,
+                        logits,
+                        padded_n as u32,
+                        v as u32,
+                        h as u32,
+                        ldb,
+                        stream,
+                    )?;
+                } else if padded_n >= 5
+                    && self.w4a16_gemm_t_kernel.0 != 0
+                    && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
+                {
+                    ops::w4a16_gemm_n128_ldb(
+                        self.gpu.as_ref(),
+                        self.w4a16_gemm_t_kernel,
+                        normed,
+                        nvfp4_t,
+                        logits,
+                        padded_n as u32,
+                        v as u32,
+                        h as u32,
+                        ldb,
+                        stream,
+                    )?;
+                } else {
+                    let gemv_k = if padded_n <= 4 {
+                        self.w4a16_gemv_batch4_kernel
+                    } else if padded_n <= 8 {
+                        self.w4a16_gemv_batch8_kernel
+                    } else if padded_n <= 16 {
+                        self.w4a16_gemv_batch16_kernel
+                    } else {
+                        spark_runtime::gpu::KernelHandle(0)
+                    };
+                    if gemv_k.0 != 0 && lm_head_batch_gemv_enabled() {
+                        ops::w4a16_gemv_batchm(
+                            self.gpu.as_ref(),
+                            gemv_k,
+                            normed,
+                            nvfp4,
+                            logits,
+                            padded_n as u32,
+                            v as u32,
+                            h as u32,
+                            stream,
+                        )?;
+                    } else {
+                        ops::w4a16_gemm(
+                            self.gpu.as_ref(),
+                            self.w4a16_gemm_kernel,
+                            normed,
+                            nvfp4,
+                            logits,
+                            padded_n as u32,
+                            v as u32,
+                            h as u32,
+                            stream,
+                        )?;
+                    }
+                }
             } else {
                 ops::dense_gemm(
                     self.gpu.as_ref(),
@@ -458,7 +565,7 @@ impl TransformerModel {
                     normed,
                     &self.lm_head_weight,
                     logits,
-                    eff_n as u32,
+                    padded_n as u32,
                     v as u32,
                     h as u32,
                     stream,
@@ -469,23 +576,25 @@ impl TransformerModel {
                 let head_us = t0.elapsed().as_micros();
                 let total = ssm_us + attn_us + head_us;
                 tracing::info!(
-                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n} eff_n={eff_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
+                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
                     total,
                     ssm_us,
                     self.config.num_ssm_layers(),
                     attn_us,
                     self.layers.len() - self.config.num_ssm_layers(),
                     head_us,
-                    total as f64 / 1000.0 / eff_n as f64,
+                    total as f64 / 1000.0 / padded_n as f64,
                 );
             }
 
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
-                    tracing::info!("Captured CUDA graph for batch size {padded_n}");
-                    if let Some(ref mut g) = graphs {
-                        g.insert(padded_n, graph);
+                    tracing::info!(
+                        "Captured CUDA graph for batch size {padded_n} (n={n}, slots={graph_key:?})"
+                    );
+                    if let (Some(g), Some(key)) = (graphs.as_mut(), graph_key.clone()) {
+                        self.insert_batch_decode_graph(g, key, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }

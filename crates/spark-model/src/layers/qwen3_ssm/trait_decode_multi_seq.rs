@@ -7,6 +7,42 @@ use super::*;
 mod ssm_batched;
 mod ssm_batched_recurrent;
 
+/// Batched dense FFN for wide SSM decode batches: **ON by default**, disabled
+/// only by `ATLAS_NO_SSM_FFN_PREFILL=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// presence-checked flags in this codebase are ENABLED by `=0`, a trap that has
+/// burned it before. Read once; the dispatch site is per-layer per-step.
+/// Smallest batch that takes the batched dense FFN. Default 5, MEASURED.
+///
+/// Tunable because the +30% measured at C=16 is LARGER than eliminating the
+/// double weight read alone predicts (~18%), which implies the tile GEMM also
+/// beats the batch-8 GEMV per pass. If that holds, the crossover is below 9 and
+/// C=4/C=8 have headroom too — `ATLAS_SSM_FFN_PREFILL_MIN_N` exists to find it
+/// by measurement rather than assertion. It was: 2 reps/cell, coherence held —
+///   MIN_N=9: C=4 37.7 | C=8 53.4
+///   MIN_N=5: C=4 37.8 | C=8 **57.8**  (+8% at C=8, C=4 untouched)
+///   MIN_N=4: C=4 36.2 | C=8 57.8      (C=4 regresses — GEMV still wins at 4)
+/// So the tile GEMM overtakes the batch-8 GEMV at n=5, not n=9: eliminating the
+/// double weight read was only part of the win, the kernel is simply better per
+/// pass. 5 is the default; 4 is a measured regression; 9 was the conservative
+/// first guess.
+fn ssm_ffn_prefill_min_n() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_SSM_FFN_PREFILL_MIN_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&v| v >= 2)
+            .unwrap_or(5)
+    })
+}
+
+fn ssm_ffn_prefill_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_SSM_FFN_PREFILL").as_deref() != Ok("1"))
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     /// Multi-sequence decode for SSM (gated-delta-net) layers.
@@ -168,6 +204,75 @@ impl Qwen3SsmLayer {
                         h as u32,
                         stream,
                     )?;
+                }
+            }
+            // WIDE BATCH (n>8): one batched dense FFN, weights read ONCE.
+            //
+            // MEASURED 2026-07-27 (ATLAS_SSM_MS_PROFILE, 9168 samples/n): the
+            // chunked arm below costs 751 / 1023 / 2022 us per layer at
+            // n=4/8/16 — n=16 is 1.98x n=8, and FFN-per-sequence is FLAT from
+            // 8 to 16 (127.9 -> 126.3 us). That is the signature of the m<=8
+            // GEMV cap: above 8 the ~7.2 GB of FFN weights are streamed TWICE
+            // per step. A batched FFN is weight-bandwidth-bound, so n=16 should
+            // cost about what n=8 does. Worth ~1000us x 48 layers = ~48 ms of a
+            // 264.9 ms step.
+            //
+            // forward_prefill reads gate/up/down once for all n rows — the
+            // ATTENTION layers already take exactly this branch for dense
+            // models (multi_seq/ffn.rs, "WIDE-VERIFY BATCHED DENSE FFN"). This
+            // is that arm's SSM-side twin.
+            //
+            // n<=8 deliberately KEEPS the chunked GEMV: the recorded crossover
+            // has GEMV winning at M=4, and a single chunk reads the weights
+            // once anyway, so there is nothing to gain there.
+            //
+            // DENSE ONLY: on a 256-expert MoE the grouped-GEMM is a net loss at
+            // small batch (see the per-token arm below), so MoE keeps the loop.
+            n if n >= ssm_ffn_prefill_min_n()
+                && self.ffn.is_dense()
+                && ssm_ffn_prefill_enabled() =>
+            {
+                self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
+                ops::residual_add(
+                    ctx.gpu,
+                    self.residual_add_k,
+                    hidden,
+                    ctx.buffers.moe_output(),
+                    (n * h) as u32,
+                    stream,
+                )?;
+            }
+            4.. if self.ffn.can_forward_km(8.min(n) as u32) => {
+                // MISSING n=4..8 ARM (2026-07-26) — the SSM-side twin of the
+                // attention ladder's 2026-07-24 K=4 gap (multi_seq/ffn.rs:100).
+                // The ladder fell from n==2/3 straight to the per-token loop,
+                // so C=4..8 decode streamed the full dense FFN weights n
+                // TIMES per layer. MS_PROFILE at C=4: 2632us/layer FFN vs
+                // 577us mixer = 63% of the step, 126ms of ~200ms across the
+                // 48-layer SSM stack. forward_km reads each projection ONCE
+                // for all n rows (batched GEMV, ~290 GB/s vs the loop's
+                // per-seq streams). Dense-only by construction:
+                // can_forward_km is false for MoE, which keeps the loop.
+                // n > 8 is processed in chunks of 8 (the batchm GEMV family
+                // caps at m=8): weights are read ceil(n/8) times instead of n.
+                // moe_output[0..m] is reused per chunk, so each chunk's
+                // residual add runs before the next chunk overwrites it.
+                let mut done = 0usize;
+                while done < n {
+                    let m = (n - done).min(8);
+                    let normed_c = normed_base.offset(done * h * bf16);
+                    let used = self.ffn.try_forward_km(normed_c, m as u32, ctx, stream)?;
+                    debug_assert!(used, "can_forward_km checked at branch entry");
+                    let hidden_c = hidden.offset(done * h * residual_elem);
+                    ops::residual_add(
+                        ctx.gpu,
+                        self.residual_add_k,
+                        hidden_c,
+                        ctx.buffers.moe_output(),
+                        (m * h) as u32,
+                        stream,
+                    )?;
+                    done += m;
                 }
             }
             _ => {

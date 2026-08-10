@@ -7,6 +7,7 @@ use super::*;
 /// Prefill a new request and return an ActiveSeq ready for batched decode.
 /// Returns None if the sequence completed during prefill (EOS on first token).
 pub fn prefill_request(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
@@ -189,6 +190,7 @@ pub fn prefill_request(
             dry_sequence_breakers: Vec::new(),
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
+            pending_draft_conf: Vec::new(),
             inside_thinking: req_enable_thinking && think_end_token.is_some(),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -274,6 +276,7 @@ pub fn prefill_request(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            &sched.levers.sampling(),
         )
     })();
 
@@ -313,16 +316,24 @@ pub fn prefill_request(
                 top: p.top,
             })
             .collect();
-        if let Err(e) = tx.blocking_send(StreamEvent::PromptLogprobs(lps)) {
-            tracing::warn!("prefill_b_step: prompt-logprobs send failed: {e}");
+        if !super::mod_helpers::bounded_stream_send(
+            tx,
+            StreamEvent::PromptLogprobs(lps),
+            "prefill_b prompt-logprobs",
+        ) {
+            tracing::warn!("prefill_b_step: prompt-logprobs send failed");
         }
     }
     if !spontaneous_think
         && max_tokens > 0
         && let ResponseSink::Streaming(ref tx) = sink
-        && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
+        && !super::mod_helpers::bounded_stream_send(
+            tx,
+            StreamEvent::Token(first),
+            "prefill_b first token",
+        )
     {
-        tracing::warn!("prefill_b_step: first-token send failed (receiver dropped): {e}");
+        tracing::warn!("prefill_b_step: first-token send failed (receiver dropped)");
     }
 
     let output_tokens = if spontaneous_think || max_tokens == 0 {
@@ -371,6 +382,7 @@ pub fn prefill_request(
             dry_sequence_breakers: Vec::new(),
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
+            pending_draft_conf: Vec::new(),
             inside_thinking: req_enable_thinking && think_end_token.is_some(),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -453,6 +465,7 @@ pub fn prefill_request(
         dry_sequence_breakers: Vec::new(),
         logit_bias,
         pending_drafts: Vec::new(),
+        pending_draft_conf: Vec::new(),
         inside_thinking: spontaneous_think || (req_enable_thinking && think_end_token.is_some()),
         enable_thinking: req_enable_thinking,
         thinking_budget: if spontaneous_think {

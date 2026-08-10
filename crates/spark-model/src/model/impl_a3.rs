@@ -27,6 +27,14 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// Presence kill switch for the wide (9..=VERIFY_ROW_CAP row) batched LM head arm:
+/// `ATLAS_NO_LMHEAD_BATCHED_WIDE` restores the M64-tile `w4a16_gemm` fallback.
+/// Presence, not value — `=0` is NOT "off" (see `atlas_env_presence_check_trap`).
+fn lmhead_batched_wide_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_LMHEAD_BATCHED_WIDE").is_err())
+}
+
 impl TransformerModel {
     pub(super) fn embed(&self, token: u32, output: DevicePtr, stream: u64) -> Result<()> {
         let h = self.config.hidden_size;
@@ -66,6 +74,93 @@ impl TransformerModel {
             .arg_u32(n)
             .arg_f32(self.config.embed_scale)
             .launch(stream)
+    }
+
+    /// Wide batched LM head, `num_tokens` in 9..=`VERIFY_ROW_CAP` (96) — exactly
+    /// the batched-verify row regime (`can_batch_verify` bounds `Σks` at
+    /// `VERIFY_ROW_CAP`; the 32:2 depth-at-width shape's n=32 × k=3 rows hits
+    /// 96 dead on).
+    /// Below 9 the existing GEMV ladder (batch2/4/8) already owns the dispatch.
+    /// When this arm was capped at 32 (pre-2026-07-30), the R=64 verify step
+    /// fell through to the base `w4a16_gemm` below at 23.9 ms/step (nsys,
+    /// spec32n) vs 3.65 ms for the same 636 MB via this tile GEMM at R=32.
+    ///
+    /// Why it matters: every row count in that range fell through to the M64-tile
+    /// `w4a16_gemm`, whose own comment upstream documents the cost — nsys measured
+    /// **19.9 ms per verify step** on the [248320, 5120] NVFP4 head, ~33 GB/s
+    /// effective, because 94%+ of the M-tile is padding. The transposed-twin tile
+    /// GEMM streams the same 636 MB once at near-roofline. This is the identical
+    /// ladder `decode_a2` already runs at `padded_n >= 5`, so the verify head now
+    /// uses the SAME kernel as the non-speculative decode head it is standing in
+    /// for (it previously did not — a silent numerics divergence between the spec
+    /// and non-spec paths at the same batch width).
+    ///
+    /// Returns `false` when no wide kernel resolves (no NVFP4 head, no twin, no
+    /// batch16 handle), in which case the caller keeps today's `w4a16_gemm`.
+    fn lm_head_batched_wide(
+        &self,
+        hidden: DevicePtr,
+        num_tokens: u32,
+        logits: DevicePtr,
+        stream: u64,
+    ) -> Result<bool> {
+        let h = self.config.hidden_size as u32;
+        let v = self.config.vocab_size as u32;
+        let Some(ref nvfp4) = self.lm_head_nvfp4 else {
+            return Ok(false);
+        };
+        if let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t {
+            // LOSSLESS path (ATLAS_LMHEAD_LOSSLESS): BF16 MMA, no activation
+            // downcast. Mirrors decode_a2 so the two heads never disagree.
+            if self.w4a16_gemm_t_bf16_kernel.0 != 0 {
+                ops::w4a16_gemm_n128_m128_bf16_ldb(
+                    self.gpu.as_ref(),
+                    self.w4a16_gemm_t_bf16_kernel,
+                    hidden,
+                    nvfp4_t,
+                    logits,
+                    num_tokens,
+                    v,
+                    h,
+                    ldb,
+                    stream,
+                )?;
+                return Ok(true);
+            }
+            if self.w4a16_gemm_t_kernel.0 != 0 {
+                ops::w4a16_gemm_n128_ldb(
+                    self.gpu.as_ref(),
+                    self.w4a16_gemm_t_kernel,
+                    hidden,
+                    nvfp4_t,
+                    logits,
+                    num_tokens,
+                    v,
+                    h,
+                    ldb,
+                    stream,
+                )?;
+                return Ok(true);
+            }
+        }
+        // No twin (ATLAS_NO_LMHEAD_TGEMM): the M<=16 weight-streaming GEMV still
+        // beats the M64 tile. M=17..32 has no single-read form, so it keeps the
+        // GEMM rather than paying two full weight passes.
+        if num_tokens <= 16 && self.w4a16_gemv_batch16_kernel.0 != 0 {
+            ops::w4a16_gemv_batchm(
+                self.gpu.as_ref(),
+                self.w4a16_gemv_batch16_kernel,
+                hidden,
+                nvfp4,
+                logits,
+                num_tokens,
+                v,
+                h,
+                stream,
+            )?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// LM head for K tokens: hidden[K, H] → logits[K, V].
@@ -190,6 +285,11 @@ impl TransformerModel {
                 h,
                 stream,
             )?;
+        } else if (9..=super::trait_impl::verify_e2::VERIFY_ROW_CAP as u32).contains(&num_tokens)
+            && lmhead_batched_wide_enabled()
+            && self.lm_head_batched_wide(hidden, num_tokens, logits, stream)?
+        {
+            // Handled by the wide arm; nothing launched when it returns false.
         } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             ops::w4a16_gemm(
                 self.gpu.as_ref(),

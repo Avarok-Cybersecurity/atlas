@@ -47,16 +47,11 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 
 use crate::layer::{AttnMetadataDev, ForwardContext, LayerState};
+use crate::layers::mtp_meta::{MTP_META_OFFSET, pack_mtp_attn_meta};
 use crate::layers::ops;
 use crate::speculative::{DraftProposer, ProposerState};
 use crate::weight_loader::deepseek_v4::DeepseekV4MtpModule;
 use crate::weight_map::DenseWeight;
-
-/// Scratch-buffer byte offset for the MTP attention metadata. Must be distinct
-/// from the target model's metadata (`32768`) so a `propose()` call does not
-/// clobber the in-flight target `attn_metadata`. Mirrors the Qwen `MtpHead`
-/// choice of `49152` (the Qwen head uploads its own packed header there too).
-const MTP_META_OFFSET: usize = 49152;
 
 /// Per-sequence state for the DeepSeek-V4 MTP proposer.
 pub struct DeepseekV4MtpProposerState {
@@ -282,15 +277,18 @@ impl DeepseekV4MtpHead {
         let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
         let actual_seq_len = (state.seq_len + 1) as i32;
 
-        let bt_i32: Vec<i32> = state.block_table.iter().map(|&b| b as i32).collect();
-        let bt_len = bt_i32.len() * 4;
-        let mut meta_buf = vec![0u8; 256 + bt_len];
-        meta_buf[0..4].copy_from_slice(&(position as u32).to_le_bytes());
-        meta_buf[8..16].copy_from_slice(&global_slot.to_le_bytes());
-        meta_buf[16..20].copy_from_slice(&actual_seq_len.to_le_bytes());
-        let bt_bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_len) };
-        meta_buf[256..256 + bt_len].copy_from_slice(bt_bytes);
+        // Shared with `MtpHead::forward`, which writes this exact layout to this
+        // exact scratch offset — hence the shared packer, which is also where
+        // the destination bound now lives. This site previously had none: the
+        // block table grows with the context, so a long enough sequence wrote
+        // past the scratch arena.
+        let meta_buf = pack_mtp_attn_meta(
+            position as u32,
+            global_slot,
+            actual_seq_len,
+            &state.block_table,
+            ctx.buffers.scratch_bytes().saturating_sub(MTP_META_OFFSET),
+        )?;
         ctx.gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
 
         let mtp_meta = AttnMetadataDev {
@@ -324,6 +322,10 @@ impl DeepseekV4MtpHead {
             buffers: ctx.buffers,
             gpu: ctx.gpu,
             config: ctx.config,
+            dispatch: ctx.dispatch,
+            derived: ctx.derived,
+            levers: ctx.levers,
+            stats: ctx.stats,
             attn_metadata: Some(mtp_meta),
             profile: ctx.profile,
             // comm = None: the MTP draft runs ONLY on rank 0, so its MoE must NOT

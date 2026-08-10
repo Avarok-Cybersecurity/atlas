@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Snapshot-side tests: intermediate snapshots, partial-suffix matching,
-//! and the standalone snapshot index LRU/session/overwrite behaviours.
+//! Snapshot-side tests: intermediate snapshots and partial-suffix matching.
+//! The standalone `SsmSnapshotIndex` LRU/session/overwrite behaviours live in
+//! `snapshot_index.rs` (mounted as `radix_tree::snapshot`'s unit tests).
 
 use crate::prefix_cache::PrefixCache;
 use crate::radix_tree::RadixTree;
@@ -269,108 +270,6 @@ fn test_partial_suffix_sub_block_only() {
     assert_eq!(m.matched_tokens, 0);
 }
 
-// ── SsmSnapshotIndex tests ──
-
-#[test]
-fn test_snapshot_index_insert_lookup_roundtrip() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..32).collect();
-    let prefix_hash = hash_token_prefix(&tokens, 32, 0);
-
-    assert!(idx.insert(prefix_hash, 42, 100, 32).is_none());
-    let result = idx.lookup(&tokens, 32, 100, 0);
-    assert_eq!(result, Some((42, 32)));
-}
-
-#[test]
-fn test_snapshot_index_lru_eviction() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens_a: Vec<u32> = (0..16).collect();
-    let tokens_b: Vec<u32> = (100..116).collect();
-    let ha = hash_token_prefix(&tokens_a, 16, 0);
-    let hb = hash_token_prefix(&tokens_b, 16, 0);
-
-    idx.insert(ha, 1, 0, 16); // older
-    idx.insert(hb, 2, 0, 16); // newer
-
-    // LRU eviction should evict snapshot 1 (older)
-    let evicted = idx.evict_lru();
-    assert_eq!(evicted, Some(1));
-    assert_eq!(idx.len(), 1);
-
-    // Only snapshot 2 remains
-    let evicted = idx.evict_lru();
-    assert_eq!(evicted, Some(2));
-    assert_eq!(idx.len(), 0);
-
-    // Empty
-    assert_eq!(idx.evict_lru(), None);
-}
-
-#[test]
-fn test_snapshot_index_session_isolation() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..16).collect();
-    let prefix_hash = hash_token_prefix(&tokens, 16, 0);
-
-    // Insert snapshot for session 100
-    idx.insert(prefix_hash, 42, 100, 16);
-
-    // Lookup from session 200 — should NOT match (different session)
-    let result = idx.lookup(&tokens, 16, 200, 0);
-    assert_eq!(result, None);
-
-    // Lookup from session 100 — should match
-    let result = idx.lookup(&tokens, 16, 100, 0);
-    assert_eq!(result, Some((42, 16)));
-
-    // Lookup with session_hash=0 (legacy) — matches any session
-    let result = idx.lookup(&tokens, 16, 0, 0);
-    assert_eq!(result, Some((42, 16)));
-}
-
-#[test]
-fn test_snapshot_index_overwrite_existing() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..16).collect();
-    let prefix_hash = hash_token_prefix(&tokens, 16, 0);
-
-    // Insert first
-    assert!(idx.insert(prefix_hash, 5, 0, 16).is_none());
-    assert_eq!(idx.len(), 1);
-
-    // Overwrite same prefix_hash — returns old snapshot_id
-    let old = idx.insert(prefix_hash, 8, 0, 16);
-    assert_eq!(old, Some(5));
-    assert_eq!(idx.len(), 1); // still 1 entry, not 2
-
-    // Lookup returns new value
-    let result = idx.lookup(&tokens, 16, 0, 0);
-    assert_eq!(result, Some((8, 16)));
-}
-
-#[test]
-fn test_snapshot_index_deepest_match() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..64).collect();
-
-    // Snapshot at token 16
-    let h16 = hash_token_prefix(&tokens, 16, 0);
-    idx.insert(h16, 10, 0, 16);
-
-    // Snapshot at token 32
-    let h32 = hash_token_prefix(&tokens, 32, 0);
-    idx.insert(h32, 20, 0, 32);
-
-    // Lookup with 48 matched tokens — deepest snapshot at 32 wins
-    let result = idx.lookup(&tokens, 48, 0, 0);
-    assert_eq!(result, Some((20, 32)));
-
-    // Lookup with 20 matched tokens — only snapshot at 16 qualifies
-    let result = idx.lookup(&tokens, 20, 0, 0);
-    assert_eq!(result, Some((10, 16)));
-}
-
 // ── Task #24: adapter-correct SSM snapshots + base hash byte-identity ──
 
 /// `hash_token_prefix(_, _, 0)` (base sentinel) must reduce EXACTLY to the
@@ -445,51 +344,4 @@ fn test_ssm_snapshot_adapter_isolation_via_tree() {
     assert_eq!(m_a.matched_tokens, 32);
     assert_eq!(m_a.ssm_snapshot, Some(42));
     tree.release(&tokens, 16, A);
-}
-
-/// Phase 1b end-to-end trait surface: a snapshot's location transitions
-/// resident → spilled → resident through the `PrefixCache` API, and
-/// `lookup` reports each state correctly (the serving path's contract).
-#[test]
-fn test_spill_tier_lookup_transitions() {
-    let tree = RadixTree::new();
-    let tokens: Vec<u32> = (0..64).collect();
-    // Register a leaf snapshot (slot 99) for this prefix, session 7.
-    tree.insert_with_snapshot(&tokens, &[10, 20, 30, 40], &[], 16, 99, 7, 0, 0);
-
-    // Resident: lookup returns the HBM slot, no tier key.
-    let m = tree.lookup(&tokens, 16, 7, 0);
-    assert_eq!(m.ssm_snapshot, Some(99));
-    assert_eq!(m.ssm_snapshot_tokens, 64);
-    assert_eq!(m.ssm_snapshot_tier_key, None);
-
-    // Spill: evict_to_tier KEEPS the entry and returns (freed_slot, key).
-    let (freed, key) = tree.evict_snapshot_to_tier().expect("resident victim");
-    assert_eq!(freed, 99, "the resident slot is freed for reuse");
-
-    // Spilled: lookup now reports the anchor as tiered — ssm_snapshot is None
-    // (no HBM slot) and the tier key is present, so the caller faults it in.
-    let m = tree.lookup(&tokens, 16, 7, 0);
-    assert_eq!(m.ssm_snapshot, None, "no resident slot while spilled");
-    assert_eq!(m.ssm_snapshot_tier_key, Some(key));
-    assert_eq!(m.ssm_snapshot_tier_tokens, 64);
-
-    // Fault-in completes into slot 123; promote re-homes the entry to HBM.
-    assert!(tree.promote_snapshot(key, 123));
-
-    // Resident again at the new slot.
-    let m = tree.lookup(&tokens, 16, 7, 0);
-    assert_eq!(m.ssm_snapshot, Some(123));
-    assert_eq!(m.ssm_snapshot_tier_key, None);
-    tree.release(&tokens, 16, 0);
-}
-
-/// A caches-without-a-tier default: `evict_snapshot_to_tier` / `promote_snapshot`
-/// no-op on the trait default (NoPrefixCaching), so a non-radix cache is safe.
-#[test]
-fn test_no_tier_default_impl() {
-    use crate::prefix_cache::NoPrefixCaching;
-    let c = NoPrefixCaching;
-    assert_eq!(c.evict_snapshot_to_tier(), None);
-    assert!(!c.promote_snapshot(123, 0));
 }

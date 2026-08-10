@@ -101,6 +101,7 @@ impl Qwen3SsmLayer {
             conv_state_checkpoint: None,
             h_state_intermediates: Vec::new(),
             conv_state_intermediates: Vec::new(),
+            h_is_f16: false,
         }))
     }
 }

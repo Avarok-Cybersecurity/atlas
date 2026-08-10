@@ -253,16 +253,17 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     config.yarn_mscale = 0.0;
     config.yarn_mscale_all_dim = 0.0;
 
-    // DEBUG: Log YaRN parameters to verify they're being read correctly
-    println!(
-        "DeepSeek-V4 YaRN parameters: factor={:?}, beta_fast={:?}, beta_slow={:?}, original_max_pos={:?}, mscale={:?}, mscale_all_dim={:?}",
-        config.yarn_factor,
-        config.yarn_beta_fast,
-        config.yarn_beta_slow,
-        config.yarn_original_max_position_embeddings,
-        config.yarn_mscale,
-        config.yarn_mscale_all_dim,
-    );
+    // A YaRN-parameter dump used to be printed here with `println!`. It went
+    // straight to stdout, and the dashboard owns that terminal: the line
+    // landed INSIDE the alternate screen while the TUI was drawing, scrolled
+    // it, and left ratatui's diff baseline pointing at the wrong rows — the
+    // stale panel header that sat above a live list on the first screen a
+    // user saw. It fired for every DeepSeek-V4 config parsed, which the
+    // Library does for each local checkpoint at boot.
+    //
+    // Deleted rather than rerouted: it was marked DEBUG, and this crate
+    // deliberately carries no `tracing` dependency (see `registry.rs`).
+    // `eprintln!` would corrupt the same terminal.
 
     finalize_config(&mut config, &raw)?;
     Ok(config)

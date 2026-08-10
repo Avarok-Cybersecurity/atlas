@@ -127,6 +127,32 @@ impl TransformerModel {
         if !spark_runtime::ssm_tail_midchunk_enabled() || !self.ssm_snapshots.is_enabled() {
             return None;
         }
+        // ONLY `atlas_scale` builds can actually fill this plan's `h_dsts`.
+        //
+        // The mid-chunk capture splits the SSM recurrence at the tail boundary
+        // and D2D-copies the live h_state into the reserved slot. That split
+        // exists only in the gfx1151/SCALE arm of
+        // `qwen3_ssm::trait_prefill_recur` — the NVIDIA FLA/WY ladder never
+        // writes `h_dsts` (grep: the pointers are allocated here, plumbed
+        // through `ForwardContext`, and on this target never used). The sibling
+        // conv_state capture is NOT so guarded, so the snapshot came out with a
+        // correct conv_state beside an h_state that was never written, and was
+        // then registered as a valid anchor. Measured on GB10 before this
+        // guard: every restore read h_sum=0 h_ssq=0 where the neighbouring
+        // intermediate checkpoint read h_ssq=28917, and because the tail anchor
+        // registers one block deeper it ALWAYS won the deepest-anchor lookup —
+        // ~93% of warm prefills (159 hits vs 12 misses on one N=10 tier)
+        // resumed from a zeroed recurrent state. Silent: the KV half is intact,
+        // so text stays fluent and only the SSM contribution is wrong.
+        //
+        // Refusing the plan here restores the intermediate checkpoint as the
+        // deepest valid anchor, which is sound. Verified equivalent: with the
+        // capture off, output is bit-identical to a cold run. Lift this the
+        // moment the NVIDIA arm captures h_state — the plan is correct, it is
+        // the writer that is missing.
+        if !cfg!(atlas_scale) {
+            return None;
+        }
         // Reuse gate: capture costs a per-prefill kernel split + D2D copy and
         // is only ever consumable by a LATER request of the SAME session (the
         // snapshot lookup is session-gated). A session seen for the FIRST
@@ -138,7 +164,20 @@ impl TransformerModel {
         // 2026-07-20): capture-always Σ1846s/9-of-10 + 257 tok/turn vs
         // capture-off Σ1495s/10-of-10 + 203 tok/turn on sessionless agentic
         // traffic; multi-turn warm-TTFT (-54% max) is preserved from turn 3.
-        if !self.ssm_snapshots.session_has_history(seq.session_hash) {
+        // A prefix-cache HIT on THIS request (cached_prefix_tokens>0) is a
+        // direct, session-hash-independent signal that this is a WARM multi-turn
+        // continuation — exactly when the captured anchor is reused next turn.
+        // The original session_has_history proxy depends on session_hash, which
+        // is UNSTABLE across turns of a growing <1024-token conversation, so it
+        // wrongly skipped capture on every warm turn of short-prompt multi-turn
+        // traffic (the warm-TTFT-climb: only turn-1's anchor ever survived). Keep
+        // the session_has_history OR so a cold first turn of a long-prompt session
+        // still captures from its second request, and cold single-turn traffic
+        // (no hit, no history) is still skipped (the measured sessionless-cost
+        // optimization is preserved).
+        if seq.cached_prefix_tokens == 0
+            && !self.ssm_snapshots.session_has_history(seq.session_hash)
+        {
             return None;
         }
         let bs = kv_cache.block_size();
@@ -201,6 +240,7 @@ impl TransformerModel {
             let saved = match self.ssm_snapshots.save(
                 seq.slot_idx,
                 seq.session_hash,
+                self.seq_ssm_h_is_f16(seq),
                 &self.ssm_pool,
                 self.gpu.as_ref(),
                 stream,
@@ -217,6 +257,7 @@ impl TransformerModel {
                             .save(
                                 seq.slot_idx,
                                 seq.session_hash,
+                                self.seq_ssm_h_is_f16(seq),
                                 &self.ssm_pool,
                                 self.gpu.as_ref(),
                                 stream,

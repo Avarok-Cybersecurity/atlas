@@ -4,36 +4,56 @@
 
 use super::*;
 
-/// Send final response and free GPU resources for a completed sequence.
-pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
-    let last_tok = a.output_tokens.last().copied();
-    let is_eos = last_tok.is_some_and(|t| a.eos_tokens.contains(&t));
-    let is_tool_call_end = last_tok == a.tool_call_end_token;
-    let reason = if is_eos {
+/// Derive the wire finish reason for a completed sequence.
+///
+/// A server-side deadline cut outranks the token-derived reasons: the
+/// last token of a truncated response is an ordinary content token, so
+/// the token-derived path would call it "length" and the client could
+/// not tell a truncation from a legitimate max_tokens stop. Pure so the
+/// precedence is unit-testable without a model or a GPU.
+pub(super) fn derive_finish_reason(
+    guard_stop: Option<&'static str>,
+    last_tok: Option<u32>,
+    eos_tokens: &[u32],
+    tool_call_end_token: Option<u32>,
+) -> &'static str {
+    if guard_stop == Some(GUARD_STOP_REQUEST_TIMEOUT) {
+        return crate::ir::FINISH_REASON_TIMEOUT;
+    }
+    if last_tok.is_some_and(|t| eos_tokens.contains(&t)) {
         "stop"
-    } else if is_tool_call_end {
+    } else if last_tok == tool_call_end_token {
         "tool_calls"
     } else {
         "length"
-    };
+    }
+}
+
+/// Send final response and free GPU resources for a completed sequence.
+pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
+    let last_tok = a.output_tokens.last().copied();
+    let reason = derive_finish_reason(a.guard_stop, last_tok, &a.eos_tokens, a.tool_call_end_token);
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
             let decode_ms = a.decode_start.elapsed().as_secs_f64() * 1000.0;
-            if let Err(e) = tx.blocking_send(StreamEvent::Done {
-                finish_reason: reason.to_string(),
-                prompt_tokens: 0, // prompt_tokens tracked by API layer
-                completion_tokens: a.output_tokens.len(),
-                time_to_first_token_ms: ttft_ms,
-                decode_time_ms: decode_ms,
-                reasoning_tokens: a.thinking_tokens,
-                cached_prompt_tokens: a.cached_prompt_tokens,
-                guard_stop: a.guard_stop,
-            }) {
-                tracing::warn!(
-                    "finish_sequence: streaming Done send failed (receiver dropped): {e}"
-                );
-            }
+            // Terminal frame: detached from the scheduler thread — safe
+            // because nothing follows Done on this channel and all earlier
+            // events are already queued (see spawn_terminal_send).
+            super::mod_helpers::spawn_terminal_send(
+                tx,
+                StreamEvent::Done {
+                    finish_reason: reason.to_string(),
+                    prompt_tokens: 0, // prompt_tokens tracked by API layer
+                    completion_tokens: a.output_tokens.len(),
+                    time_to_first_token_ms: ttft_ms,
+                    decode_time_ms: decode_ms,
+                    reasoning_tokens: a.thinking_tokens,
+                    cached_prompt_tokens: a.cached_prompt_tokens,
+                    guard_stop: a.guard_stop,
+                },
+                "done frame",
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take() {
@@ -92,9 +112,11 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
 pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
-            if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
-                tracing::warn!("send_error: streaming Error send failed (receiver dropped): {e}");
-            }
+            super::mod_helpers::spawn_terminal_send(
+                tx,
+                StreamEvent::Error(msg.to_string()),
+                "error frame",
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take()
@@ -120,11 +142,11 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
 pub fn send_error_to_sink(sink: &mut ResponseSink, msg: &str) {
     match sink {
         ResponseSink::Streaming(tx) => {
-            if let Err(e) = tx.blocking_send(StreamEvent::Error(msg.to_string())) {
-                tracing::warn!(
-                    "send_error_to_sink: streaming Error send failed (receiver dropped): {e}"
-                );
-            }
+            super::mod_helpers::spawn_terminal_send(
+                tx,
+                StreamEvent::Error(msg.to_string()),
+                "pre-seq error frame",
+            );
         }
         ResponseSink::Blocking(tx) => {
             if let Some(tx) = tx.take()
@@ -348,6 +370,7 @@ pub fn resume_swapped_seq(
         // Grammar state is not serializable; resumed sequences use legacy fallback.
         grammar_state: None,
         pending_drafts: Vec::new(),
+        pending_draft_conf: Vec::new(),
         last_token_time: Instant::now(),
         request_start: s.request_start,
         decode_start: s.decode_start,
@@ -358,4 +381,82 @@ pub fn resume_swapped_seq(
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(s.temperature),
         cached_prompt_tokens: s.cached_prompt_tokens,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GUARD_STOP_REQUEST_TIMEOUT, derive_finish_reason};
+    use crate::ir::FINISH_REASON_TIMEOUT;
+
+    const EOS: &[u32] = &[151645];
+    const TOOL_END: Option<u32> = Some(151658);
+
+    #[test]
+    fn timeout_is_not_reported_as_length() {
+        // The regression this wave fixes: a deadline cut lands on an
+        // ordinary content token, so the token-derived path calls it
+        // "length" — indistinguishable from a legitimate max_tokens stop.
+        assert_eq!(
+            derive_finish_reason(None, Some(42), EOS, TOOL_END),
+            "length"
+        );
+        assert_eq!(
+            derive_finish_reason(Some(GUARD_STOP_REQUEST_TIMEOUT), Some(42), EOS, TOOL_END),
+            FINISH_REASON_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn timeout_outranks_eos_and_tool_call_end() {
+        // A deadline can fire on the same step that emits EOS or the
+        // tool-call close; the response is still truncated relative to
+        // what the client asked for, so "timeout" must win.
+        assert_eq!(
+            derive_finish_reason(
+                Some(GUARD_STOP_REQUEST_TIMEOUT),
+                Some(151645),
+                EOS,
+                TOOL_END
+            ),
+            FINISH_REASON_TIMEOUT
+        );
+        assert_eq!(
+            derive_finish_reason(
+                Some(GUARD_STOP_REQUEST_TIMEOUT),
+                Some(151658),
+                EOS,
+                TOOL_END
+            ),
+            FINISH_REASON_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn other_guards_keep_their_token_derived_reason() {
+        // Only the deadline marker remaps. The pre-existing guards
+        // (fuzzy_repetition, tool_envelope_stuck, ...) are surfaced via
+        // `guard_stop` in the dump body and must not change the wire
+        // reason — that is a separate, already-shipped contract.
+        assert_eq!(
+            derive_finish_reason(Some("fuzzy_repetition"), Some(42), EOS, TOOL_END),
+            "length"
+        );
+        assert_eq!(
+            derive_finish_reason(Some("tool_envelope_stuck"), Some(151645), EOS, TOOL_END),
+            "stop"
+        );
+    }
+
+    #[test]
+    fn normal_stops_are_unchanged() {
+        assert_eq!(
+            derive_finish_reason(None, Some(151645), EOS, TOOL_END),
+            "stop"
+        );
+        assert_eq!(
+            derive_finish_reason(None, Some(151658), EOS, TOOL_END),
+            "tool_calls"
+        );
+        assert_eq!(derive_finish_reason(None, Some(7), EOS, TOOL_END), "length");
+    }
 }

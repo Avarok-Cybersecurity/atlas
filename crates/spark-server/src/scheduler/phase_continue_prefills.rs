@@ -42,21 +42,13 @@ use run_standard::run_standard_chunk_loop;
 /// Shared per-chunk InnerQ poll used by every prefill path (standard /
 /// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
 /// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
-/// so calling on every chunk costs one OnceLock load in the disabled case.
+/// so calling on every chunk costs one scoped-cell load in the disabled case.
 /// On non-cuda backends the driver doesn't exist (it talks to the CUDA
 /// Driver API directly via `atlas_core::registry`), so this collapses to
 /// a no-op via the `#[cfg]` gate.
-#[cfg(feature = "cuda")]
-pub(super) fn poll_innerq() {
-    if let Some(driver) = spark_model::layers::qwen3_attention::INNERQ.get()
-        && let Err(e) = driver.maybe_finalize(128)
-    {
-        tracing::warn!("InnerQ maybe_finalize failed: {e:#}");
-    }
+pub(super) fn poll_innerq(model: &dyn Model) {
+    model.poll_innerq();
 }
-
-#[cfg(not(feature = "cuda"))]
-pub(super) fn poll_innerq() {}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
@@ -78,6 +70,7 @@ pub(super) fn continue_in_progress_prefills(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) -> bool {
     let mut did_mixed_step = false;
 
@@ -139,11 +132,7 @@ pub(super) fn continue_in_progress_prefills(
             // B4: clamp so padded decode + prefill slice fit the hidden
             // buffer (else mixed_forward silently de-fuses to sequential
             // decode_batch + prefill_chunk — weights loaded twice).
-            let padded_n = [2usize, 4, 8]
-                .iter()
-                .copied()
-                .find(|&s| s >= active.len())
-                .unwrap_or(active.len());
+            let padded_n = spark_model::traits::padded_batch_n(active.len());
             let fuse_cap = max_batch_tokens.saturating_sub(padded_n).max(4);
             debug_assert!(
                 fuse_cap >= 4,
@@ -211,6 +200,7 @@ pub(super) fn continue_in_progress_prefills(
     if can_batch_prefill_only {
         run_batched_prefill_step(
             model,
+            sched,
             prefilling,
             &mut completed_indices,
             max_prefill_tokens,
@@ -247,6 +237,7 @@ pub(super) fn continue_in_progress_prefills(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
+            sched,
             &mut did_mixed_step,
         );
         promote_completed_prefills(
@@ -315,6 +306,7 @@ pub(super) fn continue_in_progress_prefills(
                         p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        &sched.levers.sampling(),
                     ) {
                         Ok(first) => {
                             tracing::info!("Two-phase prefill first token: {first}");
@@ -353,6 +345,7 @@ pub(super) fn continue_in_progress_prefills(
                 tool_call_start_token,
                 tool_call_end_token,
                 adaptive_sampling,
+                sched,
                 &mut completed_indices,
                 &mut did_mixed_step,
             );

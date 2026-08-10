@@ -1,6 +1,6 @@
 [package]
 name = "spark-server"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas Spark — pure Rust LLM inference server"
@@ -46,16 +46,36 @@ spark-storage = { path = "../spark-storage", default-features = false }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Blocking HTTP for the recipe fetch, which runs on its own std::thread and
+# never touches the async runtime. Already in the lock via atlas-spark-bench.
+ureq = { version = "3", features = ["json"] }
 thiserror = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["json"] }
 # Direct hyper/hyper-util/tower access for the manual accept loop in
 # `serve_router.rs` — `axum::serve` does not expose hyper's connection-layer
 # `header_read_timeout`, which is what bounds a slowloris (slow-header) client.
-hyper = { version = "1", features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+http-body = "1"
+hyper = { version = "1", features = ["server", "http1", "http2", "client"] }
+hyper-util = { version = "0.1", features = ["server-auto", "client-legacy", "http1", "tokio"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
+# ── Atlas TUI (crates/spark-server/src/tui/) ──
+# The benchmark suite the Benchmarks section drives. GPU-free and
+# server-independent by design, so it stays unit-testable on any box.
+atlas-plugin = { path = "../atlas-plugin" }
+# Recomputes the closure hash in `tests/closure_attestation.rs` to prove the
+# build-side and gate-side source resolvers still agree.
+atlas-closure = { path = "../atlas-closure" }
+# ratatui pins its own crossterm; the version here MUST match ratatui 0.29's
+# (crossterm 0.28) or two raw-mode stacks fight over the terminal.
+ratatui = "0.29"
+crossterm = "0.28"
+# Single/multi-line inputs (log filter, library search, REPL, chat). MIT.
+tui-textarea = "0.7"
+unicode-width = "0.2"
+# stderr redirection while the TUI owns the screen (terminal_guard).
+libc = "0.2"
 tokio-stream = "0.1"
 futures = "0.3"
 rayon = "1.12"
@@ -77,6 +97,7 @@ xgrammar = { path = "../xgrammar" }
 prometheus = { version = "0.14", default-features = false }
 lazy_static = "1"
 tower-http = { version = "0.7", features = ["catch-panic", "cors"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

@@ -68,6 +68,10 @@ int cuLaunchKernel(void* f, unsigned gx, unsigned gy, unsigned gz,
 // ── streams ───────────────────────────────────────────────────────────
 int cuStreamCreate(void** s, unsigned flags)        { return hipStreamCreateWithFlags((hipStream_t*)s, flags); }
 int cuStreamSynchronize(void* s)                    { return hipStreamSynchronize((hipStream_t)s); }
+// Non-blocking completion poll (ATLAS_D2H_SPIN_SYNC). hipErrorNotReady and
+// CUDA_ERROR_NOT_READY are both 600, so the caller's spin predicate is
+// unchanged on AMD.
+int cuStreamQuery(void* s)                          { return hipStreamQuery((hipStream_t)s); }
 int cuStreamWaitEvent(void* s, void* e, unsigned f) { return hipStreamWaitEvent((hipStream_t)s, (hipEvent_t)e, f); }
 int cuStreamBeginCapture(void* s, int mode)         { return hipStreamBeginCapture((hipStream_t)s, (hipStreamCaptureMode)mode); }
 int cuStreamEndCapture(void* s, void** pgraph)      { return hipStreamEndCapture((hipStream_t)s, (hipGraph_t*)pgraph); }

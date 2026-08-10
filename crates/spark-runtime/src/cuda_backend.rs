@@ -9,9 +9,13 @@
 use std::ffi::c_void;
 
 use anyhow::{Result, bail};
+use std::sync::Arc;
+
 use atlas_core::registry::AtlasRegistry;
 
+mod gpu_copy;
 mod gpu_impl;
+mod gpu_impl_graph;
 
 // ── Raw CUDA driver API for memory operations ──
 
@@ -32,7 +36,17 @@ unsafe extern "C" {
     ) -> i32;
     pub(super) fn cuMemcpyDtoDAsync_v2(dst: u64, src: u64, bytes: usize, stream: u64) -> i32;
     pub(super) fn cuStreamSynchronize(stream: u64) -> i32;
+    pub(super) fn cuStreamQuery(stream: u64) -> i32;
+    pub(super) fn cuMemHostGetDevicePointer_v2(
+        dptr: *mut u64,
+        host: *mut std::ffi::c_void,
+        flags: u32,
+    ) -> i32;
     pub(super) fn cuMemGetInfo_v2(free: *mut usize, total: *mut usize) -> i32;
+    /// Device of the calling context, then any `CUdevice_attribute` on it.
+    /// Used for `sm_count` (attribute 16 = MULTIPROCESSOR_COUNT).
+    pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
+    pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
@@ -76,10 +90,40 @@ unsafe extern "C" {
 
 /// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.
 ///
-/// Initialized once via [`AtlasCudaBackend::new`], which loads all PTX
-/// modules from `atlas-kernels` into the global AtlasRegistry singleton.
+/// **Owns this model's kernel modules.** The registry used to be a process
+/// singleton reached through `AtlasRegistry::get()`; it is now loaded per model
+/// and propagated from here, so a swapped-in model cannot run the previous
+/// model's kernels. Dropping the last backend unloads them.
 pub struct AtlasCudaBackend {
-    /// Default CUDA stream handle (from AtlasRegistry).
+    /// This model's kernel modules. `Arc` because the backend is cloned into
+    /// the layers that launch kernels.
+    registry: Arc<AtlasRegistry>,
+    /// `ATLAS_DEBUG_SYNC_KERNELS=1` — sync after every launch. Read once here
+    /// rather than per launch, and carried rather than cached in a static.
+    debug_sync_kernels: bool,
+    /// This model's kernel handles and op scratch. Dropped with the backend,
+    /// so neither can outlive the registry or context it came from.
+    op_cache: crate::op_cache::OpCache,
+    /// Every device allocation this backend made and has not freed.
+    ///
+    /// The backend is created per model (`preflight.rs`) and moved into it, so
+    /// this ledger is exactly model-scoped: what is still outstanding when the
+    /// model is torn down is what that model leaked.
+    ///
+    /// This exists because enumerating owners does not scale. The loaders
+    /// FUSE weights — `qwen35_dense.rs:98` allocates a new buffer and copies
+    /// two source tensors into it — and hand the result to a layer struct. The
+    /// sources live in `WeightStore` and are released with it; the fused copy
+    /// is owned by a `Box<dyn TransformerLayer>` and was released by nothing.
+    /// Measured on a 27B: 15.3 GB leaked per load/teardown cycle, linear
+    /// across six cycles with no plateau.
+    ///
+    /// Process-lifetime workspaces are NOT in here and must not be: CUTLASS
+    /// (`cutlass.rs:246`) and FlashInfer (`flashinfer.rs:145`) call
+    /// `cuMemAlloc_v2` directly rather than through this allocator, so freeing
+    /// the ledger cannot invalidate a static that outlives the model.
+    live_allocs: parking_lot::Mutex<std::collections::HashSet<u64>>,
+    /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
     cuda_ctx: u64,
@@ -88,13 +132,17 @@ pub struct AtlasCudaBackend {
 impl AtlasCudaBackend {
     /// Initialize the CUDA backend on the given GPU ordinal.
     ///
-    /// Loads the provided PTX modules into AtlasRegistry.
-    /// Use `atlas_kernels::ptx_for_model()` or `ptx_modules()` to
-    /// obtain the correct module set for the target model.
-    /// Subsequent calls reuse the cached singleton.
+    /// Loads the provided PTX modules for THIS model. Use
+    /// `atlas_kernels::ptx_for_model()` or `ptx_modules()` to obtain the
+    /// correct module set. Each call produces an independent module set — the
+    /// CUDA context and stream are shared, nothing else is.
     pub fn new(ordinal: usize, ptx_modules: &[(&'static str, &'static [u8])]) -> Result<Self> {
-        let registry = AtlasRegistry::get_or_init(ordinal, ptx_modules)
-            .map_err(|e| anyhow::anyhow!("AtlasRegistry init failed: {e}"))?;
+        // A new model's GPU state begins here, so the run mailboxes start
+        // clean — upstream of the first kernel lookup, so the kernel audit
+        // records only this model's modules. See `crate::run_metrics`.
+        crate::run_metrics::reset_for_new_run();
+        let registry = AtlasRegistry::load(ordinal, ptx_modules)
+            .map_err(|e| anyhow::anyhow!("AtlasRegistry load failed: {e}"))?;
         let default_stream = registry.raw_stream();
 
         // Capture current CUDA context for cross-thread binding.
@@ -110,9 +158,91 @@ impl AtlasCudaBackend {
         );
 
         Ok(Self {
+            live_allocs: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            registry,
+            debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
+            op_cache: crate::op_cache::OpCache::new(),
             default_stream,
             cuda_ctx,
         })
+    }
+
+    /// This model's kernel modules, for the paths that need the registry
+    /// directly rather than through `GpuBackend`.
+    pub(crate) fn record_alloc(&self, ptr: crate::gpu::DevicePtr) {
+        self.live_allocs.lock().insert(ptr.0);
+    }
+
+    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
+        self.live_allocs.lock().remove(&ptr.0);
+    }
+
+    /// Free every allocation this backend made and nobody released.
+    ///
+    /// The backstop for allocations no `ModelResource` covers — chiefly the
+    /// loaders' fused weights, which are owned by layer structs rather than by
+    /// any pool. Returns how many were reclaimed and their total bytes is not
+    /// tracked (the driver does not report per-pointer size), so the count is
+    /// the diagnostic: a non-zero count after a clean teardown names how many
+    /// allocations have no owner.
+    ///
+    /// Runs LAST in teardown, after every `ModelResource::release`, so it only
+    /// ever sees what those missed — and each `free` here has already been
+    /// removed from the ledger by `forget_alloc`, so it cannot double-free.
+    pub fn sweep_unreleased(&self) -> usize {
+        let outstanding: Vec<u64> = self.live_allocs.lock().drain().collect();
+        let count = outstanding.len();
+        for raw in outstanding {
+            // Bypass `free`: the ledger is already drained, and a failure here
+            // must not abort the rest of the sweep.
+            let status = unsafe { cuMemFree_v2(raw) };
+            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+                tracing::warn!("sweep: cuMemFree failed for {raw:#x}: status {status}");
+            }
+        }
+        count
+    }
+
+    pub fn registry(&self) -> &Arc<AtlasRegistry> {
+        &self.registry
+    }
+
+    pub(crate) fn debug_sync_kernels(&self) -> bool {
+        self.debug_sync_kernels
+    }
+}
+
+/// Last-resort reclamation for a backend that never reached model teardown.
+///
+/// A load that FAILS part-way leaves whatever it had already allocated on the
+/// ledger, and no `Model` is ever built to tear down. On a hot-swap that memory
+/// is not merely leaked, it is actively harmful: the outgoing model is already
+/// gone, and the restore then loads into a budget the dead attempt is still
+/// holding. That is not hypothetical — a 35B swap failed at kernel selection
+/// and the 27B restore died with "only 14.08 GB remains but 17.38 GB is
+/// needed", leaving the server with no model at all.
+///
+/// On the normal path this frees nothing: `Model::teardown` drains the ledger
+/// first, so the sweep finds an empty set. Freeing here is the safe case
+/// described in `atlas_core::scope` — nothing is allocating against a backend
+/// that is being dropped.
+impl Drop for AtlasCudaBackend {
+    fn drop(&mut self) {
+        let swept = self.sweep_unreleased();
+        if swept > 0 {
+            // Not necessarily a failure: a load abandoned part-way never
+            // reaches `Model::teardown`, and this is where its allocations come
+            // back. But on a model that DID serve, teardown has already drained
+            // the ledger, so anything here belongs to an owner that never
+            // registered — say which without asserting a cause the log cannot
+            // know. (An earlier wording claimed "from a load that never
+            // completed"; it fired on two perfectly healthy swaps and would
+            // have sent an operator hunting a failure that had not happened.)
+            tracing::warn!(
+                "backend drop reclaimed {swept} allocation(s) that no owner released — \
+                 expected if a load was abandoned part-way, otherwise an unregistered owner"
+            );
+        }
     }
 }
 
@@ -163,12 +293,28 @@ fn system_available_memory_bytes() -> Option<usize> {
 /// If free memory drops below `threshold_mb` MB, the process exits immediately.
 ///
 /// Returns a `tokio::task::JoinHandle` — drop it to stop the watchdog (on shutdown).
+/// Whether the watchdog is already running.
+///
+/// STATIC, DELIBERATELY — process lifecycle. The watchdog polls DEVICE free
+/// memory, which is a property of the process and its GPU, not of any model:
+/// one is correct for the whole process no matter how many models come and go.
+/// It is nonetheless spawned from inside the model-dependent startup range
+/// (after GPU init, which it needs for a context), so a second load would
+/// otherwise start a second watchdog polling the same number and logging the
+/// same warning twice. Guarding at the source rather than at the call site
+/// means a future swap path cannot get this wrong by forgetting.
+static WATCHDOG_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the OOM watchdog, or return `None` if one is already running.
 pub fn spawn_oom_watchdog(
     threshold_mb: usize,
     interval: std::time::Duration,
-) -> tokio::task::JoinHandle<()> {
+) -> Option<tokio::task::JoinHandle<()>> {
+    if WATCHDOG_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
     let threshold_bytes = threshold_mb * 1024 * 1024;
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
         // Track consecutive low-memory readings to avoid false positives
         // during transient allocation spikes.
@@ -198,7 +344,7 @@ pub fn spawn_oom_watchdog(
                 }
             }
         }
-    })
+    }))
 }
 
 #[cfg(test)]

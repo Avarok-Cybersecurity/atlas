@@ -23,6 +23,7 @@
 //!                      timeout / logprobs resolution
 
 pub(crate) mod echo;
+pub(crate) mod levers;
 mod loop_detect;
 mod msg_entry;
 pub(crate) mod prepare;
@@ -30,6 +31,7 @@ mod sampling_setup;
 mod template;
 mod thinking;
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -60,7 +62,8 @@ pub(crate) fn test_build_msg_entries(
     input: &[crate::ir::Message],
     tools_active: bool,
 ) -> Result<Vec<msg_entry::MsgEntry>, axum::response::Response> {
-    msg_entry::build_msg_entries(None, None, input, tools_active).map(|o| o.messages)
+    msg_entry::build_msg_entries(None, None, input, tools_active, &levers::ChatLevers::OFF)
+        .map(|o| o.messages)
 }
 
 #[cfg(test)]
@@ -71,7 +74,13 @@ pub(crate) fn test_build_json_messages(entries: &[msg_entry::MsgEntry]) -> Vec<s
 use super::compact::openai_error_response;
 
 pub async fn chat_completions(
-    State(state): State<Arc<AppState>>,
+    // The HOST, not `CurrentModel`: this is the one handler that can CREATE the
+    // model. Extractors run before the body is read, so `CurrentModel` would
+    // hand back whatever was loaded BEFORE the request said which model it
+    // wanted — exactly the thing the auto-swap has to decide on.
+    axum::extract::State(host): axum::extract::State<
+        std::sync::Arc<crate::main_modules::model_host::ModelHost>,
+    >,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -88,6 +97,64 @@ pub async fn chat_completions(
                 format!("Invalid request JSON: {e}"),
             );
         }
+    };
+
+    // Ollama-style: a request naming a different KNOWN model loads it first.
+    // Off unless `--auto-swap`, and `--no-auto-swap` overrides that; every
+    // other case (absent, unknown, already live) falls through untouched, which
+    // is byte-identical to the behaviour before this existed.
+    if host.auto_swap_enabled() {
+        let live = host.live_model().unwrap_or_default();
+        // Short-circuit the overwhelmingly common case — a client naming the
+        // model that is already loaded — before touching the disk. Reading the
+        // recipe index means an `ArtifactStore::discover` plus a JSON parse,
+        // and doing that per request put blocking I/O on a runtime worker in
+        // the hot path of every completion.
+        if !req.model.is_empty() && req.model != live {
+            let requested = req.model.clone();
+            let swap_host = host.clone();
+            // Both the catalogue read and the load are blocking, so BOTH belong
+            // off the runtime — the decision needs the index, and the index is
+            // on disk.
+            let outcome = tokio::task::spawn_blocking(move || {
+                let catalogue = atlas_plugin::ArtifactStore::discover()
+                    .ok()
+                    .map(|s| crate::recipe::fetch::cached(s.root()).recipes)
+                    .unwrap_or_default();
+                match crate::main_modules::auto_swap::decide(&requested, &live, &catalogue) {
+                    crate::main_modules::auto_swap::Decision::SwapTo(recipe_id) => {
+                        crate::main_modules::auto_swap::ensure_loaded(
+                            &swap_host, &recipe_id, &requested, &catalogue,
+                        )
+                    }
+                    // Unknown to the catalogue, or already live: serve as-is.
+                    crate::main_modules::auto_swap::Decision::ServeCurrent => Ok(()),
+                }
+            })
+            .await;
+            match outcome {
+                Ok(Ok(())) => {}
+                // A failed load already restored the previous model where it
+                // could; say so and serve on whatever is actually live rather
+                // than failing a request the old model could have answered.
+                Ok(Err(e)) => tracing::warn!("auto-swap to {:?} failed: {e:#}", req.model),
+                Err(e) => tracing::warn!("auto-swap task failed: {e}"),
+            }
+        }
+    }
+
+    // Resolve AFTER any swap, so the request is served by the model it asked
+    // for rather than the one that happened to be loaded when it arrived.
+    let Some(state) = host.current() else {
+        // `_typed`, not the plain form: the plain one derives `error.type` from
+        // the status and would label this `server_error`, which is both wrong
+        // (nothing failed) and inconsistent with the `CurrentModel` extractor,
+        // which reports `model_not_loaded` for the identical condition.
+        return crate::api::compact::openai_error_response_typed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no model is loaded".to_string(),
+            "model_not_loaded",
+        );
     };
 
     // --dump: record the incoming request body verbatim.
@@ -128,14 +195,13 @@ pub(crate) async fn chat_completions_inner(
     dump_seq: Option<u64>,
 ) -> ChatOutcome {
     crate::metrics::REQUESTS_TOTAL.inc();
-    crate::metrics::REQUESTS_ACTIVE.inc();
+    // RAII: decrements on EVERY exit path, including this future being dropped
+    // when the client disconnects (see ActiveRequestGuard / atlas#368). Moved
+    // into the SSE stream for streaming requests so it outlives this function.
+    let active_guard = crate::metrics::ActiveRequestGuard::new();
 
     // ── Input validation + cross-turn F-feature guards ──
     if let Err(resp) = super::chat_phases::validate_input(&req) {
-        // Balance the REQUESTS_ACTIVE gauge incremented above: every other
-        // terminal path decrements it, but this fail-fast 400 returns before
-        // reaching a dispatch handler.
-        crate::metrics::REQUESTS_ACTIVE.dec();
         return ChatOutcome::Http(resp);
     }
 
@@ -211,6 +277,47 @@ pub(crate) async fn chat_completions_inner(
     }
 
     // ── Phases 1-5 (prompt-affecting): shared with count_tokens ──
+    //
+    // Runs on the BLOCKING pool, not the async worker. Phase timing measured
+    // this chain at 1.4-3.2 ms on a short prompt and 13.0 ms at 12931 prompt
+    // tokens — nearly all of it the Jinja render + tokenize — and it used to run
+    // inline in this async fn, so a worker thread was held for the duration and
+    // could poll no other request.
+    //
+    // `spawn_blocking` rather than `block_in_place`: `block_in_place` evicts the
+    // other tasks from the current worker and may spawn a replacement thread, so
+    // it suits OCCASIONAL blocking. Here every request would do it, which turns
+    // into continuous worker cannibalisation as concurrency rises. The blocking
+    // pool exists for exactly this and keeps all async workers pollable.
+    //
+    // `'static` is satisfied by ownership, not by a scoped-spawn crate: `state`
+    // is already an `Arc` (clone = refcount bump) and `req` is MOVED in and
+    // handed back, which also preserves the tool-system-prompt mutation
+    // `prepare_chat_prompt` applies to it via `&mut`.
+    //
+    // NOTE: this is a CONCURRENCY fix. At --max-batch-size 1 single-stream there
+    // is no second request to unblock, so it buys nothing there and costs one
+    // task handoff; it is worth it for concurrent serving.
+    let _t_seg = std::time::Instant::now();
+    let state_for_prepare = state.clone();
+    let (prepared, moved_req) = match tokio::task::spawn_blocking(move || {
+        let out = prepare::prepare_chat_prompt(&state_for_prepare, &mut req);
+        (out, req)
+    })
+    .await
+    {
+        Ok(pair) => pair,
+        Err(join_err) => {
+            // The blocking task panicked. Surface a 500 rather than letting the
+            // JoinError unwind through the handler.
+            tracing::error!("prepare_chat_prompt panicked: {join_err}");
+            return ChatOutcome::Http(openai_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal error preparing the chat prompt".to_string(),
+            ));
+        }
+    };
+    req = moved_req;
     let prepare::PreparedChat {
         tools_active,
         cwd_hint,
@@ -218,18 +325,22 @@ pub(crate) async fn chat_completions_inner(
         prompt_tokens,
         enable_thinking,
         thinking_budget,
-    } = match prepare::prepare_chat_prompt(&state, &mut req) {
+    } = match prepared {
         Ok(p) => p,
         Err(resp) => return ChatOutcome::Http(resp),
     };
+
+    let us_prepare = _t_seg.elapsed().as_micros();
 
     // ── Phase 4: generic loop / spinning detection + task pin ───
     let loop_detect::LoopDetectOut {
         suppress_tool_call,
         tool_call_repeat_count,
     } = loop_detect::check_loops(&req.messages, tools_active);
+    let us_loop_detect = _t_seg.elapsed().as_micros() - us_prepare;
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
+    let us_session_hash = _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect;
     let tools_count = req.tools.len();
     tracing::info!(
         "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active} ({tools_count} defined)",
@@ -278,6 +389,16 @@ pub(crate) async fn chat_completions_inner(
         Ok(s) => s,
         Err(resp) => return ChatOutcome::Http(resp),
     };
+    if state.chat.phase_timing {
+        let us_sampling =
+            _t_seg.elapsed().as_micros() - us_prepare - us_loop_detect - us_session_hash;
+        tracing::info!(
+            "CHAT_PHASE handler: prepare={us_prepare}us loop_detect={us_loop_detect}us \
+             session_hash={us_session_hash}us sampling_and_grammar={us_sampling}us \
+             total_pre_dispatch={}us",
+            _t_seg.elapsed().as_micros()
+        );
+    }
 
     // ── Phase 7: dispatch streaming or blocking ─────────────────
     if req.stream {
@@ -319,6 +440,7 @@ pub(crate) async fn chat_completions_inner(
             grammar_spec.clone(),
             top_logprobs,
             timeout_at,
+            active_guard,
         )
         .await;
     }

@@ -51,11 +51,11 @@ impl TransformerLayer for Qwen3SsmLayer {
         residual: DevicePtr,
         num_tokens: usize,
         state: &mut dyn LayerState,
-        kv_cache: &mut PagedKvCache,
-        seq_len: usize,
-        block_table: &mut Vec<u32>,
-        disk_block_ids: &mut Vec<u32>,
-        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        _kv_cache: &mut PagedKvCache,
+        _seq_len: usize,
+        _block_table: &mut Vec<u32>,
+        _disk_block_ids: &mut Vec<u32>,
+        _disk_last_offloaded_per_layer: &mut Vec<u32>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -63,12 +63,38 @@ impl TransformerLayer for Qwen3SsmLayer {
             hidden,
             residual,
             num_tokens,
-            state,
-            kv_cache,
-            seq_len,
-            block_table,
-            disk_block_ids,
-            disk_last_offloaded_per_layer,
+            super::trait_decode_batched::GdnStates::Single(state),
+            ctx,
+            stream,
+        )
+    }
+
+    fn decode_verify_multi<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        n_seqs: usize,
+        ks: &[usize],
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        _kv_cache: &mut PagedKvCache,
+        wy_tables: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            states.len() == n_seqs && ks.len() == n_seqs,
+            "decode_verify_multi: states/ks/n mismatch"
+        );
+        let num_tokens: usize = ks.iter().sum();
+        self.decode_batched_inner(
+            hidden,
+            residual,
+            num_tokens,
+            super::trait_decode_batched::GdnStates::Multi {
+                states,
+                ks,
+                wy_tables,
+            },
             ctx,
             stream,
         )

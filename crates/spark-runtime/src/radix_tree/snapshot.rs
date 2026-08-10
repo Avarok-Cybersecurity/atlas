@@ -22,6 +22,21 @@ pub(super) struct SnapshotEntry {
     pub(super) tiered: bool,
     /// True for the per-session TAIL snapshot (the restore point the next turn's
     /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
+    ///
+    /// INVARIANT (load-bearing for the lookup session gate): `is_tail` is the
+    /// ONLY snapshot kind whose SSM state bleeds past its `token_count` (a tail
+    /// captures state at a block-floored boundary that can reflect a partial
+    /// block beyond the exact prefix). EVERY non-tail entry — `insert`
+    /// (prefill-save / finish-leaf / decode-checkpoint) and `insert_tail_sibling`
+    /// — stores state at EXACTLY `token_count` (see `snapshot_insert.rs`). Because
+    /// non-tail state is therefore a pure function of the verified token prefix,
+    /// the lookup/restore session gate is applied ONLY to `is_tail`; non-tail
+    /// entries are content-addressed and safe cross-session (like the KV radix).
+    /// `has_hidden` (pool-side) is orthogonal — the stashed last-token hidden is
+    /// likewise a pure function of the exact prefix. If a future capture path
+    /// ever registers a non-tail entry whose state reflects tokens beyond
+    /// `token_count`, it MUST set `is_tail` (or the gate must grow to cover it),
+    /// or cross-session restore will corrupt state.
     pub(super) is_tail: bool,
     /// True for the tail's EARLY sibling (the mid-chunk capture at `tb - bs`).
     /// Serves warm turns whose block-floored match lands one block below the
@@ -48,6 +63,10 @@ pub(super) enum SnapLoc {
 pub(super) struct SnapMatch {
     pub token_count: usize,
     pub loc: SnapLoc,
+    /// Whether the matched entry is a TAIL snapshot (bleeds past the exact
+    /// prefix). Only tails require the session gate at the restore site;
+    /// exact / is_tail_sibling entries are safe cross-session.
+    pub is_tail: bool,
 }
 
 pub(super) struct SsmSnapshotIndex {
@@ -80,8 +99,10 @@ pub(super) struct SsmSnapshotIndex {
     pub(super) stats: SnapshotStats,
 }
 
-/// Tail-lease kill switch. Default ON; `ATLAS_SSM_TAIL_PROTECT=0` (or `off`)
-/// disables. Backward compatible with the old opt-in scripts that set `=1`.
+/// Tail-lease kill switch. Default ON; opt out with
+/// `ATLAS_DISABLE_SSM_TAIL_PROTECT=1` (or `on`/`true`). Renamed 2026-08-05
+/// from the opt-in `ATLAS_SSM_TAIL_PROTECT` (=0/off disabled): the lease is
+/// default-on, so the variable now expresses the exception, not the rule.
 ///
 /// **INERT IN THE SHIPPING (MLPerf-edge) CONFIG — it protects nothing there.**
 /// The lease only ever shields an entry with `is_tail == true`, and the sole
@@ -89,14 +110,15 @@ pub(super) struct SsmSnapshotIndex {
 /// `finalize_midchunk_capture`, which is unreachable when
 /// `ATLAS_SSM_TAIL_MIDCHUNK=0` — which the frozen MLPerf-edge config sets.
 /// Verified 2026-07-21 by call-graph audit (the 2026-07-20 eviction rig
-/// likewise measured 0 lease hits). Do not read a `ATLAS_SSM_TAIL_PROTECT=1`
-/// in a launch script as evidence that tail protection is doing work; check
-/// `ATLAS_SSM_TAIL_MIDCHUNK` first. Behaviour here is deliberately unchanged —
+/// likewise measured 0 lease hits). A launch script setting neither this
+/// variable nor `ATLAS_SSM_TAIL_MIDCHUNK` is still running with the lease
+/// armed; check `ATLAS_SSM_TAIL_MIDCHUNK` first when asking whether tail
+/// protection is doing work. Behaviour here is deliberately unchanged —
 /// this note is a warning to the next reader, not a defect report.
 fn tail_lease_enabled() -> bool {
     !matches!(
-        std::env::var("ATLAS_SSM_TAIL_PROTECT").as_deref(),
-        Ok("0") | Ok("off")
+        std::env::var("ATLAS_DISABLE_SSM_TAIL_PROTECT").as_deref(),
+        Ok("1") | Ok("on") | Ok("true")
     )
 }
 
@@ -192,11 +214,9 @@ impl SsmSnapshotIndex {
             if entry.token_count > matched_tokens {
                 continue;
             }
-            if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
-                continue;
-            }
-            // TAIL snapshots bleed past the exact prefix — byte-safe ONLY for the
-            // same non-zero session. Cross-request reuse corrupts SSM state.
+            // Session gate applies ONLY to tails (their state bleeds past the
+            // advertised token_count). Exact + is_tail_sibling entries are a pure
+            // function of the verified token prefix — safe cross-session.
             if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
                 continue;
             }
@@ -259,7 +279,7 @@ impl SsmSnapshotIndex {
         tracing::info!(
             "ssm-snap-stats: lookups={} hits={} hit_rate={:.2} saves={} evictions(drops)={} \
              mean_anchor={:.0}tok mean_recompute_on_hit={:.0}tok recompute_on_miss={}tok \
-             resident={} tiered={} tier_spills={} tier_hits={} tier_fault_ins={}",
+             resident={} tiered={} tier_spills={} tier_hits={} tier_fault_ins={} tier_reaps={}",
             s.lookups,
             s.hits,
             hit_rate,
@@ -273,6 +293,7 @@ impl SsmSnapshotIndex {
             s.tier_spills,
             s.tier_hits,
             s.tier_fault_ins,
+            s.tier_reaps,
         );
     }
 
