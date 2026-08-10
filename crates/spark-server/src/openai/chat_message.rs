@@ -72,7 +72,9 @@ impl IncomingMessage {
     /// Convert a stored conversation item into a message for pipeline
     /// replay. Items we don't recognize (tool outputs in exotic shapes)
     /// are silently dropped — they wouldn't contribute to the text
-    /// context anyway.
+    /// context anyway. `reasoning_content` (written by the Responses
+    /// surfaces alongside the assistant text) is rehydrated so the
+    /// template can restore the prior turn's think block (F1).
     pub fn from_conversation_item(item: &serde_json::Value) -> Option<Self> {
         let role = item.get("role").and_then(|v| v.as_str())?;
         let content = item.get("content");
@@ -89,6 +91,10 @@ impl IncomingMessage {
                 .join(""),
             _ => String::new(),
         };
+        let reasoning_content = item
+            .get("reasoning_content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         Some(Self {
             role: role.to_string(),
             content: ParsedContent {
@@ -98,7 +104,7 @@ impl IncomingMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-            reasoning_content: None,
+            reasoning_content,
         })
     }
 
@@ -324,4 +330,34 @@ where
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conversation_item_round_trips_reasoning_content() {
+        let item = serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "answer"}],
+            "reasoning_content": "thought",
+        });
+        let m = IncomingMessage::from_conversation_item(&item).expect("assistant item");
+        assert_eq!(m.content.text, "answer");
+        assert_eq!(m.reasoning_content.as_deref(), Some("thought"));
+    }
+
+    #[test]
+    fn conversation_item_without_reasoning_stays_none() {
+        let item = serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "content": "answer",
+        });
+        let m = IncomingMessage::from_conversation_item(&item).expect("assistant item");
+        assert_eq!(m.content.text, "answer");
+        assert_eq!(m.reasoning_content, None);
+    }
 }

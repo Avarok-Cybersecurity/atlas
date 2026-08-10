@@ -89,6 +89,14 @@ impl MockGpuBackend {
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
         self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
     }
+
+    /// Every launch recorded so far, in dispatch order. Lets a test assert
+    /// WHICH kernel shape ran (grid/block signature), not just how many —
+    /// the mock's `kernel()` hands out one shared handle, so geometry is
+    /// the only per-launch identity available.
+    pub fn launches_snapshot(&self) -> Vec<MockLaunch> {
+        self.launches.lock().clone()
+    }
 }
 
 /// Find the allocation containing `ptr` (supports offset pointers).

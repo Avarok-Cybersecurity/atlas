@@ -80,3 +80,71 @@ fn blocking_message_emits_only_reasoning_content() {
         "mirror `reasoning` field leaked into message: {json}"
     );
 }
+
+// ── response constructors carry reasoning_content ───────────────────
+// Both convenience constructors must thread the reasoning trace through
+// to the wire message — hardwired `None` silently dropped thinking turns.
+
+fn test_usage() -> Usage {
+    Usage {
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        total_tokens: 2,
+        prompt_tokens_details: None,
+        completion_tokens_details: None,
+        time_to_first_token_ms: 0.0,
+        response_tokens_per_second: 0.0,
+    }
+}
+
+#[test]
+fn new_response_carries_reasoning_content() {
+    let resp = ChatCompletionResponse::new(
+        "m",
+        "hi".into(),
+        Some("thinking".into()),
+        test_usage(),
+        "stop",
+    );
+    assert_eq!(
+        resp.choices[0].message.reasoning_content.as_deref(),
+        Some("thinking")
+    );
+    let json = serde_json::to_string(&resp).unwrap();
+    assert!(
+        json.contains("\"reasoning_content\":\"thinking\""),
+        "reasoning_content missing: {json}"
+    );
+    // Absent reasoning stays off the wire entirely.
+    let resp = ChatCompletionResponse::new("m", "hi".into(), None, test_usage(), "stop");
+    let json = serde_json::to_string(&resp).unwrap();
+    assert!(!json.contains("reasoning_content"), "{json}");
+}
+
+#[test]
+fn tool_call_response_carries_reasoning_content() {
+    let resp = ChatCompletionResponse::with_tool_calls(
+        "m",
+        None,
+        Some("need the tool".into()),
+        vec![crate::tool_parser::ToolCall {
+            id: "call_1".into(),
+            call_type: "function".into(),
+            function: crate::tool_parser::FunctionCall {
+                name: "get_weather".into(),
+                arguments: "{}".into(),
+            },
+        }],
+        test_usage(),
+    );
+    assert_eq!(
+        resp.choices[0].message.reasoning_content.as_deref(),
+        Some("need the tool")
+    );
+    assert_eq!(resp.choices[0].finish_reason, "tool_calls");
+    let json = serde_json::to_string(&resp).unwrap();
+    assert!(
+        json.contains("\"reasoning_content\":\"need the tool\""),
+        "reasoning_content missing: {json}"
+    );
+}

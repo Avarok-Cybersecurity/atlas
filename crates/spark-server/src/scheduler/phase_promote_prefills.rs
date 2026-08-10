@@ -19,6 +19,9 @@ pub(super) fn promote_completed_prefills(
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
+    // Served context ceiling (`sched.limits.max_seq_len`) — finish_sequence
+    // needs it for the budget-derived `finish_reason` decision.
+    max_seq_len: usize,
 ) {
     // Process in reverse order so swap_remove indices stay valid.
     completed_indices.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
@@ -95,7 +98,7 @@ pub(super) fn promote_completed_prefills(
             model.decode_rollback_ring_slots(),
         );
         if immediate_finish {
-            finish_sequence(model, &mut a);
+            finish_sequence(model, &mut a, max_seq_len);
         } else {
             active.push(a);
         }

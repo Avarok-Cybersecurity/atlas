@@ -141,40 +141,7 @@ impl Model for MockModel {
     }
 
     fn alloc_sequence(&self) -> Result<SequenceState> {
-        Ok(SequenceState {
-            adapter_id: 0,
-            adapter_slot: -1,          // default: defer to installed active adapter
-            acquired_adapter_slot: -1, // Task #25: no ref held until prefill acquires
-            src_lang_id: 0,
-            tgt_lang_id: 0,
-            num_beams: 1,
-            length_penalty: 1.0,
-            early_stopping: false,
-            tokens: Vec::new(),
-            block_table: Vec::new(),
-            seq_len: 0,
-            layer_states: Vec::new(),
-            proposer_state: None,
-            slot_idx: 0,
-            ssm_slot: None,
-            marconi_skip_to: 0,
-            marconi_exact_snap: None,
-            session_hash: 0,
-            mtp_capture_gen: 0,
-            chunked_prefill_meta: None,
-            cached_prefix_tokens: 0,
-            cached_prefix_blocks: 0,
-            prefix_ref_tokens: Vec::new(),
-            prefix_lookup_applied: false,
-            prefix_lookup_skip: false,
-            kv_valid_tokens: 0,
-            last_decode_ckpt_block: 0,
-            prompt_len: 0,
-            collect_prompt_logprobs: None,
-            prompt_logprobs: Vec::new(),
-            disk_block_ids: Vec::new(),
-            disk_last_offloaded_per_layer: Vec::new(),
-        })
+        Ok(SequenceState::host_only(0))
     }
 
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {

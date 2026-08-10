@@ -38,6 +38,7 @@ const VD: usize = 128;
 const KEY_DIM: usize = NK * KD; // 2048
 const VALUE_DIM: usize = NV * VD; // 6144
 const CONV_DIM: usize = 2 * KEY_DIM + VALUE_DIM; // 10240
+const QKVZ: usize = CONV_DIM + VALUE_DIM; // 16384 (production deint row)
 const D_CONV: usize = 4;
 const H_NUMEL: usize = NV * KD * VD; // 786432 (3 MiB)
 const CONV_ST: usize = CONV_DIM * D_CONV; // 40960 f32 (160 KiB)
@@ -88,6 +89,7 @@ struct Kit {
     wy2: KernelHandle,
     wy4: KernelHandle,
     grms: KernelHandle,
+    gdn_snap_str: KernelHandle,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -336,14 +338,18 @@ fn main() -> Result<()> {
         wy2: g.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?,
         wy4: g.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
         grms: g.kernel("norm", "gated_rms_norm")?,
+        gdn_snap_str: g.kernel(
+            "gated_delta_rule_snap",
+            "gated_delta_rule_decode_f32_strided_norm_snap",
+        )?,
     };
     let mut r = Lcg(0xC057);
 
     println!(
-        "K, n, fused_us, exact_us, exact_nod2d_us, delta_pct, conv_b_us, conv_f_us, wy_us, gdnseq_us, d2d_us"
+        "K, n, fused_us, exact_us, exact_nod2d_us, snap_shipped_us, snap_delta_pct, exact_delta_pct, conv_b_us, conv_f_us, wy_us, gdnseq_us, d2d_us"
     );
     for &k in &[2usize, 4] {
-        for &n in &[1usize, 4, 8] {
+        for &n in &[1usize, 4, 8, 16, 32] {
             let b = Bufs {
                 n,
                 k,
@@ -368,6 +374,83 @@ fn main() -> Result<()> {
             let fused = time_arm(g, || fused_arm(g, &kit, &b))?;
             let exact = time_arm(g, || exact_arm(g, &kit, &b, true))?;
             let exact_nod2d = time_arm(g, || exact_arm(g, &kit, &b, false))?;
+            // EXACT-with-inline-snap: the SHIPPED #435 strided arm, launched
+            // exactly as in verify_exact_microtest/strided.rs — per token one
+            // conv_f32_strided + one strided_norm_snap (inline h snapshot for
+            // t<K-1), plus (K-1) conv-state d2d snapshots.
+            let snap_shipped = if n > 1 {
+                let deint = alloc_fill_bf16(g, n * k * QKVZ, &mut r)?;
+                let conv_scratch = g.alloc(n * QKVZ * 4)?;
+                let inter_seq_stride = (k - 1) * H_NUMEL * 4;
+                let h_inters = g.alloc(n * inter_seq_stride)?;
+                Some(time_arm(g, || {
+                    for t in 0..k {
+                        KernelLaunch::new(g, kit.conv_f_str)
+                            .grid([div_ceil(CONV_DIM as u32, 256), n as u32, 1])
+                            .block([256, 1, 1])
+                            .arg_ptr(b.conv_state)
+                            .arg_ptr(deint.offset(t * QKVZ * 2))
+                            .arg_ptr(b.wconv)
+                            .arg_ptr(DevicePtr::NULL)
+                            .arg_ptr(conv_scratch)
+                            .arg_u32(n as u32)
+                            .arg_u32(CONV_DIM as u32)
+                            .arg_u32(D_CONV as u32)
+                            .arg_u32((2 * KEY_DIM) as u32)
+                            .arg_u32(KD as u32)
+                            .arg_f32(1e-6)
+                            .arg_u32((k * QKVZ) as u32)
+                            .arg_u32(QKVZ as u32)
+                            .launch(0)?;
+                        let snapshot = t + 1 < k;
+                        let (hi, stride) = if snapshot {
+                            (
+                                h_inters.offset(t * H_NUMEL * 4),
+                                (inter_seq_stride / 4) as u64,
+                            )
+                        } else {
+                            (DevicePtr::NULL, 0)
+                        };
+                        KernelLaunch::new(g, kit.gdn_snap_str)
+                            .grid([NV as u32, n as u32, 1])
+                            .block([128, 1, 1])
+                            .arg_ptr(b.h)
+                            .arg_ptr(conv_scratch)
+                            .arg_ptr(conv_scratch.offset(KEY_DIM * 4))
+                            .arg_ptr(conv_scratch.offset(2 * KEY_DIM * 4))
+                            .arg_ptr(b.gates.offset(t * 2 * NV * 4))
+                            .arg_ptr(b.gates.offset((t * 2 * NV + NV) * 4))
+                            .arg_ptr(deint.offset((t * QKVZ + CONV_DIM) * 2))
+                            .arg_ptr(b.normw)
+                            .arg_ptr(b.normed.offset(t * VALUE_DIM * 2))
+                            .arg_u32(n as u32)
+                            .arg_u32(NK as u32)
+                            .arg_u32(NV as u32)
+                            .arg_u32(KD as u32)
+                            .arg_u32(VD as u32)
+                            .arg_u32(QKVZ as u32)
+                            .arg_u32(QKVZ as u32)
+                            .arg_u32((k * NV * 2) as u32)
+                            .arg_u32((k * QKVZ) as u32)
+                            .arg_u32((k * VALUE_DIM) as u32)
+                            .arg_f32(1e-6)
+                            .arg_ptr(hi)
+                            .arg_u64(stride)
+                            .launch(0)?;
+                        if snapshot {
+                            g.copy_d2d_async(
+                                b.conv_state,
+                                b.conv_inter.offset(t * n * CONV_ST * 4),
+                                n * CONV_ST * 4,
+                                0,
+                            )?;
+                        }
+                    }
+                    Ok(())
+                })?)
+            } else {
+                None
+            };
             // Components.
             let conv_b_t = time_arm(g, || {
                 for t in 0..k {
@@ -484,8 +567,15 @@ fn main() -> Result<()> {
                 }
                 Ok(())
             })?;
+            let (snap_s, snap_d) = match snap_shipped {
+                Some(s) => (
+                    format!("{s:.1}"),
+                    format!("{:+.1}%", (s - fused) / fused * 100.0),
+                ),
+                None => ("-".into(), "-".into()),
+            };
             println!(
-                "{k}, {n}, {fused:.1}, {exact:.1}, {exact_nod2d:.1}, {:+.1}%, {conv_b_t:.1}, {conv_f_t:.1}, {wy_t:.1}, {gdnseq_t:.1}, {d2d_t:.1}",
+                "{k}, {n}, {fused:.1}, {exact:.1}, {exact_nod2d:.1}, {snap_s}, {snap_d}, {:+.1}%, {conv_b_t:.1}, {conv_f_t:.1}, {wy_t:.1}, {gdnseq_t:.1}, {d2d_t:.1}",
                 (exact - fused) / fused * 100.0
             );
         }

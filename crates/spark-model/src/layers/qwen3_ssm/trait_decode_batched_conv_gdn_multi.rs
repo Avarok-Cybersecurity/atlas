@@ -97,6 +97,15 @@ impl Qwen3SsmLayer {
     ) -> Result<bool> {
         let n = states.len();
         let kk = args.num_tokens;
+        // ── Issue #435 route (a), OPT-IN via `--exact-verify`: exact batched
+        // verify (strided sequential-decode chain at batch=n, bitwise-equal
+        // to spec-off decode). Ok(false) → the caller's per-sequence loop,
+        // which under the same predicate runs the per-token exact arm —
+        // identical bits. The WY fast path below is the DEFAULT; without the
+        // flag, spec-on output is NOT bitwise-equal to spec-off (#435).
+        if super::verify_exact_enabled() {
+            return self.decode_batched_conv_gdn_multi_exact(states, ctx, args);
+        }
         // wy2/wy3/wy4 all carry the `state_is_table` pointer-table form, so
         // every K-vs-batch ladder width takes the two-launch path. The handle
         // is selected here (try_kernel misses are a silent 0 — gate on it,
