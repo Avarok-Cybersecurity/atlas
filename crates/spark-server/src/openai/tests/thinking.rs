@@ -94,6 +94,65 @@ fn reasoning_effort_channel() {
 }
 
 #[test]
+fn top_level_reasoning_effort_channel() {
+    // The Chat Completions wire spelling 2026 SDKs send (e.g. OpenAI
+    // .NET `ReasoningEffortLevel`). Must ride the same budget ladder as
+    // the nested object — `"none"` included, which forces thinking OFF.
+    for (effort, expect) in [
+        ("none", ThinkingDirective::Off),
+        ("minimal", ThinkingDirective::On { budget: Some(64) }),
+        ("low", ThinkingDirective::On { budget: Some(128) }),
+        ("medium", ThinkingDirective::On { budget: Some(256) }),
+        ("high", ThinkingDirective::On { budget: Some(512) }),
+    ] {
+        let mut b = base_body();
+        b["reasoning_effort"] = serde_json::json!(effort);
+        assert_eq!(
+            chat_req(b).client_thinking_directive(),
+            expect,
+            "effort={effort}"
+        );
+    }
+
+    // Nested object wins when a client sends both spellings.
+    let mut b = base_body();
+    b["reasoning"] = serde_json::json!({"effort": "high"});
+    b["reasoning_effort"] = serde_json::json!("low");
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(512) }
+    );
+}
+
+#[test]
+fn thinking_budget_aliases_thinking_token_budget() {
+    // DashScope/Qwen spelling injected top-level by OpenAI-compatible
+    // gateways; must map onto the explicit-budget rung.
+    let mut b = base_body();
+    b["thinking_budget"] = serde_json::json!(2048);
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(2048) }
+    );
+
+    let mut b = base_body();
+    b["thinking_budget"] = serde_json::json!(0);
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::Off
+    );
+
+    // Explicit budget outranks the effort ladder.
+    let mut b = base_body();
+    b["thinking_budget"] = serde_json::json!(2048);
+    b["reasoning_effort"] = serde_json::json!("low");
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(2048) }
+    );
+}
+
+#[test]
 fn chat_template_kwargs_channel() {
     // Struct still parses as a request-body wire field.
     let kw: ChatTemplateKwargs =

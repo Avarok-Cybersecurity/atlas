@@ -132,6 +132,23 @@ pub enum ResponsesOutputItem {
         arguments: String,
         status: &'static str,
     },
+    /// Reasoning/thinking trace as a first-class Responses output item.
+    /// Atlas serves the raw `<think>` body as the item's `summary` (no
+    /// separate summarizer) — this is the spec representation for
+    /// reasoning, so Responses-API clients see the thought instead of
+    /// the stream silently dropping it.
+    Reasoning {
+        id: String,
+        summary: Vec<ResponsesSummaryPart>,
+    },
+}
+
+/// One entry of a reasoning item's `summary` array. Tagged enum so the
+/// wire shape matches OpenAI's discriminated summary parts.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponsesSummaryPart {
+    SummaryText { text: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,7 +181,9 @@ pub struct ResponsesUsage {
 //   response.created                → once, on admission
 //   response.in_progress            → once, after the first token
 //   response.output_item.added      → at the start of each output item
-//                                     (message or function_call)
+//                                     (reasoning, message or function_call)
+//   response.reasoning_summary_*    → streamed reasoning summary events
+//                                     (part added → text deltas → done)
 //   response.output_text.delta      → per decoded text chunk
 //   response.function_call.arguments.delta → per tool-arg fragment
 //   response.output_item.done       → at the end of each output item
@@ -253,6 +272,45 @@ pub enum ResponsesStreamEvent {
         content_index: usize,
         refusal: String,
     },
+    // ── Reasoning summary events ──
+    // The spec representation for streamed reasoning: a `reasoning`
+    // output item opens via `response.output_item.added`, then its
+    // single `summary_text` part streams through these four events.
+    // SDKs (OpenAI .NET/Python) surface them as
+    // ReasoningSummaryTextDelta updates; `summary_index` is the
+    // position inside the item's `summary` array (always 0 on Atlas).
+    #[serde(rename = "response.reasoning_summary_part.added")]
+    ReasoningSummaryPartAdded {
+        sequence_number: u64,
+        item_id: String,
+        output_index: usize,
+        summary_index: usize,
+        part: ResponsesSummaryPart,
+    },
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta {
+        sequence_number: u64,
+        item_id: String,
+        output_index: usize,
+        summary_index: usize,
+        delta: String,
+    },
+    #[serde(rename = "response.reasoning_summary_text.done")]
+    ReasoningSummaryTextDone {
+        sequence_number: u64,
+        item_id: String,
+        output_index: usize,
+        summary_index: usize,
+        text: String,
+    },
+    #[serde(rename = "response.reasoning_summary_part.done")]
+    ReasoningSummaryPartDone {
+        sequence_number: u64,
+        item_id: String,
+        output_index: usize,
+        summary_index: usize,
+        part: ResponsesSummaryPart,
+    },
     #[serde(rename = "response.completed")]
     Completed {
         sequence_number: u64,
@@ -299,6 +357,18 @@ pub fn responses_event_name(ev: &ResponsesStreamEvent) -> &'static str {
         ResponsesStreamEvent::OutputItemDone { .. } => "response.output_item.done",
         ResponsesStreamEvent::RefusalDelta { .. } => "response.refusal.delta",
         ResponsesStreamEvent::RefusalDone { .. } => "response.refusal.done",
+        ResponsesStreamEvent::ReasoningSummaryPartAdded { .. } => {
+            "response.reasoning_summary_part.added"
+        }
+        ResponsesStreamEvent::ReasoningSummaryTextDelta { .. } => {
+            "response.reasoning_summary_text.delta"
+        }
+        ResponsesStreamEvent::ReasoningSummaryTextDone { .. } => {
+            "response.reasoning_summary_text.done"
+        }
+        ResponsesStreamEvent::ReasoningSummaryPartDone { .. } => {
+            "response.reasoning_summary_part.done"
+        }
         ResponsesStreamEvent::Completed { .. } => "response.completed",
         ResponsesStreamEvent::Failed { .. } => "response.failed",
     }
