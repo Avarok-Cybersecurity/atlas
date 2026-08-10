@@ -3,7 +3,7 @@
 //! The benchmark suite, in the order the Benchmarks pane lists it.
 
 use crate::benchmark::BenchmarkDescriptor;
-use crate::benchmarks::{agentic, bfcl, concurrency, serve_matrix, ttft};
+use crate::benchmarks::{agentic, bfcl, concurrency, contamination, serve_matrix, ttft};
 
 /// Every benchmark, list order. Cheapest and most-run first.
 ///
@@ -15,6 +15,7 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &concurrency::DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
+    &contamination::DESCRIPTOR,
     &agentic::DESCRIPTOR,
     &bfcl::SUBSET_DESCRIPTOR,
     &bfcl::SUBSET_ECHOLP_DESCRIPTOR,

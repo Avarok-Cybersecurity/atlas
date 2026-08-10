@@ -411,3 +411,7 @@ pub fn w4a16_gemm_n128_m128_bf16(
         .arg_u32(k)
         .launch(stream)
 }
+
+#[cfg(test)]
+#[path = "gemm_dense_tests.rs"]
+mod gemm_dense_tests;

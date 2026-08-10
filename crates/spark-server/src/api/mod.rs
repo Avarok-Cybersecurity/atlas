@@ -13,6 +13,7 @@
 //! - `completions`        — legacy `/v1/completions` + list/get models +
 //!                          embeddings stub + cross-handler helpers
 //! - `sanitizer`          — `<parameter=…>` leak suppression + bash bucketing
+//! - `scrub`              — complete-tag scrubber for flush-time tail dumps
 //! - `stubs`              — batches/files/audio/images/moderations stubs
 //! - `responses`,
 //!   `responses_stream`,
@@ -47,6 +48,7 @@ pub mod responses_stream;
 pub mod responses_stream_finalize;
 pub mod responses_translate;
 pub mod sanitizer;
+pub mod scrub;
 pub mod stored;
 pub mod stream_guards;
 pub mod strip;

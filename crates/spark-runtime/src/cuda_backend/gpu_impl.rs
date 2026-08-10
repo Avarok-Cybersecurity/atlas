@@ -181,11 +181,14 @@ impl GpuBackend for AtlasCudaBackend {
             shared_mem_bytes: shared_mem,
         };
         let registry = self.registry();
-        unsafe {
-            registry
-                .launch_on_stream(raw_func, cfg, stream, params)
-                .map_err(|e| anyhow::anyhow!("Kernel launch failed: {e}"))
-        }
+        unsafe { registry.launch_on_stream(raw_func, cfg, stream, params) }.map_err(|e| {
+            // A launch failure may have destroyed the CUDA context. Probe and
+            // latch before the error is flattened into a string and bubbled —
+            // see `fault_probe`. This does not change control flow: the caller
+            // still receives its error either way.
+            super::fault_probe::note_failure("kernel launch", &e.to_string());
+            anyhow::anyhow!("Kernel launch failed: {e}")
+        })
     }
 
     fn stream_is_capturing(&self, stream: u64) -> bool {

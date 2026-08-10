@@ -8,3 +8,9 @@
 # (Union may duplicate a line if two PRs edit the exact same one — harmless, de-dup at release.)
 CHANGELOG.md merge=union
 README.md merge=union
+
+# `ledger.rs` documents this and nothing declared it: two PR branches that each
+# carry a harvested ledger line would otherwise CONFLICT on append-only files.
+# Union keeps both sides' lines, and `Journey::deduplicated` collapses any
+# duplicate on read — identity excludes `at`, so a replay converges.
+governance/*.jsonl merge=union
