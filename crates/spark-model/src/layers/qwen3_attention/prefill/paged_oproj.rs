@@ -26,14 +26,10 @@ impl Qwen3AttentionLayer {
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
         // Keep-packed Q2_0 (Tier-1c): transient-dequant o_proj then dense GEMM.
-        if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
-            let scratch = ctx.buffers.q2_dequant_scratch();
-            debug_assert!(
-                (q2.n as usize) * (q2.k as usize) * 2 <= ctx.buffers.q2_dequant_scratch_bytes(),
-                "packed-Q2 o_proj dequant scratch too small"
-            );
-            let act_q8 = ctx.buffers.q2_act_q8();
-            self.q2_prefill_gemm(ctx.gpu, q2, attn_out, o_out, scratch, act_q8, n, stream)?;
+        if let Some(r) =
+            self.try_q2_prefill(ctx, self.o_weight.as_ref(), attn_out, o_out, n, stream)
+        {
+            r?;
             return Ok(o_out);
         }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;

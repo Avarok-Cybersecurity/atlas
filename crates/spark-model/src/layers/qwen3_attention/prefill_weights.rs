@@ -225,6 +225,31 @@ impl Qwen3AttentionLayer {
         Ok(())
     }
 
+    /// Keep-packed Q2_0 (Tier-1c) prefill dispatch guard, shared by the QKV
+    /// (`paged_qkv` / `cache_skip_qkv`) and o_proj call sites: when `weight`
+    /// is the keep-packed variant, run [`Self::q2_prefill_gemm`] with the
+    /// arena scratch buffers and return `Some(result)`. `None` = not packed
+    /// Q2_0 — callers fall through to their NVFP4/FP8/dense arms. Must be
+    /// checked FIRST: those fallbacks all read NULL pointers on this path.
+    pub(crate) fn try_q2_prefill(
+        &self,
+        ctx: &crate::layer::ForwardContext,
+        weight: Option<&QuantWeight>,
+        input: DevicePtr,
+        out: DevicePtr,
+        m: u32,
+        stream: u64,
+    ) -> Option<Result<()>> {
+        let q2 = weight.and_then(|w| w.as_packed_q2())?;
+        debug_assert!(
+            (q2.n as usize) * (q2.k as usize) * 2 <= ctx.buffers.q2_dequant_scratch_bytes(),
+            "packed-Q2 prefill dequant scratch too small"
+        );
+        let scratch = ctx.buffers.q2_dequant_scratch();
+        let act_q8 = ctx.buffers.q2_act_q8();
+        Some(self.q2_prefill_gemm(ctx.gpu, q2, input, out, scratch, act_q8, m, stream))
+    }
+
     /// Install the fused [q|k|v] transposed twin. Separate from
     /// `set_prefill_weights` so the fused path is opt-in per loader and the
     /// separate twins stay available as the fallback.

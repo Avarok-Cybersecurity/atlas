@@ -336,16 +336,9 @@ impl BufferSizes {
             0
         };
 
-        // Native keep-packed Q2_0 prefill transient-dequant scratch (Tier-1,
-        // ATLAS_GGUF_NATIVE_Q2=1). ONE persistent BF16 `[N,K]` buffer sized to
-        // the LARGEST keep-packed projection, reused for every per-projection
-        // dequant so prefill stops doing a per-matmul cuMemAlloc +
-        // cuStreamSynchronize + cuMemFree (a multi-second FIXED cost — 3.7 s
-        // TTFT even on a 28-token prompt, independent of prompt length). The
-        // dequant kernel writes N*K BF16 elems into the front and the
-        // same-stream GEMM consumes them before the next projection dequants.
         // Native keep-packed Q2_0 prefill scratch (Tier-1 transient-dequant +
         // Tier-2 MMQ q8_1 activation); env-gated, 0 unless the flags are set.
+        // Sizing rationale + bounds live on `sizes_q2::q2_scratch_sizes`.
         let (q2_dequant_scratch, q2_act_q8) = super::sizes_q2::q2_scratch_sizes(config, m, h, hd);
 
         // Dense-FFN activation-quant scratch, shared across all layers (SSOT).
