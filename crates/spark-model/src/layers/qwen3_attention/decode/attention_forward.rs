@@ -257,14 +257,22 @@ impl Qwen3AttentionLayer {
         let k_out = q_out.offset(q_proj_bytes);
         let v_out = k_out.offset((nkv * hd) as usize * 2);
 
-        self.attention_forward_kv(normed, k_out, v_out, nkv, hd, h, ctx, stream)?;
+        // KV-shared band (Gemma-4 E2B): skip the K/V projections entirely —
+        // this layer's own k/v weights differ from the producers and the
+        // paged-decode attention below reads the (aliased) producer pool.
+        if !self.kv_shared {
+            self.attention_forward_kv(normed, k_out, v_out, nkv, hd, h, ctx, stream)?;
+        }
 
         // ── LoRA deltas on K/V (v0; Q excluded — gated [Q|gate] interleave).
         // MUST run BEFORE the q/k RMS-norm, RoPE, and write_kv_cache below:
         // HF computes k_norm(k_proj(x) + Δ), and the KV cache must store the
         // ADAPTED k/v. Placed here rather than inside attention_forward_kv
         // because that helper has three return points (MLA / FP8 / tail).
-        if let Some(ref lw) = self.lora {
+        // Skipped on KV-shared layers (no K/V of our own to adapt).
+        if let Some(ref lw) = self.lora
+            && !self.kv_shared
+        {
             // Request-scoped routing: when this step carries a per-seq slot
             // buffer (`seq_slot != 0`) and the module has a routing table, fold
             // the delta for THIS request's adapter via the fused bgmv (n=1 row,
@@ -376,18 +384,20 @@ impl Qwen3AttentionLayer {
             )?;
         }
         if let Some(ref k_norm_full) = self.attn.k_norm_full {
-            ops::rms_norm(
-                ctx.gpu,
-                self.rms_norm_w_k,
-                k_out,
-                k_norm_full,
-                k_out,
-                1,
-                nkv * hd,
-                eps,
-                stream,
-            )?;
-        } else if !self.attn.k_norm.weight.is_null() {
+            if !self.kv_shared {
+                ops::rms_norm(
+                    ctx.gpu,
+                    self.rms_norm_w_k,
+                    k_out,
+                    k_norm_full,
+                    k_out,
+                    1,
+                    nkv * hd,
+                    eps,
+                    stream,
+                )?;
+            }
+        } else if !self.attn.k_norm.weight.is_null() && !self.kv_shared {
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_w_k,
@@ -409,8 +419,11 @@ impl Qwen3AttentionLayer {
         // GEMV against aliased K weights). For sliding layers, v_out holds
         // V projection output. Either way, normalize in place. V does NOT
         // receive RoPE. Ones (not zeros) because Gemma-4's rms_norm uses
-        // the absolute formula `out = x * rms * weight`.
-        if let Some(v_norm_w) = self.v_norm_weight.as_ref() {
+        // the absolute formula `out = x * rms * weight`. Skipped on
+        // KV-shared layers (no V of our own).
+        if let Some(v_norm_w) = self.v_norm_weight.as_ref()
+            && !self.kv_shared
+        {
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_w_k,
@@ -431,9 +444,11 @@ impl Qwen3AttentionLayer {
             // Gemma-4 full-attention: proportional RoPE with rotation pairs
             // (i, i + head_dim/2) for i < rope_angles. rotary_dim_override
             // here holds `rope_angles` (64 for 31B full attn).
+            // KV-shared: rotate Q only (nkv=0) — the producer rotated K.
             let rope_angles = self
                 .rotary_dim_override
                 .unwrap_or(ctx.config.rotary_dim() as u32);
+            let rope_nkv = if self.kv_shared { 0 } else { nkv };
             ops::rope_proportional(
                 ctx.gpu,
                 self.rope_proportional_k,
@@ -442,7 +457,7 @@ impl Qwen3AttentionLayer {
                 meta.positions,
                 1,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 rope_angles,
                 self.rope_theta_override
@@ -450,6 +465,7 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else if self.mrope_interleaved && self.rope_mrope_interleaved_k.0 != 0 {
+            let rope_nkv = if self.kv_shared { 0 } else { nkv };
             ops::rope_mrope_interleaved(
                 ctx.gpu,
                 self.rope_mrope_interleaved_k,
@@ -460,7 +476,7 @@ impl Qwen3AttentionLayer {
                 meta.positions_w,
                 1,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 self.rotary_dim_override
                     .unwrap_or(ctx.config.rotary_dim() as u32),
@@ -469,6 +485,7 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
+            let rope_nkv = if self.kv_shared { 0 } else { nkv };
             ops::rope(
                 ctx.gpu,
                 self.rope_k,
@@ -477,7 +494,7 @@ impl Qwen3AttentionLayer {
                 meta.positions,
                 1,
                 nq,
-                nkv,
+                rope_nkv,
                 hd,
                 self.rotary_dim_override
                     .unwrap_or(ctx.config.rotary_dim() as u32),
@@ -489,21 +506,25 @@ impl Qwen3AttentionLayer {
 
         // K/V are contiguous (separate dense_gemm outputs), stride = nkv * hd
         let kv_stride = nkv * hd;
-        self.write_kv_cache(
-            ctx.gpu,
-            k_out,
-            v_out,
-            kv_cache,
-            meta.slot,
-            1,
-            nkv,
-            hd,
-            bs as u32,
-            kv_stride,
-            kv_stride,
-            stream,
-            ctx.graph_capture,
-        )?;
+        // KV-shared band (Gemma-4 E2B): NEVER write this layer's k/v to the
+        // cache — the producer wrote the token's k/v into the aliased pool.
+        if !self.kv_shared {
+            self.write_kv_cache(
+                ctx.gpu,
+                k_out,
+                v_out,
+                kv_cache,
+                meta.slot,
+                1,
+                nkv,
+                hd,
+                bs as u32,
+                kv_stride,
+                kv_stride,
+                stream,
+                ctx.graph_capture,
+            )?;
+        }
 
         // Turbo KV cache: apply WHT to Q before paged decode.
         // KV cache stores WHT(K) and WHT(V). By Parseval's theorem,

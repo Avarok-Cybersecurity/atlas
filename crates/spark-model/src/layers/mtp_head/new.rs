@@ -232,6 +232,7 @@ impl MtpHead {
             },
             layer_dtypes: vec![],
             layer_dims: vec![],
+            layer_to_pool: vec![],
             cache_blocks_per_seq: None,
         };
         // The drafter's KV pool must admit EVERY concurrently-drafting

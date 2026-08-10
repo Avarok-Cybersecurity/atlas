@@ -184,6 +184,7 @@ pub struct KvCacheConfig {
     /// Dimension per head.
     pub head_dim: usize,
     /// Number of attention layers (only full_attention layers have KV cache).
+    /// With cross-layer sharing (W1.4) this is the physical pool count (E2B: 15).
     pub num_layers: usize,
     /// Quantization dtype for cache storage (uniform fallback).
     pub dtype: KvCacheDtype,
@@ -199,6 +200,10 @@ pub struct KvCacheConfig {
     /// all layers use the uniform `num_kv_heads`/`head_dim` (backward
     /// compatible — homogeneous models need no change).
     pub layer_dims: Vec<(usize, usize)>,
+    /// Cross-layer KV sharing map (Gemma-4 E2B, W1.4): `layer_to_pool[layer]`
+    /// is the physical pool index for logical layer `layer`; empty = identity
+    /// (all existing models). Shared layers only READ their producer's pool.
+    pub layer_to_pool: Vec<usize>,
     /// `--high-speed-swap` HBM-shrink knob (Phase 6.1). When `Some(N)`,
     /// each sequence is capped at `N` HBM-resident blocks; older blocks
     /// are evicted to disk via `HighSpeedSwap` and read back on demand.
@@ -210,10 +215,21 @@ pub struct KvCacheConfig {
 }
 
 impl KvCacheConfig {
-    /// Resolve the effective dtype for a given attention layer index.
+    /// Map a logical layer index to its physical pool index. Shared layers
+    /// route to their producer's pool; empty map = identity (all models).
+    pub fn pool_for_layer(&self, layer_idx: usize) -> usize {
+        if layer_idx < self.layer_to_pool.len() {
+            self.layer_to_pool[layer_idx]
+        } else {
+            layer_idx
+        }
+    }
+
+    /// Effective dtype for an attention layer (routes via `pool_for_layer`).
     pub fn dtype_for_layer(&self, layer_idx: usize) -> KvCacheDtype {
-        if layer_idx < self.layer_dtypes.len() {
-            self.layer_dtypes[layer_idx]
+        let pool = self.pool_for_layer(layer_idx);
+        if pool < self.layer_dtypes.len() {
+            self.layer_dtypes[pool]
         } else {
             self.dtype
         }
@@ -319,11 +335,13 @@ impl KvCacheConfig {
         self.block_bytes_for_dtype(self.dtype)
     }
 
-    /// (num_kv_heads, head_dim) for a specific attention layer.
-    /// Falls back to the global values when no per-layer override is set.
+    /// (num_kv_heads, head_dim) for an attention layer. Falls back to the
+    /// global values when no per-layer override is set. Shared layers report
+    /// the producer's dims via `pool_for_layer` (strides match pool layout).
     pub fn dims_for_layer(&self, layer_idx: usize) -> (usize, usize) {
-        if layer_idx < self.layer_dims.len() {
-            self.layer_dims[layer_idx]
+        let pool = self.pool_for_layer(layer_idx);
+        if pool < self.layer_dims.len() {
+            self.layer_dims[pool]
         } else {
             (self.num_kv_heads, self.head_dim)
         }
@@ -480,3 +498,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_tq_plus;
+
+#[cfg(test)]
+mod tests_w14;

@@ -132,3 +132,7 @@ bench/fp8_dgx2_drift/harness/oc
 # LoRA MVP: large fp32 reference deltas (regenerate via scripts/reference_deltas.py in seconds)
 test_data/lora-holo-tiny*/reference_deltas.safetensors
 adapters35/
+
+# OhMyOpenAgent local session state (run-continuation markers, test captures).
+# Local agent state, never source — keep out of git status and diffs.
+.omo/

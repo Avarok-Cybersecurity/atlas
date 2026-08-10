@@ -207,6 +207,12 @@ impl Qwen3AttentionLayer {
                 h as u32,
                 stream,
             )?;
+            // Gemma-4 E2B per-layer-embedding (PLE): runs immediately BEFORE
+            // layer_scalar at the end of the layer (no-op unless this layer
+            // has PLE weights AND the model armed a combined buffer).
+            if self.ple.is_some() {
+                self.gemma4_ple_forward(ctx, hidden, 1, stream)?;
+            }
             // Gemma-4: hidden *= layer_scalar at end of layer
             if let Some(scalar) = self.layer_scalar {
                 self.apply_layer_scalar(ctx.gpu, hidden, h, scalar, stream)?;
@@ -389,6 +395,13 @@ impl Qwen3AttentionLayer {
                 stream,
                 &format!("L{:02} post_residual", self.attn_layer_idx),
             );
+        }
+
+        // Gemma-4 E2B per-layer-embedding (PLE): runs immediately BEFORE
+        // layer_scalar at the end of the layer (no-op unless this layer has
+        // PLE weights AND the model armed a combined buffer this pass).
+        if self.ple.is_some() {
+            self.gemma4_ple_forward(ctx, hidden, 1, stream)?;
         }
 
         // Gemma-4: hidden *= layer_scalar at end of layer

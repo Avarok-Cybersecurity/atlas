@@ -31,7 +31,7 @@ pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
-pub use gemma4::Gemma4WeightLoader;
+pub use gemma4::{Gemma4PerLayerPleWeights, Gemma4PleTables, Gemma4WeightLoader};
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
 pub use nllb::NllbWeightLoader;
@@ -284,6 +284,20 @@ pub trait ModelWeightLoader {
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
     ) -> Result<Option<VisionEncoder>> {
+        Ok(None)
+    }
+
+    /// Load Gemma-4 E2B per-layer-embedding (PLE) tables (model-level +
+    /// per-layer input gates/projections/norms). Default impl returns `None`;
+    /// the Gemma-4 loader overrides it when the checkpoint enables PLE
+    /// (`hidden_size_per_layer_input > 0`). Loading-only — wiring the tables
+    /// into the layer forward is a later wave.
+    fn load_ple_tables(
+        &self,
+        _store: &WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<Option<Gemma4PleTables>> {
         Ok(None)
     }
 }

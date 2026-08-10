@@ -1,0 +1,99 @@
+[model]
+name = "gemma-4-e2b"
+hf_id = "google/gemma-4-E2B-it"
+model_type = "gemma4"
+architecture = "dense_attention"
+parameters = "5B"
+active_parameters = "5B"
+
+# Per-Layer Embeddings (PLE) + cross-layer KV sharing (num_kv_shared_layers=20).
+# Layer pattern is 4:1 (sliding x4, full) across 35 layers — full at
+# indices 4, 9, 14, 19, 24, 29, 34.
+layers_total = 35
+layers_sliding_attention = 28
+layers_full_attention = 7
+layer_pattern = "4:1 (sliding x4, full); 7 full layers"
+
+hidden_dim = 1536
+head_dim = 256
+global_head_dim = 512
+q_heads = 8
+kv_heads = 1
+num_global_kv_heads = 1
+
+# Config intermediate_size is 6144; layers 15-34 (the KV-shared band) are
+# double-wide (12288) via use_double_wide_mlp — see config.json text_config.
+intermediate_size = 6144
+moe_intermediate_size = 0
+moe_experts = 0
+moe_top_k = 0
+vocab_size = 262144
+max_position_embeddings = 131072
+sliding_window = 512
+
+rope_theta_sliding = 10000.0
+rope_theta_full = 1000000.0
+partial_rotary_factor = 0.25
+
+rms_norm_eps = 1e-6
+hidden_activation = "gelu_pytorch_tanh"
+tie_word_embeddings = true
+final_logit_softcapping = 30.0
+
+vision = true
+mtp_layers = 0
+
+# Effective context for agentic tasks (tokens). E2B has 128K positional budget
+# but sliding window 512 constrains effective context for tool calling.
+effective_context = 16384
+
+# Google-recommended sampling recipe (model card): temp 1.0, top_p 0.95,
+# top_k 64. No penalty/DRY band-aids (Google ships penalty-free).
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# Gemma-4 uses <|channel>thought\n...<channel|> for thinking, structurally
+# separate from tool calls. Enable thinking with tools.
+thinking_in_tools = true
+max_thinking_budget = 2048
+# BF16 KV cache — same rationale as Gemma-4 31B (large final-norm weights exceed
+# FP8 E4M3 range; vLLM also uses BF16 for Gemma 4).
+default_kv_dtype = "bf16"
+
+[[model_types]]
+model_type = "gemma4"
+hidden_size = 1536
+
+[kernel]
+# No MoE gate shared memory needed (dense model).

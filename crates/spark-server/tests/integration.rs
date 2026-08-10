@@ -93,6 +93,7 @@ fn setup_model(
         dtype: spark_runtime::kv_cache::KvCacheDtype::Fp8,
         layer_dtypes: vec![],
         layer_dims: vec![],
+        layer_to_pool: vec![],
         cache_blocks_per_seq: None,
     };
     let num_blocks =

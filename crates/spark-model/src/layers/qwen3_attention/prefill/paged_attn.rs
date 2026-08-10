@@ -103,8 +103,11 @@ impl Qwen3AttentionLayer {
 
         let bs_u = bs as u32;
 
-        // HDIM=512 path: Gemma-4 long-attention layers.
-        if hd > 256 && self.prefill_attn_512_k.0 != 0 && seq_len_start == 0 {
+        // HDIM=512 path: Gemma-4 long-attention layers. The `seq_len_start==0`
+        // branch reads CONTIGUOUS k/v from the scratch buffers — for a
+        // KV-shared layer those are never computed, so route to the paged-512
+        // kernel (reads the aliased producer pool) instead.
+        if hd > 256 && seq_len_start == 0 && !self.kv_shared && self.prefill_attn_512_k.0 != 0 {
             ops::prefill_attention(
                 ctx.gpu,
                 self.prefill_attn_512_k,
@@ -122,7 +125,7 @@ impl Qwen3AttentionLayer {
                 self.sliding_window.unwrap_or(0),
                 stream,
             )?;
-        } else if hd > 256 && seq_len_start > 0 {
+        } else if hd > 256 && (seq_len_start > 0 || self.kv_shared) {
             if self.kv_dtype != KvCacheDtype::Bf16 {
                 anyhow::bail!(
                     "Gemma-4 HDIM=512 chunked prefill only supports BF16 KV cache \

@@ -321,6 +321,16 @@ jobs:
             # compute/state-heavy entries above. Clean split (block IO → sibling)
             # tracked as follow-up.
             "crates/spark-runtime/src/kv_cache/paged_impl.rs"
+            # ── #406 (gemma-4-E2B text-core parity) carry-overs ──
+            # 512 LoC decode_a + 501 LoC paged_qkv — E2B/KV-shared decode-path
+            # + paged-QKV files. (decode_a2/decode_b already allow-listed by the
+            # Wave-55 block below.) Grew with the KV-shared PLE forward + decode
+            # path changes. Each is a single impl block / launch-order-critical
+            # sequence read top-to-bottom (same rationale as the qwen3_attention
+            # compute-heavy entries above). Clean splits (sub-module extraction
+            # into siblings) tracked as follow-up per the #90/#229 precedent.
+            "crates/spark-model/src/model/trait_impl/decode_a.rs"
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged_qkv.rs"
             # ── Wave-55 integration (perf/enterprise-concurrency-v2 -> main) ──
             # Thirteen of the fifteen below were ALREADY over the cap on the
             # branch tip before this merge; two (`model/types.rs`,
@@ -364,6 +374,16 @@ jobs:
             "crates/spark-server/src/scheduler/mtp_step.rs"
             # 502 LoC — /v1/completions handler.
             "crates/spark-server/src/api/completions.rs"
+            # ── #406 (gemma-4-E2B text-core parity) — post-#388 merge ──
+            # 506 LoC sizes.rs + 503 LoC kv_cache.rs. Both were under the cap
+            # before the merge; the union of main's packed-meta / enterprise-
+            # concurrency work with our E2B KV-shared sizing (max_ffn_inter in
+            # sizes.rs) and cross-layer KV pool map (kv_cache.rs) tipped them
+            # over. Single impl blocks whose ordering is read top-to-bottom
+            # (buffer geometry / KV pool map). Clean splits tracked as follow-up
+            # per the #90/#229 precedent.
+            "crates/spark-runtime/src/buffers/sizes.rs"
+            "crates/spark-runtime/src/kv_cache.rs"
           )
 
           violations=0

@@ -66,6 +66,42 @@ impl ModelConfig {
         }
     }
 
+    /// Cross-layer KV sharing map (Gemma-4 E2B, W1.4).
+    ///
+    /// For logical layer `i`, `kv_pool_map()[i]` is the index of the physical
+    /// KV pool that stores layer `i`'s K/V. Layers below the pool band own
+    /// their pool; shared layers (`>= pools`) route to the last same-kind
+    /// non-shared layer (e.g. E2B: 15-18/20-23/... → 13 sliding, 19/24/... → 14
+    /// full). Empty vec = identity mapping (no sharing — every non-E2B model).
+    ///
+    /// Requires `attention_types` (the per-layer sliding/full source of truth)
+    /// to pick a producer; if it's empty the map stays empty even when
+    /// `num_kv_shared_layers > 0`. `pools = num_hidden_layers -
+    /// num_kv_shared_layers` is the physical pool count.
+    pub fn kv_pool_map(&self) -> Vec<usize> {
+        if self.num_kv_shared_layers == 0 || self.attention_types.is_empty() {
+            return Vec::new();
+        }
+        let pools = self
+            .num_hidden_layers
+            .saturating_sub(self.num_kv_shared_layers);
+        let mut map = Vec::with_capacity(self.num_hidden_layers);
+        for i in 0..self.num_hidden_layers {
+            if i < pools {
+                map.push(i);
+            } else {
+                let kind = self.attention_types[i];
+                // Last non-shared layer of the same kind.
+                let producer = (0..pools).rev().find(|&j| self.attention_types[j] == kind);
+                // A missing producer is a malformed config (a shared layer kind
+                // with no pool-layer instance) — fall back to identity so the
+                // out-of-range index fails loudly at pool access.
+                map.push(producer.unwrap_or(i));
+            }
+        }
+        map
+    }
+
     /// Whether this model carries recurrent (SSM / linear-attention) state —
     /// the honest capability signal for the SSM snapshot tiers. Derived from
     /// [`Self::num_ssm_layers`] so the config-level predicate and the runtime

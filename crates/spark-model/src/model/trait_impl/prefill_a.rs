@@ -315,15 +315,17 @@ impl TransformerModel {
             pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
             pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
 
-            let devs = if marconi_skip {
-                let bt_start = (pack.high_water() + 3) & !3;
-                pack.put_at("block_table", bt_start, &seq.block_table)?;
-                let sl_start = (pack.high_water() + 3) & !3;
-                pack.put_at("seq_len", sl_start, &[n as u32])?;
-                (meta_base.offset(bt_start), meta_base.offset(sl_start))
-            } else {
-                (DevicePtr::NULL, DevicePtr::NULL)
-            };
+            // Always upload the sequence's paged-KV block table + seq_len into
+            // the meta buffer (not just on `marconi_skip` restore). The chunk-0
+            // flash path ignores them, but the paged path (used by Gemma-4 E2B's
+            // KV-shared layers even at chunk 0) dereferences the block table —
+            // leaving it NULL here was the illegal-address source. `marconi_skip`
+            // is SSM snapshot restore, which E2B never hits.
+            let bt_start = (pack.high_water() + 3) & !3;
+            pack.put_at("block_table", bt_start, &seq.block_table)?;
+            let sl_start = (pack.high_water() + 3) & !3;
+            pack.put_at("seq_len", sl_start, &[n as u32])?;
+            let devs = (meta_base.offset(bt_start), meta_base.offset(sl_start));
 
             self.gpu
                 .copy_h2d_async_retained(pack.packed(), meta_base, stream)?;

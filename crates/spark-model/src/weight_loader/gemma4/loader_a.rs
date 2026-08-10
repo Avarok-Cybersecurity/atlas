@@ -68,6 +68,10 @@ pub(super) fn load_layers_impl(
             let mut scalar_buf = [0u8; 2];
             let wt = store.get(&layer_scalar_key)?;
             gpu.copy_d2h(wt.ptr, &mut scalar_buf)?;
+            // copy_d2h is async on the default stream — sync before reading
+            // the host buffer, else scalar_buf holds stale garbage (this
+            // silently corrupted every Gemma-4 E2B layer_scalar at load).
+            gpu.synchronize(gpu.default_stream())?;
             let scalar_bf16 = u16::from_le_bytes(scalar_buf);
             let scalar_f32 = f32::from_bits((scalar_bf16 as u32) << 16);
             tracing::info!("L{i}: layer_scalar = {scalar_f32:.6}");
@@ -166,29 +170,19 @@ pub(super) fn load_layers_impl(
             Some("1") => true,
             _ => bf16_attn_default,
         };
-        // BF16 MLP (gate/up/down) — DEFAULT OFF after empirical
-        // verification. The 2026-05-02 evening test on Gemma-4-31B
-        // confirmed BF16 MLP does NOT fix the residual drift:
-        //
-        //   * Greedy fib output is BIT-IDENTICAL to NVFP4 MLP
-        //     (same broken `if n == 0:\n    return 0` indentation).
-        //   * Creative haiku at temp=0.3 actively REGRESSED — model
-        //     collapsed into emoji repetition
-        //     (`Blue🌊wavescrashashore! No.` × N).
-        //
-        // So the drift is not in the MLP NVFP4 quantization. Combined
-        // with the prior FP32 lm_head and FP32 QK^T verifications
-        // (also no-ops), this exhausts the sampler-side and
-        // weight-precision levers. The fib failure is intrinsic to
-        // the Gemma-4-31B-NVFP4 checkpoint at greedy temp=0 — same
-        // tokenizer + sampling that vLLM/HF would also hit.
-        //
-        // Memory cost when on: 60 layers × 3 weights × hidden(5376) ×
-        // intermediate(21504) × 2 bytes = ~41 GB extra. Does fit in
-        // 119 GB but increases swap-out risk. Leaving infrastructure
-        // wired for future bisection (`ATLAS_GEMMA4_BF16_MLP=1`
-        // re-enables; `=0` is the default).
-        let bf16_mlp_default = false;
+        // BF16 MLP (gate/up/down) — DEFAULT ON for E2B, OFF for 26B/31B.
+        // The 2026-05-02 evening test on Gemma-4-31B confirmed BF16 MLP
+        // does NOT fix the residual drift THERE — and that is expected:
+        // 31B ships NVFP4 MLP on disk, so BF16 = dequant of the same
+        // NVFP4 data (no new precision). E2B is different: its MLP
+        // weights are NATIVE BF16 on disk (`Bf16Raw` variant, no
+        // `weight_scale`). `quantized_any`'s Bf16Raw branch runtime-
+        // quantizes them to NVFP4 — lossy (~5-17% `moe_out` drift, the
+        // first divergence from the BF16 HF oracle) — so E2B must keep
+        // the FFN BF16 end-to-end. `num_kv_shared_layers > 0` identifies
+        // E2B exclusively among the Gemma-4 family. 26B/31B keep the
+        // NVFP4 default; `ATLAS_GEMMA4_BF16_MLP=1/0` still overrides.
+        let bf16_mlp_default = config.num_kv_shared_layers > 0;
         let bf16_mlp = match std::env::var("ATLAS_GEMMA4_BF16_MLP").ok().as_deref() {
             Some("0") => false,
             Some("1") => true,
@@ -318,10 +312,20 @@ pub(super) fn load_layers_impl(
         // to NVFP4 otherwise (matches the o_proj BF16 pattern). NVFP4
         // weights are kept loaded as a fallback / for non-MLP code that
         // still uses them.
+        // E2B double-wide MLP (use_double_wide_mlp): the KV-shared band
+        // (i >= num_hidden_layers - num_kv_shared_layers) projects to
+        // 2*intermediate_size; other layers (and all non-E2B variants) use
+        // config.intermediate_size. See loader_c::layer_intermediate_size.
+        let inter = super::loader_c::layer_intermediate_size(config, i);
+        // BF16 MLP must be captured BEFORE `quantized_any` below: its
+        // Bf16Raw branch (native-BF16 checkpoints like E2B) frees the
+        // store's BF16 source after requantizing to NVFP4, which would
+        // dangle the `dense()`/`store.get()` pointers this copy reads.
+        let bf16_mlp_weights = build_bf16_mlp(store, &lp, bf16_mlp, inter, gpu, h)?;
         let gate_proj = quantized_any(
             store,
             &format!("{lp}.mlp.gate_proj"),
-            config.intermediate_size,
+            inter,
             h,
             gpu,
             variant,
@@ -330,7 +334,7 @@ pub(super) fn load_layers_impl(
         let up_proj = quantized_any(
             store,
             &format!("{lp}.mlp.up_proj"),
-            config.intermediate_size,
+            inter,
             h,
             gpu,
             variant,
@@ -340,7 +344,7 @@ pub(super) fn load_layers_impl(
             store,
             &format!("{lp}.mlp.down_proj"),
             h,
-            config.intermediate_size,
+            inter,
             gpu,
             variant,
             qctx,
@@ -354,13 +358,16 @@ pub(super) fn load_layers_impl(
             up_proj_t: None,
             down_proj_t: None,
         };
-        let bf16_mlp_weights = build_bf16_mlp(store, &lp, bf16_mlp, config, gpu, h)?;
         gpu.synchronize(stream)?;
         tracing::info!(
             "L{i}: FFN weights loaded (bf16_mlp={bf16_mlp}), building DenseFfnLayer (GELU)..."
         );
         let mut ffn_layer =
             DenseFfnLayer::new_with_activation(ffn_weights, FfnActivation::GeLU, gpu)?;
+        // E2B double-wide band: the forward GEMMs must use the per-layer
+        // intermediate (2*intermediate_size) or they read only the first
+        // half of the [12288, h] gate/up weights (L15+ divergence).
+        ffn_layer.set_intermediate_size(inter as u32);
         if let Some((g, u, d)) = bf16_mlp_weights {
             ffn_layer.set_bf16_weights(g, u, d);
             tracing::info!("L{i}: BF16 MLP weights installed");

@@ -101,6 +101,17 @@ impl ModelConfig {
             fp8_kv_calibration_tokens: 0,
             final_logit_softcapping: 0.0,
             embed_scale: 0.0,
+            // Gemma-4 E2B fields — all default to "unused" (0/empty/None) so
+            // the base Qwen3-Next-80B template behaves identically to before.
+            num_kv_shared_layers: 0,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: 0,
+            use_double_wide_mlp: false,
+            global_head_dim: 0,
+            base_head_dim: 0,
+            attention_types: Vec::new(),
+            gemma_vision: None,
+            gemma_audio: None,
             // MiniMax M2 fields — all default to "unused" (empty/0) so the
             // base Qwen3-Next-80B template behaves identically to before.
             scoring_func: String::new(),

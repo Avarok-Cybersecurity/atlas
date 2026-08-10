@@ -205,10 +205,19 @@ impl BufferSizes {
         // Batched expert output buffers for MoE (or dense FFN).
         // Sized for max(K=3 verify, prefill chunk) × top_k experts.
         let k_max = m.max(3); // prefill chunk or K=3 verify, whichever larger
+        // Widest MLP intermediate across layers: the Gemma-4-E2B double-wide
+        // KV-shared band (use_double_wide_mlp, last num_kv_shared_layers
+        // layers) projects to 2 * intermediate_size (loader_c's
+        // layer_intermediate_size); all other layers/models keep intermediate_size.
+        let max_ffn_inter = if config.use_double_wide_mlp && config.num_kv_shared_layers > 0 {
+            config.intermediate_size * 2
+        } else {
+            config.intermediate_size
+        };
         let expert_inter = if config.num_experts > 0 {
             k_max * config.num_experts_per_tok * config.moe_intermediate_size
         } else {
-            k_max * config.intermediate_size
+            k_max * max_ffn_inter
         };
         let expert_gate_out = expert_inter * bf16;
         let expert_up_out = expert_inter * bf16;
@@ -265,13 +274,11 @@ impl BufferSizes {
         // gate/up (intermediate), and gated q_proj (2*q_heads*head_dim, which
         // can exceed both — e.g. 35B 2*16*256=8192 > hidden 4096).
         let (lora_xa, lora_delta, lora_hact, lora_seq_slot) = if config.adapter_max_rank > 0 {
-            let max_n = h
-                .max(config.intermediate_size)
-                .max(q_proj_mul * q_heads * hd);
+            let max_n = h.max(max_ffn_inter).max(q_proj_mul * q_heads * hd);
             (
                 m * config.adapter_max_rank * bf16,
                 m * max_n * bf16,
-                m * config.intermediate_size * bf16,
+                m * max_ffn_inter * bf16,
                 m * 4, // [m] i32 per-request routing slots (prefill path)
             )
         } else {
@@ -325,7 +332,7 @@ impl BufferSizes {
         // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
         // 0 for MoE (num_experts>0) — those never take the dense_ffn MMQ path.
         let (ffn_act_q8, ffn_act_a, ffn_act_scale) = if config.num_experts == 0 {
-            let kmax = h.max(config.intermediate_size);
+            let kmax = h.max(max_ffn_inter);
             let kpad = kmax.div_ceil(256) * 256;
             (
                 m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)

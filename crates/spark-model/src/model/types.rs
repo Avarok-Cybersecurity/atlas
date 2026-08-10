@@ -59,6 +59,26 @@ pub struct TransformerModel {
     pub(super) embed_tokens: DenseWeight,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
+    /// Gemma-4 E2B per-layer-embedding (PLE) tables. `None` for every
+    /// non-E2B model. Loaded by W1.2.2-4; the forward pass consumes them
+    /// in a later wave.
+    pub(super) ple_tables: Option<crate::weight_loader::Gemma4PleTables>,
+    /// PLE combined-buffer scratch A: `[max_batch_tokens, num_layers*256]`
+    /// BF16 per-pass per-layer vectors (see `impl_ple.rs::compute_ple`).
+    /// NULL when PLE is disabled.
+    pub(super) ple_combined: DevicePtr,
+    /// PLE combined-buffer scratch B: second base for the fused mixed path
+    /// (decode-side + prefill-side vectors are both resident). NULL when
+    /// PLE is disabled.
+    pub(super) ple_combined_b: DevicePtr,
+    /// PLE identity scratch: `[max_batch_tokens, num_layers*256]` BF16
+    /// token-identity table gather (reused as the projection scratch too).
+    pub(super) ple_identity: DevicePtr,
+    /// Row capacity (tokens) of the PLE scratch buffers.
+    pub(super) ple_scratch_tokens: usize,
+    /// `residual_add::bf16_residual_add` — the PLE combine step
+    /// `combined = context + identity`.
+    pub(super) ple_residual_add_k: KernelHandle,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
     /// TRANSPOSED `[K/2, ldb]` twin of `lm_head_nvfp4` + its PADDED row stride.
     ///

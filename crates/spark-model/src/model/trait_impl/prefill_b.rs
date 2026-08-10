@@ -296,6 +296,28 @@ impl TransformerModel {
             stream,
         );
 
+        // ── Phase 3c: Gemma-4 E2B per-layer-embedding (PLE) precompute ──
+        // Combined per-layer vectors for the tokens this chunk ACTUALLY
+        // processes (hidden rows [0..proc_count) — the proc_range re-embed
+        // may have narrowed the full-chunk embed). Stage their token IDs
+        // into the stable buffer and build [proc_count, num_layers*256].
+        // No-op for non-E2B.
+        if self.ple_tables.is_some() {
+            let proc_tokens = &tokens[proc_start..proc_start + proc_count];
+            let proc_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(proc_tokens.as_ptr() as *const u8, proc_count * 4)
+            };
+            self.gpu
+                .copy_h2d_async(proc_bytes, self.buffers.token_ids(), stream)?;
+            self.compute_ple(
+                self.buffers.token_ids(),
+                self.buffers.hidden_states(),
+                proc_count,
+                self.ple_combined,
+                stream,
+            )?;
+        }
+
         // ── Phase 4: forward through all layers ──
         self.prefill_b_forward_layers(
             seq,

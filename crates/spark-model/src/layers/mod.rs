@@ -5,6 +5,7 @@ pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
 pub mod fp8_calibration;
+pub mod gemma4_ple;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;

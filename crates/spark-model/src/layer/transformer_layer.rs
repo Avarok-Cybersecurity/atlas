@@ -48,6 +48,13 @@ pub trait TransformerLayer: Send + Sync {
         None
     }
 
+    /// Gemma-4 E2B: point this layer at the model-level combined PLE buffer
+    /// for the current forward pass (base of `[S, num_layers*256]` BF16; the
+    /// layer derives its own column from its layer index). `DevicePtr::NULL`
+    /// disables the PLE block for the pass. Default: no-op — only attention
+    /// layers with PLE weights override this.
+    fn set_ple_base(&self, _base: DevicePtr) {}
+
     /// Decode one token through this layer, modifying `hidden` in-place.
     ///
     /// # Arguments

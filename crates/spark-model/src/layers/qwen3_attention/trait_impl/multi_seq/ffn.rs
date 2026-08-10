@@ -213,6 +213,15 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         }
+        // Gemma-4 E2B per-layer-embedding (PLE) + layer_scalar: both run at
+        // the END of the layer (PLE first, then the scalar multiply),
+        // mirroring `decode_inner` / `prefill_inner`. No-ops when unset.
+        if self.ple.is_some() {
+            self.gemma4_ple_forward(fwd, hidden, n, stream)?;
+        }
+        if let Some(scalar) = self.layer_scalar {
+            self.apply_layer_scalar(fwd.gpu, hidden, n * h, scalar, stream)?;
+        }
         Ok(())
     }
 }

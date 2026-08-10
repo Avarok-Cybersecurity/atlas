@@ -495,6 +495,277 @@ fn test_parse_gemma4_config() {
     assert_eq!(cfg.gqa_ratio(), 2); // 32/16
     // Rotary dim
     assert_eq!(cfg.rotary_dim(), 64); // 0.25 * 256
+    // No E2B `layer_types` → attention_types stays empty and all E2B fields
+    // fall back to defaults; behavior is byte-identical to before Wave 1.1.
+    assert!(cfg.attention_types.is_empty());
+    assert_eq!(cfg.num_kv_shared_layers, 0);
+    assert_eq!(cfg.hidden_size_per_layer_input, 0);
+    assert_eq!(cfg.vocab_size_per_layer_input, 0);
+    assert!(!cfg.use_double_wide_mlp);
+    assert_eq!(cfg.global_head_dim, 0);
+    assert!(cfg.gemma_vision.is_none());
+    assert!(cfg.gemma_audio.is_none());
+}
+
+#[test]
+fn test_parse_gemma4_e2b_config() {
+    let json = r#"{
+        "model_type": "gemma4",
+        "architectures": ["Gemma4ForConditionalGeneration"],
+        "tie_word_embeddings": true,
+        "image_token_id": 258880,
+        "audio_token_id": 258881,
+        "video_token_id": 258884,
+        "boi_token_id": 255999,
+        "eoi_token_id": 258882,
+        "boa_token_id": 256000,
+        "eoa_token_id": 258883,
+        "eos_token_id": [1, 106],
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_global_key_value_heads": null,
+            "attention_k_eq_v": false,
+            "sliding_window": 512,
+            "vocab_size": 262144,
+            "vocab_size_per_layer_input": 262144,
+            "hidden_size_per_layer_input": 256,
+            "num_kv_shared_layers": 20,
+            "use_double_wide_mlp": true,
+            "intermediate_size": 6144,
+            "max_position_embeddings": 131072,
+            "rms_norm_eps": 1e-6,
+            "hidden_activation": "gelu_pytorch_tanh",
+            "final_logit_softcapping": 30.0,
+            "pad_token_id": 0,
+            "bos_token_id": 2,
+            "eos_token_id": 1,
+            "layer_types": [
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+            ],
+            "rope_parameters": {
+                "full_attention": {
+                    "partial_rotary_factor": 0.25,
+                    "rope_theta": 1000000.0,
+                    "rope_type": "proportional"
+                },
+                "sliding_attention": {
+                    "rope_theta": 10000.0,
+                    "rope_type": "default"
+                }
+            }
+        },
+        "vision_config": {
+            "model_type": "gemma4_vision",
+            "hidden_size": 768,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 16,
+            "num_attention_heads": 12,
+            "num_key_value_heads": 12,
+            "head_dim": 64,
+            "global_head_dim": 64,
+            "patch_size": 16,
+            "pooling_kernel_size": 3,
+            "position_embedding_size": 10240,
+            "use_clipped_linears": true,
+            "standardize": false
+        },
+        "audio_config": {
+            "model_type": "gemma4_audio",
+            "hidden_size": 1024,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 8,
+            "subsampling_conv_channels": [128, 32],
+            "conv_kernel_size": 5,
+            "attention_chunk_size": 12,
+            "attention_context_left": 13,
+            "attention_context_right": 0,
+            "output_proj_dims": 1536,
+            "residual_weight": 0.5,
+            "use_clipped_linears": true
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    // Core text dims (asserted via the new E2B fields below where relevant).
+    assert_eq!(cfg.model_type, "gemma4");
+    assert_eq!(cfg.hidden_size, 1536);
+    assert_eq!(cfg.num_hidden_layers, 35);
+    assert_eq!(cfg.num_attention_heads, 8);
+    assert_eq!(cfg.num_key_value_heads, 1);
+    assert_eq!(cfg.head_dim, 512); // global_head_dim wins for buffer sizing
+    assert_eq!(cfg.intermediate_size, 6144);
+    assert_eq!(cfg.vocab_size, 262144);
+    assert_eq!(cfg.sliding_window, 512);
+    assert_eq!(cfg.max_position_embeddings, 131072);
+    assert_eq!(cfg.rms_norm_eps, 1e-6);
+    assert_eq!(cfg.rope_theta, 10000.0); // sliding theta
+    assert_eq!(cfg.partial_rotary_factor, 0.25);
+    assert!(cfg.tie_word_embeddings);
+    assert_eq!(cfg.final_logit_softcapping, 30.0);
+    assert_eq!(cfg.embed_scale, (1536.0_f32).sqrt());
+    assert!(cfg.nested_config);
+
+    // New E2B text-config fields.
+    assert_eq!(cfg.num_kv_shared_layers, 20);
+    assert_eq!(cfg.hidden_size_per_layer_input, 256);
+    assert_eq!(cfg.vocab_size_per_layer_input, 262144);
+    assert!(cfg.use_double_wide_mlp);
+    assert_eq!(cfg.global_head_dim, 512);
+
+    // layer_types → attention_types: full at {4,9,14,19,24,29,34}, else sliding.
+    let full_indices = [4, 9, 14, 19, 24, 29, 34];
+    assert_eq!(cfg.attention_types.len(), 35);
+    for (i, kind) in cfg.attention_types.iter().enumerate() {
+        let expected = if full_indices.contains(&i) {
+            AttentionKind::Full
+        } else {
+            AttentionKind::Sliding
+        };
+        assert_eq!(*kind, expected, "layer {i}");
+    }
+
+    // CRITICAL: layer_types stays ALL FullAttention so the SSM/hybrid paths
+    // never engage — num_attention_layers() must return all 35.
+    assert_eq!(cfg.layer_types.len(), 35);
+    assert!(
+        cfg.layer_types
+            .iter()
+            .all(|t| *t == LayerType::FullAttention)
+    );
+    assert_eq!(cfg.num_attention_layers(), 35);
+    assert_eq!(cfg.num_ssm_layers(), 0);
+
+    // Vision tower.
+    let vision = cfg
+        .gemma_vision
+        .as_ref()
+        .expect("E2B vision_config present");
+    assert_eq!(vision.hidden_size, 768);
+    assert_eq!(vision.intermediate_size, 3072);
+    assert_eq!(vision.num_hidden_layers, 16);
+    assert_eq!(vision.num_attention_heads, 12);
+    assert_eq!(vision.head_dim, 64);
+    assert_eq!(vision.patch_size, 16);
+    assert_eq!(vision.pooling_kernel_size, 3);
+    assert_eq!(vision.position_embedding_size, 10240);
+    assert!(vision.use_clipped_linears);
+    assert_eq!(vision.image_token_id, 258880);
+
+    // Audio tower.
+    let audio = cfg.gemma_audio.as_ref().expect("E2B audio_config present");
+    assert_eq!(audio.hidden_size, 1024);
+    assert_eq!(audio.num_hidden_layers, 12);
+    assert_eq!(audio.num_attention_heads, 8);
+    assert_eq!(audio.subsampling_conv_channels, vec![128, 32]);
+    assert_eq!(audio.conv_kernel_size, 5);
+    assert_eq!(audio.attention_chunk_size, 12);
+    assert_eq!(audio.attention_context_left, 13);
+    assert_eq!(audio.attention_context_right, 0);
+    assert_eq!(audio.output_proj_dims, 1536);
+    assert_eq!(audio.residual_weight, 0.5);
+    assert!(audio.use_clipped_linears);
+    assert_eq!(audio.audio_token_id, 258881);
+}
+
+/// W1.4 Gemma-4 E2B cross-layer KV sharing: `kv_pool_map` routes each
+/// shared layer (15-34) to the last same-kind non-shared layer — sliding
+/// → 13, full → 14. Layers 0-14 own their physical pool.
+#[test]
+fn test_kv_pool_map_e2b() {
+    let json = r#"{
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 20,
+            "layer_types": [
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+                "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+            ]
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_kv_shared_layers, 20);
+
+    let map = cfg.kv_pool_map();
+    // 15 physical pools: layers 0-14 own their pool.
+    assert_eq!(map.len(), 35);
+    for (i, &pool) in map.iter().enumerate().take(15) {
+        assert_eq!(pool, i, "layer {i} owns its pool");
+    }
+    // Shared band: sliding layers route to producer 13, full layers to 14.
+    for (i, &pool) in map.iter().enumerate().skip(15) {
+        let expected = if i % 5 == 4 { 14 } else { 13 };
+        assert_eq!(pool, expected, "shared layer {i}");
+    }
+    assert_eq!(map[15], 13);
+    assert_eq!(map[18], 13);
+    assert_eq!(map[19], 14);
+    assert_eq!(map[20], 13);
+    assert_eq!(map[23], 13);
+    assert_eq!(map[24], 14);
+    assert_eq!(map[34], 14);
+}
+
+/// W1.4: `kv_pool_map` stays empty when sharing is off — identity behavior
+/// for every non-E2B model. Empty both when `num_kv_shared_layers` is 0 and
+/// when `attention_types` is missing (no layer-kind source of truth).
+#[test]
+fn test_kv_pool_map_empty_when_no_sharing() {
+    // num_kv_shared_layers defaults to 0 → no sharing.
+    let json = r#"{
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_kv_shared_layers, 0);
+    assert!(cfg.attention_types.is_empty());
+    assert!(cfg.kv_pool_map().is_empty());
+
+    // num_kv_shared_layers > 0 but no layer_types → attention_types empty →
+    // cannot pick a producer → no sharing (empty map, identity).
+    let json = r#"{
+        "model_type": "gemma4",
+        "text_config": {
+            "hidden_size": 1536,
+            "num_hidden_layers": 35,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 20
+        }
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.num_kv_shared_layers, 20);
+    assert!(cfg.attention_types.is_empty());
+    assert!(cfg.kv_pool_map().is_empty());
 }
 
 #[test]

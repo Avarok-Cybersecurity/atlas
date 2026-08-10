@@ -355,6 +355,28 @@ impl TransformerModel {
                 // see prefill_chunk_dispatch comment).
                 self.gpu.synchronize(stream)?;
 
+                // Gemma-4 E2B PLE (mirrors prefill_chunk_dispatch Phase 3c):
+                // combined per-layer vectors for THIS stream's processed
+                // tokens, staged before the shared layer loop.
+                if self.ple_tables.is_some() {
+                    let proc_tokens = &tokens[proc_start..proc_start + proc_count];
+                    let proc_bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(
+                            proc_tokens.as_ptr() as *const u8,
+                            proc_count * 4,
+                        )
+                    };
+                    self.gpu
+                        .copy_h2d_async(proc_bytes, self.buffers.token_ids(), stream)?;
+                    self.compute_ple(
+                        self.buffers.token_ids(),
+                        self.buffers.hidden_states(),
+                        proc_count,
+                        self.ple_combined,
+                        stream,
+                    )?;
+                }
+
                 // Phase 4: forward through all layers (per-stream — Phase 2b/3
                 // will hoist this out of the loop with `layer.prefill_batched`).
                 self.prefill_b_forward_layers(

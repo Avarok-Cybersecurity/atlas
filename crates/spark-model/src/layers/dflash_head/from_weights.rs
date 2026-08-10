@@ -82,6 +82,7 @@ impl BlockDiffusionDraftHead {
             dtype: KvCacheDtype::Bf16,
             layer_dtypes: vec![],
             layer_dims: vec![],
+            layer_to_pool: vec![],
             cache_blocks_per_seq: None,
         };
         let num_blocks = (max_seq_len + gamma_val + 1) / block_size + 1;

@@ -1,0 +1,1 @@
+../../gemma-4-26b-a4b/nvfp4/paged_decode_attn_fp8_512.cu

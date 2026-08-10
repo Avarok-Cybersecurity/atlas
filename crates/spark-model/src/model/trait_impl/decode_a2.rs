@@ -210,6 +210,25 @@ impl TransformerModel {
         for i in n..padded_n {
             self.gpu.memset(hidden.offset(i * h * fp32), 0, h * fp32)?;
         }
+        // 1b2. Stage the batch's token IDs into the STABLE token_ids buffer
+        // (mirrors decode_a.rs:130-131; hash-MoE + Gemma-4 E2B PLE read it).
+        {
+            let tokens_bytes: &[u8] =
+                unsafe { std::slice::from_raw_parts(tokens.as_ptr() as *const u8, n * 4) };
+            self.gpu
+                .copy_h2d_async(tokens_bytes, self.buffers.token_ids(), stream)?;
+            // Gemma-4 E2B per-layer-embedding (PLE): recompute the combined
+            // per-layer vectors for the batch's tokens every step.
+            if self.ple_tables.is_some() {
+                self.compute_ple(
+                    self.buffers.token_ids(),
+                    hidden,
+                    n,
+                    self.ple_combined,
+                    stream,
+                )?;
+            }
+        }
 
         // 1c. Allocate KV blocks for active sequences
         let mut kv_cache = self.kv_cache.lock();
@@ -266,7 +285,7 @@ impl TransformerModel {
             comm: self.comm_ref(),
             graph_capture: use_graphs,
             gdn_exact_replay: false,
-            token_ids: None,
+            token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: batched decode never routes prefill.
             midchunk_capture: None,
         };
@@ -392,6 +411,14 @@ impl TransformerModel {
             };
 
             dump_hidden("post_embed", stream)?;
+
+            // Gemma-4 E2B per-layer-embedding (PLE): arm every layer's slice
+            // from the combined buffer staged in Phase 1c (capture-safe:
+            // fixed scratch + fixed token_ids buffer content refreshed each
+            // replay). No-op for non-E2B.
+            if self.ple_tables.is_some() {
+                self.ple_arm_layers(self.ple_combined);
+            }
 
             // Layer loop for padded_n sequences
             let mut ssm_us: u128 = 0;

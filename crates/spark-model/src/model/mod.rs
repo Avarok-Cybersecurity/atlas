@@ -35,6 +35,7 @@ pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
+pub(crate) mod impl_ple;
 pub(crate) mod mtp_carry;
 pub(crate) mod pinned_pack;
 pub(crate) mod ssm_pool;

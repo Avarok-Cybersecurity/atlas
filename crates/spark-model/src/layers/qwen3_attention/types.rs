@@ -63,6 +63,24 @@ pub struct Qwen3AttentionLayer {
     pub(crate) post_ffn_out_norm: Option<DenseWeight>,
     /// Per-layer scalar (Gemma-4): hidden_states *= layer_scalar at end of forward.
     pub(crate) layer_scalar: Option<f32>,
+    /// Gemma-4 E2B per-layer-embedding (PLE) weights. `Some` only for E2B
+    /// layers; the PLE block runs right before `layer_scalar` (see `ple.rs`).
+    pub(crate) ple: Option<crate::layers::gemma4_ple::Gemma4LayerPle>,
+    /// Per-pass base of the model-level combined PLE buffer
+    /// `[S, num_layers*256]` BF16 for the current forward. Stored as an
+    /// atomic pointer value so the model loop can arm it per-pass on `&self`
+    /// (0 = no model-level vectors this pass → the PLE block no-ops).
+    pub(crate) ple_slice: std::sync::atomic::AtomicU64,
+    /// `gemma4_ple::gemma4_ple_mul` — strided slice multiply (E2B only).
+    pub(super) ple_mul_k: KernelHandle,
+    /// `gelu::gelu_tanh` — the PLE input_gate activation (gelu_pytorch_tanh).
+    pub(super) gelu_tanh_k: KernelHandle,
+    /// True when this layer is in the KV-shared band
+    /// (`i >= num_hidden_layers - num_kv_shared_layers`): its forward must NOT
+    /// compute k/v or write the cache — the attention kernel reads k/v from
+    /// the aliased producer pool (`kv_cache.{k,v}_pool_ptr(layer_idx)` routes
+    /// there). Gemma-4 E2B only; false everywhere else.
+    pub(crate) kv_shared: bool,
     /// Secondary FFN (Gemma-4 26B MoE): runs in parallel with primary FFN (dense).
     pub(crate) moe_ffn: Option<FfnComponent>,
     /// Pre-norm for MoE input (pre_feedforward_layernorm_2).
