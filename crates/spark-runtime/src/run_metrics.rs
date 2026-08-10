@@ -49,8 +49,12 @@ pub struct RunMetrics {
     /// `baseline - free_now`, excluding co-tenants automatically. `0` =
     /// unset (the mock backend in tests) and callers fall back.
     pub baseline_free_bytes: AtomicUsize,
-    /// `(module, func, loaded)` for every kernel lookup this run made.
-    pub kernel_audit: Mutex<Vec<(String, String, bool)>>,
+    /// `(module, func, loaded, dispatch site)` for every kernel lookup this run
+    /// made. The site is the `Location` of the `.kernel(…)` / `try_kernel(…)`
+    /// call, carried in through `#[track_caller]`: a bare `module::func` list
+    /// is not actionable when the same module is looked up from a dozen
+    /// constructors and the fix is always "go to that line".
+    pub kernel_audit: Mutex<Vec<(String, String, bool, &'static std::panic::Location<'static>)>>,
 
     // ── Per-run baselines for the counters above ──
     //
@@ -100,6 +104,10 @@ pub fn reset_for_new_run() {
     if let Ok(mut v) = m.kernel_audit.lock() {
         v.clear();
     }
+    // The next model runs its own eager lookups and gets its own boot gate, so
+    // the seal from the outgoing model must not outlive it — otherwise every
+    // one of the incoming model's own lookups reads as a "late" one.
+    crate::kernel_audit::unseal();
 }
 
 /// Prefix-cache activity since the CURRENT model was loaded.

@@ -52,8 +52,8 @@ fn agent() -> &'static ureq::Agent {
 ///
 /// Looked up explicitly rather than left to a client library so the behaviour
 /// does not change under us: the env vars first, then the file
-/// `huggingface-cli login` writes, which is what a user who has "logged in"
-/// will expect to work.
+/// `hf auth login` writes (`huggingface-cli login` before huggingface_hub 1.0),
+/// which is what a user who has "logged in" will expect to work.
 pub fn token() -> Option<String> {
     let env = ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"].map(|v| std::env::var(v).ok());
     let file = std::env::var_os("HOME")

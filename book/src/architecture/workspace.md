@@ -1,6 +1,6 @@
 # Workspace Layout
 
-Atlas is a twelve-member Cargo workspace plus a build-time kernel tree. This chapter maps every top-level directory to its role, and the twelve crates to the axes of variation they each insulate.
+Atlas is a **nineteen**-member Cargo workspace plus a build-time kernel tree (count them in the root `Cargo.toml` `members` list). This chapter maps every top-level directory to its role, and the crates to the axes of variation they each insulate.
 
 ## Repository tree (top level)
 
@@ -29,24 +29,26 @@ atlas/
 └── vendor/                       vendored deps (e.g. xgrammar-rs)
 ```
 
-## The twelve workspace members
+## The workspace members
 
 `Cargo.toml` lists:
 
 ```toml
 members = [
     "crates/atlas-core",
-    "crates/atlas-quant",
-    "crates/atlas-norm",
-    "crates/atlas-activation",
-    "crates/atlas-embed",
-    "crates/atlas-reduce",
     "crates/atlas-kernels",
+    "crates/atlas-plugin",
+    "crates/atlas-tier",
+    "crates/atlas-rdma",
     "crates/spark-runtime",
     "crates/spark-comm",
     "crates/spark-model",
+    "crates/spark-nllb",
     "crates/spark-server",
+    "crates/spark-storage",
     "crates/atlas-spark-bench",
+    "crates/cufile-sys",
+    "crates/xgrammar",
 ]
 ```
 
@@ -54,9 +56,7 @@ Each is its own crate with its own `Cargo.toml`, its own unit tests, and its own
 
 | Crate | Role | Consumed by |
 |---|---|---|
-| `atlas-core` | Traits & types used by every crate below: `ComputeTarget` (build-time compiler abstraction), `KernelTarget` (runtime dispatch key), `Vendor`, `Dtype`, `Tensor`, `ModelConfig` parsing | everyone |
-| `atlas-quant` | Quantization traits + kernels: NVFP4 (4-bit E2M1 + FP8 scales), FP8 native | `spark-model`, `atlas-kernels` |
-| `atlas-norm`, `atlas-activation`, `atlas-embed`, `atlas-reduce` | Small primitive-op trait crates (RMSNorm, SiLU, RoPE, argmax). Keeps the trait-only surface area clean | `spark-model`, `spark-runtime` |
+| `atlas-core` | Traits & types used by every crate below: `ComputeTarget` (build-time compiler abstraction), `KernelTarget` (runtime dispatch key), `Vendor`, `Dtype`, `Tensor`, `ModelConfig` parsing, and the host-side numerics (`numeric`: FP8 E4M3 LUT, f32 → BF16 RNE cast) every weight loader shares | everyone |
 | `atlas-kernels` | Auto-generated Rust glue over compiled PTX. `build.rs` enumerates `kernels/<hw>/<model>/<quant>/*.cu`, compiles each through the matching `ComputeTarget`, emits one `target_ptx.rs` that `include!()`s back into this crate | `spark-runtime` |
 | `spark-runtime` | `GpuBackend` trait (27 methods) + CUDA impl (`cuda_backend.rs`). KV cache, prefix cache (radix tree), paged FP8 cache, buffer arena, sampler, `WeightStore` (`O_DIRECT` + pipelined safetensors loader). Everything that touches the GPU goes through here. | `spark-model`, `spark-server` |
 | `spark-comm` | `CommBackend` trait (collective ops) + NCCL impl. `SingleGpuBackend` is the no-op impl for single-GPU runs. | `spark-model`, `spark-server` |
@@ -88,7 +88,7 @@ kernels/
     │   └── nvfp4/
     ├── minimax-m2-229b/
     │   └── nvfp4/
-    └── ... (one leaf per supported model, twelve leaves today)
+    └── ... (one leaf per (model, quant) target — 22 under kernels/gb10/ today)
 ```
 
 Every leaf directory is a fully self-contained `(gb10, model, quant)` target. The kernels inside a leaf can use any tile shape, any register budget, any shared-memory layout — they are physically incapable of regressing a different target.
@@ -123,7 +123,7 @@ The book you're reading in `book/` synthesises all of this into a single narrati
 
 | You added | You touched |
 |---|---|
-| A new quantization (e.g. MXFP4) | `atlas-quant/src/<scheme>.rs`, `kernels/<hw>/<model>/<scheme>/*.cu`, runtime dispatch in `spark-model/src/quant_format.rs` |
+| A new quantization (e.g. MXFP4) | `kernels/<hw>/<model>/<scheme>/*.cu`, a format module under `spark-model/src/quant_format/`, the loader arms in `spark-model/src/weight_map/`, and any new host-side conversion in `atlas-core/src/numeric.rs` |
 | A new model family (e.g. Phi-4) | `spark-model/src/weight_loader/<family>.rs`, one arm in `spark-model/src/factory.rs`, `kernels/<hw>/<family>/<quant>/MODEL.toml`, optional `jinja-templates/<family>.j2` |
 | A new hardware vendor (e.g. MI300X) | `atlas-core/src/compute.rs` (new `ComputeTarget` impl), `atlas-kernels/build.rs::resolve_compute_target()` arm, `spark-runtime/src/<vendor>_backend.rs` (new `GpuBackend` impl), `spark-comm/src/<vendor>_backend.rs` if the vendor needs its own collective impl, `kernels/<hw>/HARDWARE.toml`, kernel source under `kernels/<hw>/<model>/<quant>/` |
 | A new CLI flag | `spark-server/src/cli.rs`, plumbing wherever it lands |

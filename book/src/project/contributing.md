@@ -29,8 +29,11 @@ These are what CI runs (`.github/workflows/ci.yml`). Run them locally first:
 # 1. Formatting
 cargo fmt --all -- --check
 
-# 2. Lints (no CUDA required thanks to ATLAS_SKIP_BUILD)
-ATLAS_SKIP_BUILD=1 cargo clippy --workspace --tests --all-features -- -Dwarnings
+# 2. Lints. BOTH env vars are needed: ATLAS_SKIP_BUILD stubs the PTX build,
+#    CUDARC_CUDA_VERSION stops cudarc shelling out to `nvcc --version`.
+#    Deny-warnings comes from [workspace.lints], so CI passes no -D flag
+#    and no --all-features. This is verbatim what ci.yml runs.
+ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
 
 # 3. License headers
 bash scripts/check-license-headers.sh
@@ -45,7 +48,7 @@ All four are required to pass. Real CUDA build + test cycles require a GB10 host
 
 - **SPDX header on every source file.** `// SPDX-License-Identifier: AGPL-3.0-only` on line 1 of every `.rs`, `.cu`, `.cuh`, `.h`, `.hpp`, `.cpp`. Enforced by the `license-headers` CI job.
 - **License is AGPL-3.0-only.** Don't mix in permissive-only code without confirming compatibility. `deny.toml` controls allowed dependency licenses.
-- **Don't regress supported models.** The matrix in [Supported Models](../getting-started/models.md) — 12 models across 7 families — is the contract. If your PR might touch a hot path, validate against `tests/run_all_models.py` on a GB10 before opening.
+- **Don't regress supported models.** The matrix in [Supported Models](../getting-started/models.md) is the contract; `docs/GB10_DEPLOYMENT_GUIDE.md` §2 is its SSOT, and `kernels/gb10/` carries 22 `(model, quant)` leaves. If your PR might touch a hot path, validate against `tests/run_all_models.py` on a GB10 before opening.
 - **One logical change per commit.** Don't bundle cleanup with a bug fix.
 - **Commit message format.** `<area>: <imperative summary>` — e.g. `spark-server: preserve template-forced thinking through EP=2`.
 
@@ -53,7 +56,7 @@ All four are required to pass. Real CUDA build + test cycles require a GB10 host
 
 These are the classes of bug that have burned days. Know them; avoid introducing them.
 
-- **Protocol drift** between OpenAI (`api.rs`) and Anthropic (`anthropic.rs`) surfaces. A fix on one side often needs a matching change on the other.
+- **Protocol drift** between OpenAI (`api/`) and Anthropic (`anthropic/`) surfaces. A fix on one side often needs a matching change on the other.
 - **Template mismatches** subtly breaking tool-calling — different `<tool_call>` vs `<minimax:tool_call>` tokens, `<think>` seeded by the template vs emitted by the model, thinking budget enforcement.
 - **FP8 / KV / quantization edge cases** — BF16 paged cache routed into an FP8 kernel → silent NaN. If your change touches numeric paths, verify with a real model before claiming success.
 - **Docs drift** — CLI flags, release commands, quick-start snippets. Verify against the current binary, not memory.
@@ -76,9 +79,9 @@ High-level (full walkthrough in the repo README):
 
 1. `kernels/<hw>/HARDWARE.toml` with `vendor = "..."`.
 2. `impl ComputeTarget` in `atlas-core/src/compute.rs` (or inline in your crate).
-3. Arm in `atlas-kernels/build.rs::resolve_compute_target()`.
+3. Arm in `atlas-kernels/build.rs` — `resolve_targets()` reads `ATLAS_TARGET_HW` (default `gb10`) and the leaf `HARDWARE.toml`'s `vendor` picks the `ComputeTarget`.
 4. `impl GpuBackend` in `spark-runtime/src/<vendor>_backend.rs` — 27 methods, some optional.
-5. Kernel source files for ~35 kernels.
+5. Kernel sources under `kernels/<hw>/common/` (the GB10 baseline is 160 `.cu` files / 318 `__global__` entry points), plus per-model shadows only where a target diverges.
 6. `MODEL.toml` + `KERNEL.toml` for at least one model.
 7. Backend selection branch in `spark-server/src/main.rs`.
 8. Dockerfile for the new hardware.
@@ -91,7 +94,7 @@ The model-specific surface is tiny:
 2. Module declaration + `pub use` in `crates/spark-model/src/weight_loader/mod.rs`.
 3. One match arm in `crates/spark-model/src/factory.rs::loader_for_config`.
 4. Optional: `kernels/<hw>/<your-model>/MODEL.toml` for sampling / behavior defaults.
-5. Optional: tool-call parser in `crates/spark-server/src/tool_parser.rs`.
+5. Optional: tool-call parser under `crates/spark-server/src/tool_parser/`.
 6. Entry in `tests/run_all_models.py` for regression coverage.
 7. Entry in [Supported Models](../getting-started/models.md).
 
@@ -101,7 +104,7 @@ Existing loaders for patterns: `qwen35.rs`, `minimax.rs`, `nemotron.rs` cover de
 
 1. Fork and create a feature branch.
 2. Atomic commits. Enforced by reviewers; squash only at the reviewer's request.
-3. CI must pass (`fmt`, `clippy`, `license-headers`, `typos`, `cargo-deny`).
+3. CI must pass: `ci.yml` runs `fmt`, `clippy`, `license-headers`, `typos`, `kernel-structure`, `cargo test --workspace`, `test-macos-metal` and `release-matrix`; `security.yml` runs `cargo-deny`; `file-size-cap.yml` the 500-LoC cap; `docs.yml` mdBook + `cargo doc`. The `pr-benchmark-gate` job is advisory (`continue-on-error`).
 4. PR template asks for:
    - **What** — summary of the change.
    - **Why** — motivation and context.

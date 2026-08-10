@@ -34,6 +34,131 @@ fn unified_store(slots: usize) -> UnifiedSnapshotStore {
     .unwrap()
 }
 
+fn unified_store_capped(slots: usize, max_disk: usize) -> UnifiedSnapshotStore {
+    UnifiedSnapshotStore::new_capped(
+        Box::new(atlas_tier::VecSlotArena::new(BLOB, slots)),
+        Box::new(atlas_tier::MemSwapStore::new(BLOB)),
+        BLOB,
+        max_disk,
+    )
+    .unwrap()
+}
+
+// ─────────────── ATLAS_SSM_TIER_DISK_GB: the bounded Marconi tier ───────────
+
+/// A cap bounds the disk tier but NEVER converts into a reject: the store's
+/// "never full" contract is what keeps the bounded-tier warn in
+/// `reclaim_from_cache` ("SSM spill tier refused a blob") unreached — the cap's
+/// error channel is a later clean MISS, not a refused PUT.
+#[test]
+fn capped_store_bounds_disk_but_never_rejects() {
+    const CAP: usize = 3;
+    let s = unified_store_capped(2, CAP);
+    for k in 0..64u64 {
+        assert!(
+            s.put(k, &[k as u8; BLOB]).unwrap(),
+            "put {k} must never be refused by a CAPPED tier either"
+        );
+        assert!(
+            s.disk_records() <= CAP,
+            "on-disk records bounded by the cap (k={k})"
+        );
+    }
+    assert_eq!(s.stats.put_rejects.load(Ordering::Relaxed), 0);
+    assert!(s.disk_evictions() > 0, "the cap was actually load-bearing");
+    assert!(
+        s.len() <= 2 + CAP,
+        "tracked keys bounded by hot slots + disk cap, not by the 64 PUTs"
+    );
+}
+
+/// A dropped snapshot must degrade EXACTLY like a tier-disabled turn:
+/// `Ok(false)`, not `Err` and not torn bytes — the contract
+/// `try_fault_in_ssm_snapshot` relies on to free the slot and recompute.
+#[test]
+fn capped_store_miss_is_clean() {
+    let s = unified_store_capped(1, 2);
+    for k in 0..16u64 {
+        assert!(s.put(k, &[k as u8; BLOB]).unwrap());
+    }
+    let mut o = [0xAAu8; BLOB];
+    assert!(
+        !s.get(0, &mut o).unwrap(),
+        "the coldest key was dropped at the cap → clean miss"
+    );
+    assert_eq!(o, [0xAAu8; BLOB], "out untouched on a miss (no torn bytes)");
+    // The survivors are still byte-identical — a cap drops, it doesn't corrupt.
+    assert!(s.get(15, &mut o).unwrap());
+    assert_eq!(o, [15u8; BLOB]);
+}
+
+/// THE DECODE GUARD — the tripwire for the constructor split.
+///
+/// `UnifiedSnapshotStore::new` must stay UNCAPPED. A decode rollback target
+/// that misses is a CORRUPT restore, not a recompute (unlike Marconi's
+/// miss→recompute), so `build_decode_tier_store` relies on this constructor
+/// dropping nothing BY CONSTRUCTION rather than by arena sizing. If someone
+/// later routes `new` through a cap, this test fails first.
+#[test]
+fn uncapped_new_never_drops() {
+    let s = unified_store(2);
+    for k in 0..256u64 {
+        assert!(s.put(k, &[k as u8; BLOB]).unwrap());
+    }
+    assert_eq!(
+        s.disk_evictions(),
+        0,
+        "the decode tier's constructor must never drop a blob — a dropped \
+         rollback target is a corrupt restore"
+    );
+    assert_eq!(s.len(), 256, "every key still tracked");
+    let mut o = [0u8; BLOB];
+    for k in 0..256u64 {
+        assert!(s.get(k, &mut o).unwrap(), "key {k} still present");
+        assert_eq!(o, [k as u8; BLOB], "key {k} byte-identical");
+    }
+}
+
+/// The GiB→records conversion (env-free core). Holo-3.1-35B blob geometry:
+/// 66,846,720 B = 16,320 × 4 KiB.
+#[test]
+fn ssm_tier_disk_slots_conversion_and_strictness() {
+    const HOLO_BLOB: usize = 66_846_720;
+    assert_eq!(
+        disk_slots_from(None, HOLO_BLOB).unwrap(),
+        0,
+        "unset ⇒ unbounded"
+    );
+    assert_eq!(disk_slots_from(Some(""), HOLO_BLOB).unwrap(), 0);
+    assert_eq!(
+        disk_slots_from(Some("0"), HOLO_BLOB).unwrap(),
+        0,
+        "0 is the explicit unbounded sentinel"
+    );
+    // 32 GiB / 66,846,720 B = 514 records; one is reserved for the fault-in
+    // transient, so the WORST-CASE file (514 records) is still ≤ 32 GiB.
+    assert_eq!(disk_slots_from(Some("32"), HOLO_BLOB).unwrap(), 513);
+    assert_eq!(disk_slots_from(Some(" 32 "), HOLO_BLOB).unwrap(), 513);
+    assert!(
+        (513 + 1) as u64 * HOLO_BLOB as u64 <= 32 * (1u64 << 30),
+        "worst-case swap file must fit the operator's budget"
+    );
+    // Strict (PCND): a typo must never mean "unbounded".
+    for bad in ["abc", "-1", "32GB", "nan", "inf", "1e400"] {
+        assert!(
+            disk_slots_from(Some(bad), HOLO_BLOB).is_err(),
+            "{bad:?} must be a config error, not a silent unbounded tier"
+        );
+    }
+    // A budget too small for two snapshots is an error, NOT 0 — that would
+    // collide with the unbounded sentinel and invert the operator's intent.
+    let tiny = disk_slots_from(Some("0.0001"), HOLO_BLOB);
+    assert!(
+        tiny.is_err(),
+        "under-sized budget must fail fast, got {tiny:?}"
+    );
+}
+
 /// THE §4 fix: where the bounded stores FIFO-evict or drop-on-full, the
 /// unified store never rejects — overflow LRU-spills to the swap tier and
 /// every key faults back byte-identical.

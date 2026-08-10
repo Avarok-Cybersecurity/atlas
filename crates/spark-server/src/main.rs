@@ -83,7 +83,10 @@ async fn main() -> Result<()> {
     // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
     let no_tui = match &cli.command {
-        Command::Serve(args) => args.no_tui || args.rank > 0,
+        // `--check-kernels` is a script's entry point too: it prints a report
+        // and a JSON line on stdout and exits, so a dashboard would take the
+        // terminal, garble both, and have nothing to show afterwards.
+        Command::Serve(args) => args.no_tui || args.rank > 0 || args.check_kernels,
         // The benchmark subcommand is a script's entry point: always plain, so
         // nothing here reaches `tui::start` or takes the terminal.
         Command::Benchmark(_) => true,

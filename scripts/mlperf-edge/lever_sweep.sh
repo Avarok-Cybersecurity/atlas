@@ -15,13 +15,19 @@
 #   path ALREADY captures graphs by default: verify_c.rs:170
 #   `use_graphs = comm.is_none() && !hss_engaged && !lora_eager`. Nothing to win.)
 #
-#  regres   ATLAS_GDN_REGRESIDENT=1
+#  noregres ATLAS_NO_GDN_REGRESIDENT=1   (NOTE: this leg REMOVES the lever)
 #           Register-resident GDN recurrence, a drop-in for WY4 on the warm
 #           Marconi replay path (FLA cannot take that path: its chunked algebra
 #           is not token-equal at an arbitrary snapshot offset and would poison
 #           shared prefix blocks). Author measured cos 1.0 / max|dH|~1e-8 vs WY4
 #           and ~2.9x in isolation, then left it OFF "until serve-validated".
 #           Target: warm-replay TTFT -> the 18.8% marginal-prefill slice.
+#           SIGN INVERTED vs the rest of this sweep: PR #369 folded this lever
+#           default-ON, so `control` already HAS it and the only way to measure
+#           it is to take it away. A positive `ATLAS_GDN_REGRESIDENT` does not
+#           exist — setting it is a no-op, and this leg used to do exactly that,
+#           making it a duplicate of `control`. Read the delta backwards: the
+#           lever's benefit is control-minus-noregres, not noregres-minus-control.
 #
 #  bf16proj ATLAS_BF16_TC_PROJ=1
 #           Routes QKV/o projection prefill through the BF16-TC kernel
@@ -36,13 +42,18 @@
 # entirely ABSENT on the control, never a `-e FLAG=$value` line.
 # (ATLAS_DECODE_GRAPHS_MULTISEQ is the exception — it is a strict `== "1"` —
 # but it is treated the same way here so the pattern cannot be got wrong.)
+# `noregres` is the one leg that INVERTS this: ATLAS_NO_GDN_REGRESIDENT is a
+# kill switch (strict `== "1"`), so it is the leg that SETS the variable while
+# `control` leaves it absent and keeps the lever on. Before checking any delta,
+# confirm the leg's env actually reached the server — a lever whose variable
+# name does not exist reports a clean, believable, meaningless zero.
 #
 # Usage: lever_sweep.sh <atlas_bin> <outdir> [legs...]   default: all four
 set -u
 BIN="${1:?path to the built spark binary}"
 OUT="${2:?output dir}"
 shift 2
-LEGS=("$@"); [ ${#LEGS[@]} -eq 0 ] && LEGS=(control regres bf16proj)
+LEGS=("$@"); [ ${#LEGS[@]} -eq 0 ] && LEGS=(control noregres bf16proj)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 PORT=8888
@@ -52,7 +63,7 @@ extra_for() {
   case "$1" in
     control)  echo "" ;;
     graphs)   echo "-e ATLAS_DECODE_GRAPHS_MULTISEQ=1" ;;
-    regres)   echo "-e ATLAS_GDN_REGRESIDENT=1" ;;
+    noregres) echo "-e ATLAS_NO_GDN_REGRESIDENT=1" ;;
     bf16proj) echo "-e ATLAS_BF16_TC_PROJ=1" ;;
     *) echo "UNKNOWN_LEG" ;;
   esac
@@ -65,7 +76,7 @@ for leg in "${LEGS[@]}"; do
   # shellcheck disable=SC2086
   sudo docker run -d --name atlas-lever --network host --gpus all --ipc=host \
     -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
     -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $EXTRA \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \

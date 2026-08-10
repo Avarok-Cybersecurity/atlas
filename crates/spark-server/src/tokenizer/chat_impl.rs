@@ -6,21 +6,46 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-use super::{ChatTokenizer, StreamingDecoder, normalize_tool_call_arguments};
+use super::{
+    ChatTokenizer, StreamingDecoder, autoclose_assistant_think, normalize_tool_call_arguments,
+    remap_developer_role, resolve_think_control,
+};
+
+/// Run Atlas's cross-cutting message preprocessing (formerly encoded in
+/// per-model jinja overrides) so it applies to EVERY model's own template:
+///   1. parse stringified `tool_calls[*].function.arguments` (F76),
+///   2. auto-close an unclosed `<think>` before a `<tool_call>` in
+///      assistant history,
+///   3. strip inline `<|think_on|>`/`<|think_off|>` control tokens and
+///      resolve the effective `enable_thinking`.
+///
+/// Returns the rewritten messages plus the thinking flag to render with
+/// (the inline control tokens override the caller's value when present).
+pub(crate) fn preprocess_for_render(
+    messages: &[serde_json::Value],
+    enable_thinking: bool,
+) -> (Vec<serde_json::Value>, bool) {
+    // F76: stringified tool-call args → dicts (see normalize_tool_call_arguments).
+    let prepared = normalize_tool_call_arguments(messages);
+    // Behavior 0: developer→system role remap (model templates reject `developer`;
+    // folds developer+system into one leading system message).
+    let mut prepared = remap_developer_role(prepared);
+    // Behavior 1: auto-close dangling <think> before <tool_call> in history.
+    autoclose_assistant_think(&mut prepared);
+    // Behavior 2: resolve + strip inline think-control tokens.
+    let (prepared, control_override) = resolve_think_control(&prepared);
+    let effective_thinking = control_override.unwrap_or(enable_thinking);
+    (prepared, effective_thinking)
+}
 
 impl ChatTokenizer {
-    /// Override directory for Jinja templates. Drop a `.jinja` file here
-    /// named by model_type (e.g. `qwen3_5_moe.jinja`) to override the
-    /// template from `tokenizer_config.json`. Useful for applying community
-    /// fixes without re-downloading model weights.
-    const TEMPLATE_OVERRIDE_DIR: &'static str = "jinja-templates";
-
     pub fn from_model_dir(
         model_dir: &Path,
         eos_token_id: u32,
         supports_thinking: bool,
         model_type: &str,
         repo_root: Option<&Path>,
+        disable_template_overrides: bool,
     ) -> Result<Self> {
         let tokenizer_path = model_dir.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
@@ -29,12 +54,43 @@ impl ChatTokenizer {
             .with_truncation(None)
             .map_err(|e| anyhow::anyhow!("Failed to disable tokenizer truncation: {e}"))?;
 
-        // Priority 1: Override template from jinja-templates/{model_type}.jinja
-        // Priority 2: Template from tokenizer_config.json (shipped with model weights)
-        // Priority 3: Default ChatML fallback
-        let chat_template = if let Some(override_tmpl) =
+        // Template-source priority.
+        //
+        // Conceptually the default is now MODEL-FIRST: render off the
+        // model's OWN `chat_template.jinja` / `tokenizer_config.json`.
+        // Atlas's cross-cutting behaviors (autoclose-think,
+        // think-control, F76 arg-parse) are applied in Rust
+        // message-preprocessing (see `preprocess_for_render`), so a model
+        // no longer needs a bespoke `jinja-templates/{model_type}.jinja`
+        // override that is otherwise a byte-copy of its own template.
+        // This is what makes `holo3_1_moe.jinja` REDUNDANT: Holo renders
+        // correctly off its own template + Rust behaviors. (The override
+        // file itself is still present for now only because
+        // `tokenizer/tests.rs::render_holo_template_*` reads it directly;
+        // it goes away together with those tests.)
+        //
+        // A `jinja-templates/{model_type}.jinja` override is OPT-IN by
+        // FILE PRESENCE: dropping the file in is the explicit signal that
+        // this model genuinely needs a template fix the Rust preprocessing
+        // can't express (MiniMax's `_args.items()`, Gemma-4's
+        // `strip_thinking`, etc.). We deliberately do NOT prefer the
+        // model's own template when such a file exists — that would
+        // silently undo those fixes. Instead, the operator opts OUT of all
+        // overrides with `--disable-template-overrides`, which forces
+        // every model onto its own template (relying purely on the Rust
+        // behaviors).
+        //
+        // Priority (high → low):
+        //   1. jinja-templates/{model_type}.jinja override
+        //      (opt-in: file present AND overrides not disabled)
+        //   2. tokenizer_config.json / chat_template.jinja (the MODEL's own)
+        //   3. Default ChatML fallback
+        let override_tmpl = if disable_template_overrides {
+            None
+        } else {
             super::jinja_helpers::load_override_template(model_type, repo_root)
-        {
+        };
+        let chat_template = if let Some(override_tmpl) = override_tmpl {
             override_tmpl
         } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
             config_tmpl
@@ -165,17 +221,13 @@ impl ChatTokenizer {
             .get_template("chat")
             .context("Failed to get compiled template")?;
 
-        // F76 (2026-04-29): MiniMax's chat template iterates
-        // `tool_call.function.arguments` with `_args.items()`, expecting
-        // a dict. The OpenAI wire format ships `arguments` as a
-        // JSON-encoded *string*, so the template crashes with
-        // "unknown method: map has no method named items" on the
-        // second turn of any tool-use conversation. Pre-parse string
-        // arguments to JSON values before handing to Jinja so the
-        // template's iteration sees a dict. Other templates (Qwen,
-        // Mistral, Hermes) typically wrap with `tojson` and don't
-        // depend on `.items()`, so the parsed dict round-trips fine.
-        let messages_for_render = normalize_tool_call_arguments(messages);
+        // Atlas cross-cutting preprocessing (F76 arg-parse + autoclose-think
+        // + think-control), applied to the model's OWN template so the
+        // per-model jinja overrides that used to encode these are no longer
+        // required. Inline `<|think_on|>`/`<|think_off|>` tokens, when
+        // present, override the caller's `enable_thinking`.
+        let (messages_for_render, enable_thinking) =
+            preprocess_for_render(messages, enable_thinking);
         let messages_val = minijinja::Value::from_serialize(&messages_for_render);
         let tools_val = tools.map(minijinja::Value::from_serialize);
 
@@ -255,10 +307,10 @@ impl ChatTokenizer {
             let tmpl = env
                 .get_template("chat")
                 .context("Failed to get compiled OpenAI template")?;
-            // F76: pre-parse tool_call argument strings into dicts. See
-            // apply_chat_template_jinja above for the failure mode
-            // (`map has no method named items` on the second turn).
-            let messages_for_render = normalize_tool_call_arguments(messages);
+            // Same Atlas preprocessing as apply_chat_template_jinja:
+            // F76 arg-parse + autoclose-think + think-control resolution.
+            let (messages_for_render, enable_thinking) =
+                preprocess_for_render(messages, enable_thinking);
             let messages_val = minijinja::Value::from_serialize(&messages_for_render);
             let tools_val = tools.map(minijinja::Value::from_serialize);
             let reasoning_effort: minijinja::Value = if enable_thinking {

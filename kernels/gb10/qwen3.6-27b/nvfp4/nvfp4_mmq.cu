@@ -70,6 +70,57 @@ extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq128_wc(
     atlas_nvfp4_tile<128, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
 
+// SMALL-M entries. `mmq_x` is the M (token) tile and is a free template parameter --
+// the vendored MMA path's granularity is 8 (mmq_get_granularity_device), and the
+// hardware quantum is the m16n8k64 B-fragment's 8 columns, so any multiple of 8 is
+// legal. Atlas only ever instantiated 128, which meant DECODE at M=16 issued MMAs for
+// all 128 tile columns and threw away 112 of them in the write-back predicate --
+// 87.5% of the MMA issue slots. Predicted cost of that padding at n=16 across the 48
+// SSM layers was 41.1 ms against a 42.0 ms measurement, so it is the dominant term.
+// Prefill keeps 128: grid.y = ceil(M/mmq_x), so a small tile would re-stream the
+// weights once per M-tile there.
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq16_nc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<16, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq16_wc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<16, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_nc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<32, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_wc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<32, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+
+// m=64 tile. The ladder used to step 16 -> 32 -> 128, so every batch in 33..127 took the
+// 128 tile: at m=64 that computes 128 MMA columns and discards 64 of them, and its 57856 B
+// of smem admits only ONE CTA/SM. The 64 tile needs 48384 B, which fits two, and the
+// down_proj shape's grid is 40 CTAs on 48 SMs -- i.e. exactly the co-residency-starved
+// regime where a second resident CTA is free. Measured (cold-L2 replay, 7 paired reps,
+// median): down_proj N=5120/K=17408 302.8 -> 287.9 us/launch, gate+up N=17408/K=5120
+// 253.3 -> 241.6. Bit-identical to the 128 tile over 9.4M outputs (24 shapes, m=1..64):
+// each output element accumulates the same K in the same order; only the discarded
+// column count changes. Do NOT widen this past m=64 -- at m=96/128 grid.y becomes 2 and
+// the weights are re-streamed once per M tile (measured 1.6x SLOWER).
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq64_nc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<64, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq64_wc(
+        const char* x, const int* y, __nv_bfloat16* dst,
+        int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
+    atlas_nvfp4_tile<64, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+}
+
 // Activation quantizer: bf16 [ne1=M rows, ne00=K] -> block_fp4_mmq (e2m1 + ue4m3 group-16
 // scales, ±2 exhaustive scale search). One thread per 16-value sub-block.
 // grid (ne1, ceil(ne0/(16*128)), 1), block (128). Mirrors llama's host launcher.
@@ -98,6 +149,29 @@ extern "C" __global__ void atlas_nvfp4_repack(
     const uint8_t* srow = scales + (int64_t) row * (k / 16);
     block_nvfp4 dst;
 
+    // ── SoA output layout (A2) ────────────────────────────────────────────
+    // Same total bytes as the AoS `block_nvfp4[nblocks]` form (36 B/block), but
+    // split WITHIN each row: [qs: blocks_per_row*32][d: blocks_per_row*4].
+    //
+    // WHY: the AoS block interleaves 4 scale bytes with 32 nibble bytes, so the
+    // tile loader had to issue NINE 4-byte loads per block (8 qs + 1 d). With qs
+    // contiguous, the same 32 bytes are TWO 16-byte loads, and `d` is one more —
+    // 9 global ops -> 3. The consumer is `load_tiles_nvfp4_nvfp4` in
+    // q4k_vendor/mmq.cuh, which is the ONLY reader of this buffer (Atlas exposes
+    // no MMVQ entry point, so vecdotq.cuh's nvfp4 path is unreachable).
+    //
+    // The SHARED-memory tile layout is unchanged, so `vec_dot` and the MMA path
+    // are untouched and the result is bit-identical.
+    //
+    // Alignment: row_bytes = blocks_per_row*36 is 16-B aligned iff
+    // blocks_per_row % 4 == 0, i.e. K % 256 == 0. Both live K (5120 -> 80 blocks,
+    // 17408 -> 272) satisfy it, and MMQ already requires K % 512 == 0 for its
+    // 512-wide K iteration. Assert rather than assume.
+    const int qs_region = blocks_per_row * 32;
+    uint8_t* row_out = (uint8_t*) out + (int64_t) row * blocks_per_row * 36;
+    uint8_t* qs_out  = row_out + kb * 32;
+    uint8_t* d_out   = row_out + qs_region + kb * 4;
+
 #pragma unroll
     for (int s = 0; s < QK_NVFP4 / QK_NVFP4_SUB; ++s) {          // 4 sub-blocks of 16
         const int k0 = kb * QK_NVFP4 + s * QK_NVFP4_SUB;
@@ -111,15 +185,24 @@ extern "C" __global__ void atlas_nvfp4_repack(
             dst.qs[s * 8 + j] = (int8_t)(na | (nb << 4));
         }
     }
-    out[b] = dst;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) qs_out[j] = (uint8_t) dst.qs[j];
+#pragma unroll
+    for (int s2 = 0; s2 < 4; ++s2) d_out[s2] = dst.d[s2];
 }
 
-// SiLU(gate*gs)*(up*us): mirrors moe_silu_mul's math exactly (incl. the swiglu ±10 clamp)
-// plus the per-projection scale2 fold — the MMQ GEMM output is missing the checkpoint's
-// per-tensor FP32 scale2 (hardware applies only the per-16 e4m3 scales), so it is folded
-// here, BEFORE the clamp/nonlinearity, where the values first become "true"-scaled.
-// Contained duplicate of moe_silu_mul (5 lines of math) to avoid an ABI change on the
-// shared kernel for this flag-gated path.
+// SiLU(gate*gs)*(up*us): mirrors moe_silu_mul's math exactly, plus the per-projection
+// scale2 fold — the MMQ GEMM output is missing the checkpoint's per-tensor FP32 scale2
+// (hardware applies only the per-16 e4m3 scales), so it is folded here, where the values
+// first become "true"-scaled. Contained duplicate of moe_silu_mul (a few lines of math)
+// to avoid an ABI change on the shared kernel for this flag-gated path.
+// These two kernels own the 27B's PREFILL activation while moe_silu_mul owns its decode
+// and K-verify; they carried a copy of the swiglu ±10 clamp for exactly that reason, and
+// it was removed with the original when the clamp moved into the shadows of the two
+// models whose configs declare a swiglu_limit. Qwen3.6-27B declares none. Leaving the
+// copy behind would have split the 27B's own prefill from its own decode, which is the
+// failure this whole change is about — if a clamp ever returns to moe_silu_mul for this
+// model, it has to return here in the same commit.
 // In-place ×scale for the down-projection MMQ output (its scale2 has no SiLU-mul to
 // ride; the consumer is the residual add). [M, H] bf16, ~0.3ms at M=4096 vs the ~6ms
 // the MMQ down GEMM saves.
@@ -138,9 +221,6 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_scaled(
     if (idx >= total_elements) return;
     float g = __bfloat162float(gate[idx]) * gate_scale;
     float u = __bfloat162float(up[idx]) * up_scale;
-    const float SWIGLU_LIMIT = 10.0f;
-    g = fminf(g, SWIGLU_LIMIT);
-    u = fminf(fmaxf(u, -SWIGLU_LIMIT), SWIGLU_LIMIT);
     float sigmoid_g = 1.0f / (1.0f + __expf(-g));
     output[idx] = __float2bfloat16(g * sigmoid_g * u);
 }
@@ -170,7 +250,6 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
     block_fp4_mmq* yb = (block_fp4_mmq*) vy + ib;
     const int sub = (int) ((i0_base % QK_K) / QK_NVFP4_SUB);
 
-    const float SWIGLU_LIMIT = 10.0f;
     float vals_raw[QK_NVFP4_SUB];
     float amax_raw = 0.0f;
     const int64_t base_idx = i1 * ne00;
@@ -181,8 +260,6 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
         if (i00 < ne00) {
             float g = __bfloat162float(gate[base_idx + i00]) * gate_scale;
             float u = __bfloat162float(up[base_idx + i00]) * up_scale;
-            g = fminf(g, SWIGLU_LIMIT);
-            u = fminf(fmaxf(u, -SWIGLU_LIMIT), SWIGLU_LIMIT);
             v = g * (1.0f / (1.0f + __expf(-g))) * u;
         }
         vals_raw[k] = v;

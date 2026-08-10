@@ -8,7 +8,27 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::app::{App, Focus, Section, TermSub, edit_line};
+use super::app::{App, Focus, Section, TermSub};
+
+/// Minimal single-line editor for the two filter boxes.
+///
+/// Lives here rather than in `app.rs` because this file is the one that decides
+/// which buffer owns a keystroke, and this is what those buffers are edited
+/// with — the split is by concern, not only by the 500-LoC cap.
+pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
+    match key.code {
+        KeyCode::Esc => {
+            buf.clear();
+            *editing = false;
+        }
+        KeyCode::Enter => *editing = false,
+        KeyCode::Backspace => {
+            buf.pop();
+        }
+        KeyCode::Char(c) => buf.push(c),
+        _ => {}
+    }
+}
 
 impl App {
     pub(super) fn on_input_key(&mut self, key: KeyEvent) {
@@ -80,9 +100,29 @@ impl App {
                 KeyCode::PageUp => self.chat.scroll_by(10),
                 KeyCode::PageDown => self.chat.scroll_by(-10),
                 KeyCode::End => self.chat.follow(),
+                // The two thinking toggles, in their chorded forms. They come
+                // BEFORE the catch-all: a bare `t` is text, and `Ctrl+T`
+                // arrives as `Char('t')` with a modifier, so an unguarded
+                // catch-all would type a `t` for it instead.
+                KeyCode::Char('t') => match self.chat.on_view_key(key, true) {
+                    Some(said) => self.toast(said, false),
+                    None => self.chat.input.push('t'),
+                },
                 KeyCode::Char(c) => self.chat.input.push(c),
                 _ => {}
             },
         }
     }
+
+    /// Chat keys when the transcript, not the input box, has focus. Bare
+    /// letters are free here, so the toggles get their unchorded forms too.
+    pub(super) fn on_chat_content_key(&mut self, key: KeyEvent) {
+        if let Some(said) = self.chat.on_content_key(key) {
+            self.toast(said, false);
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "app_input_tests.rs"]
+mod tests;

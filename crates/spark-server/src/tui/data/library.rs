@@ -140,15 +140,10 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
     out
 }
 
-/// Human size, GiB with one decimal above 1 GiB.
+/// Human size. Delegates so the Library card and the download line that
+/// replaces it cannot disagree about how big the same file is.
 pub fn human_size(bytes: u64) -> String {
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let g = bytes as f64 / GIB;
-    if g >= 1.0 {
-        format!("{g:.1} GB")
-    } else {
-        format!("{} MB", bytes / (1024 * 1024))
-    }
+    crate::tui::format::bytes(bytes)
 }
 
 /// Run [`scan`] on its own thread, delivering the result over a channel.

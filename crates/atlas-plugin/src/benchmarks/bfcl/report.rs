@@ -6,6 +6,8 @@
 //! be read on their own — and because the MLPerf floors belong next to the
 //! verdict that enforces them, not buried in a phase loop.
 
+use std::collections::BTreeMap;
+
 use super::Bfcl;
 use crate::benchmarks::bfcl::draw;
 use crate::result::{Cell, CellStyle, Column, ResultTable, Stat, Verdict};
@@ -83,6 +85,22 @@ impl Bfcl {
                 Stat::new("With tool calls", self.tool_call_samples.to_string(), ""),
             ],
         }
+    }
+
+    /// Raw gate numbers for `--pull-request-gate` (same source the summary
+    /// tiles read from). Empty until scoring completes.
+    pub(super) fn metrics(&self) -> BTreeMap<String, f64> {
+        let Some(s) = &self.scores else {
+            return BTreeMap::new();
+        };
+        let mut m = BTreeMap::new();
+        m.insert("overall_accuracy".to_string(), s.overall_accuracy);
+        m.insert(
+            "normalized_single_turn_score".to_string(),
+            s.normalized_single_turn_score,
+        );
+        m.insert("samples".to_string(), s.total_samples as f64);
+        m
     }
 
     pub(super) fn verdict(&self) -> Verdict {

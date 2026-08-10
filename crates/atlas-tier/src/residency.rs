@@ -7,6 +7,7 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Result, bail};
 
+use crate::aligned::PageAlignedBuf;
 use crate::traits::{SlotArena, SwapStats, SwapStore};
 
 /// Where a key's blob currently lives.
@@ -45,8 +46,11 @@ pub struct Residency<A: SlotArena, S: SwapStore> {
     /// Free disk record indices (reused before growing the high-water mark).
     free_disk: Vec<usize>,
     next_disk: usize,
-    /// Reusable scratch for a single blob move (spill/fault), sized once.
-    scratch: Vec<u8>,
+    /// Reusable scratch for a single blob move (spill/fault), sized once and
+    /// **4 KiB-aligned**: [`crate::DirectSwapFile`] bounces any unaligned buffer
+    /// through an internal aligned copy, so a plain `Vec` here charged every
+    /// O_DIRECT write AND read a wasted full-record memcpy (~66 MB/snapshot).
+    scratch: PageAlignedBuf,
     /// Read-pins: `key → active reader count`. A GET hands the client an arena
     /// offset it then one-sided-RDMA-READs; the peer drops the residency lock
     /// before that read, so a concurrent allocation on another connection could pick
@@ -95,7 +99,7 @@ impl<A: SlotArena, S: SwapStore> Residency<A, S> {
             max_disk_slots,
             free_disk: Vec::new(),
             next_disk: 0,
-            scratch: vec![0u8; blob_bytes],
+            scratch: PageAlignedBuf::new(blob_bytes),
             read_pins: HashMap::new(),
             stats: SwapStats::default(),
         })
@@ -103,6 +107,11 @@ impl<A: SlotArena, S: SwapStore> Residency<A, S> {
 
     pub fn blob_bytes(&self) -> usize {
         self.blob_bytes
+    }
+    /// Scratch address — the tripwire for the O_DIRECT alignment requirement.
+    #[doc(hidden)]
+    pub fn scratch_addr(&self) -> usize {
+        self.scratch.as_slice().as_ptr() as usize
     }
     pub fn stats(&self) -> &SwapStats {
         &self.stats
@@ -112,6 +121,26 @@ impl<A: SlotArena, S: SwapStore> Residency<A, S> {
     }
     pub fn total_keys(&self) -> usize {
         self.map.len()
+    }
+    /// Live on-disk records right now (≤ `max_disk_slots` when capped).
+    pub fn disk_count(&self) -> usize {
+        self.disk_lru.len()
+    }
+    /// Disk-record high-water mark — the honest **swap-file size** in records,
+    /// which `disk_count` is not: [`crate::DirectSwapFile`] does not override
+    /// `SwapStore::discard_record` (the default no-op), so a freed record's
+    /// blocks are never punched back out of the file. The file is bounded
+    /// solely by index reuse through `free_disk` up to `next_disk`, so an
+    /// operator sizing a partition must budget `disk_high_water × blob_bytes`.
+    /// Reaches `max_disk_slots + 1` under a cap: [`Residency::locate`]'s
+    /// `OnDisk` arm pulls the faulting key out of `disk_lru` while its record
+    /// is still live, so `make_disk_room` counts one fewer than exist.
+    pub fn disk_high_water(&self) -> usize {
+        self.next_disk
+    }
+    /// The configured on-disk record cap (0 = unbounded).
+    pub fn max_disk_slots(&self) -> usize {
+        self.max_disk_slots
     }
 
     /// Direct arena access for the data plane. The peer writes the slots its
@@ -146,10 +175,43 @@ impl<A: SlotArena, S: SwapStore> Residency<A, S> {
             }
             Some(Loc::Reserved(slot)) => return Ok(slot),
             Some(Loc::OnDisk(disk_slot)) => {
-                // Rewriting a spilled key: reclaim its disk record, give a slot.
+                // Rewriting a spilled key: take a slot FIRST, only then reclaim
+                // its disk record. The order is load-bearing, not stylistic.
+                //
+                // `acquire_slot` can spill a victim, and that spill's
+                // `write_record` can fail — ENOSPC on the swap file is the
+                // canonical trigger. Freeing the record before that fallible
+                // step and then bailing would leave `disk_slot` on `free_disk`
+                // while `map[key]` still reads `OnDisk(disk_slot)`: a retry of
+                // the PUT (the natural response to a transient ENOSPC) re-enters
+                // this arm, or a `remove` takes its own `OnDisk` arm, and the
+                // index is DOUBLE-PUSHED onto the free list. The two pops then
+                // hand one record to two different keys, and the loser's GET
+                // reads the winner's bytes while `get_blob` reports `Ok(true)` —
+                // silent cross-request corruption (one sequence's whole SSM
+                // snapshot restored into another's), never a surfaced error.
+                //
+                // Self-pin out of `disk_lru` before acquiring for the same
+                // reason `locate`'s `OnDisk` arm does: otherwise the capped
+                // `make_disk_room` inside that spill could pick THIS key as the
+                // coldest on-disk victim and free its record behind our back —
+                // the same double-push by a second route.
                 self.disk_lru_remove(key);
+                let slot = match self.acquire_slot() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // Un-pin: the key is untouched, still OnDisk, and its
+                        // record is still exclusively its own.
+                        self.disk_lru.push_front(key);
+                        return Err(e);
+                    }
+                };
+                // Slot secured; releasing the record now can no longer be undone
+                // by a later failure, so it is freed exactly once.
                 self.free_disk.push(disk_slot);
                 self.swap.discard_record(disk_slot);
+                self.map.insert(key, Loc::Reserved(slot));
+                return Ok(slot);
             }
             None => {}
         }
@@ -215,16 +277,21 @@ impl<A: SlotArena, S: SwapStore> Residency<A, S> {
                 // scratch is exclusive to one move at a time (control loop is
                 // single-threaded per connection); read disk → arena slot.
                 let mut buf = std::mem::take(&mut self.scratch);
-                let r = self.swap.read_record(disk_slot, &mut buf);
-                if r.is_ok() {
-                    r.and_then(|_| self.arena.write_slot(slot, &buf))?;
-                } else {
-                    self.scratch = buf;
+                let r = self
+                    .swap
+                    .read_record(disk_slot, buf.as_mut_slice())
+                    .and_then(|_| self.arena.write_slot(slot, buf.as_slice()));
+                // ALWAYS put the scratch back before an early return. The
+                // `write_slot` arm used to bail with `?` while `scratch` was
+                // moved out, leaving a ZERO-LENGTH scratch: every later
+                // spill/fault then failed its `len == slot_bytes` check and the
+                // residency stayed wedged for the life of the process.
+                self.scratch = buf;
+                if let Err(e) = r {
                     self.free_slots.push(slot);
                     self.disk_lru.push_front(key); // still on disk; re-pin (cold)
-                    return r.map(|_| None);
+                    return Err(e);
                 }
-                self.scratch = buf;
                 self.free_disk.push(disk_slot);
                 self.swap.discard_record(disk_slot);
                 self.map.insert(key, Loc::Resident(slot));
@@ -370,8 +437,8 @@ impl<A: SlotArena, S: SwapStore> Residency<A, S> {
         let mut buf = std::mem::take(&mut self.scratch);
         let res = self
             .arena
-            .read_slot(slot, &mut buf)
-            .and_then(|_| self.swap.write_record(disk_slot, &buf));
+            .read_slot(slot, buf.as_mut_slice())
+            .and_then(|_| self.swap.write_record(disk_slot, buf.as_slice()));
         self.scratch = buf;
         if let Err(e) = res {
             // Roll back: victim stays resident, disk slot returns to the pool.
