@@ -19,6 +19,8 @@
 //! - `handle_done`  — Done arm (flush, salvage, usage, dump, metrics)
 //! - `handle_error` — Error arm
 
+#[cfg(test)]
+mod cancel_guard_tests;
 mod ctx;
 mod handle_done;
 mod handle_error;
