@@ -13,9 +13,9 @@ use std::time::Instant;
 use anyhow::Result;
 use spark_model::traits::SequenceState;
 
+use crate::api::inference_types::RepetitionDetectionParams;
 use crate::api::{InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::GrammarState;
-use crate::openai::RepetitionDetectionParams;
 
 /// Shared queue between receiver thread and scheduler.
 pub(super) struct PendingQueue {
@@ -108,6 +108,12 @@ pub(super) struct PrefillInProgress {
     pub timeout_at: Option<Instant>,
 }
 
+/// `ActiveSeq::guard_stop` marker for the server-side request deadline
+/// (`--request-timeout`). `finish_sequence` keys off this exact value to
+/// emit `finish_reason="timeout"` instead of deriving "length" from the
+/// last token — see `derive_finish_reason`.
+pub(super) const GUARD_STOP_REQUEST_TIMEOUT: &str = "request_timeout";
+
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
     pub seq: SequenceState,
@@ -174,6 +180,13 @@ pub(super) struct ActiveSeq {
     pub thinking_tokens: u32,
     /// When true, the next decode step must produce the `</think>` token.
     pub force_end_thinking: bool,
+    /// Whether the `</think>` that closed the current thinking span was
+    /// FORCE-INJECTED (budget exhaustion or thinking-loop watchdog) rather
+    /// than emitted by the model. Captured at the `</think>` commit; read
+    /// by the post-think EOS guard, which must only fire on watchdog
+    /// recoveries — a naturally closed think followed by a short answer
+    /// ends the turn like vLLM does.
+    pub think_force_closed: bool,
     /// Decode-step counter incremented while `force_end_thinking` is
     /// armed but the injection is deferred (waiting for a sentence-
     /// boundary token or fence close). Reset to 0 on the false→true
@@ -319,6 +332,13 @@ pub(super) struct ActiveSeq {
     pub grammar_state: Option<GrammarState>,
     /// MTP draft tokens awaiting verification.
     pub pending_drafts: Vec<u32>,
+    /// Top-1 LOG-probability the drafter reported for each entry of
+    /// [`Self::pending_drafts`], in the same order (D-Cut's ranking key —
+    /// `mtp_dcut`). EMPTY whenever the drafts came from a path that cannot
+    /// measure confidence (per-sequence propose, N-gram/DFlash drafters), in
+    /// which case D-Cut leaves the sequence at full depth. Truncated in
+    /// lock-step with `pending_drafts` so index `j` always describes draft `j`.
+    pub pending_draft_conf: Vec<f32>,
     /// Timestamp of the last token emission (for TBT deadline tracking).
     pub last_token_time: Instant,
     /// Timestamp when the request entered prefill (for TTFT).
@@ -422,6 +442,7 @@ pub(super) struct SwappedSeq {
     pub spontaneous_think_budget: u32,
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
+    pub think_force_closed: bool,
     pub sentence_defer_count: u32,
     pub consecutive_confident: u32,
     pub in_code_fence: bool,

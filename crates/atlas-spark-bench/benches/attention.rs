@@ -10,15 +10,10 @@
 //!   (or FlashInfer reference run) should be compared.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-static PAGED_DECODE_FP8_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-static PREFILL_ATTN_64_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// paged_decode_attn_fp8(Q, K_cache, V_cache, O, block_tables, seq_lens, max_blocks_per_seq,
 ///   num_q_heads, num_kv_heads, head_dim, block_size, inv_sqrt_d, k_scale, v_scale,
@@ -26,12 +21,7 @@ static PREFILL_ATTN_64_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 fn bench_paged_decode(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(
-        reg,
-        &PAGED_DECODE_FP8_FN,
-        "paged_decode_fp8",
-        "paged_decode_attn_fp8",
-    );
+    let kernel = gpu::get_kernel(reg, "paged_decode_fp8", "paged_decode_attn_fp8");
 
     let num_seqs: u32 = 1;
     let num_q_heads: u32 = 16;
@@ -128,12 +118,7 @@ fn bench_paged_decode(c: &mut Criterion) {
 fn bench_prefill_attn_64(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(
-        reg,
-        &PREFILL_ATTN_64_FN,
-        "inferspark_prefill",
-        "inferspark_prefill_64",
-    );
+    let kernel = gpu::get_kernel(reg, "inferspark_prefill", "inferspark_prefill_64");
 
     // MiniMax M2.7 TP=2 attention shape (nq=48 / 2 ranks = 24).
     let num_q_heads: u32 = 24;

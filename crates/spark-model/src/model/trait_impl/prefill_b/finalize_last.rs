@@ -317,7 +317,7 @@ impl TransformerModel {
         } else if cap_applied {
             // Cap forced — never attach the full-length snapshot to a
             // truncated tree (would be unreachable + leak a pool slot).
-            if !self.tokens_have_vision_pad(cache_tokens) {
+            if !self.tokens_have_vision_pad(cache_tokens) && !self.hss_window_slid(seq) {
                 let acquired = self.prefix_cache.insert(
                     cache_tokens,
                     cache_block_table,
@@ -326,7 +326,7 @@ impl TransformerModel {
                     seq.cached_prefix_tokens.min(cache_tokens_len),
                     seq.adapter_id,
                 );
-                super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
         } else if self.ssm_snapshots.is_enabled() {
             if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
@@ -340,6 +340,7 @@ impl TransformerModel {
             let snap_result = match self.ssm_snapshots.save(
                 seq.slot_idx,
                 seq.session_hash,
+                self.seq_ssm_h_is_f16(seq),
                 &self.ssm_pool,
                 self.gpu.as_ref(),
                 stream,
@@ -357,6 +358,7 @@ impl TransformerModel {
                             .save(
                                 seq.slot_idx,
                                 seq.session_hash,
+                                self.seq_ssm_h_is_f16(seq),
                                 &self.ssm_pool,
                                 self.gpu.as_ref(),
                                 stream,
@@ -374,7 +376,12 @@ impl TransformerModel {
                 }
             };
             if let Some(snap_id) = snap_result {
-                if self.tokens_have_vision_pad(tokens) {
+                if self.tokens_have_vision_pad(tokens) || self.hss_window_slid(seq) {
+                    // Vision-pad: image-tainted snapshot + colliding token key.
+                    // HSS-slid: `block_table` no longer parallels the token
+                    // stream (see `hss_window_slid`). Either way we decline the
+                    // radix insert, and the snapshot is only reachable through
+                    // those nodes — so free it rather than leak a pool slot.
                     self.ssm_snapshots.free(snap_id);
                 } else {
                     tracing::info!(
@@ -400,12 +407,12 @@ impl TransformerModel {
                         seq.cached_prefix_tokens,
                         seq.adapter_id,
                     );
-                    super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
                 let acquired = self.prefix_cache.insert(
                     tokens,
                     &seq.block_table,
@@ -414,9 +421,9 @@ impl TransformerModel {
                     seq.cached_prefix_tokens,
                     seq.adapter_id,
                 );
-                super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
@@ -425,7 +432,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         }
 
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.

@@ -5,20 +5,16 @@
 //! Shapes match Qwen3-Next-80B-A3B: W4A16 grouped GEMM.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-static MOE_W4A16_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// moe_w4a16_grouped_gemm(a, b_packed, b_scale, scale2, c, expert_offsets, num_experts, n, k)
 fn bench_moe_w4a16_grouped(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &MOE_W4A16_FN, "moe_w4a16", "moe_w4a16_grouped_gemm");
+    let kernel = gpu::get_kernel(reg, "moe_w4a16", "moe_w4a16_grouped_gemm");
 
     let num_experts: u32 = 8; // Benchmark with 8 active experts
     let tokens_per_expert: u32 = 10;

@@ -257,6 +257,30 @@ pub fn moe_expert_silu_down_shared_fp8_batch3(
 ///
 /// Grid: (ceil(cols/32), ceil(rows/32), num_experts)  Block: (32, 8)
 #[allow(clippy::too_many_arguments)]
+/// Single-matrix uint8 transpose `[rows, cols] -> [cols, rows]` on GPU
+/// (`transpose_u8.cu`, 32x32 shared-memory tiles). Load-time replacement for
+/// the host byte-loop in `QuantizedWeight::transpose_for_gemm*` — the old
+/// path bounced every packed weight D2H -> O(N*K) host loop -> H2D
+/// (~13.6 GB through host at 27B cold load).
+pub fn transpose_u8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    src: DevicePtr,
+    dst: DevicePtr,
+    rows: u32,
+    cols: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(cols, 32), div_ceil(rows, 32), 1])
+        .block([32, 8, 1])
+        .arg_ptr(src)
+        .arg_ptr(dst)
+        .arg_u32(rows)
+        .arg_u32(cols)
+        .launch(stream)
+}
+
 pub fn moe_transpose_u8_batched(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

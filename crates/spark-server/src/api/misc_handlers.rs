@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -11,12 +12,12 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::chat_stream::chat_completions_stream;
+use super::chat_stream::run_chat_stream;
 use super::responses_stream::responses_endpoint_stream;
 use super::responses_translate::{
     build_responses_usage, emit, find_frame_end, translate_chat_response_to_responses,
 };
-use super::stored::extract_assistant_incoming_message;
+use super::stored::assistant_incoming_from_ir;
 use crate::AppState;
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
@@ -104,6 +105,18 @@ pub async fn metrics_handler() -> impl IntoResponse {
         0.0
     };
 
+    // Kernel-resolution health. A gate can assert `== 0` instead of grepping
+    // the boot log — which is the only way this stays checkable once the log
+    // has rolled. Non-zero means some dispatch is on a silent fallback path.
+    let unresolved = spark_runtime::kernel_audit::unresolved_lookups();
+    let _ = write!(
+        text,
+        "\
+        # HELP atlas_kernel_lookups_unresolved Kernel lookups that did not resolve for the live model\n\
+        # TYPE atlas_kernel_lookups_unresolved gauge\n\
+        atlas_kernel_lookups_unresolved {unresolved}\n"
+    );
+
     let _ = write!(
         text,
         "\
@@ -127,27 +140,93 @@ pub async fn metrics_handler() -> impl IntoResponse {
     )
 }
 
-/// GET /health — readiness probe (503 while model is loading).
-pub async fn health(State(state): State<Arc<AppState>>) -> Response {
-    if state.model_ready.load(std::sync::atomic::Ordering::Relaxed) {
-        Json(serde_json::json!({"status": "ready", "model": &state.model_name})).into_response()
-    } else {
-        (
+/// The readiness verdict, as a pure function of the two things that decide it.
+///
+/// Split out from `health` so both branches are testable without an axum
+/// state, and because the precedence is the whole point: a **fault outranks a
+/// published model**. Issue #429 was precisely a server reporting `ready` off
+/// a published model while its CUDA context was destroyed — every request it
+/// accepted could only 500. "A model is loaded" and "requests can succeed"
+/// stopped being the same claim at that moment, and readiness means the
+/// second.
+pub(crate) fn readiness(
+    model: Option<&str>,
+    fault: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    if let Some(reason) = fault {
+        return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "loading"})),
-        )
-            .into_response()
+            serde_json::json!({"status": "faulted", "reason": reason}),
+        );
+    }
+    match model {
+        Some(name) => (
+            StatusCode::OK,
+            serde_json::json!({"status": "ready", "model": name}),
+        ),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"status": "loading"}),
+        ),
     }
 }
 
-/// GET /health/live — liveness probe (always 200).
-pub async fn health_live() -> &'static str {
-    "ok"
+/// GET /health — readiness probe (503 while model is loading).
+pub async fn health(
+    State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
+) -> Response {
+    // Takes the HOST, not the model: reporting "no model" is the whole point of
+    // this endpoint, so requiring one would make it unanswerable in exactly the
+    // state it exists to describe.
+    // A published model IS a ready one: the scheduler is running before the
+    // state is published, and the listener does not bind until after. A second
+    // readiness flag alongside it was a duplicate source of truth, and a stale
+    // one — the swap published a new model while the router still held the
+    // ORIGINAL flag, so /health reported "loading" forever after the first
+    // swap.
+    let state = host.current();
+    let (code, body) = readiness(
+        state.as_ref().map(|s| s.model_name.as_str()),
+        atlas_core::fault::global().fault(),
+    );
+    (code, Json(body)).into_response()
+}
+
+/// GET /health/live — liveness probe. 200 normally; 503 once the GPU fault
+/// latch is set.
+///
+/// Liveness deliberately fails on a fault, because the only remedy is a new
+/// process: a destroyed CUDA context cannot be rebuilt in-place, so a
+/// supervisor restarting this one is the correct response and a supervisor
+/// leaving it running is not. The server also asks itself to shut down when
+/// the latch trips (see the scheduler); this endpoint is what tells an
+/// orchestrator the truth during the drain window, and what covers the case
+/// where the drain cannot finish because in-flight work is stuck on the dead
+/// context.
+pub async fn health_live() -> Response {
+    match atlas_core::fault::global().fault() {
+        None => "ok".into_response(),
+        Some(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "faulted", "reason": reason})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /hardware — the serving box's hardware fingerprint, for benchmark
+/// provenance. Probed on request (the sm-clock reading must be live), via
+/// `spawn_blocking` because the vendor tools are synchronous subprocesses.
+pub async fn hardware() -> Response {
+    let hw = tokio::task::spawn_blocking(atlas_plugin::hardware::Hardware::probe)
+        .await
+        .unwrap_or_else(|_| atlas_plugin::hardware::Hardware::unknown());
+    Json(hw).into_response()
 }
 
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.
 pub async fn tokenize(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<crate::openai::TokenizeRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -208,7 +287,7 @@ pub struct DetokenizeRequest {
 
 /// POST /detokenize — decode token IDs back to text.
 pub async fn detokenize(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<DetokenizeRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {

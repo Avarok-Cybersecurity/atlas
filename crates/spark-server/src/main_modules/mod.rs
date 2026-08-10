@@ -3,12 +3,18 @@
 //! Sub-modules of `main.rs`, factored out to keep the binary entry-point file ≤500 LoC.
 
 pub(crate) mod app_state;
+pub(crate) mod auto_swap;
+pub(crate) mod byte_count;
 pub(crate) mod kv_dtypes;
 pub(crate) mod middleware;
+pub(crate) mod model_host;
+pub(crate) mod model_swap;
 pub(crate) mod promotion;
 pub(crate) mod serve;
+pub(crate) mod serve_flags;
+pub(crate) mod serve_load;
 pub(crate) mod serve_phases;
-pub(crate) mod serve_router;
+mod serve_router;
 
 #[cfg(test)]
 mod tests;

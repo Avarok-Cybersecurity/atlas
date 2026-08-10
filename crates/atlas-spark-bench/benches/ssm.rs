@@ -7,22 +7,17 @@
 //! gdn_num_k=16, gdn_num_v=32, dim=128.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-static CONV1D_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-static GDN_DECODE_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// causal_conv1d_update(conv_state, new_input, weight, bias, output, batch, dim, d_conv)
 /// Grid: (ceil(dim/256), batch, 1)  Block: (256, 1, 1)
 fn bench_conv1d(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &CONV1D_FN, "causal_conv1d", "causal_conv1d_update");
+    let kernel = gpu::get_kernel(reg, "causal_conv1d", "causal_conv1d_update");
 
     let batch: u32 = 1;
     let d_inner: u32 = 8192;
@@ -95,12 +90,7 @@ fn bench_conv1d(c: &mut Criterion) {
 fn bench_gdn(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(
-        reg,
-        &GDN_DECODE_FN,
-        "gated_delta_rule",
-        "gated_delta_rule_decode",
-    );
+    let kernel = gpu::get_kernel(reg, "gated_delta_rule", "gated_delta_rule_decode");
 
     let batch: u32 = 1;
     let num_k_heads: u32 = 16;
@@ -177,25 +167,17 @@ fn bench_gdn(c: &mut Criterion) {
     group.finish();
 }
 
-static GDN_CHUNK2_FN: OnceLock<RawCudaFunc> = OnceLock::new();
+// Same as the handles at the top of this file: a bench binary measures one
+// kernel for the life of the process, and the handle is resolved once so the
+// timed loop is the kernel and not the registry lookup.
 
 /// gated_delta_rule_chunk2 vs 2× sequential gated_delta_rule_decode.
 /// Measures the kernel-level speedup of fused 2-token processing.
 fn bench_gdn_chunk2(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel_seq = gpu::get_kernel(
-        reg,
-        &GDN_DECODE_FN,
-        "gated_delta_rule",
-        "gated_delta_rule_decode",
-    );
-    let kernel_chunk2 = gpu::get_kernel(
-        reg,
-        &GDN_CHUNK2_FN,
-        "gated_delta_rule",
-        "gated_delta_rule_chunk2",
-    );
+    let kernel_seq = gpu::get_kernel(reg, "gated_delta_rule", "gated_delta_rule_decode");
+    let kernel_chunk2 = gpu::get_kernel(reg, "gated_delta_rule", "gated_delta_rule_chunk2");
 
     let batch: u32 = 1;
     let num_k_heads: u32 = 16;

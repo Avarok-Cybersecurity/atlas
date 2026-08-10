@@ -33,6 +33,7 @@ mod embed_chunk;
 mod finalize_last;
 mod forward_layers;
 mod h_state_ptrs;
+mod midchunk_capture;
 mod prefix_lookup;
 mod proc_range;
 mod prompt_logprobs;
@@ -100,15 +101,33 @@ impl TransformerModel {
             let bs = self.kv_cache.lock().block_size();
             // One block below the last block boundary strictly under `total`.
             let cut = ((total.saturating_sub(1) / bs) * bs).saturating_sub(bs);
-            let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
-            if cut > chunk_start
-                && cut < total
-                && (ep_active
-                    || self
-                        .prefix_cache
-                        .peek_matched_tokens(tokens, bs, seq.adapter_id)
-                        > 0)
-            {
+            // UNCONDITIONAL. This used to additionally require
+            // `ep_active || peek_matched_tokens(..) > 0`, i.e. it split only on a
+            // WARM request (radix already populated) — which made the prompt take a
+            // DIFFERENT SHAPE cold vs warm: one N-token pass when cold, two passes
+            // [0..cut) + [cut..N) when warm. BF16 accumulation is not associative,
+            // so the two shapes produce different hidden states, and at temperature 0
+            // a near-tied argmax flips. Same prompt, same seed, different answer.
+            //
+            // MEASURED on Puzzle-75B (fresh container, temp 0, exact-hit shortcut
+            // bypassed so this split is the ONLY cold/warm difference):
+            //   34-token prompt (cut=16, split fires warm) : cold "17 barrels"
+            //                                                warm "15 barrels"  DIVERGE
+            //   16-token prompt (cut<=0, split IMPOSSIBLE) : cold == warm       MATCH
+            // The cut threshold predicts the divergence exactly.
+            //
+            // The invariant is already stated for EP>1 in the comment above —
+            // "chunk sequences must be deterministic on (tokens, config)" — it was
+            // just never enforced on a single rank. Splitting unconditionally makes
+            // cold and warm identical by construction, at the cost of one extra pass
+            // on cold prefills that cross the cut.
+            //
+            // `ATLAS_NO_TAIL_SPLIT=1` disables the split entirely (same-binary A/B).
+            // That is the OTHER way to satisfy the invariant — always one pass — and
+            // it keeps the single-pass numerics, at the cost of the warm-turn tail
+            // checkpoint this split exists to create.
+            let split_disabled = std::env::var("ATLAS_NO_TAIL_SPLIT").as_deref() == Ok("1");
+            if !split_disabled && cut > chunk_start && cut < total {
                 self.prefill_chunk_dispatch(
                     tokens,
                     seq,
@@ -184,6 +203,7 @@ impl TransformerModel {
             self.prefix_cache.as_ref(),
             self.gpu.as_ref(),
             stream,
+            self.levers.kv_poison,
         )?;
 
         // ── Phase 2b: compute effective processing range (may early-return) ──
@@ -264,6 +284,18 @@ impl TransformerModel {
         // per chunk but prevents the illegal memory access.
         self.gpu.synchronize(stream)?;
 
+        // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
+        // pass so SSM layers split their h/conv kernels at `tb` in-pass.
+        // `None` (flag off or pass doesn't span `tb`) => no split. ──
+        let midcap_plan = self.prepare_midchunk_capture(
+            tokens,
+            seq,
+            &mut kv_cache,
+            proc_start,
+            proc_count,
+            stream,
+        );
+
         // ── Phase 4: forward through all layers ──
         self.prefill_b_forward_layers(
             seq,
@@ -280,8 +312,15 @@ impl TransformerModel {
             pos_stream_bytes,
             use_mrope,
             needs_paged,
+            midcap_plan.as_ref(),
             stream,
         )?;
+
+        // Register the reserved slot as the session tail once the full pass has
+        // captured the @tb state into it (no-op when no capture was planned).
+        if let Some(plan) = midcap_plan.as_ref() {
+            self.finalize_midchunk_capture(tokens, seq, plan);
+        }
 
         // ── Phase 5: update sequence state incrementally ──
         // Always add chunk tokens exactly once. The early-return path for

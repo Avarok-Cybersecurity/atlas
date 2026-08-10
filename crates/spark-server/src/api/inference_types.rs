@@ -18,10 +18,30 @@ use crate::openai::{
 };
 use crate::tool_parser;
 
-// Re-export so scheduler / chat-stream code can refer to it via
-// `crate::api::RepetitionDetectionParams` without depending directly on
-// the `openai` module. Matches how `GrammarSpec` is plumbed.
-pub use crate::openai::RepetitionDetectionParams;
+/// Per-request override for the vLLM-anchored token-loop detector.
+///
+/// Mirrors vLLM's `RepetitionDetectionParams`
+/// (`vllm/sampling_params.py:111-144`):
+/// - `min_pattern_size` → smallest pattern length (in tokens) to consider
+/// - `max_pattern_size` → largest pattern length to consider
+/// - `min_count` → number of end-anchored back-to-back repeats that
+///   constitute a "loop"
+///
+/// When attached to a request, these override the boot-global
+/// thresholds (`CONTENT_LOOP_PERIOD_MIN` / `_MAX` /
+/// `CONTENT_LOOP_MIN_REPEATS` and the thinking-loop equivalents) for
+/// that single sequence's content-loop and thinking-loop detectors.
+///
+/// Defined here (not in a wire module) because the scheduler and
+/// chat-stream internals consume it; the API surfaces deserialize into
+/// it at their edges.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RepetitionDetectionParams {
+    pub min_pattern_size: u32,
+    pub max_pattern_size: u32,
+    pub min_count: u32,
+}
 
 /// Grammar specification for constrained decoding.
 ///

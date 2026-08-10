@@ -3,6 +3,8 @@
 use serde::Deserialize;
 
 use super::*;
+use crate::api::inference_types::RepetitionDetectionParams;
+use crate::ir::ThinkingDirective;
 
 /// Chat completion request (subset of OpenAI spec).
 #[derive(Debug, Deserialize)]
@@ -206,25 +208,6 @@ pub struct ChatCompletionRequest {
     pub reasoning_effort: Option<String>,
 }
 
-/// Per-request override for the vLLM-anchored token-loop detector.
-/// Mirrors vLLM's `RepetitionDetectionParams`
-/// (`vllm/sampling_params.py:111-144`):
-/// - `min_pattern_size` → smallest pattern length (in tokens) to consider
-/// - `max_pattern_size` → largest pattern length to consider
-/// - `min_count` → number of end-anchored back-to-back repeats that
-///   constitute a "loop"
-///
-/// When attached to a request, these override the boot-global thresholds
-/// (`CONTENT_LOOP_PERIOD_MIN` / `_MAX` / `CONTENT_LOOP_MIN_REPEATS` and the
-/// thinking-loop equivalents) for that single sequence's loop detectors.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct RepetitionDetectionParams {
-    pub min_pattern_size: u32,
-    pub max_pattern_size: u32,
-    pub min_count: u32,
-}
-
 /// Stream options (OpenAI-compatible).
 #[derive(Debug, Clone, Copy, Deserialize, Default)]
 #[serde(default)]
@@ -289,21 +272,13 @@ pub struct ReasoningConfig {
     pub effort: Option<String>,
 }
 
-/// vLLM-style chat template kwargs.
+/// vLLM-style chat template kwargs (request-body wire field). The
+/// server-level `--default-chat-template-kwargs` CLI flag is parsed at
+/// the CLI edge (`main_modules/serve.rs`), not through this type.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatTemplateKwargs {
     pub enable_thinking: Option<bool>,
     pub thinking_budget: Option<u32>,
-}
-
-impl ChatTemplateKwargs {
-    /// Parse from a JSON string. Returns `None` if parsing fails or string is empty.
-    pub fn from_json(s: &str) -> Option<Self> {
-        if s.trim().is_empty() {
-            return None;
-        }
-        serde_json::from_str(s).ok()
-    }
 }
 
 /// Default thinking budget when thinking is enabled but no explicit budget set.
@@ -312,81 +287,54 @@ impl ChatTemplateKwargs {
 const DEFAULT_THINKING_BUDGET: u32 = 256;
 
 impl ChatCompletionRequest {
-    /// Resolve thinking parameters from all supported request-body formats
-    /// into a single `(enable_thinking: bool, thinking_budget: Option<u32>)`
-    /// pair. The client's per-request choice always wins over the model
-    /// default; the model default (from MODEL.toml `[behavior].thinking_default`)
-    /// is used only when the client sends NO thinking parameter at all.
-    ///
-    /// The `--disable-thinking` CLI flag is a higher-priority kill switch
-    /// applied by the caller (api.rs / anthropic.rs) — this function does
-    /// not know about it.
+    /// Resolve the client's thinking intent from all supported
+    /// request-body formats into the neutral [`ThinkingDirective`].
+    /// This is the OpenAI-edge half of thinking resolution; the model
+    /// default (MODEL.toml `[behavior].thinking_default`), the server
+    /// default directive, and the `--disable-thinking` kill switch are
+    /// folded in later by `api/chat/thinking.rs`, which never sees the
+    /// wire fields.
     ///
     /// Request-body priority (highest to lowest):
     /// 1. `thinking.budget_tokens` (Anthropic) — explicit budget
     /// 2. `thinking_token_budget` (vLLM PR) — explicit budget
     /// 3. `reasoning.effort` (OpenAI) — mapped to budget
     /// 4. `chat_template_kwargs` (vLLM stable) — enable/disable + optional budget
-    /// 5. `enable_thinking` (Atlas legacy) — boolean with default budget
-    /// 6. `model_default` argument (from MODEL.toml) — model-specific fallback
+    /// 5. `enable_thinking` (Atlas legacy) — boolean
     ///
-    /// Returns `true` if any of channels 1-5 carried an explicit thinking
-    /// intent from the client (i.e. the resolved value did NOT fall through
-    /// to `model_default`). Callers use this to decide whether a
-    /// server-side policy (e.g. `thinking_in_tools=false`) is allowed to
-    /// override the model default OR must respect the explicit request.
-    /// Per-request override for the vLLM-anchored token-loop detector.
-    /// `None` = use the boot-global watchdog parameters.
-    pub fn repetition_detection(&self) -> Option<RepetitionDetectionParams> {
-        self.repetition_detection
-    }
-
-    pub fn thinking_explicitly_requested(&self) -> bool {
-        if self.thinking.is_some() {
-            return true;
-        }
-        if self.thinking_token_budget.is_some() {
-            return true;
-        }
-        if let Some(ref rc) = self.reasoning
-            && rc.effort.is_some()
-        {
-            return true;
-        }
-        if let Some(ref kw) = self.chat_template_kwargs
-            && (kw.thinking_budget.is_some() || kw.enable_thinking.is_some())
-        {
-            return true;
-        }
-        if self.enable_thinking {
-            return true;
-        }
-        false
-    }
-
-    pub fn resolve_thinking(&self, model_default: bool) -> (bool, Option<u32>) {
-        // 1. Anthropic: thinking.budget_tokens
+    /// No channel present → [`ThinkingDirective::Unspecified`] (the old
+    /// `thinking_explicitly_requested() == false`).
+    pub fn client_thinking_directive(&self) -> ThinkingDirective {
+        // 1. Anthropic: thinking.budget_tokens / thinking.type
         if let Some(ref tc) = self.thinking {
             if let Some(ref t) = tc.thinking_type
                 && t == "disabled"
             {
-                return (false, Some(0));
+                return ThinkingDirective::Off;
             }
             if let Some(budget) = tc.budget_tokens {
-                return (true, Some(budget));
+                return ThinkingDirective::On {
+                    budget: Some(budget),
+                };
             }
             // Anthropic "adaptive" / thinking object with no explicit budget
             // means "think as long as needed" — defer to the per-model
-            // `max_thinking_budget` (None), NOT the conservative 256-token
-            // DEFAULT_THINKING_BUDGET. A hard 256 cut force-injects </think>
-            // mid-reasoning on agentic turns and wrecks tool selection.
-            // Mirrors the step-5 enable_thinking path below.
-            return (true, None);
+            // `max_thinking_budget` (budget: None), NOT the conservative
+            // 256-token DEFAULT_THINKING_BUDGET. A hard 256 cut force-injects
+            // </think> mid-reasoning on agentic turns and wrecks tool
+            // selection. Mirrors the step-5 enable_thinking path below.
+            return ThinkingDirective::On { budget: None };
         }
 
         // 2. vLLM PR: thinking_token_budget
         if let Some(budget) = self.thinking_token_budget {
-            return (budget > 0, Some(budget));
+            return if budget > 0 {
+                ThinkingDirective::On {
+                    budget: Some(budget),
+                }
+            } else {
+                ThinkingDirective::Off
+            };
         }
 
         // 3. OpenAI: reasoning.effort
@@ -402,47 +350,55 @@ impl ChatCompletionRequest {
                 "xhigh" | "max" => 1024,
                 _ => DEFAULT_THINKING_BUDGET,
             };
-            return (budget > 0, Some(budget));
+            return if budget > 0 {
+                ThinkingDirective::On {
+                    budget: Some(budget),
+                }
+            } else {
+                ThinkingDirective::Off
+            };
         }
 
         // 4. vLLM stable: chat_template_kwargs
         if let Some(ref kwargs) = self.chat_template_kwargs {
             if let Some(budget) = kwargs.thinking_budget {
-                return (budget > 0, Some(budget));
+                return if budget > 0 {
+                    ThinkingDirective::On {
+                        budget: Some(budget),
+                    }
+                } else {
+                    ThinkingDirective::Off
+                };
             }
             if let Some(enabled) = kwargs.enable_thinking {
-                // enable_thinking via chat_template_kwargs (incl. the server's
-                // --default-chat-template-kwargs '{"enable_thinking":true}'):
-                // defer the budget to the per-model max_thinking_budget (None)
-                // rather than the conservative 256-token DEFAULT — same rationale
-                // as the legacy/model-default branches below. Without this, that
-                // server default silently capped EVERY request's thinking at 256.
-                return (enabled, if enabled { None } else { Some(0) });
+                // enable_thinking via chat_template_kwargs: defer the budget
+                // to the per-model max_thinking_budget (None) rather than the
+                // conservative 256-token DEFAULT — same rationale as the
+                // legacy branch below. Without this, a server default of
+                // '{"enable_thinking":true}' silently capped EVERY request's
+                // thinking at 256.
+                return if enabled {
+                    ThinkingDirective::On { budget: None }
+                } else {
+                    ThinkingDirective::Off
+                };
             }
         }
 
         // 5. Atlas legacy: enable_thinking boolean in the request body.
         // Only honored when explicitly true — a false value (including the
-        // serde default when the field is absent) falls through to the
-        // MODEL.toml default so clients that don't know about this flag
-        // inherit the model's design intent instead of silently opting out.
-        // Returns `None` for the budget so `api/chat/thinking.rs` falls
-        // back to `state.behavior.max_thinking_budget` (the per-model
-        // MODEL.toml cap) instead of the conservative
-        // DEFAULT_THINKING_BUDGET — opencode-style clients otherwise
-        // hit a 256-token mid-sentence cut on thinking-tier models.
+        // serde default when the field is absent) falls through to
+        // Unspecified so clients that don't know about this flag inherit
+        // the model's design intent instead of silently opting out.
+        // `budget: None` so `api/chat/thinking.rs` falls back to the
+        // per-model MODEL.toml cap instead of the conservative
+        // DEFAULT_THINKING_BUDGET — opencode-style clients otherwise hit
+        // a 256-token mid-sentence cut on thinking-tier models.
         if self.enable_thinking {
-            return (true, None);
+            return ThinkingDirective::On { budget: None };
         }
 
-        // 6. Model default from MODEL.toml [behavior].thinking_default.
-        // Same `None` rationale as step 5 — defer to the per-model
-        // `max_thinking_budget` rather than the conservative default.
-        if model_default {
-            (true, None)
-        } else {
-            (false, None)
-        }
+        ThinkingDirective::Unspecified
     }
 }
 

@@ -8,8 +8,9 @@ Markdown table to `tests/all_models_results.md`.
 
 Design:
 - Each "round" has up to 2 TestSpecs: one for `head`, one for `worker`.
-- For each round: start both containers, wait for "Listening on", run the
-  full suite against both in parallel, stop containers, move on.
+- For each round: start both containers, wait for the listener to come up on
+  the address we asked it to bind (see `ready_marker`), run the full suite
+  against both in parallel, stop containers, move on.
 - EP=2 phase runs sequentially at the end, uses both nodes cooperatively.
 - Individual failures are captured but do not abort the run.
 
@@ -31,6 +32,11 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+# Paths are SSOT'd in tests/harness_paths.py so this writer and
+# tests/gate_results.py (the reader) can never point at different checkouts.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harness_paths import RESULTS_DIR, SUITE_PATH as SUITE  # noqa: E402
+
 # ─── Configuration ─────────────────────────────────────────────────────
 
 IMAGE = os.environ.get("ATLAS_IMAGE", "atlas-gb10:latest")
@@ -44,9 +50,14 @@ WORKER_PORT = int(os.environ.get("ATLAS_WORKER_PORT", "8888"))
 _default_hf_cache = os.path.expanduser("~/.cache/huggingface")
 HF_CACHE_HEAD = os.environ.get("ATLAS_HF_CACHE_HEAD", _default_hf_cache)
 HF_CACHE_WORKER = os.environ.get("ATLAS_HF_CACHE_WORKER", _default_hf_cache)
-RESULTS_DIR = "/workspace/atlas/tests/all_models_results"
-SUITE = "/workspace/atlas/tests/single_gpu_suite.py"
 STARTUP_TIMEOUT = 600  # seconds
+
+# Address the served HTTP listener binds to. Atlas's `--bind` defaults to
+# 127.0.0.1 — right for a fresh install, fatal here: this harness probes the
+# head server from the host namespace and the worker server across the network,
+# and a loopback bind inside a container is reachable from neither (every probe
+# gets "connection reset by peer"). Stated explicitly rather than inherited.
+SERVE_BIND = "0.0.0.0"
 
 
 def hf_cache_for(host: str) -> str:
@@ -67,6 +78,10 @@ class TestSpec:
     extra_args: List[str] = field(default_factory=list)
     # If the suite takes too long or longctx is not meaningful, skip it:
     skip_longctx: bool = False
+    # Mark vision-capable models so the suite runs its image test (`--vision`).
+    # Only set on checkpoints that actually carry a vision tower AND whose Atlas
+    # kernel target ships a vision_encoder module.
+    vision: bool = False
     # ── Multi-rank (head + worker) parallelism ──
     # Set tp_size and/or ep_size > 1 to run as a 2-rank multi-node round.
     # Default (1, 1) = single-GPU. For a 2-rank GB10 cluster the supported
@@ -92,12 +107,12 @@ class TestSpec:
 ROUNDS: List[List[tuple]] = [
     # Round 1: 27B dense (head-only) + Sehyo 35B NVFP4 baseline (worker-only)
     [
-        ("head",   TestSpec("27B-dense-nvfp4", "Kbenkhaled/Qwen3.5-27B-NVFP4")),
+        ("head",   TestSpec("27B-dense-nvfp4", "Kbenkhaled/Qwen3.5-27B-NVFP4", vision=True)),
         ("worker", TestSpec("35B-nvfp4", "Sehyo/Qwen3.5-35B-A3B-NVFP4")),
     ],
     # Round 2: VL-30B + Sehyo 35B NVFP4 MTP
     [
-        ("head",   TestSpec("qwen3-vl-30B", "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4")),
+        ("head",   TestSpec("qwen3-vl-30B", "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4", vision=True)),
         ("worker", TestSpec("35B-nvfp4-mtp", "Sehyo/Qwen3.5-35B-A3B-NVFP4", mtp=True)),
     ],
     # Round 3: Gemma-4-31B + Nemotron-Nano 30B
@@ -110,7 +125,7 @@ ROUNDS: List[List[tuple]] = [
     # --max-batch-size 1 so 32k fits for the long-context test.
     [
         ("head",   TestSpec("gemma-4-31B", "nvidia/Gemma-4-31B-IT-NVFP4",
-                            kv_dtype="bf16",
+                            kv_dtype="bf16", vision=True,
                             extra_args=["--max-batch-size", "1"])),
         ("worker", TestSpec("nemotron-nano-30B",
                             "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4")),
@@ -119,7 +134,7 @@ ROUNDS: List[List[tuple]] = [
     [
         ("head",   TestSpec("gemma-4-26B",
                             "bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16",
-                            kv_dtype="bf16",
+                            kv_dtype="bf16", vision=True,
                             extra_args=["--max-batch-size", "1"])),
         ("worker", TestSpec("35B-fp8", "Qwen/Qwen3.5-35B-A3B-FP8", quant="fp8")),
     ],
@@ -154,7 +169,7 @@ ROUNDS: List[List[tuple]] = [
                             # belongs in MLA chunked-prefill correctness,
                             # not the harness spec.
         ("head",   TestSpec("35B-qwen36-fp8", "Qwen/Qwen3.6-35B-A3B-FP8",
-                            quant="fp8")),
+                            quant="fp8", vision=True)),
     ],
     # Round 7: 80B NVFP4 baseline (head) — 122B FP8 can't fit single-GPU
     # (118 GB weights > 121 GB GPU), so it moves to the EP=2 phase below.
@@ -282,6 +297,7 @@ def build_serve_cmd(spec: TestSpec, port: int) -> str:
     """Build the `serve ...` command-line tail for a container."""
     args = [
         "serve", spec.model,
+        "--bind", SERVE_BIND,
         "--port", str(port),
         "--scheduling-policy", "slai",
     ]
@@ -317,9 +333,13 @@ def start_container(host: str, spec: TestSpec, port: int) -> str:
     docker_on(host, f"rm -f {name}", check=False, capture=True)
     serve_cmd = build_serve_cmd(spec, port)
     cache = hf_cache_for(host)
+    # `--network host` (not `-p`), matching scripts/dev/test_all_models.sh —
+    # the invocation that has always worked. Bridge networking plus a
+    # published port still requires the server to bind 0.0.0.0 *inside* the
+    # container namespace, and the EP=2 path below already needs host
+    # networking for NCCL, so one networking mode for the whole harness.
     docker_cmd = (
-        f"run -d --name {name} --gpus all --ipc=host "
-        f"-p {port}:{port} "
+        f"run -d --name {name} --gpus all --ipc=host --network host "
         f"-v {cache}:/root/.cache/huggingface "
         f"{IMAGE} {serve_cmd}"
     )
@@ -327,8 +347,22 @@ def start_container(host: str, spec: TestSpec, port: int) -> str:
     return name
 
 
-def wait_listening(host: str, name: str, timeout: int = STARTUP_TIMEOUT) -> bool:
-    """Poll docker logs until 'Listening on' appears or we time out."""
+def ready_marker(port: int) -> str:
+    """Exact startup line proving the listener is reachable by this harness.
+
+    The server logs `Listening on {bind}:{port}`, so the bare substring
+    "Listening on" ALSO matches `Listening on 127.0.0.1:8888` — a bind this
+    harness can never reach. Matching that produced a false READY whose
+    downstream connection resets looked exactly like a model regression.
+    Match the address we asked for, so a wrong bind cannot read as ready.
+    """
+    return f"Listening on {SERVE_BIND}:{port}"
+
+
+def wait_listening(host: str, name: str, port: int,
+                   timeout: int = STARTUP_TIMEOUT) -> bool:
+    """Poll docker logs until the reachable-listener line appears, or time out."""
+    marker = ready_marker(port)
     deadline = time.time() + timeout
     while time.time() < deadline:
         # Container might have exited
@@ -338,8 +372,15 @@ def wait_listening(host: str, name: str, timeout: int = STARTUP_TIMEOUT) -> bool
             return False
         r = docker_on(host, f"logs {name} 2>&1", check=False, capture=True)
         log = r.stdout
-        if "Listening on" in log:
+        if marker in log:
             return True
+        if "Listening on" in log:
+            # Bound, but not where we asked. Fail fast and name the cause —
+            # never let this fall through to a probe that will be refused.
+            print(f"    [{host}/{name}] bound the WRONG address: expected "
+                  f"'{marker}'. Not reachable from this harness — check the "
+                  f"--bind argument and the container network mode.")
+            return False
         if "Error:" in log and "ERROR" in log:
             print(f"    [{host}/{name}] error detected in log")
             return False
@@ -383,6 +424,8 @@ def run_suite(host: str, spec: TestSpec, port: int) -> dict:
     ]
     if spec.skip_longctx:
         cmd.append("--skip-longctx")
+    if spec.vision:
+        cmd.append("--vision")
     with open(log_path, "w") as f:
         proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
     return {"proc": proc, "out_json": out_json, "log_path": log_path}
@@ -460,7 +503,7 @@ def run_round(round_idx: int, pairs: list) -> dict:
     ready = []
     for host, name, spec, port in started:
         print(f"  Waiting for {spec.label} to listen...")
-        if wait_listening(host, name):
+        if wait_listening(host, name, port):
             print(f"    [{spec.label}] ready")
             ready.append((host, name, spec, port))
         else:
@@ -725,6 +768,41 @@ def planned_specs(run_singlegpu, skip, only_round,
     return planned
 
 
+def load_roster(path):
+    """Replace ROUNDS with a single-GPU roster read from a JSON file.
+
+    ROUNDS is a 2-node roster naming specific HF repos. A box that does not
+    hold those checkpoints cannot run the matrix at all — every round would
+    stall on a download or fail to boot, and the run produces nothing. This
+    lets a box declare the models it actually has, without editing (and then
+    having to un-edit) the committed roster.
+
+    Format — a list of rounds, each a list of specs; every key beyond `host`
+    is a TestSpec field:
+
+        [[{"host": "head", "label": "27B-nvfp4", "model": "nvidia/Qwen3.6-27B-NVFP4"}],
+         [{"host": "head", "label": "35B-nvfp4", "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+           "kv_dtype": "bf16"}]]
+
+    The roster flows through `planned_specs` like any other, so `_manifest.json`
+    still records exactly what the run intended and the gate's coverage check
+    keeps its meaning: a model listed here that never boots is still a FAIL.
+    """
+    with open(path) as f:
+        raw = json.load(f)
+    rounds = []
+    for rnd in raw:
+        pairs = []
+        for entry in rnd:
+            e = dict(entry)
+            host = e.pop("host", "head")
+            if host not in ("head", "worker"):
+                raise SystemExit(f"{path}: host must be 'head' or 'worker', got {host!r}")
+            pairs.append((host, TestSpec(**e)))
+        rounds.append(pairs)
+    return rounds
+
+
 def write_manifest(**flags):
     planned = planned_specs(**flags)
     manifest = {
@@ -753,7 +831,22 @@ def main():
                         help="Only run the TP=2 phase (skip single-GPU + EP=2 + TPEP)")
     parser.add_argument("--only-tpep", action="store_true",
                         help="Only run the TP+EP overlapping phase")
+    parser.add_argument("--roster", default=None,
+                        help="JSON file of single-GPU rounds to run INSTEAD of the "
+                             "built-in ROUNDS (see load_roster). Use on a box whose "
+                             "HF cache holds a different model set; implies the "
+                             "multi-node phases are skipped.")
     args = parser.parse_args()
+
+    if args.roster:
+        global ROUNDS
+        ROUNDS = load_roster(args.roster)
+        # A roster file describes single-GPU rounds only, so the multi-node
+        # phases have nothing to contribute and would re-introduce models this
+        # box does not hold. Force them off rather than silently planning them.
+        args.skip_ep2 = args.skip_tp2 = args.skip_tpep = True
+        print(f"[roster] {sum(len(r) for r in ROUNDS)} model(s) over "
+              f"{len(ROUNDS)} round(s) from {args.roster}")
 
     skip = set(int(s) for s in args.skip_rounds.split(",") if s.strip())
     all_results = {}

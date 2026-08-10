@@ -108,3 +108,141 @@ mod vacuous_system_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod build_tests {
+    use super::super::build_msg_entries;
+    use crate::ir::message::{ContentPart, ImageData, ImageSource, Message, Role};
+    use axum::http::StatusCode;
+
+    fn assert_bad_request(msgs: &[Message], tools_active: bool) {
+        match build_msg_entries(
+            None,
+            None,
+            msgs,
+            tools_active,
+            &crate::api::chat::levers::ChatLevers::OFF,
+        ) {
+            Ok(_) => panic!("expected 400, got Ok"),
+            Err(resp) => assert_eq!(resp.status(), StatusCode::BAD_REQUEST),
+        }
+    }
+
+    fn text(role: Role, t: &str) -> Message {
+        Message {
+            role,
+            content: vec![ContentPart::Text(t.into())],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            reasoning: None,
+            tool_error: false,
+        }
+    }
+
+    fn image(role: Role) -> Message {
+        Message {
+            role,
+            content: vec![
+                ContentPart::Image(ImageSource {
+                    data: ImageData::Base64("data:image/png;base64,AAA".into()),
+                }),
+                ContentPart::Text("result".into()),
+            ],
+            tool_calls: Vec::new(),
+            tool_call_id: Some("c1".into()),
+            name: None,
+            reasoning: None,
+            tool_error: false,
+        }
+    }
+
+    #[test]
+    fn text_only_builds_without_vision_config() {
+        let msgs = vec![text(Role::User, "hello")];
+        let out = build_msg_entries(
+            None,
+            None,
+            &msgs,
+            false,
+            &crate::api::chat::levers::ChatLevers::OFF,
+        )
+        .expect("text-only ok");
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages[0].image_count, 0);
+    }
+
+    #[test]
+    fn user_image_without_vision_config_is_rejected() {
+        // Previously: silently dropped (200). Now: fail fast.
+        assert_bad_request(&[text(Role::User, "hi"), image(Role::User)], false);
+    }
+
+    #[test]
+    fn tool_result_image_is_collected_and_rejected_without_vision() {
+        // Proves the tool branch now COUNTS + COLLECTS images (it used to
+        // hardcode image_count: 0 and `continue` before collection): the
+        // fail-fast only fires when an image was actually collected.
+        assert_bad_request(&[text(Role::User, "look"), image(Role::Tool)], true);
+    }
+
+    #[test]
+    fn developer_role_normalized_to_system_at_build() {
+        // Was previously mapped only at JSON render time, so `developer`
+        // messages bypassed the cwd-hint / vacuous-system / CWD-injection
+        // scans that string-compare on "system".
+        let msgs = vec![text(Role::Other("developer".into()), "be terse")];
+        let out = build_msg_entries(
+            None,
+            None,
+            &msgs,
+            false,
+            &crate::api::chat::levers::ChatLevers::OFF,
+        )
+        .expect("ok");
+        assert_eq!(out.messages[0].role, "system");
+
+        // Other unknown roles still pass through verbatim for the
+        // template to handle.
+        let msgs = vec![text(Role::Other("critic".into()), "hm")];
+        let out = build_msg_entries(
+            None,
+            None,
+            &msgs,
+            false,
+            &crate::api::chat::levers::ChatLevers::OFF,
+        )
+        .expect("ok");
+        assert_eq!(out.messages[0].role, "critic");
+    }
+
+    #[test]
+    fn remote_url_image_rejected_with_clear_reason() {
+        // A https URL used to be mislabeled as base64 and die later in
+        // the vision preprocessor with "base64 decode failed". It must
+        // now be rejected up front with the real reason — even when the
+        // model HAS no vision config (the URL check fires first, at
+        // collection time).
+        let url_msg = Message {
+            role: Role::User,
+            content: vec![ContentPart::Image(ImageSource {
+                data: ImageData::Url("https://example.com/cat.png".into()),
+            })],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            reasoning: None,
+            tool_error: false,
+        };
+        match build_msg_entries(
+            None,
+            None,
+            &[url_msg],
+            false,
+            &crate::api::chat::levers::ChatLevers::OFF,
+        ) {
+            Ok(_) => panic!("expected 400, got Ok"),
+            Err(resp) => assert_eq!(resp.status(), StatusCode::BAD_REQUEST),
+        }
+    }
+}

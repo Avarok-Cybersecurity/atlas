@@ -253,14 +253,25 @@ __device__ __forceinline__ unsigned int bf16x4_to_e4m3x4(const unsigned short* s
     return ((unsigned int)h1 << 16) | (unsigned int)h0;
 }
 
+// `ldb` = ROW STRIDE of the transposed B, which may EXCEED N.
+//
+// ★ Ported from qwen3.6-27b/nvfp4/w4a16_gemm.cu (the 2026-07-28 CUDA-716 fix).
+// This copy kept the 8-arg signature while every Rust launcher moved to 9 args
+// (`w4a16_gemm_n128_ldb`) — the driver IGNORES the extra argument, so B was
+// strided by N instead of ldb, SILENTLY, wherever the two differ.
+//
+// Loads are bounded by `ldb`; STORES stay bounded by N, so only real columns
+// are written.
 extern "C" __global__ void w4a16_gemm_t(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,
     const unsigned char* __restrict__ B_scale,
     const float scale2,
     __nv_bfloat16* __restrict__ C,
-    unsigned int M, unsigned int N, unsigned int K
+    unsigned int M, unsigned int N, unsigned int K,
+    unsigned int ldb
 ) {
+    const unsigned int LDB = ldb;
     const unsigned int cta_n = blockIdx.x * N_TILE_LG;
     const unsigned int cta_m = blockIdx.y * M_TILE;
     const unsigned int warp_id = threadIdx.x / 32;
@@ -305,13 +316,13 @@ extern "C" __global__ void w4a16_gemm_t(
             unsigned int gke = (kb) + (kp << 1); \
             unsigned int gns = cta_n + ns; \
             cp_async_pred_16(&smem_Bp[(buf)][kp][ns], \
-                &B_packed[(unsigned long long)(gke >> 1) * N + gns], \
-                (gke + 1 <= K) && (gns + 15 < N)); \
+                &B_packed[(unsigned long long)(gke >> 1) * LDB + gns], \
+                (gke + 1 <= K) && (gns + 15 < LDB)); \
             if (kp < K_STEP_T / GROUP_SIZE) { \
                 unsigned int sg = (kb) / GROUP_SIZE + kp; \
                 cp_async_pred_16(&smem_Bs[(buf)][kp][ns], \
-                    &B_scale[(unsigned long long)sg * N + gns], \
-                    (gns + 15 < N)); \
+                    &B_scale[(unsigned long long)sg * LDB + gns], \
+                    (gns + 15 < LDB)); \
             } \
         } \
     } while(0)
@@ -990,16 +1001,16 @@ void w4a16_gemm_t_m128(
     __nv_bfloat16* __restrict__ C,
     unsigned int M, unsigned int N, unsigned int K
 ) {
-    // Grid axes are SWAPPED relative to the other GEMMs: blockIdx.x is the
-    // M-block, blockIdx.y is the N-block.
+    // GRID CONTRACT — N is the FAST axis, matching the SHARED launcher
+    // `ops::w4a16_gemm_n128_m128` and every other model's `w4a16_gemm_t_m128`.
     //
-    // Every m-block re-reads the whole B panel for its n-column. With n on the
-    // fast axis, the 8 m-blocks sharing a B panel are scheduled ~141 blocks
-    // apart, so the panel is evicted from L2 between them and B is fetched from
-    // DRAM 8x (~20 GB across the 112 calls in one 1k prefill). Putting m on the
-    // fast axis makes those 8 blocks co-resident, so 7 of the 8 reads hit L2.
-    const unsigned int cta_n  = blockIdx.y * N_TILE_LG;
-    const unsigned int cta_m  = blockIdx.x * (2 * M_TILE);  // base row for this block
+    // Do NOT swap these to m-fast here. This kernel is reached through a launcher
+    // shared by all NVFP4 models; swapping the axes in one model's copy while the
+    // launcher feeds every model made 18 other kernels mis-map every CTA (silent
+    // garbage, no error — it read as a dense-27B numerical break). If the m-fast
+    // L2 ordering is wanted, add a separately named `_mfast` kernel + launcher.
+    const unsigned int cta_n  = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_m  = blockIdx.y * (2 * M_TILE);  // base row for this block
     if (cta_m >= M) return;
 
     const unsigned int warp_id = threadIdx.x / 32;

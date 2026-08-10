@@ -317,3 +317,67 @@ gamma = 16
 window_size = 4096
 mask_token_id = 248070
 target_layer_ids = [1, 10, 19, 28, 37]
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels` against this
+# target's own binary (167 modules). Every entry is a try_kernel() probe
+# whose 0-handle falls through to a fallback that DID resolve on this
+# target — except the two [expected_absent.gated_delta_rule] f16 arms,
+# see that note.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin of w4a16_gemm_t, shipped ONLY in
+qwen3.6-27b/nvfp4/w4a16_gemm.cu (49 globals vs this target's slimmer
+shadow). layers::tgemm_kernel probes it first, then falls back to
+w4a16_gemm_t, which resolves here. The fallback is the 2-stage parent
+the p3 twin was derived from; the twin is UNMEASURED for this target's
+shapes — treat as a candidate to measure, not a confirmed loss."""
+w4a16_gemm_t_k64_p3 = """
+Same family: shipped only in qwen3.6-27b's shadow. layers::k64_kernel
+probes it, then REQUIRES w4a16_gemm_t_k64, which resolves here."""
+w4a16_gemm_t_k64_n64_p3 = """
+Narrow-N deep-K twin, shipped only in qwen3.6-27b's shadow.
+layers::k64_n64_kernel returns 0-handle when absent; dispatch gates on
+handle != 0 before firing, so the wide-K64 tile serves these shapes."""
+w4a16_gemm_t_m128_bf16 = """
+BF16-projection prefill twin of w4a16_gemm_t_m128. prefill_weights
+gates the probe result (handle != 0); the fallback is the w4a16 m128
+twin that resolves here, applied through the standard dequant."""
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+This model's w4a4_gemm.cu defines only w4a4_gemm; the mfast variant
+exists solely in nemotron-labs-3-puzzle-75b-a9b. Dispatch
+(qwen3_attention/init.rs) falls back to w4a4_gemm — same family the
+27B declares. UNMEASURED for this target."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
+Native-MXFP4 (E8M0) scale-format variant. Shipped only in
+deepseek-v4-flash's moe_w4a16 module (ARM-2 Phase-K). This target is
+NVFP4; the ptrtable grouped GEMM that resolves here serves it."""
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t variant."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t_k64 variant."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up variant."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up_k64 variant."
+moe_w4a16_fused_gate_up_t_k64_m128 = """
+M=128 Block-D variant shipped only in minimax-m2-229b's shadow (per the
+dispatch comment in moe/init.rs). Dispatch falls through to M=64."""
+
+# ⚠ HONESTY NOTE on the four gated_delta_rule f16 arms: unlike every
+# entry above, the FP16-h-state decode arms dispatch these handles
+# UN-PROBED (ssm_batched_recurrent.rs:279/:509) once --ssm-h-dtype f16
+# is active. Preflight refuses f16 for bad env combos but NOT for a
+# target that lacks the twins, so setting the flag on this model is a
+# 0-handle launch, not a fallback. Declared here to unblock the gate;
+# the correct fix is a preflight check on kernel presence. UNMEASURED.
+[expected_absent.gated_delta_rule]
+gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note in this MODEL.toml. F32 fused-norm arm resolves."
+gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note in this MODEL.toml. F32 strided-norm arm resolves."
+gated_delta_rule_decode_f32_strided_norm_half = """
+Half-register twin of the resolved f32_strided_norm; selected only when
+the resolved half-register gate is set, and that gate is off by default
+(ATLAS_GDN_HALF_REG presence). Not a live path as shipped."""
+gated_delta_rule_decode_f32_strided_norm_smem = """
+SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
+default) AND the half-register gate. Not a live path as shipped."""

@@ -1,9 +1,26 @@
 name: CI
 
 on:
+  # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
+  # were throttled to aid recovery, so pushes stopped creating runs at all --
+  # and with no dispatch trigger there was no way to ask for one. A check that
+  # can only be started by an event you do not control is a check you cannot
+  # get a verdict from when you most need it.
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main, master]
+  # Reusable: release.yml gates its (expensive) build matrix on CI passing, so
+  # a fmt or clippy failure costs one cheap runner instead of eight toolchain
+  # installs. Defined once here; release.yml calls it rather than copying it.
+  workflow_call:
+
+# Least privilege: CI only reads the repo. Without an explicit block the
+# GITHUB_TOKEN inherits the repository default, which can be write — flagged by
+# CodeQL (code-scanning/32) once this workflow gained the release-matrix job.
+# The reusable workflows it calls inherit this and declare the same.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,8 +41,8 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -34,15 +51,11 @@ jobs:
     name: cargo clippy --tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - name: Install vendor/xgrammar-rs build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Lint policy lives in the workspace `Cargo.toml` `[workspace.lints]`
       # block (deny `warnings` + `clippy::all`, with a few targeted
       # allows for kernel-style signatures). Each crate inherits via
@@ -55,229 +68,48 @@ jobs:
     name: SPDX license headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: apache/skywalking-eyes/header@v0.8.0
-        with:
-          config: .licenserc.yaml
-          mode: check
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Was `apache/skywalking-eyes/header`. That action is a composite that
+      # internally uses an UNPINNED `actions/setup-go@v5`, and this repo sets
+      # `sha_pinning_required`, which applies transitively — so it cannot run
+      # here however carefully we pin the action itself. Checking a header is a
+      # grep; it does not justify a third-party action and a Go toolchain in CI.
+      # `.licenserc.yaml` is still the only place the paths and ignores live.
+      - run: pip install --quiet pyyaml
+      - run: python3 scripts/check_spdx.py
 
   typos:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: crate-ci/typos@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: crate-ci/typos@2a44449ff3410624a0fa2ea073c670e1c9236a40 # master
+
+  kernel-structure:
+    name: kernel shadow structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Validates the kernels/{hw} shadowing mechanism (build.rs
+      # collect_cu_files): no shadow byte-identical to its common
+      # namesake (dead override), no duplicate regular copies of the
+      # same shadow across models (symlink to one canonical file
+      # instead). GPU-free: pure content-hash check, exit 1 on any
+      # violation. Stdlib-only; the runner's system python3 suffices.
+      - run: python3 scripts/check_kernel_shadows.py
 
   test:
     name: cargo test --workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - name: Install vendor/xgrammar-rs build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
-      - name: Generate libcuda.so stub for no-GPU linking
-        # spark-storage uses raw `extern "C"` FFI to libcuda (cuStreamCreate
-        # etc.). Without libcuda on the runner the linker fails with
-        # `undefined reference to cu*` even though `ATLAS_SKIP_BUILD=1`
-        # avoids nvcc. We synthesize a stub `libcuda.so` whose symbols
-        # all return a non-zero CUDA error code (100 = CUDA_ERROR_NO_DEVICE)
-        # so any GPU test that *does* try to call cuInit fails-fast at
-        # runtime — matching what happens on a real no-GPU host. GPU tests
-        # are `#[ignore]`-gated so they never invoke these stubs in the
-        # default `cargo test` run; they're only here to satisfy the
-        # linker.
-        run: |
-          set -euo pipefail
-          cat > /tmp/libcuda_stub.c <<'EOF'
-          /* Stub for every CUDA driver API symbol that any Atlas crate
-           * links against (spark-storage, atlas-core::registry, cudarc).
-           * Each returns CUDA_ERROR_NO_DEVICE (100) so callers fail-fast.
-           * Generated for CI link-time only; never exercised at runtime
-           * because every test that touches these is #[ignore]-gated. */
-          /* Init / device / context */
-          int cuInit(unsigned int x) { (void)x; return 100; }
-          int cuDeviceGet(void *a, int b) { (void)a; (void)b; return 100; }
-          int cuCtxCreate(void **a, unsigned int b, int c) { (void)a; (void)b; (void)c; return 100; }
-          int cuCtxCreate_v2(void **a, unsigned int b, int c) { (void)a; (void)b; (void)c; return 100; }
-          int cuCtxDestroy_v2(void *a) { (void)a; return 100; }
-          int cuCtxGetCurrent(void **a) { (void)a; return 100; }
-          int cuCtxSetCurrent(void *a) { (void)a; return 100; }
-          /* Errors */
-          int cuGetErrorName(int code, const char **out) { (void)code; (void)out; return 100; }
-          int cuGetErrorString(int code, const char **out) { (void)code; (void)out; return 100; }
-          /* Streams */
-          int cuStreamCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
-          int cuStreamDestroy_v2(void *a) { (void)a; return 100; }
-          int cuStreamSynchronize(void *a) { (void)a; return 100; }
-          int cuStreamBeginCapture(void *a, int b) { (void)a; (void)b; return 100; }
-          int cuStreamBeginCapture_v2(void *a, int b) { (void)a; (void)b; return 100; }
-          int cuStreamEndCapture(void *a, void **b) { (void)a; (void)b; return 100; }
-          int cuStreamWaitEvent(void *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
-          /* Modules + launch */
-          int cuModuleLoadData(void **a, const void *b) { (void)a; (void)b; return 100; }
-          int cuModuleUnload(void *a) { (void)a; return 100; }
-          int cuModuleGetFunction(void **a, void *b, const char *c) { (void)a; (void)b; (void)c; return 100; }
-          int cuModuleGetGlobal_v2(unsigned long long *dptr, unsigned long *bytes,
-                                   void *hmod, const char *name) {
-              (void)dptr; (void)bytes; (void)hmod; (void)name; return 100;
-          }
-          int cuFuncSetAttribute(void *f, int attr, int val) { (void)f; (void)attr; (void)val; return 100; }
-          int cuLaunchKernel(void *f, unsigned int gx, unsigned int gy, unsigned int gz,
-                             unsigned int bx, unsigned int by, unsigned int bz,
-                             unsigned int sm, void *s, void **p, void **e) {
-              (void)f; (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz;
-              (void)sm; (void)s; (void)p; (void)e; return 100;
-          }
-          /* Events */
-          int cuEventCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }
-          int cuEventDestroy_v2(void *a) { (void)a; return 100; }
-          int cuEventRecord(void *a, void *b) { (void)a; (void)b; return 100; }
-          int cuEventSynchronize(void *a) { (void)a; return 100; }
-          int cuEventElapsedTime(float *a, void *b, void *c) { (void)a; (void)b; (void)c; return 100; }
-          /* Memory — device */
-          int cuMemAlloc(unsigned long long *a, unsigned long b) { (void)a; (void)b; return 100; }
-          int cuMemAlloc_v2(unsigned long long *a, unsigned long b) { (void)a; (void)b; return 100; }
-          int cuMemAllocManaged(unsigned long long *a, unsigned long b, unsigned int c) {
-              (void)a; (void)b; (void)c; return 100;
-          }
-          int cuMemFree_v2(unsigned long long a) { (void)a; return 100; }
-          int cuMemGetInfo(unsigned long *a, unsigned long *b) { (void)a; (void)b; return 100; }
-          int cuMemGetInfo_v2(unsigned long *a, unsigned long *b) { (void)a; (void)b; return 100; }
-          /* Memory — host (pinned) */
-          int cuMemAllocHost(void **a, unsigned long b) { (void)a; (void)b; return 100; }
-          int cuMemAllocHost_v2(void **a, unsigned long b) { (void)a; (void)b; return 100; }
-          int cuMemFreeHost(void *a) { (void)a; return 100; }
-          int cuMemHostGetDevicePointer_v2(unsigned long long *a, void *b, unsigned int c) { (void)a; (void)b; (void)c; return 100; }
-          /* Memcpy / memset */
-          int cuMemcpyHtoD(unsigned long long a, const void *b, unsigned long c) {
-              (void)a; (void)b; (void)c; return 100;
-          }
-          int cuMemcpyHtoD_v2(unsigned long long a, const void *b, unsigned long c) {
-              (void)a; (void)b; (void)c; return 100;
-          }
-          int cuMemcpyHtoDAsync(unsigned long long a, const void *b, unsigned long c, void *d) {
-              (void)a; (void)b; (void)c; (void)d; return 100;
-          }
-          int cuMemcpyHtoDAsync_v2(unsigned long long a, const void *b, unsigned long c, void *d) {
-              (void)a; (void)b; (void)c; (void)d; return 100;
-          }
-          int cuMemcpyDtoHAsync_v2(void *a, unsigned long long b, unsigned long c, void *d) {
-              (void)a; (void)b; (void)c; (void)d; return 100;
-          }
-          int cuMemcpyDtoDAsync_v2(unsigned long long a, unsigned long long b, unsigned long c, void *d) {
-              (void)a; (void)b; (void)c; (void)d; return 100;
-          }
-          int cuMemsetD8Async(unsigned long long a, unsigned char b, unsigned long c, void *d) {
-              (void)a; (void)b; (void)c; (void)d; return 100;
-          }
-          int cuMemsetD32Async(unsigned long long a, unsigned int b, unsigned long c, void *d) {
-              (void)a; (void)b; (void)c; (void)d; return 100;
-          }
-          /* Graphs */
-          int cuGraphInstantiateWithFlags(void **a, void *b, unsigned long long c) {
-              (void)a; (void)b; (void)c; return 100;
-          }
-          int cuGraphLaunch(void *a, void *b) { (void)a; (void)b; return 100; }
-          int cuGraphExecDestroy(void *a) { (void)a; return 100; }
-          int cuGraphDestroy(void *a) { (void)a; return 100; }
-          EOF
-          cc -shared -fPIC -nostdlib -o /tmp/libcuda.so /tmp/libcuda_stub.c
-          sudo install -m 0644 /tmp/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so
-          # Some build scripts also probe /usr/local/cuda/.../stubs
-          sudo mkdir -p /usr/local/cuda/targets/x86_64-linux/lib/stubs
-          sudo install -m 0644 /tmp/libcuda.so /usr/local/cuda/targets/x86_64-linux/lib/stubs/libcuda.so
-      - name: Generate libnccl.so stub for no-GPU linking
-        # spark-comm links libnccl directly via `-lnccl`; without the
-        # library installed the test build fails at link time. Same
-        # treatment as libcuda: every nccl symbol returns a non-success
-        # code (2 = ncclSystemError) so any test that actually invokes
-        # NCCL fails-fast at runtime — and those tests are GPU-gated
-        # anyway. Stub purely satisfies the linker.
-        run: |
-          set -euo pipefail
-          cat > /tmp/libnccl_stub.c <<'EOF'
-          /* Stub for NCCL collective-communication symbols spark-comm
-           * links against. Each returns ncclSystemError (2) so any
-           * caller fails-fast; never invoked at runtime in default
-           * `cargo test` because every NCCL test is `#[ignore]`-gated. */
-          int ncclGetUniqueId(void *uid) { (void)uid; return 2; }
-          int ncclGetErrorString(int code) { (void)code; return 2; }
-          int ncclCommInitRank(void **comm, int n, void *uid, int rank) {
-              (void)comm; (void)n; (void)uid; (void)rank; return 2;
-          }
-          int ncclCommInitRankConfig(void **comm, int n, void *uid, int rank, void *config) {
-              (void)comm; (void)n; (void)uid; (void)rank; (void)config; return 2;
-          }
-          int ncclCommDestroy(void *comm) { (void)comm; return 2; }
-          int ncclCommAbort(void *comm) { (void)comm; return 2; }
-          int ncclCommGetAsyncError(void *comm, int *err) { (void)comm; (void)err; return 2; }
-          int ncclCommRegister(void *comm, void *p, unsigned long n, void **h) {
-              (void)comm; (void)p; (void)n; (void)h; return 2;
-          }
-          int ncclCommDeregister(void *comm, void *h) { (void)comm; (void)h; return 2; }
-          int ncclMemAlloc(void **p, unsigned long n) { (void)p; (void)n; return 2; }
-          int ncclMemFree(void *p) { (void)p; return 2; }
-          int ncclGroupStart(void) { return 2; }
-          int ncclGroupEnd(void) { return 2; }
-          int ncclSend(const void *p, unsigned long n, int dt, int peer, void *comm, void *s) {
-              (void)p; (void)n; (void)dt; (void)peer; (void)comm; (void)s; return 2;
-          }
-          int ncclRecv(void *p, unsigned long n, int dt, int peer, void *comm, void *s) {
-              (void)p; (void)n; (void)dt; (void)peer; (void)comm; (void)s; return 2;
-          }
-          int ncclAllReduce(const void *a, void *b, unsigned long n, int dt, int op, void *comm, void *s) {
-              (void)a; (void)b; (void)n; (void)dt; (void)op; (void)comm; (void)s; return 2;
-          }
-          int ncclAllGather(const void *a, void *b, unsigned long n, int dt, void *comm, void *s) {
-              (void)a; (void)b; (void)n; (void)dt; (void)comm; (void)s; return 2;
-          }
-          int ncclReduceScatter(const void *a, void *b, unsigned long n, int dt, int op, void *comm, void *s) {
-              (void)a; (void)b; (void)n; (void)dt; (void)op; (void)comm; (void)s; return 2;
-          }
-          int ncclBroadcast(const void *a, void *b, unsigned long n, int dt, int root, void *comm, void *s) {
-              (void)a; (void)b; (void)n; (void)dt; (void)root; (void)comm; (void)s; return 2;
-          }
-          EOF
-          cc -shared -fPIC -nostdlib -o /tmp/libnccl.so /tmp/libnccl_stub.c
-          sudo install -m 0644 /tmp/libnccl.so /usr/lib/x86_64-linux-gnu/libnccl.so
-      - name: Generate libcublasLt.so + libcudart.so stubs for no-GPU linking
-        # The Holo-3.1/Ornith enablement added cublaslt.rs (ATLAS_CUBLAS_GEMM
-        # FFI) and a cudaMemcpy2DAsync path; build.rs emits -lcublasLt/-lcudart
-        # even under ATLAS_SKIP_BUILD. Stub both (every symbol returns 1 so a
-        # real invocation fails-fast; GPU paths are #[ignore]-gated) purely to
-        # satisfy the linker — same treatment as libcuda/libnccl above.
-        run: |
-          set -euo pipefail
-          cat > /tmp/libcublaslt_stub.c <<'EOF'
-          int cublasLtCreate(void){return 1;}
-          int cublasLtDestroy(void){return 1;}
-          int cublasLtMatmul(void){return 1;}
-          int cublasLtMatmulAlgoGetHeuristic(void){return 1;}
-          int cublasLtMatmulDescCreate(void){return 1;}
-          int cublasLtMatmulDescDestroy(void){return 1;}
-          int cublasLtMatmulDescSetAttribute(void){return 1;}
-          int cublasLtMatmulPreferenceCreate(void){return 1;}
-          int cublasLtMatmulPreferenceDestroy(void){return 1;}
-          int cublasLtMatmulPreferenceSetAttribute(void){return 1;}
-          int cublasLtMatrixLayoutCreate(void){return 1;}
-          int cublasLtMatrixLayoutDestroy(void){return 1;}
-          EOF
-          cc -shared -fPIC -nostdlib -o /tmp/libcublasLt.so /tmp/libcublaslt_stub.c
-          sudo install -m 0644 /tmp/libcublasLt.so /usr/lib/x86_64-linux-gnu/libcublasLt.so
-          cat > /tmp/libcudart_stub.c <<'EOF'
-          int cudaMalloc(void){return 1;}
-          int cudaFree(void){return 1;}
-          int cudaMemcpy(void){return 1;}
-          int cudaMemcpy2DAsync(void){return 1;}
-          int cudaDeviceSynchronize(void){return 1;}
-          int cudaHostAlloc(void){return 1;}
-          EOF
-          cc -shared -fPIC -nostdlib -o /tmp/libcudart.so /tmp/libcudart_stub.c
-          sudo install -m 0644 /tmp/libcudart.so /usr/lib/x86_64-linux-gnu/libcudart.so
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Generate no-GPU library stubs
+        # libcuda / libnccl / libcublasLt / libcudart fail-fast stubs, so the
+        # workspace links on a runner with no GPU. Extracted to a script so the
+        # test job and the benchmark-gate job cannot drift apart.
+        run: bash scripts/ci_gpu_stubs.sh
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is
       # exactly what we want — every test that requires a real GPU
       # (spark-runtime, spark-storage, atlas-kernels, atlas-spark-bench
@@ -289,9 +121,9 @@ jobs:
     name: cargo test --features metal (macOS aarch64)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Apple Silicon path: no CUDA toolchain, no nvcc. The `metal`
       # feature opts out of cudarc workspace-wide and into the Metal
       # runtime backend (objc2-metal). xcrun + metallib are part of
@@ -336,3 +168,350 @@ jobs:
 
   # cargo-deny runs in security.yml with path filters on Cargo.toml / Cargo.lock /
   # deny.toml plus a weekly cron. Not duplicated here.
+
+  # The release build matrix runs only after every gate above is green, in
+  # this same CI run — so a PR's checks table shows base CI then the matrix,
+  # and CI is never executed twice for one commit. Guarded to pull_request:
+  # release.yml calls this workflow for its own gate, and must not trigger a
+  # second matrix build there.
+  release-matrix:
+    name: release matrix
+    if: github.event_name == 'pull_request'
+    needs: [fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: 0.0.0-pr${{ github.event.number }}
+      pr_mode: true
+      retention_days: 1
+
+  # OBSERVE-ONLY, and structurally incapable of being anything else.
+  #
+  # This job asks a language model what the pull request is *for*, and records
+  # the answer. It does not gate. `pr-benchmark-gate` below neither `needs:`
+  # this job nor reads its outputs, so there is no path — not a slow one, not a
+  # subtle one — by which this reaches a verdict. That separation is the design,
+  # not a rollout stage: the input is attacker-controlled (a PR title is written
+  # by whoever opened the PR), and arranging for that text to be UNABLE to
+  # affect verification is stronger than hoping a model resists it.
+  #
+  # What it is for right now is evidence. Before any category is allowed to add
+  # verification, the log has to show what it would have said, on real pull
+  # requests, including the ones where it abstained.
+  pr-categorize:
+    name: PR categorize (advisory)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # No write scopes. It reports into the job summary, not onto the PR, so a
+    # compromised model response has nowhere to go even in principle.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # This job runs TWO cargo binaries (`ledger_append`, `implied_benches`)
+      # and had no cache, so both paid a cold build on every PR. atlas-plugin is
+      # host-only and CUDA-free, so the workflow-level ATLAS_SKIP_BUILD=1 is all
+      # it needs besides a warm target/.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: pr-categorize
+      - name: Collect the changed paths
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Both values come from the event payload, which GitHub controls, not
+          # the branch contents. They still go through env rather than being
+          # interpolated into this script.
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt || true
+          echo "count=$(wc -l < changed.txt)" >> "$GITHUB_OUTPUT"
+          head -c 4000 changed.txt > changed_head.txt
+          # Multi-line output, heredoc-delimited: these are repo paths, and a
+          # path can contain almost anything.
+          d="__ATLAS_DIFF_EOF__"
+          { printf 'head<<%s\n' "$d"; cat changed_head.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
+      - name: Cross-repo context — which recipes exist
+        id: recipes
+        # The serve recipes are in a DIFFERENT repository, and they determine
+        # every gated number (`--kv-cache-dtype` alone is worth -3 to -4% wall
+        # in this campaign's own data). A classifier that cannot see them
+        # cannot reason about them. Read-only, best-effort, never fatal.
+        #
+        # ★ UNAUTHENTICATED, deliberately, and NOT via `gh api`. `gh` sends
+        # `GITHUB_TOKEN`, which is scoped to THIS repository, so it is REFUSED
+        # on a sibling repo — the first live run fell straight to the notice
+        # branch and classified without recipe context. `atlas-recipes` is
+        # public (`"private": false`), so a plain anonymous GET works and needs
+        # no secret: verified 27 YAMLs, HTTP 200.
+        #
+        # Anonymous api.github.com is rate-limited to 60/hr per IP, shared
+        # across the runner fleet. That is why this is best-effort: a 403 here
+        # must degrade to "classify without it", never fail the job.
+        env:
+          # Org-scoped read token. `GITHUB_TOKEN` is scoped to THIS repo and is
+          # refused on a sibling, which is why the first live run classified
+          # without recipe context. Empty on fork PRs — hence the anonymous
+          # fallback below, which works because atlas-recipes is public.
+          ORG_READ: ${{ secrets.GH_ORGANIZATION_READ_TOKEN }}
+        run: |
+          set -uo pipefail
+          API='https://api.github.com/repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1'
+          # Authenticated when the secret exists (5000/hr), anonymous otherwise
+          # (60/hr per IP, shared across the runner fleet). Both are read-only
+          # and neither is required: this is evidence for a classifier, not a
+          # gate input, so it must degrade rather than fail.
+          if [ -n "${ORG_READ:-}" ]; then
+            echo "::add-mask::$ORG_READ"
+            set -- -H "Authorization: Bearer $ORG_READ"
+          else
+            set --
+          fi
+          if names=$(curl -sS --max-time 20 --fail \
+                       -H 'Accept: application/vnd.github+json' "$@" "$API" \
+                     | jq -r '[.tree[]? | select(.path | endswith(".yaml")) | .path] | .[0:60] | join("\n")' \
+                       2>/dev/null) && [ -n "$names" ]; then
+            printf '%s' "$names" > recipes.txt
+          else
+            : > recipes.txt
+            echo "::notice::atlas-recipes not readable; classifying without recipe context"
+          fi
+          echo "count=$(wc -l < recipes.txt)" >> "$GITHUB_OUTPUT"
+          d="__ATLAS_RECIPES_EOF__"
+          { printf 'names<<%s\n' "$d"; cat recipes.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
+      - name: Read the model id
+        id: models
+        run: |
+          set -euo pipefail
+          echo "categorize=$(jq -r '.models.categorize' .github/ai-models.json)" >> "$GITHUB_OUTPUT"
+      # ── The DESCENDING classifier ────────────────────────────────────
+      # Replaces a single flat label. `categorize` picked one of seven
+      # siblings; that is what called a CI-only commit `performance`. This
+      # walks `.github/pr-taxonomy.json` one level at a time, so every
+      # individual decision is 2-6 disjoint options and the allowlist check
+      # applies at each step.
+      #
+      # It also feeds DYNAMIC BENCHMARK SELECTION: the path's `_benches`,
+      # unioned along it, are benchmarks the intent implies. They may only ADD
+      # to what the paths already require — see `gate::pr_taxonomy`.
+      - uses: ./.github/actions/classify-path
+        id: path
+        with:
+          text: |
+            ${{ github.event.pull_request.title }}
+          # ★ The PATHS, not a count. `changed_head.txt` was computed and never
+          # read, so the classifier's entire input was attacker-authored prose
+          # — titling a decode-kernel PR "docs: tidy a comment" was a complete
+          # bypass. Paths are what the change IS.
+          context: |
+            Changed paths (${{ steps.diff.outputs.count }} total):
+            ${{ steps.diff.outputs.head }}
+
+            Serve recipes available in Avarok-Cybersecurity/atlas-recipes
+            (${{ steps.recipes.outputs.count }}):
+            ${{ steps.recipes.outputs.names }}
+          taxonomy: .github/pr-taxonomy.json
+          model: ${{ steps.models.outputs.categorize }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          fallback: unknown
+      - uses: ./.github/actions/categorize
+        id: cat
+        with:
+          # The PR title reaches the action through the action's own env, never
+          # spliced into a shell here.
+          text: |
+            ${{ github.event.pull_request.title }}
+
+            Changed files:
+            ${{ steps.diff.outputs.count }} paths
+          categories: '["numerics","performance","serving","tooling","docs","ci","unknown"]'
+          model: ${{ steps.models.outputs.categorize }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          # The most conservative member of the set. A fork PR has no secret and
+          # a free endpoint is sometimes down; neither may read as a confident
+          # answer, and "unknown" is the category that claims nothing.
+          fallback: unknown
+          title: atlas-pr-categorize
+      - name: Append the classifier's opinion to the PR journey ledger
+        # `crates/atlas-governance` shipped with a full event model, a grow-only
+        # Journey, deduplication and 16 tests — and ZERO WRITERS. Nothing had
+        # ever appended a line. This is the first one.
+        #
+        # `EventKind::Category`'s own doc says it is "recorded, never acted
+        # upon … so the observe-only rollout has something to audit". That is
+        # already earning its keep: three live runs on one PR produced
+        # `tooling`, `performance`, `tooling` from the flat classifier while the
+        # descending one held `infrastructure/*` throughout. Neither fact would
+        # exist if the disagreements had not been written down.
+        #
+        # Committed as tbraun96, per the repo's authorship convention.
+        env:
+          TAXON_PATH: ${{ steps.path.outputs.path }}
+          TAXON_STATUS: ${{ steps.path.outputs.status }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # `at` is passed in rather than read from the clock inside the binary:
+          # `Event::identity()` excludes it so a re-run COLLAPSES, and a replay
+          # has to be reproducible for that to mean anything.
+          cargo run --quiet -p atlas-plugin --bin ledger_append -- category \
+            --root . --pr "$PR_NUMBER" --head-sha "$HEAD_SHA" \
+            --run-id "$RUN_ID" --attempt "$ATTEMPT" --at "$(date +%s)" \
+            --value "$TAXON_PATH" --status "$TAXON_STATUS" || {
+              echo "::warning::could not append to the journey ledger"; exit 0; }
+
+          # ★ THE LINE LEAVES BY ARTIFACT, NOT BY PUSH.
+          #
+          # This step used to `git commit` and `git push origin HEAD:$HEAD_REF`.
+          # That was dead THREE ways and had never once succeeded — every run
+          # logged "push skipped" and discarded the line with the runner:
+          #   1. this job has `permissions: contents: read` (deliberately, see
+          #      the job header) so the token cannot push at all;
+          #   2. a fork PR's token is read-only regardless of what we ask for;
+          #   3. the checkout is the `refs/pull/N/merge` ref, so even WITH
+          #      write access the push would put a merge commit carrying base
+          #      content onto the contributor's branch.
+          # Zero `governance/` files have ever been committed, on any branch.
+          #
+          # Granting `contents: write` here is the one thing we must not do:
+          # this job consumes model output derived from an attacker-authored PR
+          # title, and the job header's promise — "a compromised model response
+          # has nowhere to go even in principle" — is exactly that write scope
+          # being absent. So the line leaves as an ARTIFACT, which needs no
+          # write scope and works from forks, and a scheduled job running
+          # DEFAULT-BRANCH code harvests, re-validates and commits it.
+      - name: Hand the ledger line off for harvesting
+        # No write scope needed, and it survives a fork PR. The harvester
+        # re-validates every line and pins the PR number from the run's own API
+        # record rather than trusting artifact content.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: governance-event-pr${{ github.event.pull_request.number }}
+          path: governance/pr-${{ github.event.pull_request.number }}.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Record what it said
+        # Every value crosses into the script through `env:`, even though the
+        # action guarantees its outputs are closed-set enums and its own fixed
+        # strings — no model-authored text ever reaches them. Interpolating
+        # `${{ }}` into a `run:` body is the injection shape this repo warns
+        # about in CODEOWNERS, and "it happens to be safe here" is not a habit
+        # worth teaching the next person who copies this block.
+        env:
+          CATEGORY: ${{ steps.cat.outputs.category }}
+          STATUS: ${{ steps.cat.outputs.status }}
+          REASON: ${{ steps.cat.outputs.reason }}
+          CHANGED: ${{ steps.diff.outputs.count }}
+          TAXON_PATH: ${{ steps.path.outputs.path }}
+          TAXON_STATUS: ${{ steps.path.outputs.status }}
+          TAXON_DEPTH: ${{ steps.path.outputs.depth }}
+          TAXON_REASON: ${{ steps.path.outputs.reason }}
+        run: |
+          set -euo pipefail
+          # Resolve the implied set BEFORE opening the summary block, so a
+          # real failure annotates and stops instead of half-writing a table.
+          # Empty stdout means "implies nothing"; a nonzero exit means "could
+          # not tell". Collapsing those two is what let the old walk read clean.
+          if IMPLIED_IDS=$(cargo run --quiet -p atlas-plugin --bin implied_benches -- \
+                             --root . --path "$TAXON_PATH" 2>implied.stderr); then
+            if [ -s implied.stderr ]; then
+              echo "::warning title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
+            fi
+          else
+            # A malformed taxonomy is a repo defect, not weather. This job is
+            # advisory (nothing `needs:` it, it is not a required check), so red
+            # here blocks no merge — it buys a CAUSE one click away.
+            echo "::error title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
+            exit 1
+          fi
+          IMPLIED="${IMPLIED_IDS//$'\n'/, }"
+          IMPLIED="${IMPLIED:-(none)}"
+
+          {
+            echo "### PR category (advisory — does not gate)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            printf '| category | `%s` |\n' "$CATEGORY"
+            printf '| status | `%s` |\n' "$STATUS"
+            printf '| reason | %s |\n' "$REASON"
+            printf '| changed paths | %s |\n' "$CHANGED"
+            echo
+            echo "### Taxonomy path (descending)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            printf '| path | `%s` |\n' "$TAXON_PATH"
+            printf '| depth | %s |\n' "$TAXON_DEPTH"
+            printf '| status | `%s` |\n' "$TAXON_STATUS"
+            printf '| reason | %s |\n' "$TAXON_REASON"
+            echo
+            # `_benches` unioned along the path — what the INTENT implies.
+            #
+            # ★ SSOT: computed by the SAME code the gate runs
+            # (`pr_taxonomy::benches_for_matched`), via the `implied_benches`
+            # bin. The jq walk this replaces was a SECOND implementation of that
+            # function and disagreed with it on four shapes — three of them in
+            # the REMOVING direction (`a//b` and `" a / b "` lost benches; a
+            # bare-string `_benches` that `load` hard-rejects, jq read happily).
+            #
+            # It also had no failure rendering at all: this step runs under
+            # `set -euo pipefail`, so jq's exit 5 aborted the step MID-TABLE
+            # with stderr discarded. Now the three outcomes are distinct —
+            # a set, "implies nothing", and a named failure.
+            printf '| benchmarks this intent implies | %s |\n' "$IMPLIED"
+            echo
+            echo "**Advisory, and additive only.** The required set is computed"
+            echo "from the diff by \`gate::coverage\` in Rust. An intent path can"
+            echo "only ADD benchmarks to it, never remove one — so a"
+            echo "misclassification costs GPU minutes, never a missed regression."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Standalone and NON-BLOCKING by design: it reports whether the branch has
+  # passing, committed benchmark records, but `release-matrix` deliberately does
+  # NOT wait on it. Bench records can only be produced on a GPU box, so making
+  # the image path depend on them would halt releases on a missing record rather
+  # than on a real defect.
+  pr-benchmark-gate:
+    name: PR benchmark gate
+    runs-on: ubuntu-latest
+    # ENFORCING as of this commit. The `continue-on-error: true` that used to
+    # sit here was justified by a bootstrap gap — "no bench record is committed
+    # yet, and the PR that introduces the gate cannot commit one". That gap is
+    # closed: `.benchmarks/` now carries a BASELINE plus records for all five
+    # required gates, so the precondition its own comment named for removal is
+    # met, and keeping the line would leave a check that cannot fail.
+    #
+    # What a red here means: this branch has no record that still COVERS its
+    # head. `record_covers` invalidates every earlier record once the diff
+    # touches a PERF_PATH (crates, kernels, Cargo.*, vendor, jinja-templates,
+    # rust-toolchain.toml) — which is the point. Fix it by measuring on a GPU
+    # box and committing the record, not by re-adding continue-on-error.
+    #
+    # It is deliberately NOT in `release-matrix`'s `needs`, and deliberately
+    # not a required status check on `main`: a missing GPU measurement must
+    # show as red without wedging the image path or the merge button.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # check_gates walks git ancestry to decide whether a record taken at an
+          # earlier sha still covers HEAD, so a shallow clone would make every
+          # record look uncovered.
+          fetch-depth: 0
+      - name: Generate no-GPU library stubs
+        run: bash scripts/ci_gpu_stubs.sh
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Check committed benchmark records against their baselines
+        env:
+          ATLAS_SKIP_BUILD: "1"
+          CUDARC_CUDA_VERSION: "13000"
+        run: cargo run --locked -p spark-server --bin spark -- benchmark --pull-request-gate-check

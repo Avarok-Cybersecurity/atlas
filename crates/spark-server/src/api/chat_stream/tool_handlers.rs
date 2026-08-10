@@ -5,53 +5,49 @@
 // stream `process()` outputs) and `handle_done` (end-of-stream
 // `flush()` outputs).
 
-use axum::response::sse::Event;
-
-use crate::openai::ChatCompletionChunk;
+use crate::ir::StreamDelta;
 use crate::tool_parser;
 
 use super::super::stream_guards::{bump_f12_tool_call_count, flush_content_sanitizer};
 use super::ctx::StreamCtx;
 use super::state::{PendingRetry, StreamState};
 
-type SseVec = Vec<Result<Event, std::convert::Infallible>>;
+type DeltaVec = Vec<StreamDelta>;
 
-/// Tier 5c (2026-05-26): emit `chunk_json` to either the client SSE
-/// stream OR a per-tool-call-index buffer in `StreamState`. When tool
-/// retry is enabled we hold all tool_call SSE chunks until
-/// `handle_tool_call_delta` runs validation; on pass the buffered chunks
-/// flush to the client, on fail they're discarded and the retry fires
-/// at `handle_done`. When tool retry is disabled this is a direct emit
-/// (preserves the existing real-time streaming behaviour).
-fn emit_or_buffer_tool_chunk(
+/// Tier 5c (2026-05-26): emit `delta` to either the client stream OR a
+/// per-tool-call-index buffer in `StreamState`. When tool retry is
+/// enabled we hold all tool_call deltas until `handle_tool_call_delta`
+/// runs validation; on pass the buffered deltas flush to the client, on
+/// fail they're discarded and the retry fires at `handle_done`. When
+/// tool retry is disabled this is a direct emit (preserves the existing
+/// real-time streaming behaviour).
+fn emit_or_buffer_tool_delta(
     state: &mut StreamState,
     ctx: &StreamCtx,
     idx: usize,
-    chunk_json: String,
-    sse_events: &mut SseVec,
+    delta: StreamDelta,
+    deltas: &mut DeltaVec,
 ) {
     if ctx.tool_retry_enabled {
         state
             .buffered_tool_chunks
             .entry(idx)
             .or_default()
-            .push(chunk_json);
+            .push(delta);
     } else {
-        sse_events.push(Ok(Event::default().data(chunk_json)));
+        deltas.push(delta);
     }
 }
 
-/// Flush all buffered SSE chunks for tool-call `idx` into `sse_events`.
-/// No-op when retry is disabled (chunks were emitted directly).
-fn flush_buffered_tool_chunks(state: &mut StreamState, idx: usize, sse_events: &mut SseVec) {
+/// Flush all buffered deltas for tool-call `idx` into `deltas`.
+/// No-op when retry is disabled (deltas were emitted directly).
+fn flush_buffered_tool_chunks(state: &mut StreamState, idx: usize, deltas: &mut DeltaVec) {
     if let Some(chunks) = state.buffered_tool_chunks.remove(&idx) {
-        for chunk_json in chunks {
-            sse_events.push(Ok(Event::default().data(chunk_json)));
-        }
+        deltas.extend(chunks);
     }
 }
 
-/// Drop all buffered SSE chunks for tool-call `idx` without emitting.
+/// Drop all buffered deltas for tool-call `idx` without emitting.
 /// Called when validation fails and we're going to fire a Tier 5c retry.
 fn drop_buffered_tool_chunks(state: &mut StreamState, idx: usize) {
     state.buffered_tool_chunks.remove(&idx);
@@ -63,7 +59,7 @@ pub(super) fn handle_complete_tool_call(
     ctx: &StreamCtx,
     tc: &mut tool_parser::ToolCall,
     tc_idx: usize,
-    sse_events: &mut SseVec,
+    deltas: &mut DeltaVec,
 ) {
     // Content → Tool boundary: flush sanitiser tail.
     let pre_tool_tail = flush_content_sanitizer(
@@ -72,11 +68,10 @@ pub(super) fn handle_complete_tool_call(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail)
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
+        deltas.push(StreamDelta::Content {
+            text: pre_tool_tail,
+            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+        });
     }
     tool_parser::backfill_required_params(std::slice::from_mut(tc), &ctx.tool_defs_for_backfill);
     if ctx.wants_typed_arguments {
@@ -107,11 +102,10 @@ pub(super) fn handle_complete_tool_call(
             "tool call validation error (hard): {e}; replacing with content and ending"
         );
         let msg = format!("[atlas] Tool call rejected: {e}");
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg)
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
+        deltas.push(StreamDelta::Content {
+            text: msg,
+            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+        });
         state.stop_string_triggered = true;
     } else if let Err((_, e)) = &validation {
         // Soft validation error (missing param / empty required string) —
@@ -135,19 +129,16 @@ pub(super) fn handle_complete_tool_call(
         };
         tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
         crate::metrics::TOOL_CALLS_TOTAL.inc();
-        let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-        ));
-        let frag = ChatCompletionChunk::tool_call_args_fragment(
-            &ctx.model,
-            &ctx.id,
-            tc_idx,
-            &tc.function.arguments,
-        );
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-        ));
+        deltas.push(StreamDelta::ToolCallStart {
+            index: tc_idx,
+            id: tc.id.clone(),
+            name: tc.function.name.clone(),
+        });
+        deltas.push(StreamDelta::ToolCallArgs {
+            index: tc_idx,
+            fragment: tc.function.arguments.clone(),
+            token_ids: Vec::new(),
+        });
         // P0-3 (2026-07-09): server-authored corrective feedback. The soft
         // pass-through is kept (ST-995 never-drop invariant), but a call
         // whose REQUIRED params are empty is guaranteed to fail client-side
@@ -170,11 +161,10 @@ pub(super) fn handle_complete_tool_call(
                         empties.join(", ")
                     },
                 );
-                let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg)
-                    .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-                sse_events.push(Ok(
-                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-                ));
+                deltas.push(StreamDelta::Content {
+                    text: msg,
+                    token_ids: state.take_ids_if(ctx.req_return_token_ids),
+                });
             }
         }
     } else if state
@@ -220,19 +210,16 @@ pub(super) fn handle_complete_tool_call(
         };
         tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
         crate::metrics::TOOL_CALLS_TOTAL.inc();
-        let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-        ));
-        let frag = ChatCompletionChunk::tool_call_args_fragment(
-            &ctx.model,
-            &ctx.id,
-            tc_idx,
-            &tc.function.arguments,
-        );
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-        ));
+        deltas.push(StreamDelta::ToolCallStart {
+            index: tc_idx,
+            id: tc.id.clone(),
+            name: tc.function.name.clone(),
+        });
+        deltas.push(StreamDelta::ToolCallArgs {
+            index: tc_idx,
+            fragment: tc.function.arguments.clone(),
+            token_ids: Vec::new(),
+        });
     }
 }
 
@@ -243,7 +230,7 @@ pub(super) fn handle_tool_call_start(
     tc_id: String,
     name: String,
     idx: usize,
-    sse_events: &mut SseVec,
+    deltas: &mut DeltaVec,
 ) {
     let pre_tool_tail = flush_content_sanitizer(
         &mut state.tag_scan_buf,
@@ -251,31 +238,25 @@ pub(super) fn handle_tool_call_start(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail)
-            .with_token_ids(state.take_ids_if(ctx.req_return_token_ids));
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
+        deltas.push(StreamDelta::Content {
+            text: pre_tool_tail,
+            token_ids: state.take_ids_if(ctx.req_return_token_ids),
+        });
     }
     state
         .streaming_tool_args
         .insert(idx, (name.clone(), String::new()));
-    let tc = tool_parser::ToolCall {
-        id: tc_id,
-        call_type: "function".to_string(),
-        function: tool_parser::FunctionCall {
-            name,
-            arguments: String::new(),
-        },
-    };
     bump_f12_tool_call_count(
         &mut state.tool_calls_emitted_count,
         ctx.max_tool_calls_per_response,
         &mut state.stop_string_triggered,
     );
-    let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, &tc, idx);
-    let start_json = serde_json::to_string(&start).unwrap_or_default();
-    emit_or_buffer_tool_chunk(state, ctx, idx, start_json, sse_events);
+    let start = StreamDelta::ToolCallStart {
+        index: idx,
+        id: tc_id,
+        name,
+    };
+    emit_or_buffer_tool_delta(state, ctx, idx, start, deltas);
 }
 
 /// `DetectorOutput::ToolCallDelta` — incremental: append args.
@@ -301,7 +282,7 @@ pub(super) fn handle_tool_call_delta(
     ctx: &StreamCtx,
     args: String,
     idx: usize,
-    sse_events: &mut SseVec,
+    deltas: &mut DeltaVec,
 ) {
     let mut emit_args = args.clone();
     if let Some(entry) = state.streaming_tool_args.get_mut(&idx) {
@@ -388,10 +369,10 @@ pub(super) fn handle_tool_call_delta(
                     "tool call validation error (stream Δ, hard): {e}; replacing with content and ending"
                 );
                 let msg = format!("[atlas] Tool call rejected: {e}");
-                let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
-                sse_events.push(Ok(
-                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-                ));
+                deltas.push(StreamDelta::Content {
+                    text: msg,
+                    token_ids: Vec::new(),
+                });
                 state.stop_string_triggered = true;
                 entry.1.push_str(&args);
                 return;
@@ -404,17 +385,19 @@ pub(super) fn handle_tool_call_delta(
         // No prior ToolCallStart for this idx — keep legacy passthrough.
     }
     if !emit_args.is_empty() {
-        let frag =
-            ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &emit_args);
-        let frag_json = serde_json::to_string(&frag).unwrap_or_default();
-        // Either flush previously-buffered start + this args chunk
+        let frag = StreamDelta::ToolCallArgs {
+            index: idx,
+            fragment: emit_args,
+            token_ids: Vec::new(),
+        };
+        // Either flush previously-buffered start + this args delta
         // together (success path under retry), or emit directly (retry
-        // disabled). When retry is disabled the start chunk was already
-        // emitted in real time, so `emit_or_buffer_tool_chunk` just adds
-        // the args chunk.
-        emit_or_buffer_tool_chunk(state, ctx, idx, frag_json, sse_events);
+        // disabled). When retry is disabled the start delta was already
+        // emitted in real time, so `emit_or_buffer_tool_delta` just adds
+        // the args delta.
+        emit_or_buffer_tool_delta(state, ctx, idx, frag, deltas);
         if ctx.tool_retry_enabled {
-            flush_buffered_tool_chunks(state, idx, sse_events);
+            flush_buffered_tool_chunks(state, idx, deltas);
         }
     }
 }
@@ -428,19 +411,20 @@ pub(super) fn handle_tool_call_delta(
 /// must precede its arguments).
 pub(super) fn handle_tool_call_args_fragment(
     state: &mut StreamState,
-    ctx: &StreamCtx,
+    _ctx: &StreamCtx,
     fragment: String,
     idx: usize,
-    sse_events: &mut SseVec,
+    deltas: &mut DeltaVec,
 ) {
     let Some(entry) = state.streaming_tool_args.get_mut(&idx) else {
         return;
     };
     entry.1.push_str(&fragment);
-    let frag = ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &fragment);
-    sse_events.push(Ok(
-        Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-    ));
+    deltas.push(StreamDelta::ToolCallArgs {
+        index: idx,
+        fragment,
+        token_ids: Vec::new(),
+    });
 }
 
 /// Advance the same-name run counter for a completed call, returning the new

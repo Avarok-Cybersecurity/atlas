@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use spark_model::traits::SequenceState;
 
+use crate::api::inference_types::RepetitionDetectionParams;
 use crate::grammar::GrammarState;
-use crate::openai::RepetitionDetectionParams;
 
 use super::types::{PrefillInProgress, ResponseSink};
 

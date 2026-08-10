@@ -152,10 +152,10 @@ pub(super) struct StreamState {
     /// `true` when the request did not enable thinking.
     pub(super) thinking_done: bool,
     /// Dead after the tool-call retry stack was removed (`tool_retry_enabled`
-    /// is now constant `false`, so chunks are always streamed in real time
+    /// is now constant `false`, so deltas are always streamed in real time
     /// and this map stays empty). Retained so the buffering helpers in
     /// `tool_handlers.rs` still type-check.
-    pub(super) buffered_tool_chunks: std::collections::HashMap<usize, Vec<String>>,
+    pub(super) buffered_tool_chunks: std::collections::HashMap<usize, Vec<crate::ir::StreamDelta>>,
     /// Dead after the tool-call retry stack was removed; never set now that
     /// `tool_retry_enabled` is constant `false`.
     pub(super) pending_retry: Option<PendingRetry>,

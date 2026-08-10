@@ -55,17 +55,17 @@
 // Scale bytes per row per K tile (K_STEP_PT / GROUP_SIZE).
 #define BS_PER_ROW (K_STEP_PT / GROUP_SIZE)
 
-// The 33.8 GB of expert weights are read EXACTLY ONCE per prefill, so caching them in
-// L2 is pure pollution -- they evict the A tiles and routing metadata that ARE reused.
-// Marlin tags its weight stream with an evict-first L2 policy for exactly this reason.
-__device__ __forceinline__ uint4 moe_ld_stream_u4(const void* p, unsigned long long pol) {
-    uint4 v;
-    asm volatile("ld.global.L2::cache_hint.v4.u32 {%0,%1,%2,%3}, [%4], %5;"
-                 : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
-                 : "l"(p), "l"(pol) : "memory");
-    return v;
-}
-
+// Design note (unwired optimization): the 33.8 GB of expert weights are read
+// EXACTLY ONCE per prefill, so caching them in L2 is pure pollution -- they
+// evict the A tiles and routing metadata that ARE reused. Marlin tags its
+// weight stream with an evict-first L2 policy
+// (`createpolicy.fractional.L2::evict_first` consumed by an
+// `ld.global.L2::cache_hint` weight load) for exactly this reason. An earlier
+// draft scaffolded that policy here but never wired it into the live load path
+// (`moe_cp_async16` below -- `cp.async` cannot take a per-access L2 hint, so
+// wiring it means restructuring the B-tile staging into hinted register loads
+// + st.shared). Removed as dead code by the strict kernel lint; re-adding it
+// is a benchmarked perf change, not a cleanup.
 __device__ __forceinline__ void moe_cp_async16(void* smem_ptr, const void* gmem_ptr) {
     unsigned int s = (unsigned int)__cvta_generic_to_shared(smem_ptr);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(s), "l"(gmem_ptr));
@@ -363,7 +363,6 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
 
     const unsigned int warp_id = threadIdx.x / 32;
     const unsigned int lane_id = threadIdx.x % 32;
-    const unsigned int warp_m_offset = warp_id * 16;
     const unsigned int group_id = lane_id >> 2;
     const unsigned int tid = lane_id & 3;
 
@@ -387,9 +386,6 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
     // __constant__ lookup SERIALISES; shared memory is banked).
     __shared__ unsigned int sLUT[256];
 
-    unsigned long long evict1;
-    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(evict1));
-
     for (unsigned int i = threadIdx.x; i < 256u; i += blockDim.x) {
         const unsigned short lo =
             __bfloat16_as_ushort(__float2bfloat16(E2M1_LUT_MOE[i & 0xFu]));
@@ -410,10 +406,6 @@ __device__ __forceinline__ void moe_w4a16_grouped_gemm_ptrtable_impl(
     const unsigned int M_eff = (unsigned int)M_expert;
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
-
-    const unsigned int pf_n    = threadIdx.x >> 1;
-    const unsigned int pf_half = threadIdx.x & 1u;
-    const unsigned int pf_gn   = cta_n + pf_n;
 
 #define MOE_PF(kb, buf)                                                                \
     do {                                                                               \
@@ -686,7 +678,6 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const unsigned int a_stride = K_STEP + PAD;
     const unsigned int b_stride = N_TILE + PAD;
     const unsigned int M_eff = (unsigned int)M_expert;
-    const unsigned int num_groups = K / GROUP_SIZE;
 
     for (unsigned int k_base = 0; k_base < K; k_base += K_STEP) {
         {

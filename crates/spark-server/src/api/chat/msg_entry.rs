@@ -10,10 +10,10 @@
 
 use axum::http::StatusCode;
 use axum::response::Response;
-use std::sync::Arc;
 
-use crate::AppState;
-use crate::openai::ChatCompletionRequest;
+use atlas_core::config::VisionConfig;
+
+use crate::ir::{ContentPart, ImageData, Message, Role};
 
 use super::super::compact::openai_error_response;
 
@@ -21,7 +21,7 @@ use super::super::compact::openai_error_response;
 /// `tool_calls`, and image-part count for the Jinja vision-marker
 /// expansion. `pub(super)` so `chat::chat_completions_inner` and
 /// the other `chat/*` sub-files can read every field.
-pub(super) struct MsgEntry {
+pub(crate) struct MsgEntry {
     pub(super) role: String,
     pub(super) content: String,
     /// Structured tool_calls for the Jinja template (arguments
@@ -51,13 +51,52 @@ pub(super) struct BuildOut {
     pub(super) image_pad_counts: Vec<usize>,
 }
 
+/// Append the encoder-input string for every image part on `m` to
+/// `all_images`, growing `image_pad_counts` in lockstep (each pad count is
+/// filled in later by the vision preprocessor). Shared by the tool-message
+/// branch and the normal branch so images ride every role uniformly —
+/// including tool results, the motivating case for issue #165.
+#[allow(clippy::result_large_err)]
+fn collect_message_images(
+    m: &Message,
+    all_images: &mut Vec<String>,
+    image_pad_counts: &mut Vec<usize>,
+) -> Result<(), Response> {
+    for part in &m.content {
+        if let ContentPart::Image(src) = part {
+            let uri = match &src.data {
+                ImageData::Base64(s) => s.clone(),
+                // The encoder does not fetch remote URLs. Fed onward, the
+                // URL string would hit the base64 decoder and fail with a
+                // confusing "base64 decode failed" — reject with the real
+                // reason instead (PCND: fail fast).
+                ImageData::Url(url) => {
+                    let shown: String = url.chars().take(120).collect();
+                    return Err(openai_error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "image URLs are not fetched by this server (got '{shown}'); \
+                             send the image as a base64 data: URI"
+                        ),
+                    ));
+                }
+            };
+            all_images.push(uri);
+            image_pad_counts.push(0);
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::result_large_err)]
 pub(super) fn build_msg_entries(
-    state: &Arc<AppState>,
-    req: &ChatCompletionRequest,
+    vision_config: Option<&VisionConfig>,
+    vision_max_pixels: Option<usize>,
+    input: &[Message],
     tools_active: bool,
+    levers: &super::levers::ChatLevers,
 ) -> Result<BuildOut, Response> {
-    let mut messages: Vec<MsgEntry> = Vec::with_capacity(req.messages.len());
+    let mut messages: Vec<MsgEntry> = Vec::with_capacity(input.len());
     let mut all_images: Vec<String> = Vec::new();
     let mut image_pad_counts: Vec<usize> = Vec::new();
     let mut consecutive_tool_errors: u32 = 0;
@@ -78,49 +117,49 @@ pub(super) fn build_msg_entries(
     // assistant turns. The Jinja template already does this gating
     // itself (via its own `ns.last_query_index` computation) and the
     // injection here was the source of empty-think poisoning. Removed.
-    for (msg_idx, m) in req.messages.iter().enumerate() {
-        let _ = msg_idx;
-        let text = m.content.text.clone();
+    for m in input.iter() {
+        let mut text = m.text();
+        // F6: a failed tool result (Anthropic `is_error`, carried as
+        // `Message::tool_error`) gets an explicit ASCII marker — chat-tuned
+        // models have no structural error concept and otherwise hallucinate
+        // success over error text. Rendered here (not in the adapters) so
+        // every surface gets identical prompt bytes, and applied before the
+        // error-hint scan below so hints see the final text.
+        if m.tool_error {
+            text = format!("[tool error]\n{text}");
+        }
 
         // Preserve structured tool_calls for the Jinja template.
         // Always extract from assistant messages — past turns may
         // carry tool_calls that the template MUST render even when
-        // the current request didn't pass `tools`.
-        let tool_calls_json = if m.role == "assistant" {
-            m.tool_calls.as_ref().and_then(|tcs| {
-                if tcs.is_empty() {
-                    return None;
-                }
-                let parsed: Vec<serde_json::Value> = tcs
-                    .iter()
-                    .map(|tc| {
-                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                            .unwrap_or(serde_json::Value::Object(Default::default()));
-                        serde_json::json!({
-                            "id": tc.id.as_deref().unwrap_or(""),
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": args
-                            }
-                        })
+        // the current request didn't pass `tools`. `tc.arguments` is
+        // already structured JSON in the IR (parsed at the adapter
+        // boundary), so we forward it directly.
+        let tool_calls_json = if m.role == Role::Assistant && !m.tool_calls.is_empty() {
+            let parsed: Vec<serde_json::Value> = m
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    serde_json::json!({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments
+                        }
                     })
-                    .collect();
-                Some(parsed)
-            })
+                })
+                .collect();
+            Some(parsed)
         } else {
             None
         };
 
         // BW1: tally tool-call productivity (write/edit/build-run vs explore).
-        if m.role == "assistant"
-            && let Some(ref tcs) = m.tool_calls
-        {
-            for tc in tcs {
+        if m.role == Role::Assistant && !m.tool_calls.is_empty() {
+            for tc in &m.tool_calls {
                 total_tool_calls += 1;
-                let args: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
-                if crate::hint_injector::tool_call_is_productive(&tc.function.name, &args) {
+                if crate::hint_injector::tool_call_is_productive(&tc.name, &tc.arguments) {
                     productive_tool_calls += 1;
                 }
             }
@@ -129,7 +168,7 @@ pub(super) fn build_msg_entries(
         // Tool-response messages: pass raw content; Jinja template
         // handles `<tool_response>` wrapping and consecutive
         // grouping.
-        if tools_active && m.role == "tool" {
+        if tools_active && m.role == Role::Tool {
             let mut text = text;
             // P1-6 (2026-07-09): record the pre-hint original at the
             // index this entry is about to occupy.
@@ -144,13 +183,14 @@ pub(super) fn build_msg_entries(
                 role: "tool".into(),
                 content: text,
                 tool_calls: None,
-                image_count: 0,
+                image_count: m.image_count(),
                 reasoning_content: None,
             });
+            collect_message_images(m, &mut all_images, &mut image_pad_counts)?;
             continue;
         }
 
-        let image_count = m.content.images.len();
+        let image_count = m.image_count();
         // Wave 3 (2026-05-26): `ATLAS_STRIP_REASONING_HISTORY=1` drops
         // historical reasoning_content entirely. Matches MLC commit
         // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
@@ -162,8 +202,18 @@ pub(super) fn build_msg_entries(
         let strip_reasoning = std::env::var("ATLAS_STRIP_REASONING_HISTORY")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        // OpenAI's `developer` role is the successor of `system` (o-series
+        // clients send it). Normalize at build time so every downstream
+        // system-message scan (cwd hint, CWD injection, vacuous-strip) and
+        // the template see one canonical role — previously the mapping
+        // happened only at JSON render time, so `developer` messages
+        // bypassed those scans.
+        let role = match &m.role {
+            Role::Other(r) if r == "developer" => "system".to_string(),
+            r => r.as_wire().to_string(),
+        };
         messages.push(MsgEntry {
-            role: m.role.clone(),
+            role,
             content: text,
             tool_calls: tool_calls_json,
             image_count,
@@ -174,21 +224,16 @@ pub(super) fn build_msg_entries(
             // empty-`<think>\n\n</think>\n\n` poisoning, because F6's
             // template change skips the wrapper when reasoning_content
             // is empty.
-            reasoning_content: if m.role == "assistant" && !strip_reasoning {
-                m.reasoning_content
+            reasoning_content: if m.role == Role::Assistant && !strip_reasoning {
+                m.reasoning
                     .as_ref()
-                    .map(|s| s.trim().to_string())
+                    .map(|r| r.text.trim().to_string())
                     .filter(|s| !s.is_empty())
             } else {
                 None
             },
         });
-        if !m.content.images.is_empty() {
-            for img_uri in &m.content.images {
-                all_images.push(img_uri.clone());
-                image_pad_counts.push(0);
-            }
-        }
+        collect_message_images(m, &mut all_images, &mut image_pad_counts)?;
     }
 
     // P1-6 (2026-07-09): duplicate-error observation masking
@@ -259,16 +304,23 @@ pub(super) fn build_msg_entries(
         );
     }
 
-    // Preprocess images if a vision config is available.
+    // Preprocess images. One shared fail-fast point: if images were
+    // supplied but the model has no vision encoder, reject the request
+    // (issue #165) instead of silently dropping the user's input with a
+    // 200 — the old text-only behavior lost images without any signal.
     let mut image_pixels: Vec<(Vec<f32>, usize, usize)> = Vec::new();
-    if !all_images.is_empty()
-        && let Some(vcfg) = &state.vision_config
-    {
+    if !all_images.is_empty() {
+        let Some(vcfg) = vision_config else {
+            return Err(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "this model does not accept image input (no vision config)".to_string(),
+            ));
+        };
         for (idx, uri) in all_images.iter().enumerate() {
             match spark_model::vision_preprocess::preprocess_image_with_max_pixels(
                 uri,
                 vcfg,
-                state.vision_max_pixels,
+                vision_max_pixels,
             ) {
                 Ok((pixels, grid_h, grid_w)) => {
                     image_pad_counts[idx] = spark_model::vision_preprocess::image_pad_count(
@@ -287,16 +339,17 @@ pub(super) fn build_msg_entries(
             }
         }
     }
-    // If no vision_config (text-only model), image_pad_counts stays
-    // 0 and images are silently dropped on the encoder side.
 
     // BW1 bash-wandering watchdog: if the agent has run many tool calls with
     // no productive file output, append a steering nudge to the most recent
     // tool response (what the model reads just before its next action). Gated
     // by ATLAS_BASH_WANDER_WATCHDOG (PCND, default-off).
     if tools_active
-        && let Some(hint) =
-            crate::hint_injector::bash_wander_hint(total_tool_calls, productive_tool_calls)
+        && let Some(hint) = crate::hint_injector::bash_wander_hint(
+            total_tool_calls,
+            productive_tool_calls,
+            levers.bash_wander,
+        )
         && let Some(last_tool) = messages.iter_mut().rev().find(|e| e.role == "tool")
     {
         last_tool.content.push_str(&hint);

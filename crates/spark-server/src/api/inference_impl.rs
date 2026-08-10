@@ -301,7 +301,9 @@ impl InferenceRequest {
 
     /// Per-request override for the vLLM-anchored token-loop detector.
     /// `None` = use the boot-global watchdog parameters.
-    pub fn repetition_detection(&self) -> Option<crate::openai::RepetitionDetectionParams> {
+    pub fn repetition_detection(
+        &self,
+    ) -> Option<crate::api::inference_types::RepetitionDetectionParams> {
         match self {
             InferenceRequest::Blocking {
                 repetition_detection,
@@ -438,7 +440,17 @@ pub(crate) fn tokenize_stop_sequences(
 
 /// Strip any matching stop sequence from the end of the output text.
 /// Per OpenAI spec, returned text must not contain the stop sequence.
-pub(crate) fn strip_stop_sequences(mut text: String, stops: &[String]) -> String {
+pub(crate) fn strip_stop_sequences(text: String, stops: &[String]) -> String {
+    strip_stop_sequences_matched(text, stops).0
+}
+
+/// [`strip_stop_sequences`], also reporting WHICH stop sequence matched
+/// (feeds Anthropic's `stop_sequence` response field via the IR's
+/// `matched_stop`).
+pub(crate) fn strip_stop_sequences_matched(
+    mut text: String,
+    stops: &[String],
+) -> (String, Option<String>) {
     // Try longest-first so overlapping prefixes (`["</answer", "</answer>"]`)
     // don't truncate at the shorter (wrong) match boundary. strip_suffix
     // is end-anchored, so usually only one of the two end-matches at a
@@ -448,10 +460,10 @@ pub(crate) fn strip_stop_sequences(mut text: String, stops: &[String]) -> String
     for s in sorted {
         if let Some(stripped) = text.strip_suffix(s.as_str()) {
             text.truncate(stripped.len());
-            break;
+            return (text, Some(s.clone()));
         }
     }
-    text
+    (text, None)
 }
 
 /// Strip `<think>...</think>` reasoning content from model output.

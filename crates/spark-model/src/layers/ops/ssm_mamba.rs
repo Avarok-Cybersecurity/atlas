@@ -88,6 +88,57 @@ pub fn conv1d_update_l2norm(
         .launch(stream)
 }
 
+/// `conv1d_update_l2norm` with INDEPENDENT input/output row strides, so N
+/// concurrent decode sequences go in ONE launch instead of N.
+///
+/// Identical math to `conv1d_update_l2norm`; the only difference is that the
+/// input and output row strides are passed explicitly instead of both being
+/// assumed equal to `d_inner`. The concurrent-decode path feeds this straight
+/// from the QKVZ projection, whose rows are `qkvz_size` apart, while the conv
+/// output is `d_inner`-strided — so the non-strided kernel would read sequence
+/// b>=1 from the previous sequence's Z-gate region (correct at n=1, silently
+/// corrupt at n>=2). See `causal_conv1d_update_l2norm_f32_strided`.
+///
+/// `conv_state` keeps the `(b * d_inner + ch) * d_conv` layout, so the caller
+/// must have verified the per-sequence pool slots are contiguous.
+#[allow(clippy::too_many_arguments)]
+pub fn conv1d_update_l2norm_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    d_inner: u32,
+    d_conv: u32,
+    batch_size: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    l2_eps: f32,
+    input_stride: u32,
+    output_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    let bias_ptr = DevicePtr::NULL;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), batch_size, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(bias_ptr)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_f32(l2_eps)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .launch(stream)
+}
+
 /// STAGE 1 fused K=2 MTP-verify conv1d+L2norm: both draft positions in one
 /// launch, with the position-0 conv-state snapshot written inline (replaces
 /// the per-token `conv1d_update_l2norm` ×2 + intervening `copy_d2d`).
@@ -152,6 +203,67 @@ pub fn gdn_verify_fused_conv_k2(
 ///          conv_state_inter, num_tokens, dim, d_conv, qk_channels, head_dim,
 ///          input_stride, output_stride, inter_stride, l2_eps)`
 /// Grid: (ceil(dim/256), 1, 1)  Block: (256, 1, 1)
+/// BATCHED verify conv: `n_seq` sequences x `num_tokens` positions in ONE launch.
+///
+/// Step 1 of batched speculative decoding. `spec_step.rs:94` currently calls
+/// `decode_verify` one sequence at a time, so MTP at C=n runs n full model
+/// forwards and re-reads ~9.6 GB of weights n times — measured as a 3.4% LOSS at
+/// C=2 and a HALVING of C=4. One launch over gridDim.y = n_seq is the first
+/// piece of making n*(K+1) rows share a single weight read.
+///
+/// Bit-identical to n separate `gdn_verify_fused_conv_kn` calls: each sequence's
+/// conv window is independent, so only the base addresses differ.
+///
+/// Grid: (ceil(d_inner/256), n_seq, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_verify_fused_conv_kn_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state: DevicePtr,
+    new_input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    conv_state_inter: DevicePtr,
+    num_tokens: u32,
+    d_inner: u32,
+    d_conv: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    input_stride: u32,
+    output_stride: u32,
+    inter_stride: u32,
+    l2_eps: f32,
+    n_seq: u32,
+    conv_state_seq_stride: u32,
+    input_seq_stride: u32,
+    output_seq_stride: u32,
+    inter_seq_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), n_seq, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state)
+        .arg_ptr(new_input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_ptr(conv_state_inter)
+        .arg_u32(num_tokens)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
+        .arg_u32(inter_stride)
+        .arg_f32(l2_eps)
+        .arg_u32(conv_state_seq_stride)
+        .arg_u32(input_seq_stride)
+        .arg_u32(output_seq_stride)
+        .arg_u32(inter_seq_stride)
+        .launch(stream)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gdn_verify_fused_conv_kn(
     gpu: &dyn GpuBackend,

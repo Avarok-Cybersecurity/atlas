@@ -105,6 +105,11 @@ fn launch(
         .arg_u32(M as u32)
         .arg_u32(n as u32)
         .arg_u32(k as u32)
+        // ldb: transposed-B row stride. `w4a16_gemm_t` gained this parameter when
+        // lm_head needed a padded stride (vocab 248077 is odd and broke its 16-byte
+        // cp.async). The packed case is ldb == n. Harmless for the kernels that do
+        // not declare it — the launch API only reads declared params.
+        .arg_u32(n as u32)
         .launch(0)
 }
 
@@ -118,6 +123,8 @@ fn main() -> Result<()> {
         ("w4a16_gemm_t     ", "w4a16_gemm_t"),
         ("w4a16_gemm_t_k64 ", "w4a16_gemm_t_k64"),
         ("w4a16_gemm_t_m128", "w4a16_gemm_t_m128"),
+        // 3-deep weight pipeline: MUST agree with its 2-stage parent.
+        ("w4a16_gemm_t_k64_p3", "w4a16_gemm_t_k64_p3"),
     ]
     .into_iter()
     .filter_map(|(name, f)| g.kernel("w4a16", f).ok().map(|h| (name, h)))

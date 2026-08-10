@@ -13,6 +13,7 @@
 //! - `completions`        — legacy `/v1/completions` + list/get models +
 //!                          embeddings stub + cross-handler helpers
 //! - `sanitizer`          — `<parameter=…>` leak suppression + bash bucketing
+//! - `scrub`              — complete-tag scrubber for flush-time tail dumps
 //! - `stubs`              — batches/files/audio/images/moderations stubs
 //! - `responses`,
 //!   `responses_stream`,
@@ -47,6 +48,7 @@ pub mod responses_stream;
 pub mod responses_stream_finalize;
 pub mod responses_translate;
 pub mod sanitizer;
+pub mod scrub;
 pub mod stored;
 pub mod stream_guards;
 pub mod strip;
@@ -62,6 +64,7 @@ mod tests;
 // `compact_messages` whose handler is wired directly in serve_router).
 pub use chat::chat_completions;
 pub(crate) use chat::chat_completions_inner;
+pub(crate) use chat::{ChatOutcome, ResponseEcho};
 #[allow(unused_imports)]
 pub use compact::compact_messages;
 pub use completions::completions;
@@ -77,7 +80,8 @@ pub use inference_types::{
 pub use lora_control::{load_lora_into_slot, set_active_lora};
 #[allow(unused_imports)]
 pub use misc_handlers::{
-    DetokenizeRequest, cancel_response, detokenize, health, health_live, metrics_handler, tokenize,
+    DetokenizeRequest, cancel_response, detokenize, hardware, health, health_live, metrics_handler,
+    tokenize,
 };
 pub use models::{embeddings_stub, get_model, list_models};
 pub use responses::responses_endpoint;

@@ -14,6 +14,9 @@ use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
 mod snapshot;
+mod snapshot_insert;
+mod snapshot_stats;
+mod snapshot_tier;
 
 #[cfg(test)]
 mod tests;
@@ -98,9 +101,11 @@ impl PrefixCache for RadixTree {
         let mut ssm_snapshot_tokens = 0;
         let mut ssm_snapshot_tier_key = None;
         let mut ssm_snapshot_tier_tokens = 0;
+        let mut ssm_snapshot_is_tail = false;
         if matched_tokens > 0 {
             let mut idx = self.snapshot_index.lock();
             if let Some(m) = idx.lookup_tiered(tokens, matched_tokens, session_hash, adapter_id) {
+                ssm_snapshot_is_tail = m.is_tail;
                 match m.loc {
                     snapshot::SnapLoc::Hbm(slot) => {
                         ssm_snapshot = Some(slot);
@@ -130,6 +135,7 @@ impl PrefixCache for RadixTree {
             ssm_snapshot_tokens,
             ssm_snapshot_tier_key,
             ssm_snapshot_tier_tokens,
+            ssm_snapshot_is_tail,
         }
     }
 
@@ -145,7 +151,7 @@ impl PrefixCache for RadixTree {
         block_size: usize,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> Vec<u32> {
+    ) -> crate::prefix_cache::InsertAcquired {
         self.inner.lock().insert(
             tokens,
             block_table,
@@ -166,7 +172,7 @@ impl PrefixCache for RadixTree {
         session_hash: u64,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> (Option<usize>, Vec<u32>) {
+    ) -> (Option<usize>, crate::prefix_cache::InsertAcquired) {
         // Phase 1: insert tree nodes (lock inner, then release)
         let newly_acquired = self.inner.lock().insert(
             tokens,
@@ -181,6 +187,39 @@ impl PrefixCache for RadixTree {
         let mut idx = self.snapshot_index.lock();
         let displaced = idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len());
         (displaced, newly_acquired)
+    }
+
+    fn insert_tail_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Vec<usize> {
+        // Index only. The tree nodes for [0, tokens.len()) are inserted by the
+        // final chunk's `insert` (finalize_last); re-inserting the whole prefix
+        // here cost ~0.9 s/turn for zero benefit.
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
+        self.snapshot_index
+            .lock()
+            .insert_tail(prefix_hash, snapshot_id, session_hash, tokens.len())
+    }
+
+    fn insert_tail_sibling_snapshot(
+        &self,
+        tokens: &[u32],
+        snapshot_id: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> Option<usize> {
+        // Index only, like the tail (finalize_last's insert lays the tree nodes).
+        let prefix_hash = hash_token_prefix(tokens, tokens.len(), adapter_id);
+        self.snapshot_index.lock().insert_tail_sibling(
+            prefix_hash,
+            snapshot_id,
+            session_hash,
+            tokens.len(),
+        )
     }
 
     fn insert_intermediate_snapshot(
@@ -221,12 +260,16 @@ impl PrefixCache for RadixTree {
         self.snapshot_index.lock().evict_lru()
     }
 
-    fn evict_snapshot_to_tier(&self) -> Option<(usize, u64)> {
-        self.snapshot_index.lock().evict_to_tier()
+    fn evict_snapshot_to_tier(&self, min_tokens: usize) -> Option<crate::prefix_cache::TierEvict> {
+        self.snapshot_index.lock().evict_to_tier(min_tokens)
     }
 
     fn promote_snapshot(&self, key: u64, new_slot: usize) -> bool {
         self.snapshot_index.lock().promote(key, new_slot)
+    }
+
+    fn forget_snapshot_tier_key(&self, key: u64) -> bool {
+        self.snapshot_index.lock().forget_tiered(key)
     }
 
     fn snapshot_count(&self) -> usize {

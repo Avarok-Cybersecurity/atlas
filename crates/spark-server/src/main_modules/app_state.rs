@@ -9,8 +9,7 @@ use tokio::sync::mpsc;
 use crate::api::InferenceRequest;
 use crate::tokenizer::ChatTokenizer;
 use crate::{
-    auth, conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store,
-    tool_parser,
+    conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store, tool_parser,
 };
 
 /// Resolve a per-request `adapter` name to a LoRA pool slot index for M2
@@ -73,6 +72,9 @@ pub struct AppState {
     /// be cloned into per-request `GrammarSpec::ToolCall { parser, … }`
     /// for symmetric grammar dispatch via the trait.
     pub tool_call_parser: Option<std::sync::Arc<dyn tool_parser::ToolCallParser>>,
+    /// Chat-path levers for this server: prompt rendering (from MODEL.toml
+    /// `[behavior]`) plus the two default-off request diagnostics.
+    pub chat: crate::api::chat::levers::ChatLevers,
     /// Reasoning parser for thinking block detection. None = no thinking support.
     pub reasoning_parser: Option<Box<dyn reasoning_parser::ReasoningParser>>,
     /// Token ID for end-of-thinking — used to split thinking from content in blocking path.
@@ -94,8 +96,6 @@ pub struct AppState {
     pub tool_call_start_token_id: Option<u32>,
     /// Auto-compact threshold (fraction of max_seq_len). None = disabled.
     pub auto_compact_threshold: Option<f32>,
-    /// Readiness flag: true after model is loaded and scheduler is running.
-    pub model_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
     /// Effective context length for agentic tasks (from MODEL.toml).
@@ -109,10 +109,11 @@ pub struct AppState {
     /// thinking is forced OFF regardless of the request body or the
     /// model's MODEL.toml default. Wired from `--disable-thinking`.
     pub disable_thinking: bool,
-    /// Server-level default chat template kwargs applied when the client
+    /// Server-level default thinking directive applied when the client
     /// sends no thinking parameters. Overridden per-request by the request
-    /// body. Wired from `--default-chat-template-kwargs`.
-    pub default_chat_template_kwargs: Option<crate::openai::ChatTemplateKwargs>,
+    /// body. Wired from `--default-chat-template-kwargs` (parsed at the
+    /// CLI edge into the neutral directive).
+    pub default_thinking: crate::ir::ThinkingDirective,
     /// Shared in-memory store for stateful Responses API resume
     /// (`previous_response_id`) and opt-in Chat-Completions storage
     /// (`store: true`). Bounded LRU + TTL; env-configured at startup.
@@ -128,7 +129,6 @@ pub struct AppState {
     /// Bearer-token auth configuration. `Some` ⇒ `--require-auth` was set
     /// and the middleware enforces `Authorization: Bearer <token>` against
     /// the loaded set. `None` ⇒ auth is disabled (every request passes).
-    pub auth: Option<Arc<auth::AuthConfig>>,
     /// Task #27: STAGEABLE registry — adapters promotable-but-not-resident,
     /// `name -> {peer_stage_id, peft}`, from `--lora-stageable`. Empty ⇒ no
     /// promotion (resident-only serve byte-identical).
@@ -156,7 +156,34 @@ pub struct AppState {
 
 use crate::main_modules::promotion::PromoteReject;
 
+/// Turn a timeout budget in seconds into an absolute deadline. `0` (or a
+/// non-positive value) means "no deadline" and yields `None`. Pure and
+/// `now`-injected so the 0-disables contract is testable without a clock.
+pub fn deadline_from(secs: f32, now: std::time::Instant) -> Option<std::time::Instant> {
+    if secs > 0.0 {
+        Some(now + std::time::Duration::from_secs_f32(secs))
+    } else {
+        None
+    }
+}
+
 impl AppState {
+    /// The absolute deadline for one request: the per-request `timeout`
+    /// field when supplied, else the server's `--request-timeout`.
+    ///
+    /// SSOT — every request path (`/v1/chat/completions` blocking and
+    /// streaming, `/v1/completions` blocking and streaming, the Anthropic
+    /// edge) MUST go through here. Three copies of this arithmetic used to
+    /// exist and one of them (`/v1/completions` streaming) silently passed
+    /// `None`, so that surface had no deadline at all while every other
+    /// surface had a 300 s one.
+    pub fn request_deadline(&self, override_secs: Option<f32>) -> Option<std::time::Instant> {
+        deadline_from(
+            override_secs.unwrap_or(self.request_timeout as f32),
+            std::time::Instant::now(),
+        )
+    }
+
     /// Task #27: on a resolver MISS (`resolve_adapter_slot == None`), try to make
     /// the named adapter HOT via demand-driven RDMA promotion. Returns:
     ///   * `Ok(None)`      — not stageable / promotion disabled → the caller emits
@@ -348,7 +375,23 @@ pub type ModelBehavior = atlas_kernels::ModelBehavior;
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_adapter_slot;
+    use super::{deadline_from, resolve_adapter_slot};
+
+    #[test]
+    fn zero_timeout_disables_the_deadline() {
+        let now = std::time::Instant::now();
+        // 0 is the documented "no deadline" value — it must not become an
+        // instantly-expired deadline that cuts every request at 0 tokens.
+        assert!(deadline_from(0.0, now).is_none());
+        assert!(deadline_from(-1.0, now).is_none());
+    }
+
+    #[test]
+    fn positive_timeout_yields_that_budget() {
+        let now = std::time::Instant::now();
+        let d = deadline_from(5.0, now).expect("5s budget is a deadline");
+        assert_eq!(d.saturating_duration_since(now).as_millis(), 5000);
+    }
 
     #[test]
     fn adapter_slot_resolution_rules() {

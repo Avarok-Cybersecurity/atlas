@@ -19,7 +19,7 @@
 use crate::gpu::GpuBackend;
 use crate::weights::{
     WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
-    estimate_load_bytes, evict_page_cache, parse_expert_index,
+    estimate_load_bytes, evict_page_cache, f16_to_bf16_bytes, parse_expert_index,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -149,6 +149,7 @@ impl WeightLoader for FastSafetensorsLoader {
                 gib(oom_reserve_bytes),
                 has_fp8,
             );
+            crate::progress::preflight(gib(estimated), gib(free));
             if peak + oom_reserve_bytes > free {
                 bail!(
                     "OOM pre-flight: peak {:.2} GB + {:.2} GB reserve exceeds {:.2} GB free. \
@@ -190,6 +191,7 @@ impl WeightLoader for FastSafetensorsLoader {
                     .map(|v| format!(" ({} tensors)", v.len()))
                     .unwrap_or_default(),
             );
+            crate::progress::shard_start(i + 1, total_shards, shard_name);
 
             load_shard_fast(
                 shard_path,
@@ -207,6 +209,12 @@ impl WeightLoader for FastSafetensorsLoader {
             let used = initial_free.saturating_sub(free_now);
             tracing::info!(
                 "  Shard {}/{} done — GPU memory: {:.2} GB used, {:.2} GB free",
+                i + 1,
+                total_shards,
+                used as f64 / (1024.0 * 1024.0 * 1024.0),
+                free_now as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+            crate::progress::shard_done(
                 i + 1,
                 total_shards,
                 used as f64 / (1024.0 * 1024.0 * 1024.0),
@@ -339,7 +347,16 @@ fn load_shard_fast(
     for result in rx {
         let (idx, buf, slice_start) = result?;
         let meta = &tensors[idx];
-        let src = &buf.as_slice()[slice_start..slice_start + meta.len];
+        let raw = &buf.as_slice()[slice_start..slice_start + meta.len];
+        // F16 shards: convert bytes to BF16 before upload (same length,
+        // different bit layout — meta.dtype is already staged as BF16).
+        let converted: Vec<u8>;
+        let src: &[u8] = if meta.from_f16 {
+            converted = f16_to_bf16_bytes(raw);
+            &converted
+        } else {
+            raw
+        };
 
         let ptr = match gpu.alloc(meta.len) {
             Ok(p) => {

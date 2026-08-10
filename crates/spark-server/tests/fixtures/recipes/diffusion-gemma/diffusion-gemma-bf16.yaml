@@ -1,0 +1,46 @@
+# Recipe: Diffusion-Gemma-BF16 (single-node reference serving)
+# Based on @eugr/diffusion-gemma-bf16 with JSON args de-escaped to single braces
+# (this sparkrun fork renders via vpd.arg_substitute, NOT str.format, so {{ }} would
+# pass through literally and break vLLM JSON parsing).
+
+recipe_version: "1"
+name: Diffusion-Gemma-BF16
+description: vLLM serving DiffusionGemma-26B-A4B-it (BF16) on a single GB10 node
+
+model: google/diffusiongemma-26B-A4B-it
+
+container: vllm-node
+
+solo_only: true
+
+mods:
+  - mods/diffusiongemma
+
+defaults:
+  port: 8009
+  host: 0.0.0.0
+  gpu_memory_utilization: 0.8
+  max_model_len: 131072
+  max_num_seqs: 10
+
+env: {}
+
+command: |
+  vllm serve google/diffusiongemma-26B-A4B-it \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --port {port} \
+    --host {host} \
+    --trust-remote-code \
+    --enable-auto-tool-choice \
+    --tool-call-parser gemma4 \
+    --load-format fastsafetensors \
+    --attention-backend TRITON_ATTN \
+    --max-num-seqs {max_num_seqs} \
+    --enable-prefix-caching \
+    --diffusion-config '{"canvas_length":256}' \
+    --override-generation-config '{"max_new_tokens": null}' \
+    --reasoning-parser gemma4 \
+    --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --chat-template fixed_chat_template.jinja \
+    --moe-backend triton

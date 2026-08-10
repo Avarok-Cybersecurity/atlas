@@ -1,0 +1,87 @@
+recipe_version: "2"
+model: nvidia/Qwen3.6-35B-A3B-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:dev
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-35B-A3B (nvidia modelopt NVFP4) — the DEFAULT 35B recipe. MTP
+    K=1 on a single GB10 with calibrated fp8 KV (128K context lever) and
+    the agentic/tool-calling stack (qwen3_coder parser, tool grammar OFF).
+
+    Checkpoint choice: this recipe previously pointed at
+    unsloth/Qwen3.6-35B-A3B-NVFP4. On 2026-07-10 unsloth re-quantized and
+    re-uploaded that repo as a MIXED-PRECISION checkpoint — NVFP4 for
+    layers 0-31, FP8 E4M3 with a per-row `weight_scale` for the shared
+    experts of layers 32-39 — which no Atlas release could load ("Weight
+    'model.language_model.layers.32.mlp.shared_expert.gate_proj.weight_global_scale'
+    not found in store"). Atlas loads that layout as of atlas#297, but the
+    default recipes now track the nvidia checkpoint, whose on-disk format
+    has been stable since 2026-05-29 and does not move under users. The
+    unsloth build is still available as qwen3.6-35b-a3b-nvfp4-unsloth.
+
+    num_drafts is pinned to 1 deliberately. `speculative: true` on its own
+    does NOT select an MTP depth — it falls back to MODEL.toml's
+    `default_num_drafts`, so pin it explicitly. Re-measured on this
+    checkpoint against avarok/atlas-gb10:dev, N=10, single sequence,
+    400-token greedy generation (2026-07-12):
+
+      K=1     116.5 tok/s  (median; min 105.3, max 116.9)  <-- optimum
+      no-spec  89.7 tok/s  (median; min  83.3, max  91.5)
+      K=2      82.2 tok/s  (median; min  82.0, max  82.5)
+
+    K=1 is +30% over no-spec. K=2 is an 8% LOSS — an MTP verify step costs
+    ~2.4x a plain decode step but only lands ~1.3 accepted tokens, so the
+    deeper draft never pays for itself. Do NOT raise this to 2: an earlier
+    revision of this recipe did, on a stale measurement, and shipped a
+    slowdown. The scheduler's MTP gate will still report ENABLED at K=2
+    (it admits any depth whose verify multiplier is under the theoretical
+    max acceptance, not the observed one), so "ENABLED" in the log is not
+    evidence the depth is profitable — only a no-spec A/B is.
+
+    Serving params: calibrated fp8 KV (this checkpoint ships no k/v
+    scales, so calibration is required or Atlas refuses to serve;
+    validated 2026-06-06 — quality holds vs bf16 within N=10 noise),
+    kv_high_precision_layers auto, slai scheduling, native bf16 MTP draft
+    head (downcasting lowers draft acceptance). qwen3_coder with
+    disable_tool_grammar true is mandatory for parallel tool calls —
+    grammar-constraining collapses them to 0.00 on BFCL.
+
+    Requires avarok/atlas-gb10:dev (>= 2026-07-10T19:18Z), which carries
+    the SSM snapshot-eviction fix (atlas#287). Without it, deep multi-turn
+    conversations freeze the warm-restore anchor and replay up to 18.6k
+    tokens/turn through the GDN layers (TTFT tail to 40 s).
+  maintainer: avarok
+  category: agent
+  model_params: 35B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 131072
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  speculative: true
+  # Measured optimum for this checkpoint (see description): K=1 = 116.5
+  # tok/s vs 89.7 no-spec vs 82.2 at K=2. K=2 is a net LOSS — do not raise.
+  num_drafts: 1
+  # bf16 MTP draft head — loading it native maximizes draft acceptance;
+  # nvfp4 head measured -1.3% with no accuracy benefit.
+  mtp_quantization: bf16
+  enable_prefix_caching: true
+  # fp8 KV requires online K/V scale calibration on this checkpoint (no
+  # shipped k/v scales) — without it, bare fp8 KV clips to E4M3 [-448,448]
+  # and Atlas refuses to serve. kv_high_precision_layers auto keeps
+  # sink+output bf16.
+  fp8_kv_calibration_tokens: 256
+  kv_high_precision_layers: auto
+  ssm_cache_slots: 128
+  ssm_checkpoint_interval: 32
+  tool_call_parser: qwen3_coder
+  disable_tool_grammar: true
+  disable_thinking: true

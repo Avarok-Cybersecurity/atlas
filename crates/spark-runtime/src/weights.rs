@@ -89,6 +89,25 @@ impl WeightDtype {
     }
 }
 
+/// Convert a little-endian IEEE-754 half-precision (F16) tensor byte buffer
+/// to BF16 bytes. F16 and BF16 are both 2 bytes/element but have different
+/// bit layouts (5-bit vs 8-bit exponent), so the bytes cannot be
+/// reinterpreted — each value goes f16 → f32 (exact) → bf16
+/// (round-to-nearest-even). Shared by both disk loaders so F16 checkpoints
+/// (e.g. centml modelopt W4A4 exports, which ship all unquantized tensors as
+/// F16) land in the store as BF16; [`WeightDtype`] itself stays closed to
+/// store-legal dtypes and F16 can never appear on the RDMA wire.
+pub(crate) fn f16_to_bf16_bytes(src: &[u8]) -> Vec<u8> {
+    use half::{bf16, f16};
+    debug_assert_eq!(src.len() % 2, 0, "F16 tensor byte length must be even");
+    let mut out = Vec::with_capacity(src.len());
+    for pair in src.chunks_exact(2) {
+        let h = f16::from_le_bytes([pair[0], pair[1]]);
+        out.extend_from_slice(&bf16::from_f32(h.to_f32()).to_le_bytes());
+    }
+    out
+}
+
 /// A weight tensor on the GPU.
 pub struct WeightTensor {
     pub ptr: DevicePtr,
@@ -163,6 +182,15 @@ impl WeightStore {
         self.weights
             .values()
             .any(|w| matches!(w.dtype, WeightDtype::FP8E4M3))
+    }
+
+    /// Number of per-layer FP8 KV-cache scale tensors (`*.k_scale`) the
+    /// checkpoint ships. `>0` means the model carries calibrated KV scales, so
+    /// FP8 KV needs no online calibration; `0` means the scales default to 1.0
+    /// (which clips BF16 into E4M3 range), so online calibration or a non-FP8 KV
+    /// dtype is required. Used to log the right guidance at serve time.
+    pub fn fp8_kv_scale_count(&self) -> usize {
+        self.names().filter(|n| n.ends_with(".k_scale")).count()
     }
 }
 
@@ -258,7 +286,10 @@ pub fn parse_expert_index(name: &str) -> Option<usize> {
 pub mod adapter;
 mod loader;
 pub mod mlx_int8;
-pub(crate) use loader::{check_oom_guard, estimate_has_fp8, estimate_load_bytes};
+pub(crate) use loader::estimate_load_bytes;
+// Consumed by the unix-only fast-weights (O_DIRECT) loader path.
+#[cfg(unix)]
+pub(crate) use loader::{check_oom_guard, estimate_has_fp8};
 
 #[cfg(test)]
 mod from_str_tests {
@@ -285,7 +316,97 @@ mod from_str_tests {
                 "dtype {s}"
             );
         }
+        // F16 is converted to BF16 at disk-load; a store (and therefore a
+        // peer manifest) can never contain it, so the wire mapping rejects it.
         assert!(WeightDtype::from_safetensors_str("F16").is_err());
         assert!(WeightDtype::from_safetensors_str("bogus").is_err());
     }
+
+    #[test]
+    fn f16_bytes_convert_to_bf16_via_f32() {
+        use half::{bf16, f16};
+        // Cover sign, exact powers of two, a value needing mantissa rounding
+        // (f16 has 10 mantissa bits, bf16 only 7), f16 max, and a subnormal.
+        let vals = [0.0f32, 1.0, -1.5, 0.1, 65504.0, -6.1035156e-5];
+        let src: Vec<u8> = vals
+            .iter()
+            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
+            .collect();
+        let out = super::f16_to_bf16_bytes(&src);
+        assert_eq!(out.len(), src.len());
+        for (i, v) in vals.iter().enumerate() {
+            let got = bf16::from_le_bytes([out[2 * i], out[2 * i + 1]]);
+            let want = bf16::from_f32(f16::from_f32(*v).to_f32());
+            assert_eq!(got, want, "value {v}");
+        }
+    }
 }
+
+/// Resolve the weight-key prefix a nested (multimodal) checkpoint uses.
+///
+/// Lives here rather than in the server because it depends only on the store
+/// and the config, and BOTH the serve path and the integration harness need it:
+/// a nested checkpoint stores `model.language_model.layers.0.…`, and a caller
+/// that skips this step fails with "Weight 'model.layers.0.input_layernorm.
+/// weight' not found in store" after a full weight load. Keeping one copy is
+/// what stops the test from accepting a different set of checkpoints than
+/// production does.
+pub fn auto_detect_weight_prefix(
+    store: &WeightStore,
+    config: &mut atlas_core::config::ModelConfig,
+) {
+    if config.weight_prefix.is_empty() && config.nested_config {
+        config.weight_prefix = if store.contains("language_model.model.embed_tokens.weight") {
+            "language_model.model".to_string()
+        } else if store.contains("model.language_model.embed_tokens.weight") {
+            "model.language_model".to_string()
+        } else {
+            let scanned = store
+                .names()
+                .find(|k| k.contains(".layers.0."))
+                .and_then(|k| k.split(".layers.0.").next())
+                .map(|s| s.to_string());
+            if let Some(ref prefix) = scanned {
+                tracing::info!("Auto-detected weight prefix: '{prefix}'");
+            }
+            scanned.unwrap_or_else(|| "model".to_string())
+        };
+    }
+    if !config.weight_prefix.is_empty() {
+        tracing::info!("Weight prefix: {}", config.weight_prefix);
+    }
+}
+
+/// Release every weight tensor.
+///
+/// Safe to free per-entry because the loaders allocate per-tensor: the fast
+/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
+/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
+/// a shared block into this map. (Fused per-expert views DO exist — see
+/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
+/// the fused allocation, not here, so this cannot double-free them.)
+impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
+    fn label(&self) -> &'static str {
+        "weight store"
+    }
+
+    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        // `drain` rather than iterate: the map must not be left holding
+        // pointers to memory that is gone, and it makes this idempotent.
+        for (name, tensor) in self.weights.drain() {
+            if let Err(e) = gpu.free(tensor.ptr)
+                && first_error.is_none()
+            {
+                first_error = Some(e.context(format!("freeing weight {name}")));
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod teardown_tests;

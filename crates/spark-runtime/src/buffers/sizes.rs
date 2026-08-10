@@ -3,6 +3,7 @@
 //! Byte sizes for the per-pass GPU buffer arena.
 
 use atlas_core::config::ModelConfig;
+use atlas_core::device::sm121::NUM_SMS;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
@@ -108,7 +109,11 @@ impl BufferSizes {
         max_batch_tokens: usize,
         max_seq_len: usize,
         kv_block_size: usize,
+        max_batch_size: usize,
     ) -> Self {
+        // Derived batched-decode metadata layout (rows = max(32, bs)).
+        // Byte-identical sizing for every bs <= 32; see `decode_meta.rs`.
+        let decode_meta = super::DecodeMetaLayout::for_max_batch_size(max_batch_size);
         let bf16 = 2;
         let m = max_batch_tokens;
         let h = config.hidden_size;
@@ -131,8 +136,14 @@ impl BufferSizes {
         //
         // B) Batched decode/verify metadata:
         //   [0 .. 32768): fixed metadata region
-        //   [32768 .. 32768+768): decode metadata (positions, slots, seq_lens)
-        //   [32768+768 .. ): block table (padded_n × max_blocks × 4 bytes)
+        //   [32768 .. 32768+24R): decode metadata (positions, seq_slot,
+        //     slots, seq_lens; R = decode-meta rows, `decode_meta.rs` —
+        //     24R = 768 at the 32-row floor)
+        //   [32768+24R .. ): decode block table (padded_n × max_blocks × 4 B)
+        //   Batched MTP verify (verify_e.rs) overlays the SAME base with
+        //   96-row gaps: meta [32768, 32768+1920), bt at +2048 (bt_rows=96).
+        //   Each path re-uploads its own layout pre-dispatch; sizing takes
+        //   the wider (verify) envelope.
         //
         // MoE scratch: 2 * M * top_k * 4 (indices [M*top_k] u32 + weights [M*top_k] f32)
         let moe_scratch = 2 * m * top_k * 4;
@@ -156,11 +167,21 @@ impl BufferSizes {
         let bt_end = bt_offset + max_blocks * 4;
         let sl_offset = (bt_end + 3) & !3;
         let prefill_meta = sl_offset + 4;
-        // Block table metadata: max(batch_size=8, K=4 verify, K=γ DFlash verify)
-        // rows × max_blocks × 4 bytes. DFlash γ-block verify uses up to γ+1=17
-        // rows (γ=16 for Qwen3.6-DFlash), so size for the worst case.
-        let bt_rows = 32usize; // headroom for K=γ DFlash verify (typical γ=16, K=17)
-        let bt_meta = 32768 + 768 + bt_rows * max_blocks * 4;
+        // Block table metadata: the widest user is the batched MTP verify
+        // (verify_e.rs) at R = 96 rows (n=32 × k=3 rows, the wave-11
+        // depth-at-width envelope — 32:2), whose bt staging sits at
+        // meta_base+2048 (wider 96-row gaps: positions 384 | seq_slot 384 |
+        // slots 768 | seq_lens 384). Batched decode (padded_n ≤ 32) and
+        // DFlash K=γ+1=17 verify keep the narrow +768 layout — strictly
+        // inside this envelope.
+        let bt_rows = 96usize; // batched verify R cap (VERIFY_ROW_CAP, verify_e2.rs)
+        // Envelope = max(verify 96-row overlay, DERIVED decode layout).
+        // The decode layout (`decode_meta.rs`, rows = max(32, bs)) sits
+        // strictly inside the verify overlay for every rows <= 64 (bt at
+        // 24R <= 1536 < 2048, rows <= 96), so this max() changes NOTHING
+        // for bs <= 64; it only grows the scratch once rows > ~85.
+        let bt_meta =
+            32768 + (2048 + bt_rows * max_blocks * 4).max(decode_meta.meta_bytes(max_blocks));
         let scratch_min = 64 * 1024;
         // Q12 kernel-batched prefill stages N per-stream meta blocks plus a
         // stacked BatchedAttnMetadata block — a strictly larger footprint than
@@ -200,11 +221,19 @@ impl BufferSizes {
             k_max * h * bf16
         };
 
-        // Logits: only last token used during prefill. Cap at 32 tokens
-        // (sufficient for decode=1, batched_decode=8, spec_verify≤5,
-        // DFlash K=γ verify with γ=16 → K=17 tokens — bumped from 16
-        // for DFlash K=γ headroom; matches `bt_rows` cap above).
-        let logits_tokens = m.min(32);
+        // Logits: only last token used during prefill. Cap at 96 tokens —
+        // the batched MTP verify's R = Σ ks row cap (n=32 × k=3 rows, the
+        // wave-11 depth-at-width envelope; VERIFY_ROW_CAP in verify_e2.rs).
+        // This also covers decode=1, batched decode padded_n<=32 PLUS the
+        // run_standard mixed path (`decode_b2`) parking prefill logits at
+        // row `padded_n` = 32 (the old 33-row bound), spec_verify≤5, and
+        // DFlash K=γ+1=17. ~45 MB at vocab 248320 (was ~30 MB at 64 rows,
+        // ~16 MB at 33).
+        // Derived floor for wide native batches: the run_standard mixed path
+        // (`decode_b2`) parks prefill logits at row `padded_n`, which can be
+        // as high as `decode_meta.rows()` — so the arena must hold rows+1.
+        // Inert (96) for every rows <= 95, i.e. all bs <= 95.
+        let logits_tokens = m.min(96.max(decode_meta.rows() + 1));
 
         // Mamba-2 d_inner may exceed hidden_size; norm_output and attn_output must fit.
         let mamba2_d_inner = config.mamba2_d_inner();
@@ -213,7 +242,11 @@ impl BufferSizes {
         // Split-K decode workspace: NUM_SMS * (head_dim + 2) * sizeof(f32).
         // Partials from split CTAs are stored as [o[head_dim], m, l] per split.
         // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
-        let splitk_workspace = 48 * (hd + 2) * 4;
+        // Read NUM_SMS rather than repeating its value: run_paged_decode derives
+        // num_splits from the same constant, so a literal here is a second source
+        // of truth that under-allocates — silently, into out-of-bounds device
+        // writes — the moment the constant moves.
+        let splitk_workspace = NUM_SMS as usize * (hd + 2) * 4;
 
         // The residual stream is always BF16.
         let residual_elem = bf16;

@@ -14,6 +14,7 @@ pub fn step_decode_only(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
     let t0 = std::time::Instant::now();
     let n = active.len();
@@ -31,7 +32,6 @@ pub fn step_decode_only(
     if n > 1 {
         active.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(a.seq.slot_idx));
     }
-    let tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
 
     // CONCURRENT-DECODE DIAG: per-step batch state (slot, seq_len, etc).
     // Demoted to debug after the 2026-04-22 stride+graph fixes shipped —
@@ -66,18 +66,80 @@ pub fn step_decode_only(
     // empirically as a 51s broadcast timeout on the worker followed by
     // stale comm data reads. See decode_a2.rs for the full rationale.
 
-    let mut refs: Vec<&mut SequenceState> = active.iter_mut().map(|a| &mut a.seq).collect();
-
-    let logits = match model.decode_batch(&tokens, &mut refs, 0) {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("decode_batch error: {e:#}");
-            for mut a in active.drain(..) {
-                send_error(model, &mut a, &format!("{e:#}"));
+    // Decode, PREEMPTING on KV exhaustion instead of failing the whole batch.
+    //
+    // Sequences grow one block per `block_size` tokens as they decode, but
+    // admission control only sizes the pool against a new request's PROMPT
+    // (scheduler/mod.rs: `blocks_needed = prompt_len / block_size + 1`) and is
+    // never re-consulted afterwards. So N conversations admitted comfortably at
+    // 2K tokens each can collectively exhaust the pool once they reach 18K —
+    // measured: 8 seqs x 1173 blocks = 9384 needed vs a 9058-block pool.
+    // Previously ONE sequence failing to extend its block table errored EVERY
+    // sequence in the batch, destroying up to `max_num_seqs` in-flight requests
+    // because one of them wanted a single extra block.
+    //
+    // Instead: drop the largest sequence (its `free_sequence` in `send_error`
+    // returns its blocks to the pool) and retry, so the rest of the batch makes
+    // progress. Victim choice mirrors the admission-time policy — largest
+    // block_table, grammar-active sequences excluded (their state isn't
+    // reconstructible). Preferable would be swapping the victim out for later
+    // resume (`swap_out_sequence`), but that needs the KvSpillManager threaded
+    // in; dropping one to save the rest is the strictly-better-than-today fix.
+    let logits = loop {
+        let tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
+        let mut refs: Vec<&mut SequenceState> = active.iter_mut().map(|a| &mut a.seq).collect();
+        match model.decode_batch(&tokens, &mut refs, 0) {
+            Ok(l) => break l,
+            Err(e) => {
+                drop(refs);
+                let victim = if format!("{e:#}").contains("KV cache exhausted") && active.len() > 1
+                {
+                    active
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| a.grammar_state.is_none())
+                        .max_by_key(|(_, a)| a.seq.block_table.len())
+                        .map(|(i, _)| i)
+                } else {
+                    None
+                };
+                let Some(vi) = victim else {
+                    tracing::error!("decode_batch error: {e:#}");
+                    for mut a in active.drain(..) {
+                        send_error(model, &mut a, &format!("{e:#}"));
+                    }
+                    // A destroyed CUDA context (issue #429) surfaces here like
+                    // any other decode error, but it is terminal: the next tick
+                    // would admit the next request onto a dead context and fail
+                    // it identically, forever. The backend has already probed
+                    // and latched by this point, so the only thing left is to
+                    // stop. `request` is idempotent, so the echoing failures of
+                    // the remaining in-flight batches do not re-trigger it.
+                    if let Some(reason) = atlas_core::fault::global().fault() {
+                        crate::tui::shutdown::request(reason);
+                    }
+                    return;
+                };
+                // `remove` (not `swap_remove`) keeps the ascending SSM-slot order
+                // established above; a hole only costs the batched path a fallback
+                // to the eager loop for this step, and the next step re-sorts.
+                let mut v = active.remove(vi);
+                tracing::warn!(
+                    "KV cache exhausted during decode: preempting slot={} ({} blocks) \
+                     so the other {} sequence(s) can continue",
+                    v.seq.slot_idx,
+                    v.seq.block_table.len(),
+                    active.len(),
+                );
+                send_error(model, &mut v, &format!("{e:#}"));
             }
-            return;
         }
     };
+    // Preemption may have shrunk the batch; `n` gates the n==1 paths below.
+    let n = active.len();
+    if n == 0 {
+        return;
+    }
 
     // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1): think-gated stretches
     // route HERE (mod.rs sends `inside_thinking` seqs to step_decode_only,
@@ -89,14 +151,14 @@ pub fn step_decode_only(
     // is ambiguous in a multi-seq batch (fine here — DFlash runs
     // --max-batch-size 1).
     if n == 1 {
-        if crate::scheduler::adaptive_spec::unified_ctx_enabled() {
+        if sched.levers.dflash_unified_ctx {
             // Unified ctx commit: serial token at RoPE position seq_len-1
             // (decode() advanced seq_len past the token just processed).
             let base_pos = active[0].seq.seq_len.saturating_sub(1);
             if let Err(e) = model.commit_ctx(&mut active[0].seq, 1, base_pos) {
                 tracing::error!("commit_ctx (decode_only serial): {e:#}");
             }
-        } else if crate::scheduler::adaptive_spec::serial_append_enabled()
+        } else if sched.levers.dflash_serial_append
             && let Err(e) = model.dflash_serial_ctx_append(&mut active[0].seq)
         {
             tracing::error!("dflash_serial_ctx_append (decode_only): {e:#}");
@@ -114,5 +176,6 @@ pub fn step_decode_only(
         tool_call_start_token,
         tool_call_end_token,
         adaptive_sampling,
+        sched,
     );
 }

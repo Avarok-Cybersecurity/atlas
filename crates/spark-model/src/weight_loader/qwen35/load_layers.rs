@@ -103,14 +103,17 @@ pub(super) fn load_layers(
     };
     let native_fp8 = quant_format == QuantFormat::Fp8;
     // FAST_MOE=full (transposed prefill tables + the CUTLASS grouped NVFP4 MoE)
-    // applies to any Holo-family (holo3_1_moe) NVFP4 MoE — both modelopt
-    // MIXED_PRECISION (Holo-3.1) and uniform NVFP4 (e.g. compressed-tensors,
-    // Ornith-35B). The transpose/grouped path operates on the loaded NVFP4 experts
-    // regardless of source quant format; the mixed-precision-specific handling
-    // (fp8 experts, native-modelopt SSM/attn) stays gated on
-    // `modelopt_mixed_precision` and simply doesn't fire for the uniform case.
-    let holo_nvfp4_moe = config.model_type == "holo3_1_moe" && quant_format == QuantFormat::Nvfp4;
-    let low_memory_modelopt_moe = (modelopt_mixed_precision || holo_nvfp4_moe)
+    // applies to ANY NVFP4 MoE: the transpose/grouped path operates on the loaded
+    // NVFP4 experts regardless of source quant format (modelopt MIXED_PRECISION,
+    // compressed-tensors, uniform NVFP4). Keyed on the ARCHITECTURE (MoE + NVFP4),
+    // not a model_type string — holo3_1_moe / qwen3_5_moe / qwen3_6_moe are the
+    // same arch at the weight level (factory::loader_for_config maps all three to
+    // Qwen35WeightLoader), so gating on the label silently dropped sibling and
+    // third-party NVFP4-MoE checkpoints to the slow moe_w4a16 path. The
+    // mixed-precision-specific handling (fp8 experts, native-modelopt SSM/attn)
+    // stays gated on `modelopt_mixed_precision` and simply doesn't fire otherwise.
+    let nvfp4_moe = config.num_experts > 0 && quant_format == QuantFormat::Nvfp4;
+    let low_memory_modelopt_moe = (modelopt_mixed_precision || nvfp4_moe)
         && std::env::var("ATLAS_HOLO_LOW_MEMORY_MOE").ok().as_deref() == Some("1");
     let holo_fast_moe_mode = if low_memory_modelopt_moe {
         holo_fast_moe_mode()
@@ -846,6 +849,7 @@ pub(super) fn load_layers(
         if (i + 1) % 10 == 0 || i < 5 {
             let free_gb = gpu.free_memory()? as f64 / (1024.0 * 1024.0 * 1024.0);
             tracing::info!("Loaded layers 0..{} — {free_gb:.1} GB free", i + 1);
+            spark_runtime::progress::layer(i + 1, config.num_hidden_layers);
         }
     }
 
@@ -864,10 +868,12 @@ pub(super) fn load_layers(
 /// list of singletons and inclusive ranges, e.g. `"31-39"` or `"31,35,39"`.
 /// Unset → every layer selected (legacy all-layers behaviour). Parsed once.
 fn layer_dequant_selected(layer: usize) -> bool {
-    use std::sync::OnceLock;
-    // None  = env unset → all layers; Some(ranges) = explicit selection.
-    static SPEC: OnceLock<Option<Vec<(usize, usize)>>> = OnceLock::new();
-    let spec = SPEC.get_or_init(|| {
+    // Parsed per call rather than memoized in a `OnceLock`. This runs a few
+    // dozen times during a weight load that takes minutes, so the cache bought
+    // nothing measurable and cost the ability to load a second model under a
+    // different selection.
+    // None = env unset → all layers; Some(ranges) = explicit selection.
+    let spec: Option<Vec<(usize, usize)>> = (|| -> Option<Vec<(usize, usize)>> {
         let s = std::env::var("ATLAS_FP8_DEQUANT_LAYERS").ok()?;
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         for part in s.split(',') {
@@ -884,7 +890,7 @@ fn layer_dequant_selected(layer: usize) -> bool {
             }
         }
         Some(ranges)
-    });
+    })();
     match spec {
         None => true,
         Some(ranges) => ranges.iter().any(|&(a, b)| layer >= a && layer <= b),
@@ -902,32 +908,27 @@ enum HoloFastMoeMode {
 /// grouped gate_up prefill path. OnceLock-cached, default OFF => the existing
 /// FP8 fused gate_up kernel runs unchanged (bit-identical).
 fn holo_moe_gateup_fp4() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("ATLAS_HOLO_MOE_GATEUP_FP4")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    // Load-time: the weight loader runs before any `TransformerModel` exists to
+    // carry the levers, so this resolves at the point of use rather than in a
+    // static. The interpretation stays SSOT in `ModelLevers`.
+    crate::layers::ops::ModelLevers::from_env().holo_moe_gateup_fp4
 }
 
 /// `ATLAS_HOLO_MOE_DOWN_FP4=1` opts in to the FP4 (NVFP4 block-scaled) down
 /// prefill path. OnceLock-cached, default OFF => the existing FP8/w4a16 down
 /// path runs unchanged (bit-identical). Independent of the gate_up flag.
 fn holo_moe_down_fp4() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("ATLAS_HOLO_MOE_DOWN_FP4")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    // Load-time: the weight loader runs before any `TransformerModel` exists to
+    // carry the levers, so this resolves at the point of use rather than in a
+    // static. The interpretation stays SSOT in `ModelLevers`.
+    crate::layers::ops::ModelLevers::from_env().holo_moe_down_fp4
 }
 
 fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
-    use std::sync::OnceLock;
-    static MODE: OnceLock<Option<HoloFastMoeMode>> = OnceLock::new();
-    *MODE.get_or_init(|| {
+    // Resolved per call, for the same reason as `layer_dequant_selected`:
+    // load-time work, and a memoized answer pins the first model's MoE mode
+    // onto every model loaded after it.
+    (|| -> Option<HoloFastMoeMode> {
         let Ok(mode) = std::env::var("ATLAS_HOLO_FAST_MOE_MODE") else {
             return None;
         };
@@ -954,18 +955,17 @@ fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
                 None
             }
         }
-    })
+    })()
 }
 
 fn holo_fast_moe_layer_selected(layer: usize) -> bool {
-    use std::sync::OnceLock;
-    static SPEC: OnceLock<Vec<(usize, usize)>> = OnceLock::new();
-    let ranges = SPEC.get_or_init(|| {
+    // Per call — see `layer_dequant_selected`.
+    let ranges = {
         let Ok(spec) = std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS") else {
-            return Vec::new();
+            return false;
         };
         parse_layer_ranges(&spec)
-    });
+    };
     ranges.iter().any(|&(a, b)| layer >= a && layer <= b)
 }
 

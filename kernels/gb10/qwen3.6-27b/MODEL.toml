@@ -128,21 +128,25 @@ thinking_default = true
 thinking_in_tools = true
 # 2026-05-23 sweep: 512 → 2048 (project-wide reasoning headroom bump).
 max_thinking_budget = 2048
-default_num_drafts = 1
-# BF16 KV cache for long-context prefill (2026-06-21 prefill-32k study).
-# The 16 full-attention layers (head_dim=256, full_attention_interval=4)
-# dominate long-context prefill, and at depth they are KV-load-latency bound.
-# The FP8 paged-attn prefill kernel (inferspark_prefill_paged_fp8.cu) loads +
-# dequants KV SYNCHRONOUSLY (no cp.async pipelining); the BF16 kernel pipelines
-# KV tile loads via cp.async, hiding the latency. Measured on dgx1, cold 32k
-# c=1 prefill (Qwen3.6-27B-FP8): FP8 KV 435.8 tok/s vs BF16 KV 480.2 tok/s
-# (+10.2%); per-chunk gaps grow steeper for FP8 (8.9→11.5s) than BF16
-# (8.8→10.0s), confirming the unhidden FP8 KV-load latency. BF16 KV is also
-# higher quality (no FP8 KV quant drift on the large-magnitude deep-layer K/V)
-# and decode is unregressed (9.6 vs 9.7 tok/s @ d32768). Resolution rule 3 in
-# serve_phases/kv_cache.rs applies this when the recipe passes the CLI default
-# `--kv-cache-dtype fp8`; an explicit non-fp8 override still wins.
-default_kv_dtype = "bf16"
+# 2026-07-24 chain-widening sweep: 1 → 3 (K=2 → K=4). The K=4 verify FFN on the
+# 16 full-attention layers was falling through to the MMQ prefill GEMM (no n==4
+# arm in multi_seq/ffn.rs) — the reason every earlier K>2 sweep regressed. With
+# that arm added, the agentic ladder measures TPOT 38.49 (K=3) → 31.69 (K=4),
+# and the full MLCommons e2e at K=4 gives wall 4104s / TPOT 32.60ms / BFCL 87.44
+# / IoU 0.6231 (vs 4551.9s / 38.18ms at the old default). K=5 wins wall/tps by
+# ~1.5-2.5% on the subset but has no full-e2e accuracy validation; revisit with
+# its own e2e before moving further.
+default_num_drafts = 3
+# FP8 KV cache (enabled 2026-07-19): lever #2 — cp.async pipelining in
+# inferspark_prefill_paged_fp8.cu hides KV-load latency behind QK^T compute.
+# The old sync fp8->bf16 dequant path was 10.2% SLOWER than BF16 KV (435.8
+# vs 480.2 tok/s @32k c=1 cold prefill). With cp.async pipelining (matching
+# the BF16 kernel's 2-stage pattern), the FP8 kernel's load latency is now
+# hidden, so FP8 KV is expected to be FASTER than BF16 KV (smaller DV75
+# bandwidth, same compute epic). Resolution rule 3 in
+# serve_phases/kv_cache.rs is now a no-op since the MODEL.toml default
+# already matches the CLI default `--kv-cache-dtype fp8`.
+default_kv_dtype = "fp8"
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
 # Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to
@@ -174,3 +178,34 @@ mask_token_id = 248070
 # `dflash_loader::parse_dflash_config` reads these from the drafter's
 # config.json at runtime; this MODEL.toml field is the fallback default.
 target_layer_ids = [1, 16, 31, 46, 61]
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+#
+# TRANSITIONAL, and deliberately EMPTY. The boot audit fails closed on every
+# unresolved lookup that is not listed here, so anything added is a lookup we
+# have decided to keep issuing knowing it can never resolve.
+#
+# Prefer the other fix: gate the lookup on config so it is never ISSUED (see
+# `qwen3_attention::init_arch_gates`, which is what removed the MLA /
+# hyper-connection / CSA / HDIM-512 probes from every non-DeepSeek model). A
+# lookup that is never issued leaves no row to explain.
+#
+# Shape — every entry needs a stated reason, and the build PANICS without one:
+#
+#   [expected_absent.<module>]
+#   <kernel> = "why this model cannot use it"
+#
+# Populate from one boot: `spark serve <model> --check-kernels` prints the
+# complete list for this target with each dispatch site, and exits non-zero
+# while anything is unexplained.
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+This model's w4a4_gemm.cu defines only w4a4_gemm; the mfast variant exists solely
+in nemotron-labs-3-puzzle-75b-a9b. Dispatch (qwen3_attention/init.rs) falls back
+to w4a4_gemm, which is correct. This fallback predates the resolution gate and
+was silent until it; it is declared here to unblock serving, NOT because the
+fallback is known to be optimal. Whether porting mfast to this model is a win is
+UNMEASURED - treat as a candidate, not a confirmed loss (routing m=9..32 into a
+GEMV looked like the same shape and measured -14.4% at C=16). Remove this entry
+if mfast is ported."""

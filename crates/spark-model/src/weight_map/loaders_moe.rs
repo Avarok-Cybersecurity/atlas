@@ -200,7 +200,14 @@ pub(crate) fn load_mtp(
             Nvfp4Variant::Fp8Dequanted => dense_auto(store, name, gpu),
             // Bf16Raw fine-tunes already store .weight as BF16; no dequant needed.
             Nvfp4Variant::Bf16Raw => dense(store, name),
-            _ => dense(store, name),
+            // Standard & friends: usually BF16 on disk (dense_auto's BF16 arm
+            // returns the raw pointer, identical to `dense`), but checkpoints
+            // that quantize the MTP head too (e.g. centml modelopt W4A4:
+            // mtp.fc/*_proj as packed NVFP4 + weight_scale/_2) route through
+            // dense_auto's UInt8 arm for a one-time NVFP4->BF16 dequant.
+            // Feeding the packed U8 pointer to the BF16 GEMV read 4x past the
+            // allocation (cuMemsetD8Async status 700 on first decode).
+            _ => dense_auto(store, name, gpu),
         }
     };
 

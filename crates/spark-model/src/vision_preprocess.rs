@@ -6,17 +6,31 @@
 //! `patch_size × spatial_merge_size`, normalizes with ImageNet stats,
 //! and produces a flat `f32` tensor ready for the GPU vision encoder.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use atlas_core::config::VisionConfig;
-use image::{DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 
 /// SigLIP normalization — matches HF's Qwen2VLImageProcessor
 /// (`image_mean = image_std = (0.5, 0.5, 0.5)` → pixels mapped to [-1, 1]).
 const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
 const STD: [f32; 3] = [0.5, 0.5, 0.5];
 
-/// Maximum allowed image dimension in pixels (longer side).
+/// Maximum allowed image dimension in pixels (longer side), applied AFTER
+/// decode by the resize below. See [`DECODE_MAX_SIDE`] for the pre-decode cap.
 const MAX_DIM: u32 = 1280;
+
+/// Decoder limit: reject a header declaring more than this on either side
+/// before a single pixel is allocated. Everything is resized down to
+/// [`MAX_DIM`] anyway, so this only has to be above any real camera image;
+/// 16384 is ~4× the long side of a 50 MP photo.
+const DECODE_MAX_SIDE: u32 = 16_384;
+
+/// Decoder limit: bytes the decoder may hold at once for one image. The
+/// `image` crate's own default is 512 MiB, which on GB10's UNIFIED 121 GB
+/// CPU+GPU memory is a per-request budget competing directly with the KV
+/// cache — and the request body arrives over HTTP from an unauthenticated
+/// caller. 192 MiB still admits an 8000×8000 RGB image.
+const DECODE_MAX_ALLOC: u64 = 192 * 1024 * 1024;
 
 /// Decode a base64 data URI or raw base64 string into a `DynamicImage`.
 fn decode_image(data_uri: &str) -> Result<DynamicImage> {
@@ -38,7 +52,43 @@ fn decode_image(data_uri: &str) -> Result<DynamicImage> {
 
     // Probe format from magic bytes.
     let fmt = image::guess_format(&bytes).unwrap_or(ImageFormat::Jpeg);
-    image::load_from_memory_with_format(&bytes, fmt).context("image decode failed")
+    // Decode through `ImageReader` rather than `load_from_memory_with_format`
+    // so the limits are ours. (The free function is not unlimited — it applies
+    // `Limits::default()`, i.e. 512 MiB alloc — but it sets NO dimension cap,
+    // and the alloc cap is documented as non-strict.) A 40-byte PNG header can
+    // declare 65535×65535; the dimension limit rejects that from the header,
+    // before any buffer is reserved.
+    let mut reader = ImageReader::new(std::io::Cursor::new(&bytes));
+    reader.set_format(fmt);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(DECODE_MAX_SIDE);
+    limits.max_image_height = Some(DECODE_MAX_SIDE);
+    limits.max_alloc = Some(DECODE_MAX_ALLOC);
+    reader.limits(limits);
+    reader.decode().context("image decode failed")
+}
+
+/// Reject a vision config whose geometry cannot drive the preprocessor.
+///
+/// Every field here comes from a third-party `config.json` via
+/// `parse_vision_config`, which reports a MISSING key as `0` — so an absent or
+/// malformed `patch_size` reaches `preprocess_image` as a divisor of zero, and
+/// `grid_unit = patch_size * spatial_merge_size` reaches the scale computation
+/// as `0.0`, producing a 0×0 target and then a division by zero. Fail with a
+/// named error instead. Deliberately no fallback default: silently assuming
+/// `patch_size = 16` would let a mismatched checkpoint produce a wrongly-shaped
+/// pixel buffer, which is the hazard the encoder's own length check exists for.
+fn validate_geometry(vcfg: &VisionConfig) -> Result<()> {
+    if vcfg.patch_size == 0 {
+        bail!("vision_config.patch_size is 0 (missing or invalid in the checkpoint's config.json)");
+    }
+    if vcfg.spatial_merge_size == 0 {
+        bail!("vision_config.spatial_merge_size is 0 (missing or invalid in config.json)");
+    }
+    if vcfg.temporal_patch_size == 0 {
+        bail!("vision_config.temporal_patch_size is 0 (missing or invalid in config.json)");
+    }
+    Ok(())
 }
 
 /// Compute the target (H, W) so that:
@@ -82,6 +132,8 @@ pub fn preprocess_image_with_max_pixels(
     vcfg: &VisionConfig,
     max_pixels: Option<usize>,
 ) -> Result<(Vec<f32>, usize, usize)> {
+    // Before anything divides by them.
+    validate_geometry(vcfg)?;
     let img = decode_image(data_uri)?;
     let img = img.to_rgb8();
     let (orig_w, orig_h) = (img.width(), img.height());
@@ -185,6 +237,121 @@ mod tests {
     fn test_image_pad_count_zero_sms_clamps_to_one() {
         // sms=0 is invalid; clamps to 1 so we never divide by zero.
         assert_eq!(image_pad_count(64, 64, 0), 64 * 64);
+    }
+
+    /// A `vision_config` for the shipped Qwen3-VL geometry.
+    fn ok_cfg() -> VisionConfig {
+        VisionConfig {
+            depth: 27,
+            hidden_size: 1152,
+            num_heads: 16,
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            intermediate_size: 4304,
+            out_hidden_size: 2048,
+            deepstack_visual_indexes: vec![8, 16, 24],
+            image_pad_token_id: 151_655,
+        }
+    }
+
+    /// A 1×1 PNG, the smallest decodable input.
+    const TINY_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    /// `parse_vision_config` reports a MISSING key as 0, so a checkpoint whose
+    /// `vision_config` omits `patch_size` reaches here as a zero divisor. The
+    /// old code divided `th / ps` at line 98 and panicked — from an HTTP
+    /// request body, i.e. a remote crash of the request task.
+    #[test]
+    fn zero_patch_size_is_an_error_not_a_divide_by_zero_panic() {
+        let mut vcfg = ok_cfg();
+        vcfg.patch_size = 0;
+        let err = preprocess_image(TINY_PNG_B64, &vcfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("patch_size"), "{err}");
+    }
+
+    /// `grid_unit = patch_size * spatial_merge_size` is the other divisor, and
+    /// a zero here made it 0.0 in the f32 scale computation → a 0×0 target.
+    #[test]
+    fn zero_spatial_merge_size_is_an_error() {
+        let mut vcfg = ok_cfg();
+        vcfg.spatial_merge_size = 0;
+        let err = preprocess_image(TINY_PNG_B64, &vcfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("spatial_merge_size"), "{err}");
+    }
+
+    /// `temporal_patch_size = 0` collapses `patch_dim` to 0, yielding an empty
+    /// pixel buffer that the encoder would then have to catch.
+    #[test]
+    fn zero_temporal_patch_size_is_an_error() {
+        let mut vcfg = ok_cfg();
+        vcfg.temporal_patch_size = 0;
+        let err = preprocess_image(TINY_PNG_B64, &vcfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("temporal_patch_size"), "{err}");
+    }
+
+    /// The geometry check must not have broken the working path: a valid
+    /// config still decodes and produces `num_patches × patch_dim` floats.
+    #[test]
+    fn valid_config_still_preprocesses() {
+        let vcfg = ok_cfg();
+        let (pixels, gh, gw) = preprocess_image(TINY_PNG_B64, &vcfg).unwrap();
+        let patch_dim = 3 * vcfg.temporal_patch_size * vcfg.patch_size * vcfg.patch_size;
+        assert_eq!(pixels.len(), gh * gw * patch_dim);
+        assert!(gh > 0 && gw > 0);
+    }
+
+    /// Garbage that is not an image must be a clean error, not a panic.
+    #[test]
+    fn undecodable_input_is_an_error() {
+        assert!(preprocess_image("bm90LWFuLWltYWdl", &ok_cfg()).is_err());
+        assert!(preprocess_image("!!! not base64 !!!", &ok_cfg()).is_err());
+    }
+
+    /// A PNG whose IHDR declares 65535×65535 (~12.9 GB of RGB) but whose file
+    /// is 70 bytes. The dimension limit rejects it from the header, before any
+    /// pixel buffer is reserved.
+    #[test]
+    fn decode_bomb_dimensions_are_rejected_before_allocation() {
+        let mut png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut ihdr: Vec<u8> = b"IHDR".to_vec();
+        ihdr.extend_from_slice(&65535u32.to_be_bytes()); // width
+        ihdr.extend_from_slice(&65535u32.to_be_bytes()); // height
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit RGB
+        let crc = {
+            // CRC-32 over the chunk type + data, as PNG requires.
+            let mut c: u32 = 0xFFFF_FFFF;
+            for &b in &ihdr {
+                c ^= u32::from(b);
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0xEDB8_8320
+                    } else {
+                        c >> 1
+                    };
+                }
+            }
+            !c
+        };
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(&ihdr);
+        png.extend_from_slice(&crc.to_be_bytes());
+
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png);
+        // The fixture must exceed the limit under test, or it proves nothing.
+        const { assert!(65535 > DECODE_MAX_SIDE) };
+        // Assert on the LIMIT error specifically, not just "some error": the
+        // fixture is also a truncated PNG, so a decoder without limits would
+        // still fail — just later, after reserving the buffer. Only this exact
+        // message proves the header check fired first.
+        let err = format!("{:#}", preprocess_image(&b64, &ok_cfg()).unwrap_err());
+        assert!(err.contains("Image size exceeds limit"), "{err}");
     }
 
     #[test]

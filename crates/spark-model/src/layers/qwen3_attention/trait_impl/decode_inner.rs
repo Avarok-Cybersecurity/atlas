@@ -9,7 +9,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
-use super::{diag_norm, gemma4_diag_enabled};
+use super::diag_norm;
 use crate::layer::{ForwardContext, LayerState};
 use crate::layers::ops;
 
@@ -50,7 +50,7 @@ impl Qwen3AttentionLayer {
         // Disable diagnostics during CUDA graph capture — diag_norm does d2h
         // copy + sync which invalidates stream capture (status 901).
         let gemma4_diag =
-            ctx.config.model_type == "gemma4" && gemma4_diag_enabled() && !ctx.graph_capture;
+            ctx.config.model_type == "gemma4" && ctx.levers.gemma4_diag && !ctx.graph_capture;
         // The residual stream is always BF16, so `hidden` is a BF16 buffer.
         let diag_hidden =
             |gpu: &dyn GpuBackend, ptr: DevicePtr, n: usize, stream: u64, label: &str| {

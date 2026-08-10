@@ -46,7 +46,6 @@ extern "C" __global__ void rope_forward(
     // Determine if we're processing Q or K
     const bool is_q = (head_idx < num_q_heads);
     const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
-    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
 
     if (!is_q && head >= num_kv_heads) return;
 
@@ -75,7 +74,6 @@ extern "C" __global__ void rope_forward(
     const float sin_val = sinf(angle);
 
     // Pointer to the head's data at this sequence position
-    const unsigned int stride = num_heads * head_dim;
     __nv_bfloat16* ptr;
     if (is_q) {
         ptr = Q + batch * seq_len * (num_q_heads * head_dim)
@@ -90,7 +88,6 @@ extern "C" __global__ void rope_forward(
     // Load the pair (interleaved convention: pair (2i, 2i+1) matching Mistral weight storage)
     // Mistral uses rope_interleave=True: weights are stored as (d0,d1),(d2,d3),...
     // HF converts interleaved→split-half before rotate_half, but we rotate in-place.
-    const unsigned int half_rot = rotary_dim / 2;
     const unsigned int d0 = 2 * pair_idx;              // Interleaved: (0,1), (2,3), ...
     const unsigned int d1 = 2 * pair_idx + 1;
     float x0 = (float)ptr[d0];
@@ -133,7 +130,6 @@ extern "C" __global__ void rope_forward_yarn(
 
     const bool is_q = (head_idx < num_q_heads);
     const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
-    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
 
     if (!is_q && head >= num_kv_heads) return;
 
@@ -154,7 +150,6 @@ extern "C" __global__ void rope_forward_yarn(
     const float cos_val = cosf(angle);
     const float sin_val = sinf(angle);
 
-    const unsigned int stride = num_heads * head_dim;
     __nv_bfloat16* ptr;
     if (is_q) {
         ptr = Q + batch * seq_len * (num_q_heads * head_dim)

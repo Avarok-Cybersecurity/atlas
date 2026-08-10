@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::api::inference_types::RepetitionDetectionParams;
 
 // ── Legacy /v1/completions types (OpenAI standard) ──
 

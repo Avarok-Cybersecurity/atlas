@@ -15,10 +15,10 @@ residual ─► gate (linear) ─► softmax/sigmoid ─► topk ──► dispa
 Five kernels contribute to one MoE block:
 
 1. **Gate** — linear projection. Uses the same GEMM kernels as attention projections.
-2. **Top-k + softmax/sigmoid** — per-token expert selection. From `atlas-reduce::topk`.
+2. **Top-k + softmax/sigmoid** — per-token expert selection.
 3. **Dispatch** — token scatter to expert-local arrangement. Conceptually a permutation.
 4. **Expert FFN** — `k` copies of `silu_mul_quant(up(x)) → down(...)`. Grouped GEMM with one batch per expert.
-5. **Gather + weighted sum** — reduce expert outputs back to the residual shape. From `atlas-reduce::moe_sum`.
+5. **Gather + weighted sum** — reduce expert outputs back to the residual shape.
 
 ## Prefill: grouped GEMM
 
