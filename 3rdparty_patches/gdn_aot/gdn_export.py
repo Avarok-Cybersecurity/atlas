@@ -22,9 +22,17 @@ beta = torch.rand(T, Hv, dtype=torch.float32, device=dev).sigmoid()
 cu = torch.tensor([0, T], dtype=torch.int64, device=dev)
 h0 = torch.zeros(1, Hv, D, D, dtype=torch.float32, device=dev)
 so = torch.zeros_like(h0)
-_ = chunk_gated_delta_rule(q, k, v, g, beta, None, h0, True, cu, False, None, so)
-torch.cuda.synchronize()
-print(f"GDN ran at Holo shape (T={T} Hqk={Hqk} Hv={Hv} D={D}); captured {len(captured)} compiled kernel(s)")
+try:
+    _ = chunk_gated_delta_rule(q, k, v, g, beta, None, h0, True, cu, False, None, so)
+    torch.cuda.synchronize()
+except Exception as e:
+    # Under nvidia-cutlass-dsl 4.5.0 the export-mode annotations (the
+    # delta_rule_sm120_aot_export.patch CUstream/Int32 hunks) leave the compiled
+    # function without a JIT execution engine — calling it raises DSLRuntimeError.
+    # The compile itself succeeded and was captured; export_to_c below is the
+    # supported path for such functions, so proceed.
+    print(f"note: JIT execution unavailable ({type(e).__name__}: {str(e)[:120]}) — proceeding to export_to_c")
+print(f"GDN compiled at Holo shape (T={T} Hqk={Hqk} Hv={Hv} D={D}); captured {len(captured)} compiled kernel(s)")
 for i, cf in enumerate(captured):
     print(f"  [{i}] {type(cf).__name__}  export_to_c={hasattr(cf,'export_to_c')}")
 
