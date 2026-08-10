@@ -123,6 +123,21 @@ impl Qwen3SsmLayer {
         // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
+        if let Some(ref q2) = self.qkvz_q2 {
+            // Tier-1c keep-packed Q2_0: per-token 2-bit fused-qkvz GEMV. Bonsai
+            // (dense qwen35) has no MTP, so this batched path is only reached
+            // under multi-token verify — a per-token loop is bit-identical to
+            // the M=1 decode GEMV and needs no batched packed kernel.
+            for t in 0..num_tokens {
+                ops::q2_0_gemv_vec(
+                    ctx.gpu,
+                    self.q2_0_gemv_k,
+                    normed.offset(t * h * bf16),
+                    q2,
+                    proj_dst.offset(t * qkvz_size * bf16),
+                    stream,
+                )?;
+            }
         // 2..=4: the K=4 verify (num_drafts=3) hits this same NULL-slot
         // hazard — on native-FP8-GDN checkpoints (e.g. nvidia/Qwen3.6-27B-
         // NVFP4, whose GDN layers ship FP8) `in_proj_qkvz`/`qkvz_nvfp4*` are
@@ -133,7 +148,7 @@ impl Qwen3SsmLayer {
         // is built for M<=4 (see w8a16_gemv_batch4.cu), so widening the
         // guard is sufficient; the per-token `w8a16_gemv` fallback already
         // loops over num_tokens.
-        if (2..=4).contains(&num_tokens)
+        } else if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.qkvz_fp8w
         {
             if self.w8a16_gemv_batch4_k.0 != 0 {

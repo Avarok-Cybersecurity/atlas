@@ -137,6 +137,20 @@ pub struct Qwen3AttentionLayer {
     /// Gemma-4 FP32-input rms_norm (absolute formula).
     pub(super) rms_norm_f32_in_k: KernelHandle,
     pub(super) dense_gemv_k: KernelHandle,
+    /// Load-time packed-Q2 → BF16 dequant (`dequant_gguf_bf16` module). Used by
+    /// the Tier-1c keep-packed attention PREFILL path: dequant q/k/v/o into a
+    /// transient BF16 scratch, run the normal `dense_gemm`, free. Decode uses
+    /// the native `q2_0_gemv_vec` (no dequant). `KernelHandle(0)` when absent.
+    pub(super) dequant_q2_0_gn_k: KernelHandle,
+    /// Native Q2_0 MMQ prefill (Tier-2, `ATLAS_GGUF_NATIVE_Q2_MMQ`): keep-packed
+    /// tensor-core int8 MMA vs a shared q8_1 activation. `KernelHandle(0)` when
+    /// absent → the transient-dequant prefill path is used instead. The q8_1
+    /// activation quantizer is shared with Q4_K (`q4k_quant_act_k`).
+    pub(super) q2_0_mmq_nc_k: KernelHandle,
+    pub(super) q2_0_mmq_wc_k: KernelHandle,
+    pub(super) q4k_quant_act_k: KernelHandle,
+    /// Native `q2_0_gemv_vec` decode kernel for keep-packed q/k/v/o.
+    pub(super) q2_0_gemv_k: KernelHandle,
     pub(super) w4a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,

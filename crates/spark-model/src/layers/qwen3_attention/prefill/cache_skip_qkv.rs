@@ -167,6 +167,11 @@ impl Qwen3AttentionLayer {
             ),
         };
 
+        // Keep-packed Q2_0 (Tier-1c): transient-dequant to BF16 then dense GEMM.
+        if let Some(r) = self.try_q2_prefill(ctx, weight_opt, normed, out, n, stream) {
+            return r;
+        }
+
         let use_t_pipelined =
             std::env::var("ATLAS_ATTN_PREFILL_T_PIPE").ok().as_deref() == Some("1");
         if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)

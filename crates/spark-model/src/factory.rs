@@ -190,8 +190,12 @@ mod tests {
         assert!(loader_for_config(&config).is_err());
     }
 
+    // The generic `ModelWeightLoader` for NLLB must fail fast: real NLLB serving
+    // goes through the dedicated `NllbGpuModel` encoder-decoder runtime, which
+    // `build_model` selects before this loader is ever consulted. Reaching this
+    // loader is a routing bug, so every generic entry point bails.
     #[test]
-    fn test_nllb_loader_fails_fast_until_encoder_decoder_runtime_exists() {
+    fn test_nllb_generic_loader_fails_fast_dedicated_runtime_serves() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
         config.model_type = "nllb".to_string();
         let loader = loader_for_config(&config).unwrap();
@@ -200,9 +204,8 @@ mod tests {
 
         let err = loader.load_embedding(&store, &config, &gpu).unwrap_err();
         assert!(
-            err.to_string().contains(
-                "Atlas does not yet implement the encoder-decoder runtime required by facebook/nllb-200-3.3B"
-            ),
+            err.to_string()
+                .contains("dedicated GPU encoder-decoder runtime"),
             "{err}"
         );
     }

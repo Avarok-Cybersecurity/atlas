@@ -94,7 +94,10 @@ impl Qwen3SsmLayer {
             } else if self.sequential_qkvz {
                 // Qwen3.5: QKVZ weight is pre-concatenated [Q|K|V|Z] sequential.
                 // Plain GEMV writes directly to deinterleaved buffer.
-                if let Some(ref nvfp4) = self.qkvz_nvfp4 {
+                if let Some(ref q2) = self.qkvz_q2 {
+                    // Tier-1c keep-packed Q2_0: 2-bit fused-qkvz GEMV.
+                    ops::q2_0_gemv_vec(ctx.gpu, self.q2_0_gemv_k, normed, q2, deinterleaved, stream)
+                } else if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                     ops::w4a16_gemv(
                         ctx.gpu,
                         self.w4a16_gemv_k,

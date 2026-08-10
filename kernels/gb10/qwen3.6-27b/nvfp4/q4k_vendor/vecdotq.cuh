@@ -108,6 +108,10 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 
 #define VDR_Q1_0_Q8_1_MMVQ 1  // Process one 32-element chunk at a time for parallelism
 #define VDR_Q1_0_Q8_1_MMQ  4  // Q1_0 has 128 bits (4 ints) per block
+// Q2_0 unpacks to q8_0-shaped int8 in-register, so its MMQ vec_dot is the stock
+// q8_0 path (VDR_Q8_0_Q8_1_MMQ==8). The traits `vdr` is unused on the Turing MMA
+// process-tile path (vec_dot handles its own k-stepping); kept q8_0-consistent.
+#define VDR_Q2_0_Q8_1_MMQ  8
 
 #define VDR_Q4_0_Q8_1_MMVQ 2
 #define VDR_Q4_0_Q8_1_MMQ  4

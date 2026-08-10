@@ -64,6 +64,39 @@ fn test_buffer_arena_alloc() {
 }
 
 #[test]
+fn q2_dequant_scratch_covers_largest_projection() {
+    // The native keep-packed Q2_0 prefill reuses ONE BF16 dequant scratch for
+    // every projection, so it must be sized to the widest `[N,K]` — otherwise a
+    // later, larger dequant overruns the buffer. Every keep-packed projection
+    // has one dim == hidden_size, so the bound is `max_other_dim * hidden * 2`.
+    let cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    let bytes = q2_dequant_scratch_bytes(&cfg);
+    let h = cfg.hidden_size;
+    let ffn = cfg.intermediate_size * h * 2; // gate/up [inter,h] & down [h,inter]
+    let qkvz = cfg.ssm_qkvz_size() * h * 2; // fused GDN in_proj_qkvz [qkvz,h]
+    let q_mul = if cfg.attn_gated { 2 } else { 1 };
+    let q = cfg.num_attention_heads * q_mul * cfg.head_dim * h * 2; // attn q_proj
+    let kv = cfg.num_key_value_heads * cfg.head_dim * h * 2; // attn k/v_proj
+    assert!(bytes >= ffn, "scratch {bytes} < FFN {ffn}");
+    assert!(bytes >= qkvz, "scratch {bytes} < qkvz {qkvz}");
+    assert!(bytes >= q, "scratch {bytes} < q_proj {q}");
+    assert!(bytes >= kv, "scratch {bytes} < kv_proj {kv}");
+    assert!(bytes > 0);
+}
+
+#[test]
+fn q2_dequant_scratch_zero_without_flag() {
+    // Flag off (default): from_config must NOT size the buffer, so non-Q2
+    // models allocate nothing extra (BufferArena skips the alloc on 0 → NULL).
+    if std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1") {
+        return; // flag on in this environment — the sized path is covered above
+    }
+    let cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    let sizes = BufferSizes::from_config(&cfg, 1, 4096, 16, 32);
+    assert_eq!(sizes.q2_dequant_scratch, 0);
+}
+
+#[test]
 fn test_buffer_sizes_scale_with_batch() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
     // max_batch_size=32: the decode-meta rows floor — legacy byte-identical sizing.
