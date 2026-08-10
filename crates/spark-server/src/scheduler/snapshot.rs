@@ -47,16 +47,30 @@ pub struct SchedulerSnapshot {
     pub published_at: Instant,
 }
 
-static SNAP: Mutex<Option<SchedulerSnapshot>> = Mutex::new(None);
+/// The run's snapshot cell: the scheduler writes, the dashboard reads.
+///
+/// A latest-value mailbox — every tick overwrites the whole snapshot, so
+/// nothing accumulates. It was a static, which meant the numbers survived the
+/// run that produced them: after a swap, and before the new scheduler's first
+/// tick, `/health` and the dashboard reported the dead run's queue depth and
+/// KV occupancy as if live. `published_at` bounded that window but did not
+/// close it.
+///
+/// Shared as an `Arc` from `serve` — the same route `SchedLevers` takes — so
+/// the cell dies with the run and a reader attached to no run sees `None`.
+#[derive(Default)]
+pub struct SnapshotCell(Mutex<Option<SchedulerSnapshot>>);
 
-/// Publish the latest snapshot (scheduler thread, once per loop tick).
-pub fn publish(s: SchedulerSnapshot) {
-    *SNAP.lock() = Some(s);
-}
+impl SnapshotCell {
+    /// Publish the latest snapshot (scheduler thread, once per loop tick).
+    pub fn publish(&self, s: SchedulerSnapshot) {
+        *self.0.lock() = Some(s);
+    }
 
-/// Read the latest snapshot, if the scheduler has published one yet.
-pub fn read() -> Option<SchedulerSnapshot> {
-    *SNAP.lock()
+    /// Read the latest snapshot, if the scheduler has published one yet.
+    pub fn read(&self) -> Option<SchedulerSnapshot> {
+        *self.0.lock()
+    }
 }
 
 #[cfg(test)]
@@ -65,6 +79,7 @@ mod tests {
 
     #[test]
     fn publish_read_roundtrip() {
+        let cell = SnapshotCell::default();
         let s = SchedulerSnapshot {
             active_seqs: 3,
             prefilling_seqs: 1,
@@ -79,8 +94,8 @@ mod tests {
             steps_total: 7,
             published_at: Instant::now(),
         };
-        publish(s);
-        let r = read().expect("published");
+        cell.publish(s);
+        let r = cell.read().expect("published");
         assert_eq!(r.active_seqs, 3);
         assert_eq!(r.mtp_mode, MtpModeSnap::Mtp);
     }

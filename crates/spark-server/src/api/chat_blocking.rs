@@ -403,7 +403,12 @@ fn build_choice_message(
                     crate::metrics::TOOL_CALLS_TOTAL.inc();
                 }
                 msg_tool_calls = Some(validated.valid);
-                finish_reason_i = "tool_calls".to_string();
+                // A deadline cut outranks "tool_calls": the turn was
+                // truncated, so a call parsed out of it may be partial and
+                // the client must not treat it as a completed tool turn.
+                if finish_reason_i != ir::FINISH_REASON_TIMEOUT {
+                    finish_reason_i = "tool_calls".to_string();
+                }
             }
         }
     }
@@ -506,7 +511,9 @@ fn finalize_response(
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.
     crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(prompt_len as u64);
     crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(total_completion_tokens as u64);
-    crate::metrics::TTFT_SECONDS.observe(first_ttft / 1000.0);
+    crate::metrics::TTFT_SECONDS
+        .with_label_values(&[state.model_name.as_str()])
+        .observe(first_ttft / 1000.0);
 
     // Rate-limit true-up. Middleware admitted with a conservative
     // reservation of `max_seq_len` tokens; refund the difference.

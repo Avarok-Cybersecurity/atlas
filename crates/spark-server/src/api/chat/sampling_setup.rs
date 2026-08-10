@@ -57,6 +57,34 @@ fn tool_choice_required_for_parser(
     explicit_required || parser_required
 }
 
+/// Whether the model-level tool-grammar escape hatch applies to THIS request.
+///
+/// `disable_tool_grammar` is a *model* property (MODEL.toml `[behavior]`, or
+/// the `--disable-tool-grammar` override); `tool_choice_required` is a *request*
+/// property. The escape hatch is scoped to the requests it was written for —
+/// `serve_args.rs`: "skips XGrammar structural-tag enforcement on
+/// `tool_choice="auto"` requests ... Matches vLLM's default behaviour in auto
+/// mode (vLLM only grammar-constrains when tool_choice="required")".
+///
+/// Without the `!tool_choice_required` term the hatch also swallowed
+/// `required`/specific requests, which is what `book/src/operations/tools.md`
+/// documents the grammar as implementing: it "masks the no-tool-call path, so
+/// the sampler can only produce a valid tool-call opening". Dropping the
+/// grammar there did not leave `required` wholly unenforced — the scheduler's
+/// legacy EOS-suppression backstop switches on precisely when the grammar is
+/// absent (`prefill_a_step.rs`: `req_require_tool_call && grammar_state
+/// .is_none() && tool_call_start_token.is_some()`) — but that path is weaker
+/// (it needs a `tool_call_start_token` and only suppresses EOS) and it is not
+/// the behaviour either doc promises.
+///
+/// The `minimax_xml` arm of `tool_choice_required_for_parser` is deliberately
+/// covered by the same term: that parser's grammar is what stops the
+/// `<invokeinvoke` / `<parameterparameter` degenerate-loop corruption class
+/// (see `compile_minimax_xml_tool_grammar`), so the hatch must not remove it.
+fn tool_grammar_escape_applies(disable_tool_grammar: bool, tool_choice_required: bool) -> bool {
+    disable_tool_grammar && !tool_choice_required
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
@@ -278,10 +306,14 @@ pub(super) fn build_sampling(
                 schema: schema.to_string(),
             }),
         }
-    } else if tools_active && state.behavior.disable_tool_grammar {
+    } else if tools_active
+        && tool_grammar_escape_applies(state.behavior.disable_tool_grammar, tool_choice_required)
+    {
         // Structure-snowballing escape hatch (arXiv:2604.06066): this
         // model tool-calls more reliably unconstrained. Tool calls are
         // still parsed from the output — just not grammar-enforced.
+        // Scoped to auto-mode requests; `required`/specific keep the
+        // grammar that enforces them (see `tool_grammar_escape_applies`).
         tracing::info!("MODEL.toml [behavior].disable_tool_grammar=true — tool-call grammar OFF");
         None
     } else if tools_active {
@@ -306,13 +338,8 @@ pub(super) fn build_sampling(
         None
     };
 
-    // Timeout deadline.
-    let timeout_secs = req.timeout_secs.unwrap_or(state.request_timeout as f32);
-    let timeout_at = if timeout_secs > 0.0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(timeout_secs))
-    } else {
-        None
-    };
+    // Timeout deadline (SSOT: AppState::request_deadline).
+    let timeout_at = state.request_deadline(req.timeout_secs);
 
     // Pre-resolved from the wire's logprobs/top_logprobs pair at the edge.
     let top_logprobs = req.top_logprobs;
@@ -345,9 +372,61 @@ pub(super) fn build_sampling(
 
 #[cfg(test)]
 mod tests {
-    use super::tool_choice_required_for_parser;
+    use super::{tool_choice_required_for_parser, tool_grammar_escape_applies};
 
     use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
+
+    /// The escape hatch's own help text scopes it to `tool_choice="auto"`.
+    #[test]
+    fn the_escape_hatch_applies_in_auto_mode() {
+        let required = tool_choice_required_for_parser(true, None, Some("qwen3_coder"));
+
+        assert!(!required);
+        assert!(tool_grammar_escape_applies(true, required));
+    }
+
+    /// `required` is *implemented by* the grammar, so the hatch must not
+    /// remove it — the escape hatch is a model property, `required` is a
+    /// request property, and the request wins.
+    #[test]
+    fn required_mode_keeps_the_grammar_despite_the_escape_hatch() {
+        let choice = ToolChoice::Mode("required".to_string());
+        let required = tool_choice_required_for_parser(true, Some(&choice), Some("qwen3_coder"));
+
+        assert!(required);
+        assert!(!tool_grammar_escape_applies(true, required));
+    }
+
+    #[test]
+    fn specific_function_keeps_the_grammar_despite_the_escape_hatch() {
+        let choice = ToolChoice::Specific {
+            function: ToolChoiceFunction {
+                name: "memory".to_string(),
+            },
+        };
+        let required = tool_choice_required_for_parser(true, Some(&choice), Some("qwen3_coder"));
+
+        assert!(required);
+        assert!(!tool_grammar_escape_applies(true, required));
+    }
+
+    /// minimax_xml's grammar is the anti-corruption frame, not just a
+    /// tool-choice enforcer, so the hatch must not remove it either.
+    #[test]
+    fn minimax_xml_keeps_the_grammar_despite_the_escape_hatch() {
+        let required = tool_choice_required_for_parser(true, None, Some("minimax_xml"));
+
+        assert!(required);
+        assert!(!tool_grammar_escape_applies(true, required));
+    }
+
+    /// The fix must not switch the grammar ON for models that never asked
+    /// for the hatch — with the hatch off, nothing about this changes.
+    #[test]
+    fn the_hatch_being_off_is_unaffected_by_tool_choice() {
+        assert!(!tool_grammar_escape_applies(false, false));
+        assert!(!tool_grammar_escape_applies(false, true));
+    }
 
     #[test]
     fn bare_json_auto_uses_triggered_grammar() {

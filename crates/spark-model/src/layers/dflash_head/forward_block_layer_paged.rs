@@ -439,9 +439,9 @@ impl BlockDiffusionDraftHead {
         if layer_idx == 0
             && std::env::var("ATLAS_DFLASH_OPTION_B_DIAG").ok().as_deref() == Some("1")
         {
-            static DIAG_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !DIAG_DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            // Per-model latch (see `ModelStats::dumped`): a static would let
+            // the previous model swallow this model's one-shot diagnostic.
+            if ctx.stats.dumped.keyed("dflash_option_b") {
                 gpu.synchronize(stream)?;
 
                 // Read slot 0's physical index from slot_mapping (i64).
@@ -547,10 +547,7 @@ impl BlockDiffusionDraftHead {
         // ATLAS_DFLASH_CONTIG_ATTN=1: cat([k_ctx, k_noise]) gather + contiguous
         // non-causal prefill_attention — matches dflash.py:75-97 op-for-op.
         // Default (env unset): paged-indirect kernel, unchanged.
-        static USE_CONTIG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *USE_CONTIG
-            .get_or_init(|| std::env::var("ATLAS_DFLASH_CONTIG_ATTN").ok().as_deref() == Some("1"))
-        {
+        if ctx.levers.dflash_contig_attn {
             return self.forward_block_layer_attention_contig(args, ctx, k_pool, v_pool);
         }
 

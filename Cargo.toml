@@ -2,12 +2,8 @@
 resolver = "2"
 members = [
     "crates/atlas-core",
-    "crates/atlas-quant",
-    "crates/atlas-norm",
-    "crates/atlas-activation",
-    "crates/atlas-embed",
-    "crates/atlas-reduce",
     "crates/atlas-kernels",
+    "crates/atlas-plugin",
     "crates/atlas-tier",
     "crates/atlas-rdma",
     "crates/spark-runtime",
@@ -19,6 +15,8 @@ members = [
     "crates/cufile-sys",
     "crates/spark-storage",
     "crates/xgrammar",
+    "crates/atlas-governance",
+    "crates/atlas-closure",
 ]
 
 # AMD/SCALE + native-HIP: the vendored cudarc 0.19.2 is byte-identical to
@@ -30,7 +28,7 @@ members = [
 cudarc = { path = "vendor/cudarc" }
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -70,6 +68,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Error handling
 thiserror = "2"
 anyhow = "1"
+# Stable content hashing for kernel-closure provenance. `DefaultHasher` is
+# explicitly NOT stable across Rust releases, and this hash is persisted in
+# committed gate records — it has to mean the same thing next year.
+sha2 = "0.10"
 
 # Synchronization — parking_lot Mutex/RwLock are faster than std::sync,
 # don't poison, and `.lock()` returns the guard directly (no Result).
@@ -82,11 +84,6 @@ parking_lot = "0.12"
 # right backend feature explicitly (cuda or metal). Without this, every
 # member would silently pull in cudarc via atlas-core's `cuda` default.
 atlas-core = { path = "crates/atlas-core", default-features = false }
-atlas-quant = { path = "crates/atlas-quant" }
-atlas-norm = { path = "crates/atlas-norm" }
-atlas-activation = { path = "crates/atlas-activation" }
-atlas-embed = { path = "crates/atlas-embed" }
-atlas-reduce = { path = "crates/atlas-reduce" }
 atlas-kernels = { path = "crates/atlas-kernels" }
 atlas-tier = { path = "crates/atlas-tier" }
 atlas-rdma = { path = "crates/atlas-rdma" }

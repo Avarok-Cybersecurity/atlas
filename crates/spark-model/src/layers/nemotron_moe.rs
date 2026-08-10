@@ -115,6 +115,25 @@ impl NemotronMoeLayer {
         } else {
             config.num_experts_per_tok
         };
+        // Nemotron's `top_k` is PER LAYER (`num_experts_per_tok_for`), so this
+        // runs once per MoE layer and a single outlying block config cannot
+        // slip through on the model-wide value. `MoeLayer::new` carries the
+        // same pair of bounds; `NemotronMoeLayer` had no check at all and its
+        // decode kernel is the one whose shadows were capped at 24.
+        let num_experts = weights.experts.len();
+        anyhow::ensure!(
+            top_k > 0
+                && top_k <= num_experts
+                && top_k <= crate::layers::ops::MOE_TOPK_SIGMOID_MAX_TOP_K
+                && num_experts <= crate::layers::ops::MOE_TOPK_SIGMOID_MAX_EXPERTS,
+            "Nemotron MoE config invalid: top_k={} must be in 1..={} and within \
+             the routing kernels' bounds (top_k max {}, num_experts={} max {})",
+            top_k,
+            num_experts,
+            crate::layers::ops::MOE_TOPK_SIGMOID_MAX_TOP_K,
+            num_experts,
+            crate::layers::ops::MOE_TOPK_SIGMOID_MAX_EXPERTS,
+        );
 
         Ok(Self {
             weights,

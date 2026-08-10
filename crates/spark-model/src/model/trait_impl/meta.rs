@@ -65,6 +65,107 @@ impl TransformerModel {
         })
     }
 
+    /// Storage dtype of this sequence's SSM h-state (`ATLAS_SSM_H_FP16`).
+    ///
+    /// Read from the sequence's own first SSM layer state, which the decode
+    /// mixer flips on its first decode step — so this is the invariant itself,
+    /// not an assumption about it. Every layer of a sequence converts on the
+    /// same step, so the first is representative.
+    pub(super) fn seq_ssm_h_is_f16(&self, seq: &SequenceState) -> bool {
+        seq.layer_states
+            .iter()
+            .find_map(|ls| ls.as_any().downcast_ref::<SsmLayerState>())
+            .is_some_and(|s| s.h_is_f16)
+    }
+
+    /// Narrow this sequence's SSM h-state to FP16 (`ATLAS_SSM_H_FP16`), once.
+    ///
+    /// ★ MUST be called from the model's decode entry points, OUTSIDE the CUDA
+    /// graph region. Launching it from inside the layer puts the conversion
+    /// into the captured graph, which then re-converts the already-FP16 state
+    /// on every replay — fluent-but-degenerate output that the host-side
+    /// `h_is_f16` flag cannot prevent, because the flag correctly says
+    /// "converted" while the graph replays the launch anyway.
+    ///
+    /// No-op when the flag is absent or the sequence is already converted, so
+    /// it is safe (and cheap) to call on every decode step.
+    /// ★ The stream is NOT a parameter. Every decode entry point reassigns its
+    /// working stream to `default_stream()` before compute, and the staging
+    /// buffer below is a SINGLE shared allocation — so issuing the conversion
+    /// on a caller-supplied stream both (a) leaves it unordered against the
+    /// decode kernels that read the state and (b) lets two sequences'
+    /// conversions interleave through the same scratch. That produced NaN
+    /// h-states on a concurrency-dependent subset of sequences (7/16 at C=16,
+    /// 6/128 at C=128; clean at C<=8), surfacing as `"In!!!!!!"` completions
+    /// cut at 49 tokens. Taking the stream from the backend makes the whole
+    /// sequence of conversions self-serialising and ordered ahead of decode.
+    pub(crate) fn ssm_h_to_f16_dispatch(&self, seq: &mut SequenceState) -> Result<()> {
+        let stream = self.gpu.default_stream();
+        if !crate::layers::qwen3_ssm::ssm_h_fp16_enabled() || self.ssm_pool.num_ssm_layers == 0 {
+            return Ok(());
+        }
+        let h_bytes = self.ssm_pool.h_bytes;
+        let f16_bytes = h_bytes / 2;
+        let mut pending = false;
+        for ls in seq.layer_states.iter() {
+            if let Some(s) = ls.as_any().downcast_ref::<SsmLayerState>()
+                && !s.h_is_f16
+            {
+                pending = true;
+                break;
+            }
+        }
+        if !pending {
+            return Ok(());
+        }
+        if self.ssm_h_f32_to_f16_kernel.0 == 0 {
+            bail!(
+                "ATLAS_SSM_H_FP16: ssm_h_dtype::ssm_h_state_f32_to_f16 did not resolve on this                  target — refusing to run the FP16 decode kernels over an FP32 pool"
+            );
+        }
+        let scratch = match self.ssm_h_f16_scratch.get() {
+            Some(p) => *p,
+            None => {
+                let p = self.gpu.alloc(f16_bytes)?;
+                let _ = self.ssm_h_f16_scratch.set(p);
+                p
+            }
+        };
+        for ls in seq.layer_states.iter_mut() {
+            let Some(s) = ls.as_any_mut().downcast_mut::<SsmLayerState>() else {
+                continue;
+            };
+            if s.h_is_f16 {
+                continue;
+            }
+            crate::layers::ops::ssm_h_state_f32_to_f16(
+                self.gpu.as_ref(),
+                self.ssm_h_f32_to_f16_kernel,
+                s.h_state,
+                scratch,
+                (h_bytes / 4) as u64,
+                stream,
+            )?;
+            self.gpu
+                .copy_d2d_async(scratch, s.h_state, f16_bytes, stream)?;
+            s.h_is_f16 = true;
+        }
+        if std::env::var("ATLAS_SSM_H_FP16_DEBUG").is_ok() {
+            tracing::info!(
+                "SSM_H_FP16_CONVERT slot={} seq_len={} prompt_len={} hptr={:#x}",
+                seq.slot_idx,
+                seq.seq_len,
+                seq.prompt_len,
+                seq.layer_states
+                    .iter()
+                    .find_map(|l| l.as_any().downcast_ref::<SsmLayerState>())
+                    .map(|x| x.h_state.0)
+                    .unwrap_or(0)
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn normalize_ssm_states_dispatch(
         &self,
         seq: &SequenceState,
@@ -76,12 +177,32 @@ impl TransformerModel {
         if num_ssm == 0 || self.ssm_state_norm_kernel.0 == 0 {
             return Ok(());
         }
+        // Stage 1 leaves prefill FP32 end-to-end and this normalize only ever
+        // runs on a PREFILLING sequence (its one decode-path caller is gated on
+        // `mamba_num_heads > 0`, which is 0 for GDN), so the FP16 arm is not
+        // reached today. It is selected from the real invariant rather than
+        // hardcoded so stage 2 — native FP16 prefill writes — does not have to
+        // reopen this dispatch.
+        let norm_k = if self.seq_ssm_h_is_f16(seq) {
+            if self.ssm_state_norm_f16_kernel.0 == 0 {
+                anyhow::bail!(
+                    "ATLAS_SSM_H_FP16: ssm_state_norm::ssm_state_clamp_norm_fused_f16 did not                      resolve, refusing to clamp an FP16 state through the FP32 kernel"
+                );
+            }
+            self.ssm_state_norm_f16_kernel
+        } else {
+            self.ssm_state_norm_kernel
+        };
         let slot = seq.slot_idx;
 
         // Build pointer table: [layer_0_h_state, layer_1_h_state, ...]
         let ptrs: Vec<u64> = (0..num_ssm)
             .map(|i| self.ssm_pool.h_state(i, slot).0)
             .collect();
+        // SAFETY: the length is derived from `ptrs` itself —
+        // `ptrs.len() * size_of::<u64>()` — over the `Vec<u64>` the `collect`
+        // above just materialised (`len == num_ssm`, every element written by
+        // the map, no `with_capacity` gap).
         let ptr_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(ptrs.as_ptr() as *const u8, ptrs.len() * 8) };
         self.gpu
@@ -89,7 +210,7 @@ impl TransformerModel {
 
         let (num_heads, k_dim, v_dim) = self.config.ssm_state_norm_dims();
 
-        KernelLaunch::new(self.gpu.as_ref(), self.ssm_state_norm_kernel)
+        KernelLaunch::new(self.gpu.as_ref(), norm_k)
             .grid([num_heads as u32, num_ssm as u32, 1])
             .block([v_dim as u32, 1, 1])
             .arg_ptr(self.ssm_norm_ptrs_buf)
@@ -155,6 +276,10 @@ impl TransformerModel {
                     conv_state_checkpoint: None,
                     h_state_intermediates: Vec::new(),
                     conv_state_intermediates: Vec::new(),
+                    // A freshly allocated slot has just been zeroed, and zero
+                    // is zero in both formats — but prefill writes it as FP32,
+                    // so FP32 is the truth until the decode mixer converts.
+                    h_is_f16: false,
                 };
 
                 if has_mtp {
@@ -223,8 +348,13 @@ impl TransformerModel {
             marconi_skip_to: 0,
             marconi_exact_snap: None,
             session_hash: 0,
+            mtp_capture_gen: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            cached_prefix_blocks: 0,
+            prefix_ref_tokens: Vec::new(),
+            prefix_lookup_applied: false,
+            prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
             prompt_len: 0,
@@ -299,17 +429,40 @@ impl TransformerModel {
         let v = self.config.vocab_size;
         let bf16 = 2usize;
         let out_ptr = self.buffers.scratch();
-        for i in 0..n {
-            let logits_i = logits_ptr.offset(i * v * bf16);
-            let out_i = out_ptr.offset(i * 4);
-            ops::argmax_bf16(
+        // ONE launch, one block per row. The single-row `argmax_bf16` is a one-CTA
+        // reduction (grid [1,1,1]), so n calls on the same stream serialise n
+        // single-SM scans: measured 16 x 100.6 us = 1.6 ms per decode step at n=16.
+        // The batched kernel runs the identical per-row body, so ties resolve the
+        // same way — byte-identical. Falls back to the loop when the kernel set
+        // lacks the batched entry.
+        fn argmax_batch_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_NO_ARGMAX_BATCH").ok().as_deref() != Some("1"))
+        }
+        if self.argmax_batch_kernel.0 != 0 && argmax_batch_enabled() {
+            ops::argmax_bf16_batch(
                 self.gpu.as_ref(),
-                self.argmax_kernel,
-                logits_i,
-                out_i,
+                self.argmax_batch_kernel,
+                logits_ptr,
+                out_ptr,
+                v as u32,
+                n as u32,
                 v as u32,
                 stream,
             )?;
+        } else {
+            for i in 0..n {
+                let logits_i = logits_ptr.offset(i * v * bf16);
+                let out_i = out_ptr.offset(i * 4);
+                ops::argmax_bf16(
+                    self.gpu.as_ref(),
+                    self.argmax_kernel,
+                    logits_i,
+                    out_i,
+                    v as u32,
+                    stream,
+                )?;
+            }
         }
         let mut buf = vec![0u8; n * 4];
         self.gpu.copy_d2h(out_ptr, &mut buf)?;

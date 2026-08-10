@@ -4,8 +4,8 @@
 
 use lazy_static::lazy_static;
 use prometheus::{
-    Histogram, IntCounter, IntCounterVec, IntGauge, register_histogram, register_int_counter,
-    register_int_counter_vec, register_int_gauge,
+    HistogramVec, IntCounter, IntCounterVec, IntGauge, register_histogram_vec,
+    register_int_counter, register_int_counter_vec, register_int_gauge,
 };
 
 lazy_static! {
@@ -13,9 +13,22 @@ lazy_static! {
         register_int_counter!("atlas_requests_total", "Total requests processed").unwrap();
     pub static ref REQUESTS_ACTIVE: IntGauge =
         register_int_gauge!("atlas_requests_active", "Currently active requests").unwrap();
-    pub static ref TTFT_SECONDS: Histogram = register_histogram!(
+    /// Time to first token, LABELLED BY MODEL.
+    ///
+    /// A label rather than a reset. The counters in this file are process
+    /// totals and are correct across a hot-swap — "requests this process
+    /// handled" does not become false when the model changes, and resetting a
+    /// Prometheus counter breaks `rate()`, which assumes monotonicity.
+    ///
+    /// A latency histogram is different: pooling two models' distributions
+    /// makes every quantile a statement about neither of them. The standard
+    /// answer is to separate by label, which also keeps the pre-swap data
+    /// rather than discarding it — `sum by (le)` aggregates back to the old
+    /// single-series view for anyone who wants it.
+    pub static ref TTFT_SECONDS: HistogramVec = register_histogram_vec!(
         "atlas_time_to_first_token_seconds",
         "Time to first token",
+        &["model"],
         vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
     )
     .unwrap();

@@ -38,16 +38,65 @@ use super::log_ring::LogRingLayer;
 /// this; the event loop flips it on attach/detach.
 pub static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-static TEE: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
-static TEE_PATH: OnceLock<String> = OnceLock::new();
-/// Raw fd of the tee file, for the guard's stderr redirection (-1 = none).
-static TEE_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+/// Releases [`TUI_ACTIVE`] when dropped, so the claim `tui::start` takes before
+/// spawning the render thread is given back on every way out of that thread.
+///
+/// ★ **A `return` that skipped the release silenced the process's logs for
+/// good.** `SwitchableIo` above writes to stdout only while this flag is
+/// clear — a subscriber writing into a raw-mode alternate screen shreds the
+/// render, so the tee file is the only destination while the TUI owns the
+/// terminal. The event loop had exactly one `store(false)`, at the bottom of
+/// the loop, and two early returns above it: one when `TerminalGuard::enter`
+/// fails and one when the crossterm backend will not initialise. Both announce
+/// "continuing with plain logs" and then took the flag with them, so the plain
+/// logs they promised went nowhere the operator could see for the rest of the
+/// run. Neither branch is reachable under a `TestBackend`, which is precisely
+/// why it survived 689 tests: the terminal has to actually refuse.
+///
+/// Drop rather than a call, because the bug was a missed call, and unwinding
+/// out of the render thread has the same problem.
+pub struct ActiveClaim;
+
+impl ActiveClaim {
+    /// Claim the terminal. Paired with the drop; the store is idempotent, so a
+    /// second claim is not an error, merely redundant.
+    pub fn claim() -> Self {
+        TUI_ACTIVE.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ActiveClaim {
+    fn drop(&mut self) {
+        TUI_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The always-on log file: its writer, its path, and its raw fd.
+///
+/// One object rather than three loose globals. They are installed together in
+/// one place and are meaningless apart — the path names the file the writer
+/// holds, and the fd is that same file, handed to the terminal guard for the
+/// stderr redirect.
+struct Tee {
+    writer: Mutex<BufWriter<File>>,
+    path: String,
+    /// Raw fd, for the guard's stderr redirection.
+    fd: i32,
+}
+
+// STATIC, DELIBERATELY — process lifecycle. The tee is a FILE HANDLE the
+// tracing writer holds for the life of the process: it is opened before the
+// subscriber is installed and must outlive every model so the log covers
+// startup, swaps and shutdown as one file. The panic hook and the terminal
+// guard both read it during paths that run when nothing else is still alive.
+static TEE: OnceLock<Tee> = OnceLock::new();
 
 /// The tee file's raw fd, if one is open.
 pub fn tee_raw_fd() -> Option<i32> {
-    match TEE_FD.load(Ordering::Relaxed) {
-        -1 => None,
-        fd => Some(fd),
+    match TEE.get().map(|t| t.fd) {
+        None | Some(-1) => None,
+        Some(fd) => Some(fd),
     }
 }
 
@@ -69,12 +118,12 @@ fn tee_path() -> PathBuf {
 
 /// The tee file's path, once installed (for the panic hook + header display).
 pub fn tee_file_path() -> Option<&'static str> {
-    TEE_PATH.get().map(String::as_str)
+    TEE.get().map(|t| t.path.as_str())
 }
 
 /// Flush the tee file (shutdown path).
 pub fn flush_tee() {
-    if let Some(t) = TEE.get() {
+    if let Some(t) = TEE.get().map(|t| &t.writer) {
         let _ = t.lock().flush();
     }
 }
@@ -88,7 +137,7 @@ pub struct SwitchableIo;
 
 impl Write for SwitchableIo {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if let Some(t) = TEE.get() {
+        if let Some(t) = TEE.get().map(|t| &t.writer) {
             let _ = t.lock().write_all(buf);
         }
         if !TUI_ACTIVE.load(Ordering::Relaxed) {
@@ -128,12 +177,17 @@ pub fn install_tty_subscriber(progress_tx: Sender<ProgressEvent>) {
         // tracing stream, only the stderr redirection in `terminal_guard` is
         // unavailable (see `tee_raw_fd`).
         #[cfg(unix)]
-        {
+        let fd = {
             use std::os::fd::AsRawFd;
-            TEE_FD.store(f.as_raw_fd(), Ordering::Relaxed);
-        }
-        let _ = TEE.set(Mutex::new(BufWriter::new(f)));
-        let _ = TEE_PATH.set(path.display().to_string());
+            f.as_raw_fd()
+        };
+        #[cfg(not(unix))]
+        let fd = -1;
+        let _ = TEE.set(Tee {
+            writer: Mutex::new(BufWriter::new(f)),
+            path: path.display().to_string(),
+            fd,
+        });
     }
     // Filters: one instance per layer, same spec — EnvFilter is not Clone.
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -152,3 +206,7 @@ pub fn install_tty_subscriber(progress_tx: Sender<ProgressEvent>) {
         .with(progress_layer)
         .init();
 }
+
+#[cfg(test)]
+#[path = "init_tests.rs"]
+mod tests;

@@ -112,6 +112,23 @@ impl Default for ProgressModel {
 }
 
 impl ProgressModel {
+    /// Start over for a new model load.
+    ///
+    /// **Deliberately `Self::default()`, not a field-by-field clear.** A load
+    /// leaves state in every field — `ready`, the per-phase `Done` marks, the
+    /// frozen `load_secs` window, `started_at` — and a hand-written reset that
+    /// misses one renders the *second* load as already finished. Reassigning
+    /// the whole struct cannot miss a field, and a field added later is reset
+    /// for free.
+    ///
+    /// Without this, `enter_phase` only advances `Pending → Running`, so a
+    /// phase re-entered after the first load never leaves `Done`; `ready` is
+    /// never cleared; and `freeze_load_window` keeps the FIRST close, so the
+    /// second load's GB/s is never measured.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     pub fn apply(&mut self, ev: ProgressEvent) {
         match ev {
             ProgressEvent::Phase { phase, .. } => self.enter_phase(phase as usize),
@@ -275,95 +292,5 @@ impl ProgressModel {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn phase_entry_closes_earlier_phases() {
-        let mut m = ProgressModel::default();
-        m.apply(ProgressEvent::Phase {
-            phase: 0,
-            name: "banner".into(),
-        });
-        m.apply(ProgressEvent::Phase {
-            phase: 3,
-            name: "gpu init".into(),
-        });
-        assert_eq!(m.phases[0].state, PhaseState::Done);
-        assert_eq!(m.phases[1].state, PhaseState::Done);
-        assert_eq!(m.phases[3].state, PhaseState::Running);
-        assert_eq!(m.phases[4].state, PhaseState::Pending);
-    }
-
-    #[test]
-    fn ready_completes_everything() {
-        let mut m = ProgressModel::default();
-        m.apply(ProgressEvent::Phase {
-            phase: 5,
-            name: "weight load".into(),
-        });
-        m.apply(ProgressEvent::Ready { port: 8888 });
-        assert!(m.ready);
-        assert!(m.phases.iter().all(|p| p.state == PhaseState::Done));
-    }
-
-    #[test]
-    fn shard_rollover_snaps_shard_bar() {
-        let mut m = ProgressModel::default();
-        m.apply(ProgressEvent::ShardDone {
-            shard: 1,
-            total: 4,
-            used_gb: 2.0,
-            free_gb: 100.0,
-        });
-        assert_eq!(m.shard_target(), 1.0);
-        m.apply(ProgressEvent::ShardStart {
-            shard: 2,
-            total: 4,
-            name: "s2".into(),
-        });
-        assert_eq!(m.shard_target(), 0.0);
-    }
-
-    /// GB/s must be measured over the weight-load window, not since process start,
-    /// and must stop moving once the load is over. Previously it divided a constant
-    /// number of bytes by an ever-growing elapsed time, so a finished load's rate
-    /// decayed toward zero for as long as the server ran -- and the pre-load time
-    /// (CUDA init, model resolution, preflight) was in the divisor throughout.
-    #[test]
-    fn load_rate_is_windowed_and_freezes_at_the_last_shard() {
-        let ms = |n| std::thread::sleep(std::time::Duration::from_millis(n));
-        let mut m = ProgressModel::default();
-        m.apply(ProgressEvent::Preflight {
-            disk_gb: 10.0,
-            free_gb: 100.0,
-        });
-        ms(120); // pre-load work that must NOT count against the rate
-        for shard in 1..=2u64 {
-            m.apply(ProgressEvent::ShardStart {
-                shard,
-                total: 2,
-                name: "s".into(),
-            });
-            ms(60);
-            m.apply(ProgressEvent::ShardDone {
-                shard,
-                total: 2,
-                used_gb: 1.0,
-                free_gb: 9.0,
-            });
-        }
-        let secs = m.load_secs().expect("last shard closes the window");
-        assert!(
-            secs < m.started_at.elapsed().as_secs_f64() - 0.1,
-            "window {secs}s must exclude the 120ms of pre-load work"
-        );
-        let (rate, eta) = m.rate_eta().expect("rate known once shards are in");
-        assert_eq!(eta, 0.0, "nothing left to load");
-        assert!(rate > 0.0);
-
-        ms(120);
-        let (rate_later, _) = m.rate_eta().unwrap();
-        assert_eq!(rate, rate_later, "a finished load's rate must not drift");
-    }
-}
+#[path = "progress_tests.rs"]
+mod tests;

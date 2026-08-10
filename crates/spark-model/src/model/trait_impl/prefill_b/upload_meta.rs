@@ -49,12 +49,20 @@ impl TransformerModel {
             effective_seq_len_start,
             kv_cache,
             meta_base,
+            self.buffers.scratch_bytes().saturating_sub(meta_offset),
             stream,
         )
     }
 
     /// Build positions + slots metadata for `proc_count` tokens and upload
-    /// to the caller-provided `meta_base` device pointer. Used by both the
+    /// to the caller-provided `meta_base` device pointer.
+    ///
+    /// `meta_region_bytes` is how much room this metadata block owns AT
+    /// `meta_base` — the tail of the scratch arena for the single-stream entry
+    /// point, one per-stream slice for the Q12 batched one. It is a required
+    /// parameter because `meta_base` is a bare `DevicePtr` that carries no size,
+    /// so without it the pack can only be bounded against the HOST staging
+    /// buffer and would happily run off the end of the DEVICE allocation. Used by both the
     /// single-stream entry point above and Q12 batched prefill (multiple
     /// per-stream metadata blocks concatenated in one big scratch region).
     pub(in crate::model) fn prefill_b_upload_meta_at(
@@ -68,6 +76,7 @@ impl TransformerModel {
         effective_seq_len_start: usize,
         kv_cache: &PagedKvCache,
         meta_base: DevicePtr,
+        meta_region_bytes: usize,
         stream: u64,
     ) -> Result<MetaLayout> {
         // MRoPE-interleaved packs three u32 position streams (T, H, W).
@@ -156,31 +165,8 @@ impl TransformerModel {
                 }
             }
 
-            let pinned = stg.ptr;
-            let mut cursor = pos_stream_bytes;
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned,
-                    pos_stream_bytes,
-                );
-                if use_mrope {
-                    std::ptr::copy_nonoverlapping(
-                        stg.positions_h.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        pos_stream_bytes,
-                    );
-                    cursor += pos_stream_bytes;
-                    std::ptr::copy_nonoverlapping(
-                        stg.positions_w.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        pos_stream_bytes,
-                    );
-                    cursor += pos_stream_bytes;
-                }
-            }
-
+            // Build the slot table before packing: the packer borrows the
+            // staging struct, so every reusable `Vec` has to be final first.
             if !needs_paged {
                 let bs = kv_cache.block_size();
                 stg.slots.clear();
@@ -191,24 +177,37 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
-                cursor = slot_offset;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        stg.slots.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        proc_count * 8,
-                    );
-                }
-                cursor += proc_count * 8;
             }
 
-            assert!(
-                cursor <= stg.bytes,
-                "prefill_chunk metadata overflow: {cursor} > {}",
-                stg.bytes
-            );
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
-            self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
+            // The MRoPE+vision arm above REBUILDS `positions` from the chunk's
+            // pad-token runs (one entry per text token, `gh*gw` per image run)
+            // instead of from `proc_count`, so its length is data-dependent —
+            // it tracks `chunk_len`, and `proc_count <= chunk_len` only because
+            // every `ProcRange::Compute` arm caps it there. `put_prefix_at`
+            // carries that check: each stream contributes exactly `proc_count`
+            // elements or the pack is refused.
+            //
+            // The DESTINATION bound used to be missing here entirely — the only
+            // check was an `assert!(cursor <= stg.bytes)` AFTER the writes had
+            // already landed, which is too late to keep them inside the
+            // allocation. The packer checks each field before writing it.
+            //
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // position streams that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs).
+            let mut pack = stg.packer_for(meta_region_bytes);
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            if use_mrope {
+                let h_at = pos_stream_bytes;
+                let w_at = h_at + pos_stream_bytes;
+                pack.put_prefix_at("positions_h", h_at, &stg.positions_h, proc_count)?;
+                pack.put_prefix_at("positions_w", w_at, &stg.positions_w, proc_count)?;
+            }
+            if !needs_paged {
+                pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
+            }
+            self.gpu
+                .copy_h2d_async_retained(pack.packed(), meta_base, stream)?;
         }
 
         Ok(MetaLayout {

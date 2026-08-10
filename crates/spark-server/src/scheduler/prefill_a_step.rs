@@ -6,6 +6,7 @@ use super::*;
 
 /// Start a chunked prefill: process chunk 0, return result.
 pub fn start_chunked_prefill(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
@@ -212,6 +213,7 @@ pub fn start_chunked_prefill(
             dry_sequence_breakers: Vec::new(),
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
+            pending_draft_conf: Vec::new(),
             inside_thinking: req_enable_thinking && think_end_token.is_some(),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -441,6 +443,7 @@ pub fn start_chunked_prefill(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            &sched.levers.sampling(),
         ) {
             Ok(t) => {
                 tracing::info!("Prefill first token: {t}");
@@ -547,6 +550,7 @@ pub fn start_chunked_prefill(
                 dry_sequence_breakers: Vec::new(),
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
+                pending_draft_conf: Vec::new(),
                 inside_thinking: req_enable_thinking && think_end_token.is_some(),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
@@ -632,6 +636,7 @@ pub fn start_chunked_prefill(
                 dry_sequence_breakers: Vec::new(),
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
+                pending_draft_conf: Vec::new(),
                 inside_thinking: spontaneous_think
                     || (req_enable_thinking && think_end_token.is_some()),
                 enable_thinking: req_enable_thinking,

@@ -19,10 +19,8 @@
 //!     (M·num_experts total token-expert pairs).
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -38,9 +36,6 @@ fn h2d<T: Copy>(dev: u64, host: &[T]) {
     }
 }
 
-static SCALAR_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-static TC_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-
 const K: u32 = 2048;
 const N: u32 = 512;
 const TOP_K: u32 = 8;
@@ -53,13 +48,9 @@ fn bench_moe_decode_vs_prefill(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
 
-    let scalar_kernel = gpu::get_kernel(
-        reg,
-        &SCALAR_FN,
-        "moe_shared_expert_fused",
-        "moe_expert_gate_up_shared",
-    );
-    let tc_kernel = gpu::get_kernel(reg, &TC_FN, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable");
+    let scalar_kernel =
+        gpu::get_kernel(reg, "moe_shared_expert_fused", "moe_expert_gate_up_shared");
+    let tc_kernel = gpu::get_kernel(reg, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable");
 
     // ── Per-expert weight buffers ────────────────────────────────────
     let per_expert_packed_bytes = (N as usize) * (K as usize / 2);

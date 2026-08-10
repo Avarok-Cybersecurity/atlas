@@ -9,36 +9,10 @@
 
 use super::*;
 
-/// Register-resident warm-replay GDN recurrence: **ON by default**, disabled only
-/// by `ATLAS_NO_GDN_REGRESIDENT=1`.
-///
-/// Default flipped 2026-07-25 on measured evidence. Full MLCommons edge-agentic
-/// e2e on the frozen GB10 golden config, this flag as the ONLY change:
-/// perf wall **4134.01 -> 3834.44 s (-7.25%)**, TTFT p50/p90/p99
-/// **-11.4% / -18.0% / -15.8%**, BFCL **identical at 87.24**, IoU -0.0048 (exactly
-/// on the measured two-identical-runs noise floor). Attribution confirms the win is
-/// TTFT and that decode is untouched: decode fell 80.5 s, of which 79.9 s is the
-/// 3.2% drop in emitted tokens at an unchanged 31.09 ms/token, leaving a -0.5 s
-/// residual. Discounting that trajectory effect, the defensible win is ~219 s =
-/// 5.3% of wall, all TTFT — which is exactly where a warm-replay kernel should act.
-///
-/// It had been opt-in since 2026-06-28 labelled "until serve-validated" and was
-/// never validated; this is that validation.
-///
-/// NOT output-neutral at long replay: the kernel is token-equal to WY4 by
-/// construction (cos 1.0, max|dH| ~1e-8) and matched on short replays, but a
-/// ~1200-token replay differed — a changed accumulation order tips razor-margin
-/// greedy tokens. Hence the kill switch.
-///
-/// The switch is a strict `== "1"` on an `ATLAS_NO_*` name, deliberately NOT a
-/// presence check on the old `ATLAS_GDN_REGRESIDENT`: presence-checked flags in this
-/// codebase are ENABLED by `=0`, a trap that has burned it before, so the disable
-/// path must be an explicit value on an explicitly negative name. Read once — the
-/// dispatch site is per-layer per-chunk.
-fn gdn_regresident_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Ok("1"))
-}
+// The `OnceLock<bool>` static that lived here is now a field on
+// `layers::ops::ModelLevers` — resolved when the model is built and carried
+// on `ForwardContext`, because a static outlives the model whose flags it
+// encodes.
 
 impl Qwen3SsmLayer {
     /// GDN prefill recurrence via the WY4-persistent kernel.
@@ -214,12 +188,16 @@ impl Qwen3SsmLayer {
         {
             // One-time positive signal that the FLA path is live (vs silently
             // falling through to wy4 on a guard miss) — greppable in the server log.
-            static FLA_LOG: std::sync::Once = std::sync::Once::new();
-            FLA_LOG.call_once(|| {
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:gdn_fla_chunked") {
                 tracing::info!(
                     "GDN prefill: FLA chunked path ACTIVE (baked default: recompute_wu → chunk_delta_h_ksplit → chunk_fwd_o)"
                 );
-            });
+            }
             let num_chunks = k.div_ceil(64);
             let nt = num_chunks as usize;
             let w_out = fla_scratch;
@@ -262,7 +240,7 @@ impl Qwen3SsmLayer {
                 ctx.profile,
                 stream,
             )?;
-        } else if gdn_regresident_enabled()
+        } else if ctx.levers.gdn_regresident
             && kd == 128
             && vd == 128
             && self.gdn_prefill_regresident_k.0 != 0
@@ -276,12 +254,16 @@ impl Qwen3SsmLayer {
             // in isolation.
             //
             // DEFAULT-ON since 2026-07-25 — see `gdn_regresident_enabled`.
-            static RR_LOG: std::sync::Once = std::sync::Once::new();
-            RR_LOG.call_once(|| {
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:gdn_regresident") {
                 tracing::info!(
                     "GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)"
                 );
-            });
+            }
             ops::gdn_prefill_regresident(
                 ctx.gpu,
                 self.gdn_prefill_regresident_k,

@@ -129,6 +129,9 @@ pub struct FilesystemBackend {
     /// `None` only while `Drop` is closing the queue.
     tx: Mutex<Option<std::sync::mpsc::SyncSender<DiskOp>>>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Latches the "disk queue full" warning so it is logged once per backend
+    /// rather than once per process — the queue it describes is this one's.
+    queue_full_warned: std::sync::atomic::AtomicBool,
 }
 
 fn write_to_disk(dir: &std::path::Path, disk: &DiskEntry) {
@@ -180,6 +183,7 @@ impl FilesystemBackend {
             dir,
             tx: Mutex::new(Some(tx)),
             worker: Mutex::new(Some(worker)),
+            queue_full_warned: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -195,9 +199,12 @@ impl FilesystemBackend {
             return;
         };
         if let Err(std::sync::mpsc::TrySendError::Full(op)) = tx.try_send(op) {
-            static WARNED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            // Latched on the BACKEND, not in a static: the warning is about
+            // this backend's disk queue, and `&self` is right here.
+            if !self
+                .queue_full_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
                 tracing::warn!(
                     "response_store: disk queue full — falling back to inline writes                      (persistence is keeping up poorly; requests will see the write latency)"
                 );

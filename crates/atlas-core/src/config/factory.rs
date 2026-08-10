@@ -9,6 +9,7 @@ use super::{LayerType, ModelConfig, QuantizationConfig};
 impl ModelConfig {
     pub fn qwen3_next_80b_nvfp4() -> Self {
         Self {
+            profile: false,
             hidden_size: 2048,
             num_hidden_layers: 48,
             intermediate_size: 5120,

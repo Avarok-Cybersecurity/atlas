@@ -22,55 +22,9 @@
 
 use half::bf16;
 
-/// Group size for per-group FP8 scales. Matches `NVFP4_GROUP_SIZE` in the
-/// per-quant attention kernels.
-pub const NVFP4_GROUP_SIZE: usize = 16;
-
-/// E2M1 4-bit codebook (NVFP4). Matches
-/// `kernels/gb10/common/paged_decode_attn_nvfp4.cu:118`.
-pub const NVFP4_E2M1_LUT: [f32; 16] = [
-    0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
-];
-
-/// Turbo4 16-level Lloyd-Max codebook. Matches
-/// `kernels/gb10/common/paged_decode_attn_turbo4.cu:121`.
-pub const TURBO4_LUT: [f32; 16] = [
-    -2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3880, -0.1284, 0.1284, 0.3880, 0.6568,
-    0.9423, 1.2562, 1.6180, 2.0690, 2.7326,
-];
-
-/// Turbo3 8-level Lloyd-Max codebook. Matches
-/// `kernels/gb10/common/paged_decode_attn_turbo3.cu:137`.
-pub const TURBO3_LUT: [f32; 8] = [
-    -2.1520, -1.3440, -0.7560, -0.2451, 0.2451, 0.7560, 1.3440, 2.1520,
-];
-
-/// E4M3 → f32 LUT (256 entries). Built lazily on first use.
-pub fn e4m3_lut() -> &'static [f32; 256] {
-    use std::sync::OnceLock;
-    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
-    LUT.get_or_init(|| {
-        let mut lut = [0.0f32; 256];
-        for byte in 0..256u32 {
-            let sign_bit = (byte >> 7) & 1;
-            let exp = ((byte >> 3) & 0xF) as i32;
-            let mant = byte & 0x7;
-            let s: f32 = if sign_bit == 0 { 1.0 } else { -1.0 };
-            lut[byte as usize] = if exp == 0 {
-                if mant == 0 {
-                    s * 0.0
-                } else {
-                    s * (mant as f32) * 2.0f32.powi(-9)
-                }
-            } else if exp == 0xF && mant == 0x7 {
-                f32::NAN
-            } else {
-                s * 2.0f32.powi(exp - 7) * (1.0 + (mant as f32) / 8.0)
-            };
-        }
-        lut
-    })
-}
+#[path = "kv_dequant/luts.rs"]
+mod luts;
+pub use luts::{NVFP4_E2M1_LUT, NVFP4_GROUP_SIZE, TURBO3_LUT, TURBO4_LUT, e4m3_lut};
 
 /// Dequant FP8 (E4M3) bytes to BF16, applying a per-tensor scale.
 pub fn dequant_fp8_to_bf16(fp8_bytes: &[u8], scale: f32, out: &mut [bf16]) {

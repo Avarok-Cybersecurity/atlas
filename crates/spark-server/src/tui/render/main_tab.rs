@@ -15,7 +15,10 @@ use crate::tui::progress::PhaseState;
 use crate::tui::{log_ring, logo, theme};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let loading = !app.progress.ready;
+    // The listener comes up before any model does, and it reports itself
+    // ready — so with no model this pane claimed "loaded in 0.1s" next to an
+    // empty model name. Readiness of the SOCKET is not readiness of a model.
+    let loading = !app.progress.ready || app.awaiting_model;
     let top_h = if loading { 15 } else { 3 };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -41,10 +44,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_phases(f: &mut Frame, app: &App, area: Rect) {
     let (done, total, secs) = app.progress.phase_counts();
-    let block = panel(format!("STARTUP ─ {done}/{total} ── {secs:.1}s ─"), false);
+    // A spinner and a climbing clock against a load that is not running is a
+    // lie the reader has no way to check. Say what is actually true.
+    let block = panel(
+        if app.awaiting_model {
+            "STARTUP ─ awaiting a model ─".to_string()
+        } else {
+            format!("STARTUP ─ {done}/{total} ── {secs:.1}s ─")
+        },
+        false,
+    );
     let mut lines = Vec::new();
     for p in &app.progress.phases {
-        let (glyph, gstyle, label_style) = match p.state {
+        let state = if app.awaiting_model {
+            PhaseState::Pending
+        } else {
+            p.state
+        };
+        let (glyph, gstyle, label_style) = match state {
             PhaseState::Done => ("✓", theme::brand_green(), theme::text2()),
             PhaseState::Running => (
                 theme::SPINNER[(app.tick as usize) % theme::SPINNER.len()],
@@ -53,7 +70,7 @@ fn draw_phases(f: &mut Frame, app: &App, area: Rect) {
             ),
             PhaseState::Pending => ("○", theme::dim(), theme::dim()),
         };
-        let secs = match p.state {
+        let secs = match state {
             PhaseState::Done if p.secs > 0.005 => format!("{:>7.1}s", p.secs),
             PhaseState::Running => {
                 format!(
@@ -82,6 +99,21 @@ fn draw_weight_load(f: &mut Frame, app: &App, area: Rect) {
     let block = panel(title, false);
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // With nothing loading, the ratio is 0/0 and the bar rendered a full 100%
+    // beside an empty model name. Say what is true instead.
+    if app.awaiting_model {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::default(),
+                Line::from(Span::styled(
+                    "  no model loaded — open the Library (4) to choose one",
+                    theme::dim(),
+                )),
+            ]),
+            inner,
+        );
+        return;
+    }
     let bar_w = inner.width.saturating_sub(22);
 
     let mut lines: Vec<Line> = vec![Line::default()];
@@ -160,12 +192,7 @@ fn draw_weight_load(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_ready_strip(f: &mut Frame, app: &App, area: Rect) {
     let block = panel("READY ─".into(), false);
-    let model = app
-        .args
-        .model_name
-        .clone()
-        .or_else(|| app.args.model.clone())
-        .unwrap_or_default();
+    let model = super::live_model_name(app);
     let line = Line::from(vec![
         Span::styled(" ✓ ", theme::brand_green().add_modifier(Modifier::BOLD)),
         Span::styled(model, theme::text().add_modifier(Modifier::BOLD)),
@@ -185,7 +212,19 @@ fn draw_ready_strip(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_chips(f: &mut Frame, app: &App, area: Rect) {
-    let chips = logo::badges(&app.args);
+    // The LIVE argv, not the boot one. Every chip here — kv dtype, lm head,
+    // batch, context, scheduler, port — is read from `ServeArgs`, and a swap
+    // replaces the whole argv: after launching a recipe from the Library the
+    // strip went on describing the configuration the process started with,
+    // which for a no-model boot is the bare defaults and a literal "<model>".
+    //
+    // `app.awaiting_model` for the same reason: with nothing loaded these are
+    // clap defaults, not a running configuration. It is read rather than
+    // recomputed from the host because `App::tick` already derives it there
+    // (app.rs:193) and the status pill reads the same field — one answer to
+    // "is a model loaded", not two that can disagree mid-swap.
+    let live_args = app.host.as_ref().and_then(|h| h.args());
+    let chips = logo::badges(live_args.as_ref().unwrap_or(&app.args), app.awaiting_model);
     let mut spans: Vec<Span> = Vec::new();
     for b in &chips {
         let tint = match b.tint {
@@ -262,14 +301,71 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
             ])
         })
         .collect();
+    // The ceiling the wheel clamps to: everything the pane holds, less what
+    // fits on screen. Recorded before truncation, because truncation is what
+    // the offset DOES.
+    app.log_scroll_max
+        .set(lines.len().saturating_sub(inner.height as usize));
     // Apply scroll: drop from the end when scrolled up.
     if let Some(up) = app.log_scroll {
         let keep = lines.len().saturating_sub(up);
         lines.truncate(keep);
     }
-    let visible = lines.len().saturating_sub(inner.height as usize);
-    let shown: Vec<Line> = lines.into_iter().skip(visible).collect();
+    // Wrap BEFORE choosing what fits. A long line used to be cut at the panel
+    // edge — the tail of "SSM snapshot pool: ... 48 layers" simply vanished —
+    // and handing `Paragraph` a `Wrap` instead would not fix it: the skip
+    // below counts ENTRIES, so one entry occupying three rows would push the
+    // newest lines off the bottom, which is worse than losing the end of one.
+    // Expanding to visual rows first keeps "the last N rows" true.
+    let width = inner.width as usize;
+    let rows: Vec<Line> = lines
+        .into_iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect();
+    let visible = rows.len().saturating_sub(inner.height as usize);
+    let shown: Vec<Line> = rows.into_iter().skip(visible).collect();
     f.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Break one composed log line into as many rows as it needs.
+///
+/// The prefix spans (timestamp, level, target) are styled separately from the
+/// message, so this wraps the MESSAGE and indents continuations under it —
+/// re-wrapping the whole line as plain text would lose those styles and repeat
+/// the timestamp on every row.
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line];
+    }
+    let prefix: usize = line
+        .spans
+        .iter()
+        .take(3)
+        .map(|s| s.content.chars().count())
+        .sum();
+    let msg = line
+        .spans
+        .last()
+        .map(|s| s.content.to_string())
+        .unwrap_or_default();
+    if prefix + msg.chars().count() <= width {
+        return vec![line];
+    }
+    let style = line.spans.last().map(|s| s.style).unwrap_or_default();
+    let avail = width.saturating_sub(prefix).max(8);
+    let mut chunks = super::wrap(&msg, avail, style);
+    let mut out = Vec::with_capacity(chunks.len());
+    // First row keeps the real prefix; the rest are indented to line up.
+    let head = chunks.remove(0);
+    let mut first: Vec<Span<'static>> = line.spans.iter().take(3).cloned().collect();
+    first.extend(head.spans);
+    out.push(Line::from(first));
+    for c in chunks {
+        let mut row = vec![Span::raw(" ".repeat(prefix))];
+        row.extend(c.spans);
+        out.push(Line::from(row));
+    }
+    out
 }
 
 pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
@@ -285,28 +381,30 @@ pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     };
+    // Only the ACTIONABLE class alarms; expected-absent is declared with a reason.
+    let missing = &model.missing_required;
     let mut constraints = vec![Constraint::Min(6)];
-    if !model.missing.is_empty() {
-        constraints.insert(0, Constraint::Length(model.missing.len().min(6) as u16 + 2));
+    if !missing.is_empty() {
+        constraints.insert(0, Constraint::Length(missing.len().min(6) as u16 + 2));
     }
     let rows_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
     let mut idx = 0;
-    if !model.missing.is_empty() {
-        let block = panel(
-            format!("⚠ {} UNRESOLVED KERNEL LOOKUP(S) ─", model.missing.len()),
-            false,
-        )
-        .border_style(theme::warn());
-        let lines: Vec<Line> = model
-            .missing
+    if !missing.is_empty() {
+        let n = missing.len();
+        let title = format!(
+            "⚠ {n} UNRESOLVED ─ {} EXPECTED-ABSENT ─",
+            model.missing_expected.len()
+        );
+        let block = panel(title, false).border_style(theme::warn());
+        let lines: Vec<Line> = missing
             .iter()
             .take(6)
             .map(|m| {
                 Line::from(Span::styled(
-                    format!("  {}::{}", m.module, m.func),
+                    format!("  {}::{}  at {}", m.module, m.func, m.site),
                     theme::warn(),
                 ))
             })
@@ -319,6 +417,11 @@ pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .filter(|r| app.kernel_filter.is_empty() || r.module.contains(&app.kernel_filter))
         .collect();
+    // Two rows of chrome (header + border) come off the visible count; the
+    // ceiling is what remains once a full screen is showing.
+    let kernel_view = rows_layout[idx].height.saturating_sub(3) as usize;
+    app.kernel_scroll_max
+        .set(filtered.len().saturating_sub(kernel_view));
     let title = format!("KERNELS ─ {} modules ─", filtered.len());
     let header = Row::new(vec!["MODULE", "PTX-HASH", "RESOLUTION"])
         .style(theme::text2().add_modifier(Modifier::BOLD));
@@ -391,3 +494,7 @@ impl Wrapped for Paragraph<'_> {
         self.wrap(ratatui::widgets::Wrap { trim: false })
     }
 }
+
+#[cfg(test)]
+#[path = "main_tab_tests.rs"]
+mod tests;

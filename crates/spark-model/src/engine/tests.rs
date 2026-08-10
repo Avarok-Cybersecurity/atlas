@@ -46,7 +46,7 @@ impl MockModel {
     fn new(output_sequence: Vec<u32>) -> Self {
         let config = ModelConfig::qwen3_next_80b_nvfp4();
         let gpu = MockGpuBackend::new();
-        let buffers = BufferArena::new(&config, 1, 4096, 16, &gpu).unwrap();
+        let buffers = BufferArena::new(&config, 1, 4096, 16, 1, &gpu).unwrap();
         let kv_config = KvCacheConfig {
             block_size: 16,
             num_kv_heads: config.num_key_value_heads,
@@ -160,8 +160,13 @@ impl Model for MockModel {
             marconi_skip_to: 0,
             marconi_exact_snap: None,
             session_hash: 0,
+            mtp_capture_gen: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            cached_prefix_blocks: 0,
+            prefix_ref_tokens: Vec::new(),
+            prefix_lookup_applied: false,
+            prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
             prompt_len: 0,

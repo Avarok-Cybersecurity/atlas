@@ -24,6 +24,11 @@ pub(super) fn diag_norm(
 ) {
     let _ = gpu.synchronize(stream);
     let mut buf = vec![0u16; n_elements];
+    // SAFETY: `buf` is `vec![0u16; n_elements]` on the line above, so
+    // `buf.len() == n_elements` and `n_elements * 2 == buf.len() *
+    // size_of::<u16>()` — the span is exactly the Vec's buffer, all of it
+    // zero-initialised. `bytes` is the sole reference derived from `buf` while it
+    // is live: it is dead after the `copy_d2h` below, before `buf.iter()` runs.
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 2) };
     if gpu.copy_d2h(ptr, bytes).is_err() {
@@ -58,6 +63,11 @@ pub fn diag_norm_f32(
 ) {
     let _ = gpu.synchronize(stream);
     let mut buf = vec![0f32; n_elements];
+    // SAFETY: `buf` is `vec![0f32; n_elements]` on the line above, so
+    // `buf.len() == n_elements` and `n_elements * 4 == buf.len() *
+    // size_of::<f32>()` — the span is exactly the Vec's buffer, all of it
+    // zero-initialised. `bytes` is the sole reference derived from `buf` while it
+    // is live: it is dead after the `copy_d2h` below, before `buf.iter()` runs.
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 4) };
     if gpu.copy_d2h(ptr, bytes).is_err() {
@@ -75,17 +85,9 @@ pub fn diag_norm_f32(
     );
 }
 
-/// Gemma-4 diagnostic gate. Set ATLAS_DIAG_GEMMA4=1 to enable per-layer
-/// hidden-state norm dumps in the decode path. Heavy (one d2h copy per
-pub(super) fn gemma4_diag_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        matches!(
-            std::env::var("ATLAS_DIAG_GEMMA4").ok().as_deref(),
-            Some("1") | Some("true")
-        )
-    })
-}
+// The `OnceLock<bool>` static that lived here is now
+// `layers::ops::ModelLevers::gemma4_diag`, resolved when the model is built
+// and carried on `ForwardContext`.
 
 impl TransformerLayer for Qwen3AttentionLayer {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

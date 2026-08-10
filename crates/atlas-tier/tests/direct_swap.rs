@@ -143,3 +143,31 @@ fn direct_swap_aligned_fast_path_roundtrips() {
     }
     let _ = std::fs::remove_file(path);
 }
+
+/// The other half of "the swap file is 0 bytes": once a record IS written, the
+/// file grows immediately. `write_record` is a bare `pwrite`, so it extends
+/// `i_size` on the first byte at offset 0 — meaning a 0-byte file proves zero
+/// write calls, never a silently-dropped write. Skips where O_DIRECT is refused
+/// (tmpfs), like the other tests in this file.
+#[test]
+fn direct_swap_file_grows_on_first_write() {
+    let rb = 4096usize;
+    let Some((mut f, path)) = o_direct_file(rb, "grow") else {
+        return;
+    };
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        0,
+        "freshly created (truncated) swap file starts empty"
+    );
+    f.write_record(0, &vec![0x7C; rb]).unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        rb as u64,
+        "one record written ⇒ file is exactly one record long"
+    );
+    // Sparse addressing: a high slot sets i_size to (slot + 1) * record_bytes.
+    f.write_record(4, &vec![0x7D; rb]).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 5 * rb as u64);
+    let _ = std::fs::remove_file(path);
+}

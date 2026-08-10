@@ -532,9 +532,7 @@ impl Qwen3AttentionLayer {
                 let indptr_h = &bmeta.cu_seqlens_host;
                 let indptr_d = bmeta.cu_seqlens.0;
                 {
-                    use std::sync::atomic::{AtomicBool, Ordering};
-                    static LOGGED: AtomicBool = AtomicBool::new(false);
-                    if !LOGGED.swap(true, Ordering::Relaxed) {
+                    if ctx.stats.once("log:flashinfer_prefill_varlen") {
                         tracing::warn!(
                             "FLASHINFER_PREFILL(varlen) batch={batch} total={total} \
                              num_tokens={num_tokens} cu_seqlens={indptr_h:?} \

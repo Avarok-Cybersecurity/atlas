@@ -3,7 +3,7 @@ set -u
 IMG=atlas-gb10:followups; BIN=/workspace/.wt-decode-fold/target/release/spark
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf; HF=/workspace/.cache/huggingface; PORT=8888
 OUT=/workspace/.wt-decode-fold/kv_ab; mkdir -p "$OUT"
-ENV=(-e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1)
+ENV=(-e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1)
 leg(){
   local tag="$1"; local kv="$2"; local CN="atlas-kv-$tag"
   for c in $(sudo docker ps -q --filter name=atlas-kv-); do sudo docker rm -f "$c">/dev/null 2>&1; done; sleep 4

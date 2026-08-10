@@ -12,7 +12,7 @@
 //! [`WINDOW`] K=γ verify steps. Window full and mean below the threshold →
 //! SUSPEND speculation for that sequence (no proposing; the scheduler's
 //! bootstrap path serial-decodes it at full NOSPEC pace). After
-//! `reprobe_tokens()` serial tokens, UN-suspend and re-probe: the window
+//! `sched.levers.dflash_adaptive_reprobe` serial tokens, UN-suspend and re-probe: the window
 //! must refill before suspension can re-trigger, so a probe costs WINDOW
 //! spec steps (~2.7s) once per re-probe interval — a few percent on pure
 //! prose, nothing on accepting content, and mixed documents (prose→code)
@@ -39,35 +39,14 @@ pub(crate) struct AdaptState {
 
 const WINDOW: usize = 12;
 
-fn enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_ADAPTIVE").ok().as_deref() == Some("1"))
-}
-
-fn min_mean_accepted() -> f32 {
-    static CACHED: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_DFLASH_ADAPTIVE_MIN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2.0)
-    })
-}
-
-fn reprobe_tokens() -> u32 {
-    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_DFLASH_ADAPTIVE_REPROBE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(256)
-    })
-}
-
 /// Record one K=γ verify step's accept count; may trip suspension.
 /// Call after `num_accepted` is known (verify_dflash_step).
-pub(crate) fn record_verify(a: &mut ActiveSeq, num_accepted: usize) {
-    if !enabled() {
+pub(crate) fn record_verify(
+    a: &mut ActiveSeq,
+    num_accepted: usize,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+) {
+    if !sched.levers.dflash_adaptive {
         return;
     }
     let st = &mut a.spec_adapt;
@@ -77,14 +56,14 @@ pub(crate) fn record_verify(a: &mut ActiveSeq, num_accepted: usize) {
     }
     if st.window.len() == WINDOW {
         let mean = st.window.iter().sum::<u32>() as f32 / WINDOW as f32;
-        if mean < min_mean_accepted() {
+        if mean < sched.levers.dflash_adaptive_min {
             st.suspended = true;
             st.serial_tokens = 0;
             st.window.clear();
             tracing::info!(
                 "adaptive spec: SUSPENDED (mean accepted {mean:.2} < {} over {WINDOW} steps) — \
                  serial decode until re-probe",
-                min_mean_accepted(),
+                sched.levers.dflash_adaptive_min,
             );
         }
     }
@@ -92,21 +71,24 @@ pub(crate) fn record_verify(a: &mut ActiveSeq, num_accepted: usize) {
 
 /// May this sequence propose/speculate right now? Un-suspends (re-probe)
 /// once enough serial tokens have passed.
-pub(crate) fn spec_allowed(a: &mut ActiveSeq) -> bool {
-    if !enabled() {
+pub(crate) fn spec_allowed(
+    a: &mut ActiveSeq,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+) -> bool {
+    if !sched.levers.dflash_adaptive {
         return true;
     }
     let st = &mut a.spec_adapt;
     if !st.suspended {
         return true;
     }
-    if st.serial_tokens >= reprobe_tokens() {
+    if st.serial_tokens >= sched.levers.dflash_adaptive_reprobe {
         st.suspended = false;
         st.serial_tokens = 0;
         st.window.clear();
         tracing::info!(
             "adaptive spec: RE-PROBING after {} serial tokens",
-            reprobe_tokens()
+            sched.levers.dflash_adaptive_reprobe
         );
         return true;
     }
@@ -115,31 +97,19 @@ pub(crate) fn spec_allowed(a: &mut ActiveSeq) -> bool {
 
 /// Is this sequence currently in the adaptive-suspended (serial) regime?
 /// Read-only peek — unlike `spec_allowed`, never mutates re-probe state.
-pub(crate) fn is_suspended(a: &ActiveSeq) -> bool {
-    enabled() && a.spec_adapt.suspended
-}
-
-/// Ctx-holes fix master switch (`ATLAS_DFLASH_SERIAL_APPEND=1`): append
-/// every serially-decoded token's captured target hidden into the DFlash
-/// ctx accumulator — think-gated stretches, adaptive-suspended stretches,
-/// and bootstrap tokens alike. Read once.
-pub(crate) fn serial_append_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_SERIAL_APPEND").ok().as_deref() == Some("1"))
-}
-
-/// ATLAS_DFLASH_UNIFIED_CTX=1 → route the two commit points through the
-/// single `commit_ctx` (hole-immune by construction, DDD §4.1) instead of
-/// the ~5 fragmented appends. Default OFF = the 24.1 path, so both paths
-/// A/B on ONE binary.
-pub(crate) fn unified_ctx_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1"))
+pub(crate) fn is_suspended(a: &ActiveSeq, sched: &crate::scheduler::sched_ctx::SchedCtx) -> bool {
+    sched.levers.dflash_adaptive && a.spec_adapt.suspended
 }
 
 /// Count a serially-decoded token toward the re-probe interval.
-pub(crate) fn tick_serial(a: &mut ActiveSeq) {
-    if enabled() && a.spec_adapt.suspended {
+pub(crate) fn tick_serial(a: &mut ActiveSeq, sched: &crate::scheduler::sched_ctx::SchedCtx) {
+    if sched.levers.dflash_adaptive && a.spec_adapt.suspended {
         a.spec_adapt.serial_tokens = a.spec_adapt.serial_tokens.saturating_add(1);
     }
 }
+
+// The `ATLAS_DFLASH_SERIAL_APPEND` and `ATLAS_DFLASH_UNIFIED_CTX` statics
+// that lived here are now `SchedLevers::dflash_serial_append` /
+// `::dflash_unified_ctx`, resolved once per run and read through `SchedCtx`.
+
+// The `ATLAS_DFLASH_ADAPTIVE*` statics are now `SchedLevers::dflash_adaptive*`.

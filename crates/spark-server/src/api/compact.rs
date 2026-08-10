@@ -183,20 +183,57 @@ pub(super) fn openai_error_response_with_param(
     param: Option<&str>,
     code: Option<&str>,
 ) -> Response {
+    error_body(status, message, type_for_status(status), param, code)
+}
+
+/// The same, with an explicit `error.type` instead of one derived from the
+/// status code.
+///
+/// The derived mapping is far too coarse for anything a client should branch
+/// on: it turns every 503 into `"server_error"`, so "no model has been chosen
+/// yet" — recoverable, and fixed by one action in the Library — was
+/// indistinguishable from an internal failure. Handlers that know the specific
+/// condition say so here, and in exchange get the matching hint.
+pub(super) fn openai_error_response_typed(
+    status: StatusCode,
+    message: String,
+    error_type: &str,
+) -> Response {
+    error_body(status, message, error_type, None, None)
+}
+
+fn type_for_status(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST => "invalid_request_error",
+        StatusCode::UNAUTHORIZED => "authentication_error",
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::NOT_FOUND => "not_found_error",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_exceeded",
+        StatusCode::SERVICE_UNAVAILABLE => "server_error",
+        _ => "server_error",
+    }
+}
+
+/// The single place an OpenAI-shaped error body is built.
+///
+/// Hint lookup lives here rather than at the call sites so that a handler
+/// cannot emit a known error type and forget the hint — the two are decided
+/// together, once, from the same string.
+fn error_body(
+    status: StatusCode,
+    message: String,
+    error_type: &str,
+    param: Option<&str>,
+    code: Option<&str>,
+) -> Response {
+    let hint = crate::error_hints::hint_for(error_type);
     let body = serde_json::json!({
         "error": {
-            "message": message,
-            "type": match status {
-                StatusCode::BAD_REQUEST => "invalid_request_error",
-                StatusCode::UNAUTHORIZED => "authentication_error",
-                StatusCode::FORBIDDEN => "permission_error",
-                StatusCode::NOT_FOUND => "not_found_error",
-                StatusCode::TOO_MANY_REQUESTS => "rate_limit_exceeded",
-                StatusCode::SERVICE_UNAVAILABLE => "server_error",
-                _ => "server_error",
-            },
+            "message": crate::error_hints::message_with_hint(&message, error_type),
+            "type": error_type,
             "param": param,
             "code": code,
+            "hint": hint,
         }
     });
     (status, Json(body)).into_response()

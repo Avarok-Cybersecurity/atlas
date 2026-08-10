@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Helpers: BF16 conversion, hard-stop registry, loop detection, sampling defaults.
+//! Helpers: BF16 conversion, loop detection, sampling defaults, and the pure
+//! decision cores behind the hard output/length limits (the limits themselves
+//! travel on `SchedCtx` — see `scheduler::limits`).
 
 /// Convert two little-endian BF16 bytes to f32.
 #[inline]
@@ -8,47 +10,12 @@ pub fn bf16_to_f32(lo: u8, hi: u8) -> f32 {
     f32::from_bits(((lo as u32) | ((hi as u32) << 8)) << 16)
 }
 
-/// Global hard-stop token for ChatML role boundaries (`<|im_start|>`).
-///
-/// Set once at startup from `main.rs::set_im_start_hard_stop` when the
-/// tokenizer exposes `<|im_start|>` as a single token id (Qwen3.5/3.6 family
-/// tokenizers: id 248045). Read from `emit_token` to bail out of the turn
-/// regardless of grammar / tool-call / min_tokens suppression — otherwise
-/// the model can sample `<|im_start|>`, have it silently swallowed as a
-/// suppressed EOS, and continue emitting the following role literal
-/// (`user` / `assistant`, plain BPE tokens) which DO stream to the client.
-///
-/// 0 = unset / no hard-stop (non-Qwen tokenizers). The value is checked
-/// with `load(Ordering::Relaxed)` on the emit path — no atomicity contract
-/// beyond "set once before the first request lands", which is guaranteed
-/// by the main.rs init ordering.
-static IM_START_HARD_STOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Install the ChatML role-boundary hard-stop. Called once from `main.rs`
-/// at startup when `<|im_start|>` resolves to a single token id. Noop when
-/// called with 0.
-pub fn set_im_start_hard_stop(id: u32) {
-    IM_START_HARD_STOP.store(id, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[inline]
-pub fn im_start_hard_stop() -> Option<u32> {
-    let id = IM_START_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
-    if id == 0 { None } else { Some(id) }
-}
-
-/// Fix B (2026-06-05): global hard-stop token for the `<tool_response>` control
-/// token. Set once at startup from `tokenizer_runtime.rs` when `<tool_response>`
-/// resolves to a single token id; mirrors the `<|im_start|>` hard-stop above.
-/// 0 = unset / no hard-stop.
-static TOOL_RESPONSE_HARD_STOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-pub fn set_tool_response_hard_stop(id: u32) {
-    TOOL_RESPONSE_HARD_STOP.store(id, std::sync::atomic::Ordering::Relaxed);
-}
-pub fn tool_response_hard_stop() -> Option<u32> {
-    let id = TOOL_RESPONSE_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
-    if id == 0 { None } else { Some(id) }
-}
+// The `<|im_start|>` / `<tool_response>` hard-stop token ids and the
+// served-context ceiling were three atomics here, each installed by a `set_*`
+// call during serve startup. All three are per-model — two are token ids,
+// which mean nothing against another tokenizer — so they are now
+// `SchedLimits`, built where the tokenizer resolves them and carried on
+// `SchedCtx`. See `scheduler::limits`.
 
 // ── Hard output/length limits (2026-07-21, DS4F hard-limit lane) ─────────────
 // Three scheduler defects let generation run past its declared ceilings once a
@@ -61,26 +28,6 @@ pub fn tool_response_hard_stop() -> Option<u32> {
 // The pure decision cores below back the fixes in `decode_logits_step` and
 // `emit_step`. All are no-ops until a ceiling is actually reached, so the
 // 35/40 direct-mode (thinking-OFF) baseline is byte-unchanged.
-
-/// Runtime served-context ceiling (`--max-seq-len`). Set ONCE at serve startup
-/// (`serve.rs`, before the scheduler thread spawns) and read per decode step so
-/// the scheduler HARD-STOPS a sequence at the context ceiling instead of
-/// relying on the on-completion true-up (`middleware.rs`). `0` = unset /
-/// disabled → every guard below becomes a no-op (also the default any unit
-/// test / un-inited path sees). Read with `Relaxed`: the only contract is
-/// "set once before the first request lands", guaranteed by serve init order.
-static MAX_SEQ_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Install the served-context ceiling. Called once from `serve.rs`. `0`
-/// disables the per-step seq-len guard.
-pub fn set_max_seq_len(n: usize) {
-    MAX_SEQ_LEN.store(n, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[inline]
-pub fn max_seq_len_ceiling() -> usize {
-    MAX_SEQ_LEN.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 /// §C-3 pure core: would the NEXT decode step reach or exceed the served
 /// context ceiling? `position` = current sequence length (prompt + generated,
@@ -177,8 +124,8 @@ pub const THINK_LOOP_SCAN_WINDOW: usize = 160;
 /// **Gating**: this watchdog is OFF by default. Models with a known
 /// prose-attractor failure mode (Qwen3.5-35B-A3B + Claude-Code agentic
 /// sessions) opt in via MODEL.toml `[behavior].enable_loop_watchdog =
-/// true`. The flag is read at boot and stored in
-/// [`set_enable_loop_watchdog`] / [`enable_loop_watchdog`].
+/// true`. The flag is read at boot into `SchedLevers::loop_watchdog`, which
+/// the dashboard's `/watchdog` command can also toggle mid-run.
 // 2026-05-23 numerical-drift sweep lowered MIN_TOKENS 96→48 and
 // MIN_REPEATS 3→2: opencode session ses_1a97c9241ffecMUu29IF8304TS
 // showed the model entering a sentence-repeat attractor at late
@@ -229,6 +176,10 @@ pub const CONTENT_LOOP_NORM_MIN_REPEATS: usize = 4;
 /// "structural", never a false numeric — safe either way.
 pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 
+// `ATLAS_DISABLE_WATCHDOGS` is resolved once into `SchedLevers::disable_watchdogs`
+// and read through `SchedCtx` / `LogitsContext`. `parse_disable_watchdogs` below
+// stays as the SSOT parse — the boot audit calls it directly, having no carrier.
+
 /// Resolved kill-switch for ALL auto-watchdogs (content-loop, inter-tool
 /// prose budget, F2 confidence early-stop, mid-word `</think>` defer,
 /// thinking-loop). Cached once on first read from `ATLAS_DISABLE_WATCHDOGS`.
@@ -243,9 +194,7 @@ pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 /// auto-watchdogs short-circuit. The user-set `max_thinking_budget` and
 /// safety masks (post-`</think>` re-entry, tool-call-during-thinking)
 /// are NOT touched — those are not watchdogs.
-static DISABLE_WATCHDOGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-fn parse_disable_watchdogs(env: Option<&str>) -> bool {
+pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
     match env {
         Some(v) => {
             let v = v.trim();
@@ -254,31 +203,18 @@ fn parse_disable_watchdogs(env: Option<&str>) -> bool {
         None => false,
     }
 }
-
-/// Whether all auto-watchdogs are disabled at runtime. `false` by
-/// default; flipped only when `ATLAS_DISABLE_WATCHDOGS=1`/`true`.
-pub fn disable_watchdogs() -> bool {
-    *DISABLE_WATCHDOGS.get_or_init(|| {
-        parse_disable_watchdogs(std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref())
-    })
-}
-
-static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved `ModelBehavior.enable_loop_watchdog`.
-/// Idempotent: subsequent calls within the same process are ignored.
-pub fn set_enable_loop_watchdog(enabled: bool) {
-    let _ = ENABLE_LOOP_WATCHDOG.set(enabled);
-}
-
-/// Read the per-model loop-watchdog flag set at boot. Defaults to
-/// `false` until `set_enable_loop_watchdog` runs (boot order: weights →
-/// behavior plumbing → scheduler start).
-pub fn enable_loop_watchdog() -> bool {
-    *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
-}
+// The loop watchdog was a `OnceLock<bool>` with a `set_` installer called
+// from both serve startup (MODEL.toml `[behavior].enable_loop_watchdog`) and
+// the dashboard's `/watchdog` command — a process global precisely because
+// two threads needed to share one bool. It is now `SchedLevers::loop_watchdog`,
+// an atomic inside the run's levers, which serve hands to the scheduler and
+// the dashboard as an `Arc`.
 
 // ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
+
+// Resolved once into `SchedLevers::forced_token_fastpath` and read off
+// `LogitsContext::sampling` by the one stage that needs it.
+// `parse_forced_token_fastpath` below stays as the SSOT parse.
 
 /// Resolved kill-switch for the grammar forced-token (Coalescence)
 /// fast-path. Computed once on first read from the environment.
@@ -296,17 +232,15 @@ pub fn enable_loop_watchdog() -> bool {
 /// `mod_helpers.rs`; a MODEL.toml `[behavior]` flag was not used because
 /// the `ModelBehavior` struct lives in the `atlas-kernels` crate, which
 /// this change deliberately does not touch.
-static FORCED_TOKEN_FASTPATH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
 /// Pure parse of the `ATLAS_DISABLE_FORCED_TOKEN` env value into the
-/// resolved "fast-path enabled" boolean. Split out of
-/// [`forced_token_fastpath_enabled`] so the parsing rule is unit-testable
-/// without touching the process-wide `OnceLock`.
+/// resolved "fast-path enabled" boolean. Kept separate from
+/// `SchedLevers::forced_token_fastpath`, which calls it, so the parsing rule
+/// is unit-testable without building a whole lever set.
 ///
 /// `None` (env unset) → enabled. A truthy value (`"1"` / `"true"`,
 /// case-insensitive, surrounding whitespace ignored) → disabled.
 /// Everything else (empty, `"0"`, `"false"`, junk) → enabled.
-fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
+pub(crate) fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
     match env {
         Some(v) => {
             let v = v.trim();
@@ -348,14 +282,6 @@ pub fn grammar_budget_close_enabled() -> bool {
 /// same reason as Fix A. Kill-switch: `ATLAS_TOOL_RESPONSE_STOP=0`/`false`.
 pub fn tool_response_stop_enabled() -> bool {
     env_flag_default_on("ATLAS_TOOL_RESPONSE_STOP")
-}
-
-/// Whether the grammar forced-token fast-path is enabled (default
-/// `true`; disabled by `ATLAS_DISABLE_FORCED_TOKEN=1`/`true`).
-pub fn forced_token_fastpath_enabled() -> bool {
-    *FORCED_TOKEN_FASTPATH.get_or_init(|| {
-        parse_forced_token_fastpath(std::env::var("ATLAS_DISABLE_FORCED_TOKEN").ok().as_deref())
-    })
 }
 
 /// Per-model tunables for the always-on decode-time watchdogs. Sourced
@@ -418,108 +344,60 @@ impl Default for WatchdogParams {
     }
 }
 
-static WATCHDOG_PARAMS: std::sync::OnceLock<WatchdogParams> = std::sync::OnceLock::new();
+impl WatchdogParams {
+    /// Historical fuzzy-repeat mismatch tolerance divisor, exposed so the
+    /// `repetition` tests can name it instead of restating `12`.
+    pub const DEFAULT_FUZZY_TOLERANCE_DIV: usize =
+        DEFAULT_WATCHDOG_PARAMS.fuzzy_repeat_tolerance_div;
 
-/// Set once at startup from the resolved `ModelBehavior`. Idempotent.
-pub fn set_watchdog_params(p: WatchdogParams) {
-    let _ = WATCHDOG_PARAMS.set(p);
-}
-
-/// Read the per-model watchdog tunables. Returns the historical-default
-/// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
-/// any pre-boot caller see exactly the old hardcoded constants.
-pub fn watchdog_params() -> WatchdogParams {
-    let mut p = *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS);
-    // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
-    // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on every
-    // turn, so a legitimate PLAN / analysis prose turn (`grammar_state.is_some()`
-    // ⇒ "tool turn") is subject to it and gets guillotined mid-sentence
-    // (finish=length) — the "worst run ever" 6-turn session died writing an API
-    // plan at 385 tokens. The REPEATING wander is already caught by the
-    // content-loop + SimHash watchdogs independently; this budget's residual job
-    // is only the non-repeating dormant-opener burn. Raise the effective bound
-    // to a plan-friendly value (still << max_tokens, per the ultracode do-NOT
-    // list) and expose it for tuning. Env wins over MODEL.toml.
-    if let Some(v) = *INTER_TOOL_PROSE_OVERRIDE.get_or_init(|| {
-        std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
+    /// Resolve this model's watchdog tunables from its MODEL.toml
+    /// `[behavior]` table, applying the one env override that outranks it.
+    ///
+    /// Was a `OnceLock` plus a `set_watchdog_params` installer. Two problems,
+    /// both fixed by building the value where it is known and carrying it:
+    /// the tunables are per-model, so a `OnceLock` kept the first model's
+    /// table for every model after it; and the installer ran from
+    /// `log_behavior_audit`, which serve calls *after* it spawns the
+    /// scheduler thread — the reader's `unwrap_or(&DEFAULT)` was the only
+    /// reason that ordering was survivable.
+    pub fn from_behavior(b: &atlas_kernels::ModelBehavior) -> Self {
+        let mut p = Self {
+            think_loop_min_repeats: b.think_loop_min_repeats as usize,
+            think_loop_scan_window: b.think_loop_scan_window as usize,
+            confidence_early_stop: b.confidence_early_stop,
+            confidence_run_length: b.confidence_run_length,
+            fuzzy_repeat_tolerance_div: b.fuzzy_repeat_tolerance_div as usize,
+            max_inter_tool_prose: b.max_inter_tool_prose,
+            max_post_think_content_tokens: b.max_post_think_content_tokens,
+            rollback_resteer: b.rollback_resteer,
+        };
+        // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
+        // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on
+        // every turn, so a legitimate PLAN / analysis prose turn
+        // (`grammar_state.is_some()` ⇒ "tool turn") is subject to it and gets
+        // guillotined mid-sentence (finish=length) — the "worst run ever"
+        // 6-turn session died writing an API plan at 385 tokens. The REPEATING
+        // wander is already caught by the content-loop + SimHash watchdogs
+        // independently; this budget's residual job is only the non-repeating
+        // dormant-opener burn. Env wins over MODEL.toml.
+        if let Some(v) = std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-    }) {
-        p.max_inter_tool_prose = v;
+        {
+            p.max_inter_tool_prose = v;
+        }
+        p
     }
-    p
 }
 
-static INTER_TOOL_PROSE_OVERRIDE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
-
-/// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
-/// (optionally one leading space). Built once at startup from the
-/// tokenizer; drives the digit-normalized content-loop path. Fail-open:
-/// never set (or build failed) → normalized path inert, the exact
-/// detector is unaffected.
-static NUMERIC_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> = std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved tokenizer. Idempotent.
-pub fn set_numeric_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = NUMERIC_TOKEN_MASK.set(mask);
-}
-
-/// Read the numeric-token mask. `None` until `set_numeric_token_mask`
-/// runs — callers must treat `None` as "normalized path disabled".
-pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    NUMERIC_TOKEN_MASK.get().cloned()
-}
-
-/// `mask[id] == true` iff token `id` decodes to text ending in a
-/// well-formed generation boundary — a newline, or sentence-ending
-/// punctuation (`.`, `!`, `?`) optionally followed by a closing quote
-/// or whitespace. Built once at startup from the tokenizer; drives
-/// [`super::rollback::rollback_to_boundary`]'s boundary search.
-/// Fail-open: never set → rollback finds no boundary and the watchdog
-/// falls back to its hard stop.
-static BOUNDARY_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
-    std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved tokenizer. Idempotent.
-pub fn set_boundary_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = BOUNDARY_TOKEN_MASK.set(mask);
-}
-
-/// Read the boundary-token mask. `None` until `set_boundary_token_mask`
-/// runs — callers must treat `None` as "no boundary info available".
-pub fn boundary_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    BOUNDARY_TOKEN_MASK.get().cloned()
-}
-
-/// Per-token mid-word mask (2026-05-24): `mask[id]` is true iff the
-/// token decodes to text whose LAST character is alphanumeric — i.e.
-/// emitting `</think>` (or any sentence-end punctuation) right after
-/// this token would split a word.
-///
-/// Used by [`super::decode_logits_seq`] to suppress `</think>` when the
-/// previously emitted token ended mid-word. FP8 precision drift on
-/// Qwen3.6-FP8 biases the `</think>` logit upward by enough to flip
-/// against word-continuation tokens at low margin (opencode-session.md
-/// 2026-05-24: 8/8 thinking blocks ended mid-word: "creating thep",
-/// "ping/pong en", "then cr"). The fix is a soft guard rather than a
-/// rewrite of the model.
-///
-/// Fail-open: never set → suppression is skipped and the model
-/// retains full freedom to terminate thinking at any token.
-static MID_WORD_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
-    std::sync::OnceLock::new();
-
-/// Set once at startup from the resolved tokenizer. Idempotent.
-pub fn set_mid_word_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = MID_WORD_TOKEN_MASK.set(mask);
-}
-
-/// Read the mid-word token mask. `None` until `set_mid_word_token_mask`
-/// runs — callers must treat `None` as "no mid-word info available"
-/// and skip the suppression.
-pub fn mid_word_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    MID_WORD_TOKEN_MASK.get().cloned()
-}
+// The three vocabulary masks that lived here as `OnceLock<Arc<[bool]>>` plus a
+// `set_*` each are now `scheduler::vocab_masks::VocabMasks`, returned by
+// `resolve_tokenizer_runtime` like every other tokenizer-derived value and
+// carried down through `scheduler::run`.
+//
+// They were the sharpest hazard in the tree: each is INDEXED BY TOKEN ID, so a
+// mask outliving the vocabulary that built it does not fail — it classifies the
+// wrong ids, and the logit processors suppress the wrong tokens. Silently.
 
 /// F2 (2026-04-26): cap on free-text tokens between successive
 /// `<tool_call>` opens when `tool_choice="auto"`. The grammar FSM
@@ -558,8 +436,8 @@ pub const MAX_POST_THINK_CONTENT_TOKENS: u32 = 100_000;
 /// `Executing:` / `I need to run:`). A strict "contiguous
 /// periodic repeat" detector misses these; a substring-occurrence
 /// counter catches them.
-pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
-    detect_thinking_token_loop_with(tokens, None)
+pub fn detect_thinking_token_loop(tokens: &[u32], wp: WatchdogParams) -> bool {
+    detect_thinking_token_loop_with(tokens, None, wp)
 }
 
 /// Per-sequence override variant of [`detect_thinking_token_loop`].
@@ -567,11 +445,12 @@ pub fn detect_thinking_token_loop(tokens: &[u32]) -> bool {
 /// `p.max_pattern_size`, `p.min_count` as the period and repeat
 /// thresholds — exactly mirroring vLLM's `RepetitionDetectionParams`
 /// (`sampling_params.py:111-144`). When `None`, falls back to the
-/// boot-global `watchdog_params()` constants so existing callers
-/// without per-request configuration are byte-identical to before.
+/// run's `WatchdogParams` so existing callers without per-request
+/// configuration are byte-identical to before.
 pub fn detect_thinking_token_loop_with(
     tokens: &[u32],
     override_: Option<crate::api::inference_types::RepetitionDetectionParams>,
+    wp: WatchdogParams,
 ) -> bool {
     let (period_min, period_max, min_repeats) = match override_ {
         Some(p) => (
@@ -579,18 +458,15 @@ pub fn detect_thinking_token_loop_with(
             p.max_pattern_size as usize,
             p.min_count as usize,
         ),
-        None => {
-            let wp = watchdog_params();
-            (
-                THINK_LOOP_PERIOD_MIN,
-                THINK_LOOP_PERIOD_MAX,
-                wp.think_loop_min_repeats,
-            )
-        }
+        None => (
+            THINK_LOOP_PERIOD_MIN,
+            THINK_LOOP_PERIOD_MAX,
+            wp.think_loop_min_repeats,
+        ),
     };
     let scan_window = match override_ {
         Some(_) => 0, // vLLM-anchored detector ignores scan_window
-        None => watchdog_params().think_loop_scan_window,
+        None => wp.think_loop_scan_window,
     };
     detect_token_loop(
         tokens,

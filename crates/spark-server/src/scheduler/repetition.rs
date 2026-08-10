@@ -14,7 +14,10 @@
 /// naturally contains 2x boilerplate repeats (function signatures, XML tags);
 /// real runaway loops repeat many times, so the 3x threshold cuts false
 /// positives seen on alpha-2.43 (20-tok at 138 and 37-tok at 103 boundary hits).
-pub fn detect_fuzzy_repetition(tokens: &[u32]) -> Option<(usize, usize, usize)> {
+pub fn detect_fuzzy_repetition(
+    tokens: &[u32],
+    tolerance_div: usize,
+) -> Option<(usize, usize, usize)> {
     let len = tokens.len();
     if len < 90 {
         return None;
@@ -24,8 +27,7 @@ pub fn detect_fuzzy_repetition(tokens: &[u32]) -> Option<(usize, usize, usize)> 
             continue;
         }
         let base = len - pattern_len * 3;
-        let max_mismatches =
-            (pattern_len / super::helpers::watchdog_params().fuzzy_repeat_tolerance_div).max(1);
+        let max_mismatches = (pattern_len / tolerance_div).max(1);
         let mut mis_a = 0usize;
         let mut mis_b = 0usize;
         for i in 0..pattern_len {
@@ -50,17 +52,28 @@ pub fn detect_fuzzy_repetition(tokens: &[u32]) -> Option<(usize, usize, usize)> 
 mod fuzzy_repetition_tests {
     use super::detect_fuzzy_repetition;
 
+    /// The historical hardcoded divisor, which `WatchdogParams::default()`
+    /// reproduces — these cases assert the pre-parameterization behaviour.
+    const DEFAULT_TOLERANCE_DIV: usize =
+        crate::scheduler::helpers::WatchdogParams::DEFAULT_FUZZY_TOLERANCE_DIV;
+
     #[test]
     fn returns_none_below_minimum_output() {
         let tokens: Vec<u32> = (0..50).collect();
-        assert_eq!(detect_fuzzy_repetition(&tokens), None);
+        assert_eq!(
+            detect_fuzzy_repetition(&tokens, DEFAULT_TOLERANCE_DIV),
+            None
+        );
     }
 
     #[test]
     fn returns_none_on_non_repeating_output() {
         // 120 distinct tokens — should never match a 15..=40 pattern-x3 window.
         let tokens: Vec<u32> = (0..120).collect();
-        assert_eq!(detect_fuzzy_repetition(&tokens), None);
+        assert_eq!(
+            detect_fuzzy_repetition(&tokens, DEFAULT_TOLERANCE_DIV),
+            None
+        );
     }
 
     #[test]
@@ -72,7 +85,7 @@ mod fuzzy_repetition_tests {
         for _ in 0..3 {
             tokens.extend_from_slice(&pattern);
         }
-        let hit = detect_fuzzy_repetition(&tokens);
+        let hit = detect_fuzzy_repetition(&tokens, DEFAULT_TOLERANCE_DIV);
         assert!(
             matches!(hit, Some((20, 0, 0))),
             "expected exact 20-tok x3 detection, got {:?}",
@@ -94,7 +107,10 @@ mod fuzzy_repetition_tests {
         for t in 600..660 {
             tokens.push(t);
         }
-        assert_eq!(detect_fuzzy_repetition(&tokens), None);
+        assert_eq!(
+            detect_fuzzy_repetition(&tokens, DEFAULT_TOLERANCE_DIV),
+            None
+        );
     }
 
     #[test]
@@ -111,7 +127,7 @@ mod fuzzy_repetition_tests {
         tokens.extend_from_slice(&base);
         tokens.extend_from_slice(&copy_b);
         tokens.extend_from_slice(&copy_c);
-        let hit = detect_fuzzy_repetition(&tokens);
+        let hit = detect_fuzzy_repetition(&tokens, DEFAULT_TOLERANCE_DIV);
         assert!(
             hit.is_some(),
             "expected detection of near-identical triple, got None"
@@ -135,6 +151,9 @@ mod fuzzy_repetition_tests {
         for t in 4000..4060 {
             tokens.push(t);
         }
-        assert_eq!(detect_fuzzy_repetition(&tokens), None);
+        assert_eq!(
+            detect_fuzzy_repetition(&tokens, DEFAULT_TOLERANCE_DIV),
+            None
+        );
     }
 }

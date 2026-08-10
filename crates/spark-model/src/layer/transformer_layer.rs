@@ -11,6 +11,36 @@ use super::{BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState};
 
 mod default_loops;
 
+/// Batched-verify WY pointer-table layout (SSOT — writer:
+/// `TransformerModel::upload_verify_wy_tables`, reader: the qwen3_ssm
+/// `GdnStates::Multi` batched conv+WY arm).
+///
+/// Per GDN layer, four device pointer tables laid back-to-back:
+/// `[h_state | Hi0 | Hi1 | Hi2]`, each `VERIFY_WY_TABLE_SEQS` u64 entries
+/// (one per batched-verify sequence, unused tail entries zero). The
+/// per-layer slice handed to `decode_verify_multi` is
+/// `VERIFY_WY_LAYER_STRIDE_BYTES` long. At K<4 only the first `k` tables
+/// are filled (`[h | Hi_0..Hi_{k-2}]`); the layout/strides are constant so
+/// the reader's offsets never depend on the ladder step.
+///
+/// 32 (2026-07-30, spec at n=32): THE batched-verify sequence envelope —
+/// the stash slots, the `can_batch_verify` n-cap and these tables are all
+/// sized from this one const. History: 4 → 16 (at 4 the upload returned
+/// NULL for every n>4 batch, silently declining the cross-sequence conv+WY
+/// fast path at exactly the concurrencies it was built for) → 32 (the
+/// 32:1 ladder rung: n=32 × k=2 = 64 verify rows; kernels index a table by
+/// sequence and receive each table's base pointer separately, so widening
+/// is a pure host-side layout change). 48 GDN layers x 4 tables x 32
+/// entries x 8 B = 48 KB.
+pub const VERIFY_WY_TABLE_SEQS: usize = 32;
+/// Tables per GDN layer: h_state + Hi0..Hi2 (K=4 verify → 3 intermediates).
+pub const VERIFY_WY_TABLES_PER_LAYER: usize = 4;
+/// Bytes between consecutive tables within a layer slice.
+pub const VERIFY_WY_TABLE_STRIDE_BYTES: usize = VERIFY_WY_TABLE_SEQS * 8;
+/// Bytes between consecutive GDN layers' table slices.
+pub const VERIFY_WY_LAYER_STRIDE_BYTES: usize =
+    VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES;
+
 pub trait TransformerLayer: Send + Sync {
     /// `&mut dyn Any` downcast hook for post-construction weight overlays (e.g.
     /// the LoRA install walk). Default `None`; overlay-capable layers override.
@@ -491,6 +521,37 @@ pub trait TransformerLayer: Send + Sync {
             ctx,
             stream,
         )
+    }
+
+    /// Batched MTP verify: `n_seqs` sequences × `k` tokens through this layer
+    /// in ONE weight sweep (rows seq-major, `r = i*k + j`, contiguous in
+    /// `hidden`/`residual`). Projections/FFN batch across all `n_seqs*k` rows;
+    /// the stateful recurrence (conv/GDN) runs per-sequence against
+    /// `states[i]` with row-offset buffer bases — per-sequence math is
+    /// byte-identical to the single-sequence `decode_batched` K-token body.
+    ///
+    /// Only SSM layers override (attention layers are handled by the caller
+    /// via `decode_multi_seq`, which already takes per-row block tables and
+    /// seq lens). Default: unsupported.
+    ///
+    /// `wy_tables`: this layer's slice of the model-staged WY pointer tables
+    /// (layout above, `VERIFY_WY_LAYER_STRIDE_BYTES`; refreshed pre-graph
+    /// every step) enabling the single-launch table-form WY batch. NULL →
+    /// the layer keeps its per-sequence WY path.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_verify_multi<'a, 'b: 'a>(
+        &self,
+        _hidden: DevicePtr,
+        _residual: DevicePtr,
+        _n_seqs: usize,
+        _ks: &[usize],
+        _states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        _kv_cache: &mut PagedKvCache,
+        _wy_tables: DevicePtr,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!("decode_verify_multi: unsupported for this layer type")
     }
 
     /// Allocate per-sequence state for this layer.

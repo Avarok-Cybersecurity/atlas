@@ -14,7 +14,10 @@ fn detects_period_8_triple_repeat() {
     tokens.extend(pat.iter()); // r1
     tokens.extend(pat.iter()); // r2
     tokens.extend(pat.iter()); // r3
-    assert!(detect_thinking_token_loop(&tokens));
+    assert!(detect_thinking_token_loop(
+        &tokens,
+        WatchdogParams::default()
+    ));
 }
 
 #[test]
@@ -26,14 +29,20 @@ fn rejects_two_repeats() {
     let mut tokens: Vec<u32> = (0u32..50).collect();
     tokens.extend(pat.iter()); // r1
     tokens.extend(pat.iter()); // r2 only
-    assert!(!detect_thinking_token_loop(&tokens));
+    assert!(!detect_thinking_token_loop(
+        &tokens,
+        WatchdogParams::default()
+    ));
 }
 
 #[test]
 fn rejects_numbered_list_reasoning() {
     // Legitimate thinking content: 80 distinct tokens, no repeat.
     let tokens: Vec<u32> = (0u32..80).collect();
-    assert!(!detect_thinking_token_loop(&tokens));
+    assert!(!detect_thinking_token_loop(
+        &tokens,
+        WatchdogParams::default()
+    ));
 }
 
 #[test]
@@ -47,7 +56,10 @@ fn detects_short_period_fence_loop() {
     for _ in 0..4 {
         tokens.extend(pat.iter());
     }
-    assert!(detect_thinking_token_loop(&tokens));
+    assert!(detect_thinking_token_loop(
+        &tokens,
+        WatchdogParams::default()
+    ));
 }
 
 #[test]
@@ -74,7 +86,7 @@ fn rejects_fence_body_with_varying_prefixes() {
         tokens.extend(fence.iter());
     }
     assert!(
-        !detect_thinking_token_loop(&tokens),
+        !detect_thinking_token_loop(&tokens, WatchdogParams::default()),
         "end-anchored detector intentionally does not fire on varying-prefix patterns"
     );
 }
@@ -392,7 +404,7 @@ fn override_applies_to_thinking_loop() {
         tokens.extend(pat.iter());
     }
     assert!(
-        detect_thinking_token_loop_with(&tokens, None),
+        detect_thinking_token_loop_with(&tokens, None, WatchdogParams::default()),
         "default thinking-loop thresholds must still fire on 4× period-10"
     );
     // Override demanding 6 repeats ⇒ 4 is insufficient ⇒ must not fire.
@@ -402,7 +414,7 @@ fn override_applies_to_thinking_loop() {
         min_count: 6,
     };
     assert!(
-        !detect_thinking_token_loop_with(&tokens, Some(strict)),
+        !detect_thinking_token_loop_with(&tokens, Some(strict), WatchdogParams::default()),
         "stricter min_count=6 override must suppress 4-repeat firing"
     );
 }

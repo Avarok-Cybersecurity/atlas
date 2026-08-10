@@ -10,7 +10,7 @@
 
 [package]
 name = "xgrammar"
-version = "0.2.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Pure-Rust grammar-constrained decoding (XGrammar port)"

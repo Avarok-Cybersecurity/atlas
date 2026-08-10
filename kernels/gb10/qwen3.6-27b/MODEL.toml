@@ -178,3 +178,34 @@ mask_token_id = 248070
 # `dflash_loader::parse_dflash_config` reads these from the drafter's
 # config.json at runtime; this MODEL.toml field is the fallback default.
 target_layer_ids = [1, 16, 31, 46, 61]
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+#
+# TRANSITIONAL, and deliberately EMPTY. The boot audit fails closed on every
+# unresolved lookup that is not listed here, so anything added is a lookup we
+# have decided to keep issuing knowing it can never resolve.
+#
+# Prefer the other fix: gate the lookup on config so it is never ISSUED (see
+# `qwen3_attention::init_arch_gates`, which is what removed the MLA /
+# hyper-connection / CSA / HDIM-512 probes from every non-DeepSeek model). A
+# lookup that is never issued leaves no row to explain.
+#
+# Shape — every entry needs a stated reason, and the build PANICS without one:
+#
+#   [expected_absent.<module>]
+#   <kernel> = "why this model cannot use it"
+#
+# Populate from one boot: `spark serve <model> --check-kernels` prints the
+# complete list for this target with each dispatch site, and exits non-zero
+# while anything is unexplained.
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+This model's w4a4_gemm.cu defines only w4a4_gemm; the mfast variant exists solely
+in nemotron-labs-3-puzzle-75b-a9b. Dispatch (qwen3_attention/init.rs) falls back
+to w4a4_gemm, which is correct. This fallback predates the resolution gate and
+was silent until it; it is declared here to unblock serving, NOT because the
+fallback is known to be optimal. Whether porting mfast to this model is a win is
+UNMEASURED - treat as a candidate, not a confirmed loss (routing m=9..32 into a
+GEMV looked like the same shape and measured -14.4% at C=16). Remove this entry
+if mfast is ported."""

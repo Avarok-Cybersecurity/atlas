@@ -59,8 +59,47 @@ use spark_runtime::gpu::DevicePtr;
 /// so carry alone is inert, and prefill without carry is a measured −927
 /// ms/turn loss. [`crate::model::drafter_context`] resolves both together and
 /// is the single source of truth for the policy and its kill switch.
-pub fn mtp_carry_drafter_enabled() -> bool {
-    crate::model::drafter_context::config().carry
+/// Minimum MATCHED prefix (tokens) before the Marconi SSM snapshot skip is worth
+/// taking. Below this, take the KV-only path instead.
+///
+/// # Why a floor exists at all
+///
+/// Restoring an SSM snapshot skips the target's prefill, so
+/// `mtp_prefill_capture_len` stays 0, the `captured >= prompt_len` guard at
+/// `speculative.rs:194` fails, `prefill_drafter` is skipped and the drafter
+/// starts EMPTY (the defect this module's carry closes for SAME-SESSION turns —
+/// but a fresh request matching only a shared chat-template preamble has no
+/// previous turn to carry from, so carry cannot fire).
+///
+/// Measured at C=1, identical-prompt reps (full-prompt hits), warm reps vs
+/// caching-off, 2026-07-28:
+/// ```text
+///    99 matched tokens   23.85 vs 26.4   -9.7%   LOSS
+///   219 matched tokens   24.15 vs 22.0   +9.8%   WIN
+///   349 matched tokens   23.55 vs 21.9   +7.5%
+///   629 matched tokens   22.45 vs 20.3  +10.6%
+/// ```
+/// The crossover is SHARP, between ~99 and ~219. 256 sits inside the win region
+/// and is block-aligned (16 x 16-token blocks). On preamble-only traffic the
+/// penalty was -6.8% at C=1 and -9.2% at C=2, and inert by C=4.
+///
+/// `ATLAS_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores the previous
+/// always-restore behaviour.
+pub fn marconi_min_tokens() -> usize {
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("ATLAS_MARCONI_MIN_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(256)
+    })
+}
+
+pub fn mtp_carry_drafter_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+    // Force-off in multi-seq MTP mode: the carry slot is single-sequence by
+    // design (one slot, `active.len() == 1` assumption). See
+    // `speculative::mtp_multi_seq_mode` for the contract.
+    levers.drafter.carry && !crate::speculative::mtp_multi_seq_mode()
 }
 
 /// `ATLAS_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no

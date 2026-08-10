@@ -1,0 +1,28 @@
+{
+  "name": "dez-site",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "description": "Placeholder site for Dez — the free and open-source IDE for the local inference-first paradigm.",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "npm run icons && vite build",
+    "preview": "vite preview",
+    "icons": "node scripts/gen-icons.mjs",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.70.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "sharp": "^0.35.3",
+    "svelte": "^5.56.8",
+    "svelte-check": "^4.4.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.1"
+  }
+}
