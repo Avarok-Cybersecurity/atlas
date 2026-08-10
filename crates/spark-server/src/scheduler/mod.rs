@@ -22,8 +22,12 @@ mod decode_logits_step;
 mod decode_step;
 mod emit_step;
 mod fast_greedy;
+#[cfg(test)]
+mod finish_guard_tests;
 mod helpers;
 mod lifecycle;
+#[cfg(test)]
+mod lifecycle_tests;
 mod logit_dump;
 mod logit_processors;
 mod logprobs;
@@ -857,7 +861,7 @@ pub fn run(
         // on this same iteration. Placed here rather than in a decode step
         // because the MTP/speculative path does not run `process_decode_logits`.
         enforce_request_deadlines(&mut active);
-        retire_finished_sequences(&*model, &mut active);
+        retire_finished_sequences(&*model, &mut active, sched.limits.max_seq_len);
         sched.timing.record(mtp_timing::Phase::LoopRetire, t_loop);
 
         // ── Swap-in: resume swapped sequences when blocks free up ──
@@ -939,7 +943,7 @@ pub fn run(
 
     // Drain any remaining active sequences on shutdown.
     for mut a in active {
-        finish_sequence(&*model, &mut a);
+        finish_sequence(&*model, &mut a, sched.limits.max_seq_len);
     }
     if let Some(ref mut spill) = spill_manager {
         for s in swapped {

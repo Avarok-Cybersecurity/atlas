@@ -230,6 +230,15 @@ pub struct Qwen3SsmLayer {
     gdn_verify_fused_conv_kn_k: KernelHandle,
     /// Batched twin (gridDim.y = n_seq) — batched spec decode. 0 when absent.
     gdn_verify_fused_conv_kn_batched_k: KernelHandle,
+    /// Exact-verify `_snap` twins (issue #435 route (a)): the fused-norm
+    /// decode kernels with an inline per-token h-state rollback snapshot, and
+    /// the FP32-output fused verify conv. All OPTIONAL (model-shadow staged,
+    /// currently qwen3.6-27b/nvfp4 only): a 0 handle makes the exact arm fall
+    /// back to the parent kernel + `copy_d2d_async` snapshots — the same
+    /// bits, more launches.
+    gdn_f32_norm_snap_k: KernelHandle,
+    gdn_f32_strided_norm_snap_k: KernelHandle,
+    gdn_verify_fused_conv_kn_f32_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential
@@ -409,7 +418,9 @@ pub(crate) mod ssm_h_fp16;
 mod trait_decode;
 mod trait_decode_batched;
 mod trait_decode_batched_conv_gdn;
+mod trait_decode_batched_conv_gdn_exact;
 mod trait_decode_batched_conv_gdn_multi;
+mod trait_decode_batched_conv_gdn_multi_exact;
 mod trait_decode_batched_conv_gdn_wyn;
 mod trait_decode_multi_seq;
 mod trait_layer;
@@ -423,6 +434,7 @@ mod trait_prefill_recur;
 
 pub use gdn_flags::{
     GdnFlags, gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_fp16_enabled,
+    verify_exact_enabled,
 };
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──

@@ -94,6 +94,23 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
             );
             state.loop_watchdog_triggered = true;
             state.stop_string_triggered = true;
+            // ★ Name the guard so the wire reason comes out "length".
+            // Without this the scheduler sees a bare `cancel_flag` with
+            // budget left, falls to its early-finalize rule and reports
+            // "stop" — telling the client the model finished, when in
+            // fact we truncated it mid-doom-loop.
+            //
+            // This was the THIRD such path. The scheduler guards and the
+            // simhash/token-loop watchdogs were fixed first; this one
+            // survived both and cost the agentic gate runs 0 and 7 on
+            // three consecutive shas, because the harness's
+            // `was_cut_off()` only nudges on "length".
+            //
+            // ★ Note the harness's OTHER recovery route cannot cover it:
+            // `emitted_unparsed_call` scans the text for `<tool_call>` /
+            // `<function=`, and the sanitizer has already suppressed
+            // exactly those bytes — which is why this streak fired at all.
+            state.guard_stop = Some("suppress_streak");
             state
                 .cancel_flag
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -430,6 +447,13 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
             &mut state.stop_string_emitted_len,
             &mut state.stop_string_triggered,
         );
+        // Entry was gated on `!triggered`, so a flip here is a GENUINE
+        // client stop-sequence match (the watchdog paths set the flag
+        // elsewhere): record it for the wire finish_reason ("stop", per
+        // OpenAI) and cancel generation.
+        if state.stop_string_triggered {
+            state.note_stop_string_match();
+        }
         if delta.is_empty() {
             // Either everything is sitting in the hold-back window
             // (waiting for the next chunk / stream close) or a match

@@ -178,6 +178,10 @@ name = "gdn_wy4_batched_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "verify_exact_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_conv_kn_microtest"
 required-features = ["cuda", "gpu-examples"]
 

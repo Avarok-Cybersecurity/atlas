@@ -381,3 +381,25 @@ the resolved half-register gate is set, and that gate is off by default
 gated_delta_rule_decode_f32_strided_norm_smem = """
 SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
 default) AND the half-register gate. Not a live path as shipped."""
+
+# #438: the exact-verify `_snap` twins are model-shadow staged in
+# qwen3.6-27b/nvfp4 ONLY (shadow-first; promote to common/ once validated
+# per family). Every dispatch site probes handle != 0, and the whole chain
+# is opt-in via --exact-verify; the fallback stays exact.
+[expected_absent.gated_delta_rule_snap]
+gated_delta_rule_decode_f32_norm_snap = """
+Exact-verify snapshot twin (#435), shipped only in qwen3.6-27b/nvfp4.
+trait_decode_batched_conv_gdn_exact probes handle != 0; absent, the
+exact arm uses the parent gdn_f32_norm kernel + copy_d2d snapshots
+(same bits, more launches)."""
+gated_delta_rule_decode_f32_strided_norm_snap = """
+Batched exact-verify snapshot twin (#435), shipped only in
+qwen3.6-27b/nvfp4. trait_decode_batched_conv_gdn_multi_exact declines
+the batched form on handle 0 and the per-sequence exact loop serves
+(still exact)."""
+
+[expected_absent.gdn_verify_fused_conv_kn_f32]
+gdn_verify_fused_conv_kn_f32 = """
+FP32 fused verify conv for the exact-verify chain (#435), shipped only
+in qwen3.6-27b/nvfp4. Probed handle != 0; absent, the exact chain keeps
+its per-token conv launches (same bits, more launches)."""
