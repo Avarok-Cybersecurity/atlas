@@ -260,6 +260,59 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// A detached, host-only sequence state: no GPU resources, no SSM
+    /// slot, no layer states, every counter zeroed.
+    ///
+    /// This is the ONLY way for another crate to construct a
+    /// `SequenceState` at all — `ssm_slot` is crate-private by design —
+    /// so it is what lets `spark-server`'s scheduler tests drive the real
+    /// `emit_token` over a real `ActiveSeq` instead of re-implementing
+    /// the guard under test. Same role as `SchedCtx::for_test()`: a
+    /// production-visible constructor that only tests call.
+    ///
+    /// It is deliberately NOT wired into the three in-crate literal
+    /// construction sites (NLLB `alloc_sequence`, the engine-test mock,
+    /// `trait_impl/meta.rs`) — folding those onto this default belongs in
+    /// its own change, not in a test-only fix.
+    pub fn host_only(slot_idx: usize) -> Self {
+        SequenceState {
+            tokens: Vec::new(),
+            block_table: Vec::new(),
+            seq_len: 0,
+            layer_states: Vec::new(),
+            proposer_state: None,
+            slot_idx,
+            ssm_slot: None,
+            marconi_skip_to: 0,
+            marconi_exact_snap: None,
+            session_hash: 0,
+            mtp_capture_gen: 0,
+            adapter_id: 0,
+            chunked_prefill_meta: None,
+            cached_prefix_tokens: 0,
+            cached_prefix_blocks: 0,
+            prefix_ref_tokens: Vec::new(),
+            prefix_lookup_applied: false,
+            prefix_lookup_skip: false,
+            kv_valid_tokens: 0,
+            last_decode_ckpt_block: 0,
+            prompt_len: 0,
+            disk_block_ids: Vec::new(),
+            disk_last_offloaded_per_layer: Vec::new(),
+            collect_prompt_logprobs: None,
+            prompt_logprobs: Vec::new(),
+            // -1 = defer to the installed active adapter (see field docs).
+            adapter_slot: -1,
+            // -1 = no LoRA slot ref held until prefill acquires (Task #25).
+            acquired_adapter_slot: -1,
+            src_lang_id: 0,
+            tgt_lang_id: 0,
+            num_beams: 1,
+            length_penalty: 1.0,
+            early_stopping: false,
+        }
+    }
+
     /// SSM-pool slot index for this sequence, if it has GDN/SSM (linear-attn)
     /// layers. Used by the scheduler to order the decode batch by slot so the
     /// batched-recurrent SSM + CUDA-graph contiguity invariant holds
