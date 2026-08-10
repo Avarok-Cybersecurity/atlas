@@ -27,6 +27,7 @@ mod decode_checkpoint;
 mod decode_graph_key;
 mod drafter_prefill;
 mod ep_misc;
+mod lm_head_batched;
 mod meta;
 mod prefill_a;
 mod prefill_b;

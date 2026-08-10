@@ -30,16 +30,6 @@ fn multiseq_graphs_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
 }
 
-/// Batched-GEMV decode lm_head: **ON by default**, disabled by
-/// `ATLAS_NO_LM_HEAD_BATCH_GEMV=1`.
-///
-/// Strict `== "1"` on an `ATLAS_NO_*` name, not a presence check — presence
-/// flags in this codebase are ENABLED by `=0`. Read once; this is a per-step site.
-fn lm_head_batch_gemv_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_LM_HEAD_BATCH_GEMV").as_deref() != Ok("1"))
-}
-
 impl TransformerModel {
     pub(super) fn decode_batch_dispatch(
         &self,
@@ -457,120 +447,14 @@ impl TransformerModel {
             // ~N×254 MB/step). nvfp4/dense are batched here; FP8 single-scale
             // keeps the per-row path (no batched single-scale FP8 GEMM handle
             // on the model, and Holo's lm_head is NVFP4 anyway).
-            let logits = self.buffers.logits();
-            let v = self.config.vocab_size;
-            if let Some(ref fp8) = self.lm_head_fp8 {
-                for i in 0..padded_n {
-                    ops::dense_gemv_fp8w(
-                        self.gpu.as_ref(),
-                        self.dense_gemv_fp8w_kernel,
-                        normed.offset(i * h * bf16),
-                        fp8,
-                        logits.offset(i * v * bf16),
-                        v as u32,
-                        h as u32,
-                        stream,
-                    )?;
-                }
-            } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                // Batched GEMV for the decode head. The base M64-tile
-                // `w4a16_gemm` below wastes most of its MMA tile here: at
-                // padded_n=16 only 16 of 64 tile-rows carry data, and the same
-                // nsys note the verify path records (impl_a3.rs) measured it at
-                // 19.3 ms on this [248320, 5120] NVFP4 head vs ~2.5 ms for the
-                // batched GEMV streaming the same 636 MB once. That cost is
-                // FLAT in n, so it sits in the fixed term at every batch size.
-                //
-                // Tier by padded_n exactly as the SSM mixer does: batch4 (M<=4)
-                // / batch8 (M<=8) / batch16 (M<=16). A 0-handle on any tier
-                // falls through to the GEMM, so targets lacking the kernel are
-                // unaffected.
-                // Tile GEMM at padded_n >= 5 over the PADDED transposed twin.
-                // padded_n <= 4 stays on the GEMV, which measures 3174 us =
-                // 226 GB/s = 98.3% of the memory roofline on this shape and is
-                // therefore unimprovable; the tile GEMM LOSES there.
-                if padded_n >= 5
-                    && self.w4a16_gemm_t_bf16_kernel.0 != 0
-                    && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
-                {
-                    // LOSSLESS path: BF16 MMA, no activation downcast.
-                    ops::w4a16_gemm_n128_m128_bf16_ldb(
-                        self.gpu.as_ref(),
-                        self.w4a16_gemm_t_bf16_kernel,
-                        normed,
-                        nvfp4_t,
-                        logits,
-                        padded_n as u32,
-                        v as u32,
-                        h as u32,
-                        ldb,
-                        stream,
-                    )?;
-                } else if padded_n >= 5
-                    && self.w4a16_gemm_t_kernel.0 != 0
-                    && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
-                {
-                    ops::w4a16_gemm_n128_ldb(
-                        self.gpu.as_ref(),
-                        self.w4a16_gemm_t_kernel,
-                        normed,
-                        nvfp4_t,
-                        logits,
-                        padded_n as u32,
-                        v as u32,
-                        h as u32,
-                        ldb,
-                        stream,
-                    )?;
-                } else {
-                    let gemv_k = if padded_n <= 4 {
-                        self.w4a16_gemv_batch4_kernel
-                    } else if padded_n <= 8 {
-                        self.w4a16_gemv_batch8_kernel
-                    } else if padded_n <= 16 {
-                        self.w4a16_gemv_batch16_kernel
-                    } else {
-                        spark_runtime::gpu::KernelHandle(0)
-                    };
-                    if gemv_k.0 != 0 && lm_head_batch_gemv_enabled() {
-                        ops::w4a16_gemv_batchm(
-                            self.gpu.as_ref(),
-                            gemv_k,
-                            normed,
-                            nvfp4,
-                            logits,
-                            padded_n as u32,
-                            v as u32,
-                            h as u32,
-                            stream,
-                        )?;
-                    } else {
-                        ops::w4a16_gemm(
-                            self.gpu.as_ref(),
-                            self.w4a16_gemm_kernel,
-                            normed,
-                            nvfp4,
-                            logits,
-                            padded_n as u32,
-                            v as u32,
-                            h as u32,
-                            stream,
-                        )?;
-                    }
-                }
-            } else {
-                ops::dense_gemm(
-                    self.gpu.as_ref(),
-                    self.dense_gemm_kernel,
-                    normed,
-                    &self.lm_head_weight,
-                    logits,
-                    padded_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
+            // The ladder itself lives in `lm_head_batched.rs` — the mixed
+            // co-dispatch head (`decode_b2::mixed_final_norm_lm_head`) calls
+            // the same function, so the two heads cannot pick different
+            // kernels for the same `padded_n`.
+            // The returned pointer is discarded here: this path reports its
+            // logits through `self.decode_logits_ptr()` at the end of the
+            // function, which reads the same buffer.
+            self.lm_head_project_batched(normed, padded_n, h, bf16, stream)?;
             if let Some(t0) = lmhead_t0 {
                 self.gpu.synchronize(stream).ok();
                 let head_us = t0.elapsed().as_micros();
