@@ -171,8 +171,8 @@ impl NemotronMamba2Layer {
     }
 
     /// Set native FP8 weights to skip double-quantization (FP8→BF16→NVFP4).
-    /// When set, decode uses w8a16_gemv and prefill uses w8a16_gemm[_pipelined]
-    /// instead of the NVFP4/W4A4 arms.
+    /// When set, decode uses `w8a16_gemv` and prefill uses `w8a16_gemm` /
+    /// `w8a16_gemm_pipelined` instead of the NVFP4/W4A4 arms.
     ///
     /// Inputs MUST be tagged `WeightQuantFormat::Fp8BlockScaled`: every w8a16
     /// kernel indexes `block_scale[n/128 * k_blocks + k/128]`, so a per-row `[N]`
