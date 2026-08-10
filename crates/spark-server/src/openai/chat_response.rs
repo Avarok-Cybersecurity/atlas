@@ -121,6 +121,36 @@ pub struct ModelInfo {
     pub object: String,
     pub created: u64,
     pub owned_by: String,
+    /// Context window the server will actually accept, in tokens.
+    ///
+    /// Not an OpenAI field — a vLLM extension that clients (LiteLLM, aider,
+    /// Continue, OpenWebUI) probe to size requests without a round trip that
+    /// fails at the scheduler. It is DERIVED from `AppState::max_seq_len`, the
+    /// same value the admission path enforces, so the advertised ceiling and
+    /// the enforced one cannot drift apart.
+    ///
+    /// `None` (omitted from the wire) when no model is loaded: fabricating a 0
+    /// would read as "zero context" rather than "unknown".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_model_len: Option<usize>,
+}
+
+impl ModelInfo {
+    /// The ONE place an advertised entry is built.
+    ///
+    /// Both `/v1/models` list sites and the retrieve handler go through here so
+    /// the advertised ceiling is DERIVED from the value admission enforces
+    /// (`AppState::max_seq_len`) rather than restated. A second construction
+    /// site is how the wire and the scheduler drift apart.
+    pub fn advertise(id: String, max_seq_len: usize) -> Self {
+        Self {
+            id,
+            object: "model".to_string(),
+            created: crate::ids::unix_timestamp(),
+            owned_by: "atlas-spark".to_string(),
+            max_model_len: Some(max_seq_len),
+        }
+    }
 }
 
 impl ChatCompletionResponse {
