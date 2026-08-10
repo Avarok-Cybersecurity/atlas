@@ -310,7 +310,7 @@ mod tests {
         let json = match std::fs::read_to_string(SNAP) {
             Ok(s) => s,
             Err(_) => {
-                eprintln!("Skipping: drafter snapshot not in cache");
+                tracing::warn!("Skipping: drafter snapshot not in cache");
                 return;
             }
         };

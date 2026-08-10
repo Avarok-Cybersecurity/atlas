@@ -102,6 +102,15 @@ impl Drop for KvSpillManager {
                 }
             }
         }
+        // And the directory itself. It is named per-PID, so a server that
+        // clears its files but leaves the directory strands one empty
+        // directory per start, forever — 28 of them had collected on the test
+        // box. The shared path this replaced could not accumulate, so the
+        // per-PID fix for cross-process wipes brought this with it.
+        //
+        // `remove_dir` refuses a non-empty directory, which is the behaviour
+        // to want: anything left in there is not ours to delete.
+        let _ = fs::remove_dir(&self.spill_dir);
     }
 }
 
@@ -215,5 +224,47 @@ mod tests {
         assert_eq!(id1, 1);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod dir_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_the_manager_leaves_no_directory_behind() {
+        // The path is per-PID, so clearing the files but keeping the directory
+        // strands one empty directory per server start, forever. 28 had
+        // collected on the test box before this was noticed.
+        let dir = std::env::temp_dir().join(format!(
+            "atlas_spill_cleanup_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        {
+            let mgr = KvSpillManager::new(dir.clone(), 1024).expect("constructs");
+            assert!(dir.exists(), "the manager creates its directory");
+            drop(mgr);
+        }
+        assert!(!dir.exists(), "and removes it again");
+    }
+
+    #[test]
+    fn a_directory_holding_someone_elses_file_is_left_alone() {
+        // `remove_dir` refuses a non-empty directory, which is the behaviour to
+        // want: anything not ours is not ours to delete.
+        let dir = std::env::temp_dir().join(format!(
+            "atlas_spill_shared_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("not-ours.txt"), b"keep me").expect("write");
+        {
+            let _mgr = KvSpillManager::new(dir.clone(), 1024).expect("constructs");
+        }
+        assert!(dir.exists(), "a directory with a foreign file survives");
+        assert!(dir.join("not-ours.txt").exists(), "and so does the file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

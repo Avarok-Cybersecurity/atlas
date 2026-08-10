@@ -64,16 +64,14 @@ fn env_usize(name: &str, default: usize) -> usize {
 /// Serial tokens between MTP re-probes while in Serial mode. Default
 /// matches the proven `ATLAS_DFLASH_ADAPTIVE_REPROBE` policy (256).
 fn reprobe_tokens() -> usize {
-    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *C.get_or_init(|| env_usize("ATLAS_MTP_GATE_REPROBE", 256))
+    env_usize("ATLAS_MTP_GATE_REPROBE", 256)
 }
 
 /// MTP tokens between serial-baseline refreshes while in Mtp mode. One
 /// 16-step window per 1024 tokens bounds refresh overhead at ≤0.3% even if
 /// serial were 18% slower.
 fn serial_refresh_tokens() -> usize {
-    static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *C.get_or_init(|| env_usize("ATLAS_MTP_GATE_REFRESH", 1024))
+    env_usize("ATLAS_MTP_GATE_REFRESH", 1024)
 }
 
 /// What the gate wants the scheduler to run for the NEXT step.
@@ -139,6 +137,10 @@ impl ModeStats {
 /// single-sequence decode/verify step is timed and reported, so arbitration
 /// runs continuously with zero dedicated measurement phases.
 pub struct MtpGate {
+    /// Serial tokens between MTP re-probes while in Serial mode.
+    reprobe: usize,
+    /// MTP tokens between serial-baseline refreshes while in Mtp mode.
+    refresh: usize,
     mode: Mode,
     /// True while the gate is running a short window of the OTHER mode
     /// (re-probe from Serial, baseline refresh from Mtp).
@@ -162,16 +164,40 @@ pub struct MtpGate {
 }
 
 impl MtpGate {
+    /// Observability accessor for the scheduler snapshot: current mode and
+    /// the delivered-throughput EWMA of that mode (0.0 until measured).
+    pub fn observe(&self) -> (super::snapshot::MtpModeSnap, f32) {
+        use super::snapshot::MtpModeSnap;
+        let mode = if self.probing {
+            MtpModeSnap::Probing
+        } else {
+            match self.mode {
+                Mode::Mtp => MtpModeSnap::Mtp,
+                Mode::Serial => MtpModeSnap::Serial,
+            }
+        };
+        let stats = match self.mode {
+            Mode::Mtp => &self.mtp,
+            Mode::Serial => &self.serial,
+        };
+        (mode, stats.tps.unwrap_or(0.0) as f32)
+    }
+
     /// `num_drafts` is retained for construction-site compatibility and
     /// logging; arbitration is measurement-driven and does not model K.
     pub fn new(num_drafts: usize) -> Self {
+        // Resolved once per gate rather than cached in two statics: the gate
+        // belongs to the run, and `event_interval` reads these on every decode
+        // step, which is too hot for a per-call getenv.
+        let reprobe = reprobe_tokens();
+        let refresh = serial_refresh_tokens();
         tracing::info!(
             "MTP gate: throughput-arbitrated (K={num_drafts}); window={WINDOW_STEPS} steps, \
-             dwell={SWITCH_DWELL_WINDOWS}, reprobe={} tok, refresh={} tok",
-            reprobe_tokens(),
-            serial_refresh_tokens(),
+             dwell={SWITCH_DWELL_WINDOWS}, reprobe={reprobe} tok, refresh={refresh} tok",
         );
         Self {
+            reprobe,
+            refresh,
             mode: Mode::Mtp,
             probing: false,
             probe_windows_left: 0,
@@ -253,8 +279,8 @@ impl MtpGate {
 
     fn event_interval(&self) -> usize {
         match self.mode {
-            Mode::Mtp => serial_refresh_tokens(),
-            Mode::Serial => reprobe_tokens(),
+            Mode::Mtp => self.refresh,
+            Mode::Serial => self.reprobe,
         }
     }
 

@@ -50,6 +50,28 @@ echo "GPU mem utilization: $GPU_MEM_UTIL"
 echo "MTP quantization:   $MTP_QUANT"
 echo ""
 
+IFACE_PRIMARY="enp1s0f0np0"
+IFACE_SECONDARY="enp1s0f1np1"
+NCCL_SOCKET_IFNAME=""
+
+echo "Detecting active RDMA network interface..."
+
+if ip -4 addr show "$IFACE_PRIMARY" 2>/dev/null | grep -q "inet "; then
+    NCCL_SOCKET_IFNAME="$IFACE_PRIMARY"
+    echo "  -> Found valid IP on: $IFACE_PRIMARY"
+elif ip -4 addr show "$IFACE_SECONDARY" 2>/dev/null | grep -q "inet "; then
+    NCCL_SOCKET_IFNAME="$IFACE_SECONDARY"
+    echo "  -> Found valid IP on: $IFACE_SECONDARY (Primary unavailable)"
+else
+    echo "ERROR: Neither $IFACE_PRIMARY nor $IFACE_SECONDARY has a valid IPv4 address." >&2
+    echo "Available interfaces on this node:"
+    ip -4 addr show | grep -E "^[0-9]+:" || true
+    exit 1
+fi
+
+echo "Using NCCL Socket Interface: $NCCL_SOCKET_IFNAME"
+echo ""
+
 # Stop any existing containers
 echo "Cleaning up old containers..."
 sudo docker rm -f atlas-ep0 2>/dev/null || true
@@ -80,7 +102,7 @@ RDMA_FLAGS="--device=/dev/infiniband --cap-add=IPC_LOCK --ulimit memlock=-1"
 #   - Added NVLS_ENABLE=0 (aarch64 Blackwell bug, NCCL #1769)
 #   - Added IB_TIMEOUT=22 + IB_RETRY_CNT=7 (resilience for slow IB startup)
 NCCL_ENV="\
-  -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \
+  -e NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME \
   -e NCCL_IB_DISABLE=0 \
   -e NCCL_IB_HCA=rocep1s0f0 \
   -e NCCL_IB_ROCE_VERSION_NUM=2 \

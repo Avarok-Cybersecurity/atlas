@@ -12,10 +12,7 @@ mod misc;
 mod parallel_calls;
 mod param_key_constraint;
 mod qwen3_coder_required;
-// TODO: stale tests — reference `enforce_min_length_on_required_strings`
-// and `sanitize_schema_for_grammar` which have been refactored. File
-// left on disk; un-comment once updated to the current schema-cleaner API.
-// mod sanitize;
+mod sanitize;
 mod tools_basic;
 
 /// Build a minimal vocabulary for testing.

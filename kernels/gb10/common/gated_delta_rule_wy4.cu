@@ -33,7 +33,23 @@ extern "C" __global__ void gated_delta_rule_wy4(
     unsigned int v_dim,
     unsigned int qk_stride,
     unsigned int v_stride,
-    unsigned int gb_stride
+    unsigned int gb_stride,
+    // 0 = the four state args are CONTIGUOUS bases indexed by (b*num_v_heads+vh);
+    // 1 = they are device POINTER TABLES of `batch_size` entries, one per sequence.
+    //
+    // Why this exists: the contiguous form assumes a batch stride of
+    // num_v_heads*hv floats for BOTH h_state and the intermediates. That is
+    // correct for h_state (pool slot stride) but WRONG for the intermediates,
+    // whose pool stride is num_intermediates * that (ssm_pool: the intermediate
+    // for (slot, token) lives at (slot*ni + token)*h_bytes). At batch_size>1 the
+    // old form made sequence 1's Hi0 write land on sequence 0's Hi1 — silent
+    // cross-sequence rollback corruption, latent only because every call site
+    // passed batch_size=1. The table form sidesteps it AND the separate
+    // "active sequences occupy contiguous slots" assumption.
+    //
+    // is_table=0 is byte-identical to the original kernel — same idiom as
+    // gated_delta_rule_fla.cu's h_state_is_table.
+    unsigned int state_is_table
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -44,10 +60,16 @@ extern "C" __global__ void gated_delta_rule_wy4(
     const unsigned int kh = vh / hr;
     const unsigned int hv = k_dim * v_dim;
 
-    float* H   = h_state        + ((b * num_v_heads + vh) * hv);
-    float* Hi0 = h_state_inter0 + ((b * num_v_heads + vh) * hv);
-    float* Hi1 = h_state_inter1 + ((b * num_v_heads + vh) * hv);
-    float* Hi2 = h_state_inter2 + ((b * num_v_heads + vh) * hv);
+    const unsigned long long head_off = (unsigned long long)vh * hv;
+    const unsigned long long flat_off = (unsigned long long)(b * num_v_heads + vh) * hv;
+    float* H   = state_is_table ? ((float* const*)h_state)[b]        + head_off
+                                : h_state        + flat_off;
+    float* Hi0 = state_is_table ? ((float* const*)h_state_inter0)[b] + head_off
+                                : h_state_inter0 + flat_off;
+    float* Hi1 = state_is_table ? ((float* const*)h_state_inter1)[b] + head_off
+                                : h_state_inter1 + flat_off;
+    float* Hi2 = state_is_table ? ((float* const*)h_state_inter2)[b] + head_off
+                                : h_state_inter2 + flat_off;
 
     // Token pointers.
     // Gate clamp MUST match per-token gated_delta_rule_decode to keep WY

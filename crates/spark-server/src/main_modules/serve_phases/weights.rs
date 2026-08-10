@@ -99,32 +99,6 @@ pub(crate) fn load_weight_store(
     Ok(store)
 }
 
-pub(crate) fn auto_detect_weight_prefix(
-    store: &spark_runtime::weights::WeightStore,
-    config: &mut ModelConfig,
-) {
-    if config.weight_prefix.is_empty() && config.nested_config {
-        config.weight_prefix = if store.contains("language_model.model.embed_tokens.weight") {
-            "language_model.model".to_string()
-        } else if store.contains("model.language_model.embed_tokens.weight") {
-            "model.language_model".to_string()
-        } else {
-            let scanned = store
-                .names()
-                .find(|k| k.contains(".layers.0."))
-                .and_then(|k| k.split(".layers.0.").next())
-                .map(|s| s.to_string());
-            if let Some(ref prefix) = scanned {
-                tracing::info!("Auto-detected weight prefix: '{prefix}'");
-            }
-            scanned.unwrap_or_else(|| "model".to_string())
-        };
-    }
-    if !config.weight_prefix.is_empty() {
-        tracing::info!("Weight prefix: {}", config.weight_prefix);
-    }
-}
-
 pub(crate) fn load_dflash_drafter(
     args: &cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,

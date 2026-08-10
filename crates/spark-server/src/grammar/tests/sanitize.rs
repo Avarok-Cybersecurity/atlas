@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
+// `schema`'s helpers are `pub(super)` to `grammar`, so they are not
+// re-exported through `tests`' own glob import — name them directly.
+use super::super::schema::{enforce_min_length_on_required_strings, sanitize_schema_for_grammar};
 
 #[test]
 fn test_enforce_min_length_on_required_strings() {

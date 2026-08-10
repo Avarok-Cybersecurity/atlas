@@ -5,6 +5,13 @@
 
 use super::super::*;
 
+/// How often the batched-recurrent fast path engaged vs fell back to the per-seq
+/// loop. The precondition (pool slots contiguous AND in slice order) fails as
+/// slots fragment, and it used to fail silently.
+static BATCHED_OK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FALLBACK_ONCE: std::sync::Once = std::sync::Once::new();
+
 impl Qwen3SsmLayer {
     /// Recurrent inner of the batched-projection SSM mixer.
     ///
@@ -57,8 +64,26 @@ impl Qwen3SsmLayer {
             };
         }
 
-        let batched_recurrent = if std::env::var("ATLAS_SSM_BATCHED_RECURRENT").ok().as_deref()
-            == Some("1")
+        // FP16 h-state (ATLAS_SSM_H_FP16). The conversion itself happens in
+        // `ssm_h_to_f16_dispatch` at the model's decode entry, outside the CUDA
+        // graph; here we only verify the invariant and pick the kernel.
+        let h_f16 = super::super::ssm_h_fp16_enabled();
+        if h_f16 {
+            for st in states.iter_mut().take(n) {
+                let ssm = st
+                    .as_any_mut()
+                    .downcast_mut::<SsmLayerState>()
+                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState for FP16 h-state"))?;
+                super::super::ssm_h_fp16::require_h_f16(ssm)?;
+            }
+            if kd != 128 || vd != 128 {
+                anyhow::bail!(
+                    "ATLAS_SSM_H_FP16 needs linear head dims 128/128 (the FP16 twins size their                      smem for k_dim==128); this model is {kd}/{vd}"
+                );
+            }
+        }
+
+        let batched_recurrent = if crate::layers::qwen3_ssm::ssm_batched_recurrent_enabled()
             && self.gdn_f32_strided_k.0 != 0
             && n > 1
         {
@@ -80,8 +105,38 @@ impl Qwen3SsmLayer {
                 }
             }
             if contiguous {
+                BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Some((h_base, conv_base))
             } else {
+                // Falling back to the per-seq loop costs ~28% on this block
+                // (measured n=16: batched 618 us/layer vs per-seq 853). It used
+                // to happen SILENTLY, so a profile could show both paths in one
+                // run with no way to tell how often or why. Report the first
+                // one with the offending slot, and keep a count.
+                let n_fb = FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                FALLBACK_ONCE.call_once(|| {
+                    let mut broke_at = usize::MAX;
+                    let mut delta = 0i64;
+                    for i in 1..n {
+                        if let Some(st) = states[i].as_any_mut().downcast_mut::<SsmLayerState>() {
+                            let want = h_base.0 + (i * self.h_state_bytes) as u64;
+                            if st.h_state.0 != want {
+                                broke_at = i;
+                                delta = st.h_state.0 as i64 - want as i64;
+                                break;
+                            }
+                        }
+                    }
+                    tracing::info!(
+                        "SSM batched recurrent DECLINED (n={n}): pool slots are not contiguous in \
+                         slice order — seq {broke_at} sits {} slot(s) from where the batch axis \
+                         expects it. The per-seq loop costs ~28% more on this block. Slots \
+                         fragment as sequences finish, so this is expected to recur; count is \
+                         logged at debug on every occurrence.",
+                        delta / self.h_state_bytes.max(1) as i64
+                    );
+                });
+                tracing::debug!("SSM batched recurrent fallback #{n_fb} (n={n})");
                 None
             }
         } else {
@@ -112,67 +167,174 @@ impl Qwen3SsmLayer {
             detail_step!("recurrent_batched_ba");
 
             let conv_out = ctx.buffers.ssm_conv_out_f32();
-            // CONV INPUT-STRIDE FIX: the conv kernel strides its input by `dim`
-            // (= conv_dim), but `deinterleaved` (the QKVZ-projection output) is
-            // laid out [Q|K|V|Z] with stride `qkvz_size` (> conv_dim). A single
-            // batched launch (batch=n) would read seq b>=1 from `b*conv_dim`
-            // instead of `b*qkvz_size`, pulling in the previous seq's Z-gate
-            // region → garbage into the GDN scan (correct at n=1, corrupt at
-            // n>=2). Mirror the proven per-token pattern in
-            // `trait_decode_batched_conv_gdn.rs`: run the cheap conv per-seq
-            // (batch=1) with pre-offset pointers so the qkvz_size input stride
-            // and conv_dim output stride are both honored. The expensive GDN
-            // scan below stays fully batched.
-            for i in 0..n {
-                ops::conv1d_update_l2norm(
+            // CONV INPUT-STRIDE: the conv reads `deinterleaved` (the QKVZ
+            // projection output), whose rows are `qkvz_size` apart, and writes
+            // a `conv_dim`-strided FP32 row. The plain kernel hardcodes BOTH
+            // strides as `dim` (= conv_dim), so a batch=n launch would read
+            // seq b>=1 from `b*conv_dim` instead of `b*qkvz_size` — landing in
+            // the previous seq's Z-gate region and feeding garbage into the
+            // GDN scan (correct at n=1, silently corrupt at n>=2).
+            //
+            // The strided kernel takes both strides explicitly, so the whole
+            // batch goes in ONE launch. Kernel sets that predate it report
+            // handle 0; there we keep the per-seq loop with pre-offset
+            // pointers, which honours the same two strides one row at a time.
+            if self.conv1d_l2norm_f32_strided_k.0 != 0 {
+                ops::conv1d_update_l2norm_strided(
                     ctx.gpu,
-                    self.conv1d_l2norm_f32_k,
-                    conv_state_base.offset(i * self.conv_state_bytes),
-                    deinterleaved.offset(i * qkvz_size * bf16),
+                    self.conv1d_l2norm_f32_strided_k,
+                    conv_state_base,
+                    deinterleaved,
                     &self.ssm.conv1d,
-                    conv_out.offset(i * conv_dim as usize * 4), // FP32 output, conv_dim-strided
+                    conv_out,
                     conv_dim,
                     d_conv,
-                    1,
+                    n as u32,
                     qk_channels,
                     kd as u32,
                     1e-6,
+                    qkvz_size as u32, // input row stride (BF16 elements)
+                    conv_dim,         // output row stride (FP32 elements)
                     stream,
                 )?;
+            } else {
+                for i in 0..n {
+                    ops::conv1d_update_l2norm(
+                        ctx.gpu,
+                        self.conv1d_l2norm_f32_k,
+                        conv_state_base.offset(i * self.conv_state_bytes),
+                        deinterleaved.offset(i * qkvz_size * bf16),
+                        &self.ssm.conv1d,
+                        conv_out.offset(i * conv_dim as usize * 4), // FP32, conv_dim-strided
+                        conv_dim,
+                        d_conv,
+                        1,
+                        qk_channels,
+                        kd as u32,
+                        1e-6,
+                        stream,
+                    )?;
+                }
             }
             detail_step!("recurrent_batched_conv");
 
             if self.gdn_f32_strided_norm_k.0 != 0
-                && std::env::var("ATLAS_GDN_FUSED_NORM").ok().as_deref() == Some("1")
+                && crate::layers::qwen3_ssm::gdn_fused_norm_enabled()
             {
                 let z_base = deinterleaved.offset((key_dim * 2 + value_dim) * bf16);
-                ops::gdn_decode_f32_strided_norm(
-                    ctx.gpu,
-                    self.gdn_f32_strided_norm_k,
-                    h_state_base,
-                    conv_out,
-                    conv_out.offset(key_dim * 4),
-                    conv_out.offset(key_dim * 2 * 4),
-                    gates,
-                    beta_fp32,
-                    z_base,
-                    self.ssm.norm.weight,
-                    normed_out_base,
-                    n as u32,
-                    nk as u32,
-                    nv as u32,
-                    kd as u32,
-                    vd as u32,
-                    conv_dim,
-                    conv_dim,
-                    gate_stride,
-                    qkvz_size as u32,
-                    value_dim as u32,
-                    eps,
-                    stream,
-                )?;
+                fn gdn_half_reg_enabled() -> bool {
+                    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    *ON.get_or_init(|| {
+                        std::env::var("ATLAS_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
+                    })
+                }
+                // SRAM-staged twin: bit-identical to the register-retention
+                // kernel (proved by `gdn_strided_norm_microtest`'s bitwise
+                // leg) and it does remove the half re-read — 1.0R+1W instead
+                // of 1.5R+1W.
+                //
+                // OPT-IN, because the traffic it removes turns out not to be
+                // DRAM traffic. Measured on dgx2 at tip w16, kill-switch A/B,
+                // 2 scored reps/leg: C=128 328.80 vs 327.10 baseline (+0.5%),
+                // and ON TOP OF the m128 projection lever 335.65 vs 337.35
+                // (-0.5%) — both inside the campaign's +/-1.0 boot band. The
+                // predicted -10.6% never appeared, which refutes the wave-15
+                // roofline premise that the scan moves 2.5 DRAM passes over H:
+                // the extra half-read was evidently already served by L2.
+                // Enable with ATLAS_GDN_SMEM_STAGE (PRESENCE — `=0` is NOT
+                // "on") to re-probe at wider batches, where the state grows
+                // past L2 and the balance may change.
+                fn gdn_smem_stage_enabled() -> bool {
+                    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    *ON.get_or_init(|| std::env::var("ATLAS_GDN_SMEM_STAGE").is_ok())
+                }
+                let gdn_norm_k = if kd == 128
+                    && vd == 128
+                    && self.gdn_f32_strided_norm_smem_k.0 != 0
+                    && gdn_half_reg_enabled()
+                    && gdn_smem_stage_enabled()
+                {
+                    // Precondition: the staging buffer is statically sized for
+                    // k_dim == 128, which the kd/vd guard above establishes.
+                    self.gdn_f32_strided_norm_smem_k
+                } else if kd == 128
+                    && vd == 128
+                    && self.gdn_f32_strided_norm_half_k.0 != 0
+                    && gdn_half_reg_enabled()
+                {
+                    self.gdn_f32_strided_norm_half_k
+                } else {
+                    self.gdn_f32_strided_norm_k
+                };
+                if h_f16 {
+                    // The FP16 pool has exactly one legal reader; the FP32 arms
+                    // above are unreachable in this mode (preflight refuses the
+                    // flag for any env combination that could route to one).
+                    // ★ `h_state_bytes` is the FP32-SIZED pool slot stride, so
+                    // in __half elements the per-sequence stride is
+                    // `h_state_bytes / 2` — twice the dense FP16 footprint the
+                    // FP32 kernel is allowed to infer from the head dims.
+                    ops::gdn_decode_f16_strided_norm(
+                        ctx.gpu,
+                        self.gdn_f16_strided_norm_half_k,
+                        h_state_base,
+                        conv_out,
+                        conv_out.offset(key_dim * 4),
+                        conv_out.offset(key_dim * 2 * 4),
+                        gates,
+                        beta_fp32,
+                        z_base,
+                        self.ssm.norm.weight,
+                        normed_out_base,
+                        n as u32,
+                        nk as u32,
+                        nv as u32,
+                        kd as u32,
+                        vd as u32,
+                        conv_dim,
+                        conv_dim,
+                        gate_stride,
+                        qkvz_size as u32,
+                        value_dim as u32,
+                        (self.h_state_bytes / 2) as u64,
+                        eps,
+                        stream,
+                    )?;
+                } else {
+                    ops::gdn_decode_f32_strided_norm(
+                        ctx.gpu,
+                        gdn_norm_k,
+                        h_state_base,
+                        conv_out,
+                        conv_out.offset(key_dim * 4),
+                        conv_out.offset(key_dim * 2 * 4),
+                        gates,
+                        beta_fp32,
+                        z_base,
+                        self.ssm.norm.weight,
+                        normed_out_base,
+                        n as u32,
+                        nk as u32,
+                        nv as u32,
+                        kd as u32,
+                        vd as u32,
+                        conv_dim,
+                        conv_dim,
+                        gate_stride,
+                        qkvz_size as u32,
+                        value_dim as u32,
+                        eps,
+                        stream,
+                    )?;
+                }
                 detail_step!("recurrent_batched_gdn_norm");
             } else {
+                if h_f16 {
+                    anyhow::bail!(
+                        "ATLAS_SSM_H_FP16: the batched decode arm selected the FP32-only \
+                         gated_delta_rule_decode_f32_strided (ATLAS_GDN_FUSED_NORM is not 1)"
+                    );
+                }
                 let gdn_out = conv_out.offset(n * conv_dim as usize * 4);
                 ops::gdn_decode_f32_strided(
                     ctx.gpu,
@@ -304,6 +466,12 @@ impl Qwen3SsmLayer {
                 } else {
                     None
                 };
+                if h_f16 && (use_fused_conv || self.gdn_f32_norm_k.0 == 0) {
+                    anyhow::bail!(
+                        "ATLAS_SSM_H_FP16: the per-seq decode arm selected an FP32-only kernel                          (fused_conv={use_fused_conv}, gdn_f32_norm={}). That would read the FP16                          pool as FP32. Unset ATLAS_GDN_FUSED_CONV and set ATLAS_GDN_FUSED_NORM=1.",
+                        self.gdn_f32_norm_k.0
+                    );
+                }
                 if use_fused_conv {
                     ops::gdn_decode_f32_conv_norm(
                         ctx.gpu,
@@ -333,11 +501,15 @@ impl Qwen3SsmLayer {
                         rec_gdn_us += t0.elapsed().as_micros();
                     }
                 } else if self.gdn_f32_norm_k.0 != 0
-                    && std::env::var("ATLAS_GDN_FUSED_NORM").ok().as_deref() == Some("1")
+                    && crate::layers::qwen3_ssm::gdn_fused_norm_enabled()
                 {
                     ops::gdn_decode_f32_norm(
                         ctx.gpu,
-                        self.gdn_f32_norm_k,
+                        if h_f16 {
+                            self.gdn_f16_norm_k
+                        } else {
+                            self.gdn_f32_norm_k
+                        },
                         ssm_state.h_state,
                         q_conv,
                         k_conv,

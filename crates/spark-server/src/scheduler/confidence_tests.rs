@@ -48,7 +48,7 @@ fn f2_arms_after_confidence_run_limit_tokens() {
     let mut run = 0;
     let mut fired = false;
     for _ in 0..CONFIDENCE_RUN_LIMIT {
-        let (next, fire) = confidence_run_step(true, run);
+        let (next, fire) = confidence_run_step(true, run, CONFIDENCE_RUN_LIMIT);
         run = next;
         fired |= fire;
     }
@@ -61,7 +61,7 @@ fn f2_arms_after_confidence_run_limit_tokens() {
 
 #[test]
 fn f2_run_breaks_on_non_confident_token() {
-    let (run, fire) = confidence_run_step(false, 25);
+    let (run, fire) = confidence_run_step(false, 25, CONFIDENCE_RUN_LIMIT);
     assert_eq!(run, 0);
     assert!(!fire);
 }
@@ -72,11 +72,11 @@ fn f2_accumulates_inside_code_too() {
     // brakeable. (Mid-statement safety is the *injection* gate's job,
     // see `defer_*` tests below — NOT suppression of detection.)
     // Pre-CONFIDENCE_RUN_LIMIT step: run advances, fire stays false.
-    let (run, fire) = confidence_run_step(true, CONFIDENCE_RUN_LIMIT - 2);
+    let (run, fire) = confidence_run_step(true, CONFIDENCE_RUN_LIMIT - 2, CONFIDENCE_RUN_LIMIT);
     assert_eq!(run, CONFIDENCE_RUN_LIMIT - 1);
     assert!(!fire);
     // At-limit step: run hits the cap and fire flips true.
-    let (run, fire) = confidence_run_step(true, CONFIDENCE_RUN_LIMIT - 1);
+    let (run, fire) = confidence_run_step(true, CONFIDENCE_RUN_LIMIT - 1, CONFIDENCE_RUN_LIMIT);
     assert_eq!(run, CONFIDENCE_RUN_LIMIT);
     assert!(
         fire,

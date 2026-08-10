@@ -1,6 +1,6 @@
 [package]
 name = "spark-model"
-version = "0.1.0"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas Spark model — Qwen3 forward pass orchestration"
@@ -90,6 +90,10 @@ name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "w4a16_lmhead_716_repro"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gemv_fp4_vs_fp8_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -158,6 +162,10 @@ name = "gdn_wy_verify_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_wy_f16_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_wyn_bench"
 required-features = ["cuda", "gpu-examples"]
 
@@ -167,6 +175,10 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "gdn_strided_norm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_wy4_batched_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]

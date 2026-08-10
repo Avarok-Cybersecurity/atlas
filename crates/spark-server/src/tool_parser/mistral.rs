@@ -19,12 +19,17 @@ impl ToolCallParser for MistralNativeParser {
         "mistral"
     }
 
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String {
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &super::PromptLevers,
+    ) -> String {
         // Mistral's native Jinja template handles tool injection via its own
         // [AVAILABLE_TOOLS] block. We still provide a system prompt so the
         // model knows the expected output format when the template pathway
         // is not active (e.g. OpenAI-compatible clients bypass the template).
-        let tools_json = tool_list_body(tools, || {
+        let tools_json = tool_list_body(tools, levers, || {
             serde_json::to_string(tools).unwrap_or_else(|_| "[]".into())
         });
         let mut prompt = format!(

@@ -30,7 +30,7 @@ The product decomposition is visible in three places in the repo:
 
 - The **directory tree**: `kernels/<hw>/<model>/<quant>/` mirrors the three-factor product exactly. A leaf is an object of `𝒯`.
 - The **build-time wildcards**: `ATLAS_TARGET_HW`, `ATLAS_TARGET_MODEL`, `ATLAS_TARGET_QUANT` in `atlas-kernels/build.rs` select subsets of each factor independently.
-- The **workspace crate split**: `spark-runtime`/`spark-comm` insulate the Hw axis, `spark-model` insulates the Mod axis, `atlas-quant` + `atlas-kernels` insulate the Quant axis.
+- The **workspace crate split**: `spark-runtime`/`spark-comm` insulate the Hw axis, `spark-model` insulates the Mod axis, `spark-model/src/quant_format/` + `atlas-kernels` insulate the Quant axis.
 
 Orthogonality of axes is not a lucky accident — it is the defining property of a categorical product. Adding an object to `Hw` does not touch `Mod × Quant`; the projection `π_{Mod×Quant}` is unchanged. This is exactly the empirical fact that "adding a new hardware vendor is two trait impls and a directory".
 

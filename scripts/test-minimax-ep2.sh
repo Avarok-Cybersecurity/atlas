@@ -22,12 +22,17 @@ IMAGE="${IMAGE:-atlas-gb10:minimax-ep2}"
 WORKER_IP="${WORKER_IP:-127.0.0.1}"
 HEAD_PORT="${HEAD_PORT:-8888}"
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-900}"
-RESULT_DIR="/workspace/atlas/tests/all_models_results"
+# Root THIS checkout, the way tests/harness_paths.py does. A baked
+# /workspace/atlas wrote this label's result into whichever checkout happened
+# to live there — so a worktree run graded, and overwrote, another tree's
+# gate output. Deriving from the script's own location keeps a worktree, a
+# clone and a container copy each on their own results.
+ATLAS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STARTUP_SCRIPT="$ATLAS_ROOT/scripts/start-minimax-ep2.sh"
+
+RESULT_DIR="$ATLAS_ROOT/tests/all_models_results"
 LABEL="minimax-m2-ep2"
 mkdir -p "$RESULT_DIR"
-
-ATLAS_ROOT="/workspace/atlas"
-STARTUP_SCRIPT="$ATLAS_ROOT/scripts/start-minimax-ep2.sh"
 
 echo "=== MiniMax EP=2 end-to-end test ==="
 echo "Model: $MODEL"

@@ -1,0 +1,36 @@
+recipe_version: "2"
+model: lukealonso/MiniMax-M2.7-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+min_nodes: 2
+max_nodes: 2
+
+metadata:
+  description: |
+    MiniMax M2.7 NVFP4 with expert parallelism across two GB10 nodes.
+    The validated production EP=2 configuration from Atlas's
+    `scripts/start-minimax-ep2.sh` — KV cache stays at BF16 during
+    bring-up (FP8/NVFP4 are not yet stable for MiniMax) and `--speculative`
+    is OFF because the public checkpoint ships no MTP weights.
+  maintainer: avarok
+  category: agent
+  model_params: 230B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  tensor_parallel: 1
+  ep_size: 2
+  # 12288 (not 16384) — at gpu_memory_utilization 0.90 the head only fits
+  # 13120 KV tokens (820 blocks × 16) after weights + MoE setup on
+  # avarok/atlas-gb10:latest (3.0.0). Live-validated 2026-05-08 on the
+  # 10.10.10.1/10.10.10.2 GB10 pair.
+  max_model_len: 12288
+  max_batch_size: 1
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.90
+  enable_prefix_caching: true
+  oom_guard_mb: 512

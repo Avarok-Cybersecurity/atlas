@@ -1,0 +1,42 @@
+recipe_version: "2"
+model: Qwen/Qwen3-Coder-Next-FP8
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3-Coder-Next-FP8 — 80B MoE (512 experts top-10) with hybrid
+    GDN + Attention, served at native FP8 (~58 tok/s decode on a single
+    GB10 with no conversion overhead). Same architecture as
+    qwen3_next, only `rope_theta=5M` differs.
+
+    Production constraints from the Atlas FP8-native bring-up:
+      * `kv_cache_dtype: bf16` — FP8 KV is incompatible with this model
+      * `ssm_cache_slots: 0` — Marconi snapshot lookup misses cause SSM
+        state divergence in multi-turn
+      * `oom_guard_mb: 1024` — the default 4096 is too conservative for
+        FP8 (1.5× overhead estimate + 4 GB reserve > available)
+      * `tool_call_parser: qwen3_coder` — required for tool calling
+
+    Known limitation: agentic quality degrades after ~5–8 tool-use
+    turns (model emits malformed XML, loops). Document but accept —
+    this is a model issue, not an Atlas one.
+  maintainer: avarok
+  category: agent
+  model_params: 80B
+  model_dtype: fp8
+  quantization: fp8
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 16384
+  max_batch_size: 1
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.92
+  scheduling_policy: slai
+  ssm_cache_slots: 0
+  oom_guard_mb: 1024
+  tool_call_parser: qwen3_coder

@@ -29,6 +29,8 @@ mod citation;
 mod citation_structured;
 mod cli;
 mod conversation_store;
+mod disk_guard;
+mod error_hints;
 pub mod grammar;
 mod halluc_probe;
 mod hint_injector;
@@ -41,12 +43,14 @@ mod loop_simhash;
 mod lqer;
 mod main_modules;
 pub mod metrics;
+mod model_download;
 mod model_resolver;
 mod moe_quality;
 mod ngram;
 mod openai;
 mod rate_limiter;
 pub mod reasoning_parser;
+pub mod recipe;
 mod refusal;
 mod request_dumper;
 mod response_store;
@@ -60,6 +64,7 @@ mod tool_arg_dedup;
 pub mod tool_parser;
 mod tool_rag;
 mod tscg;
+pub mod tui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -74,15 +79,94 @@ pub type ModelBehavior = atlas_kernels::ModelBehavior;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
+    // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
+    // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
+    let no_tui = match &cli.command {
+        // `--check-kernels` is a script's entry point too: it prints a report
+        // and a JSON line on stdout and exits, so a dashboard would take the
+        // terminal, garble both, and have nothing to show afterwards.
+        Command::Serve(args) => args.no_tui || args.rank > 0 || args.check_kernels,
+        // The benchmark subcommand is a script's entry point: always plain, so
+        // nothing here reaches `tui::start` or takes the terminal.
+        Command::Benchmark(_) => true,
+    };
 
-    match cli.command {
-        Command::Serve(args) => serve(args).await,
-    }
+    let tui_channels = if tui::plain_mode(no_tui) {
+        // The pre-TUI init, byte-for-byte: this exact fmt layout is the
+        // contract every benchmark driver and gate script greps.
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .init();
+        None
+    } else {
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        tui::init::install_tty_subscriber(progress_tx);
+        Some(progress_rx)
+    };
+
+    // Race the server against shutdown. No spawn: `serve()` is a real future that
+    // yields while its blocking startup runs on the blocking pool, so pinning it
+    // here is enough for `select!` to poll the other branch. (It would NOT be
+    // enough if startup still blocked inside the future — `select!` chooses at
+    // await points, it does not preempt.)
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
+    tui::shutdown::arm_startup_escape(shutdown_tx);
+    let result = match cli.command {
+        Command::Benchmark(args) => {
+            // No model load, so none of the startup-escape plumbing below
+            // applies — `dispatch` installs its own Ctrl-C handling. Drop the
+            // receiver explicitly: `let _ =` on a future silently discards it
+            // without polling, which is a different thing and one clippy is
+            // right to flag.
+            drop(shutdown_rx);
+            cli::bench_run::dispatch(args).await
+        }
+        Command::Serve(args) => {
+            let serving = serve(args, tui_channels);
+            tokio::pin!(serving);
+            // Only a SEND means shutdown. The sender is parked for the life of the
+            // process rather than dropped when startup ends, so the channel should
+            // never close; this arm exists so that if one ever did, a closed
+            // channel could not masquerade as a shutdown and kill a healthy server.
+            let shutdown_signal = async {
+                match shutdown_rx.await {
+                    Ok(reason) => reason,
+                    Err(_) => std::future::pending::<&'static str>().await,
+                }
+            };
+            tokio::pin!(shutdown_signal);
+            tokio::select! {
+                res = &mut serving => res,
+                reason = &mut shutdown_signal => {
+                    // Cancelled before the server came up. Nothing is in flight
+                    // and no client is connected, so there is nothing to drain —
+                    // the startup task is abandoned where it stands.
+                    tracing::info!(
+                        "Shutdown requested ({reason}) during startup — exiting before the server came up"
+                    );
+                    // Cleanup that would otherwise run below, then exit without
+                    // waiting on the runtime: a task parked inside a synchronous
+                    // CUDA call cannot be aborted, and dropping the runtime would
+                    // block on it — reintroducing the very wait this fixes.
+                    tui::stop_and_join(std::time::Duration::from_secs(2));
+                    tui::terminal_guard::restore();
+                    tui::init::flush_tee();
+                    std::process::exit(0);
+                }
+            }
+        }
+    };
+    // If serve() returned while the TUI owned the screen (startup error, clean
+    // shutdown), stop the dashboard thread and wait for its TerminalGuard to
+    // drop BEFORE the error prints — main's exit never runs another thread's
+    // Drop, and a bare restore() races the thread's raw-mode entry when
+    // serve() fails within milliseconds. restore() stays as the backstop.
+    tui::stop_and_join(std::time::Duration::from_secs(2));
+    tui::terminal_guard::restore();
+    tui::init::flush_tee();
+    result
 }

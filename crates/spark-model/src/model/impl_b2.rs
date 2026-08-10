@@ -200,6 +200,10 @@ impl TransformerModel {
                 buffers: &self.buffers,
                 gpu: self.gpu.as_ref(),
                 config: &self.config,
+                dispatch: &self.dispatch,
+                derived: &self.derived,
+                levers: &self.levers,
+                stats: &self.stats,
                 attn_metadata: None,
                 profile: false,
                 // MTP runs on rank 0 only — no EP all_reduce (BUG #26).

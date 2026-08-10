@@ -32,7 +32,22 @@ extern "C" __global__ void gated_delta_rule_wy3(
     unsigned int v_dim,
     unsigned int qk_stride,
     unsigned int v_stride,
-    unsigned int gb_stride
+    unsigned int gb_stride,
+    // 0 = the three state args are CONTIGUOUS bases indexed by
+    //     (b*num_v_heads+vh);
+    // 1 = they are device POINTER TABLES of `batch_size` entries, one per
+    //     sequence.
+    //
+    // Identical contract (and identical reason for existing) as
+    // gated_delta_rule_wy4's `state_is_table`: the contiguous form assumes the
+    // intermediates share h_state's batch stride, but the pool's intermediate
+    // stride is num_intermediates x larger, so at batch_size>1 sequence 1's
+    // Hi0 would land on sequence 0's Hi1 — silent cross-sequence rollback
+    // corruption. The table form is what lets the cross-sequence batched MTP
+    // verify run at K=3 (ladder step "2 drafts"), not just K=4.
+    //
+    // is_table=0 is byte-identical to the original kernel.
+    unsigned int state_is_table
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -43,9 +58,14 @@ extern "C" __global__ void gated_delta_rule_wy3(
     const unsigned int kh = vh / hr;
     const unsigned int hv = k_dim * v_dim;
 
-    float* H   = h_state        + ((b * num_v_heads + vh) * hv);
-    float* Hi0 = h_state_inter0 + ((b * num_v_heads + vh) * hv);
-    float* Hi1 = h_state_inter1 + ((b * num_v_heads + vh) * hv);
+    const unsigned long long head_off = (unsigned long long)vh * hv;
+    const unsigned long long flat_off = (unsigned long long)(b * num_v_heads + vh) * hv;
+    float* H   = state_is_table ? ((float* const*)h_state)[b]        + head_off
+                                : h_state        + flat_off;
+    float* Hi0 = state_is_table ? ((float* const*)h_state_inter0)[b] + head_off
+                                : h_state_inter0 + flat_off;
+    float* Hi1 = state_is_table ? ((float* const*)h_state_inter1)[b] + head_off
+                                : h_state_inter1 + flat_off;
 
     // Token pointers.
     // Gate clamp MUST match per-token gated_delta_rule_decode to keep WY

@@ -2,9 +2,19 @@
 
 Tracking every kernel, its baseline comparison, and optimizations applied.
 
+> **Scope: this is the 2026-02 bring-up inventory, not the live registry.** It
+> records the first eight GB10 kernels and the measurements that justified them.
+> The registry has since grown by two orders of magnitude — `kernels/gb10/common/`
+> alone holds 160 `.cu` files defining 318 `extern "C" __global__` entry points,
+> plus per-model shadow directories under `kernels/gb10/<model>/<quant>/`. For
+> what is actually compiled into a build, read `kernels/gb10/common/KERNEL.toml`
+> and the per-model `MODEL.toml` / `KERNEL.toml` files — they are the SSOT.
+> Everything below is kept because the *reasoning* (SM121 MMA availability,
+> grouped-GEMM approach comparison, fragment-ordering fix) is still correct.
+
 **Target**: nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 on DGX Spark GB10 (SM121)
 **Goal**: Beat vLLM v21+Marlin+MTP (59.9 tok/s) with purpose-built kernels
-**Version**: 0.3.0-sm121-clean (8 CUDA kernels, best-only inventory)
+**Version**: 0.3.0-sm121-clean (8 CUDA kernels, best-only inventory as of 2026-02-23)
 
 ## Hardware: GB10 (SM121)
 
@@ -21,7 +31,7 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 ## Kernel Inventory (8 kernels)
 
 ### 1. dense_gemm_tc_bf16 — BF16 Tensor Core GEMM
-- **File**: `cuda_kernels/dense_gemm_tc.cu`
+- **File**: `kernels/gb10/common/dense_gemm_tc.cu`
 - **Instruction**: `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32`
 - **Status**: CORRECT, all sizes pass (including non-aligned)
 - **CTA Tile**: 64×64, K_STEP=64, 128 threads (4 warps)
@@ -41,33 +51,33 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 | 256×256×256 | 0.024ms | 0.006ms | Medium GEMM |
 
 ### 2. dense_gemm_bf16 — Scalar BF16 GEMM (fallback)
-- **File**: `cuda_kernels/dense_gemm_bf16.cu`
+- **File**: `kernels/gb10/common/dense_gemm_bf16.cu`
 - **Tile**: 16×16×16, one thread per output element
 - **Status**: CORRECT (bit-exact), used as fallback when K < 16
 - **Note**: Auto-dispatch sends K≥16 to TC path
 
 ### 3. rms_norm — RMS Normalization
-- **File**: `cuda_kernels/rms_norm.cu`
+- **File**: `kernels/gb10/common/rms_norm.cu`
 - **Status**: CORRECT, 0.47% rel error (BF16 rounding)
 - **Shape**: [num_tokens, hidden_size], one block per token
 
 ### 4. fused_silu_mul — Fused SiLU(gate) × up
-- **File**: `cuda_kernels/dense_gemm_bf16.cu` (shares file with scalar GEMM)
+- **File**: `kernels/gb10/common/dense_gemm_bf16.cu` (shares file with scalar GEMM)
 - **Status**: CORRECT, 0.56% rel error
 - **Shape**: [N, inter_size×2] → [N, inter_size]
 
 ### 5. e2m1_branchless — FP32 → E2M1 (FP4) Quantization
-- **File**: `cuda_kernels/e2m1_branchless.cu`
+- **File**: `kernels/gb10/common/e2m1_branchless.cu`
 - **Status**: CORRECT, bit-exact
 - **Note**: 7 uint comparisons, no branches. Packs 8 values into 1 uint32.
 
 ### 6. moe_permute_tokens — Token Expert Routing
-- **File**: `cuda_kernels/moe_permute.cu`
+- **File**: `kernels/gb10/common/moe_permute.cu`
 - **Status**: CORRECT, bit-exact
 - **Kernels**: `moe_permute_tokens`, `moe_unpermute_reduce`, `moe_count_experts`
 
 ### 7. w4a16_gemm — Fused W4A16 Dequant+GEMM
-- **File**: `cuda_kernels/w4a16_gemm.cu`
+- **File**: `kernels/gb10/common/w4a16_gemm.cu`
 - **Instruction**: `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32` (BF16 TC)
 - **Status**: CORRECT, bit-exact at 16×16×16, 0.1% mean error at MoE scale
 - **CTA Tile**: 64×64, K_STEP=16, 128 threads (4 warps)
@@ -77,7 +87,7 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 - **Key insight**: Native FP4 MMA (`kind::f8f6f4`) NOT available on SM121. Must use W4A16 dequant path.
 
 ### 8. moe_w4a16_grouped_gemm — Grouped W4A16 GEMM for MoE
-- **File**: `cuda_kernels/moe_w4a16_grouped_gemm.cu`
+- **File**: `kernels/gb10/common/moe_w4a16_grouped_gemm.cu`
 - **Status**: CORRECT — bit-exact at small sizes, <0.1% mean error at 256 experts
 - **Grid**: (ceil(N/64), max_m_tiles, num_experts) — 3D grid, one CTA tile per expert
 - **expert_offsets**: [num_experts+1] prefix sum maps blockIdx.z to row range in A/C

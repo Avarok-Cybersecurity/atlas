@@ -37,6 +37,9 @@ impl TransformerModel {
         seq.seq_len = total_len;
         // Re-embed just the last token at hidden[0] for final norm + LM head.
         let last_tok = tokens[total_len - 1];
+        // SAFETY: 4 == `size_of::<u32>()` bytes over the single, fully
+        // initialised `last_tok` local on the line above (an in-bounds copy out
+        // of `tokens`); the slice never outlives that local.
         let last_tok_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(&last_tok as *const u32 as *const u8, 4) };
         let token_id_dev = self.buffers.scratch();
@@ -69,7 +72,7 @@ impl TransformerModel {
         )?;
         self.lm_head(normed, stream)?;
         // Prefix cache insert (no new snapshot needed — SSM state unchanged).
-        if !self.tokens_have_vision_pad(tokens) {
+        if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
@@ -78,7 +81,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::block_mgmt::cache_acquires_refs(&acquired, &mut self.kv_cache.lock());
         }
         Ok(self.decode_logits_ptr())
     }
@@ -100,6 +103,7 @@ impl TransformerModel {
             let snap_result = match self.ssm_snapshots.save(
                 seq.slot_idx,
                 seq.session_hash,
+                self.seq_ssm_h_is_f16(seq),
                 &self.ssm_pool,
                 self.gpu.as_ref(),
                 stream,
@@ -117,6 +121,7 @@ impl TransformerModel {
                             .save(
                                 seq.slot_idx,
                                 seq.session_hash,
+                                self.seq_ssm_h_is_f16(seq),
                                 &self.ssm_pool,
                                 self.gpu.as_ref(),
                                 stream,
@@ -135,10 +140,15 @@ impl TransformerModel {
                 if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                     tracing::warn!("prefill snapshot save: record snapshot event: {e}");
                 }
-                if self.tokens_have_vision_pad(tokens) {
+                if self.tokens_have_vision_pad(tokens) || self.hss_window_slid(seq) {
                     // Vision prefill: snapshot is image-tainted and the
                     // token stream collides across distinct images, so do
                     // not admit either the snapshot or the radix block.
+                    // HSS-slid: `block_table` no longer parallels the token
+                    // stream, so the blocks would be filed under chunks whose
+                    // KV they don't hold (see `hss_window_slid`). The snapshot
+                    // goes too — it is only reachable via the tree nodes we are
+                    // declining to insert, so keeping it would leak a pool slot.
                     self.ssm_snapshots.free(snap_id);
                 } else {
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
@@ -151,12 +161,12 @@ impl TransformerModel {
                         seq.cached_prefix_tokens,
                         seq.adapter_id,
                     );
-                    super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
                 let acquired = self.prefix_cache.insert(
                     tokens,
                     &seq.block_table,
@@ -165,9 +175,9 @@ impl TransformerModel {
                     seq.cached_prefix_tokens,
                     seq.adapter_id,
                 );
-                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
@@ -176,7 +186,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         }
     }
 
@@ -196,6 +206,7 @@ impl TransformerModel {
             let snap_result = match self.ssm_snapshots.save(
                 seq.slot_idx,
                 seq.session_hash,
+                self.seq_ssm_h_is_f16(seq),
                 &self.ssm_pool,
                 self.gpu.as_ref(),
                 stream,
@@ -213,6 +224,7 @@ impl TransformerModel {
                             .save(
                                 seq.slot_idx,
                                 seq.session_hash,
+                                self.seq_ssm_h_is_f16(seq),
                                 &self.ssm_pool,
                                 self.gpu.as_ref(),
                                 stream,
@@ -235,7 +247,7 @@ impl TransformerModel {
                 if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                     tracing::warn!("prefill snapshot save [twophase]: record snapshot event: {e}");
                 }
-                if self.tokens_have_vision_pad(tokens) {
+                if self.tokens_have_vision_pad(tokens) || self.hss_window_slid(seq) {
                     // Vision prefill: the SSM snapshot is image-tainted and
                     // the token stream collides across distinct images (the
                     // prefix-cache key hashes token IDs only, and image-pad
@@ -244,6 +256,8 @@ impl TransformerModel {
                     // on the next same-prompt request (issue #58). Free the
                     // snapshot and skip the radix insert, matching the gated
                     // standard path in `prefill_save_snapshot_with_vision_gate`.
+                    // Same for an HSS-slid window, where `block_table` no longer
+                    // parallels the token stream (see `hss_window_slid`).
                     self.ssm_snapshots.free(snap_id);
                 } else {
                     tracing::info!(
@@ -262,12 +276,12 @@ impl TransformerModel {
                         seq.cached_prefix_tokens,
                         seq.adapter_id,
                     );
-                    super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                    super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
                 let acquired = self.prefix_cache.insert(
                     tokens,
                     &seq.block_table,
@@ -276,9 +290,9 @@ impl TransformerModel {
                     seq.cached_prefix_tokens,
                     seq.adapter_id,
                 );
-                super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+                super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
                 tokens,
                 &seq.block_table,
@@ -287,7 +301,7 @@ impl TransformerModel {
                 seq.cached_prefix_tokens,
                 seq.adapter_id,
             );
-            super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+            super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         }
     }
 }

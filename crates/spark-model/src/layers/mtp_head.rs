@@ -37,8 +37,8 @@ use crate::weight_map::{
 /// Policy, including the kill switch and the coupling to the cross-turn carry
 /// (which this half is useless without), lives in
 /// `crate::model::drafter_context` — the single source of truth.
-pub fn mtp_drafter_prefill_enabled() -> bool {
-    crate::model::drafter_context::config().prefill
+pub fn mtp_drafter_prefill_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+    levers.drafter.prefill
 }
 
 /// Dedicated scratch for the batched drafter prefill (allocated in
@@ -223,6 +223,58 @@ pub struct MtpHead {
     moe_weighted_sum_blend_k: Option<KernelHandle>,
     /// Batched BF16 GEMM for the drafter-prefill pass (0 when absent).
     dense_gemm_k: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM (`dense_gemm_bf16_pipelined`) for the
+    /// batched cross-sequence propose (0 when absent). Measured at M=4 on the
+    /// drafter shapes: 2.7x the 4x-GEMV per-seq loop (5.1 vs 14.4 ms per
+    /// draft position).
+    dense_gemm_pipelined_k: KernelHandle,
+    /// `w4a16_gemv_batch{4,8,16,32}` for the batched-propose LM head (0 when
+    /// absent): reads the shared NVFP4 LM head once for up to MAX_M
+    /// sequences. Selected per batch width by
+    /// [`MtpHead::lm_head_batch_kernel`]; per-row accumulation order is
+    /// identical across instantiations (one `w4a16_gemv_batchm_impl`), so
+    /// output is bit-identical at matching M.
+    w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
+    w4a16_gemv_batch32_k: KernelHandle,
+    /// Padded transposed twin of the SHARED main LM head for the batched
+    /// propose at n >= 5: `(weight_t, ldb)` with `ldb = align_up(vocab, 128)`
+    /// (248192 on the 27B checkpoint — vocab 248077 is ODD, so every 16-byte
+    /// `cp.async` B load MUST use the padded row stride; the unpadded stride
+    /// is the campaign's sticky CUDA-716). `None` when the drafter has a
+    /// DEDICATED draft head (`mtp_lm_head_nvfp4` — the twin describes the
+    /// main head only), when the main twin was not built
+    /// (`ATLAS_NO_LMHEAD_TGEMM=1`), or under the propose-local kill switch
+    /// `ATLAS_NO_MTP_LMHEAD_TGEMM` (PRESENCE — `=0` is NOT off). Zero extra
+    /// memory: this aliases the twin `impl_a1` already allocated.
+    pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
+    /// `w4a16_gemm_t` tile GEMM for the twin (3-deep pipeline variant when
+    /// present, same resolver as decode_a2's lm_head). 0-handle = twin path
+    /// dead, batched GEMV fallback unchanged.
+    pub(super) w4a16_gemm_t_k: KernelHandle,
+    /// Drafter attention metadata for the batched propose:
+    /// `[PROPOSE_META_SEQS, propose_meta_stride]` bytes, one slab per
+    /// sequence. A dedicated allocation, NOT an offset into the shared
+    /// `scratch` arena — the old fixed `scratch + 49152 + i*2048` layout ran
+    /// past the end of a 27B-shaped scratch at n > 8 (silent out-of-range
+    /// H2D → sticky CUDA-700, the #110 failure mode).
+    propose_meta: DevicePtr,
+    /// Per-sequence stride of `propose_meta`, computed at construction from
+    /// `max_seq_len` (`batch_caps::propose_meta_stride_env`, floor 2048,
+    /// override `ATLAS_PROPOSE_META_STRIDE=<bytes>`). The fixed 2048 capped
+    /// the block table at 448 entries = 7,168 tokens — sized in the 4K era;
+    /// 10-20K agentic contexts made the batched propose fall back
+    /// permanently (PROGRESS_LOG 5.2/6.17).
+    propose_meta_stride: usize,
+    /// `argmax_bf16_batch` for the batched-propose per-row argmax (0 when
+    /// absent; falls back to the serial per-row scan).
+    argmax_batch_k: KernelHandle,
+    /// `argmax_bf16_batch_lp` — the same batched argmax that ALSO emits each
+    /// row's top-1 log-probability. Resolved with `try_kernel`, so 0 means the
+    /// module predates this kernel; D-Cut gates on it and declines rather than
+    /// silently proposing without confidences.
+    argmax_batch_lp_k: KernelHandle,
     /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
 }
@@ -308,8 +360,10 @@ impl MtpHead {
     }
 }
 
+mod batch_caps;
 mod draft_proposer;
 mod forward;
+mod forward_batch;
 mod moe_forward;
 mod new;
 mod prefill;

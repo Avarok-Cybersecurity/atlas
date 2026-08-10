@@ -2,6 +2,14 @@
 
 use xgrammar::{GrammarCompiler, TokenizerInfo, VocabType, detect_metadata_from_hf};
 
+/// Byte budget for the Tier-1 compiled-grammar cache (`GrammarCompiler`).
+///
+/// 1 GiB. Sized against the measured footprint of a compiled tool grammar plus
+/// the masks it accumulates in use (~17 MB under BFCL), so this holds roughly
+/// sixty distinct schemas — far beyond any realistic hot set, while bounding a
+/// tail that was previously unbounded. See issue #368.
+const GRAMMAR_CACHE_BUDGET_BYTES: isize = 1024 * 1024 * 1024;
+
 use super::extract_ordered_vocab;
 
 // ── GrammarEngine ──────────────────────────────────────────────────────
@@ -132,7 +140,14 @@ impl GrammarEngine {
     fn from_tokenizer_info(tokenizer_info: TokenizerInfo) -> Result<Self, GrammarError> {
         let vocab_size = tokenizer_info.vocab_size();
         // Single compilation thread, cache enabled, no memory limit.
-        let compiler = GrammarCompiler::new(&tokenizer_info, 1, true, -1)
+        // ★ NOT -1 (unlimited). `CacheKey::Schema` is keyed by the full tool
+        // schema, so agentic traffic mints a distinct compiled grammar per
+        // request; unbounded, that grew host RSS ~100 MB/min under BFCL and is
+        // the shape behind issue #368's ~7-hour restart cadence. A GiB is far
+        // above any realistic hot set (tens of schemas) while bounding the
+        // tail. `-1` remains available as an explicit opt-in for callers that
+        // genuinely want every grammar pinned.
+        let compiler = GrammarCompiler::new(&tokenizer_info, 1, true, GRAMMAR_CACHE_BUDGET_BYTES)
             .map_err(GrammarError::Compilation)?;
         Ok(Self {
             compiler,

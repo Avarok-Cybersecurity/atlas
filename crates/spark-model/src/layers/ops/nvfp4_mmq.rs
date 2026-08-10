@@ -23,7 +23,18 @@ pub const NVFP4_BLOCK_BYTES: usize = 36;
 const FP4_MMQ_Y_BLOCK_VALS: u32 = 256;
 const FP4_MMQ_Y_BLOCK_BYTES: usize = 144;
 /// Dynamic shared memory: ids(512) + x-tile(128*MMQ_MMA_TILE_X_K_FP4=76*4) + y-tile(128*144).
-pub const NVFP4_MMQ_SMEM: u32 = 57856;
+pub const NVFP4_MMQ_SMEM: u32 = nvfp4_mmq_smem(128);
+
+/// Dynamic shared memory for a given M-tile, from the vendor's layout:
+/// ids_dst\[mmq_x\] + y-tile\[mmq_x * MMQ_TILE_Y_K(=36) ints, padded to 256\] +
+/// x-tile\[128 * MMQ_MMA_TILE_X_K_FP4(=76) ints\], all 4-byte.
+/// Reproduces the previously-hardcoded 57856 at mmq_x=128, which is the check that
+/// this derivation matches the kernel's actual layout.
+pub const fn nvfp4_mmq_smem(mmq_x: u32) -> u32 {
+    let y = mmq_x * 36;
+    let y_padded = y.div_ceil(256) * 256;
+    4 * (mmq_x + y_padded + 128 * 76)
+}
 const QUANT_BLOCK_THREADS: u32 = 128;
 
 /// Bytes for the block_nvfp4 form of an [n, k] weight (k % 64 == 0).
@@ -123,6 +134,57 @@ pub fn nvfp4_mmq_gemm(
         .launch(stream)
 }
 
+/// NVFP4 W4A4 MMQ GEMM with an M-SIZED TILE.
+///
+/// Same kernel family as [`nvfp4_mmq_gemm`], but the caller picks the M tile. The
+/// 128-wide tile issues MMAs for all 128 tile columns regardless of `m` and discards
+/// the surplus in the write-back predicate, so decode at m=16 wasted 87.5% of its MMA
+/// slots. `mmq_x` must be one of {16, 32, 128} — the instantiated entries.
+///
+/// PREFILL MUST KEEP 128: `grid.y = ceil(m / mmq_x)`, so a small tile re-streams the
+/// whole weight matrix once per M-tile. This is a decode-shape optimisation only.
+#[allow(clippy::too_many_arguments)]
+pub fn nvfp4_mmq_gemm_tiled(
+    gpu: &dyn GpuBackend,
+    kernel_nc: KernelHandle,
+    kernel_wc: KernelHandle,
+    mmq_x: u32,
+    a_fp4: DevicePtr,
+    w_nvfp4: DevicePtr,
+    out_bf16: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    debug_assert!(
+        matches!(mmq_x, 16 | 32 | 64 | 128),
+        "mmq_x must be an instantiated tile"
+    );
+    debug_assert!(
+        m <= mmq_x,
+        "grid.y>1 would re-stream the weights per M-tile"
+    );
+    let kernel = if !n.is_multiple_of(128) {
+        kernel_wc
+    } else {
+        kernel_nc
+    };
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 128), div_ceil(m, mmq_x), 1])
+        .block([32, 8, 1])
+        .shared_mem(nvfp4_mmq_smem(mmq_x))
+        .arg_ptr(w_nvfp4)
+        .arg_ptr(a_fp4)
+        .arg_ptr(out_bf16)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(k)
+        .arg_u32(k / QK_NVFP4)
+        .arg_u32(m)
+        .arg_u32(n)
+        .launch(stream)
+}
 /// Fused SiLU-mul + block_fp4_mmq quantize for the down-MMQ path: reads RAW gate/up MMQ
 /// outputs, applies the scale2 folds + swiglu clamp + SiLU-mul, and quantizes straight
 /// into the down GEMM's y-format — the intermediate bf16 activation tensor is never

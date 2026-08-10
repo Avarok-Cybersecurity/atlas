@@ -15,11 +15,11 @@ use super::LoraModule;
 /// eager decode (no CUDA-graph capture) when an adapter is active, so
 /// graph-vs-eager output parity can be compared in the field. Read ONCE —
 /// the decode graph gate runs per token.
+/// Resolved at the point of use rather than cached in a static: the model
+/// carries this as `ModelLevers::lora_eager` for the per-token decode gate, and
+/// the remaining callers are one-shot startup checks where a getenv is free.
 pub fn lora_eager_env() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_EAGER").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
+    crate::layers::ops::ModelLevers::from_env().lora_eager
 }
 
 /// `ATLAS_LORA_ROTATE=1` (or `true`) ARMS runtime adapter rotation: it forces
@@ -30,11 +30,9 @@ pub fn lora_eager_env() -> bool {
 /// only needed to arm rotation on a SINGLE resident adapter (e.g. RDMA
 /// slot-swap-in-place). Unset + a single startup adapter = today's behaviour
 /// exactly (graphs ON, slot-0 pointers baked).
+/// See [`lora_eager_env`] on why this is not cached.
 pub fn lora_rotate_env() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_ROTATE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
+    crate::layers::ops::ModelLevers::from_env().lora_rotate
 }
 
 /// `$ATLAS_LORA_PEER` (host:port of an `atlas-weight-peer` staging a rotation

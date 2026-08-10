@@ -88,6 +88,16 @@ unsafe impl Send for Workspaces {}
 #[cfg(atlas_flashinfer)]
 unsafe impl Sync for Workspaces {}
 #[cfg(atlas_flashinfer)]
+/// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
+/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// per process) and sized by a fixed budget, not by any model's shapes: the
+/// bounds below are generous upper limits chosen to fit any realistic serving
+/// configuration, so a swap needs no reallocation and re-allocating per model
+/// would churn hundreds of megabytes for no change in what is mapped.
+///
+/// It survives a model swap for the same reason the context does. Nothing in
+/// it is derived from a model — no token ids, no weight pointers, no shapes —
+/// only scratch the library plans within.
 static WS: OnceLock<Workspaces> = OnceLock::new();
 
 // Max config the persistent workspaces are sized for. Generous upper bounds for
@@ -416,7 +426,7 @@ mod tests {
                 cudaFree(p as *mut c_void);
             }
         }
-        eprintln!("FLASHINFER_RAGGED worst_cos={worst_cos:.6} max_rel={max_rel:.4}");
+        tracing::debug!("FLASHINFER_RAGGED worst_cos={worst_cos:.6} max_rel={max_rel:.4}");
         assert!(
             worst_cos > 0.99,
             "FlashInfer ragged prefill diverges from CPU ref: cos {worst_cos}"

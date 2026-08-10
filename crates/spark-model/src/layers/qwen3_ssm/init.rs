@@ -49,6 +49,10 @@ impl Qwen3SsmLayer {
                 "atlas_q8_1_quantize_ds4_bf16",
             ),
             sequential_qkvz: false,
+            // Resolved ONCE here from the driver, then carried on the layer:
+            // the projection dispatch asks "does this grid still fill the
+            // machine?" and that question has no portable answer.
+            sm_count: gpu.sm_count()?,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
             gated_rms_norm_f32_k: super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input"),
@@ -67,6 +71,14 @@ impl Qwen3SsmLayer {
             // BF16 kernel via the `.0 != 0` gate at the use site
             // (ssm_forward.rs). Warn instead of error: missing-on-Metal is
             // expected, and a startup `error!` would page on benign cases.
+            // Strided twin of `conv1d_l2norm_f32_k` for the batched multi-seq
+            // decode path. Optional: absent on older kernel sets, where the
+            // multi-seq conv stays a per-sequence loop.
+            conv1d_l2norm_f32_strided_k: super::super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_l2norm_f32_strided",
+            ),
             conv1d_l2norm_f32_k: {
                 let h = super::super::try_kernel(
                     gpu,
@@ -108,6 +120,26 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f32_strided_norm",
             ),
+            gdn_f32_strided_norm_half_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f32_strided_norm_half",
+            ),
+            gdn_f32_strided_norm_smem_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f32_strided_norm_smem",
+            ),
+            gdn_f16_strided_norm_half_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f16_strided_norm_half",
+            ),
+            gdn_f16_norm_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_f16_norm",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             l2_norm_k: gpu.kernel("norm", "l2_norm_bf16")?,
@@ -119,15 +151,12 @@ impl Qwen3SsmLayer {
             ),
             gated_rms_norm_prefill_k: gpu.kernel("norm", "gated_rms_norm_prefill")?,
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
-            w4a16_gemm_t_k: gpu.kernel("w4a16", "w4a16_gemm_t")?,
-            w4a16_gemm_t_k64_k: gpu.kernel("w4a16", "w4a16_gemm_t_k64")?,
+            w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
+            w4a16_gemm_t_k64_k: crate::layers::k64_kernel(gpu)?,
+            w4a16_gemm_t_k64_n64_k: crate::layers::k64_n64_kernel(gpu),
             w4a16_gemm_t_m128_k: gpu.kernel("w4a16", "w4a16_gemm_t_m128")?,
             // 8-warp pipelined M128 (try_kernel: 0 when absent → falls back to m128/n128).
-            w4a16_gemm_t_m128_v2_k: super::super::try_kernel(
-                gpu,
-                "w4a16_v2",
-                "w4a16_gemm_t_m128_v2",
-            ),
+            w4a16_gemm_t_m128_v2_k: super::super::w4a16_v2_kernel(gpu),
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             // try_kernel: 0-handle if absent (gated at dispatch); the pipelined
@@ -211,8 +240,59 @@ impl Qwen3SsmLayer {
             gdn_chunk3_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_chunk3")?,
             w4a16_gemv_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
             gdn_wy2_k: gpu.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?,
+            // Register-resident wy2 twin (own gb10-common module so non-gb10
+            // targets simply resolve 0 and keep the base wy2 — try_kernel
+            // misses are a silent handle 0, so `wy2_kernel` logs the
+            // resolution outcome once at first K=2 dispatch).
+            gdn_wy2_resident_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy2_resident",
+                "gated_delta_rule_wy2_resident",
+            ),
             gdn_wy3_k: gpu.kernel("gated_delta_rule_wy3", "gated_delta_rule_wy3")?,
+            // Register-resident wy3 twin (same pattern as wy2's above:
+            // try_kernel so non-gb10 targets resolve 0 and keep base wy3;
+            // `wy3_kernel` logs the resolution outcome at first K=3 dispatch).
+            gdn_wy3_resident_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy3_resident",
+                "gated_delta_rule_wy3_resident",
+            ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
+            // ── ATLAS_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
+            // verify WY kernels. try_kernel for the same reason as the
+            // resident twins above — a miss is a silent handle 0, and the
+            // selectors gate on `.0 != 0` before ever picking one. Without
+            // these the flag and `--speculative` are mutually exclusive,
+            // because every WY kernel above writes the state as FP32 and an
+            // FP32 kernel over an FP16 pool produces fluent garbage, not an
+            // error. Preflight refuses the combination unless the K values the
+            // configured draft count can reach all have a twin here.
+            gdn_wy2_f16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy_f16",
+                "gated_delta_rule_wy2_f16",
+            ),
+            gdn_wy2_resident_f16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy2_resident_f16",
+                "gated_delta_rule_wy2_resident_f16",
+            ),
+            gdn_wy3_f16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy3_f16",
+                "gated_delta_rule_wy3_f16",
+            ),
+            gdn_wy3_resident_f16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy3_resident_f16",
+                "gated_delta_rule_wy3_resident_f16",
+            ),
+            gdn_wy4_f16_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy4_f16",
+                "gated_delta_rule_wy4_f16",
+            ),
             // STAGE 1 fused K=2 verify epilogue. Only present in the gb10
             // common PTX module set; NULL on targets lacking the .cu, in which
             // case the num_tokens==2 arm keeps the per-token path even when
@@ -234,6 +314,12 @@ impl Qwen3SsmLayer {
                 gpu,
                 "gdn_verify_fused_conv_kn",
                 "gdn_verify_fused_conv_kn",
+            ),
+            // Batched twin (gridDim.y = n_seq) for batched speculative decoding.
+            gdn_verify_fused_conv_kn_batched_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_conv_kn",
+                "gdn_verify_fused_conv_kn_batched",
             ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.

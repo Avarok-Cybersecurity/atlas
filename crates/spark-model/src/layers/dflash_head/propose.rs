@@ -45,14 +45,15 @@ impl BlockDiffusionDraftHead {
         // ctx_len, n_layers, target_hidden_size, position, last_token so the
         // harness reconstructs shape without log-scraping.
         {
-            static CTX_PARITY_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
+            // Per-model latch (see `ModelStats::dumped`) rather than a static: an
+            // operator who sets the flag and then swaps models must still get the
+            // dump, instead of it being swallowed by the previous model's shot.
             if std::env::var("ATLAS_DFLASH_CTX_PARITY_DUMP")
                 .ok()
                 .as_deref()
                 == Some("1")
                 && dstate.ctx_len > 0
-                && !CTX_PARITY_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                && ctx.stats.dumped.keyed("dflash_ctx_parity")
             {
                 let n_bytes = dstate.ctx_len * dstate.ctx_slot_bytes;
                 let mut buf = vec![0u8; n_bytes];
@@ -84,7 +85,6 @@ impl BlockDiffusionDraftHead {
                         tracing::warn!("DFLASH CTX_PARITY: write failed: {e}");
                     }
                 }
-                CTX_PARITY_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
 

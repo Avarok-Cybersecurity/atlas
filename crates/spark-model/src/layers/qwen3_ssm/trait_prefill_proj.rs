@@ -54,18 +54,18 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
-        let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
+        let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
         // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
         // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS
         // ceiling on GB10 (32 vs 85 TFLOPS bf16 on this shape). Dequant the FP8
         // weight to BF16 once (cached), then route the projection through
         // cuBLASLt. W16A16 here is strictly more accurate than the W8A8 path.
-        if ops::cutlass_nvfp4_qkvz_enabled()
+        if ctx.dispatch.cutlass_nvfp4_qkvz
             && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
         {
-            ops::log_cutlass_nvfp4_route("ssm_qkvz_nvfp4", k, qkvz_size as u32, h as u32);
+            ops::log_cutlass_nvfp4_route(ctx.gpu, "ssm_qkvz_nvfp4", k, qkvz_size as u32, h as u32);
             ops::cutlass_nvfp4_proj(
-                ctx.gpu,
+                ctx,
                 normed,
                 nvfp4_t,
                 proj_dst,
@@ -74,12 +74,18 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-        } else if ops::cutlass_nvfp4_qkvz_enabled()
+        } else if ctx.dispatch.cutlass_nvfp4_qkvz
             && let Some(ref fp8w) = self.qkvz_fp8w
         {
-            ops::log_cutlass_nvfp4_route("ssm_qkvz_fp8pack", k, qkvz_size as u32, h as u32);
-            ops::cutlass_nvfp4_proj_from_fp8(
+            ops::log_cutlass_nvfp4_route(
                 ctx.gpu,
+                "ssm_qkvz_fp8pack",
+                k,
+                qkvz_size as u32,
+                h as u32,
+            );
+            ops::cutlass_nvfp4_proj_from_fp8(
+                ctx,
                 normed,
                 fp8w,
                 proj_dst,
@@ -88,11 +94,12 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-        } else if ops::cutlass_gemm_enabled()
+        } else if ctx.dispatch.cutlass_gemm
             && let Some(ref fp8w) = self.qkvz_fp8w
         {
             ops::cutlass_bf16_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 fp8w,
                 proj_dst,
@@ -101,11 +108,12 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-        } else if ops::cublas_fp8_enabled()
+        } else if ctx.dispatch.cublas_fp8
             && let Some(ref fp8w) = self.qkvz_fp8w
         {
             ops::cublas_fp8_rowwise_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 ctx.buffers.fp8_act(),
                 ctx.buffers.fp8_act_scale(),
@@ -116,11 +124,12 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-        } else if ops::cublas_gemm_enabled()
+        } else if ctx.dispatch.cublas_gemm
             && let Some(ref fp8w) = self.qkvz_fp8w
         {
             ops::cublas_bf16_proj(
                 ctx.gpu,
+                ctx.derived,
                 normed,
                 fp8w,
                 proj_dst,

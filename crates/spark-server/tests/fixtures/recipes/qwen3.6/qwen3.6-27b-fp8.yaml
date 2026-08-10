@@ -1,0 +1,36 @@
+recipe_version: "2"
+model: Qwen/Qwen3.6-27B-FP8
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-27B (dense, native FP8) on the Atlas runtime. FP8 weights
+    paired with BF16 KV — FP8/NVFP4 KV breaks dense attention here
+    (request timeouts, CUDA graph thrash). max_model_len capped at
+    60_000 so the full spark-arena-v2 concurrency=10 sweep fits in the
+    KV pool on a single GB10; cells at depth=65535/100000 in
+    spark-arena-v2 will be skipped because they exceed max_model_len.
+    Use --tp 2 / EP=2 to get the full long-context sweep. No MTP.
+  maintainer: avarok
+  category: chat
+  model_params: 27B
+  model_dtype: fp8
+  quantization: fp8
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 262144
+  max_batch_size: 2
+  max_num_seqs: 2
+  kv_cache_dtype: fp8
+  kv_high_precision_layers: auto
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  speculative: false
+  mtp_quantization: bf16
+  enable_prefix_caching: true
+  oom_guard_mb: 1024

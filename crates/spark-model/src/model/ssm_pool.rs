@@ -47,6 +47,16 @@ pub(crate) struct SsmStatePool {
     /// index `max_slots`). All claim_slot/release_slot operations work
     /// in `[0, max_slots)`.
     pub(super) max_slots: usize,
+    /// Number of claimable slots COVERED by the MTP intermediate/checkpoint
+    /// pools (`ssm_reserve::mtp_state_slots(max_slots)`; 0 when `!has_mtp`).
+    /// Those pools allocate `mtp_slots + 1` slots — their own dummy lives at
+    /// index `mtp_slots`. At `max_slots <= 32` this equals `max_slots`
+    /// (sizing byte-identical to the pre-diet layout); above 32 the
+    /// scheduler's spec dispatch guard (`slot_idx < mtp_state_slots(bs)`)
+    /// keeps uncovered slots out of every verify path, and
+    /// [`Self::mtp_slot`] clamps a stray access onto the MTP dummy so it is
+    /// memory-safe.
+    pub(super) mtp_slots: usize,
     pub(super) num_ssm_layers: usize,
     pub(super) has_mtp: bool,
     pub(super) num_intermediates: usize,
@@ -94,32 +104,56 @@ impl SsmStatePool {
             conv_state_pools.push(conv_pool);
         }
 
+        // MTP verify pools cover only the slots spec dispatch can reach
+        // (SSOT: `ssm_reserve::mtp_state_slots` — the same number preflight
+        // reserves and the scheduler guard enforces). Equals `max_slots` at
+        // bs<=32; above that it caps at the spec dispatch width (floor 32),
+        // saving `(max_slots - mtp_slots) × (ni+1) × blob` — 25.4 GB at
+        // bs=64/K=4 on the 27B. `+1` = the MTP pools' own dummy slot.
+        let mtp_slots = if has_mtp {
+            crate::ssm_reserve::mtp_state_slots(max_slots)
+        } else {
+            0
+        };
         if has_mtp {
             let ni = num_intermediates;
+            let mtp_total = mtp_slots + 1;
             for _ in 0..num_ssm_layers {
-                let h_inter = gpu.alloc(total_slots * ni * h_bytes)?;
-                gpu.memset(h_inter, 0, total_slots * ni * h_bytes)?;
+                let h_inter = gpu.alloc(mtp_total * ni * h_bytes)?;
+                gpu.memset(h_inter, 0, mtp_total * ni * h_bytes)?;
                 h_intermediate_pools.push(h_inter);
 
-                let conv_inter = gpu.alloc(total_slots * ni * conv_bytes)?;
-                gpu.memset(conv_inter, 0, total_slots * ni * conv_bytes)?;
+                let conv_inter = gpu.alloc(mtp_total * ni * conv_bytes)?;
+                gpu.memset(conv_inter, 0, mtp_total * ni * conv_bytes)?;
                 conv_intermediate_pools.push(conv_inter);
 
                 // 1 checkpoint per slot per layer
-                let h_ckpt = gpu.alloc(total_slots * h_bytes)?;
-                gpu.memset(h_ckpt, 0, total_slots * h_bytes)?;
+                let h_ckpt = gpu.alloc(mtp_total * h_bytes)?;
+                gpu.memset(h_ckpt, 0, mtp_total * h_bytes)?;
                 h_checkpoint_pools.push(h_ckpt);
 
-                let conv_ckpt = gpu.alloc(total_slots * conv_bytes)?;
-                gpu.memset(conv_ckpt, 0, total_slots * conv_bytes)?;
+                let conv_ckpt = gpu.alloc(mtp_total * conv_bytes)?;
+                gpu.memset(conv_ckpt, 0, mtp_total * conv_bytes)?;
                 conv_checkpoint_pools.push(conv_ckpt);
             }
 
             let mtp_mb = num_ssm_layers
-                * total_slots
+                * mtp_total
                 * (ni * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
                 / (1024 * 1024);
-            tracing::info!("SSM MTP pools ({ni} intermediates + checkpoints): {mtp_mb} MB");
+            if mtp_slots < max_slots {
+                let saved_mb = num_ssm_layers
+                    * (max_slots - mtp_slots)
+                    * (ni * h_bytes + ni * conv_bytes + h_bytes + conv_bytes)
+                    / (1024 * 1024);
+                tracing::info!(
+                    "SSM MTP pools ({ni} intermediates + checkpoints): {mtp_mb} MB, \
+                     CAPPED at {mtp_slots}/{max_slots} slots (spec dispatch width; \
+                     saves {saved_mb} MB; kill switch ATLAS_MTP_POOL_FULL_WIDTH)"
+                );
+            } else {
+                tracing::info!("SSM MTP pools ({ni} intermediates + checkpoints): {mtp_mb} MB");
+            }
         }
 
         // free_slots holds claimable indices only; the dummy at index
@@ -141,11 +175,33 @@ impl SsmStatePool {
             h_bytes,
             conv_bytes,
             max_slots,
+            mtp_slots,
             num_ssm_layers,
             has_mtp,
             num_intermediates,
             free_slots: Mutex::new(free_slots),
         })
+    }
+
+    /// Map a pool slot onto the (possibly narrower) MTP verify pools.
+    ///
+    /// Covered slots (`< mtp_slots`) map 1:1 — at `max_slots <= 32` that is
+    /// every slot AND the base dummy (`max_slots == mtp_slots` ⇒ dummy maps
+    /// to the MTP dummy at the same index), so addressing is byte-identical
+    /// to the pre-diet layout. Uncovered slots (only possible at bs>32)
+    /// clamp onto the MTP dummy at index `mtp_slots`: their pointers are
+    /// computed for every sequence's `SsmLayerState` at alloc/compact time
+    /// but are only ever DEREFERENCED by verify paths, which the scheduler
+    /// guard (`slot_idx < ssm_reserve::mtp_state_slots(bs)`) keeps away
+    /// from uncovered slots — the clamp just makes a missed guard
+    /// memory-safe (scratch write) instead of out-of-bounds.
+    #[inline]
+    fn mtp_slot(&self, slot: usize) -> usize {
+        if slot < self.mtp_slots {
+            slot
+        } else {
+            self.mtp_slots
+        }
     }
 
     pub(super) fn claim_slot(&self) -> Result<usize> {
@@ -299,6 +355,7 @@ impl SsmStatePool {
         token_idx: usize,
     ) -> DevicePtr {
         let ni = self.num_intermediates;
+        let slot = self.mtp_slot(slot);
         self.h_intermediate_pools[ssm_layer_idx].offset((slot * ni + token_idx) * self.h_bytes)
     }
 
@@ -309,23 +366,28 @@ impl SsmStatePool {
         token_idx: usize,
     ) -> DevicePtr {
         let ni = self.num_intermediates;
+        let slot = self.mtp_slot(slot);
         self.conv_intermediate_pools[ssm_layer_idx]
             .offset((slot * ni + token_idx) * self.conv_bytes)
     }
 
     pub(super) fn h_checkpoint(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
-        self.h_checkpoint_pools[ssm_layer_idx].offset(slot * self.h_bytes)
+        self.h_checkpoint_pools[ssm_layer_idx].offset(self.mtp_slot(slot) * self.h_bytes)
     }
 
     pub(super) fn conv_checkpoint(&self, ssm_layer_idx: usize, slot: usize) -> DevicePtr {
-        self.conv_checkpoint_pools[ssm_layer_idx].offset(slot * self.conv_bytes)
+        self.conv_checkpoint_pools[ssm_layer_idx].offset(self.mtp_slot(slot) * self.conv_bytes)
     }
 
     pub(super) fn reset_slot(&self, slot: usize, gpu: &dyn GpuBackend) -> Result<()> {
+        // MTP pools only cover slots < mtp_slots (bs>32 diet); an uncovered
+        // slot has no MTP state of its own to reset (its accessors clamp to
+        // the shared MTP dummy — zeroing that would be wasted work).
+        let reset_mtp = self.has_mtp && slot < self.mtp_slots;
         for i in 0..self.num_ssm_layers {
             gpu.memset(self.h_state(i, slot), 0, self.h_bytes)?;
             gpu.memset(self.conv_state(i, slot), 0, self.conv_bytes)?;
-            if self.has_mtp {
+            if reset_mtp {
                 for t in 0..self.num_intermediates {
                     gpu.memset(self.h_intermediate(i, slot, t), 0, self.h_bytes)?;
                     gpu.memset(self.conv_intermediate(i, slot, t), 0, self.conv_bytes)?;
@@ -344,6 +406,14 @@ impl SsmStatePool {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
+        // Compaction can migrate FROM an uncovered slot (bs>32: source slot
+        // >= mtp_slots) — such a sequence has never speculated (the dispatch
+        // guard requires slot < mtp_slots to verify), so it has no live MTP
+        // checkpoint/intermediate state to carry; copying the clamped dummy
+        // would smear scratch bytes over the target. Targets are always
+        // in-range (`compact_survivors_into_range` picks targets < n), so
+        // `to` uncovered can only pair with `from` uncovered.
+        let copy_mtp = self.has_mtp && from < self.mtp_slots && to < self.mtp_slots;
         for i in 0..self.num_ssm_layers {
             gpu.copy_d2d_async(
                 self.h_state(i, from),
@@ -357,7 +427,7 @@ impl SsmStatePool {
                 self.conv_bytes,
                 stream,
             )?;
-            if self.has_mtp {
+            if copy_mtp {
                 for t in 0..self.num_intermediates {
                     gpu.copy_d2d_async(
                         self.h_intermediate(i, from, t),
@@ -466,6 +536,40 @@ impl Drop for SlotGuard {
     }
 }
 
+/// Release every per-layer state pool.
+///
+/// The intermediate and checkpoint pools are only allocated when MTP is on, so
+/// the vectors are empty otherwise — draining handles both without a branch.
+impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
+    fn label(&self) -> &'static str {
+        "ssm state pool"
+    }
+
+    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        for pool in [
+            &mut self.h_state_pools,
+            &mut self.conv_state_pools,
+            &mut self.h_intermediate_pools,
+            &mut self.conv_intermediate_pools,
+            &mut self.h_checkpoint_pools,
+            &mut self.conv_checkpoint_pools,
+        ] {
+            for ptr in pool.drain(..) {
+                if let Err(e) = gpu.free(ptr)
+                    && first_error.is_none()
+                {
+                    first_error = Some(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod slot_guard_tests {
     use super::*;
@@ -485,6 +589,7 @@ mod slot_guard_tests {
             h_bytes: 0,
             conv_bytes: 0,
             max_slots,
+            mtp_slots: 0,
             num_ssm_layers: 0,
             has_mtp: false,
             num_intermediates: 0,

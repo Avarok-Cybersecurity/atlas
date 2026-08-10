@@ -590,6 +590,31 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         let op = &attn_layer.attn.o_proj;
                         let ot = op.transpose_for_gemm(gpu, hh, nh * hd)?;
                         attn_layer.set_prefill_weights(Some(qt), Some(kt), Some(vt), Some(ot));
+                        // Fused [q|k|v] twin: k/v are N=1024, which against the
+                        // 128-wide N tile is 8 CTAs on 48 SMs (40 idle, 23.6 GB/s,
+                        // 9.75x off floor). Concatenated N=14336 runs 112 CTAs in
+                        // ONE launch. Bit-identical ONLY when the three share a
+                        // single `weight_scale_2` — the GEMM applies one scale2 per
+                        // launch — so verify the device values rather than assume.
+                        // Bit-exact float comparison, not an epsilon: the GEMM
+                        // applies ONE scale2, so anything but exact equality
+                        // changes results.
+                        let scales_equal = qw.weight_scale_2.to_bits()
+                            == kw.weight_scale_2.to_bits()
+                            && kw.weight_scale_2.to_bits() == vw.weight_scale_2.to_bits();
+                        if scales_equal {
+                            let fused =
+                                crate::weight_map::QuantizedWeight::transpose_concat_for_gemm(
+                                    gpu,
+                                    &[(&qw, q_n), (&kw, nkv * hd), (&vw, nkv * hd)],
+                                    hh,
+                                )?;
+                            attn_layer.set_fused_qkv_prefill_weight(Some(fused));
+                        } else if attn_idx == 0 {
+                            tracing::warn!(
+                                "attention q/k/v have differing weight_scale_2 — fused QKV GEMM disabled (3 separate launches per layer)"
+                            );
+                        }
                     }
                     // Overlay native FP8 q/k/v/o on top of the NVFP4 weights when
                     // enabled (single-GPU FP8 checkpoint). Hot decode/prefill paths
@@ -1116,6 +1141,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
             if (i + 1) % 10 == 0 {
                 tracing::info!("Loaded layers 0..{}", i + 1);
+                spark_runtime::progress::layer(i + 1, config.num_hidden_layers);
             }
         }
 

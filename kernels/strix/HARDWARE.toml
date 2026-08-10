@@ -15,19 +15,25 @@ memory_type = "LPDDR5X"
 # GPU-visible pool is the dedicated-VRAM carveout (<<64 GB) — model
 # sizing for the WSL bring-up must account for that, not this number.
 memory_gb = 64
-# RDNA3.5 has a hard 64 KB/workgroup LDS cap. The BR64=64 large-chunk
-# prefill kernel's __shared__ (smem_Q64[64]) overflows it even after
-# single-buffering K. Force the BR=32 prefill path on this target: the
-# BR=32 kernel is LDS-fixed, correct for all chunk sizes, and the _64
-# kernels become compile-only (never dispatched). Perf-only tradeoff
-# (large prefill chunks tile in 32 rows instead of 64). NVIDIA targets
-# omit this key → option_env! None → unchanged behaviour.
-force_br32_prefill = true
-
-# RDNA3.5 has no cp.async PTX, so the coherence native-FP8 SSM prefill
-# GEMM (`fp8_gemm_n128`, cp.async-based) cannot be built/dispatched here
-# under SCALE either. Keep the NVFP4 SSM in_proj/out_proj path (the proven
-# dispatch for the Fp8Dequanted variant on this target). Without this gate
-# the binary would allocate the ~5.3 GB native-FP8 prefill buffers and risk
-# OOM on the bandwidth-limited APU. NVIDIA/GB10 omits this key → unchanged.
-disable_fp8_ssm_prefill = true
+# NOTE — two keys were removed from here because nothing read them:
+#
+#   force_br32_prefill      parsed by atlas-kernels/build.rs and re-emitted as
+#                           ATLAS_HW_FORCE_BR32, which no code consumed (the
+#                           reader was lost in the Strix squash merge, and
+#                           cargo:rustc-env cannot cross from atlas-kernels to
+#                           spark-model anyway). RDNA3.5's 64 KB/workgroup LDS
+#                           cap is handled instead by `#define BR64 32` under
+#                           __SCALE__ in common/prefill_paged_compute.cuh, with
+#                           the matching 32-row host grid stride selected by
+#                           cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs.
+#
+#   disable_fp8_ssm_prefill never parsed at all — no build script ever looked
+#                           it up, so it was pure decoration. The native-FP8
+#                           SSM prefill path is gated at runtime by the
+#                           ATLAS_NO_GDN_FP8_PREFILL env var
+#                           (weight_loader/qwen35_dense.rs), which is NOT
+#                           target-aware: this path is ON by default on Strix.
+#                           That is a real open question, not something this
+#                           key was ever suppressing.
+#
+# Do not re-add either key without adding a reader in the same change.

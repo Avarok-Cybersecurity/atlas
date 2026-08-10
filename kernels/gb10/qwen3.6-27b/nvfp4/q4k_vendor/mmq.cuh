@@ -1064,7 +1064,18 @@ static __device__ __forceinline__ void load_tiles_nvfp4_nvfp4(const char * __res
     const int kbx = txi % threads_per_row;
     const int row_in_warp = txi / threads_per_row;
 
-    const block_nvfp4 * bxi_base = (const block_nvfp4 *) x + kbx0 + kbx;
+    // ATLAS (A2): the weight buffer is SoA per row — [qs: bpr*32][d: bpr*4] —
+    // not an array of 36-byte block_nvfp4. `stride` still carries blocks-per-row,
+    // so the row base is stride*36 bytes and the two regions are derived from it.
+    // This makes the 32 qs bytes CONTIGUOUS: two 16-byte loads instead of eight
+    // 4-byte loads. Written by atlas_nvfp4_repack; see the note there.
+    // ★ `kbx0` is a LINEAR block index that already folds in the CTA's row offset
+    // (`offset_x = ... + it*mmq_y*stride_row_x`, line 3640) — it is NOT a pure
+    // k-offset. The SoA layout is per-ROW, so recover the two components once per
+    // thread. One div+mod, hoisted out of the i-loop.
+    const int bpr  = stride;                 // blocks per row
+    const int row0 = kbx0 / bpr;             // first row of this tile
+    const int kb0  = kbx0 - row0 * bpr;      // k-block offset within the row
     uint32_t * x_u32_scale = x_u32 + 64 + kbx;
 
 #pragma unroll
@@ -1075,19 +1086,24 @@ static __device__ __forceinline__ void load_tiles_nvfp4_nvfp4(const char * __res
             i = min(i, i_max);
         }
 
-        const block_nvfp4 * bxi = bxi_base + i * stride;
+        const char * rp = x + (size_t) (row0 + i) * bpr * 36;   // this row's base
+        const int kb = kb0 + kbx;                                  // block within row
         const int row_base = i * MMQ_MMA_TILE_X_K_FP4;
         const int q_base = row_base + 8 * kbx;
 
-        const uint32_t * src_qs = reinterpret_cast<const uint32_t *>(bxi->qs);
+        // 32 contiguous qs bytes = 2x16B. Aligned because the row base is
+        // bpr*36 (16-B aligned for bpr%4==0, i.e. K%256==0 — both live K qualify)
+        // and the in-row offset is a multiple of 32.
+        const uint4 q0 = *reinterpret_cast<const uint4 *>(rp + (size_t) kb * 32);
+        const uint4 q1 = *reinterpret_cast<const uint4 *>(rp + (size_t) kb * 32 + 16);
 
-#pragma unroll
-        for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
-            x_u32[q_base + 2 * sub + 0] = src_qs[2 * sub + 0];
-            x_u32[q_base + 2 * sub + 1] = src_qs[2 * sub + 1];
-        }
+        x_u32[q_base + 0] = q0.x; x_u32[q_base + 1] = q0.y;
+        x_u32[q_base + 2] = q0.z; x_u32[q_base + 3] = q0.w;
+        x_u32[q_base + 4] = q1.x; x_u32[q_base + 5] = q1.y;
+        x_u32[q_base + 6] = q1.z; x_u32[q_base + 7] = q1.w;
 
-        x_u32_scale[row_base] = get_int_b4(bxi->d, 0);
+        x_u32_scale[row_base] =
+            *reinterpret_cast<const uint32_t *>(rp + (size_t) bpr * 32 + (size_t) kb * 4);
     }
 }
 

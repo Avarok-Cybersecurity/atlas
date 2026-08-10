@@ -46,17 +46,16 @@ pub(super) fn render_template(
     // defeat the compaction. Pass `None` so the template's `{% if tools
     // %}` branch falls through — the tool-call format instructions
     // still come from `system_prompt()`.
-    let jinja_tools: Option<Vec<serde_json::Value>> =
-        if tools_active && !crate::tscg::tscg_enabled() {
-            Some(
-                tools
-                    .iter()
-                    .map(|t| serde_json::to_value(t).unwrap_or_default())
-                    .collect(),
-            )
-        } else {
-            None
-        };
+    let jinja_tools: Option<Vec<serde_json::Value>> = if tools_active && !state.chat.prompt.tscg {
+        Some(
+            tools
+                .iter()
+                .map(|t| serde_json::to_value(t).unwrap_or_default())
+                .collect(),
+        )
+    } else {
+        None
+    };
 
     // Progressive auto-compact (DISABLED BY DEFAULT 2026-04-25 —
     // see project_no_auto_compaction memory feedback).
@@ -256,8 +255,14 @@ mod json_message_tests {
             text_msg(Role::User, "thanks"),
         ];
 
-        let out = super::super::msg_entry::build_msg_entries(None, None, &msgs, true)
-            .expect("fixture builds");
+        let out = super::super::msg_entry::build_msg_entries(
+            None,
+            None,
+            &msgs,
+            true,
+            &crate::api::chat::levers::ChatLevers::OFF,
+        )
+        .expect("fixture builds");
         assert_eq!(out.cwd_hint.as_deref(), Some("/tmp/proj"));
         let json = build_json_messages(&out.messages);
 

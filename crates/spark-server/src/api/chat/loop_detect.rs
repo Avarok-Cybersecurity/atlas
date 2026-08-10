@@ -20,7 +20,7 @@ pub(super) struct LoopDetectOut {
     pub(super) tool_call_repeat_count: usize,
 }
 
-/// BW1/SPINFIX relaxation (Iter 52, 2026-06-02): the loop detector hard-masks
+/// BW1/SPINFIX relaxation (Iter 52, 2026-06-02): the loop detector hard-sched
 /// the `<tool_call>` token (Suppress verdict + spinning) after only ~3 similar
 /// turns. During legitimate agentic coding the agent repeats commands
 /// (`ls`/`cargo check`/`cargo run` while iterating), trips this at turns>=3,
