@@ -22,6 +22,8 @@ mod decode_logits_step;
 mod decode_step;
 mod emit_step;
 mod fast_greedy;
+#[cfg(test)]
+mod finish_guard_tests;
 mod helpers;
 mod lifecycle;
 #[cfg(test)]

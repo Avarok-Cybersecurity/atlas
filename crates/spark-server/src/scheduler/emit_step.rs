@@ -74,6 +74,8 @@ pub fn emit_token(
     {
         a.output_tokens.push(tok);
         a.finished = true;
+        // Name the cut -- MTP twin of the decode_logits_step site.
+        a.guard_stop = Some(GUARD_STOP_TOOL_RESPONSE);
         tracing::debug!("<tool_response> hard-stop fired (id={trs}); ending turn");
         return;
     }
