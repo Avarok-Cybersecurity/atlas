@@ -85,7 +85,8 @@ impl Qwen3SsmLayer {
         // qkvz_nvfp4.is_none() covers TWO builds: the FP8 build (qkvz_fp8w
         // Some -> batched w8a16 GEMM, needs w8a16_gemm_k) and the pure
         // native-BF16 build (both None -> the batched `dense_gemm` fallback
-        // below, which uses dense_gemm_k, always loaded). Gate each on the
+        // below, which uses dense_gemm_k — loaded with an unconditional `?`
+        // in init.rs:147, so it is always non-zero here). Gate each on the
         // kernel it actually dispatches so the BF16 build engages the batched
         // fast path instead of silently dropping to the per-seq loop. The FP8
         // sub-case (qkvz_fp8w Some) is byte-identical to the old gate.
