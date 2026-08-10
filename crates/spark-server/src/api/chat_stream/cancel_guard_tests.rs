@@ -30,9 +30,16 @@
 //! property is structural, so the test is too.
 
 /// Files in `chat_stream` that may cancel a stream.
+///
+/// Derived by grepping `spark-server` for a `.store(true` within three lines
+/// of a `cancel_flag`; keep it that way when adding an entry. `state.rs` was
+/// missed on the first pass and its site — `note_stop_string_match` — was
+/// correctly guarded by luck, not by this test. A file omitted here is a
+/// silent hole, which is why `checked` has a floor below.
 const CANCEL_SITE_FILES: &[(&str, &str)] = &[
     ("handle_token.rs", include_str!("handle_token.rs")),
     ("tool_handlers.rs", include_str!("tool_handlers.rs")),
+    ("state.rs", include_str!("state.rs")),
 ];
 
 /// Any one of these, within the window above a `cancel_flag` store, means
@@ -49,10 +56,17 @@ const WINDOW: usize = 25;
 
 /// True when this store is provably unreachable and so cannot mislabel.
 fn is_dead_path(preceding: &str) -> bool {
-    // `tool_retry_enabled` is a `const false`; `PendingRetry` is never
-    // constructed (see state.rs). Kept compiling as documentation of the
-    // retry design, so exempt it explicitly rather than by silence.
-    preceding.contains("pending_retry")
+    // The retry cut in `tool_handlers.rs` is gated behind `tool_retry_enabled`,
+    // a `const false`, so it can never execute. Kept compiling as documentation
+    // of the retry design, so exempt it explicitly rather than by silence.
+    //
+    // ★ Match the ASSIGNMENT, not the bare identifier. The first version of
+    // this test looked for `pending_retry` anywhere in the window, which also
+    // matched the unrelated `pending_retry: None` struct-field initializer in
+    // `state.rs` — silently exempting a live cut site 15 lines below it and
+    // making the whole invariant vacuous for that file. The exemption must be
+    // narrower than the window it is searched in.
+    preceding.contains("pending_retry = Some(")
 }
 
 #[test]
@@ -87,7 +101,7 @@ fn every_cancel_flag_store_names_its_guard() {
     // sites, this test must fail loudly rather than pass over an empty
     // scan and report a green it never earned.
     assert!(
-        checked >= 3,
+        checked >= 4,
         "found only {checked} cancel_flag stores — the scan stopped matching. \
          Fix the detection before trusting a green here."
     );
