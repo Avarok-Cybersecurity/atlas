@@ -187,7 +187,7 @@ impl<'a> KernelLaunch<'a> {
         // Diagnostic only — leave unset in production (one stream sync per
         // launch is a large slowdown). With RUST_BACKTRACE=1 the propagated
         // error pinpoints the calling op.
-        if r.is_ok() && debug_sync_kernels() {
+        if r.is_ok() && self.gpu.debug_sync_kernels() {
             self.gpu.synchronize(stream).map_err(|e| {
                 let bt = std::backtrace::Backtrace::force_capture();
                 anyhow::anyhow!(
@@ -203,14 +203,9 @@ impl<'a> KernelLaunch<'a> {
     }
 }
 
-/// One-time read of `ATLAS_DEBUG_SYNC_KERNELS` (PCND opt-in). When `1`,
-/// `KernelLaunch::launch` synchronizes the stream after every launch so an
-/// asynchronous illegal-address fault is reported at the exact kernel that
-/// caused it (rather than surfacing at a later sync). Default-off.
-fn debug_sync_kernels() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"))
-}
+// `ATLAS_DEBUG_SYNC_KERNELS` is now resolved once when the backend is built
+// and read through `GpuBackend::debug_sync_kernels` — the launch path is far
+// too hot for a per-call getenv, and a static was the wrong way to avoid one.
 
 /// Convenience: divide and round up.
 pub fn div_ceil(a: u32, b: u32) -> u32 {

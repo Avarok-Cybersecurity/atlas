@@ -1,0 +1,49 @@
+recipe_version: "2"
+model: nvidia/DeepSeek-V4-Flash-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+min_nodes: 2
+max_nodes: 2
+
+metadata:
+  description: |
+    DeepSeek-V4-Flash (NVFP4) served with pure expert parallelism across two
+    GB10 nodes over NCCL/RoCEv2. This model REQUIRES EP=2: the quantized
+    checkpoint is ~153 GB, larger than a single GB10's 119.7 GB, so a
+    single-node launch OOMs. It also cannot use tensor parallelism —
+    DeepSeek-V4 has num_key_value_heads=1 (MQA), so TP>1 is impossible and
+    the topology is fixed at tensor_parallel=1, ep_size=2.
+
+    Architecture: 43 layers, MLA (head_dim 512, kv_lora 512 + 64 rope), 256
+    experts / top-6 / 1 shared, sqrtsoftplus routing with the first 3 layers
+    hash-routed (static tid2eid), Hyper-Connections residual (mHC, Sinkhorn),
+    and DeepSeek Sparse Attention (per-layer compress ratios). The Atlas port
+    is validated coherent end-to-end (Paris, counting, haiku, math).
+
+    KV cache is FP8: the MLA decode kernel's V=K rope reconstruction and
+    attention sink are only implemented on the FP8 path, and BF16-KV decode
+    is measurably worse. CUDA graphs are disabled under EP on GB10 (RoCE
+    replay deadlocks) — Atlas defaults ATLAS_EP_GRAPHS=0, so no override is
+    needed here.
+
+    --speculative is OFF: the public checkpoint ships no usable MTP draft
+    weights, so speculative decoding cannot be enabled on either rank.
+    Validated decode ~15.5 tok/s (network/all-reduce bound over RoCE).
+  maintainer: avarok
+  category: agent
+  model_params: 280B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  tensor_parallel: 1
+  ep_size: 2
+  max_model_len: 32768
+  max_batch_size: 1
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.90
+  enable_prefix_caching: true
+  oom_guard_mb: 512

@@ -1,0 +1,51 @@
+/* =============================================================================
+   News band. Same floating-card language as .reach-card / .road-card, with a
+   copper accent rail on the featured item. Auto-fit grid so it reflows from
+   three columns to one without a single media query.
+   ========================================================================== */
+.news-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap: 1.25rem;
+  margin-top: 2.5rem;
+}
+.news-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: #fcfbf8;
+  border: 1px solid rgba(205, 191, 168, 0.45);
+  border-radius: 18px;
+  padding: 1.6rem 1.7rem;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(58, 44, 20, 0.03), 0 16px 44px -20px rgba(58, 44, 20, 0.24);
+  transition: transform 0.2s, border-color 0.2s;
+}
+.news-card:hover { transform: translateY(-3px); border-color: var(--accent); }
+.news-accent { position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--bar); }
+.news-card.is-featured { padding-top: 1.8rem; }
+
+.news-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.news-tag {
+  font-family: var(--font-mono); font-size: 0.66rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-deep);
+  background: var(--accent-soft); border: 1px solid rgba(181, 98, 47, 0.3);
+  border-radius: 5px; padding: 0.2rem 0.5rem; white-space: nowrap;
+}
+.news-date { font-size: 0.72rem; color: var(--t3); white-space: nowrap; }
+.news-card h3 { font-size: 1.05rem; font-weight: 780; letter-spacing: -0.02em; line-height: 1.3; }
+.news-card p { font-size: 0.9rem; color: var(--t2); line-height: 1.62; }
+.news-link {
+  margin-top: auto; padding-top: 0.35rem;
+  font-size: 0.84rem; font-weight: 650; color: var(--accent); text-decoration: none;
+}
+.news-link:hover { text-decoration: underline; }
+
+/* gift banner call to action, sits inline with the thank-you line */
+.gift-cta {
+  font-size: 0.82rem; font-weight: 700; color: var(--accent);
+  text-decoration: none; white-space: nowrap;
+  border-bottom: 1px solid rgba(181, 98, 47, 0.35);
+}
+.gift-cta:hover { border-bottom-color: var(--accent); }

@@ -15,6 +15,29 @@ use super::{
     validate_config,
 };
 
+fn required_u64(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<u64> {
+    let value = raw
+        .get(key)
+        .with_context(|| format!("{model_type} config missing required field `{key}`"))?;
+    value
+        .as_u64()
+        .with_context(|| format!("{model_type} config field `{key}` must be an unsigned integer"))
+}
+
+fn required_nonzero_usize(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<usize> {
+    let value = required_u64(raw, key, model_type)? as usize;
+    if value == 0 {
+        anyhow::bail!("{model_type} config field `{key}` must be greater than zero");
+    }
+    Ok(value)
+}
+
+fn required_u32(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<u32> {
+    let value = required_u64(raw, key, model_type)?;
+    u32::try_from(value)
+        .with_context(|| format!("{model_type} config field `{key}` does not fit in u32"))
+}
+
 pub fn parse_config(json: &str) -> Result<ModelConfig> {
     // First, probe the top-level model_type.
     let raw: serde_json::Value =
@@ -139,9 +162,16 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             finalize_config(&mut config, &raw)?;
             Ok(config)
         }
-        "nemotron_h" => {
-            let mut config: ModelConfig =
-                serde_json::from_str(json).context("Failed to parse nemotron_h config.json")?;
+        "nemotron_h" | "nemotron_h_puzzle" => {
+            // Puzzle: num_hidden_layers is JSON null and the hybrid schedule lives
+            // in layers_block_type / block_configs (per-block MoE channel pruning).
+            // Rewrite the JSON so serde can deserialize, then map to Atlas fields.
+            let mut raw_mut = raw.clone();
+            if top_model_type == "nemotron_h_puzzle" {
+                apply_nemotron_puzzle_json(&mut raw_mut)?;
+            }
+            let mut config: ModelConfig = serde_json::from_value(raw_mut.clone())
+                .context("Failed to parse nemotron_h config.json")?;
             // Map Nemotron-H field names → Atlas canonical names
             if config.num_experts == 0 && config.n_routed_experts > 0 {
                 config.num_experts = config.n_routed_experts;
@@ -160,7 +190,7 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             // Architecture flags
             config.attn_gated = false;
             config.weight_prefix = "backbone".to_string();
-            // Parse hybrid_override_pattern → layer_types
+            // Parse hybrid_override_pattern → layer_types (Nano / Super)
             if !config.hybrid_override_pattern.is_empty() && config.layer_types.is_empty() {
                 config.layer_types = config
                     .hybrid_override_pattern
@@ -173,10 +203,61 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                     })
                     .collect();
             }
-            finalize_config(&mut config, &raw)?;
+            // Puzzle: layers_block_type + block_configs → layer_types + per-layer MoE dims
+            if top_model_type == "nemotron_h_puzzle" {
+                apply_nemotron_puzzle_config(&mut config, &raw_mut)?;
+            }
+            finalize_config(&mut config, &raw_mut)?;
             Ok(config)
         }
         "gemma4" => parse_gemma4_params(&raw),
+        "m2m_100" | "nllb" => {
+            let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+            config.model_type = "m2m_100".to_string();
+            config.hidden_size = required_nonzero_usize(&raw, "d_model", top_model_type)?;
+            config.num_hidden_layers =
+                required_nonzero_usize(&raw, "decoder_layers", top_model_type)?;
+            config.intermediate_size =
+                required_nonzero_usize(&raw, "decoder_ffn_dim", top_model_type)?;
+            config.vocab_size = required_nonzero_usize(&raw, "vocab_size", top_model_type)?;
+            config.num_attention_heads =
+                required_nonzero_usize(&raw, "decoder_attention_heads", top_model_type)?;
+            config.num_key_value_heads = config.num_attention_heads;
+            if !config
+                .hidden_size
+                .is_multiple_of(config.num_attention_heads)
+            {
+                anyhow::bail!(
+                    "{} config has d_model ({}) not divisible by decoder_attention_heads ({})",
+                    top_model_type,
+                    config.hidden_size,
+                    config.num_attention_heads,
+                );
+            }
+            config.head_dim = config.hidden_size / config.num_attention_heads;
+            config.max_position_embeddings =
+                required_nonzero_usize(&raw, "max_position_embeddings", top_model_type)?;
+            config.bos_token_id = required_u32(&raw, "bos_token_id", top_model_type)?;
+            config.eos_token_id = required_u32(&raw, "eos_token_id", top_model_type)?;
+            config.tie_word_embeddings = true;
+            config.attn_gated = false;
+            config.weight_prefix = "model.decoder".to_string();
+            config.num_experts = 0;
+            config.num_experts_per_tok = 1;
+            config.moe_intermediate_size = 0;
+            config.shared_expert_intermediate_size = 0;
+            config.layer_types.clear();
+            config.full_attention_interval = 1;
+            config.linear_num_key_heads = 0;
+            config.linear_key_head_dim = 0;
+            config.linear_num_value_heads = 0;
+            config.linear_value_head_dim = 0;
+            config.mtp_num_hidden_layers = 0;
+            config.vision = None;
+            config.quantization_config = parse_quantization_config(&raw);
+            validate_config(&config)?;
+            Ok(config)
+        }
         "minimax_m2" => parse_minimax_m2(&raw),
         "step3p7" => parse_step3p7(&raw),
         "deepseek_v4" => parse_deepseek_v4(json),
@@ -189,4 +270,128 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             Ok(config)
         }
     }
+}
+
+/// Rewrite Puzzle HF JSON so serde can load it as `ModelConfig`.
+///
+/// - `num_hidden_layers` is JSON null → derive from `layers_block_type` length
+/// - scalar `moe_intermediate_size` / `num_experts_per_tok` may be absent → fill
+///   with max-over-blocks so uniform Super-style code paths still have defaults
+fn apply_nemotron_puzzle_json(raw: &mut serde_json::Value) -> Result<()> {
+    let obj = raw
+        .as_object_mut()
+        .context("nemotron_h_puzzle config.json is not an object")?;
+    let n_layers = obj
+        .get("layers_block_type")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .or_else(|| {
+            obj.get("block_configs")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+        })
+        .context("nemotron_h_puzzle missing layers_block_type / block_configs")?;
+    if obj
+        .get("num_hidden_layers")
+        .map(|v| v.is_null() || v.as_u64() == Some(0))
+        .unwrap_or(true)
+    {
+        obj.insert("num_hidden_layers".into(), serde_json::json!(n_layers));
+    }
+    // Collect max MoE dims from block_configs for scalar fallbacks
+    let mut max_inter = 0usize;
+    let mut max_topk = 0usize;
+    if let Some(blocks) = obj.get("block_configs").and_then(|v| v.as_array()) {
+        for b in blocks {
+            if let Some(mi) = b.get("moe_intermediate_size").and_then(|v| v.as_u64()) {
+                max_inter = max_inter.max(mi as usize);
+            }
+            if let Some(tk) = b.get("num_experts_per_tok").and_then(|v| v.as_u64()) {
+                max_topk = max_topk.max(tk as usize);
+            }
+        }
+    }
+    if obj
+        .get("moe_intermediate_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        == 0
+        && max_inter > 0
+    {
+        obj.insert("moe_intermediate_size".into(), serde_json::json!(max_inter));
+    }
+    if obj
+        .get("num_experts_per_tok")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        == 0
+        && max_topk > 0
+    {
+        obj.insert("num_experts_per_tok".into(), serde_json::json!(max_topk));
+    }
+    Ok(())
+}
+
+/// Map Puzzle `layers_block_type` / `block_configs` onto Atlas layer schedule.
+fn apply_nemotron_puzzle_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
+    let block_types = raw
+        .get("layers_block_type")
+        .and_then(|v| v.as_array())
+        .context("nemotron_h_puzzle missing layers_block_type")?;
+    config.layer_types = block_types
+        .iter()
+        .map(|v| {
+            let s = v.as_str().unwrap_or("");
+            Ok(match s {
+                "mamba" => LayerType::LinearAttention,
+                "moe" => LayerType::Moe,
+                "attention" => LayerType::FullAttention,
+                other => anyhow::bail!("unknown layers_block_type entry: '{other}'"),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if config.num_hidden_layers == 0 {
+        config.num_hidden_layers = config.layer_types.len();
+    }
+    // Per-layer MoE schedule from block_configs
+    let n = config.num_hidden_layers;
+    let mut inters = vec![0usize; n];
+    let mut topks = vec![0usize; n];
+    if let Some(blocks) = raw.get("block_configs").and_then(|v| v.as_array()) {
+        for (i, b) in blocks.iter().enumerate().take(n) {
+            if b.get("block_type").and_then(|v| v.as_str()) != Some("moe") {
+                continue;
+            }
+            inters[i] = b
+                .get("moe_intermediate_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            topks[i] = b
+                .get("num_experts_per_tok")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+        }
+    }
+    config.moe_intermediate_sizes = inters;
+    config.num_experts_per_toks = topks;
+    // Keep scalar fields as max for buffer defaults / logging
+    if let Some(m) = config
+        .moe_intermediate_sizes
+        .iter()
+        .copied()
+        .filter(|&s| s > 0)
+        .max()
+    {
+        config.moe_intermediate_size = m;
+    }
+    if let Some(m) = config
+        .num_experts_per_toks
+        .iter()
+        .copied()
+        .filter(|&k| k > 0)
+        .max()
+    {
+        config.num_experts_per_tok = m;
+    }
+    Ok(())
 }

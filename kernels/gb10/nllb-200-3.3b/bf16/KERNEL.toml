@@ -1,0 +1,3 @@
+# NLLB starts from common BF16 CUDA kernels. Encoder-decoder-specific kernels
+# are intentionally added under this target as the runtime implementation lands.
+extra_nvcc_flags = []

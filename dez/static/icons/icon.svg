@@ -1,0 +1,14 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Dez">
+  <!-- scripts/gen-icons.mjs strips this group for the maskable variant, where
+       the launcher supplies its own plate shape. Keep the id. -->
+  <g id="plate">
+    <rect width="512" height="512" rx="116" fill="#0c0d10"/>
+    <rect x="12" y="12" width="488" height="488" rx="105" fill="none" stroke="#333842" stroke-width="10"/>
+  </g>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="30">
+    <path d="M176 152 L104 256 L176 360" stroke="#e7e9ee"/>
+    <path d="M248 360 L320 152" stroke="#9aa0ab" stroke-width="27"/>
+    <path d="M376 216 L416 256 L376 296" stroke="#ff9d4d"/>
+  </g>
+</svg>

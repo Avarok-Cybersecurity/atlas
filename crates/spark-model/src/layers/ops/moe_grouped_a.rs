@@ -161,7 +161,7 @@ pub fn moe_w4a16_grouped_gemm_ptrtable(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n_out, 64), max_m_tiles, num_experts])
+        .grid([div_ceil(n_out, 128), max_m_tiles, num_experts])
         .block([128, 1, 1])
         .arg_ptr(a)
         .arg_ptr(b_packed_ptrs)

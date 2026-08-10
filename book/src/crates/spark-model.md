@@ -131,9 +131,9 @@ Wraps the MTP draft-then-verify loop. Draft tokens are produced by the MTP head,
 
 ## Vision preprocessing (`vision_preprocess.rs`)
 
-For Qwen3-VL and Qwen3.6: accept image input (JPEG/PNG/base64), resize/normalise to the model's patch grid, produce pixel-values tensor + MRoPE position IDs (H/W/T triples). Handles the 3× positions scratch mentioned in [atlas-embed](./atlas-primitives.md#atlas-embed--position--token-embeddings).
+For Qwen3-VL and Qwen3.6: accept image input (JPEG/PNG/base64), resize/normalise to the model's patch grid, produce pixel-values tensor + MRoPE position IDs (H/W/T triples). Handles the 3× positions scratch the MRoPE path needs.
 
-## Quant format runtime dispatch (`quant_format.rs`)
+## Quant format runtime dispatch (`quant_format/`)
 
 Sniffs the checkpoint shape on load and picks the right `Dequantize` implementation. Introduced in the Pass-25 sweep to replace a load-time heuristic that had produced EP=2 CUDA illegal-address errors on the ModelOpt-NVFP4 variant of M2.7.
 

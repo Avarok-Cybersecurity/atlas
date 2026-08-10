@@ -32,36 +32,14 @@
 use super::{LogitsContext, LogitsProcessor, ProcessorOutcome};
 use crate::scheduler::ActiveSeq;
 use std::io::Write;
-use std::sync::Mutex;
 
 /// Pipeline stage that records Shannon entropy of the masked logit
 /// distribution to a JSONL file. Diagnostic-only — never mutates logits.
 pub struct AdaDecDiagnostic;
 
-/// Mutex-guarded file appender. `OnceLock` so the file is opened lazily on
-/// the first record write rather than at startup (zero cost when the env
-/// var is unset).
-static APPENDER: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
-
-fn appender() -> Option<&'static Mutex<std::fs::File>> {
-    APPENDER
-        .get_or_init(|| {
-            let dir = std::env::var("ATLAS_ADADEC_DIAGNOSTIC").ok()?;
-            if dir.is_empty() {
-                return None;
-            }
-            std::fs::create_dir_all(&dir).ok()?;
-            let path = std::path::Path::new(&dir).join("adadec_entropy.jsonl");
-            let f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok()?;
-            tracing::info!(target: "atlas::adadec", "Appending entropy diagnostics to {}", path.display());
-            Some(Mutex::new(f))
-        })
-        .as_ref()
-}
+// The appender is `SchedCtx::dumps.adadec`, opened when the run starts —
+// see `scheduler::dumps` for why the `OnceLock` was wrong for both the
+// handle and the decision it cached.
 
 /// Shannon entropy of the softmax distribution over `logits`, computed
 /// in numerically-stable log-sum-exp form. Tokens at `-inf` (masked by
@@ -123,8 +101,13 @@ fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
 /// (`decode_logits_seq::process_seq_logits`) which applies its stages
 /// INLINE rather than via `run_pipeline`. No-op when the env var is
 /// unset; otherwise writes one JSONL record per call.
-pub fn log_step(logits: &[f32], seq: &ActiveSeq, path: &'static str) {
-    let Some(mtx) = appender() else {
+pub fn log_step(
+    sink: Option<&std::sync::Mutex<std::fs::File>>,
+    logits: &[f32],
+    seq: &ActiveSeq,
+    path: &'static str,
+) {
+    let Some(mtx) = sink else {
         return;
     };
 
@@ -157,9 +140,9 @@ impl LogitsProcessor for AdaDecDiagnostic {
         &self,
         logits: &mut [f32],
         seq: &mut ActiveSeq,
-        _ctx: &LogitsContext,
+        ctx: &LogitsContext,
     ) -> ProcessorOutcome {
-        log_step(logits, seq, "verify");
+        log_step(ctx.dumps.adadec.as_ref(), logits, seq, "verify");
         ProcessorOutcome::Continue
     }
 

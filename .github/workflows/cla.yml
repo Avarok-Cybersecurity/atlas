@@ -1,65 +1,60 @@
 name: "CLA Assistant"
 
+# Keyed on the PR: `issue_comment` and `pull_request_target` both fire for the
+# same pull request but carry different `github.ref` shapes, so grouping on the
+# ref alone would let the two trigger types queue against each other.
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   issue_comment:
     types: [created]
+  # `pull_request_target` runs with repository secrets against a fork's PR, so
+  # it is only safe while NOTHING here consumes the fork's code or its
+  # attacker-controlled text. Two properties keep that true, and both must
+  # survive any future edit to this file:
+  #
+  #   1. There is NO `actions/checkout`. The job never materialises head-ref
+  #      code, so a fork cannot supply a script, a build file, or an action
+  #      that this workflow would then execute.
+  #   2. No step interpolates `github.event.*` free text (comment bodies, PR
+  #      titles/branches) into a `run:` block or an action input. Signature
+  #      matching is done entirely inside the pinned action, against the
+  #      comment AUTHOR's committer id — see the note on the step below.
+  #
+  # Adding a checkout of `github.event.pull_request.head.sha`, or piping a
+  # comment body into a shell, converts this into a pwn-request: arbitrary
+  # fork-controlled input executing with the write scopes declared below.
   pull_request_target:
     types: [opened, closed, synchronize]
 
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
+    # `issue_comment` fires for plain issues too, where the action's
+    # `pulls.get(issue.number)` 404s and reds the job for no reason. Gate on
+    # the `pull_request` key that only PR-backed issues carry.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+    # Scoped to what contributor-assistant actually calls (verified against the
+    # action source at the pinned sha):
+    #   contents      — git refs/commits that persist signatures/version1/cla.json
+    #   pull-requests — pulls.get for the PR's head branch
+    #   issues        — listComments / createComment / updateComment / lock
+    #   actions       — reRunWorkflow, to turn the failed CLA check green once
+    #                   a contributor signs by comment (upstream issue #39)
+    # `statuses: write` was declared but is never used — the action sets no
+    # commit status — so it is dropped.
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      statuses: write
       actions: write
     steps:
-      # Retained for EXTERNAL first-time human contributors only: it re-injects a
-      # prior signature comment on re-push so the CLA doesn't have to be re-signed.
-      # Maintainer-controlled identities are allowlisted above and never reach here.
-      - name: "Prepare Dynamic Signature Match"
-        if: (contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) || github.event_name == 'pull_request_target'
-        env:
-          # Required for the gh CLI to query the API
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          # Dynamically grab the PR number depending on the event type
-          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-        run: |
-          DELIMITER=$(openssl rand -hex 8)
-          TARGET_STRING="I have read the CLA Document and I hereby sign the CLA"
-          
-          # 1. If it's a new comment dropping right now, use it immediately
-          if [[ "${{ github.event_name }}" == "issue_comment" && "$COMMENT_BODY" == *"$TARGET_STRING"* ]]; then
-            echo "SIGNATURE_TEXT<<$DELIMITER" >> $GITHUB_ENV
-            echo "$COMMENT_BODY" >> $GITHUB_ENV
-            echo "$DELIMITER" >> $GITHUB_ENV
-            exit 0
-          fi
-          
-          # 2. If it's a push/sync event, scan the PR's comment history
-          if [[ -n "$PR_NUMBER" ]]; then
-            # Query the API for all comments, filter for the target string, and grab the most recent match
-            MATCHING_COMMENT=$(gh api repos/${{ github.repository }}/issues/$PR_NUMBER/comments \
-              --jq "map(select(.body | contains(\"$TARGET_STRING\"))) | .[-1].body")
-            
-            # If a match was found (jq returns "null" if nothing matches)
-            if [[ "$MATCHING_COMMENT" != "null" && -n "$MATCHING_COMMENT" ]]; then
-              echo "SIGNATURE_TEXT<<$DELIMITER" >> $GITHUB_ENV
-              echo "$MATCHING_COMMENT" >> $GITHUB_ENV
-              echo "$DELIMITER" >> $GITHUB_ENV
-              exit 0
-            fi
-          fi
-          
-          # 3. Fallback (if no signature exists anywhere, default to the strict string so the bot fails gracefully)
-          echo "SIGNATURE_TEXT=$TARGET_STRING" >> $GITHUB_ENV
-
       - name: "CLA Assistant"
-        if: env.SIGNATURE_TEXT != ''
-        uses: contributor-assistant/github-action@v2.6.1
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -74,8 +69,16 @@ jobs:
           create-file-commit-message: 'chore: setup CLA signatures file'
           signed-commit-message: 'chore: $contributorName signed the CLA in PR #$pullRequestNo'
           custom-notsigned-prcomment: |
-            Thanks for the contribution. Before we can merge, please sign our [Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CLA.md) by replying to this comment with exactly:
+            Thanks for the contribution. Before we can merge, please sign our [Contributor License Agreement](https://github.com/${{ github.repository }}/blob/main/CLA.md) by replying to this comment with:
 
             `I have read the CLA Document and I hereby sign the CLA`
-          custom-pr-sign-comment: ${{ env.SIGNATURE_TEXT }}
+          # NO `custom-pr-sign-comment`. Setting it switches the action from its
+          # built-in CLA regex to EXACT equality against whatever string is
+          # supplied, and the step that used to supply it read that string out
+          # of the PR's comment history — so any third party who commented the
+          # phrase with extra text on someone else's PR redefined the accepted
+          # signature, and the real contributor's canonical reply then stopped
+          # matching. Leaving the input unset restores the action's default
+          # `use-dco-flag: false` regex, which matches the phrase anywhere in a
+          # comment and credits it to the COMMENT AUTHOR's committer id only.
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you!'

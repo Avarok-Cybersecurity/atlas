@@ -58,7 +58,7 @@ Thirteen waves of systematic audit-framework bug sweeps (`project_bug_sweep_wave
 - **Wave 9** — Rate-limiter `MAX_KEYS` DoS guard, body-size env-configurable.
 - **Wave 10** — Responses function_call(_output) items + instructions stacking, multi-block reasoning extractor, MoE topk bounds, weight loader scale=0 guard.
 - **Wave 11** — Streaming Responses store tool_calls, balanced markdown URL parens (Wikipedia URLs), self-spec rollback fail-fast on SSM.
-- **Wave 12** — Anthropic streaming `stop_sequence` populated, `/tokenize`+`/detokenize` gated under `ATLAS_REQUIRE_AUTH`.
+- **Wave 12** — Anthropic streaming `stop_sequence` populated, `/tokenize`+`/detokenize` gated behind auth (then `ATLAS_REQUIRE_AUTH`; the env var has since been replaced by the `--require-auth` flag).
 
 Vision fixes (7 ViT + MRoPE image position IDs) landed all four vision models passing the Mona-Lisa test.
 

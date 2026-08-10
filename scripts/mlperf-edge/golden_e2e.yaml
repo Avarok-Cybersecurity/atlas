@@ -1,0 +1,93 @@
+name: edge-agentic-full-run
+version: '1.0'
+type: online
+model_params:
+  name: centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
+  temperature: 0.0
+  seed: 42
+  max_new_tokens: 1024
+  min_new_tokens: 1
+  skip_special_tokens: true
+  streaming: 'on'
+  tokenizer_name: Qwen/Qwen3.6-27B
+datasets:
+- name: agentic_coding
+  type: performance
+  path: examples/11_Edge_Agentic_Example/agentic_coding_2.5h.jsonl
+  accuracy_config:
+    eval_method: agentic_inference_inline
+    num_repeats: 1
+  agentic_inference:
+    turn_timeout_s: 600.0
+    enable_salt: false
+    inject_tool_delay: false
+    num_trajectories_to_issue: 20
+    stop_issuing_on_first_user_complete: false
+- name: bfcl_v4::function_calling
+  type: accuracy
+  generate_params:
+    categories:
+    - non_live
+    - live
+    - hallucination
+    category_sample_pct:
+      non_live: 62
+      live: 10
+      hallucination: 10
+    subset_floor: 25
+  accuracy_config:
+    eval_method: bfcl_v4
+    ground_truth: ground_truth
+    extractor: function_call_extractor
+    num_repeats: 1
+settings:
+  runtime:
+    min_duration_ms: 0
+    max_duration_ms: 14400000
+    scheduler_random_seed: 42
+    dataloader_random_seed: 42
+  load_pattern:
+    type: agentic_inference
+    target_concurrency: 1
+  client:
+    num_workers: 1
+    log_level: INFO
+    warmup_connections: 0
+    max_connections: 1
+    transport:
+      type: zmq
+      recv_buffer_size: 16777216
+      send_buffer_size: 16777216
+      io_threads: 4
+      worker_io_threads: 1
+      high_water_mark: 0
+      linger: -1
+      immediate: 1
+    stream_all_chunks: false
+    worker_initialization_timeout: 60.0
+    worker_graceful_shutdown_wait: 0.5
+    worker_force_kill_timeout: 0.5
+    insecure: false
+    max_idle_time: 4.0
+    min_required_connections: -1
+    worker_gc_mode: relaxed
+  drain:
+    warmup_timeout_s: 240.0
+    performance_timeout_s: 240.0
+    metrics_drain_timeout_s: 0.0
+    metrics_tokenizer_workers: 2
+  warmup:
+    enabled: false
+    salt: true
+    drain: false
+    warmup_random_seed: 42
+  profiling: {}
+  service_ready_timeout_s: 30.0
+endpoint_config:
+  endpoints:
+  - http://localhost:8888
+  api_type: openai
+report_dir: results/chainK_golden_e2e_20260724_131209
+timeout: 21600.0
+verbose: false
+enable_cpu_affinity: true

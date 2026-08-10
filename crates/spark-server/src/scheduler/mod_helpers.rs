@@ -61,7 +61,13 @@ pub(super) fn install_high_speed_swap(
 }
 
 /// Co-dispatch admission window: `Some(duration)` when `ATLAS_PREFILL_CODISPATCH=1`,
-/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` (default 5).
+/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS`
+/// (default 100). A burst of concurrent requests arrives over tens of ms
+/// (HTTP accept + tokenize spread); the old 10 ms default admitted only the
+/// first 1-2 arrivals, so the "co"-dispatch cohort was mostly singletons and
+/// the batched path never saw the burst it exists for. 100 ms is one decode
+/// step's worth of TTFT — negligible against the multi-second serialized
+/// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
     let on = std::env::var("ATLAS_PREFILL_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -72,7 +78,7 @@ fn codispatch_window() -> Option<std::time::Duration> {
     let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(10);
+        .unwrap_or(100);
     Some(std::time::Duration::from_millis(ms))
 }
 
@@ -87,11 +93,25 @@ pub(super) fn drain_pending_requests(
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
     if active.is_empty() && prefilling.is_empty() {
-        // Block until signalled (no busy-wait, no polling).
-        while g.requests.is_empty() && !g.closed {
+        // Block until signalled (no busy-wait, no polling). Also wake on a
+        // pending rotation: a quiescence-applied LoraCommand (Rotate / Promote /
+        // PromoteDisk) is pushed onto `g.rotations` by the rotation forwarder and
+        // notified on this same Condvar. Without `rotations.is_empty()` in the
+        // predicate the notify would wake us but the loop would immediately
+        // re-sleep (requests still empty), starving the quiescence-apply block —
+        // an idle-scheduler deadlock for demand-driven promotion.
+        while g.requests.is_empty() && g.rotations.is_empty() && !g.closed {
             cv.wait(&mut g);
         }
         if g.closed && g.requests.is_empty() {
+            return Vec::new();
+        }
+        // Rotation-only wakeup: we exited the wait with no requests but a pending
+        // rotation. Return an empty batch so the caller reaches the
+        // quiescence-apply block (active/prefilling/new_reqs/swapped all empty)
+        // and drains `g.rotations` at true quiescence. Do NOT fall into the
+        // co-dispatch window with zero requests.
+        if g.requests.is_empty() {
             return Vec::new();
         }
         // Co-dispatch micro-batch window (ATLAS_PREFILL_CODISPATCH=1): when idle,
@@ -164,6 +184,59 @@ pub(super) fn drain_pending_requests(
         result.push(req);
     }
     result
+}
+
+/// Enforce the server-side per-request deadline on every active sequence.
+///
+/// Runs once per scheduler iteration, immediately before retirement, so it
+/// is INDEPENDENT of which decode path produced the step. The check used to
+/// live inside `decode_logits_step::process_decode_logits`, which the MTP /
+/// speculative path never calls — so with `--speculative` (the config of
+/// record) the deadline was simply not enforced at all, and it only ever
+/// fired at the high concurrencies where the spec path is off. Measured on
+/// dgx2 2026-08-01: a `--request-timeout 5` serve ran a single request for
+/// 145 s to a full 4000 tokens without the deadline firing once.
+///
+/// A deadline cut is an ABNORMAL stop: it sets `guard_stop` so
+/// `finish_sequence` reports `finish_reason="timeout"` instead of deriving
+/// "length" from the last token, which is indistinguishable from a
+/// legitimate max_tokens stop. Retirement is unchanged — the sequence goes
+/// through the same `finish_sequence` → `free_sequence` path as any other
+/// stop, so KV blocks and the SSM `SlotGuard` are released identically.
+pub(super) fn enforce_request_deadlines(active: &mut [ActiveSeq]) {
+    // No clock read and no per-sequence work when nothing is deadlined
+    // (`--request-timeout 0`), so the decode loop pays nothing for this.
+    if !active.iter().any(|a| !a.finished && a.timeout_at.is_some()) {
+        return;
+    }
+    let now = Instant::now();
+    for a in active.iter_mut() {
+        if a.finished {
+            continue;
+        }
+        let Some(deadline) = a.timeout_at else {
+            continue;
+        };
+        if now < deadline {
+            continue;
+        }
+        let emitted = a.output_tokens.len();
+        tracing::warn!(
+            slot = a.seq.slot_idx,
+            session_hash = a.session_hash,
+            elapsed_s = a.request_start.elapsed().as_secs_f64(),
+            budget_s = deadline
+                .saturating_duration_since(a.request_start)
+                .as_secs_f64(),
+            emitted_tokens = emitted,
+            requested_tokens = emitted + a.remaining,
+            "Request TIMEOUT: response TRUNCATED by the server deadline \
+             (--request-timeout / per-request `timeout`); \
+             reporting finish_reason=\"timeout\", not \"length\""
+        );
+        a.guard_stop = Some(GUARD_STOP_REQUEST_TIMEOUT);
+        a.finished = true;
+    }
 }
 
 /// Retire finished sequences. After swap_remove, the last element moves to
@@ -264,5 +337,149 @@ pub(super) fn compact_survivors_into_range(model: &dyn Model, survivors: &mut [A
                 ),
             }
         }
+    }
+}
+
+/// Deadline for a scheduler-thread send into a FULL stream channel.
+///
+/// Default 5000 ms; override `ATLAS_STREAM_SEND_DEADLINE_MS` (strict integer).
+/// Rationale for a default at all (PCND): the pre-existing behaviour was an
+/// UNBOUNDED `blocking_send`, i.e. an implicit deadline of infinity — the most
+/// dangerous possible default. 5 s is >5000x the per-token cadence and only
+/// triggers after the 1024-deep channel is ALSO full, so a consumer that hits
+/// it has been unresponsive for thousands of events.
+fn stream_send_deadline() -> std::time::Duration {
+    // STATIC, DELIBERATELY — transport configuration. This bounds how long a
+    // send to a CLIENT's stream channel may block; it is a property of the
+    // HTTP transport, not of the model behind it, and the two send helpers
+    // that read it are called from every emit site with no scheduler context
+    // in hand. Reaching one would mean threading a carrier through the whole
+    // emit path to configure a socket timeout.
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    std::time::Duration::from_millis(*MS.get_or_init(|| {
+        std::env::var("ATLAS_STREAM_SEND_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000)
+    }))
+}
+
+/// Bounded send from the scheduler/GPU thread into a per-request stream
+/// channel — the SSOT replacing every direct `blocking_send` in the scheduler.
+///
+/// Why this exists: `emit_token` and its siblings run ON the scheduler thread,
+/// which also drives every GPU step. The old backpressure arm fell back to an
+/// unbounded `tx.blocking_send`, so ONE stalled SSE consumer (channel full =
+/// 1024 undelivered events) froze the entire engine — all concurrent
+/// sequences, prefill and decode alike — for as long as that client stayed
+/// wedged. At C=1 that stalls one user's own request; at C=16 it is a
+/// denial-of-service pivot. There were TWELVE direct `blocking_send` call
+/// sites scattered across the scheduler, so the bound lives here once.
+///
+/// Semantics: identical to the old path until the deadline — try, then poll
+/// the full channel at 1 ms — after which the send is abandoned and `false` is
+/// returned, which every caller already treats exactly like the
+/// receiver-dropped case (finish/cancel that sequence). A consumer that is
+/// both 1024 events behind AND unresponsive for the whole deadline is
+/// indistinguishable from a dead one; delivering its backlog later cannot
+/// matter.
+pub(super) fn bounded_stream_send(
+    tx: &tokio::sync::mpsc::Sender<crate::api::inference_types::StreamEvent>,
+    event: crate::api::inference_types::StreamEvent,
+    what: &str,
+) -> bool {
+    use tokio::sync::mpsc::error::TrySendError;
+    let mut event = match tx.try_send(event) {
+        Ok(()) => return true,
+        Err(TrySendError::Closed(_)) => {
+            // INFO, not debug. This is the client hanging up mid-stream, and it
+            // is the single most common reason a generation "just stops" — but
+            // at debug it is invisible at the default level, so the server log
+            // shows a `Request:` line, then nothing: no completion, no error.
+            // That is indistinguishable from a hung server, and on 2026-08-07
+            // it cost a real debugging session chasing a stall that had not
+            // happened. One line per abandoned request is the right price for
+            // being able to tell "they left" from "we wedged".
+            tracing::info!("stream receiver dropped — client went away ({what})");
+            return false;
+        }
+        Err(TrySendError::Full(ev)) => ev,
+    };
+    let deadline = std::time::Instant::now() + stream_send_deadline();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        match tx.try_send(event) {
+            Ok(()) => return true,
+            Err(TrySendError::Closed(_)) => {
+                // Same event, later: they hung up while we were waiting on a
+                // full channel. Same reasoning, same level.
+                tracing::info!(
+                    "stream receiver dropped during backpressure — client went away ({what})"
+                );
+                return false;
+            }
+            Err(TrySendError::Full(ev)) => {
+                if std::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        "stream consumer stalled past {:?} with a full channel — abandoning ({what})",
+                        stream_send_deadline()
+                    );
+                    return false;
+                }
+                event = ev;
+            }
+        }
+    }
+}
+
+/// Tokio runtime handle captured at serve startup (async context), used by
+/// [`spawn_terminal_send`] from the scheduler OS thread — where
+/// `Handle::try_current()` would fail because the thread is not a runtime
+/// worker. Unset (tests, exotic embeddings) falls back to the bounded
+/// synchronous send.
+static RUNTIME_HANDLE: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Capture the current tokio runtime handle. Call from async context BEFORE
+/// spawning the scheduler thread. Idempotent.
+pub fn capture_runtime_handle() {
+    let _ = RUNTIME_HANDLE.set(tokio::runtime::Handle::current());
+}
+
+/// Fire-and-forget send for a TERMINAL stream event (Done / Error) — the last
+/// event a sequence's channel will ever carry.
+///
+/// Terminal frames are the only events that may be detached from the scheduler
+/// thread without an ordering hazard: every earlier token was already QUEUED
+/// (its send returned true before this is called) and nothing follows, so the
+/// FIFO channel delivers the spawned send after the full backlog regardless of
+/// when the task runs. Mid-stream events must NOT go through here — a spawned
+/// first-token send still waiting for capacity would race the next step's
+/// `try_send` of token #2 and deliver out of order.
+///
+/// The spawned task still applies [`stream_send_deadline`] via
+/// `tokio::time::timeout` so a wedged consumer cannot leak the task forever;
+/// on timeout the frame is dropped, which for a consumer that is 1024 events
+/// behind and unresponsive is indistinguishable from the receiver-drop case.
+/// Without a captured runtime handle this degrades to the synchronous bounded
+/// send.
+pub(super) fn spawn_terminal_send(
+    tx: &tokio::sync::mpsc::Sender<crate::api::inference_types::StreamEvent>,
+    event: crate::api::inference_types::StreamEvent,
+    what: &'static str,
+) {
+    if let Some(h) = RUNTIME_HANDLE.get() {
+        let tx = tx.clone();
+        let deadline = stream_send_deadline();
+        h.spawn(async move {
+            match tokio::time::timeout(deadline, tx.send(event)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => tracing::debug!("terminal send: receiver dropped ({what})"),
+                Err(_) => tracing::warn!(
+                    "terminal send: consumer stalled past {deadline:?}, frame dropped ({what})"
+                ),
+            }
+        });
+    } else if !bounded_stream_send(tx, event, what) {
+        tracing::debug!("terminal send failed synchronously ({what})");
     }
 }

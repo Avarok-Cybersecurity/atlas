@@ -1,0 +1,76 @@
+[model]
+name = "nemotron-labs-3-puzzle-75b-a9b"
+hf_id = "nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4"
+model_type = "nemotron_h_puzzle"
+architecture = "hybrid_mamba2_latent_moe_attention_puzzle"
+parameters = "75B"
+active_parameters = "9B"
+
+[[model_types]]
+model_type = "nemotron_h_puzzle"
+hidden_size = 4096
+
+# Inherit Super sampling defaults — same ChatML / LatentMoE family.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+enable_loop_watchdog = true
+thinking_in_tools = true
+disable_tool_steering = true
+tool_call_parser = "bare_json"
+max_thinking_budget = 2048
+thinking_default = true
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels` against this
+# target's own binary. All four are try_kernel() probes for the
+# qwen3.6-27b-shadow-only deep-K GEMM twins; every fallback they fall
+# through to resolves on this target.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin of w4a16_gemm_t, shipped ONLY in
+qwen3.6-27b's shadow w4a16_gemm.cu. layers::tgemm_kernel probes it,
+then falls back to w4a16_gemm_t, which resolves here. The twin is
+UNMEASURED for Nemotron-H shapes — candidate to measure, not loss."""
+w4a16_gemm_t_k64_p3 = """
+Same family. layers::k64_kernel probes it, then REQUIRES
+w4a16_gemm_t_k64, which resolves here (shadow defines it)."""
+w4a16_gemm_t_k64_n64_p3 = """
+Narrow-N deep-K twin. layers::k64_n64_kernel returns a 0-handle when
+absent; dispatch gates on handle != 0 before firing."""
+w4a16_gemm_t_m128_bf16 = """
+BF16-projection prefill twin; prefill_weights gates the probe (handle
+!= 0) and falls back to the resolved w4a16_gemm_t_m128 path. Note this
+target's shadow does not define w4a16_gemm_t_m128 either — the m128
+fallback resolves from the common module."""

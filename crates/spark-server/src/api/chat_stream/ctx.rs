@@ -11,6 +11,11 @@ use crate::AppState;
 use crate::tool_parser;
 
 pub(super) struct StreamCtx {
+    /// Holds `atlas_requests_active` for the stream's whole lifetime. `StreamCtx`
+    /// is moved into the SSE `flat_map` closure, so this drops — releasing the
+    /// gauge exactly once — on normal completion, on error, AND when the client
+    /// disconnects and axum drops the stream. Never read; existence is the point.
+    pub(super) _active_guard: crate::metrics::ActiveRequestGuard,
     pub(super) state: Arc<AppState>,
     pub(super) model: String,
     pub(super) id: String,
@@ -47,7 +52,6 @@ pub(super) struct StreamCtx {
     /// (string → integer/boolean/array/object). True for qwen3_xml.
     pub(super) wants_typed_arguments: bool,
     pub(super) max_tool_calls_per_response: usize,
-    pub(super) req_stream_include_usage: bool,
     pub(super) req_return_token_ids: bool,
     pub(super) req_ctx: Option<crate::rate_limiter::RequestContext>,
     pub(super) dump_seq: Option<u64>,

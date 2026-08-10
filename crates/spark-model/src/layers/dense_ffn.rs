@@ -95,6 +95,10 @@ pub struct DenseFfnLayer {
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
+    /// M<=4 batched GEMV (K=4 verify FFN); 0-handle when absent.
+    w4a16_gemv_batch4: KernelHandle,
+    /// M<=8 batched GEMV (chain-verify K=5..8 FFN); 0-handle when absent.
+    w4a16_gemv_batch8: KernelHandle,
     w4a16_gemm: KernelHandle,
     // 128x128 2-stage cp.async pipelined w4a16 GEMM — the fast prefill kernel
     // attention/SSM already use. The base `w4a16_gemm` (M64xN64) only hits
@@ -132,6 +136,9 @@ pub struct DenseFfnLayer {
     // below) and requant the BF16 activations every call (`requant_a_bf16_int8`,
     // into `int8_a_scratch`). KernelHandle(0) on miss → arm never taken.
     int8_faith2_k: KernelHandle,
+    // faith5: int32 per-sb accumulation (breaks the MMA→scale dependency chain).
+    // Opt-in via ATLAS_INT8_FAITH5=1 (replaces faith2 for int8 prefill GEMMs).
+    int8_faith5_k: KernelHandle,
     requant_w_int8_k: KernelHandle,
     requant_a_int8_k: KernelHandle,
     // Lazily-built, process-lifetime int8 weight copies (one per projection),
@@ -166,6 +173,15 @@ pub struct DenseFfnLayer {
     // folded in the scaled SiLU-mul. KernelHandle(0) → arm skipped.
     nvfp4_mmq_nc_k: KernelHandle,
     nvfp4_mmq_wc_k: KernelHandle,
+    /// M-sized MMQ tiles for DECODE. The 128 tile issues MMAs for all 128 columns
+    /// regardless of m, so at m=16 it discards 112 of them; these size the tile to
+    /// the batch. try_kernel: 0-handle -> dispatch keeps the 128 tile.
+    nvfp4_mmq16_nc_k: KernelHandle,
+    nvfp4_mmq16_wc_k: KernelHandle,
+    nvfp4_mmq32_nc_k: KernelHandle,
+    nvfp4_mmq32_wc_k: KernelHandle,
+    nvfp4_mmq64_nc_k: KernelHandle,
+    nvfp4_mmq64_wc_k: KernelHandle,
     nvfp4_quant_act_k: KernelHandle,
     nvfp4_repack_k: KernelHandle,
     nvfp4_silu_scaled_k: KernelHandle,
@@ -214,8 +230,29 @@ pub struct DenseFfnLayer {
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
     w8a16_gemm_t_m128_k: KernelHandle,
+    /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
+    /// where `fp8_weights` or `bf16_weights` are installed (v0 supports the
+    /// NVFP4 dispatch path only — the FP8/BF16 decode branches early-return
+    /// before the NVFP4 tail where the deltas will land; holo is NVFP4 so
+    /// it is unaffected). M0: stored only — compute reads land in M1.
+    #[allow(dead_code)]
+    lora: Option<ops::lora_delta::LoraFfnWeights>,
 }
 
+/// M-sized MMQ tiles: **ON by default**, disabled by `ATLAS_NO_MMQ_SMALL_TILE=1`.
+/// Strict `== "1"` on an `ATLAS_NO_*` name — presence flags here are enabled by `=0`.
+fn mmq_small_tile_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_MMQ_SMALL_TILE").as_deref() != Ok("1"))
+}
+
+/// The m=64 MMQ tile: **ON by default**, disabled by `ATLAS_NO_MMQ_TILE64=1`. Separate
+/// from `ATLAS_NO_MMQ_SMALL_TILE` so this arm can be A/B'd without also reverting the
+/// already-shipped 16/32 tiles. Strict `== "1"`, matching the sibling above.
+fn mmq_tile64_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_MMQ_TILE64").as_deref() != Ok("1"))
+}
 impl DenseFfnLayer {
     pub fn new(weights: DenseFfnWeights, gpu: &dyn GpuBackend) -> Result<Self> {
         Self::new_with_activation(weights, FfnActivation::SiLU, gpu)
@@ -257,17 +294,20 @@ impl DenseFfnLayer {
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             w4a16_gemv_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
+            w4a16_gemv_batch4: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
-            w4a16_gemm_t_m128_v2_k: super::try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2"),
+            w4a16_gemm_t_m128_v2_k: super::w4a16_v2_kernel(gpu),
             w4a16_gemm_t_m128_bf16_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128_bf16"),
             w4a16_gemm_t_m128_bf16_v2_k: super::try_kernel(
                 gpu,
                 "w4a16",
                 "w4a16_gemm_t_m128_bf16_v2",
             ),
-            w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
+            w4a16_gemm_t_k: super::tgemm_kernel(gpu),
             int8_faith2_k: super::try_kernel(gpu, "w4a16", "int8_gemm_faith2"),
+            int8_faith5_k: super::try_kernel(gpu, "w4a16", "int8_gemm_i32acc"),
             requant_w_int8_k: super::try_kernel(gpu, "w4a16", "requant_w_nvfp4_int8"),
             requant_a_int8_k: super::try_kernel(gpu, "w4a16", "requant_a_bf16_int8"),
             int8_gate: std::sync::OnceLock::new(),
@@ -289,6 +329,12 @@ impl DenseFfnLayer {
             q4k_down: std::sync::OnceLock::new(),
             nvfp4_mmq_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq128_nc"),
             nvfp4_mmq_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq128_wc"),
+            nvfp4_mmq16_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_nc"),
+            nvfp4_mmq16_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_wc"),
+            nvfp4_mmq32_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq32_nc"),
+            nvfp4_mmq32_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq32_wc"),
+            nvfp4_mmq64_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq64_nc"),
+            nvfp4_mmq64_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq64_wc"),
             nvfp4_quant_act_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_quantize_bf16"),
             nvfp4_repack_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_repack"),
             nvfp4_silu_scaled_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_silu_mul_scaled"),
@@ -297,7 +343,7 @@ impl DenseFfnLayer {
             fp4mmq_gate: std::sync::OnceLock::new(),
             fp4mmq_up: std::sync::OnceLock::new(),
             fp4mmq_down: std::sync::OnceLock::new(),
-            w4a16_gemm_t_k64_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64"),
+            w4a16_gemm_t_k64_k: super::k64_kernel(gpu).unwrap_or(KernelHandle(0)),
             act_mul,
             bf16_weights: None,
             dense_gemv_bf16_k,
@@ -313,6 +359,7 @@ impl DenseFfnLayer {
                 "w8a16_gemv_silu_input",
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
+            lora: None,
         };
         Ok(layer)
     }
@@ -393,12 +440,20 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
-            static TWIN_LOG: std::sync::Once = std::sync::Once::new();
-            TWIN_LOG.call_once(|| {
-                eprintln!(
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            // Latched on the BACKEND (`OpCache::once`), which exists by load
+            // time: `finalize_q4k_load` takes the `gpu` it is loading onto. A
+            // static meant only the first model in the process reported the
+            // decision.
+            if gpu.op_cache().once("log:ffn_mmq_freed_twins") {
+                tracing::info!(
                     "[atlas] ATLAS_FFN_MMQ: freed transposed FFN `_t` copies (dead under Q4_K prefill) — Q4_K weights net to ~0 vs NVFP4 baseline"
                 );
-            });
+            }
         }
         Ok(())
     }
@@ -463,7 +518,7 @@ impl DenseFfnLayer {
         let mut freed = 0usize;
         for wt in [&mut self.weights.gate_proj_t, &mut self.weights.up_proj_t]
             .into_iter()
-            .chain(down_t.take().into_iter())
+            .chain(down_t.take())
         {
             if let Some(w) = wt.as_ref()
                 && !w.weight.is_null()
@@ -475,12 +530,20 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
-            static FP4_TWIN_LOG: std::sync::Once = std::sync::Once::new();
-            FP4_TWIN_LOG.call_once(|| {
-                eprintln!(
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            // Latched on the BACKEND (`OpCache::once`), which exists by load
+            // time: `finalize_q4k_load` takes the `gpu` it is loading onto. A
+            // static meant only the first model in the process reported the
+            // decision.
+            if gpu.op_cache().once("log:ffn_fp4mmq_freed_twins") {
+                tracing::info!(
                     "[atlas] ATLAS_FFN_NVFP4_MMQ: freed gate/up `_t` copies (dead under FP4-MMQ prefill) — block_nvfp4 copies net to ~0 vs NVFP4 baseline"
                 );
-            });
+            }
         }
         Ok(())
     }
@@ -529,6 +592,21 @@ impl DenseFfnLayer {
             up_proj: up,
             down_proj: down,
         });
+    }
+
+    /// Install the startup-static LoRA FFN overlay (gate/up/down deltas).
+    /// Hard-rejects when FP8/BF16 weight overlays are installed — those
+    /// decode branches early-return before the NVFP4 tail where the M1
+    /// delta insertions land, so a permissive install would silently skip
+    /// deltas. holo is NVFP4, so it is unaffected.
+    pub fn set_lora_weights(&mut self, w: ops::lora_delta::LoraFfnWeights) -> Result<()> {
+        anyhow::ensure!(
+            self.fp8_weights.is_none() && self.bf16_weights.is_none(),
+            "LoRA v0 supports only the NVFP4 dense-FFN path (FP8/BF16 weight \
+             overlays installed on this layer)"
+        );
+        self.lora = Some(w);
+        Ok(())
     }
 
     /// Install BF16 dense MLP weights. After this call, the forward paths
@@ -787,23 +865,28 @@ impl DenseFfnLayer {
         // clamp), so with this arm the whole FFN block is kernel-identical to
         // a verify row. Requires the *_proj_t transposed copies (the NVFP4-MMQ
         // prefill arm FREES them — disable it if the warn below fires).
-        fn decode_ffn_via_gemm() -> bool {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_DECODE_FFN_VIA_GEMM").ok().as_deref() == Some("1")
-            })
-        }
-        if decode_ffn_via_gemm() && self.activation == FfnActivation::SiLU && self.act_mul.0 != 0 {
+        // The `OnceLock<bool>` static that lived here is now a field on
+        // `layers::ops::ModelLevers` — resolved when the model is built and carried
+        // on `ForwardContext`, because a static outlives the model whose flags it
+        // encodes.
+        if ctx.levers.decode_ffn_via_gemm
+            && self.activation == FfnActivation::SiLU
+            && self.act_mul.0 != 0
+        {
             let wt_alive =
                 |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
             if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
-                static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-                LOGGED.get_or_init(|| {
+                // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+                // value — the message is rebuilt from the arguments every call — so a
+                // stale entry cannot produce a wrong answer, only a suppressed duplicate
+                // line after a model swap. Scoping it would thread a logging concern
+                // through the call path to prevent one repeated INFO line.
+                if ctx.stats.once("log:decode_ffn_via_gemm") {
                     tracing::info!(
                         "decode FFN via verify GEMM path (ATLAS_DECODE_FFN_VIA_GEMM=1): \
                          gate/up/down through w4a16_prefill_gemm at M=1"
                     );
-                });
+                }
                 self.w4a16_prefill_gemm(
                     ctx,
                     &self.weights.gate_proj,
@@ -849,14 +932,18 @@ impl DenseFfnLayer {
                 )?;
                 return Ok(output);
             }
-            static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-            WARNED.get_or_init(|| {
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:decode_ffn_no_twins") {
                 tracing::warn!(
                     "ATLAS_DECODE_FFN_VIA_GEMM=1 requested but transposed FFN copies \
                      are freed/absent (NVFP4-MMQ prefill arm?) — falling back to GEMV; \
                      the unification experiment is NOT active"
                 );
-            });
+            }
         }
 
         // Fused gate_proj + up_proj: [1, H] → [1, inter] × 2.
@@ -1075,6 +1162,94 @@ impl DenseFfnLayer {
         Ok(())
     }
 
+    /// Batchm-GEMV kernel for `m` verify rows: batch4 (m<=4) or batch8
+    /// (m=5..8, chain verify). 0-handle when out of range or absent.
+    fn batchm_kernel(&self, m: u32) -> KernelHandle {
+        match m {
+            1..=4 => self.w4a16_gemv_batch4,
+            5..=8 => self.w4a16_gemv_batch8,
+            _ => KernelHandle(0),
+        }
+    }
+
+    /// Whether the M-row batched-GEMV verify path is available for `m` rows
+    /// (batchm kernel present AND NVFP4 weights loaded — the batchm GEMV
+    /// reads the non-transposed NVFP4 layout).
+    pub fn can_forward_km(&self, m: u32) -> bool {
+        self.batchm_kernel(m).0 != 0 && !self.weights.gate_proj.weight.is_null()
+    }
+
+    /// K=m (m<=8) speculative verify: batched GEMV for m tokens.
+    /// 4 launches: batchm gate + batchm up + silu_mul + batchm down — each
+    /// projection weight is read ONCE for all m rows at near-peak stream
+    /// bandwidth. nsys (2026-07-18, M=4): the `forward_prefill` MMQ arm this
+    /// replaces for the K=4 verify cost 54.8 ms/step across the 64-layer
+    /// dense FFN stack (~156 GB/s effective at M=4); the batch GEMV family
+    /// measures ~290 GB/s on the same shapes (w8a16_gemv_batch4 sibling),
+    /// putting this path at the ~31 ms weight-traffic floor. m=5..8 uses
+    /// `w4a16_gemv_batch8` (batchm_bench: same weight-streaming bandwidth,
+    /// removing the M>4 tile-GEMM cliff for chain-verify K=5..8).
+    pub fn forward_km(
+        &self,
+        input: DevicePtr,
+        m: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let inter = ctx.config.intermediate_size as u32;
+        let kh = self.batchm_kernel(m);
+
+        let gate_out = ctx.buffers.expert_gate_out();
+        let up_out = ctx.buffers.expert_up_out();
+
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            kh,
+            input,
+            &self.weights.gate_proj,
+            gate_out,
+            m,
+            inter,
+            h,
+            stream,
+        )?;
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            kh,
+            input,
+            &self.weights.up_proj,
+            up_out,
+            m,
+            inter,
+            h,
+            stream,
+        )?;
+        ops::silu_mul(
+            ctx.gpu,
+            self.act_mul,
+            gate_out,
+            up_out,
+            gate_out,
+            m * inter,
+            stream,
+        )?;
+        let output = ctx.buffers.moe_output();
+        ops::w4a16_gemv_batchm(
+            ctx.gpu,
+            kh,
+            gate_out,
+            &self.weights.down_proj,
+            output,
+            m,
+            h,
+            inter,
+            stream,
+        )?;
+
+        Ok(())
+    }
+
     /// N-token prefill: GEMM for all projections.
     /// W4A16 prefill/verify GEMM dispatch, routed by (M, K) per
     /// w4a16_m17_bench measurements on GB10:
@@ -1101,13 +1276,16 @@ impl DenseFfnLayer {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        fn small_m_enabled() -> bool {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
-        }
+        // The `OnceLock<bool>` static that lived here is now a field on
+        // `layers::ops::ModelLevers` — resolved when the model is built and carried
+        // on `ForwardContext`, because a static outlives the model whose flags it
+        // encodes.
         if let Some(wt) = wt {
-            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
-                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
+            if m <= 64 && k.is_multiple_of(32) && ctx.levers.ffn_small_m {
+                if k >= crate::layers::w4a16_k64_min_k()
+                    && k.is_multiple_of(64)
+                    && self.w4a16_gemm_t_k64_k.0 != 0
+                {
                     return ops::w4a16_gemm_n128(
                         ctx.gpu,
                         self.w4a16_gemm_t_k64_k,
@@ -1309,8 +1487,11 @@ impl DenseFfnLayer {
         // keeps the same 128x128 cp.async speed at base-kernel precision.
         // Unset (default) → every arm below is byte-for-byte the prior behavior
         // (PCND: explicit opt-in, no silent default change). Read once per call.
-        let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0
-            && std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
+        // Env read only here; the usable gate (`bf16_tc_prefill`) is derived
+        // below AFTER v1/v2 selection, from the handle actually launched.
+        // Gating on v1's handle while dispatching v2 admitted launches of a
+        // kernel this target may not carry.
+        let bf16_tc_env = std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
         // FP8 M64 fast-prefill opt-in: route prefill GEMMs through the m16n8k32
         // e4m3 M64 kernel (~1.47x vs v2 BF16, smem-relieved). Lossy (cosine 0.9997)
         // → highest priority when set, so it overrides the BF16/FP8 t_m128 arms.
@@ -1330,12 +1511,16 @@ impl DenseFfnLayer {
         let int8_prefill =
             self.int8_faith2_k.0 != 0 && std::env::var_os("ATLAS_INT8_PREFILL").is_some();
         if int8_prefill {
-            static INT8_LOG: std::sync::Once = std::sync::Once::new();
-            INT8_LOG.call_once(|| {
-                eprintln!(
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:ffn_int8_prefill") {
+                tracing::info!(
                     "[atlas] ATLAS_INT8_PREFILL=1: dense-FFN prefill via int8_gemm_faith2 (W4A8 requant→int8 MMA, lossy ~0.99998 cosine)"
                 );
-            });
+            }
         }
         // NVFP4 W4A4 MMQ prefill (ATLAS_FFN_NVFP4_MMQ) — vendored llama Blackwell
         // block-scale FP4 MMA, gate/up ONLY (hybrid: down stays on the default t_m128
@@ -1348,12 +1533,16 @@ impl DenseFfnLayer {
             && matches!(self.activation, FfnActivation::SiLU)
             && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
         if fp4mmq_prefill {
-            static FP4MMQ_LOG: std::sync::Once = std::sync::Once::new();
-            FP4MMQ_LOG.call_once(|| {
-                eprintln!(
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:ffn_fp4_mmq_prefill") {
+                tracing::info!(
                     "[atlas] ATLAS_FFN_NVFP4_MMQ=1: dense-FFN gate/up prefill via vendored llama NVFP4 W4A4 MMQ (block-scale FP4 MMA, ~80 TFLOP/s vs t_m128 ~51)"
                 );
-            });
+            }
         }
         // Down-projection MMQ arm (DEFAULT ON; kill-switch ATLAS_NO_FFN_NVFP4_MMQ_DOWN=1): route down through
         // the same MMQ arm (t_m128 runs the narrow-N down at only ~34 TFLOP/s in-model).
@@ -1397,12 +1586,16 @@ impl DenseFfnLayer {
             && self.quantize_nvfp4_k.0 != 0
             && std::env::var_os("ATLAS_FP4_PREFILL").is_some();
         if fp4_prefill {
-            static FP4_LOG: std::sync::Once = std::sync::Once::new();
-            FP4_LOG.call_once(|| {
-                eprintln!(
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:ffn_fp4_prefill") {
+                tracing::info!(
                     "[atlas] ATLAS_FP4_PREFILL=1: dense-FFN prefill via w4a4_gemm (native FP4 MMA sm_121a, W4A4)"
                 );
-            });
+            }
         }
         // NVFP4 packed [m,K/2] + scale [m,K/16] both fit within the shared int8
         // buffers (a_i8 [m,K] ⊇ packed; a_scale [m,(K/32)*4] ⊇ scale). FP4-prefill
@@ -1421,12 +1614,16 @@ impl DenseFfnLayer {
             && !fp4mmq_prefill
             && std::env::var_os("ATLAS_FFN_MMQ").is_some();
         if q4k_prefill {
-            static Q4K_LOG: std::sync::Once = std::sync::Once::new();
-            Q4K_LOG.call_once(|| {
-                eprintln!(
+            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // value — the message is rebuilt from the arguments every call — so a
+            // stale entry cannot produce a wrong answer, only a suppressed duplicate
+            // line after a model swap. Scoping it would thread a logging concern
+            // through the call path to prevent one repeated INFO line.
+            if ctx.stats.once("log:ffn_q4k_prefill") {
+                tracing::info!(
                     "[atlas] ATLAS_FFN_MMQ=1: dense-FFN prefill via vendored llama Q4_K MMQ (W4A8, +25%/+10% gate·down vs faith2)"
                 );
-            });
+            }
         }
         let q4k_a = if q4k_prefill {
             ctx.buffers.ffn_act_q8()
@@ -1450,6 +1647,9 @@ impl DenseFfnLayer {
         } else {
             self.w4a16_gemm_t_m128_bf16_k
         };
+        // Final gate: the flag is honored only when the SELECTED kernel is
+        // loaded (v2 when preferred, else v1) — not v1's handle unconditionally.
+        let bf16_tc_prefill = bf16_kernel.0 != 0 && bf16_tc_env;
 
         macro_rules! w4_gemm {
             ($w:expr, $wt:expr, $cell:expr, $qcell:expr, $fp4cell:expr, $allow_fp4:expr, $in:expr, $out:expr, $n:expr, $k:expr, $allow_q4k:expr) => {
@@ -1462,17 +1662,30 @@ impl DenseFfnLayer {
                         let _ = $in;
                         let qw =
                             self.ensure_nvfp4_mmq_weight($fp4cell, ctx.gpu, $w, $n, $k, stream)?;
-                        ops::nvfp4_mmq_gemm(
-                            ctx.gpu,
-                            self.nvfp4_mmq_nc_k,
-                            self.nvfp4_mmq_wc_k,
-                            fp4_y,
-                            qw.w,
-                            $out,
-                            m,
-                            $n,
-                            $k,
-                            stream,
+                        // Size the M tile to the batch when the batch is small and
+                        // the small-tile entries are present. m must be <= mmq_x or
+                        // grid.y>1 re-streams the weights per tile.
+                        let (tk_nc, tk_wc, tile) = if m <= 16
+                            && self.nvfp4_mmq16_nc_k.0 != 0
+                            && mmq_small_tile_enabled()
+                        {
+                            (self.nvfp4_mmq16_nc_k, self.nvfp4_mmq16_wc_k, 16u32)
+                        } else if m <= 32
+                            && self.nvfp4_mmq32_nc_k.0 != 0
+                            && mmq_small_tile_enabled()
+                        {
+                            (self.nvfp4_mmq32_nc_k, self.nvfp4_mmq32_wc_k, 32u32)
+                        } else if m <= 64
+                            && self.nvfp4_mmq64_nc_k.0 != 0
+                            && mmq_small_tile_enabled()
+                            && mmq_tile64_enabled()
+                        {
+                            (self.nvfp4_mmq64_nc_k, self.nvfp4_mmq64_wc_k, 64u32)
+                        } else {
+                            (self.nvfp4_mmq_nc_k, self.nvfp4_mmq_wc_k, 128u32)
+                        };
+                        ops::nvfp4_mmq_gemm_tiled(
+                            ctx.gpu, tk_nc, tk_wc, tile, fp4_y, qw.w, $out, m, $n, $k, stream,
                         )?;
                     }
                     // Q4_K MMQ prefill (ATLAS_FFN_MMQ) — next priority, gated per-GEMM by
@@ -1521,9 +1734,19 @@ impl DenseFfnLayer {
                     // (down_faith2 && !$allow_q4k): down falls here instead of Q4_K.
                     _ if int8_prefill || (down_faith2 && !$allow_q4k) => {
                         let iw = self.ensure_int8_weight($cell, ctx.gpu, $w, $n, $k, stream)?;
+                        // faith5 (ATLAS_INT8_FAITH5=1): int32 per-sb accumulation
+                        // breaks the MMA→scale dependency chain. Same kernel signature
+                        // + grid/block as faith2 — just a different KernelHandle.
+                        let int8_kernel = if self.int8_faith5_k.0 != 0
+                            && std::env::var_os("ATLAS_INT8_FAITH5").is_some()
+                        {
+                            self.int8_faith5_k
+                        } else {
+                            self.int8_faith2_k
+                        };
                         ops::int8_gemm_faith2_prefill(
                             ctx.gpu,
-                            self.int8_faith2_k,
+                            int8_kernel,
                             self.requant_a_int8_k,
                             $in,
                             iw.w_i8,
@@ -1554,6 +1777,26 @@ impl DenseFfnLayer {
                         m,
                         $n,
                         $k,
+                        stream,
+                    )?,
+                    // v2's COMPILED signature carries a 9th param, `ldb`
+                    // (transposed-B row stride; == N for the FFN twins, which
+                    // are built unpadded). It MUST go through the `_ldb`
+                    // launcher: the 8-arg helper leaves cuLaunchKernel reading
+                    // one-past-the-end of the param array for `ldb` —
+                    // CUDA_ERROR_INVALID_VALUE or a host SIGSEGV depending on
+                    // the neighboring heap word. v1 takes exactly 8 params and
+                    // stays on the 8-arg helper.
+                    Some(wt) if bf16_tc_prefill && use_v2 => ops::w4a16_gemm_n128_m128_bf16_ldb(
+                        ctx.gpu,
+                        bf16_kernel,
+                        $in,
+                        &wt,
+                        $out,
+                        m,
+                        $n,
+                        $k,
+                        $n,
                         stream,
                     )?,
                     Some(wt) if bf16_tc_prefill => ops::w4a16_gemm_n128_m128_bf16(
