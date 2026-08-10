@@ -194,12 +194,17 @@ impl TransformerModel {
         // graph capture — CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED, status 900).
         // With MTP, every decode step lands here (regular `decode` is never
         // called), so we also drive the same auto-unsuppress trigger that
-        // `decode` uses: once `seq_len > calibration_tokens + 10` the scales
-        // are frozen and graphs become safe.
-        if self
-            .suppress_graphs
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && seq.seq_len > self.config.fp8_kv_calibration_tokens + 10
+        // `decode` uses, keyed on the ACTUAL frozen flag. Also now guarded by
+        // `fp8_kv_calibration_tokens > 0`, matching `decode_dispatch`: without
+        // that guard, a process whose graphs were suppressed for a DIFFERENT
+        // reason (EP, profile — calibration_tokens == 0, so the old
+        // `seq_len > 0 + 10` was true almost immediately) had its suppression
+        // silently undone here after ten tokens.
+        if self.config.fp8_kv_calibration_tokens > 0
+            && self
+                .suppress_graphs
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && self.fp8_calibration_frozen()
         {
             self.suppress_graphs
                 .store(false, std::sync::atomic::Ordering::Relaxed);

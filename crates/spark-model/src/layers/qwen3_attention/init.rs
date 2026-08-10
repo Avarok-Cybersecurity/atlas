@@ -619,7 +619,11 @@ impl Qwen3AttentionLayer {
                         | KvCacheDtype::Turbo3
                         | KvCacheDtype::Turbo8
                 ) {
-                Some(Fp8KvCalibration::new(fp8_calibration_tokens, gpu)?)
+                Some(Fp8KvCalibration::new(
+                    fp8_calibration_tokens,
+                    config.fp8_kv_headroom,
+                    gpu,
+                )?)
             } else {
                 None
             },
