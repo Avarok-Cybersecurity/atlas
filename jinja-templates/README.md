@@ -12,11 +12,15 @@ Drop a `.jinja` file here named by `model_type` only when a model needs a
 template fix that the Rust preprocessing can't express (e.g. MiniMax's
 `_args.items()` iteration, Gemma-4's `strip_thinking` macro). The file's
 presence is the **opt-in**: it takes precedence over the model's own template.
-Set `ATLAS_DISABLE_TEMPLATE_OVERRIDES=1` to ignore this directory entirely and
-force every model onto its own template + the Rust behaviors.
+Serve with `--disable-template-overrides` to ignore this directory entirely
+and force every model onto its own template + the Rust behaviors.
 
-> The former `holo3_1_moe.jinja` override was removed: it was a byte-copy of
-> Holo-3.1's own template plus the three behaviors now handled in Rust.
+> `holo3_1_moe.jinja` is now REDUNDANT — it is a byte-copy of Holo-3.1's own
+> template plus the three behaviors now handled in Rust (the fixture tests in
+> `tokenizer/message_preprocess/tests.rs` prove Holo renders correctly off its
+> own template). It is kept for the moment only because
+> `tokenizer/tests.rs::render_holo_template_*` still reads it directly; it
+> will be deleted together with those tests.
 
 ## Naming Convention
 
@@ -32,7 +36,7 @@ The filename must match the model's `model_type` from `config.json`:
 ## Priority
 
 1. Override template from this directory — **opt-in by file presence**, unless
-   `ATLAS_DISABLE_TEMPLATE_OVERRIDES=1`
+   serving with `--disable-template-overrides`
 2. Template from `tokenizer_config.json` / `chat_template.jinja` (the model's
    own — the default for models without an override file)
 3. Default ChatML fallback (lowest priority)

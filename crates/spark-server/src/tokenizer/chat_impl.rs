@@ -45,6 +45,7 @@ impl ChatTokenizer {
         supports_thinking: bool,
         model_type: &str,
         repo_root: Option<&Path>,
+        disable_template_overrides: bool,
     ) -> Result<Self> {
         let tokenizer_path = model_dir.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
@@ -62,8 +63,11 @@ impl ChatTokenizer {
         // message-preprocessing (see `preprocess_for_render`), so a model
         // no longer needs a bespoke `jinja-templates/{model_type}.jinja`
         // override that is otherwise a byte-copy of its own template.
-        // This is what let us delete `holo3_1_moe.jinja`: Holo now ships
-        // no override and renders off its own template + Rust behaviors.
+        // This is what makes `holo3_1_moe.jinja` REDUNDANT: Holo renders
+        // correctly off its own template + Rust behaviors. (The override
+        // file itself is still present for now only because
+        // `tokenizer/tests.rs::render_holo_template_*` reads it directly;
+        // it goes away together with those tests.)
         //
         // A `jinja-templates/{model_type}.jinja` override is OPT-IN by
         // FILE PRESENCE: dropping the file in is the explicit signal that
@@ -72,7 +76,7 @@ impl ChatTokenizer {
         // `strip_thinking`, etc.). We deliberately do NOT prefer the
         // model's own template when such a file exists — that would
         // silently undo those fixes. Instead, the operator opts OUT of all
-        // overrides with `ATLAS_DISABLE_TEMPLATE_OVERRIDES=1`, which forces
+        // overrides with `--disable-template-overrides`, which forces
         // every model onto its own template (relying purely on the Rust
         // behaviors).
         //
@@ -81,10 +85,7 @@ impl ChatTokenizer {
         //      (opt-in: file present AND overrides not disabled)
         //   2. tokenizer_config.json / chat_template.jinja (the MODEL's own)
         //   3. Default ChatML fallback
-        let overrides_disabled = std::env::var("ATLAS_DISABLE_TEMPLATE_OVERRIDES")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let override_tmpl = if overrides_disabled {
+        let override_tmpl = if disable_template_overrides {
             None
         } else {
             super::jinja_helpers::load_override_template(model_type, repo_root)

@@ -5,7 +5,7 @@
 //!
 //! Historically these behaviors lived inside hand-maintained
 //! `jinja-templates/{model_type}.jinja` overrides (notably the
-//! now-removed `holo3_1_moe.jinja`). The model's *own* shipped
+//! now-redundant `holo3_1_moe.jinja`). The model's *own* shipped
 //! `chat_template.jinja` does not implement them, so encoding them in
 //! Jinja meant every model that wanted them needed a bespoke override
 //! that was otherwise a byte-for-byte copy of the model template.

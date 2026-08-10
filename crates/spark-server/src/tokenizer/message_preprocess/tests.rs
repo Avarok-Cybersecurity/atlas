@@ -154,7 +154,9 @@ fn remap_noop_without_developer() {
 // `chat_template.jinja` (copied verbatim — grep-verified to contain
 // NONE of `<|think_on|>`, `rfind`, or `reasoning_effort`). The
 // hand-maintained `jinja-templates/holo3_1_moe.jinja` override that
-// used to add those behaviors has been removed. These tests prove the
+// used to add those behaviors is now redundant (still present only for
+// `tokenizer/tests.rs::render_holo_template_*`, which reads it
+// directly; see jinja-templates/README.md). These tests prove the
 // behaviors now come from Rust preprocessing applied ahead of the
 // model's own template, exactly as the production
 // `preprocess_for_render` does.
@@ -215,7 +217,7 @@ fn holo_renders_off_model_template() {
     );
 }
 
-/// Developer-role regression (ported from the deleted
+/// Developer-role regression (ported from
 /// `render_holo_template_accepts_vllm_thinking_controls`, which passed a
 /// `role: developer` message): the Holo model's OWN template raises
 /// `Unexpected message role.` on `developer`, so without the
