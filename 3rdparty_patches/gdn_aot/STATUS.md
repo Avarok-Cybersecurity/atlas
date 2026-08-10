@@ -86,3 +86,29 @@ RESULT (holo35b, same binary, A/B via ATLAS_GDN_FLASHINFER 1 vs 0):
   reads S[k][v]). THE one remaining fix for full generation coherence.
 NEXT: add k<->v transpose of h_state after the FI call (small per-head 128x128 transpose) -> decode
 coherent -> needle/quality test; then larger-context prefill speedup; then perf-tune.
+
+## TRACK B 2026-08-10 — link-time VENDORING: kernel linked into the binary, cute runtime DELETED ✅
+The dlopen(libatlasgdn.so) bridge is now the FALLBACK; on gb10/aarch64 builds the AOT kernel is
+statically linked (cfg `atlas_gdn_aot`, `crates/spark-model/build.rs::build_gdn_aot`):
+- `libatlas_gdn_aot.a` = gdn_shim.o + gdn_cute_rt_stub.o + gdn_transpose.o + gdn_holo_0.o,
+  linked with STATIC cudart. No libatlasgdn.so, no libcute_dsl_runtime.so, no RUNPATH.
+- `gdn_cute_rt_stub.cpp` replaces the 8 `_cuda*`/`_cu*` symbols the .o imports from NVIDIA's
+  proprietary 37MB libcute_dsl_runtime.so — in that lib they are single-branch trampolines onto
+  cudart/driver calls (verified by disassembly of both the lib AND the .o's call sites);
+  the stub forwards directly. `_cuKernelGetAttribute` is dlopen'd from libcuda.so.1 lazily so the
+  binary has no hard driver DT_NEEDED.
+- Rust side (`layers/ops/gdn_flashinfer.rs`): real `extern "C"` prototypes under cfg(atlas_gdn_aot)
+  — signature drift is now a LINK ERROR, not runtime UB. dlopen path kept for non-gb10 builds and
+  for `ATLAS_GDN_LIB` overrides (which win, so linked-vs-so can be A/B'd).
+- Audit: `record_boot_audit()` (called from Qwen3SsmLayer::new, eager) surfaces
+  `gdn_aot::atlas_gdn_prefill_packed_managed` in the boot kernel table / --check-kernels when
+  ATLAS_GDN_FLASHINFER=1 resolves. Attestation: `gb10/gdn_aot/vendored` entry in
+  ATLAS_TARGET_CLOSURES (closure hash of shim sources + raw sha256 of gdn_holo_0.o).
+- BIT-PARITY GATE: `crates/spark-model/tests/gdn_aot_parity.rs` (#[ignore], GB10) runs linked vs
+  dlopen-reference (.so relinked from the SAME gdn_holo_0.o + real cute runtime) on identical
+  random inputs at the Holo shape, full + chunked(state-carry) — requires bit-identical output.
+  Reference .so build recipe is in the test's module docs.
+- Dockerfile.builder: relink step + cute-DSL pip install + both runtime COPYs removed; the serve
+  image needs only the binary. The cuda-13.2 compat driver for sm_121a remains (driver matter).
+STILL TRUE (intrinsic to the AOT artifact, unchanged by vendoring shape): bf16 + D=128 + sm_121a
+are frozen in gdn_holo_0.o; T/head-counts stay dynamic; re-export = the pinned Python recipe above.

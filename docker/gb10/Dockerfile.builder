@@ -7,8 +7,10 @@
 #   • "CUTLASS support was not built; set CUTLASS_HOME" — build.rs silently drops
 #     the native NVFP4 GEMM (`atlas_cutlass` cfg) when CUTLASS_HOME is unset.
 #   • FlashInfer FA2 ragged-prefill wrapper needs FLASHINFER_HOME + its PINNED CCCL.
-#   • GDN-FlashInfer (ATLAS_GDN_FLASHINFER=1) needs libatlasgdn.so + the CuTe-DSL
-#     runtime + the cuda-13.2 compat driver for sm_121a.
+#   • GDN-FlashInfer (ATLAS_GDN_FLASHINFER=1) is now LINKED INTO the binary on
+#     gb10/aarch64 (spark-model/build.rs `build_gdn_aot`, cfg atlas_gdn_aot) —
+#     no libatlasgdn.so, no libcute_dsl_runtime.so. Only the cuda-13.2 compat
+#     driver for sm_121a remains a runtime concern.
 #
 # Two ways to use it:
 #   1. As a BUILD SANDBOX (mount the repo, run any cargo cmd — all env preset):
@@ -23,16 +25,11 @@
 ARG CUDA_VER=13.2.0
 ARG CUTLASS_SHA=cf064d2e6bad2886238ac565b3b49007764f4939
 ARG FLASHINFER_SHA=a671c02ee2fbcdde7cc991f5a01c7cf5eb4a8972
-# CuTe-DSL runtime (libcute_dsl_runtime.so) for the GDN AOT kernel — matches the
-# floor pinned by FlashInfer @ ${FLASHINFER_SHA} (requirements.txt: >=4.5.0, cu13
-# extra). Bump deliberately and re-validate gdn_fla_vs_fi after.
-ARG CUTLASS_DSL_VER=4.5.0
 
 # ── Build stage: toolchain + all pinned native deps ──────────────────────────
 FROM nvidia/cuda:${CUDA_VER}-devel-ubuntu24.04 AS builder
 ARG CUTLASS_SHA
 ARG FLASHINFER_SHA
-ARG CUTLASS_DSL_VER
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
@@ -60,17 +57,7 @@ RUN git clone --filter=blob:none https://github.com/flashinfer-ai/flashinfer.git
     git -C ${FLASHINFER_HOME} checkout ${FLASHINFER_SHA} && \
     git -C ${FLASHINFER_HOME} submodule update --init --depth 1 3rdparty/cccl
 
-# CuTe-DSL runtime for the GDN AOT kernel (provides libcute_dsl_runtime.so).
-# Discover its location and expose it on the linker/loader path. Since 4.5.0 the
-# .so lives in nvidia_cutlass_dsl/lib/ — a SIBLING of python_packages/cutlass —
-# so a glob relative to the `cutlass` module can never find it; search the pip
-# prefix instead.
-RUN pip3 install --no-cache-dir --break-system-packages "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VER}" && \
-    CUTE_RT=$(find /usr/local/lib /usr/lib -name libcute_dsl_runtime.so 2>/dev/null | head -1) && \
-    test -n "$CUTE_RT" && ln -sf "$CUTE_RT" /usr/local/lib/libcute_dsl_runtime.so && \
-    echo "cute runtime: $CUTE_RT"
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/compat:${LD_LIBRARY_PATH}
-ENV CUTE_DSL_ARCH=sm_121a
 
 WORKDIR /build
 
@@ -91,17 +78,11 @@ ENV ATLAS_CUTLASS_NVFP4_GEMM=1
 # CUDARC_CUDA_VERSION=13000: the vendored cudarc 0.19.2 tops out at 13.1 in its
 # nvcc-version table, so `nvcc --version` (13.2) panics without the pin. Same
 # value every CI workflow pins.
+# The GDN AOT kernel needs no separate link step: spark-model/build.rs
+# (`build_gdn_aot`) compiles gdn_shim.cpp + gdn_cute_rt_stub.cpp +
+# gdn_transpose.cu, archives them with the committed gdn_holo_0.o, and links
+# the result (plus static cudart) INTO the binary during the cargo build above.
 RUN CUDARC_CUDA_VERSION=13000 cargo build --release -p spark-server
-
-# Re-link the GDN AOT shared lib from committed artifacts (gdn_holo_0.o is the
-# AOT-exported bf16 kernel; gdn_transpose.o is the k<->v state transpose). No
-# python/torch needed here — the .o is pre-exported and version-controlled.
-RUN cd 3rdparty_patches/gdn_aot && \
-    nvcc -arch=sm_121a -Xcompiler -fPIC -c gdn_transpose.cu -o gdn_transpose.o && \
-    g++ -O2 -fPIC -shared gdn_shim.cpp gdn_transpose.o gdn_holo_0.o \
-      -o /usr/local/lib/libatlasgdn.so \
-      -I. -I/usr/local/cuda/include -lcudart \
-      -L/usr/local/lib -lcute_dsl_runtime -Wl,-rpath,/usr/local/lib
 
 # ── Runtime stage: serve image on CUDA 13.2 + GDN runtime bundled ─────────────
 FROM nvidia/cuda:${CUDA_VER}-runtime-ubuntu24.04
@@ -118,16 +99,13 @@ RUN apt-get update -qq && \
 
 COPY --from=builder /build/target/release/spark /usr/local/bin/spark
 COPY --from=builder /build/jinja-templates/ /jinja-templates/
-# GDN-FlashInfer runtime libs (only loaded when ATLAS_GDN_FLASHINFER=1).
-COPY --from=builder /usr/local/lib/libatlasgdn.so /usr/local/lib/libatlasgdn.so
-COPY --from=builder /usr/local/lib/libcute_dsl_runtime.so /usr/local/lib/libcute_dsl_runtime.so
 COPY LICENSE /LICENSE
 COPY README.md /README.md
 
 ENV RUST_LOG=info
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/compat:/usr/local/cuda/lib64
-ENV CUTE_DSL_ARCH=sm_121a
-# GDN-FlashInfer is opt-in (FLA recurrence is the validated default).
+# GDN-FlashInfer is opt-in (FLA recurrence is the validated default). The AOT
+# kernel is linked into the binary (cfg atlas_gdn_aot) — no extra .so needed.
 ENV ATLAS_GDN_FLASHINFER=0
 EXPOSE 8888
 ENTRYPOINT ["spark"]
