@@ -76,107 +76,22 @@ impl NemotronMamba2Layer {
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * self.d_inner.max(h)
             && std::env::var("ATLAS_NO_SSM_W4A4").is_err();
-        if w4a4 {
-            let a4 = ctx.buffers.fp8_act();
-            let a4_sf = a4.offset((n as usize) * h / 2);
-            ops::quantize_bf16_to_nvfp4(
-                ctx.gpu,
-                self.quantize_nvfp4_k,
-                normed,
-                a4,
-                a4_sf,
-                n,
-                h as u32,
-                stream,
-            )?;
-            ops::w4a4_gemm_mfast(
-                ctx.gpu,
-                self.w4a4_gemm_k,
-                a4,
-                a4_sf,
-                &self.ssm.in_proj,
-                proj,
-                n,
-                self.in_proj_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if let Some(w_fp8) = self.in_proj_pd_fp8 {
-            // Weights already FP8: no per-K-step dequant, no M-block redundancy.
-            if fp8_a {
-                let a8 = ctx.buffers.fp8_act();
-                ops::bf16_to_fp8(
-                    ctx.gpu,
-                    self.bf16_to_fp8_k,
-                    normed,
-                    a8,
-                    n * h as u32,
-                    stream,
-                )?;
-                ops::fp8_fp8_gemm_m128_mfast(
-                    ctx.gpu,
-                    self.fp8_fp8_gemm_t_k,
-                    a8,
-                    w_fp8,
-                    proj,
-                    n,
-                    self.in_proj_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::fp8_gemm_m128_mfast(
-                    ctx.gpu,
-                    self.fp8_gemm_t_k,
-                    normed,
-                    w_fp8,
-                    proj,
-                    n,
-                    self.in_proj_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
-        } else if let Some(ref wt) = self.in_proj_t {
-            // Fast path: transposed weights + FP8 MMA (N128, K32, cp.async pipeline)
-            if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
-                ops::w4a16_gemm_n128_m128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_k,
-                    normed,
-                    wt,
-                    proj,
-                    n,
-                    self.in_proj_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w4a16_gemm_n128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_k,
-                    normed,
-                    wt,
-                    proj,
-                    n,
-                    self.in_proj_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm_k,
-                normed,
-                &self.ssm.in_proj,
-                proj,
-                n,
-                self.in_proj_size as u32,
-                h as u32,
-                stream,
-            )?;
-        }
+        // The predequant-FP8 arms below launch `fp8_fp8_gemm_t_m128_mfast` (when
+        // `fp8_a`) or else `fp8_gemm_t_m128_mfast`. Both resolve through
+        // `try_kernel`, which yields a NULL handle instead of failing, and a
+        // per-model `w4a16_gemm.cu` override need not define them — Nano-30B's
+        // exports `fp8_gemm_t`, NOT `fp8_gemm_t_m128_mfast`. Those arms used to be
+        // entered on weight presence ALONE, unlike every sibling arm here, so on
+        // such a checkpoint prefill launched a null handle and died with
+        // CUDA_ERROR_INVALID_HANDLE (400) at layer 0 — the whole model unusable,
+        // no fallback. `fp8_a` already proves its own two kernels resolved, so only
+        // the non-`fp8_a` kernel needs checking. Falling through reaches the
+        // transposed-NVFP4 and plain `w4a16_gemm` arms, which are always present.
+        let pd_fp8_ok = fp8_a || self.fp8_gemm_t_k.0 != 0;
+        // Arm selection (native BF16 → native FP8 → W4A4 → pre-dequant FP8 →
+        // transposed NVFP4 → plain W4A16) lives in `prefill_proj.rs` (500-LoC
+        // cap split); the precedence rationale is documented there.
+        self.prefill_in_proj(normed, proj, n, h, fp8_a, w4a4, pd_fp8_ok, ctx, stream)?;
 
         // ── 3. Conv1d prefill on xBC (WITH bias, fused SiLU) ──
         //    Input: xBC at proj+d_inner, stride=in_proj_size between tokens
@@ -220,6 +135,15 @@ impl NemotronMamba2Layer {
             && self.head_dim.is_multiple_of(ops::SSD_PT as usize)
             && self.state_size.is_multiple_of(8)
             && (self.state_size / 8).is_multiple_of(4)
+            // The scan's dynamic shared memory grows with `state_size` and can
+            // exceed what a block may opt into (sm_121: 101376 B). Over the limit
+            // `cuFuncSetAttribute` fails with CUDA_ERROR_INVALID_VALUE, which
+            // ABORTS the layer rather than degrading — Nemotron Nano-30B
+            // (state_size=128 -> 115968 B) could not serve a single token, while
+            // Puzzle-75B (state_size=96 -> 91392 B) was unaffected, which is why
+            // this went unnoticed. Treat the fit as a precondition of the fast
+            // path; failing it falls through to the sequential scan below.
+            && ops::ssd_scan_fits(self.state_size as u32)
             && std::env::var("ATLAS_NO_SSD").is_err();
 
         if ssd_ok {
@@ -288,7 +212,13 @@ impl NemotronMamba2Layer {
                 self.d_inner as u32,
                 stream,
             )?;
-        } else if self.mamba2_ssm_prefill_persistent_k.0 != 0 {
+        } else if self.mamba2_ssm_prefill_persistent_k.0 != 0
+            // Same-binary A/B against the plain sequential scan below. The
+            // persistent kernel keeps H in shared memory and is only reachable
+            // when the SSD fast path is unavailable — a path no shipped model
+            // took until Nemotron Nano-30B (state_size=128) fell out of SSD.
+            && std::env::var("ATLAS_NO_SSM_PERSISTENT").is_err()
+        {
             ops::mamba2_ssm_prefill_persistent(
                 ctx.gpu,
                 self.mamba2_ssm_prefill_persistent_k,
@@ -365,105 +295,8 @@ impl NemotronMamba2Layer {
 
         // ── 6. out_proj GEMM: [N, d_inner] × [d_inner, h] → [N, h] ──
         let out = ctx.buffers.ssm_qkvz();
-        if w4a4 {
-            let a4 = ctx.buffers.fp8_act();
-            let a4_sf = a4.offset((n as usize) * self.d_inner / 2);
-            ops::quantize_bf16_to_nvfp4(
-                ctx.gpu,
-                self.quantize_nvfp4_k,
-                gated_out,
-                a4,
-                a4_sf,
-                n,
-                self.d_inner as u32,
-                stream,
-            )?;
-            ops::w4a4_gemm_mfast(
-                ctx.gpu,
-                self.w4a4_gemm_k,
-                a4,
-                a4_sf,
-                &self.ssm.out_proj,
-                out,
-                n,
-                h as u32,
-                self.d_inner as u32,
-                stream,
-            )?;
-        } else if let Some(w_fp8) = self.out_proj_pd_fp8 {
-            if fp8_a {
-                let a8 = ctx.buffers.fp8_act();
-                ops::bf16_to_fp8(
-                    ctx.gpu,
-                    self.bf16_to_fp8_k,
-                    gated_out,
-                    a8,
-                    n * self.d_inner as u32,
-                    stream,
-                )?;
-                ops::fp8_fp8_gemm_m128_mfast(
-                    ctx.gpu,
-                    self.fp8_fp8_gemm_t_k,
-                    a8,
-                    w_fp8,
-                    out,
-                    n,
-                    h as u32,
-                    self.d_inner as u32,
-                    stream,
-                )?;
-            } else {
-                ops::fp8_gemm_m128_mfast(
-                    ctx.gpu,
-                    self.fp8_gemm_t_k,
-                    gated_out,
-                    w_fp8,
-                    out,
-                    n,
-                    h as u32,
-                    self.d_inner as u32,
-                    stream,
-                )?;
-            }
-        } else if let Some(ref wt) = self.out_proj_t {
-            if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
-                ops::w4a16_gemm_n128_m128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_k,
-                    gated_out,
-                    wt,
-                    out,
-                    n,
-                    h as u32,
-                    self.d_inner as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w4a16_gemm_n128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_k,
-                    gated_out,
-                    wt,
-                    out,
-                    n,
-                    h as u32,
-                    self.d_inner as u32,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm_k,
-                gated_out,
-                &self.ssm.out_proj,
-                out,
-                n,
-                h as u32,
-                self.d_inner as u32,
-                stream,
-            )?;
-        }
+        // Mirrors the in_proj dispatch (see step 2); arms in `prefill_proj.rs`.
+        self.prefill_out_proj(gated_out, out, n, h, fp8_a, w4a4, pd_fp8_ok, ctx, stream)?;
 
         // ── 7. Residual add (N*h elements) ──
         ops::residual_add(
