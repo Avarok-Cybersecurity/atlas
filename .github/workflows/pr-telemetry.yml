@@ -14,6 +14,12 @@ on:
     # someone opens it, rare enough that a queue of PRs does not generate a
     # notification storm.
     - cron: "17 */4 * * *"
+  push:
+    # Every merge to main lands as a push, so "Recommended next steps" (which
+    # PR to merge next, who must re-gate, what debt the merge left) refreshes
+    # the moment the tree changes instead of up to four hours later. The
+    # concurrency group below already serializes this against the schedule.
+    branches: [main]
   workflow_dispatch:
 
 # One run at a time, and never cancelled mid-flight: the write step reads a
