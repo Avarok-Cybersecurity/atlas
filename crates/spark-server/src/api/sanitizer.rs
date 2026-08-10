@@ -205,6 +205,14 @@ pub fn sanitize_content_chunk(
             }
         }
     }
+    // NOTE: no final `scrub_tool_tags` pass here. The state machine above
+    // searches the WHOLE buffer every iteration, so a complete marker can
+    // never be committed to `out` outside an envelope — a trailing scrub
+    // would be dead code there. Inside a recognized envelope the inner
+    // `<invoke …>…</invoke>` tags are the legitimate F73 payload the
+    // downstream parser extracts, so scrubbing them would break the
+    // minimax envelope pass-through. Desync tails that end-of-stream dumps
+    // leave in `tag_scan_buf` are scrubbed by `flush_content_sanitizer`.
     out
 }
 
