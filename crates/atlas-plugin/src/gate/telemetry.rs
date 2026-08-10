@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::{codeowners, taxon};
+use super::{codeowners, coverage, taxon};
 
 /// The marker pair that makes the comment rewritable in place.
 ///
@@ -45,6 +45,15 @@ pub struct PrFacts {
     pub author: String,
     #[serde(default)]
     pub draft: bool,
+    /// True once this PR has landed on the default branch.
+    ///
+    /// ★ Promotion debt outlives the merge. A PR that a promotion-candidate
+    /// gate wanted to see, merged without it, is not a warning any more — it is
+    /// coverage this repository has already gone without, and it stays on the
+    /// books until a record discharges it. CLOSED PRs carry no debt: nothing
+    /// shipped, so nothing is owed.
+    #[serde(default)]
+    pub merged: bool,
     /// Repo-relative paths this PR changes.
     #[serde(default)]
     pub changed_paths: Vec<String>,
@@ -61,6 +70,15 @@ pub struct PrView {
     /// True when the diff reaches beyond `kernels/` and therefore re-opens
     /// every gate regardless of which targets it touches.
     pub whole_repo: bool,
+    /// [`coverage::PROMOTION_CANDIDATES`] this PR's paths would have
+    /// invalidated — gates that WANTED to run and were not required to.
+    ///
+    /// ★ This is debt, and it is rendered whether or not it is empty. Showing
+    /// only the gates that ran silently converts "ungated" into "unaffected",
+    /// which is fail-open by omission and exactly how a coverage gap becomes
+    /// invisible. It needs no model: it is a join between changed paths and a
+    /// coverage table.
+    pub promotion_debt: Vec<&'static str>,
 }
 
 /// Derive every PR's view. Pure: the tree supplies the taxonomy, nothing else.
@@ -80,6 +98,9 @@ pub fn views(root: &Path, prs: &[PrFacts]) -> Vec<PrView> {
                 targets: taxon::affected(root, &kernel_paths),
                 owners: codeowners::owners_for_paths(&rules, &facts.changed_paths),
                 whole_repo: facts.changed_paths.len() > kernel_paths.len(),
+                promotion_debt: coverage::promotion_debt(
+                    facts.changed_paths.iter().map(String::as_str),
+                ),
                 facts: facts.clone(),
             }
         })
@@ -182,6 +203,48 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
                 escape(category),
                 targets,
                 escape(&owners),
+            ));
+        }
+    }
+
+    // ── Promotion debt ──
+    //
+    // ★ Rendered ALWAYS, empty or not. A gate that is not required yet still
+    // has an opinion about which PRs it wanted to see; listing only the gates
+    // that ran turns "ungated" into "unaffected" by omission, which is how a
+    // coverage gap becomes invisible. Deterministic — a join between changed
+    // paths and `coverage::PROMOTION_CANDIDATES`, no model involved.
+    out.push_str("\n### Promotion-candidate debt\n\n");
+    if coverage::PROMOTION_CANDIDATES.is_empty() {
+        out.push_str(
+            "No gates are on a promotion path, so nothing can be owed. When one \
+             is registered (`coverage::PROMOTION_CANDIDATES`), every PR whose \
+             paths it covers appears here until a record discharges it.\n",
+        );
+    } else {
+        let owing: Vec<&PrView> = views
+            .iter()
+            .filter(|v| !v.promotion_debt.is_empty())
+            .collect();
+        out.push_str(
+            "These gates are NOT required, so these PRs can merge without them. \
+             Each row is coverage this repository chose not to buy — recorded so \
+             the choice stays visible rather than becoming an assumption.\n\n",
+        );
+        out.push_str("| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n");
+        if owing.is_empty() {
+            out.push_str("| — | — | _no tracked PR touches a promotion candidate's paths_ | — |\n");
+        }
+        for v in owing {
+            out.push_str(&format!(
+                "| #{} | {} | {} | {} |\n",
+                v.facts.number,
+                // Merged debt is ACCRUED — the coverage was skipped and the code
+                // shipped. Open debt is still a warning. The column is what makes
+                // those two different rows instead of one undifferentiated list.
+                if v.facts.merged { "**yes**" } else { "not yet" },
+                escape(&v.facts.title),
+                v.promotion_debt.join(", ")
             ));
         }
     }

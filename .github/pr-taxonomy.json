@@ -1,0 +1,83 @@
+{
+  "_doc": [
+    "The PR INTENT taxonomy, and the benchmarks each intent implies.",
+    "",
+    "One path per PR, descended ONE LEVEL AT A TIME. This is NOT the hardware",
+    "taxonomy — that one is kernels/<hw>/<model>/<quant>/, derived from paths by",
+    "atlas-plugin::gate::taxon and needing no model at all. This tree covers",
+    "what a change is FOR, which cannot be read off a directory.",
+    "",
+    "★★ THE SAFETY PROPERTY, and it is the whole design:",
+    "",
+    "  `benches` may only ADD to the required set. It can NEVER remove.",
+    "",
+    "The floor stays the path-derived coverage (PERF_PATHS + the closure hash).",
+    "A PR touching crates/ owes its gates whatever a model thinks it is for.",
+    "So a MISCLASSIFICATION COSTS GPU MINUTES, NEVER A MISSED REGRESSION —",
+    "which is the only footing on which a language model belongs anywhere near",
+    "a merge gate. Invert this and the classifier becomes a way to skip tests",
+    "by writing a misleading PR title.",
+    "",
+    "What it buys, then, is the other direction: catching benchmarks the PATHS",
+    "do not imply. A scheduler change under crates/spark-server/ does not touch",
+    "kernels/, so the closure hash excuses every target — but it can move decode",
+    "wall badly. `performance/scheduling` adds the agentic leg that would",
+    "otherwise not run.",
+    "",
+    "SHAPE RULES, enforced by pr_taxonomy_tests.rs:",
+    "  * every node is an object; a node with no child keys is a leaf",
+    "  * keys are lowercase kebab-case, so a path is a safe label and anchor",
+    "  * every non-leaf has >= 2 real children. A single child is not a choice;",
+    "    asking a model to pick from a set of one wastes a call and manufactures",
+    "    confidence, so the descent auto-follows those instead",
+    "  * every `benches` entry names a registered benchmark id",
+    "",
+    "ADDING A CATEGORY: keep the top level small. The first pick is the one no",
+    "later level can correct, so its options must be disjoint at a glance.",
+    "Depth is cheaper than breadth."
+  ],
+
+  "correctness": {
+    "_benches": ["bfcl-subset"],
+    "numerics": { "_benches": ["bfcl-subset-echolp"] },
+    "loader": { "_benches": ["bfcl-subset-echolp", "ttft-cold-gate"] },
+    "tool-calling": { "_benches": ["bfcl-subset-echolp"] },
+    "ssm-state": { "_benches": ["ttft-warm-gate"] },
+    "kv-cache": { "_benches": ["ttft-warm-gate", "ttft-cold-gate"] },
+    "sampling": {}
+  },
+
+  "performance": {
+    "_benches": ["agentic-webserver"],
+    "decode": { "_benches": ["bfcl-subset", "ttft-warm-gate"] },
+    "prefill": { "_benches": ["ttft-cold-gate", "ttft-warm-gate"] },
+    "kernel-dispatch": { "_benches": ["bfcl-subset"] },
+    "memory-traffic": { "_benches": ["bfcl-subset", "ttft-warm-gate"] },
+    "scheduling": { "_benches": ["ttft-warm-gate"] },
+    "speculation": { "_benches": ["bfcl-subset"] }
+  },
+
+  "capability": {
+    "_benches": ["bfcl-subset", "agentic-webserver"],
+    "new-model": { "_benches": ["ttft-cold-gate"] },
+    "new-hardware": { "_benches": ["ttft-cold-gate", "ttft-warm-gate"] },
+    "quantization": { "_benches": ["bfcl-subset-echolp"] },
+    "adapters": {},
+    "serving-api": {}
+  },
+
+  "infrastructure": {
+    "ci": {},
+    "benchmark-gate": {},
+    "release": {},
+    "observability": {},
+    "build-system": {}
+  },
+
+  "documentation": {
+    "reference": {},
+    "design-record": {}
+  },
+
+  "unknown": {}
+}

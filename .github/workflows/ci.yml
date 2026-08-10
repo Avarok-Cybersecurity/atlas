@@ -209,6 +209,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      # This job runs TWO cargo binaries (`ledger_append`, `implied_benches`)
+      # and had no cache, so both paid a cold build on every PR. atlas-plugin is
+      # host-only and CUDA-free, so the workflow-level ATLAS_SKIP_BUILD=1 is all
+      # it needs besides a warm target/.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: pr-categorize
       - name: Collect the changed paths
         id: diff
         env:
@@ -222,11 +229,93 @@ jobs:
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt || true
           echo "count=$(wc -l < changed.txt)" >> "$GITHUB_OUTPUT"
           head -c 4000 changed.txt > changed_head.txt
+          # Multi-line output, heredoc-delimited: these are repo paths, and a
+          # path can contain almost anything.
+          d="__ATLAS_DIFF_EOF__"
+          { printf 'head<<%s\n' "$d"; cat changed_head.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
+      - name: Cross-repo context — which recipes exist
+        id: recipes
+        # The serve recipes are in a DIFFERENT repository, and they determine
+        # every gated number (`--kv-cache-dtype` alone is worth -3 to -4% wall
+        # in this campaign's own data). A classifier that cannot see them
+        # cannot reason about them. Read-only, best-effort, never fatal.
+        #
+        # ★ UNAUTHENTICATED, deliberately, and NOT via `gh api`. `gh` sends
+        # `GITHUB_TOKEN`, which is scoped to THIS repository, so it is REFUSED
+        # on a sibling repo — the first live run fell straight to the notice
+        # branch and classified without recipe context. `atlas-recipes` is
+        # public (`"private": false`), so a plain anonymous GET works and needs
+        # no secret: verified 27 YAMLs, HTTP 200.
+        #
+        # Anonymous api.github.com is rate-limited to 60/hr per IP, shared
+        # across the runner fleet. That is why this is best-effort: a 403 here
+        # must degrade to "classify without it", never fail the job.
+        env:
+          # Org-scoped read token. `GITHUB_TOKEN` is scoped to THIS repo and is
+          # refused on a sibling, which is why the first live run classified
+          # without recipe context. Empty on fork PRs — hence the anonymous
+          # fallback below, which works because atlas-recipes is public.
+          ORG_READ: ${{ secrets.GH_ORGANIZATION_READ_TOKEN }}
+        run: |
+          set -uo pipefail
+          API='https://api.github.com/repos/Avarok-Cybersecurity/atlas-recipes/git/trees/main?recursive=1'
+          # Authenticated when the secret exists (5000/hr), anonymous otherwise
+          # (60/hr per IP, shared across the runner fleet). Both are read-only
+          # and neither is required: this is evidence for a classifier, not a
+          # gate input, so it must degrade rather than fail.
+          if [ -n "${ORG_READ:-}" ]; then
+            echo "::add-mask::$ORG_READ"
+            set -- -H "Authorization: Bearer $ORG_READ"
+          else
+            set --
+          fi
+          if names=$(curl -sS --max-time 20 --fail \
+                       -H 'Accept: application/vnd.github+json' "$@" "$API" \
+                     | jq -r '[.tree[]? | select(.path | endswith(".yaml")) | .path] | .[0:60] | join("\n")' \
+                       2>/dev/null) && [ -n "$names" ]; then
+            printf '%s' "$names" > recipes.txt
+          else
+            : > recipes.txt
+            echo "::notice::atlas-recipes not readable; classifying without recipe context"
+          fi
+          echo "count=$(wc -l < recipes.txt)" >> "$GITHUB_OUTPUT"
+          d="__ATLAS_RECIPES_EOF__"
+          { printf 'names<<%s\n' "$d"; cat recipes.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
       - name: Read the model id
         id: models
         run: |
           set -euo pipefail
           echo "categorize=$(jq -r '.models.categorize' .github/ai-models.json)" >> "$GITHUB_OUTPUT"
+      # ── The DESCENDING classifier ────────────────────────────────────
+      # Replaces a single flat label. `categorize` picked one of seven
+      # siblings; that is what called a CI-only commit `performance`. This
+      # walks `.github/pr-taxonomy.json` one level at a time, so every
+      # individual decision is 2-6 disjoint options and the allowlist check
+      # applies at each step.
+      #
+      # It also feeds DYNAMIC BENCHMARK SELECTION: the path's `_benches`,
+      # unioned along it, are benchmarks the intent implies. They may only ADD
+      # to what the paths already require — see `gate::pr_taxonomy`.
+      - uses: ./.github/actions/classify-path
+        id: path
+        with:
+          text: |
+            ${{ github.event.pull_request.title }}
+          # ★ The PATHS, not a count. `changed_head.txt` was computed and never
+          # read, so the classifier's entire input was attacker-authored prose
+          # — titling a decode-kernel PR "docs: tidy a comment" was a complete
+          # bypass. Paths are what the change IS.
+          context: |
+            Changed paths (${{ steps.diff.outputs.count }} total):
+            ${{ steps.diff.outputs.head }}
+
+            Serve recipes available in Avarok-Cybersecurity/atlas-recipes
+            (${{ steps.recipes.outputs.count }}):
+            ${{ steps.recipes.outputs.names }}
+          taxonomy: .github/pr-taxonomy.json
+          model: ${{ steps.models.outputs.categorize }}
+          api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          fallback: unknown
       - uses: ./.github/actions/categorize
         id: cat
         with:
@@ -245,6 +334,70 @@ jobs:
           # answer, and "unknown" is the category that claims nothing.
           fallback: unknown
           title: atlas-pr-categorize
+      - name: Append the classifier's opinion to the PR journey ledger
+        # `crates/atlas-governance` shipped with a full event model, a grow-only
+        # Journey, deduplication and 16 tests — and ZERO WRITERS. Nothing had
+        # ever appended a line. This is the first one.
+        #
+        # `EventKind::Category`'s own doc says it is "recorded, never acted
+        # upon … so the observe-only rollout has something to audit". That is
+        # already earning its keep: three live runs on one PR produced
+        # `tooling`, `performance`, `tooling` from the flat classifier while the
+        # descending one held `infrastructure/*` throughout. Neither fact would
+        # exist if the disagreements had not been written down.
+        #
+        # Committed as tbraun96, per the repo's authorship convention.
+        env:
+          TAXON_PATH: ${{ steps.path.outputs.path }}
+          TAXON_STATUS: ${{ steps.path.outputs.status }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # `at` is passed in rather than read from the clock inside the binary:
+          # `Event::identity()` excludes it so a re-run COLLAPSES, and a replay
+          # has to be reproducible for that to mean anything.
+          cargo run --quiet -p atlas-plugin --bin ledger_append -- category \
+            --root . --pr "$PR_NUMBER" --head-sha "$HEAD_SHA" \
+            --run-id "$RUN_ID" --attempt "$ATTEMPT" --at "$(date +%s)" \
+            --value "$TAXON_PATH" --status "$TAXON_STATUS" || {
+              echo "::warning::could not append to the journey ledger"; exit 0; }
+
+          # ★ THE LINE LEAVES BY ARTIFACT, NOT BY PUSH.
+          #
+          # This step used to `git commit` and `git push origin HEAD:$HEAD_REF`.
+          # That was dead THREE ways and had never once succeeded — every run
+          # logged "push skipped" and discarded the line with the runner:
+          #   1. this job has `permissions: contents: read` (deliberately, see
+          #      the job header) so the token cannot push at all;
+          #   2. a fork PR's token is read-only regardless of what we ask for;
+          #   3. the checkout is the `refs/pull/N/merge` ref, so even WITH
+          #      write access the push would put a merge commit carrying base
+          #      content onto the contributor's branch.
+          # Zero `governance/` files have ever been committed, on any branch.
+          #
+          # Granting `contents: write` here is the one thing we must not do:
+          # this job consumes model output derived from an attacker-authored PR
+          # title, and the job header's promise — "a compromised model response
+          # has nowhere to go even in principle" — is exactly that write scope
+          # being absent. So the line leaves as an ARTIFACT, which needs no
+          # write scope and works from forks, and a scheduled job running
+          # DEFAULT-BRANCH code harvests, re-validates and commits it.
+      - name: Hand the ledger line off for harvesting
+        # No write scope needed, and it survives a fork PR. The harvester
+        # re-validates every line and pins the PR number from the run's own API
+        # record rather than trusting artifact content.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: governance-event-pr${{ github.event.pull_request.number }}
+          path: governance/pr-${{ github.event.pull_request.number }}.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Record what it said
         # Every value crosses into the script through `env:`, even though the
         # action guarantees its outputs are closed-set enums and its own fixed
@@ -257,8 +410,31 @@ jobs:
           STATUS: ${{ steps.cat.outputs.status }}
           REASON: ${{ steps.cat.outputs.reason }}
           CHANGED: ${{ steps.diff.outputs.count }}
+          TAXON_PATH: ${{ steps.path.outputs.path }}
+          TAXON_STATUS: ${{ steps.path.outputs.status }}
+          TAXON_DEPTH: ${{ steps.path.outputs.depth }}
+          TAXON_REASON: ${{ steps.path.outputs.reason }}
         run: |
           set -euo pipefail
+          # Resolve the implied set BEFORE opening the summary block, so a
+          # real failure annotates and stops instead of half-writing a table.
+          # Empty stdout means "implies nothing"; a nonzero exit means "could
+          # not tell". Collapsing those two is what let the old walk read clean.
+          if IMPLIED_IDS=$(cargo run --quiet -p atlas-plugin --bin implied_benches -- \
+                             --root . --path "$TAXON_PATH" 2>implied.stderr); then
+            if [ -s implied.stderr ]; then
+              echo "::warning title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
+            fi
+          else
+            # A malformed taxonomy is a repo defect, not weather. This job is
+            # advisory (nothing `needs:` it, it is not a required check), so red
+            # here blocks no merge — it buys a CAUSE one click away.
+            echo "::error title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
+            exit 1
+          fi
+          IMPLIED="${IMPLIED_IDS//$'\n'/, }"
+          IMPLIED="${IMPLIED:-(none)}"
+
           {
             echo "### PR category (advisory — does not gate)"
             echo
@@ -269,8 +445,34 @@ jobs:
             printf '| reason | %s |\n' "$REASON"
             printf '| changed paths | %s |\n' "$CHANGED"
             echo
-            echo "The required gate set is computed from the diff by"
-            echo '`gate::coverage`, in Rust, and is not affected by this.'
+            echo "### Taxonomy path (descending)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            printf '| path | `%s` |\n' "$TAXON_PATH"
+            printf '| depth | %s |\n' "$TAXON_DEPTH"
+            printf '| status | `%s` |\n' "$TAXON_STATUS"
+            printf '| reason | %s |\n' "$TAXON_REASON"
+            echo
+            # `_benches` unioned along the path — what the INTENT implies.
+            #
+            # ★ SSOT: computed by the SAME code the gate runs
+            # (`pr_taxonomy::benches_for_matched`), via the `implied_benches`
+            # bin. The jq walk this replaces was a SECOND implementation of that
+            # function and disagreed with it on four shapes — three of them in
+            # the REMOVING direction (`a//b` and `" a / b "` lost benches; a
+            # bare-string `_benches` that `load` hard-rejects, jq read happily).
+            #
+            # It also had no failure rendering at all: this step runs under
+            # `set -euo pipefail`, so jq's exit 5 aborted the step MID-TABLE
+            # with stderr discarded. Now the three outcomes are distinct —
+            # a set, "implies nothing", and a named failure.
+            printf '| benchmarks this intent implies | %s |\n' "$IMPLIED"
+            echo
+            echo "**Advisory, and additive only.** The required set is computed"
+            echo "from the diff by \`gate::coverage\` in Rust. An intent path can"
+            echo "only ADD benchmarks to it, never remove one — so a"
+            echo "misclassification costs GPU minutes, never a missed regression."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Standalone and NON-BLOCKING by design: it reports whether the branch has
