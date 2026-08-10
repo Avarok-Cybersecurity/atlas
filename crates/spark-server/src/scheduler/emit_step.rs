@@ -100,6 +100,17 @@ pub fn emit_token(
         }
         return;
     }
+    // Reset skip counter when a real content token is generated — parity with
+    // `decode_logits_step.rs`. Without this the counter is CUMULATIVE on the MTP
+    // path while the non-MTP path counts CONSECUTIVE strays, so a generation
+    // that emits 50 scattered `</think>` across otherwise healthy content is
+    // force-stopped here and not there. The watchdog exists for the degenerate
+    // `</think>` REPETITION seen at long context, which is consecutive by
+    // definition; counting non-adjacent strays is a different, stricter policy
+    // that was never intended.
+    if a.think_ended {
+        a.think_skip_count = 0;
+    }
 
     // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
     // Guard with !inside_thinking — tool calls inside thinking are spurious.
