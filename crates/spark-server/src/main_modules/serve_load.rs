@@ -564,7 +564,7 @@ pub(crate) fn load_model(
         top_p: default_top_p,
         top_n_sigma: default_top_n_sigma,
         min_p: default_min_p,
-    } = serve_phases::load_sampling_defaults(&model_dir, &args);
+    } = serve_phases::load_sampling_defaults(&model_dir, &args, &sampling_presets.non_thinking);
 
     // 6. Load tokenizer
     spark_runtime::progress::phase(8, "tokenizer");
