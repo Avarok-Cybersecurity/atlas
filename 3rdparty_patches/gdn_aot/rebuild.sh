@@ -82,7 +82,8 @@ else
     #    the kernel for the LOCAL GPU before export_to_c can capture it.
     command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 \
         || die "no NVIDIA GPU visible. The AOT export must run on a GB10-class (sm_121a) box \
-— gx10-9959, dgx-00, or the docker/gb10/Dockerfile.builder --target builder image with --gpus all. \
+— gx10-9959 is the only VERIFIED export environment (dgx-00 reproducibly fails the export; \
+the Dockerfile.builder image lacks torch and cannot rebuild gdn_holo_0.o from a clean checkout). \
 Link-only rebuilds can pass GDN_HOLO_O=<pre-exported gdn_holo_0.o> instead."
     "$PY" -c 'import torch' 2>/dev/null \
         || die "$PY has no torch. Need torch (cu13 build) — e.g. uv pip install torch --index-url https://download.pytorch.org/whl/cu130"
@@ -110,7 +111,9 @@ Link-only rebuilds can pass GDN_HOLO_O=<pre-exported gdn_holo_0.o> instead."
         || true   # gdn_export.py prints per-kernel EXPORT FAIL details; verdict is the .o below
     [ -f /tmp/gdn_aot/gdn_holo_0.o ] || die "export did not produce /tmp/gdn_aot/gdn_holo_0.o (see output above). \
 Known-good environment: a GB10 box WITH the cuda-13.2 compat driver stack (gx10-9959, or the \
-docker/gb10/Dockerfile.builder --target builder image, --gpus all) + nvidia-cutlass-dsl[cu13]==$CUTLASS_DSL_VER. \
+gx10-9959 with the cuda-13.2 compat stack) + nvidia-cutlass-dsl[cu13]==$CUTLASS_DSL_VER. \
+NOTE: the Dockerfile.builder image is NOT a verified export env (no torch; and its relink step \
+references a gitignored gdn_holo_0.o, so it cannot build from a clean checkout — pre-existing bug). \
 dgx-00 (driver 580.173.02, no /usr/local/cuda-13.2/compat) reproducibly FAILS here — verified 2026-08-10."
     cp /tmp/gdn_aot/gdn_holo_0.o /tmp/gdn_aot/gdn_holo_0.h "$OUT/"
     if ! cmp -s "$OUT/gdn_holo_0.h" "$HERE/gdn_holo_0.h"; then
