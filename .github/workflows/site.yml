@@ -5,12 +5,18 @@ on:
     branches: [main, master]
     paths:
       - 'site/**'
+      - '.benchmarks/**'
       - '.github/workflows/site.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'site/**'
+      - '.benchmarks/**'
       - '.github/workflows/site.yml'
+  # Daily rebuild so the dashboard picks up gate records that landed on
+  # branches whose PRs have not merged yet (gen-gates.mjs walks all heads).
+  schedule:
+    - cron: '17 6 * * *'
 
 concurrency:
   group: site-${{ github.ref }}
@@ -61,7 +67,7 @@ jobs:
   deploy:
     name: Deploy to avarok via rsync
     needs: build
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     environment:
       name: production-site

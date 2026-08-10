@@ -30,9 +30,11 @@ const URL = 'https://github.com/Avarok-Cybersecurity/atlas';
 const FALLBACK_COUNT = 546;
 
 function gh(args) {
+  // stderr is piped (not discarded) so a failing leg names its HTTP error in
+  // the build log instead of degrading invisibly.
   return execFileSync('gh', args, {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 64 * 1024 * 1024
   }).trim();
 }
@@ -94,9 +96,37 @@ function buildHistory(isoLines, count) {
   return series;
 }
 
+// The history leg fails in environments whose token cannot list stargazers
+// (the endpoint rejects anonymous and restricted tokens). When that happens,
+// the fresh history is empty but the count leg (plain repo metadata) still
+// succeeds — and writing { count, history: [] } would CLOBBER the committed
+// history and blank the star chart on the deployed site. Salvage instead:
+// keep the previously generated curve and pin its terminal point to the live
+// count so the figure and the curve agree.
+function salvageHistory(count, generatedDate) {
+  if (!existsSync(OUT)) return [];
+  try {
+    const prev = JSON.parse(readFileSync(OUT, 'utf8'));
+    const hist = (Array.isArray(prev.history) ? prev.history : []).filter(
+      (p) => p && typeof p.date === 'string' && Number.isFinite(p.stars)
+    );
+    if (hist.length === 0) return [];
+    const last = hist[hist.length - 1];
+    if (last.stars !== count) {
+      if (generatedDate && generatedDate > last.date) hist.push({ date: generatedDate, stars: count });
+      else last.stars = count;
+    }
+    console.log(`gen-stars: history leg degraded — salvaged ${hist.length} committed points`);
+    return hist;
+  } catch {
+    return [];
+  }
+}
+
 try {
   const count = parseInt(gh(['api', `repos/${REPO}`, '--jq', '.stargazers_count']), 10);
   if (!Number.isFinite(count)) throw new Error('non-numeric star count');
+  const generatedDate = git(['log', '-1', '--format=%cs']);
 
   let history = [];
   try {
@@ -110,11 +140,14 @@ try {
       '.[].starred_at'
     ]);
     history = buildHistory(iso.split('\n'), count);
-  } catch {
-    history = []; // heavy/failed pagination degrades to empty history, count kept
+  } catch (err) {
+    // Name the failure — a silent catch here is what shipped an empty chart.
+    const detail = ((err && (err.stderr || err.message)) || String(err)).toString().trim();
+    console.error(`gen-stars: stargazers leg failed: ${detail}`);
   }
+  if (history.length === 0) history = salvageHistory(count, generatedDate);
 
-  const obj = { count, url: URL, history, generated_date: git(['log', '-1', '--format=%cs']) };
+  const obj = { count, url: URL, history, generated_date: generatedDate };
   writeFileSync(OUT, JSON.stringify(obj, null, 2) + '\n');
   console.log(`gen-stars: count=${count}, ${history.length} history points -> ${OUT}`);
 } catch (err) {
