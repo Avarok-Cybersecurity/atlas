@@ -183,6 +183,15 @@ impl WeightStore {
             .values()
             .any(|w| matches!(w.dtype, WeightDtype::FP8E4M3))
     }
+
+    /// Number of per-layer FP8 KV-cache scale tensors (`*.k_scale`) the
+    /// checkpoint ships. `>0` means the model carries calibrated KV scales, so
+    /// FP8 KV needs no online calibration; `0` means the scales default to 1.0
+    /// (which clips BF16 into E4M3 range), so online calibration or a non-FP8 KV
+    /// dtype is required. Used to log the right guidance at serve time.
+    pub fn fp8_kv_scale_count(&self) -> usize {
+        self.names().filter(|n| n.ends_with(".k_scale")).count()
+    }
 }
 
 /// SBIO IORouter trait for weight loading.
@@ -440,6 +449,45 @@ mod teardown_tests {
         store.release(&gpu).expect("first");
         store.release(&gpu).expect("second");
         assert_eq!(gpu.alloc_count(), 0);
+    }
+
+    /// `fp8_kv_scale_count` counts exactly the `*.k_scale` tensors — one per
+    /// attention layer in checkpoints that ship calibrated FP8 KV scales —
+    /// and ignores `v_scale` (paired 1:1 with `k_scale`, counting both would
+    /// double-report) and lookalike suffixes.
+    #[test]
+    fn fp8_kv_scale_count_counts_only_k_scale_tensors() {
+        let gpu = MockGpuBackend::new();
+        let tensor = || WeightTensor {
+            ptr: gpu.alloc(1024).expect("alloc"),
+            shape: vec![1],
+            dtype: WeightDtype::BF16,
+        };
+        let mut map = HashMap::new();
+        for name in [
+            "model.layers.0.self_attn.k_scale",
+            "model.layers.0.self_attn.v_scale",
+            "model.layers.7.self_attn.k_scale",
+            "model.layers.7.self_attn.v_scale",
+            "model.layers.0.self_attn.q_proj.weight",
+            // Lookalikes that must NOT count: no dot before the suffix, and a
+            // different scale kind entirely.
+            "model.layers.0.self_attn.attnk_scale",
+            "model.layers.0.mlp.weight_scale",
+        ] {
+            map.insert(name.to_string(), tensor());
+        }
+        let store = WeightStore::from_map(map);
+        assert_eq!(store.fp8_kv_scale_count(), 2);
+    }
+
+    /// A checkpoint without shipped KV scales reports zero — the case where
+    /// serve logs the "needs calibration or a non-FP8 KV dtype" warning.
+    #[test]
+    fn fp8_kv_scale_count_zero_without_scales() {
+        let gpu = MockGpuBackend::new();
+        let store = store_with(&gpu, 4);
+        assert_eq!(store.fp8_kv_scale_count(), 0);
     }
 
     /// Reverse order, and one failure does not abandon the rest — the whole

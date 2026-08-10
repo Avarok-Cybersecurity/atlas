@@ -173,6 +173,9 @@ pub(crate) fn resolve_kv_cache_config(
     args: &cli::ServeArgs,
     config: &ModelConfig,
     behavior_default_kv_dtype: &str,
+    // Count of `*.k_scale` tensors in the checkpoint (0 = no shipped FP8 KV
+    // scales). Drives the FP8-KV guidance log below.
+    fp8_kv_scale_count: usize,
 ) -> Result<KvCacheConfig> {
     // Resolution rules:
     //   1. No MODEL.toml override        → use args.kv_cache_dtype as-is.
@@ -207,23 +210,43 @@ pub(crate) fn resolve_kv_cache_config(
     };
     let kv_dtype: spark_runtime::kv_cache::KvCacheDtype = effective_kv_dtype_str.parse()?;
     if kv_dtype == spark_runtime::kv_cache::KvCacheDtype::Fp8 {
+        let has_ckpt_scales = fp8_kv_scale_count > 0;
         if config.fp8_kv_calibration_tokens > 0 {
+            if has_ckpt_scales {
+                // The model already ships calibrated scales; online calibration
+                // would override them with a looser first-observe estimate.
+                tracing::info!(
+                    "FP8 KV online calibration is ON, but this checkpoint already ships {} \
+                     per-layer k_scale/v_scale tensors (full-data calibrated, tighter than a \
+                     runtime estimate). Prefer --fp8-kv-calibration-tokens 0 to use them directly.",
+                    fp8_kv_scale_count,
+                );
+            } else {
+                tracing::info!(
+                    "FP8 KV cache with online calibration (checkpoint ships no k/v scales): \
+                     freezing per-tensor scales on the first observed tokens.{}",
+                    if args.fp8_kv_calibration_tokens == 0 {
+                        " (auto-enabled from MODEL.toml)"
+                    } else {
+                        ""
+                    },
+                );
+            }
+        } else if has_ckpt_scales {
+            // The common, correct case for NVFP4 checkpoints that ship KV scales
+            // (e.g. Laguna-S-2.1): no calibration needed, and it is the tightest
+            // option. NOT a warning.
             tracing::info!(
-                "FP8 KV cache with online calibration: tracking max |K|/|V| during \
-                 first {} tokens to compute per-tensor scales.{}",
-                config.fp8_kv_calibration_tokens,
-                if args.fp8_kv_calibration_tokens == 0 {
-                    " (auto-enabled from MODEL.toml)"
-                } else {
-                    ""
-                },
+                "FP8 KV cache using {} per-layer k_scale/v_scale tensors from the checkpoint — \
+                 no calibration needed.",
+                fp8_kv_scale_count,
             );
         } else {
             tracing::warn!(
-                "FP8 KV cache selected. This requires calibrated k_scale/v_scale in the model \
-                 checkpoint. Without scales (default=1.0), BF16 values are silently clipped to \
-                 E4M3 range [-448, 448], destroying dynamic range. Use --fp8-kv-calibration-tokens 256 \
-                 for online calibration, or --kv-cache-dtype nvfp4/bf16 if your model lacks k/v scales."
+                "FP8 KV cache selected but the checkpoint ships NO k_scale/v_scale tensors \
+                 (defaulting to 1.0, which silently clips BF16 into E4M3 range [-448, 448] and \
+                 destroys dynamic range). Enable --fp8-kv-calibration-tokens 256 for online \
+                 calibration, or use --kv-cache-dtype nvfp4/bf16."
             );
         }
     }
