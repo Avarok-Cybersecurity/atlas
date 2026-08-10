@@ -42,7 +42,9 @@ mod eligible;
 // `batch_kernel_tests.rs`) and the env-flag predicates resolve unchanged
 // after the eligibility cluster moved into the `eligible` submodule.
 use eligible::first_chunk_batched_enabled;
-pub(in crate::model) use eligible::{check_kernel_batched_eligible, varlen_prefill_enabled};
+pub(in crate::model) use eligible::{
+    check_kernel_batched_eligible, config_is_mla, varlen_prefill_enabled,
+};
 
 use crate::layer::{
     BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer,
