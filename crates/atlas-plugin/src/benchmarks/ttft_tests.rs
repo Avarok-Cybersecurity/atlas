@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use super::*;
 use crate::artifacts::ArtifactStore;
 use crate::plugin::TargetEndpoint;
-use crate::result::VerdictKind;
+use crate::result::{Verdict, VerdictKind};
 
 fn gate(mode: Mode, root: &str) -> TtftGate {
     let mut g = TtftGate::new(mode);
@@ -103,6 +103,31 @@ fn a_baseline_from_another_target_reports_instead_of_gating() {
     let (v, _) = g.verdict(Some(800.0), Some(900.0));
     assert_eq!(v.kind, VerdictKind::Info);
     assert!(v.reason.contains("other-box"), "{}", v.reason);
+}
+
+/// A failing run must not overwrite the baseline it just failed against.
+///
+/// ★ The stored baseline is what the NEXT run is compared to. Saving it
+/// unconditionally meant a regression became the new bar: run once and FAIL at
+/// +10%, run the identical build again and it is 0% against its own regressed
+/// number — PASS, with a gate record to prove it. The percentage guard would
+/// then only ever catch the FIRST run after a regression landed, and a re-run
+/// (which a stochastic gate invites) launders it away.
+#[test]
+fn a_failing_run_does_not_become_the_new_baseline() {
+    let g = gate(Mode::Warm, "nolaunder");
+    assert!(!g.should_store(&Verdict::fail("REGRESSED — median +10.0%")));
+    // The two cases that MUST still store: a clean pass, and the first run on a
+    // box, which has no baseline to compare against and exists to create one.
+    assert!(g.should_store(&Verdict::pass("median +0.1%")));
+    assert!(g.should_store(&Verdict::info("no baseline on this box yet")));
+
+    // …and the opt-out still wins over all of them.
+    let mut off = gate(Mode::Warm, "nolaunder-off");
+    let mut v = ParamValues::defaults(&off.parameters());
+    v.set("update_baseline", ParamValue::Bool(false));
+    off.configure(&v).unwrap();
+    assert!(!off.should_store(&Verdict::pass("median +0.1%")));
 }
 
 #[test]

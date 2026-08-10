@@ -313,6 +313,7 @@ fn coherence_test_capital_of_france() -> Result<()> {
         false,
         &config.model_type,
         None,
+        false, // --disable-template-overrides default
     )?;
 
     // Encode prompt with chat template
@@ -392,6 +393,7 @@ fn streaming_coherence_test() -> Result<()> {
         false,
         &config.model_type,
         None,
+        false, // --disable-template-overrides default
     )?;
 
     let messages = vec![(
@@ -481,6 +483,7 @@ fn speculative_decode_coherence() -> Result<()> {
         false,
         &config.model_type,
         None,
+        false, // --disable-template-overrides default
     )?;
 
     let messages = vec![(
@@ -559,6 +562,7 @@ fn prompt_logprobs_collection_during_prefill() -> Result<()> {
         false,
         &config.model_type,
         None,
+        false, // --disable-template-overrides default
     )?;
 
     let prompt = "The capital of France is Paris. The capital of Germany is";

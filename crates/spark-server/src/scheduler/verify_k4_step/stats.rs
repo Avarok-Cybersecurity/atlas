@@ -23,7 +23,7 @@ const K4_SUMMARY_PERIOD: u64 = 100;
 // observable on every step.
 
 #[inline]
-pub(super) fn k4_record_positional(
+pub(in crate::scheduler) fn k4_record_positional(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
     d1: bool,
     d2: bool,
@@ -117,7 +117,7 @@ pub(super) fn k4_record_positional(
 }
 
 #[inline]
-pub(super) fn k4_record_outcome(
+pub(in crate::scheduler) fn k4_record_outcome(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
     num_accepted: usize,
     seq_len: usize,

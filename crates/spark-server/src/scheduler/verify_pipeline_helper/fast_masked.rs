@@ -52,11 +52,16 @@ use spark_model::traits::Model;
 /// Returns `Some(picks)` when the fast path proves masked-greedy ==
 /// raw-argmax for every position (picks are the raw `argmax_ids`);
 /// `None` when any gate fails and the caller must run the slow path.
+///
+/// `row_base`: first logits row of this sequence's verify span in the
+/// shared `[R, vocab]` buffer (0 on all single-sequence paths; `i*4` for
+/// sequence i on the batched K=4 verify — see `verify_pick_all_with_pipeline`).
 pub(super) fn try_chat_fast_path(
     model: &dyn Model,
     argmax_ids: &[u32],
     a: &ActiveSeq,
     ctx: &LogitsContext,
+    row_base: usize,
 ) -> Option<Vec<u32>> {
     // DFlash masked-verify mode ONLY. The fast path exists to make
     // ATLAS_DFLASH_MASKED_VERIFY affordable; it must never run for MTP:
@@ -134,7 +139,13 @@ pub(super) fn try_chat_fast_path(
         }
         if penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
             && !crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
-                crate::scheduler::fast_greedy::logit_is_positive(model, logits_base, i, vocab, tok)
+                crate::scheduler::fast_greedy::logit_is_positive(
+                    model,
+                    logits_base,
+                    row_base + i,
+                    vocab,
+                    tok,
+                )
             })
         {
             all_clear = false;

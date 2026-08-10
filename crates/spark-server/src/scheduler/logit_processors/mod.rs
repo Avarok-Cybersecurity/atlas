@@ -110,6 +110,8 @@ pub struct SamplingLevers {
     pub mtp_verify_sample: bool,
     /// Fast masked-sampling chat path.
     pub fast_masked: bool,
+    /// Grammarless verify fast-greedy (the chat sibling of the grammar arm).
+    pub fast_greedy_chat: bool,
     /// Adaptive-decode diagnostic recording. Suppresses the fast path so the
     /// full pipeline is observable.
     pub adadec_diagnostic: bool,

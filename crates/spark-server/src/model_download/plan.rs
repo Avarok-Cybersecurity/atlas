@@ -52,9 +52,35 @@ fn is_weight(name: &str) -> bool {
     name.ends_with(".safetensors") || name.ends_with(".safetensors.index.json")
 }
 
+/// Does this name stay inside the snapshot directory it is joined onto?
+///
+/// The name is the Hub's `rfilename`, so it is chosen by whoever published
+/// the repo, and `select`'s output is joined straight onto the cache path by
+/// the downloader. `Path::join` resolves `..` against the parent and treats
+/// an absolute component as a *replacement* for everything to its left, so
+/// an unvalidated name is an arbitrary-file-write primitive on the machine
+/// doing the pull — enough to overwrite another model's shards.
+///
+/// Weights legitimately sit in subdirectories, so `/` itself has to be
+/// allowed; it is the traversal and the rooting that are rejected.
+fn is_contained(name: &str) -> bool {
+    // `\` is a separator on Windows and no Hub repo needs it; a `C:` prefix
+    // is absolute on the platforms that parse it.
+    if name.is_empty() || name.starts_with('/') || name.contains('\\') {
+        return false;
+    }
+    let b = name.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return false;
+    }
+    // An empty component is `//`, which some joiners re-root on.
+    name.split('/')
+        .all(|c| !c.is_empty() && c != "." && c != "..")
+}
+
 /// Is this file worth downloading?
 pub fn wanted(name: &str) -> bool {
-    if is_excluded(name) {
+    if !is_contained(name) || is_excluded(name) {
         return false;
     }
     // Only top-level metadata: a `subfolder/config.json` belongs to a

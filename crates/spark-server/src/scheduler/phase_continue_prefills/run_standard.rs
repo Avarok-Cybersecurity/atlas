@@ -11,6 +11,7 @@ use spark_model::traits::{Model, SequenceState};
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
+use super::super::lifecycle::send_error;
 use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
 
@@ -129,10 +130,25 @@ pub(super) fn run_standard_chunk_loop(
             let had_drafts = active.iter().any(|a| !a.pending_drafts.is_empty());
             for a in active.iter_mut() {
                 a.pending_drafts.clear();
+                a.pending_draft_conf.clear();
             }
             if had_drafts && let Err(e) = model.sync_secondary() {
                 tracing::error!("mtp->mixed sync_secondary: {e:#}");
             }
+        }
+        // Sort by SSM pool slot before building the batch, exactly as
+        // `decode_step.rs` does for pure-decode steps. Without it the batched
+        // GDN recurrence declines: its precondition is that the n sequences sit
+        // in CONSECUTIVE pool slots IN SLICE ORDER, and retire+compaction packs
+        // the slot SET while scrambling the ORDER (a finishing sequence's slot
+        // is backfilled by the highest-slot survivor, which stays last in the
+        // vec). Pure-decode steps healed this and mixed steps did not, so every
+        // step for the duration of a prefill fell back to the per-seq loop —
+        // measured 853 us/layer vs 618 batched, a 28% penalty on ~30 ms/step.
+        // Reordering whole ActiveSeq elements keeps the post-decode
+        // position->seq mapping consistent (same argument as decode_step.rs).
+        if active.len() > 1 {
+            active.sort_by_key(|a| a.seq.ssm_slot_idx().unwrap_or(a.seq.slot_idx));
         }
         let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
         let mut decode_refs: Vec<&mut SequenceState> =
@@ -237,14 +253,59 @@ pub(super) fn run_standard_chunk_loop(
         return;
     }
 
-    match model.prefill_chunk(
+    // Preempt-and-retry on KV exhaustion, mirroring `decode_step`: a prompt chunk
+    // that cannot allocate should evict a LARGER in-flight sequence rather than
+    // fail this request outright. Safe to retry because
+    // `ensure_blocks_through_prefill` fails during block allocation, BEFORE the
+    // forward pass — no GPU state has been mutated. Victim policy matches
+    // admission control (largest block_table, grammar-active excluded, since
+    // their state is not reconstructible). Falls through to the original
+    // fail-this-sequence behavior when nothing can be evicted.
+    let mut chunk_res = model.prefill_chunk(
         &p.prompt_tokens,
         &mut p.seq,
         p.chunk_offset,
         chunk_len,
         is_last,
         prefill_stream,
-    ) {
+    );
+    while chunk_res
+        .as_ref()
+        .err()
+        .is_some_and(|e| format!("{e:#}").contains("KV cache exhausted"))
+    {
+        let Some(vi) = active
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.grammar_state.is_none())
+            .max_by_key(|(_, a)| a.seq.block_table.len())
+            .map(|(i, _)| i)
+        else {
+            break;
+        };
+        let mut victim = active.remove(vi);
+        tracing::warn!(
+            "KV cache exhausted during prefill chunk: preempting slot={} ({} blocks) \
+             so this prefill can proceed ({} sequence(s) remain)",
+            victim.seq.slot_idx,
+            victim.seq.block_table.len(),
+            active.len(),
+        );
+        send_error(
+            model,
+            &mut victim,
+            "preempted: KV cache exhausted (a prefill needed its blocks)",
+        );
+        chunk_res = model.prefill_chunk(
+            &p.prompt_tokens,
+            &mut p.seq,
+            p.chunk_offset,
+            chunk_len,
+            is_last,
+            prefill_stream,
+        );
+    }
+    match chunk_res {
         Ok(logits) => {
             p.chunk_offset += chunk_len;
             tracing::info!(

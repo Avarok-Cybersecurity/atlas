@@ -57,3 +57,42 @@ fn build_manifest_keeps_all_when_no_index() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A crafted header with a REVERSED `data_offsets` pair. The old
+/// `rel_end - rel_start` wrapped to ~u64::MAX and that length was published
+/// to RDMA peers as a remote read size. Staging must reject the shard.
+#[test]
+fn build_manifest_rejects_reversed_data_offsets() {
+    let dir = std::env::temp_dir().join(format!("wpeer-rev-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let header = r#"{"a.weight":{"dtype":"F32","shape":[2],"data_offsets":[16,0]}}"#;
+    write_st(&dir.join("model.safetensors"), header, &[0u8; 16]);
+
+    let err = build_manifest(&dir, "test").unwrap_err().to_string();
+    assert!(
+        err.contains("model.safetensors"),
+        "error should name the shard: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A truncated shard: the header still advertises the full tensor but the
+/// bytes are not there. Publishing it would hand peers a read that runs off
+/// the end of the registered memory region.
+#[test]
+fn build_manifest_rejects_span_past_end_of_shard() {
+    let dir = std::env::temp_dir().join(format!("wpeer-trunc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let header = r#"{"a.weight":{"dtype":"F32","shape":[1024],"data_offsets":[0,4096]}}"#;
+    // Only 16 of the 4096 declared data bytes are present.
+    write_st(&dir.join("model.safetensors"), header, &[0u8; 16]);
+
+    let err = build_manifest(&dir, "test").unwrap_err().to_string();
+    assert!(
+        err.contains("model.safetensors"),
+        "error should name the shard: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

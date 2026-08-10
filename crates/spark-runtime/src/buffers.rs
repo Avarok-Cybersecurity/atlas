@@ -10,8 +10,10 @@ use anyhow::Result;
 use atlas_core::config::ModelConfig;
 
 mod accessors;
+pub mod decode_meta;
 mod sizes;
 mod sizes_q12;
+pub use decode_meta::{DECODE_META_MAX_ROWS, DECODE_META_MIN_ROWS, DecodeMetaLayout};
 pub use sizes::BufferSizes;
 pub use sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
@@ -116,6 +118,10 @@ pub struct BufferArena {
     lora_seq_slot: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
+    /// Derived batched-decode metadata layout (rows = max(32, serve
+    /// max_batch_size)); byte-identical to the legacy fixed 32-row gaps for
+    /// every bs <= 32. SSOT consumed by `upload_batch_metadata_fixed`/`_at`.
+    decode_meta: DecodeMetaLayout,
     /// Sizes in bytes for each buffer (for debug/logging).
     sizes: BufferSizes,
 }
@@ -127,9 +133,17 @@ impl BufferArena {
         max_batch_tokens: usize,
         max_seq_len: usize,
         kv_block_size: usize,
+        max_batch_size: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
-        let sizes = BufferSizes::from_config(config, max_batch_tokens, max_seq_len, kv_block_size);
+        let decode_meta = DecodeMetaLayout::for_max_batch_size(max_batch_size);
+        let sizes = BufferSizes::from_config(
+            config,
+            max_batch_tokens,
+            max_seq_len,
+            kv_block_size,
+            max_batch_size,
+        );
 
         let hidden_states = gpu.alloc(sizes.hidden_states)?;
         let residual = gpu.alloc(sizes.residual)?;
@@ -263,6 +277,7 @@ impl BufferArena {
             lora_hact,
             lora_seq_slot,
             max_batch_tokens,
+            decode_meta,
             sizes,
         })
     }
@@ -286,6 +301,8 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             // exhaustiveness check above keeps its teeth.
             sizes: _,
             max_batch_tokens: _,
+            // Layout, not an allocation — derived from `--max-batch-size`.
+            decode_meta: _,
             hidden_states,
             residual,
             norm_output,

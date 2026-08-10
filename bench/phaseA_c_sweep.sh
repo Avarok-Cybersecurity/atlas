@@ -65,7 +65,7 @@ else
   teardown
   sudo docker run -d --name atlas-csweep --network host --gpus all --ipc=host \
     -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
     -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \

@@ -4,21 +4,66 @@
 //! sticky footer, toasts, help overlay. Pure `App` → `Frame`.
 
 mod bench;
+mod chat_lines;
 mod header;
 mod library;
 mod main_tab;
 mod network_tab;
+mod overlay;
 mod stats_tab;
 mod terminal_tab;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::app::{App, Focus, MainSub, Section};
 use super::theme;
+
+/// Where the header ends and the sidebar ends, for a terminal of this size.
+///
+/// ★ **One definition, because the renderer and the hit-tester have to agree
+/// exactly.** `events::on_mouse` maps a click back to a sidebar row by
+/// subtracting the header height and testing the column against the sidebar
+/// width — so it held its own copy of all four breakpoints, in another file,
+/// with no test that could notice them drifting apart. The failure mode is
+/// silent: nothing crashes and no row is out of range, the wrong section just
+/// opens. It is the same class of defect as the subsection-offset bug
+/// `events::sidebar_row` was extracted to fix, one layer out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chrome {
+    /// Header rows above the sidebar's first row.
+    pub header_h: u16,
+    /// Sidebar columns.
+    pub sidebar_w: u16,
+}
+
+impl Chrome {
+    /// The chrome a terminal this size gets.
+    pub fn of(size: Size) -> Self {
+        Self {
+            // The three-row header carries the logo block; below this the
+            // content pane cannot spare the two rows, so it collapses to a
+            // one-line strip.
+            header_h: if size.height >= 28 { 3 } else { 1 },
+            // The wide sidebar carries labels; the narrow one is icons only.
+            sidebar_w: if size.width >= 96 { 18 } else { 4 },
+        }
+    }
+
+    /// Is the header drawing the logo block rather than the one-line strip?
+    pub fn tall_header(&self) -> bool {
+        self.header_h > 1
+    }
+
+    /// Is the sidebar drawing labels — and therefore the active section's
+    /// subsection rows, which shift every row below them?
+    pub fn full_sidebar(&self) -> bool {
+        self.sidebar_w >= 18
+    }
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -37,24 +82,22 @@ pub fn draw(f: &mut Frame, app: &App) {
         Block::default().style(Style::default().bg(theme::BG_BASE.color())),
         area,
     );
-    let tall = area.height >= 28;
-    let header_h = if tall { 3 } else { 1 };
+    let chrome = Chrome::of(area.as_size());
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_h),
+            Constraint::Length(chrome.header_h),
             Constraint::Min(5),
             Constraint::Length(1),
         ])
         .split(area);
-    header::draw_header(f, app, rows[0], tall);
+    header::draw_header(f, app, rows[0], chrome.tall_header());
 
-    let sidebar_w = if area.width >= 96 { 18 } else { 4 };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(sidebar_w), Constraint::Min(20)])
+        .constraints([Constraint::Length(chrome.sidebar_w), Constraint::Min(20)])
         .split(rows[1]);
-    draw_sidebar(f, app, cols[0], sidebar_w >= 18);
+    draw_sidebar(f, app, cols[0], chrome.full_sidebar());
 
     // The content area always wears a 1-cell ring so nothing shifts when a
     // benchmark starts; the ring is dim while idle and pulses brand cyan while
@@ -75,9 +118,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     draw_footer(f, app, rows[2]);
-    draw_toasts(f, app, content);
+    overlay::draw_toasts(f, app, content);
     if app.help_open {
-        draw_help(f, area);
+        overlay::draw_help(f, area);
+    }
+    // After the help modal: a question the user must answer outranks a
+    // reference they were browsing.
+    if app.confirm_quit {
+        overlay::draw_quit_confirm(f, app, area);
     }
     // LAST, over everything including the help overlay: the highlight has to
     // show what will actually be copied, and what is copied is read back out
@@ -173,7 +221,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, full: bool) {
         }
         let mut line = Line::from(spans);
         if selected {
-            line = line.style(Style::default().bg(theme::BG_SELECTION.color()));
+            line = line.style(theme::selected());
         }
         lines.push(line);
         // Subsections under the active section (full mode).
@@ -230,7 +278,13 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-6 jump · ? help",
         Section::Library => library_hints(app),
         Section::Benchmarks => bench_hints(app),
-        Section::Terminal => "⏎ input · Esc back · ↑/↓ scroll · End follow · ⇥ Ops↔Chat · ? help",
+        // `/detach` named here and nowhere else on screen: it is the only way
+        // out that leaves the server running, and this is the tab it is typed
+        // into. Without it the only exit a user could find was `q`, which
+        // stops the server.
+        Section::Terminal => {
+            "⏎ input · Esc back · ↑/↓ scroll · ⇥ Ops↔Chat · /detach leave · ? help"
+        }
     };
     let line = Line::from(vec![
         Span::styled(
@@ -267,119 +321,6 @@ fn bench_hints(app: &App) -> &'static str {
     }
 }
 
-/// Toasts, drawn over whatever is underneath them.
-///
-/// They are boxed rather than being a single tinted line. A toast lands on top
-/// of a dense pane — a table, a log, a progress bar — and a one-row strip with
-/// only a background colour to separate it reads as part of that pane rather
-/// than as a message about it. The border is in the toast's own accent colour
-/// (green or red), which is also what tells you at a glance whether something
-/// succeeded or failed.
-fn draw_toasts(f: &mut Frame, app: &App, content: Rect) {
-    // +2 columns and +2 rows per toast for the border box.
-    let width = 44.min(content.width.saturating_sub(2));
-    let inner_w = width.saturating_sub(2) as usize;
-    for (i, t) in app.toasts.iter().rev().take(3).enumerate() {
-        // Three rows each now (box + a blank), so they stack without touching.
-        let area = Rect {
-            x: content.x + content.width.saturating_sub(width + 1),
-            y: content.y + 1 + (i as u16) * 4,
-            width,
-            height: 3,
-        };
-        if area.bottom() > content.bottom() || width < 6 {
-            // Not enough room to draw a box honestly; skip rather than clip a
-            // border into something unreadable.
-            continue;
-        }
-        let accent = if t.error {
-            theme::error()
-        } else {
-            theme::brand_green()
-        };
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(accent.add_modifier(Modifier::BOLD))
-            .style(Style::default().bg(theme::BG_RAISED.color()));
-        let inner = block.inner(area);
-        // `Clear` over the WHOLE box, including the border cells: without it
-        // the rounded corners sit on top of whatever glyph was underneath.
-        f.render_widget(Clear, area);
-        f.render_widget(block, area);
-        let text = truncate_toast(&t.text, inner_w);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(text, theme::text())))
-                .style(Style::default().bg(theme::BG_RAISED.color())),
-            inner,
-        );
-    }
-}
-
-/// One line, ellipsised, so a long message cannot spill past the border it is
-/// supposed to be inside.
-fn truncate_toast(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let n = text.chars().count();
-    if n <= width {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{head}…")
-}
-
-fn draw_help(f: &mut Frame, area: Rect) {
-    let w = 64.min(area.width.saturating_sub(4));
-    let h = 18.min(area.height.saturating_sub(4));
-    let modal = Rect {
-        x: area.x + (area.width - w) / 2,
-        y: area.y + (area.height - h) / 2,
-        width: w,
-        height: h,
-    };
-    f.render_widget(Clear, modal);
-    let keys = [
-        ("1-6", "jump to section (repeat cycles its subsections)"),
-        (
-            "Tab / Shift+Tab",
-            "walk every sidebar row, subsections included",
-        ),
-        ("j/k ↑/↓", "move / scroll"),
-        ("g / G", "top / bottom (follow)"),
-        ("f", "log filter (Main)"),
-        ("/", "search (Library)"),
-        ("←/→ + Enter", "select node / detail (Network)"),
-        ("Enter", "focus input (Terminal) / edit field (Benchmarks)"),
-        ("s", "start the configured benchmark"),
-        ("c", "cancel the running benchmark"),
-        (
-            "d",
-            "Library: download / resume / update the selected model",
-        ),
-        ("x", "Library: stop the running download"),
-        ("u", "Library: check the selected model for updates"),
-        ("Ctrl+Enter", "send chat message"),
-        ("Esc", "back / cancel"),
-        ("Ctrl+C", "clean shutdown (drain + exit)"),
-        ("q", "quit TUI"),
-        ("?", "this help"),
-    ];
-    let mut lines = vec![Line::default()];
-    for (k, d) in keys {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {k:<16}"), theme::brand_cyan()),
-            Span::styled(d.to_string(), theme::text2()),
-        ]));
-    }
-    let block = Block::bordered()
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(theme::border(false))
-        .title(Span::styled("─ KEYS ─", theme::text2()))
-        .style(Style::default().bg(theme::BG_PANEL.color()));
-    f.render_widget(Paragraph::new(lines).block(block), modal);
-}
-
 /// Shared rounded-panel block.
 pub(super) fn panel(title: String, focused: bool) -> Block<'static> {
     Block::bordered()
@@ -414,10 +355,17 @@ pub(super) fn gradient_bar(frac: f64, width: u16) -> Line<'static> {
 }
 
 #[cfg(test)]
+#[path = "harness.rs"]
+mod harness;
+
+#[cfg(test)]
 #[path = "render_tests.rs"]
 mod tests;
 
-/// Wrap `text` to `width` columns as owned lines.
+#[cfg(test)]
+#[path = "chrome_tests.rs"]
+mod chrome_tests;
+
 /// The Library's footer, which depends on which pane and mode it is in.
 fn library_hints(app: &App) -> &'static str {
     use crate::tui::lib_state::View;
@@ -459,6 +407,12 @@ pub(crate) fn live_model_name(app: &App) -> String {
         .unwrap_or_default()
 }
 
+/// Wrap `text` to `width` columns as owned lines.
+///
+/// Measured in bytes, which over-counts anything non-ASCII and so wraps early
+/// rather than late — the panes that use this hand the result straight to a
+/// `Paragraph` with no `Wrap`, so a row that is too LONG is silently clipped
+/// while a row that is too short is merely a short row.
 pub(crate) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Vec<Line<'static>> {
     if width == 0 {
         return Vec::new();
@@ -475,7 +429,23 @@ pub(crate) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Ve
         if !current.is_empty() {
             current.push(' ');
         }
-        current.push_str(word);
+        // A token wider than the pane — a long URL, a snapshot path, a hash —
+        // has no space to break at, and the `Paragraph`s downstream do not
+        // wrap what they are handed: left whole, everything past the panel
+        // edge was simply cut. Hard-split it, as the chat pane already does.
+        if word.len() > width {
+            for ch in word.chars() {
+                if !current.is_empty() && current.len() + ch.len_utf8() > width {
+                    lines.push(Line::from(Span::styled(
+                        std::mem::take(&mut current),
+                        style,
+                    )));
+                }
+                current.push(ch);
+            }
+        } else {
+            current.push_str(word);
+        }
     }
     if !current.is_empty() {
         lines.push(Line::from(Span::styled(current, style)));

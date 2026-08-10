@@ -15,7 +15,7 @@ This book is the canonical long-form documentation for Atlas. It complements —
 
 Three audiences, one narrative arc:
 
-- **Operators** who want to serve one of the twelve supported models on a GB10 today. Start with *Installation* and *Quickstart*, then jump to *Operating Atlas* for CLI flags, KV-cache dtypes, and multi-GPU bring-up.
+- **Operators** who want to serve one of the supported models on a GB10 today (22 `(model, quant)` targets ship in the image; the compatibility matrix is `docs/GB10_DEPLOYMENT_GUIDE.md` §2). Start with *Installation* and *Quickstart*, then jump to *Operating Atlas* for CLI flags, KV-cache dtypes, and multi-GPU bring-up.
 - **Model authors** extending Atlas with a new architecture. Read *Architecture* → *spark-model* → *Engineering Deep Dives* in order, then follow the "Adding a new model" section of the repo README alongside `crates/spark-model/src/weight_loader/minimax.rs` as a template.
 - **Kernel engineers** porting Atlas to a new hardware target or hyperoptimizing an existing kernel. Read *Philosophy* → *Kernel Dispatch Pipeline* → the *CUDA Kernel Engineering* deep dive, then use the repo's "Adding a new hardware target" walkthrough with `kernels/gb10/` as a reference implementation.
 

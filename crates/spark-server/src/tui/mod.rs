@@ -16,14 +16,19 @@
 //!   capture_layer   typed startup-progress event decoding
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
+//!   events_rules    the loop's decisions as pure functions, so they are testable
 //!   section         Section — the sidebar/nav SSOT
 //!   app             App state + reducer (section, focus, per-tab state)
+//!   app_quit        what `q` costs, and when it costs a second press
 //!   bench_state     Benchmarks section state + the executor's channels
 //!   bench_keys      Benchmarks key handling (list / params / run / history)
 //!   theme           palette + shared styles (brand chevron colors)
+//!   format          byte counts and scheduler enums, as the screen says them
 //!   logo            header art + CLI flag badge derivation
 //!   commands        Terminal tab slash-command parser/dispatch
-//!   chat            loopback SSE chat client for the served model
+//!   chat            Chat transcript state + delta reducer
+//!   chat_stream     loopback SSE chat client for the served model
+//!   chat_thinking   thinking: what the client asks for, and how it is drawn
 //!   data/           pollers: metrics deltas, library scan, kernel rows
 //!   render/         one file per section, pure App-state -> Frame
 //!   worker          the one way to run work off the render thread
@@ -76,13 +81,17 @@ pub mod terminal_guard;
 pub mod app;
 mod app_input;
 pub mod app_library;
+pub mod app_quit;
 pub mod app_scroll;
+pub mod bench_host;
 pub mod bench_keys;
 pub mod bench_preflight;
 pub mod bench_state;
 pub mod commands;
 pub mod download_state;
 pub mod events;
+pub mod events_rules;
+pub mod format;
 pub mod lib_dates;
 pub mod lib_keys;
 pub mod lib_scan;
@@ -94,6 +103,8 @@ pub mod theme;
 pub mod worker;
 
 pub mod chat;
+pub mod chat_stream;
+pub mod chat_thinking;
 pub mod data;
 pub mod render;
 
@@ -149,7 +160,15 @@ pub fn start(
                 .clone()
                 .or_else(|| args.model.clone())
                 .unwrap_or_default();
+            let cache_dir = args.cache_dir.clone();
             let mut app = app::App::new(args);
+            // The Serve Matrix boots checkpoints through this process. Install
+            // the seam before the section can start a run; without it the
+            // benchmark refuses to load and says why, which is the correct
+            // behaviour for a harness with no server, not for this one.
+            atlas_plugin::benchmarks::serve_matrix::host::install(std::sync::Arc::new(
+                bench_host::TuiServeHost::new(host.clone(), cache_dir),
+            ));
             app.host = Some(host);
             app.chat.set_runtime(runtime.clone());
             // Benchmarks default to the server they are attached to. A store

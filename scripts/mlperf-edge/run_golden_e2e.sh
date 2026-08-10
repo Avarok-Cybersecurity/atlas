@@ -93,7 +93,7 @@ sleep 3
 # NOT "off" -- the flag must be absent. The ones meant to be off are simply not set.
 sudo docker run -d --name "$CONTAINER" --network host --gpus all --ipc=host \
   -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
   -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $EXTRA_ENV \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \

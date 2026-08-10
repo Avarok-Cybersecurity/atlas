@@ -1,0 +1,19 @@
+[package]
+name = "atlas-closure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content hash of a kernel target's transitive include closure."
+
+# Deliberately tiny and CUDA-free. Both `atlas-kernels`'s build script and
+# `atlas-plugin`'s gate checker compute this hash, and they MUST agree forever —
+# so there is exactly one implementation, in a crate light enough that a
+# no-GPU, ATLAS_SKIP_BUILD=1 consumer can depend on it without pulling a
+# toolchain.
+
+[dependencies]
+anyhow.workspace = true
+sha2 = "0.10"
+
+[lints]
+workspace = true

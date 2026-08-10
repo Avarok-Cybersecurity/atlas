@@ -383,11 +383,15 @@ extern "C" __global__ void KERNEL_NAME(
 }
 
 // ==========================================================================
-// BR=64 entry (KERNEL_NAME##_64). On AMD/gfx1151 the BR=64 large-chunk paged
-// prefill kernels are COMPILE-ONLY (force_br32_prefill routes all dispatch to
-// the BR=32 kernel above — see HARDWARE.toml / paged_attn.rs). To keep LDS
-// within RDNA3.5's 64 KB cap and the grid math harmless, BR64 is clamped to 32
-// here (mirroring inferspark_prefill_wmma.cu). The wave32 WMMA + smem-softmax
+// BR=64 entry (KERNEL_NAME##_64). On AMD/gfx1151 these _64 paged prefill
+// kernels ARE still dispatched (paged_attn.rs picks them on chunk length
+// alone), so BR64 is clamped to 32 here both to keep LDS within RDNA3.5's
+// 64 KB cap and to make the tiling correct; the host grid is clamped to match
+// by cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs, and the two MUST
+// agree. (An earlier comment claimed a `force_br32_prefill` HARDWARE.toml key
+// routed dispatch away from them — no such routing existed, the key had no
+// reader, and it has been removed.) Mirrors inferspark_prefill_wmma.cu. The
+// wave32 WMMA + smem-softmax
 // body is identical to the BR=32 kernel; only the entry symbol differs so the
 // registry links. NVIDIA keeps BR64=64 verbatim.
 #define BR64 32

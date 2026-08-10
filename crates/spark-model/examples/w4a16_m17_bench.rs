@@ -44,9 +44,17 @@ const ITERS: usize = 100;
 const SHAPES: &[(&str, u32, u32)] = &[
     ("ffn_gate/up  N=17408 K=5120 ", 17408, 5120),
     ("ffn_down     N=5120  K=17408", 5120, 17408),
+    ("ssm_qkvz     N=16384 K=5120 ", 16384, 5120),
+    ("ssm_out_proj N=5120  K=6144 ", 5120, 6144),
+    ("attn_qkv     N=8192  K=5120 ", 8192, 5120),
+    ("attn_o_proj  N=5120  K=6144 ", 5120, 6144),
+    ("attn_k       N=1024  K=5120 ", 1024, 5120),
+    ("attn_v       N=1024  K=5120 ", 1024, 5120),
+    ("attn_qkv_FUSED N=14336 K=5120", 14336, 5120),
+    ("lm_head      N=248320 K=5120", 248320, 5120),
 ];
 
-const M_SWEEP: &[u32] = &[17, 32, 64, 128];
+const M_SWEEP: &[u32] = &[1, 4, 8, 16, 32, 64];
 
 /// Launch geometry per kernel, mirroring the ops wrappers exactly.
 #[derive(Clone, Copy)]
@@ -57,6 +65,17 @@ enum Geom {
     N128M64,
     /// w4a16_gemm_t_m128 via w4a16_gemm_n128_m128: grid (N/128, M/128), block 128
     N128M128,
+    /// w4a16_gemm_t_m128_v2: grid (N/128, M/128), block 256 (8 warps, pipelined).
+    /// Lives in module `w4a16_v2`, and is dispatched today ONLY by the SSM
+    /// batched-decode and FFN paths — never by the multi-seq concurrent decode
+    /// projections, which is what this bench is here to check.
+    N128M128W256,
+    /// w4a16_gemv_batch4/8/16: grid (ceil(N/4), 1, 1), block 256.
+    /// SAME arg signature as the gemm family (A,Bp,Bs,scale2,C,M,N,K), so it
+    /// shares the launch path; only the geometry differs. This is the kernel
+    /// lm_head runs TODAY, and the one the tile-GEMM migration would replace —
+    /// its low-M curve decides whether a threshold is needed.
+    GemvN4,
 }
 
 fn grid_for(g: Geom, m: u32, n: u32) -> [u32; 3] {
@@ -64,6 +83,8 @@ fn grid_for(g: Geom, m: u32, n: u32) -> [u32; 3] {
         Geom::N64M64 => [div_ceil(n, 64), div_ceil(m, 64), 1],
         Geom::N128M64 => [div_ceil(n, 128), div_ceil(m, 64), 1],
         Geom::N128M128 => [div_ceil(n, 128), div_ceil(m, 128), 1],
+        Geom::N128M128W256 => [div_ceil(n, 128), div_ceil(m, 128), 1],
+        Geom::GemvN4 => [div_ceil(n, 4), 1, 1],
     }
 }
 
@@ -82,7 +103,15 @@ fn launch(
 ) -> Result<()> {
     KernelLaunch::new(g, k_h)
         .grid(grid_for(geom, m, n))
-        .block([128, 1, 1])
+        .block([
+            if matches!(geom, Geom::N128M128W256 | Geom::GemvN4) {
+                256
+            } else {
+                128
+            },
+            1,
+            1,
+        ])
         .arg_ptr(a)
         .arg_ptr(b)
         .arg_ptr(b_scale)
@@ -91,6 +120,11 @@ fn launch(
         .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
+        // ldb: transposed-B row stride. `w4a16_gemm_t` gained this parameter when
+        // lm_head needed a padded stride (vocab 248077 is odd and broke its 16-byte
+        // cp.async). The packed case is ldb == n. Harmless for the kernels that do
+        // not declare it — the launch API only reads declared params.
+        .arg_u32(n)
         .launch(0)
 }
 
@@ -117,13 +151,46 @@ fn main() -> Result<()> {
             "w4a16_gemm_t_m128",
             Geom::N128M128,
         ),
+        (
+            "w4a16_gemm_t_m128_v2(W256)",
+            "w4a16_gemm_t_m128_v2",
+            Geom::N128M128W256,
+        ),
+        // LOSSLESS BF16-MMA family. Documented bit-identical to each other
+        // (w4a16_gemm.cu:1816) — the choice between them is purely perf, which
+        // is what this bench settles for the lm_head shape.
+        (
+            "w4a16_gemm_t_m64_bf16 (N128,M64)",
+            "w4a16_gemm_t_m64_bf16",
+            Geom::N128M64,
+        ),
+        (
+            "w4a16_gemm_t_m128_bf16_v2",
+            "w4a16_gemm_t_m128_bf16_v2",
+            Geom::N128M128,
+        ),
+        // The INCUMBENT. lm_head dispatches batch4/8/16 by padded_n today.
+        ("w4a16_gemv_batch4", "w4a16_gemv_batch4", Geom::GemvN4),
+        ("w4a16_gemv_batch8", "w4a16_gemv_batch8", Geom::GemvN4),
+        ("w4a16_gemv_batch16", "w4a16_gemv_batch16", Geom::GemvN4),
     ]
     .into_iter()
-    .filter_map(|(name, func, geom)| match g.kernel("w4a16", func) {
-        Ok(h) => Some((name, h, geom)),
-        Err(_) => {
-            eprintln!("SKIP {name}: kernel w4a16::{func} not in this target's module set");
-            None
+    .filter_map(|(name, func, geom)| {
+        match g.kernel(
+            if func == "w4a16_gemm_t_m128_v2" {
+                "w4a16_v2"
+            } else if func.starts_with("w4a16_gemv") {
+                "w4a16_gemv"
+            } else {
+                "w4a16"
+            },
+            func,
+        ) {
+            Ok(h) => Some((name, h, geom)),
+            Err(_) => {
+                eprintln!("SKIP {name}: kernel w4a16::{func} not in this target's module set");
+                None
+            }
         }
     })
     .collect();

@@ -44,7 +44,7 @@ pub fn execute(line: &str, app: &mut App) {
     if !line.starts_with('/') {
         app.ops
             .output
-            .push("(bare text goes to the Chat tab — press 5 twice)".into());
+            .push("(bare text goes to the Chat tab — press 6 twice)".into());
         return;
     }
     let mut parts = line.splitn(2, ' ');
@@ -107,8 +107,10 @@ fn cmd_status(app: &mut App) {
                 s.kv_blocks_free, s.kv_blocks_total, s.ssm_slots_used, s.ssm_slots_total
             ));
             app.ops.output.push(format!(
-                "  mtp {:?} · delivered {:.1} tok/s · {} steps",
-                s.mtp_mode, s.delivered_tps, s.steps_total
+                "  mtp {} · delivered {:.1} tok/s · {} steps",
+                crate::tui::format::mtp_mode_label(s.mtp_mode),
+                s.delivered_tps,
+                s.steps_total
             ));
         }
         None => app
@@ -171,13 +173,20 @@ fn cmd_metrics(app: &mut App, filter: &str) {
 fn cmd_kernels(app: &mut App, filter: &str) {
     let rows = spark_runtime::kernel_audit::audit_rows();
     let mut n = 0;
-    for (m, f, ok) in rows {
+    for r in rows {
+        let (m, f, ok) = (&r.module, &r.func, r.loaded);
         if !filter.is_empty() && !m.contains(filter) && !f.contains(filter) {
             continue;
         }
+        // A failed lookup without its dispatch site is a name, not a work item.
+        let site = if ok {
+            String::new()
+        } else {
+            format!("  at {}:{}", r.site.file(), r.site.line())
+        };
         app.ops
             .output
-            .push(format!("  {} {m}::{f}", if ok { "✓" } else { "✗" }));
+            .push(format!("  {} {m}::{f}{site}", if ok { "✓" } else { "✗" }));
         n += 1;
         if n >= 40 {
             app.ops
@@ -233,3 +242,9 @@ mod tests {
         assert_eq!(complete("hello"), None); // not a slash command
     }
 }
+
+// The dispatch cases live in their own mount; the completion case above stays
+// beside the function it describes.
+#[cfg(test)]
+#[path = "commands_tests.rs"]
+mod line_tests;

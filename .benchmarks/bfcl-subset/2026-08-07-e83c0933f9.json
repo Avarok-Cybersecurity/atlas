@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "benchmark_id": "bfcl-subset",
+  "benchmark_name": "BFCL (subset)",
+  "git_sha": "e83c0933f9",
+  "recorded_at": 1786138796,
+  "target_model": "unsloth/Qwen3.6-27B-NVFP4",
+  "params": {
+    "hallucination_pct": "10",
+    "live_pct": "10",
+    "max_new_tokens": "1024",
+    "non_live_pct": "62",
+    "request_timeout_s": "600",
+    "subset_floor": "25",
+    "temperature": "0"
+  },
+  "command": [
+    "spark",
+    "benchmark",
+    "run",
+    "bfcl-subset",
+    "--param",
+    "hallucination_pct=10",
+    "--param",
+    "live_pct=10",
+    "--param",
+    "max_new_tokens=1024",
+    "--param",
+    "non_live_pct=62",
+    "--param",
+    "request_timeout_s=600",
+    "--param",
+    "subset_floor=25",
+    "--param",
+    "temperature=0",
+    "--pull-request-gate"
+  ],
+  "served_by": "qwen3.6/qwen3.6-27b-nvfp4-unsloth",
+  "atlas_version": "1.0.0-beta-preview",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.126.09",
+    "sm_clock_mhz": 2405.0,
+    "source": "nvidia-smi"
+  },
+  "metrics": {
+    "normalized_single_turn_score": 88.59,
+    "overall_accuracy": 87.64,
+    "samples": 995.0
+  },
+  "frame_status": "Completed",
+  "verdict": "PASS",
+  "verdict_reason": "overall 87.64 (floor 83.64) · normalized 88.59 (floor 85.32) · n=995",
+  "summary": "unsloth/Qwen3.6-27B-NVFP4 · normalized_single_turn_score=88.59, overall_accuracy=87.64, samples=995.00 · Pass: overall 87.64 (floor 83.64) · normalized 88.59 (floor 85.32) · n=995"
+}

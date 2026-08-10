@@ -89,6 +89,12 @@ impl VisionEncoder {
                 }
             }
         }
+        // SAFETY: `out_bf16` is a live `vec![0u16; p * h]` (line 43) and the
+        // byte length is derived from that same Vec's `len()`, so the view
+        // cannot leave the allocation. Every element was zero-initialised by
+        // the `vec!` before the interpolation loop wrote it, so no byte is
+        // uninitialised; `u16` has no invalid bit patterns and `u8` has
+        // alignment 1. The view is read-only and dies before `out_bf16`.
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(out_bf16.as_ptr() as *const u8, out_bf16.len() * 2)
         };
@@ -176,6 +182,12 @@ impl VisionEncoder {
                 }
             }
         }
+        // SAFETY (both): `cos_bf16`/`sin_bf16` are live `vec![0u16; p * hd]`
+        // (lines 137-138) and each byte length is derived from that same Vec's
+        // `len()`, so neither view leaves its allocation. The `vec!` zeroed
+        // every element, so no byte is uninitialised even where the rope loop
+        // skips one; `u16` has no invalid bit patterns and `u8` has alignment
+        // 1. Both views are read-only and die before their Vecs.
         let cos_b: &[u8] = unsafe {
             std::slice::from_raw_parts(cos_bf16.as_ptr() as *const u8, cos_bf16.len() * 2)
         };

@@ -3,8 +3,32 @@
 // Focused dispatch tests for `forward_k2`'s E8M0 guard (`k2_e8m0_needs_per_token`).
 // Included via `#[path]` from forward_k2.rs to keep that file ≤500 LoC.
 
-use super::k2_e8m0_needs_per_token;
+use super::{batch2_block_width, k2_e8m0_needs_per_token};
 use crate::weight_map::WeightQuantFormat;
+
+#[test]
+fn batch2_block_width_is_one_of_the_two_widths_the_kernel_implements() {
+    // The kernel dispatches on blockDim.x and implements exactly 128 and 256.
+    // Any other answer would silently fall back to the 128 decomposition and
+    // waste the extra warps — the bug this helper exists to prevent.
+    for hidden in [1024usize, 2048, 2560, 2688, 2816, 3072, 4096, 5120, 7168] {
+        let w = batch2_block_width(hidden);
+        assert!(w == 128 || w == 256, "hidden={hidden} → unsupported {w}");
+    }
+}
+
+#[test]
+fn batch2_block_width_widens_at_3072() {
+    // 2048-hidden MoE models (qwen3.6-35b-a3b, holo-3.1-35b-a3b, qwen3-vl-30b)
+    // stay narrow; the 3072/4096-hidden ones (122B, MiniMax-M2, step3.7,
+    // nemotron-super/puzzle, 397B) go wide.
+    assert_eq!(batch2_block_width(2048), 128);
+    assert_eq!(batch2_block_width(2816), 128);
+    assert_eq!(batch2_block_width(3071), 128);
+    assert_eq!(batch2_block_width(3072), 256);
+    assert_eq!(batch2_block_width(4096), 256);
+    assert_eq!(batch2_block_width(5120), 256);
+}
 
 #[test]
 fn e8m0_takes_per_token_path_not_gs16_batch2() {
