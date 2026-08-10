@@ -1,0 +1,87 @@
+name: Merge ancestry
+
+# A PR can be MERGEABLE and still destroy work. GitHub computes mergeability
+# over TREES, not ancestry: PR #452's head was an ORPHAN — its first commit a
+# repository root carrying a full tree snapshotted before PR #450 merged — so
+# `git merge-base` found nothing, yet the PR displayed mergeable. Squash-
+# merging it would have applied a diff that silently reverted five PRs of
+# engine work, with nothing in the PR UI saying so. It was caught only because
+# a manual `git merge origin/main` refused with "unrelated histories" and that
+# refusal was diagnosed instead of overridden. `strict: true` also blocked it,
+# but only as a side effect (an orphan can never compute as up-to-date), not
+# as a deliberate check. This workflow makes the refusal deliberate and loud.
+#
+# Not a hypothetical here even beyond #452: this repo's history was re-rooted
+# at "Open Source Release", so pre-release branches (e.g. ci/docs-paths-filter,
+# merged as PR #11) genuinely share no ancestor with today's main.
+#
+# Verdicts (logic + rationale live in scripts/check_merge_ancestry.sh, which
+# is unit-tested by scripts/check_merge_ancestry_test.sh — the self-test job):
+#   FAIL  no merge base — head is unrelated to base (the #452 class).
+#   WARN  merely behind — normal for nearly every open PR; `strict: true`
+#         already forces an update before merge, so failing would be noise.
+#   WARN  revert signature — the PR rewinds files to pre-merge-base contents
+#         (a stale snapshot WITH ancestry: mergeable, conflict-free, and it
+#         reverts silently). WARN not FAIL because deliberate revert PRs are
+#         legitimate; the point is that a reviewer sees it in the checks log.
+#
+# Deliberately NOT in the required status checks yet: promoting a brand-new
+# context to required before it has reported on the ~28 open PRs would block
+# the entire queue. Promotion is a follow-up once it has run everywhere.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  # Manually runnable (2026-08-06 Actions-incident lesson, as in ci.yml): a
+  # dispatch run exercises the self-test job; the guard itself needs a PR
+  # context and re-runs from the PR's checks tab or on push.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: PR shares history with its base
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # merge-base needs the FULL commit graph: a shallow clone cannot
+          # distinguish "no common ancestor" from "not deep enough", and a
+          # targeted deepen loop never terminates against a genuine orphan —
+          # only a full graph can PROVE the base is missing. fetch-depth: 0
+          # stays cheap via blob:none (all commits and trees, no file
+          # contents; ancestry and blob-OID comparison never read contents)
+          # and a sparse checkout that materialises only scripts/.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: scripts
+
+      - name: Check merge ancestry
+        env:
+          # head.sha tracks the PR's latest push. base.sha in the payload is
+          # the base tip at PR CREATION and goes stale, so the base is
+          # resolved from the just-fetched origin/<base.ref> instead.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          BASE_SHA="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
+          bash scripts/check_merge_ancestry.sh "$BASE_SHA" "$HEAD_SHA" "$BASE_REF"
+
+  self-test:
+    name: Merge-ancestry guard self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Builds scratch repos from nothing (descendant / orphan / behind /
+      # rewind / bogus-sha), so the default shallow checkout is enough. Runs
+      # per-PR so a change to the guard script cannot land with the guard
+      # silently broken.
+      - name: Run guard unit tests
+        run: bash scripts/check_merge_ancestry_test.sh
