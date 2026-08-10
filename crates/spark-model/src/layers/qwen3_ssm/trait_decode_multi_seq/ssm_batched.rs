@@ -99,8 +99,7 @@ impl Qwen3SsmLayer {
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
         // Tier-1c keep-packed Q2_0 has no batched packed GEMM; decline so the
-        // per-seq fallback (which runs `ssm_forward` per sequence and dispatches
-        // `q2_0_gemv_vec`) handles it.
+        // per-seq fallback (`ssm_forward` → `q2_0_gemv_vec`) handles it.
         if n < 2
             || !self.sequential_qkvz
             || !use_f32_conv
