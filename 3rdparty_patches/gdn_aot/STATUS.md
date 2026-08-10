@@ -121,3 +121,26 @@ RESULT (holo35b, same binary, A/B via ATLAS_GDN_FLASHINFER 1 vs 0):
   reads S[k][v]). THE one remaining fix for full generation coherence.
 NEXT: add k<->v transpose of h_state after the FI call (small per-head 128x128 transpose) -> decode
 coherent -> needle/quality test; then larger-context prefill speedup; then perf-tune.
+
+## PROVENANCE UPDATE — 2026-08-10, full pipeline VERIFIED on gx10-9959
+
+`rebuild.sh` executed end-to-end (clone @ pin → patch → export → both links)
+on gx10-9959 (compat stack + preloaded `libcute_dsl_runtime.so` — BOTH are
+required; compat alone reproduces dgx-00's Symbols-not-found failure).
+
+**Determinism, measured (two identical-env runs):**
+- `gdn_holo_0.o`  → `35671a38…` both runs — the CuTe-DSL export IS
+  deterministic within a fixed environment.
+- `gdn_holo.so`   → `c4f0fe76…` both runs — deterministic.
+- `libatlasgdn.so`→ differed run-to-run only via linker build-id; fixed by
+  `-Wl,--build-id=none` (now in rebuild.sh).
+
+**So the historical three-way drift is ENVIRONMENT drift, not JIT randomness:**
+- original pinned blobs ← deleted `/tmp/gdn-bench` venv (unrecoverable env)
+- `ea1c5632…` .o ← dgx-00 July env (the .o the vendored-link branch commits)
+- `35671a38…` .o ← the now-DOCUMENTED gx10 env (this file + rebuild.sh)
+
+Implication: pin the environment (this venv recipe) and the artifact class is
+fully reproducible going forward. The committed-blob pins in PINS.sha256
+remain validated-bytes attestations for the historical artifacts; any future
+re-export should come from the documented env so its bytes are regenerable.

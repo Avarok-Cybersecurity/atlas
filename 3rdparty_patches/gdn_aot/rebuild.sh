@@ -98,7 +98,19 @@ Link-only rebuilds can pass GDN_HOLO_O=<pre-exported gdn_holo_0.o> instead."
     # GB10 boxes whose system driver is older (historical recipe, STATUS.md:
     # LD_LIBRARY_PATH=/usr/local/cuda-13.2/compat:...). Honor it when present.
     COMPAT_DIR=${GDN_COMPAT_DIR:-/usr/local/cuda-13.2/compat}
-    EXPORT_LD_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+    # VERIFIED gx10 2026-08-10: the JIT session resolves its 8 trampoline
+    # symbols (_cuKernelGetAttribute, _cudaLaunchKernelEx, ...) from
+    # libcute_dsl_runtime.so, which must be BOTH on the loader path and
+    # LD_PRELOADed — compat alone still fails with the same Symbols-not-found.
+    CUTE_RT_LIB=$("$PY" - <<'PYEOF'
+import glob, sys, sysconfig
+cands = glob.glob(sysconfig.get_paths()["purelib"] + "/nvidia_cutlass_dsl/lib")
+print(cands[0] if cands else "")
+PYEOF
+)
+    [ -n "$CUTE_RT_LIB" ] || die "nvidia_cutlass_dsl/lib not found in this python env (pip install 'nvidia-cutlass-dsl[cu13]==$CUTLASS_DSL_VER')"
+    EXPORT_LD_PATH="$CUTE_RT_LIB:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+    EXPORT_PRELOAD="$CUTE_RT_LIB/libcute_dsl_runtime.so"
     if [ -d "$COMPAT_DIR" ]; then
         EXPORT_LD_PATH="$COMPAT_DIR:$EXPORT_LD_PATH"
         note "using CUDA compat driver: $COMPAT_DIR"
@@ -107,7 +119,7 @@ Link-only rebuilds can pass GDN_HOLO_O=<pre-exported gdn_holo_0.o> instead."
     fi
     note "exporting AOT kernel (CuTe DSL JIT + export_to_c, ~1-3 min on GB10)..."
     rm -rf /tmp/gdn_aot   # gdn_export.py hardcodes this output dir
-    ( cd "$OUT" && LD_LIBRARY_PATH="$EXPORT_LD_PATH" PYTHONPATH="$FLASHINFER_HOME" CUTE_DSL_ARCH=$SM_ARCH "$PY" "$HERE/gdn_export.py" ) \
+    ( cd "$OUT" && LD_LIBRARY_PATH="$EXPORT_LD_PATH" LD_PRELOAD="$EXPORT_PRELOAD" PYTHONPATH="$FLASHINFER_HOME" CUTE_DSL_ARCH=$SM_ARCH "$PY" "$HERE/gdn_export.py" ) \
         || true   # gdn_export.py prints per-kernel EXPORT FAIL details; verdict is the .o below
     [ -f /tmp/gdn_aot/gdn_holo_0.o ] || die "export did not produce /tmp/gdn_aot/gdn_holo_0.o (see output above). \
 Known-good environment: a GB10 box WITH the cuda-13.2 compat driver stack (gx10-9959, or the \
@@ -146,7 +158,10 @@ note "linked gdn_holo.so"
 # ── Step 5: libatlasgdn.so (docker/gb10/Dockerfile.builder recipe, verbatim
 #    plus -L$CUDA_HOME/lib64 which the docker image supplies via ldconfig) ─────
 "$NVCC" -arch=$SM_ARCH -Xcompiler -fPIC -c "$HERE/gdn_transpose.cu" -o gdn_transpose.o
-g++ -O2 -fPIC -shared "$HERE/gdn_shim.cpp" gdn_transpose.o gdn_holo_0.o \
+# -Wl,--build-id=none: the ONLY nondeterminism left in the pipeline (verified
+# gx10 2026-08-10: .o and gdn_holo.so bit-identical across runs; libatlasgdn.so
+# differed run-to-run solely from the linker build-id).
+g++ -O2 -fPIC -shared -Wl,--build-id=none "$HERE/gdn_shim.cpp" gdn_transpose.o gdn_holo_0.o \
     -o libatlasgdn.so \
     -I"$HERE" -I"$CUDA_HOME/include" -L"$CUDA_HOME/lib64" -lcudart \
     -L"$CUTE_DSL_LIB" -lcute_dsl_runtime -Wl,-rpath,"${GDN_RPATH:-$CUTE_DSL_LIB}"
