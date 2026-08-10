@@ -53,3 +53,4 @@ What's better, what's worse, what new problems did we create?
 - [0011 — EP batched-decode optimization](0011-ep-batched-decode-optimization.md)
 - [0012 — Scope a kernel change by its include closure](0012-closure-hash-cascade.md)
 - [0013 — A gate record covers a commit by content, never by ancestry](0013-gate-coverage-by-content-not-ancestry.md)
+- [0014 — PR intent is a descending tree, and it may only ADD benchmarks](0014-pr-intent-taxonomy-and-the-required-union.md)

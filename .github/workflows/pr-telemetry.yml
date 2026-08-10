@@ -44,8 +44,22 @@ jobs:
           # Draft PRs are included deliberately: a draft still tells you which
           # targets are about to be contended, which is the thing this view is
           # for. It is labelled as a draft in the table.
-          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            --jq '[.[] | {number, title, author: .user.login, draft}]' > prs.json
+          # ★ OPEN **and** MERGED, never CLOSED. Promotion debt outlives the
+          # merge: a PR that a candidate gate wanted to see, merged without it,
+          # is coverage this repo has already gone without and stays on the
+          # books. A PR that was closed shipped nothing, so it owes nothing —
+          # including it would inflate the ledger with debts that cannot exist.
+          #
+          # The API has no "merged" state: merged PRs come back as `closed`
+          # with `merged_at` set, so the filter is on `merged_at`, not `state`.
+          # Bounded to the most recent 200 by update time — the full history
+          # would grow without limit and the debt that matters is recent.
+          gh api "repos/$REPO/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+            --paginate --jq '[.[]
+              | select(.state == "open" or .merged_at != null)
+              | {number, title, author: .user.login, draft,
+                 merged: (.merged_at != null)}]' \
+            | jq -s -c '[.[][]] | .[0:200]' > prs.json
 
           # Changed paths need a second call per PR — the list endpoint does
           # not carry them. Paginated in full rather than capped: a truncated
@@ -56,8 +70,27 @@ jobs:
           : > enriched.ndjson
           while read -r pr; do
             number=$(jq -r '.number' <<<"$pr")
-            paths=$(gh api "repos/$REPO/pulls/$number/files?per_page=100" --paginate \
-                      --jq '[.[].filename]' 2>/dev/null || echo '[]')
+            # ★ `--paginate` applies `--jq` PER PAGE, so an array filter emits
+            # ONE ARRAY PER PAGE. At >100 files that is two JSON documents, and
+            # `--argjson` takes exactly one — the whole render died on the first
+            # such PR. It was not hypothetical: #350 has 144 files, and both
+            # scheduled runs on 2026-08-09 aborted here.
+            #
+            # `jq -e .` does NOT catch this (it happily validates a concatenated
+            # stream); only `--argjson` rejects it. So emit newline-delimited
+            # names and assemble ONE array, which is page-count independent.
+            # Guard on gh's EXIT STATUS, not on whether the output is empty:
+            # on a 404 `gh api` prints the error BODY to stdout, so a
+            # length-based check turns `{"message":"Not Found",...}` into a
+            # single bogus "filename" that renders as a real path. (The first
+            # version of this fix did exactly that.)
+            if raw=$(gh api "repos/$REPO/pulls/$number/files?per_page=100" \
+                       --paginate --jq '.[].filename' 2>/dev/null); then
+              paths=$(printf '%s' "$raw" \
+                      | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            else
+              paths='[]'
+            fi
             jq -c --argjson p "$paths" '. + {changed_paths: $p}' <<<"$pr" >> enriched.ndjson
           done < prs.ndjson
           jq -s '.' enriched.ndjson > facts.json

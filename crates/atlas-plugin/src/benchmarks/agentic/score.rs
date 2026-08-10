@@ -46,6 +46,21 @@ impl Directions {
     pub fn overall(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|(_, ok)| *ok)
     }
+    /// The steps that were NOT evidenced, in declaration order.
+    ///
+    /// ★ Without this a failure is undiagnosable. The run record stored only
+    /// the COUNT (`"5/6"`) while `steps` carried the names all along, and the
+    /// per-iteration trajectory is truncated by the next run of the same index
+    /// — so the 2026-08-09 investigation into an intermittent 9/10 had to be
+    /// reconstructed from a leftover `/tmp/agent_server.log` four hours later.
+    /// A gate that cannot say WHY it failed is a gate nobody can fix.
+    pub fn missing(&self) -> Vec<&'static str> {
+        self.steps
+            .iter()
+            .filter(|(_, ok)| !*ok)
+            .map(|(name, _)| *name)
+            .collect()
+    }
     pub fn met(&self) -> usize {
         self.steps.iter().filter(|(_, ok)| *ok).count()
     }
@@ -421,3 +436,61 @@ fn regular(path: &Path) -> bool {
 #[cfg(test)]
 #[path = "score_tests.rs"]
 mod tests;
+
+/// How many iterations evidenced each directive, keyed `step:<name>`.
+///
+/// ★ Lives here rather than in the driving loop because it is SCORING. It also
+/// keeps `mod.rs` under the repo's 500-line ceiling, which the diagnosability
+/// work pushed it past.
+///
+/// The record needs this because `followed_directions` is all-or-nothing per
+/// iteration: a 9/10 says one iteration failed and nothing about WHICH
+/// directive, and the trajectory that would have said is truncated by the next
+/// run of the same index.
+pub fn per_step_tallies(all: &[&Directions]) -> Vec<(String, f64)> {
+    let Some(first) = all.first() else {
+        return Vec::new();
+    };
+    first
+        .steps
+        .iter()
+        .map(|(name, _)| {
+            let met = all
+                .iter()
+                .filter(|d| d.steps.iter().any(|(n, ok)| n == name && *ok))
+                .count();
+            (format!("step:{name}"), met as f64)
+        })
+        .collect()
+}
+
+/// Gate A's verdict. Scoring, so it lives beside the other scoring — and it
+/// keeps `mod.rs` under the repo's 500-line ceiling.
+pub(super) fn verdict(
+    rows: &[super::IterationRow],
+    wall: f64,
+    wall_budget_s: f64,
+) -> crate::result::Verdict {
+    use crate::result::Verdict;
+    let n = rows.len();
+    let ok = rows.iter().filter(|r| r.webserver_ok).count();
+    let fd = rows.iter().filter(|r| r.directions.overall()).count();
+    let mut failures = Vec::new();
+    if ok < n {
+        failures.push(format!("webserver_ok {ok}/{n}"));
+    }
+    if fd < n {
+        failures.push(format!("followed_directions {fd}/{n}"));
+    }
+    if wall > wall_budget_s {
+        failures.push(format!("Σwall {wall:.0}s > {wall_budget_s:.0}s"));
+    }
+    if failures.is_empty() {
+        Verdict::pass(format!(
+            "{ok}/{n} webserver_ok · {fd}/{n} followed_directions · \
+             Σwall {wall:.0}s ≤ {wall_budget_s:.0}s"
+        ))
+    } else {
+        Verdict::fail(failures.join(" · "))
+    }
+}
