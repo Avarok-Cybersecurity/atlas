@@ -162,14 +162,14 @@ extern "C" __global__ void KERNEL_NAME(
                 v16bf_512 a;
                 #pragma unroll
                 for (int i = 0; i < 16; i++)
-                    a[i] = (__bf16)smem_Q[(qk_m + lane_lo) * HDIM_512 + k_off + i];
+                    a[i] = (__bf16)(float)smem_Q[(qk_m + lane_lo) * HDIM_512 + k_off + i];
                 #pragma unroll
                 for (int nt = 0; nt < QK_N_TILES_512; nt++) {
                     unsigned int key_row = nt * 16 + lane_lo;
                     v16bf_512 bb;
                     #pragma unroll
                     for (int k = 0; k < 16; k++)
-                        bb[k] = (__bf16)smem_K[key_row * HDIM_512 + k_off + k];
+                        bb[k] = (__bf16)(float)smem_K[key_row * HDIM_512 + k_off + k];
                     acc_s[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_s[nt]);
                 }
             }
@@ -243,14 +243,14 @@ extern "C" __global__ void KERNEL_NAME(
                 v16bf_512 a;
                 #pragma unroll
                 for (int i = 0; i < 16; i++)
-                    a[i] = (__bf16)smem_P[(pv_warp_m + lane_lo) * p_stride + k_off + i];
+                    a[i] = (__bf16)(float)smem_P[(pv_warp_m + lane_lo) * p_stride + k_off + i];
                 #pragma unroll
                 for (int nt = 0; nt < N_TILES_PER_WARP_512; nt++) {
                     unsigned int d_col = (pv_n_start + nt) * 16 + lane_lo;
                     v16bf_512 bb;
                     #pragma unroll
                     for (int k = 0; k < 16; k++)
-                        bb[k] = (__bf16)smem_V[(k_off + k) * HDIM_512 + d_col];
+                        bb[k] = (__bf16)(float)smem_V[(k_off + k) * HDIM_512 + d_col];
                     acc_o[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_o[nt]);
                 }
             }

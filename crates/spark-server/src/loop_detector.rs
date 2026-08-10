@@ -298,6 +298,99 @@ pub fn detect(recent_newest_first: &[Signature]) -> LoopState {
     }
 }
 
+// ─── P1-5 (2026-07-09): exact-match failing-call fast path ──────────
+
+/// P1-5 (2026-07-09): one recent assistant turn's raw tool-call unit
+/// plus whether the tool results that followed it were error-shaped.
+/// Built by the orchestrator (api/chat/loop_detect.rs), which sees the
+/// interleaved role=="tool" messages that the `Signature`-based
+/// detector never receives.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CallOutcome {
+    /// Byte-exact representation of the turn's tool calls
+    /// (name + arguments, joined). `None` when the turn issued no
+    /// tool calls.
+    pub call_unit: Option<String>,
+    /// True iff at least one tool result followed the call AND every
+    /// one of them was error-shaped
+    /// (`crate::hint_injector::looks_like_error`).
+    pub failing: bool,
+    /// Concatenated text of the tool results that followed the call
+    /// (bounded by the orchestrator). `None` when no result followed.
+    /// P1-5b: lets the Suppress gate distinguish a productive
+    /// similar-call cycle (cargo check → fix → check: results DIFFER
+    /// each round) from a true infinite loop (results identical).
+    pub result_unit: Option<String>,
+}
+
+/// P1-5b (2026-07-09): true iff the newest `n` turns' tool RESULTS show
+/// forward progress — i.e. at least one adjacent pair of results is
+/// materially different (Jaccard < 0.9 over 4-gram shingles). A build-
+/// fix-rebuild cycle has similar CALLS but different RESULTS each round
+/// (new error list); masking `<tool_call>` there corners the model into
+/// an empty stop ("..." EOS, 57k session 2026-07-09). A true infinite
+/// loop repeats both. Missing results ⇒ NOT progressing (conservative:
+/// legacy Suppress applies).
+pub fn recent_results_progressing(newest_first: &[CallOutcome], n: usize) -> bool {
+    if n < 2 || newest_first.len() < n {
+        return false;
+    }
+    let window = &newest_first[..n];
+    if window.iter().any(|c| c.result_unit.is_none()) {
+        return false;
+    }
+    window.windows(2).any(|pair| {
+        let a = pair[0].result_unit.as_deref().unwrap_or("");
+        let b = pair[1].result_unit.as_deref().unwrap_or("");
+        if a.trim() == b.trim() {
+            return false;
+        }
+        jaccard(&shingle_set(a), &shingle_set(b)) < 0.9
+    })
+}
+
+/// P1-5 (2026-07-09): exact-match fast path for the 45k-collapse
+/// shape — the model retries a BYTE-IDENTICAL FAILING tool call whose
+/// short (e.g. 3-token empty-args) unit is below MIN_CHANNEL_TOKENS,
+/// so [`detect`] is blind and escalates ~4 turns late.
+///
+/// Returns `Some(run_turns)` when the newest >= 3 turns carry
+/// byte-identical tool calls, each followed by error-shaped results.
+/// Callers must NOT hard-suppress `<tool_call>` on this signal: the
+/// repeated unit is FAILING, and masking `<tool_call>` removes the
+/// model's only escape action. Apply only the soft bias decay
+/// (tool_call_repeat_count).
+pub fn detect_exact_failing_repeat(newest_first: &[CallOutcome]) -> Option<usize> {
+    let newest_unit = newest_first.first().and_then(|c| c.call_unit.as_deref())?;
+    let run = newest_first
+        .iter()
+        .take_while(|c| c.failing && c.call_unit.as_deref() == Some(newest_unit))
+        .count();
+    if run >= 3 { Some(run) } else { None }
+}
+
+/// P1-5 (2026-07-09): true iff the newest `n` assistant turns each
+/// issued at least one tool call AND every following tool result was
+/// error-shaped. Gates the Suppress hard-mask: a repeated FAILING
+/// call must not have `<tool_call>` masked (it is the escape action),
+/// while repeated SUCCEEDING calls keep the legacy Suppress behavior
+/// (the BW1/SPINFIX true-infinite-loop case).
+pub fn recent_calls_all_failing(newest_first: &[CallOutcome], n: usize) -> bool {
+    n >= 1
+        && newest_first.len() >= n
+        && newest_first[..n]
+            .iter()
+            .all(|c| c.call_unit.is_some() && c.failing)
+}
+
+/// P1-6 (2026-07-09): shared shingle helper, exposed crate-wide so
+/// duplicate-error masking (api/chat/msg_entry.rs) reuses the exact
+/// similarity measure this detector uses (SSOT) instead of
+/// duplicating tokenise/shingle logic.
+pub(crate) fn shingle_set(text: &str) -> HashSet<u64> {
+    shingles(&tokenise(text), SHINGLE_ORDER)
+}
+
 fn tokenise(s: &str) -> Vec<&str> {
     // Word tokens, lowercased on-the-fly via a fresh string would
     // require allocation per token. Instead we keep references and
@@ -331,7 +424,9 @@ fn shingles(tokens: &[&str], order: usize) -> HashSet<u64> {
     out
 }
 
-fn jaccard(a: &HashSet<u64>, b: &HashSet<u64>) -> f64 {
+// P1-6 (2026-07-09): pub(crate) so msg_entry.rs duplicate-error
+// masking shares this measure (SSOT).
+pub(crate) fn jaccard(a: &HashSet<u64>, b: &HashSet<u64>) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }

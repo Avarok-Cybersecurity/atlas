@@ -1498,7 +1498,6 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64_fp4(
         acc[i][2] = 0.0f; acc[i][3] = 0.0f;
     }
 
-    const unsigned int ast = K_STEP_T64 + PAD_T64;
     const unsigned int M_eff = (unsigned int)M_expert;
     const unsigned int num_groups = K / GROUP_SIZE;
 

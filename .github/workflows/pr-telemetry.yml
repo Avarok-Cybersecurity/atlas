@@ -1,0 +1,135 @@
+name: PR telemetry
+
+# The cross-PR view. Each PR's own checks answer "is this one green?"; nothing
+# answers "are these seven green together". Two PRs touching one kernel target
+# are each measured against a baseline the other will move, and whichever lands
+# second is gated on a number that no longer describes the tree.
+#
+# Advisory by construction: this posts a comment and fails nothing. The blocking
+# decisions stay in `check.rs`, against committed records.
+
+on:
+  schedule:
+    # Every four hours. Frequent enough that the comment is not stale when
+    # someone opens it, rare enough that a queue of PRs does not generate a
+    # notification storm.
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+
+# One run at a time, and never cancelled mid-flight: the write step reads a
+# comment and rewrites it, so a cancelled run could leave the body half-updated
+# while a second run reads the stale version.
+concurrency:
+  group: pr-telemetry
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  render:
+    name: Render the view
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Collect open PRs and their changed paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Draft PRs are included deliberately: a draft still tells you which
+          # targets are about to be contended, which is the thing this view is
+          # for. It is labelled as a draft in the table.
+          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            --jq '[.[] | {number, title, author: .user.login, draft}]' > prs.json
+
+          # Changed paths need a second call per PR — the list endpoint does
+          # not carry them. Paginated in full rather than capped: a truncated
+          # path list would UNDERSTATE a PR's blast radius, and understating is
+          # the one direction this view must not fail in. (GitHub itself stops
+          # at 3000 files; a diff that large is already "everything".)
+          jq -c '.[]' prs.json > prs.ndjson
+          : > enriched.ndjson
+          while read -r pr; do
+            number=$(jq -r '.number' <<<"$pr")
+            paths=$(gh api "repos/$REPO/pulls/$number/files?per_page=100" --paginate \
+                      --jq '[.[].filename]' 2>/dev/null || echo '[]')
+            jq -c --argjson p "$paths" '. + {changed_paths: $p}' <<<"$pr" >> enriched.ndjson
+          done < prs.ndjson
+          jq -s '.' enriched.ndjson > facts.json
+
+          echo "collected $(jq 'length' facts.json) open PR(s)"
+
+      - name: Render the comment body
+        env:
+          # atlas-plugin is host-only and CUDA-free, so the runner needs no
+          # toolchain and no GPU. The skip flag stops atlas-kernels' build
+          # script looking for nvcc.
+          ATLAS_SKIP_BUILD: "1"
+          CUDARC_CUDA_VERSION: "13000"
+        run: |
+          set -euo pipefail
+          cargo run --quiet -p atlas-plugin --bin pr_telemetry -- . < facts.json > body.md
+          # The body is the artifact the next job posts. Also echoed into the
+          # run summary so the view is readable even when no tracking issue is
+          # configured and nothing gets posted anywhere.
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Same upload/download pair release-build.yml already uses together, so
+      # the pin is a combination this repo exercises rather than a new one.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-telemetry-body
+          path: body.md
+          retention-days: 7
+
+  publish:
+    name: Update the tracking comment
+    needs: render
+    runs-on: ubuntu-latest
+    # The ONLY job with a write scope, and it holds exactly one. Rendering runs
+    # read-only, so a bug in the analysis has nowhere to write even in principle.
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pr-telemetry-body
+
+      - name: Upsert the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # PCND: no default issue number. Unset means "not configured yet",
+          # and the step says so and exits 0 rather than guessing an issue and
+          # commenting on something arbitrary.
+          ISSUE: ${{ vars.PR_TELEMETRY_ISSUE }}
+          MARKER: "<!-- atlas-pr-telemetry:start -->"
+        run: |
+          set -euo pipefail
+          if [ -z "${ISSUE:-}" ]; then
+            echo "PR_TELEMETRY_ISSUE is not set — rendered the view but posted nothing."
+            echo "Set the repository variable to the tracking issue number to enable it."
+            echo "The body is attached to this run as the pr-telemetry-body artifact."
+            exit 0
+          fi
+
+          # Find OUR previous comment by its marker rather than by a stored id,
+          # so there is no state to keep in sync and a deleted comment simply
+          # results in a new one.
+          existing=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
+            --jq "[.[] | select(.body | contains(\"$MARKER\"))] | .[0].id // empty")
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" \
+              -F body=@body.md > /dev/null
+            echo "updated comment $existing"
+          else
+            gh api -X POST "repos/$REPO/issues/$ISSUE/comments" \
+              -F body=@body.md > /dev/null
+            echo "created a new comment"
+          fi

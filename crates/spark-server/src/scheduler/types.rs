@@ -13,14 +13,18 @@ use std::time::Instant;
 use anyhow::Result;
 use spark_model::traits::SequenceState;
 
+use crate::api::inference_types::RepetitionDetectionParams;
 use crate::api::{InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::GrammarState;
-use crate::openai::RepetitionDetectionParams;
 
 /// Shared queue between receiver thread and scheduler.
 pub(super) struct PendingQueue {
     pub requests: Vec<InferenceRequest>,
     pub closed: bool,
+    /// Pending LoRA adapter-rotation control requests, applied by the scheduler
+    /// at a quiescent point (see [`super::LoraRotation`]). Kept OUT of
+    /// `requests` so the sequence machinery never sees a control message.
+    pub rotations: Vec<super::LoraRotation>,
 }
 
 /// Per-request slice of a co-dispatched batched-ViT encode. When >=2 image
@@ -104,6 +108,12 @@ pub(super) struct PrefillInProgress {
     pub timeout_at: Option<Instant>,
 }
 
+/// `ActiveSeq::guard_stop` marker for the server-side request deadline
+/// (`--request-timeout`). `finish_sequence` keys off this exact value to
+/// emit `finish_reason="timeout"` instead of deriving "length" from the
+/// last token — see `derive_finish_reason`.
+pub(super) const GUARD_STOP_REQUEST_TIMEOUT: &str = "request_timeout";
+
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
     pub seq: SequenceState,
@@ -114,6 +124,19 @@ pub(super) struct ActiveSeq {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
+    /// Which server-side guard force-finished this sequence (e.g.
+    /// "fuzzy_repetition"), if any. Surfaced in the synthesized --dump body
+    /// so a guard-cut turn is attributable without log archaeology (the
+    /// 2026-07-09 fuzzy cuts reported bare finish=length with every dump
+    /// flag false). Not part of the OpenAI wire format.
+    pub guard_stop: Option<&'static str>,
+    /// P0-1: provisional `</parameter>` close progress inside a parameter
+    /// VALUE body (0 = none, 1 = saw `</`, 2 = saw `</` `parameter`). The
+    /// body-exit commits only on the confirmed full close; HTML/Svelte
+    /// close tags in value content no longer exit the body (which
+    /// reclassified file content as envelope tokens and tripped the
+    /// stuck-envelope cap mid-write).
+    pub param_close_pending: u8,
     pub sink: ResponseSink,
     /// Cooperative cancellation flag from the streaming pipeline.
     /// `Some` for streaming requests with the flag wired through;
@@ -157,6 +180,13 @@ pub(super) struct ActiveSeq {
     pub thinking_tokens: u32,
     /// When true, the next decode step must produce the `</think>` token.
     pub force_end_thinking: bool,
+    /// Whether the `</think>` that closed the current thinking span was
+    /// FORCE-INJECTED (budget exhaustion or thinking-loop watchdog) rather
+    /// than emitted by the model. Captured at the `</think>` commit; read
+    /// by the post-think EOS guard, which must only fire on watchdog
+    /// recoveries — a naturally closed think followed by a short answer
+    /// ends the turn like vLLM does.
+    pub think_force_closed: bool,
     /// Decode-step counter incremented while `force_end_thinking` is
     /// armed but the injection is deferred (waiting for a sentence-
     /// boundary token or fence close). Reset to 0 on the false→true
@@ -302,6 +332,13 @@ pub(super) struct ActiveSeq {
     pub grammar_state: Option<GrammarState>,
     /// MTP draft tokens awaiting verification.
     pub pending_drafts: Vec<u32>,
+    /// Top-1 LOG-probability the drafter reported for each entry of
+    /// [`Self::pending_drafts`], in the same order (D-Cut's ranking key —
+    /// `mtp_dcut`). EMPTY whenever the drafts came from a path that cannot
+    /// measure confidence (per-sequence propose, N-gram/DFlash drafters), in
+    /// which case D-Cut leaves the sequence at full depth. Truncated in
+    /// lock-step with `pending_drafts` so index `j` always describes draft `j`.
+    pub pending_draft_conf: Vec<f32>,
     /// Timestamp of the last token emission (for TBT deadline tracking).
     pub last_token_time: Instant,
     /// Timestamp when the request entered prefill (for TTFT).
@@ -363,6 +400,16 @@ pub(super) fn consume_budget(remaining: &mut usize) -> bool {
 pub(super) struct SwappedSeq {
     pub tokens: Vec<u32>,
     pub session_hash: u64,
+    /// M2 per-request LoRA routing: preserved across spill/restore so a
+    /// swapped-then-resumed sequence keeps its adapter (unlike `cancel_flag`,
+    /// which is intentionally dropped). CPU metadata, restored like `tokens`.
+    pub adapter_slot: i32,
+    /// Task #24: STABLE adapter_id preserved across spill/restore. Stored (not
+    /// recomputed) because a swapped `-1` (defer-to-active) seq's KV was computed
+    /// under the adapter that was active AT PREFILL — recomputing from
+    /// `adapter_slot == -1` after a rotation would re-bind it to a different
+    /// active id and mis-key its own already-written blocks.
+    pub adapter_id: u64,
     pub seq_len: usize,
     pub num_blocks: usize,
     pub last_token: u32,
@@ -395,6 +442,7 @@ pub(super) struct SwappedSeq {
     pub spontaneous_think_budget: u32,
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
+    pub think_force_closed: bool,
     pub sentence_defer_count: u32,
     pub consecutive_confident: u32,
     pub in_code_fence: bool,

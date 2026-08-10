@@ -208,7 +208,7 @@ fn qwen3_xml_has_grammar() {
 fn qwen3_xml_system_prompt_contains_markers() {
     let tools: Vec<ToolDefinition> = vec![];
     let tc = ToolChoice::Mode("auto".to_string());
-    let prompt = Qwen3XmlParser.system_prompt(&tools, &tc);
+    let prompt = Qwen3XmlParser.system_prompt(&tools, &tc, &crate::tool_parser::PromptLevers::OFF);
     assert!(prompt.contains("<tool_call>"), "missing <tool_call>");
     assert!(prompt.contains("<function="), "missing <function=");
     assert!(prompt.contains("<parameter="), "missing <parameter=");

@@ -41,6 +41,26 @@ impl TransformerModel {
         // tail checkpoints + leaf carry the warm path).
         let tail = (tokens.len().saturating_sub(1) / bs) * bs;
         let is_prompt_tail = end_token == tail || (tail >= bs && end_token == tail - bs);
+        // NOTE (2026-07-21, dgx2 SSM audit): `--ssm-checkpoint-interval` is a
+        // FILTER over chunk boundaries, not a generator of them. This
+        // function only runs at a chunk end, so the effective checkpoint
+        // spacing is the CHUNK size, not the interval — the interval can only
+        // suppress boundaries, never create one. The auto-clamp that used to
+        // force the prefill budget down to `interval * block_size` was
+        // removed deliberately (impl_a1.rs, issue #15, 2026-07-02) because it
+        // forced micro-chunked prefill.
+        //
+        // Consequence to be aware of when reading a serve log: with
+        // `--ssm-checkpoint-interval 32` (32 blocks = 512 tokens at bs=16)
+        // and `--max-prefill-tokens 8192`, chunk ends land on blocks 512,
+        // 1024, ... — every one of which is a multiple of 32 — so interval
+        // checkpoints fire every 8192 tokens, NOT every 512. The warm path is
+        // carried by the tail checkpoints and the leaf above, which is why
+        // this is not currently a correctness problem.
+        //
+        // Making the interval a real generator (splitting chunks at interval
+        // boundaries) is a behaviour change with a prefill-throughput cost
+        // and is deliberately NOT made here; it needs its own measured A/B.
         let on_interval = self.ssm_checkpoint_interval > 0
             && end_block.is_multiple_of(self.ssm_checkpoint_interval);
         if end_block == 0 || !(is_prompt_tail || on_interval) {
@@ -71,6 +91,7 @@ impl TransformerModel {
         let snap_result = match self.ssm_snapshots.save(
             seq.slot_idx,
             seq.session_hash,
+            self.seq_ssm_h_is_f16(seq),
             &self.ssm_pool,
             self.gpu.as_ref(),
             stream,
@@ -78,14 +99,17 @@ impl TransformerModel {
             Ok(Some(id)) => Some(id),
             Ok(None) => {
                 // Pool exhausted — try to reclaim from cache
-                if self
-                    .ssm_snapshots
-                    .reclaim_from_cache(self.prefix_cache.as_ref(), kv_cache)
-                {
+                if self.ssm_snapshots.reclaim_from_cache(
+                    self.prefix_cache.as_ref(),
+                    kv_cache,
+                    self.ssm_tier_store.as_deref(),
+                    self.gpu.as_ref(),
+                ) {
                     self.ssm_snapshots
                         .save(
                             seq.slot_idx,
                             seq.session_hash,
+                            self.seq_ssm_h_is_f16(seq),
                             &self.ssm_pool,
                             self.gpu.as_ref(),
                             stream,
@@ -149,8 +173,9 @@ impl TransformerModel {
             boundary_disk,
             bs,
             end_token,
+            seq.adapter_id,
         );
-        super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
+        super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
             boundary_tokens,
             boundary_blocks,
@@ -159,6 +184,7 @@ impl TransformerModel {
             snap_id,
             seq.session_hash,
             end_token,
+            seq.adapter_id,
         ) {
             self.ssm_snapshots.free(old);
         }

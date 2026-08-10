@@ -42,6 +42,13 @@ extern "C" __global__ void moe_topk_sigmoid(
     const unsigned int num_warps = BLOCK_SIZE / 32;
 
     unsigned int actual_n = num_experts < MAX_EXPERTS ? num_experts : MAX_EXPERTS;
+    // Defence in depth against a `top_k` larger than the shared-memory arrays.
+    // The authoritative check is host-side and refuses to build the layer
+    // (`MoeLayer::new` / `NemotronMoeLayer::new`), so this bound is unreachable
+    // in a booted model; it exists so a config that slipped past truncates
+    // rather than writing off the end of `s_top_vals`/`s_top_idxs` into
+    // `s_warp_val`. Mirrors `moe_hash_route.cu`'s `t < top_k && t < MAX_TOP_K`.
+    const unsigned int top_k_c = top_k < MAX_TOP_K ? top_k : MAX_TOP_K;
 
     // Phase 1: Load gate logits, compute sigmoid, add bias for selection
     for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
@@ -57,7 +64,7 @@ extern "C" __global__ void moe_topk_sigmoid(
     __syncthreads();
 
     // Phase 2: Parallel top-K from selection scores (sigmoid + bias)
-    for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+    for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
         float local_max = -1e30f;
         unsigned int local_idx = 0;
         for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
@@ -104,7 +111,7 @@ extern "C" __global__ void moe_topk_sigmoid(
     // Phase 3: Gather pre-bias sigmoid weights, normalize, and scale
     if (tid == 0) {
         float topk_sum = 0.0f;
-        for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+        for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
             unsigned int idx = s_top_idxs[t];
             float w = s_sigmoid[idx];  // pre-bias sigmoid score
             s_top_vals[t] = w;
@@ -112,12 +119,12 @@ extern "C" __global__ void moe_topk_sigmoid(
         }
 
         if (normalize && topk_sum > 1e-20f) {
-            for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+            for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
                 s_top_vals[t] /= topk_sum;
             }
         }
 
-        for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+        for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
             expert_indices[t] = s_top_idxs[t];
             expert_weights[t] = s_top_vals[t] * scaling_factor;
         }
@@ -155,6 +162,13 @@ extern "C" __global__ void moe_topk_sigmoid_batched(
     float* my_weights = expert_weights + token * top_k;
 
     unsigned int actual_n = num_experts < MAX_EXPERTS ? num_experts : MAX_EXPERTS;
+    // Defence in depth against a `top_k` larger than the shared-memory arrays.
+    // The authoritative check is host-side and refuses to build the layer
+    // (`MoeLayer::new` / `NemotronMoeLayer::new`), so this bound is unreachable
+    // in a booted model; it exists so a config that slipped past truncates
+    // rather than writing off the end of `s_top_vals`/`s_top_idxs` into
+    // `s_warp_val`. Mirrors `moe_hash_route.cu`'s `t < top_k && t < MAX_TOP_K`.
+    const unsigned int top_k_c = top_k < MAX_TOP_K ? top_k : MAX_TOP_K;
     for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
         float logit = __bfloat162float(my_gate[i]);
         float sig = 1.0f / (1.0f + __expf(-logit));
@@ -167,7 +181,7 @@ extern "C" __global__ void moe_topk_sigmoid_batched(
     }
     __syncthreads();
 
-    for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+    for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
         float local_max = -1e30f;
         unsigned int local_idx = 0;
         for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
@@ -177,11 +191,15 @@ extern "C" __global__ void moe_topk_sigmoid_batched(
                 local_idx = i;
             }
         }
+        // Same lower-index-wins tie-break as the single-token kernel above.
+        // Without it the two disagreed on an exact tie, so one model's decode
+        // and its batched prefill/verify could route a token to different
+        // experts for identical logits.
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
             float other_val = __shfl_down_sync(0xFFFFFFFF, local_max, offset);
             unsigned int other_idx = __shfl_down_sync(0xFFFFFFFF, local_idx, offset);
-            if (other_val > local_max) {
+            if (other_val > local_max || (other_val == local_max && other_idx < local_idx)) {
                 local_max = other_val;
                 local_idx = other_idx;
             }
@@ -195,7 +213,7 @@ extern "C" __global__ void moe_topk_sigmoid_batched(
             float best_val = s_warp_val[0];
             unsigned int best_idx = s_warp_idx[0];
             for (unsigned int w = 1; w < num_warps; w++) {
-                if (s_warp_val[w] > best_val) {
+                if (s_warp_val[w] > best_val || (s_warp_val[w] == best_val && s_warp_idx[w] < best_idx)) {
                     best_val = s_warp_val[w];
                     best_idx = s_warp_idx[w];
                 }
@@ -209,18 +227,18 @@ extern "C" __global__ void moe_topk_sigmoid_batched(
 
     if (tid == 0) {
         float topk_sum = 0.0f;
-        for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+        for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
             unsigned int idx = s_top_idxs[t];
             float w = s_sigmoid[idx];
             s_top_vals[t] = w;
             topk_sum += w;
         }
         if (normalize && topk_sum > 1e-20f) {
-            for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+            for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
                 s_top_vals[t] /= topk_sum;
             }
         }
-        for (unsigned int t = 0; t < top_k && t < actual_n; t++) {
+        for (unsigned int t = 0; t < top_k_c && t < actual_n; t++) {
             my_indices[t] = s_top_idxs[t];
             my_weights[t] = s_top_vals[t] * scaling_factor;
         }

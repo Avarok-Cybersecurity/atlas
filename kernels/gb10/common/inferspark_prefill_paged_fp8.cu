@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// ldmatrix-enabled rebuild (header content change forces kernel cache miss)
 
 // Paged Prefill Flash Attention — FP8 E4M3 KV cache variant.
 //
@@ -15,42 +16,54 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
     return __float2bfloat16(v);
 }
 
-// FP8-smem occupancy variant (NVIDIA GB10, FP8-KV, HDIM=256): keep K/V in
-// shared memory as raw E4M3 bytes and dequant in-register before each MMA,
-// halving smem_K + smem_V so 2 CTAs/SM fit. Output is bit-identical to the
-// BF16-smem path (same fp8_to_bf16 + k_scale/v_scale). Comment out this
-// define to revert to BF16-smem dequant-on-load.
-// GATED 2026-06-28 (dgx1): bit-identical (cosine 1.0) + occupancy 1->2 CTAs/SM
-// CONFIRMED via ncu, BUT per-attn-layer prefill time UNCHANGED (~18ms cold,
-// warm 360 vs 350ms baseline) => occupancy-NEUTRAL, attention is per-warp
-// dependency-latency bound (QK->softmax->PV), not occupancy bound. Disabled on
-// the serving path (no speed win); code kept validated for a future larger-BR
-// retile that USES the freed ~25KB smem. See MMQ_PORT_HANDOFF.md.
-// #define ATLAS_ATTN_FP8_SMEM
+// FP8-smem + cp.async pipelining (Lever #2, 2026-07-19): K/V kept in shared
+// memory as raw E4M3 bytes (__nv_fp8_storage_t, halving smem_K + smem_V) and
+// dequantized in-register before each MMA. Tile loads use cp.async (16 FP8
+// elements per atlas_cp16) so KV-load latency is hidden behind QK^T compute
+// of the previous tile — the synchronous fp8→bf16 dequant that made FP8 KV
+// 10% SLOWER than BF16 is now deferred to the register read. The in-register
+// dequant uses the same fp8_to_bf16 + k_scale/v_scale as the original sync
+// path, making the MMA operands (and therefore the kernel output) bit-identical.
+// See also: inferspark_prefill_paged_bf16k_turbo4v.cu (BF16 cp.async pattern).
+#define ATLAS_ATTN_FP8_SMEM
 
-// FP8 tile loader: manual load + dequant + store to smem.
-// cache_stride is in FP8 elements (1 byte each).
+// FP8 tile loader: cp.async copy of raw E4M3 bytes into fp8-storage smem.
+// 16 FP8 elements (16 bytes) per atlas_cp16, matching the 16-byte transaction
+// size. Dequant is deferred to in-register MMA read (ATLAS_ATTN_FP8_SMEM path
+// in prefill_paged_compute.cuh uses fp8x2_to_*_bits). OOB rows (pos >= kv_len)
+// are zeroed synchronously (uint4) — safe because the committed cp.async group
+// covers only valid-row entries. cache_stride is in FP8 elements (1 byte each).
+//
+// ALIGNMENT (2026-07-19 fix): FP8-smem elements are 1 byte, so the row stride
+// HDIM_PAD must itself be 16-aligned for the 16-byte atlas_cp16 and uint4
+// stores. With the default PAD_KV=8 → HDIM_PAD=264 → 264 mod 16 = 8 (odd rows
+// misaligned → silent cp.async misalignment fault, 1/8 tool-call coherence).
+// Override PAD_KV=16 → HDIM_PAD=272 → 272 mod 16 = 0 before including the
+// shared header (which is #ifndef-guarded so the override sticks). The BF16 /
+// NVFP4 paths don't define ATLAS_ATTN_FP8_SMEM, so they keep PAD_KV=8.
+#ifdef ATLAS_ATTN_FP8_SMEM
+#define PAD_KV 16
+#endif
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
     do { \
-        const unsigned int _cpr = HDIM / 8; \
-        for (unsigned int _i = t; _i < TILE_CHUNKS; _i += (stride)) { \
-            unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
+        const unsigned int _cpr = HDIM / 16; \
+        for (unsigned int _i = t; _i < TILE_CHUNKS / 2; _i += (stride)) { \
+            unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 16; \
             unsigned int _pos = (kv_s) + _row; \
             if (_pos < (kv_l)) { \
                 unsigned int _lb = _pos / cache_block_size; \
                 unsigned int _bo = _pos % cache_block_size; \
                 unsigned int _pb = (unsigned int)(bt)[_lb]; \
-                const __nv_fp8_storage_t* _base = (const __nv_fp8_storage_t*)(cache) \
+                const void* _base = (const void*)( \
+                    (const __nv_fp8_storage_t*)(cache) \
                     + (unsigned long long)_pb * fp8_cache_stride \
                     + (unsigned long long)_bo * num_kv_heads * head_dim \
-                    + (unsigned long long)(kvh) * head_dim + _col; \
-                __nv_bfloat16 _v[8]; \
-                for (int _j = 0; _j < 8; _j++) \
-                    _v[_j] = fp8_to_bf16(_base[_j], dq_scale); \
-                *((uint4*)&(smem)[_row][_col]) = *((uint4*)_v); \
-            } else { *((uint4*)&(smem)[_row][_col]) = make_uint4(0,0,0,0); } \
+                    + (unsigned long long)(kvh) * head_dim + _col); \
+                atlas_cp16(&((__nv_fp8_storage_t(*)[HDIM_PAD])(smem))[_row][_col], _base); \
+            } else { \
+                *((uint4*)&((__nv_fp8_storage_t(*)[HDIM_PAD])(smem))[_row][_col]) = make_uint4(0,0,0,0); \
+            } \
         } \
-        /* No cp.async used; emit dummy commit so shared header's wait works */ \
     } while(0)
 
 #define KERNEL_NAME inferspark_prefill_paged_fp8
@@ -61,75 +74,9 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
     , const float k_scale \
     , const float v_scale \
     , const unsigned long long fp8_cache_stride
-#define KERNEL_PREAMBLE \
-    const float dq_scale = (K_cache == V_cache) ? k_scale : \
-        ((const void*)smem_Q == (const void*)smem_V ? v_scale : k_scale); \
-    /* This hack won't work; we need separate K/V dequant scales. */ \
-    /* Actually: dq_scale is set per LOAD_KV_TILE call via the cache ptr. */ \
-    /* For now, use a shared approach: k_scale for K loads, v_scale for V loads. */ \
-    /* The LOAD_KV_TILE macro captures `dq_scale` from scope. */ \
-    /* We'll set it before each load in the compute header... */ \
-    /* FIXME: For FP8, we need K and V to use different scales. */ \
-    /* Simple approach: the compute header loads K with dq_scale=k_scale, V with dq_scale=v_scale. */ \
-    (void)0;
-
-/* Problem: the shared compute header uses LOAD_KV_TILE for both K and V,
-   but FP8 needs different scales. Override with a scale-aware approach. */
-
-/* Actually, let me take a different approach. For FP8, the scale depends on
-   whether we're loading K or V. The compute header calls LOAD_KV_TILE with
-   K_cache for K tiles and V_cache for V tiles. We can use the cache pointer
-   to determine which scale to use. */
-
-#undef LOAD_KV_TILE
-#ifdef ATLAS_ATTN_FP8_SMEM
-// FP8-smem: copy raw E4M3 bytes into shared memory (8 bytes / chunk via uint2);
-// dequant is deferred to the in-register MMA read (fp8x2_to_*_bits). smem here
-// is __nv_fp8_storage_t, so a chunk of 8 elements is 8 bytes, not 16.
-#define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
-    do { \
-        const unsigned int _cpr = HDIM / 8; \
-        for (unsigned int _i = t; _i < TILE_CHUNKS; _i += (stride)) { \
-            unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
-            unsigned int _pos = (kv_s) + _row; \
-            if (_pos < (kv_l)) { \
-                unsigned int _lb = _pos / cache_block_size; \
-                unsigned int _bo = _pos % cache_block_size; \
-                unsigned int _pb = (unsigned int)(bt)[_lb]; \
-                const __nv_fp8_storage_t* _base = (const __nv_fp8_storage_t*)(cache) \
-                    + (unsigned long long)_pb * fp8_cache_stride \
-                    + (unsigned long long)_bo * num_kv_heads * head_dim \
-                    + (unsigned long long)(kvh) * head_dim + _col; \
-                *((uint2*)&(smem)[_row][_col]) = *((const uint2*)_base); \
-            } else { *((uint2*)&(smem)[_row][_col]) = make_uint2(0,0); } \
-        } \
-    } while(0)
-#else
-#define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
-    do { \
-        const float _sc = ((const void*)(cache) == (const void*)K_cache) ? k_scale : v_scale; \
-        const unsigned int _cpr = HDIM / 8; \
-        for (unsigned int _i = t; _i < TILE_CHUNKS; _i += (stride)) { \
-            unsigned int _row = _i / _cpr, _col = (_i % _cpr) * 8; \
-            unsigned int _pos = (kv_s) + _row; \
-            if (_pos < (kv_l)) { \
-                unsigned int _lb = _pos / cache_block_size; \
-                unsigned int _bo = _pos % cache_block_size; \
-                unsigned int _pb = (unsigned int)(bt)[_lb]; \
-                const __nv_fp8_storage_t* _base = (const __nv_fp8_storage_t*)(cache) \
-                    + (unsigned long long)_pb * fp8_cache_stride \
-                    + (unsigned long long)_bo * num_kv_heads * head_dim \
-                    + (unsigned long long)(kvh) * head_dim + _col; \
-                __nv_bfloat16 _v[8]; \
-                for (int _j = 0; _j < 8; _j++) \
-                    _v[_j] = fp8_to_bf16(_base[_j], _sc); \
-                *((uint4*)&(smem)[_row][_col]) = *((uint4*)_v); \
-            } else { *((uint4*)&(smem)[_row][_col]) = make_uint4(0,0,0,0); } \
-        } \
-    } while(0)
-#endif
-
-#undef KERNEL_PREAMBLE
+// KERNEL_PREAMBLE: empty — ATLAS_ATTN_FP8_SMEM path defers fp8→bf16 dequant
+// to in-register MMA reads (fp8x2_to_*_bits in prefill_paged_compute.cuh), so
+// no load-time dq_scale is needed on the host side.
 #define KERNEL_PREAMBLE /* nothing */
 
 #include "prefill_paged_compute.cuh"

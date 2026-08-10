@@ -44,7 +44,12 @@ import os
 import sys
 
 MANIFEST_NAME = "_manifest.json"
-BASELINE_DIR = os.path.join(os.path.dirname(__file__), "baselines")
+
+# SSOT: the same module run_all_models.py writes from, so the reader and the
+# writer cannot drift onto different checkouts. --results-dir/--baseline-dir
+# still override.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harness_paths import BASELINE_DIR, RESULTS_DIR  # noqa: E402
 
 # ── Per-model bars (PCND: explicit, rationale inline) ────────────────────────
 COHERENCE_MIN_PASS = 2   # of 3 probes (factual + reasoning + creative); >=2 tolerates
@@ -184,6 +189,17 @@ def _score_one(label, name, result, baseline_dir, require_baseline):
     return bars, note
 
 
+def has_any_baseline(baseline_dir):
+    """True iff at least one blessed `<label>.json` tps baseline is committed.
+
+    With none, TPS_TOLERANCE has nothing to compare against and the tps bar
+    degrades to liveness (tps>0) for every model — an image that serves at a
+    fraction of its blessed speed still passes. The gate must SAY that rather
+    than print a green that reads as "throughput was checked".
+    """
+    return bool(glob.glob(os.path.join(baseline_dir, "*.json")))
+
+
 def load_manifest(results_dir, manifest_path):
     """Return the planned [(label, model)] roster, or None if no manifest."""
     path = manifest_path or os.path.join(results_dir, MANIFEST_NAME)
@@ -281,7 +297,7 @@ def update_baselines(results_dir, roster, baseline_dir):
 
 def main():
     ap = argparse.ArgumentParser(description="Serve-matrix release gate (exit 0=ship, 1=block).")
-    ap.add_argument("--results-dir", default=os.path.join(os.path.dirname(__file__), "all_models_results"),
+    ap.add_argument("--results-dir", default=RESULTS_DIR,
                     help="dir of per-model single_gpu_suite.py JSON outputs")
     ap.add_argument("--manifest", default=None,
                     help=f"path to the run manifest (default <results-dir>/{MANIFEST_NAME})")
@@ -303,6 +319,14 @@ def main():
         return 1
 
     roster = load_manifest(args.results_dir, args.manifest)
+
+    if not args.update_baselines and not has_any_baseline(args.baseline_dir):
+        print(f"[gate] WARNING: no tps baselines committed in {args.baseline_dir} — the "
+              f"tokens/sec REGRESSION bar is INERT. Every model is checked for LIVENESS "
+              f"ONLY (tps>0), so an image that serves far below its blessed speed still "
+              f"passes this gate. Bless with --update-baselines, or pass "
+              f"--require-baselines to make the missing baseline a hard fail.",
+              file=sys.stderr)
 
     if args.update_baselines:
         written = update_baselines(args.results_dir, roster, args.baseline_dir)

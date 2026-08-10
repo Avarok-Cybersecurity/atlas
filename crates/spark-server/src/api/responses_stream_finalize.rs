@@ -124,7 +124,7 @@ pub(super) async fn close_open_items(
             role: "assistant",
             content: vec![crate::openai::ResponsesContentPart::OutputText {
                 text: ctx.content_text.to_string(),
-                annotations: crate::citation::merged_annotations(ctx.content_text),
+                annotations: crate::openai::merged_annotations(ctx.content_text),
             }],
         };
         completed_items.push(done.clone());

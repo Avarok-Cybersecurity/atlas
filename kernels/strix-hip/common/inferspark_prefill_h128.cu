@@ -42,8 +42,9 @@ __device__ __forceinline__ float sw_exp_h(float x) {
 
 // Shared body macro: one block computes BR query rows over the full KV range.
 // BLK = block-row count (32). Entry-specific only in launch dims; the AMD
-// build clamps the 64-row variant to 32 rows (compile-only — never dispatched
-// on AMD per force_br32_prefill).
+// build clamps the 64-row variant to 32 rows. That variant IS still dispatched
+// on AMD — the host picks it on chunk length alone — and the host grid stride
+// is clamped to match by cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs.
 #define INFERSPARK_H128_BODY(BLK)                                                      \
     const unsigned int q_head = blockIdx.x;                                            \
     const unsigned int q_block = blockIdx.y;                                           \
@@ -118,11 +119,11 @@ __device__ __forceinline__ float sw_exp_h(float x) {
             for (unsigned int ks = 0; ks < WMMA_K_STEPS; ks++) {                       \
                 unsigned int k_off = ks * K16;                                         \
                 v16bf a;                                                               \
-                for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_Q[qk_m + lane_lo][k_off + i]; \
+                for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_Q[qk_m + lane_lo][k_off + i]; \
                 for (int nt = 0; nt < QK_N_TILES; nt++) {                              \
                     unsigned int key_row = nt * 16 + lane_lo;                          \
                     v16bf bb;                                                          \
-                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)smem_K[key_row][k_off + k]; \
+                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)(float)smem_K[key_row][k_off + k]; \
                     acc_s[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_s[nt]); \
                 }                                                                      \
             }                                                                          \
@@ -156,11 +157,11 @@ __device__ __forceinline__ float sw_exp_h(float x) {
             for (unsigned int ks = 0; ks < PV_K_STEPS; ks++) {                         \
                 unsigned int k_off = ks * K16;                                         \
                 v16bf a;                                                               \
-                for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_P[pv_warp_m + lane_lo][k_off + i]; \
+                for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_P[pv_warp_m + lane_lo][k_off + i]; \
                 for (int nt = 0; nt < PV_N_TILES; nt++) {                              \
                     unsigned int d_col = (pv_n_start + nt) * 16 + lane_lo;             \
                     v16bf bb;                                                          \
-                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)smem_V[k_off + k][d_col]; \
+                    for (int k = 0; k < 16; k++) bb[k] = (__bf16)(float)smem_V[k_off + k][d_col]; \
                     acc_o[nt] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, bb, acc_o[nt]); \
                 }                                                                      \
             }                                                                          \
@@ -197,8 +198,11 @@ extern "C" __global__ void inferspark_prefill_h128(
     INFERSPARK_H128_BODY(BR)
 }
 
-// BR=64 variant — clamped to BR=32 on AMD (compile-only; force_br32_prefill
-// routes all dispatch to the BR=32 entry). 256-thread launch uses only warps
+// BR=64 variant — clamped to BR=32 on AMD. It is still dispatched there (no
+// `force_br32_prefill` routing ever existed; that HARDWARE.toml key had no
+// reader and has been removed), so the host grid must use the same 32-row
+// stride — see cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs.
+// 256-thread launch uses only warps
 // 0-3 (the `warp_id >= 4` guard in the body returns the rest).
 extern "C" __global__ void inferspark_prefill_h128_64(
     const __nv_bfloat16* __restrict__ Q,

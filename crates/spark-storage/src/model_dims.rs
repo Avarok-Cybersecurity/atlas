@@ -15,4 +15,12 @@ pub struct ModelDims {
     pub num_kv_heads: u16,
     pub head_dim: u16,
     pub block_size: u16,
+    /// Config-derived model fingerprint (spark-model's `ModelFingerprint`,
+    /// KV convention `derive_kv`: blob_bytes = 0) — the per-model identity
+    /// the KV paging namespace folds (`kv_paging::ns::derive_kv_ns`) so two
+    /// models sharing one paging peer can never collide. `None` when the
+    /// loader could not derive one (or in geometry-only tests/benches);
+    /// `ATLAS_KV_PAGING=1` then fails fast at connect unless
+    /// `ATLAS_KV_PAGING_NS` is set explicitly. Unread on every other path.
+    pub model_fp: Option<std::num::NonZeroU64>,
 }

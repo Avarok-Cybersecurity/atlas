@@ -154,8 +154,15 @@ pub fn dump_expert_load(
     if !enabled() {
         return;
     }
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
+    // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+    // value — the message is rebuilt from the arguments every call — so a
+    // stale entry cannot produce a wrong answer, only a suppressed duplicate
+    // line after a model swap. Scoping it would thread a logging concern
+    // through the call path to prevent one repeated INFO line.
+    // Backend-scoped latch: `dump_expert_load` holds a `GpuBackend` and
+    // nothing else, and a `static Once` meant only the first model ever
+    // dumped its expert load.
+    if gpu.op_cache().once("dump:moe_expert_load") {
         if gpu.synchronize(stream).is_err() {
             return;
         }
@@ -182,7 +189,7 @@ pub fn dump_expert_load(
             kernel_max,
             max_cnt > kernel_max
         );
-    });
+    }
 }
 
 /// Dump the routed-only MoE output buffer (= post-unpermute_reduce,

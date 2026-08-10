@@ -51,7 +51,6 @@ extern "C" __global__ void rope_forward_mrope_interleaved(
 
     const bool is_q = (head_idx < num_q_heads);
     const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
-    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
 
     if (!is_q && head >= num_kv_heads) return;
 

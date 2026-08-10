@@ -422,4 +422,5 @@ mod init;
 #[cfg(test)]
 mod mod_tests;
 mod ptr_table_build;
+mod union_stats;
 pub(crate) use ptr_table_build::*;

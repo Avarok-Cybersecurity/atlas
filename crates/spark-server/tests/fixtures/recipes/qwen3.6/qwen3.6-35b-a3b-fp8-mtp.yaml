@@ -1,0 +1,68 @@
+recipe_version: "2"
+model: Qwen/Qwen3.6-35B-A3B-FP8
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    THE FLAGSHIP. Qwen3.6-35B-A3B (qwen3_5_moe architecture) at native FP8
+    on the Atlas runtime: bf16 lm-head (full-precision 248K-vocab logit
+    projection), bf16 KV cache, 64K context, MTP K=2 speculative decoding,
+    live-streamed tool-call argument deltas. Single GB10 (~109 of 119.7 GB).
+
+    Config rationale (gate-measured, opencode webserver_ok harness, N=10):
+      - bf16 lm-head: ws_ok 10/10, tightest wall distribution of the
+        lm-head dtype A/B (vs nvfp4/fp8 heads, 2026-06-07).
+      - bf16 KV: faster (~2-3%) AND higher quality than calibrated fp8 KV
+        at agentic lengths; fp8 KV is a memory-only lever for ~128K.
+      - Re-verified post --lm-head-dtype merge 2026-06-09: 10/10 ws_ok,
+        10/10 followed_directions.
+  maintainer: avarok
+  category: agent
+  model_params: 35B
+  model_dtype: fp8
+  quantization: fp8
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  # 64K with bf16 KV fits next to the FP8 weights on one GB10 (~109/119.7
+  # GB, live-validated 2026-06-09 incl. streaming tool calls).
+  max_model_len: 65536
+  # max_batch_size 2: REQUIRED until Avarok-Cybersecurity/atlas#110 lands —
+  # an uncapped batch hits the concurrency>=4 + deep-context CUDA-700 crash
+  # (re-confirmed live 2026-06-11 at n_decode=2 + n_prefill=2, ~8.5K ctx).
+  # The old warning here against capping (SSM slot-leak on aborted deep
+  # prefill) is obsolete: that slot leak was fixed (slot-release-first
+  # ordering in free_sequence). The cap also matches the gate-measured
+  # fast path (mixed-batch scheduling overhead avoided).
+  max_batch_size: 2
+  # Single-chunk prefill up to 32K: chunked (4096) prefill is slower and
+  # was the surface of the warm-turn suffix-token bug fixed in atlas#156.
+  # Prompts >32K still chunk safely.
+  max_prefill_tokens: 32768
+  kv_cache_dtype: bf16
+  kv_high_precision_layers: auto
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  speculative: true
+  mtp_quantization: bf16
+  # Prefix caching: the warm-restore corruption (atlas#155) is fixed in
+  # atlas#156 (warm-turn suffix tokens, decode-ckpt registration
+  # off-by-one, snapshot eviction inversion, finish-leaf commit race).
+  # Gate 2026-06-11: webserver_ok 10/10, zero path-drift, median run
+  # ~125s with caching ON + MTP K=2 (image digest 637e7b32).
+  enable_prefix_caching: true
+  # ssm_cache_slots MUST be pinned: the Marconi slot pool is an LRU region and
+  # the built-in default (16) churns under multi-turn agentic load (~4-6 snapshot
+  # saves/turn at 17k ctx) — the fresh tail/leaf checkpoint gets evicted before the
+  # next turn's lookup ("Prefix cache hit: N tokens but no SSM snapshot" → full SSM
+  # recompute, warm TTFT 15s+). Diagnosed 2026-07-02 (webserver_ok gate, snapshot-id
+  # recycling 10/13/13/10 in the serve log). 256 holds a full session comfortably.
+  ssm_cache_slots: 256
+  # bf16 lm-head: the 248K-vocab projection stays full-precision (the
+  # single largest per-token weight read). Argmax over the vocab is exact.
+  lm_head_dtype: bf16
+  oom_guard_mb: 1024

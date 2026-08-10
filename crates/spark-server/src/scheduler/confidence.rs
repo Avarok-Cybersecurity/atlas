@@ -6,8 +6,6 @@
 //! gate; they are pure parity/accumulator functions, unit-tested
 //! directly without any `ActiveSeq` / logits mocking.
 
-use super::helpers::watchdog_params;
-
 /// Flip `in_fence` when the just-sampled token `tok` is the model's
 /// atomic ``` code-fence token. `fence_tok == None` (tokenizer has no
 /// single fence token) disables the guard: the fence state can never
@@ -25,7 +23,8 @@ pub fn toggle_code_fence(in_fence: bool, tok: u32, fence_tok: Option<u32>) -> bo
 
 /// `CONFIDENCE_RUN_LIMIT` is the default streak length before F2's
 /// confidence-early-stop arms `</think>`. The live limit is
-/// `watchdog_params().confidence_run_length` (MODEL.toml-tunable).
+/// `WatchdogParams::confidence_run_length` (MODEL.toml-tunable), passed in
+/// by the caller.
 ///
 /// 2026-05-23 sweep: 30 → 60. With the project-wide `max_thinking_budget`
 /// bump to 2048 reasoning chains genuinely span hundreds of tokens, and
@@ -46,10 +45,10 @@ pub const CONFIDENCE_RUN_LIMIT: u32 = 60;
 /// must NOT happen is the forced `</think>` landing mid-statement —
 /// that boundary decision is [`should_inject_think_end`] below, which
 /// defers the injection until the fence closes (a safe boundary).
-pub fn confidence_run_step(confident: bool, prev_run: u32) -> (u32, bool) {
+pub fn confidence_run_step(confident: bool, prev_run: u32, run_limit: u32) -> (u32, bool) {
     if confident {
         let run = prev_run + 1;
-        (run, run >= watchdog_params().confidence_run_length)
+        (run, run >= run_limit)
     } else {
         (0, false)
     }
@@ -87,7 +86,7 @@ pub const MAX_SENTENCE_DEFER_TOKENS: u32 = 64;
 ///    code is finite, brake fires after the closing ```.
 /// 2. **Sentence-boundary defer** (2026-05-23): outside a fence, wait
 ///    until the previously-emitted token is a sentence boundary
-///    (`.`/`!`/`?`/`\n`, per [`crate::scheduler::helpers::boundary_token_mask`]).
+///    (`.`/`!`/`?`/`\n`, per `VocabMasks::boundary`).
 /// 3. **`hard_override`** caller-computed escape hatch: when thinking
 ///    overran the budget by [`THINK_DEFER_BUDGET_FACTOR`]× / hit
 ///    [`THINK_DEFER_ABS_CEILING`] / has been deferring for

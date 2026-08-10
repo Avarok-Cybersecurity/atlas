@@ -5,105 +5,75 @@ use axum::response::{IntoResponse, Response, Sse};
 use futures::StreamExt;
 
 use super::translator::*;
-/// Translate an OpenAI SSE response into Anthropic's structured event
-/// stream, **per-chunk**: each OpenAI `data: {…}` line that arrives
-/// produces zero or more Anthropic events emitted to the client
-/// before the next OpenAI chunk is processed.
-///
-/// Implementation: spawn a tokio task that consumes the inner body's
-/// `Bytes` stream, splits on `\n\n` event boundaries, parses the
-/// `data:` payload as JSON, and feeds it through
-/// `AnthropicTranslator::process_openai_chunk`. The translator's
-/// emitted events are sent down an `mpsc` channel that's wrapped as
-/// a `ReceiverStream` and handed to axum's `Sse::new` — the same
-/// pattern api.rs uses for its own SSE response.
-pub(super) async fn wrap_chat_sse_for_anthropic(
-    chat_resp: Response,
-    req_model: String,
-) -> Response {
-    let (parts, body) = chat_resp.into_parts();
-    if !parts.status.is_success() {
-        // Forward error envelope verbatim, status preserved.
-        return Response::from_parts(parts, body);
-    }
 
-    // Match the OpenAI chat_stream sizing — see chat_stream/mod.rs for rationale.
+/// Encode the pipeline's neutral delta stream as Anthropic's structured
+/// SSE event stream, **per-delta**: each `ir::StreamDelta` produces zero
+/// or more Anthropic events emitted to the client before the next delta
+/// is processed. (This replaces the old wrapper that re-parsed the
+/// serialized OpenAI SSE bytes chunk-by-chunk — one fewer serialize/
+/// parse round-trip and one fewer protocol to drift against.)
+///
+/// `dump` (--dump seq + writer handle) captures the response in
+/// Anthropic shape: the typed events are aggregated as they are sent
+/// and written as one `stream: true` entry when the stream ends.
+pub(super) fn anthropic_sse_from_deltas(
+    deltas: crate::ir::DeltaStream,
+    req_model: String,
+    dump: Option<(u64, crate::request_dumper::DumpHandle)>,
+) -> Response {
+    // Match the chat_stream sizing — see chat_stream/mod.rs for rationale.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(1024);
 
     tokio::spawn(async move {
         let mut translator = AnthropicTranslator::new(req_model);
-        let mut buf = String::new();
-        let mut data_stream = body.into_data_stream();
-        let mut pending: Vec<Event> = Vec::new();
+        let mut pending: Vec<SseEvent> = Vec::new();
+        let mut deltas = deltas;
+        // --dump: aggregate the typed events (event name + JSON data)
+        // so the dump entry records the exact Anthropic wire framing.
+        let mut captured: Option<Vec<serde_json::Value>> = dump.as_ref().map(|_| Vec::new());
 
-        // Inner helper: drain `pending` into the channel. Returns
-        // `false` when the receiver has hung up — caller should
-        // abort.
+        // Drain `pending` into the channel, converting each typed
+        // `SseEvent` to an axum wire event (and capturing it for the
+        // --dump entry when enabled). Returns `false` when the receiver
+        // has hung up — caller should abort.
         async fn flush(
             tx: &tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>,
-            pending: &mut Vec<Event>,
+            pending: &mut Vec<SseEvent>,
+            captured: &mut Option<Vec<serde_json::Value>>,
         ) -> bool {
             for ev in pending.drain(..) {
-                if tx.send(Ok(ev)).await.is_err() {
+                if let Some(events) = captured {
+                    events.push(serde_json::json!({"event": ev.event, "data": ev.data}));
+                }
+                if tx.send(Ok(ev.to_axum_event())).await.is_err() {
                     return false;
                 }
             }
             true
         }
 
-        while let Some(chunk_res) = data_stream.next().await {
-            let chunk = match chunk_res {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!("anthropic stream: inner body error: {e}");
-                    break;
-                }
-            };
-            buf.push_str(&String::from_utf8_lossy(&chunk));
-
-            // Process any complete `data: {…}\n\n` records.
-            while let Some(boundary) = buf.find("\n\n") {
-                let raw_record: String = buf.drain(..boundary + 2).collect();
-                for line in raw_record.lines() {
-                    let payload = match line.strip_prefix("data:") {
-                        Some(s) => s.trim(),
-                        None => continue,
-                    };
-                    if payload.is_empty() || payload == "[DONE]" {
-                        continue;
-                    }
-                    let val: serde_json::Value = match serde_json::from_str(payload) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    translator.process_openai_chunk(&val, &mut pending);
-                }
-                if !flush(&tx, &mut pending).await {
-                    return;
-                }
+        let mut aborted = false;
+        while let Some(delta) = deltas.next().await {
+            translator.on_delta(&delta, &mut pending);
+            if !flush(&tx, &mut pending, &mut captured).await {
+                aborted = true;
+                break;
             }
         }
 
-        // Final flush: drain any tail bytes (no trailing `\n\n`) and
-        // ensure message_stop fires even if upstream omitted
-        // finish_reason.
-        if !buf.is_empty() {
-            for line in buf.lines() {
-                let payload = match line.strip_prefix("data:") {
-                    Some(s) => s.trim(),
-                    None => continue,
-                };
-                if payload.is_empty() || payload == "[DONE]" {
-                    continue;
-                }
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(payload) {
-                    translator.process_openai_chunk(&val, &mut pending);
-                }
+        if !aborted {
+            // Ensure message_stop fires even if the stream ended without
+            // a Finish delta.
+            translator.finalize(&mut pending);
+            if !flush(&tx, &mut pending, &mut captured).await {
+                tracing::warn!("anthropic stream: final flush failed (receiver dropped)");
             }
         }
-        translator.finalize(&mut pending);
-        if !flush(&tx, &mut pending).await {
-            tracing::warn!("anthropic stream: final flush failed (receiver dropped)");
+
+        // --dump: write the aggregated Anthropic event list under the
+        // request's seq (partial when the client hung up mid-stream).
+        if let (Some((seq, writer)), Some(events)) = (dump, captured) {
+            writer.dump_response("/v1/messages", seq, &events, true);
         }
     });
 

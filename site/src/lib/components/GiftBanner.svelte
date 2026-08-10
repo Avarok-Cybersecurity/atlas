@@ -9,5 +9,6 @@
     </svg>
     <span class="gift-line">{gifts.line}</span>
     <span class="gift-sub">{gifts.sub}</span>
+    <a class="gift-cta" href={gifts.ctaUrl} target="_blank" rel="noopener">{gifts.ctaText} ↗</a>
   </div>
 </div>

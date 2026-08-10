@@ -24,34 +24,12 @@
 //! per-step diff localizes whether a divergence is the model (raw_topk
 //! differs) or an Atlas processor (raw_topk matches but `bias` flips it).
 
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
-use std::sync::{Mutex, OnceLock};
+use std::io::Write;
 
-static DUMP: OnceLock<Option<Mutex<BufWriter<File>>>> = OnceLock::new();
-
-fn writer() -> Option<&'static Mutex<BufWriter<File>>> {
-    DUMP.get_or_init(|| {
-        let path = std::env::var("ATLAS_LOGIT_DUMP").ok()?;
-        if path.is_empty() {
-            return None;
-        }
-        match OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(f) => Some(Mutex::new(BufWriter::new(f))),
-            Err(e) => {
-                tracing::error!("ATLAS_LOGIT_DUMP: cannot open {path}: {e}");
-                None
-            }
-        }
-    })
-    .as_ref()
-}
-
-/// Whether `ATLAS_LOGIT_DUMP` is active (used to skip the per-step bias
-/// clone in the hot path when dumping is off).
-pub(crate) fn enabled() -> bool {
-    writer().is_some()
-}
+// The appender is `SchedCtx::dumps.logits`, opened when the run starts.
+// The `OnceLock` here cached the DECISION as well as the handle: a run
+// started with the env unset poisoned the slot with `None`, so no later run
+// in that process could dump however the environment changed.
 
 /// Returns the top-`k` (index, logit) pairs by logit, descending.
 fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
@@ -74,6 +52,7 @@ fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
 /// Append one per-step record. No-op unless `ATLAS_LOGIT_DUMP` is set.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record(
+    sink: &std::sync::Mutex<std::io::BufWriter<std::fs::File>>,
     step: usize,
     in_body: bool,
     chars: usize,
@@ -81,9 +60,7 @@ pub(crate) fn record(
     bias: &[(u32, f32)],
     sampled: u32,
 ) {
-    let Some(w) = writer() else {
-        return;
-    };
+    let w = sink;
     const K: usize = 12;
     let raw_topk = top_k(raw_logits, K);
     // Post-bias argmax (additive part only).

@@ -3,21 +3,53 @@
 //! Phase 5-7 of `Qwen3SsmLayer::decode_batched_inner`: Conv1d + L2 norm +
 //! GDN per-token (with intermediate checkpoints). Extracted from
 //! `trait_decode_batched.rs` to keep the parent file under 500 LoC.
-//! Dispatches one of the fused K=2/3/4/17 paths or the sequential
-//! per-token fallback. All buffers + state are owned by the caller; this
+//! Dispatches one of the fused K=2/3/4 paths, the pool-layout WY arm
+//! (K∈{5..8} chain verify and K=17 DFlash — see
+//! `trait_decode_batched_conv_gdn_wyn.rs`), or the sequential per-token
+//! fallback. All buffers + state are owned by the caller; this
 //! function only mutates `ssm_state.h_state`, `ssm_state.conv_state`,
 //! their intermediates, `conv_out_buf`, and `gdn_out_buf`.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
-/// Diagnostic kill-switch: `ATLAS_GDN_WY17=0` forces the K=17 verify off the
-/// fused wy17 arm (BF16 conv + WY-chunkwise GDN) onto the sequential
-/// per-token fallback (FP32 conv + gdn_decode — the numerics closest to
-/// single-token decode). MUCH slower; for greedy-losslessness bisection only.
-fn wy17_enabled() -> bool {
+// The `OnceLock<bool>` static that lived here is now a field on
+// `layers::ops::ModelLevers` — resolved when the model is built and carried
+// on `ForwardContext`, because a static outlives the model whose flags it
+// encodes.
+
+/// Kill switch for the register-resident wy2 twin. PRESENCE check per the
+/// house convention (`ATLAS_NO_GDN_WY2_RESIDENT=0` is NOT off), read once
+/// per process.
+fn wy2_resident_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GDN_WY17").ok().as_deref() != Some("0"))
+    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GDN_WY2_RESIDENT").is_none())
+}
+
+/// Kill switch for the register-resident wy3 twin. Independent of wy2's so
+/// each lever attributes on its own A/B leg. PRESENCE check per the house
+/// convention (`=0` is NOT off), read once per process.
+fn wy3_resident_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GDN_WY3_RESIDENT").is_none())
+}
+
+/// Minimum verify batch width (sequences in the launch) for the
+/// register-resident wy twins (SSOT for wy2 AND wy3 — same
+/// `__launch_bounds__(128,1)` occupancy trade). The resident kernel is
+/// 1 block/SM by construction; for wy2, n=32 buys +22 tok/s (+9.6%,
+/// matched-out 256.2 vs 235.2) and C=16 matched-out measures +8.6 tok/s at
+/// n=16 (validator r1, 184.4 vs 175.8 @15882). The apparent -2 tok/s at
+/// n=8 that motivated this gate was later attributed to CROSS-BOOT NOISE
+/// (fixer r1: gated legs = the kill-leg dispatch by construction, yet read
+/// inside the resident-ON band; validator r1 concurred), so n < 16 is
+/// UNPROVEN either way, not a measured loss. 16 stays the floor because it
+/// is the smallest width validated on the winning side — and for wy3 it is
+/// exactly the 16:2 default rung's width (n=16 x k=3 rows) — below it the
+/// base kernel is dispatched (strictly free at wide widths, protective at
+/// narrow ones).
+fn wy_resident_min_width() -> usize {
+    16
 }
 
 use super::{Qwen3SsmLayer, SsmLayerState};
@@ -65,9 +97,182 @@ impl Qwen3SsmLayer {
             )
     }
 
+    /// Select the K=2 verify WY kernel: the register-resident twin
+    /// (`gated_delta_rule_wy2_resident`, Pass 2 served from registers —
+    /// 2R+2W -> 1R+2W of the 64KB/head FP32 state) when it is linked, the
+    /// head shape matches its compile-time k_dim (kd == vd == 128, the only
+    /// production GDN shape), the launch is WIDE enough to carry its
+    /// 1-block/SM occupancy (`n >= wy_resident_min_width()` — the wave-10
+    /// validator measured the resident kernel LOSING ~2 tok/s at n=8 while
+    /// buying +22 at n=32), and the kill switch is absent; the base
+    /// `gated_delta_rule_wy2` otherwise. Identical launch contract — call
+    /// sites (single-seq arm here with n=1, batched-verify arm in
+    /// `trait_decode_batched_conv_gdn_multi` with n=batch width) just swap
+    /// the handle, keeping this the ONE dispatch decision point. The choice
+    /// is a pure function of (shape, n, process-static handle/env), and
+    /// verify graphs are keyed by the slot vector (which fixes n), so it is
+    /// CUDA-graph-stable. Byte-identical numerics (bitwise parity leg in
+    /// gdn_wy_verify_microtest). The first dispatch of each arm logs WITH
+    /// the handle — try_kernel misses are a silent handle 0, so the ENGAGED
+    /// log is the resolution proof.
+    pub(super) fn wy2_kernel(
+        &self,
+        kd: usize,
+        vd: usize,
+        n: usize,
+    ) -> spark_runtime::gpu::KernelHandle {
+        let wide_enough = n >= wy_resident_min_width();
+        let eligible = kd == 128
+            && vd == 128
+            && wide_enough
+            && self.gdn_wy2_resident_k.0 != 0
+            && wy2_resident_enabled();
+        static LOGGED_ENGAGED: std::sync::Once = std::sync::Once::new();
+        static LOGGED_BASE: std::sync::Once = std::sync::Once::new();
+        // ATLAS_SSM_H_FP16 stage 2: under the flag the h-state in the pool is
+        // FP16, so the FP16 twin is the ONLY correct kernel — an FP32 twin
+        // here would read half-width data as floats and emit fluent garbage.
+        // Selection is otherwise identical (same residency/width/shape rules),
+        // which keeps this the one decision point per K. A zero handle is
+        // returned as zero on purpose: the call sites turn that into a hard
+        // error rather than a silent FP32 fallback.
+        if super::ssm_h_fp16_enabled() {
+            return if eligible && self.gdn_wy2_resident_f16_k.0 != 0 {
+                self.gdn_wy2_resident_f16_k
+            } else {
+                self.gdn_wy2_f16_k
+            };
+        }
+        if eligible {
+            LOGGED_ENGAGED.call_once(|| {
+                tracing::info!(
+                    "GDN wy2 REGISTER-RESIDENT ENGAGED (handle {:#x}, n={n}): K=2 verify \
+                     Pass 2 served from registers — state traffic 2R+2W -> 1R+2W; \
+                     width-gated n >= {}; kill switch ATLAS_NO_GDN_WY2_RESIDENT (presence)",
+                    self.gdn_wy2_resident_k.0,
+                    wy_resident_min_width(),
+                );
+            });
+            self.gdn_wy2_resident_k
+        } else {
+            LOGGED_BASE.call_once(|| {
+                tracing::info!(
+                    "GDN wy2 register-resident twin NOT engaged at this dispatch (kd={kd}, \
+                     vd={vd}, n={n} vs min width {}, handle {:#x}, kill_switch_present={}): \
+                     base gated_delta_rule_wy2 in use (wider K=2 launches re-decide)",
+                    wy_resident_min_width(),
+                    self.gdn_wy2_resident_k.0,
+                    !wy2_resident_enabled(),
+                );
+            });
+            self.gdn_wy2_k
+        }
+    }
+
+    /// Select the K=3 verify WY kernel: the register-resident twin
+    /// (`gated_delta_rule_wy3_resident`, Pass 2 served from registers —
+    /// 2R+3W -> 1R+3W of the 64KB/head FP32 state) under exactly the wy2
+    /// twin's conditions (kd == vd == 128, `n >= wy_resident_min_width()`,
+    /// handle linked, kill switch absent); base `gated_delta_rule_wy3`
+    /// otherwise. K=3 is the 16:2 default ladder rung's row shape (2 drafts
+    /// = 3 rows/seq — the +6% C=16 winner, 2026-07-30) and the 24:2/32:2
+    /// env rungs'; the 16:2 win was measured ON THE BASE wy3, so this twin
+    /// STACKS on it (the rung no longer forfeits the residency lever that
+    /// was wy2-only). Same ONE-decision-point / graph-stability / bitwise-
+    /// parity contract as `wy2_kernel` above; the ENGAGED log is the
+    /// try_kernel resolution proof.
+    pub(super) fn wy3_kernel(
+        &self,
+        kd: usize,
+        vd: usize,
+        n: usize,
+    ) -> spark_runtime::gpu::KernelHandle {
+        let wide_enough = n >= wy_resident_min_width();
+        let eligible = kd == 128
+            && vd == 128
+            && wide_enough
+            && self.gdn_wy3_resident_k.0 != 0
+            && wy3_resident_enabled();
+        static LOGGED_ENGAGED: std::sync::Once = std::sync::Once::new();
+        static LOGGED_BASE: std::sync::Once = std::sync::Once::new();
+        // ATLAS_SSM_H_FP16 stage 2 — see `wy2_kernel` for the rationale.
+        if super::ssm_h_fp16_enabled() {
+            return if eligible && self.gdn_wy3_resident_f16_k.0 != 0 {
+                self.gdn_wy3_resident_f16_k
+            } else {
+                self.gdn_wy3_f16_k
+            };
+        }
+        if eligible {
+            LOGGED_ENGAGED.call_once(|| {
+                tracing::info!(
+                    "GDN wy3 REGISTER-RESIDENT ENGAGED (handle {:#x}, n={n}): K=3 verify \
+                     Pass 2 served from registers — state traffic 2R+3W -> 1R+3W; \
+                     width-gated n >= {}; kill switch ATLAS_NO_GDN_WY3_RESIDENT (presence)",
+                    self.gdn_wy3_resident_k.0,
+                    wy_resident_min_width(),
+                );
+            });
+            self.gdn_wy3_resident_k
+        } else {
+            LOGGED_BASE.call_once(|| {
+                tracing::info!(
+                    "GDN wy3 register-resident twin NOT engaged at this dispatch (kd={kd}, \
+                     vd={vd}, n={n} vs min width {}, handle {:#x}, kill_switch_present={}): \
+                     base gated_delta_rule_wy3 in use (wider K=3 launches re-decide)",
+                    wy_resident_min_width(),
+                    self.gdn_wy3_resident_k.0,
+                    !wy3_resident_enabled(),
+                );
+            });
+            self.gdn_wy3_k
+        }
+    }
+
+    /// Select the K=4 verify WY kernel. There is no register-resident K=4
+    /// twin, so this is only ever the base kernel or — under
+    /// `ATLAS_SSM_H_FP16` — its FP16 h-state twin. K=4 is the widths-1..8
+    /// shape of the default ladder (`4:3,8:3,16:2,32:1`, 3 drafts = 4 rows),
+    /// i.e. exactly the low rungs the no-regression gate covers.
+    pub(super) fn wy4_kernel(&self) -> spark_runtime::gpu::KernelHandle {
+        if super::ssm_h_fp16_enabled() {
+            return self.gdn_wy4_f16_k;
+        }
+        self.gdn_wy4_k
+    }
+
+    /// Refuse to run the verify path with an FP16 pool and no FP16 kernel.
+    ///
+    /// The selectors above return handle 0 when the twin for this K did not
+    /// link, and every caller's existing reaction to a zero handle is to fall
+    /// back — to the base kernel, or to the sequential per-token loop. Both
+    /// fallbacks are FP32 readers, and an FP32 reader over an FP16 pool does
+    /// not fault: it reinterprets pairs of halves as floats and produces
+    /// plausible-looking, wrong numbers. That is the single silent failure
+    /// mode of this design, so it is converted into a boot-time-visible error
+    /// at the first verify dispatch instead. Preflight makes it unreachable in
+    /// a supported configuration; this is the backstop for the unsupported
+    /// ones.
+    pub(super) fn require_wy_f16(
+        &self,
+        kk: usize,
+        wy_k: spark_runtime::gpu::KernelHandle,
+    ) -> Result<()> {
+        if super::ssm_h_fp16_enabled() && wy_k.0 == 0 {
+            anyhow::bail!(
+                "ATLAS_SSM_H_FP16: no FP16 h-state twin resolved for the K={kk} MTP verify \
+                 WY kernel. Falling back to the FP32 kernel would read the FP16 pool as \
+                 floats and emit fluent garbage, so this refuses instead. Run without \
+                 --speculative, or unset ATLAS_SSM_H_FP16."
+            );
+        }
+        Ok(())
+    }
+
     /// Run conv1d_update_l2norm + GDN over `num_tokens` (multi-token decode
-    /// / MTP verify). Picks the K=2/3/4/17 fused WY path if available,
-    /// otherwise falls back to the sequential per-token gdn_decode loop.
+    /// / MTP verify). Picks the K=2/3/4, K∈{5..8} (wyN) or K=17 fused WY
+    /// path if available, otherwise falls back to the sequential per-token
+    /// gdn_decode loop.
     pub(super) fn decode_batched_conv_gdn(
         &self,
         ssm_state: &mut SsmLayerState,
@@ -117,12 +322,32 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                // Skip t == K-1: no reader exists, and that is ENFORCED, not
+                // merely argued. `commit_accepted_prefix` now bails on both
+                // `num_accepted == 0` and `num_accepted > k` and early-returns
+                // on `num_accepted == k`, so its reachable intermediate index
+                // is exactly [0, k-2] (async_chkpt.rs). The other two readers
+                // are bounded by their callers: `rollback_ssm_states` is only
+                // called from the self-spec path under
+                // `if a.seq.seq_len > expected_seq_len` (spec_step.rs:158),
+                // which means at least one draft was REJECTED, so
+                // `num_accepted + 1 <= K-1` and the index is <= K-2; and
+                // `start_rollback_and_checkpoint_async` is only ever called
+                // with 1..=K-1 (impl_a2.rs:450-509, spec_step.rs:340).
+                // DFlash cannot reach these branches at all: it dispatches
+                // only at `drafts.len() >= 4` (mtp_step.rs:308), i.e. verify
+                // width >= 5, which lands on K=17 or the sequential fallback,
+                // both of which still write every intermediate.
+                // Writing it cost a conv_bytes D2D per SSM layer per verify
+                // step for nothing (measured: 0.14% of decode GPU time).
+                if t + 1 < 4 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             // WY-chunkwise GDN: 2-pass algorithm for 4-token verification.
@@ -133,7 +358,7 @@ impl Qwen3SsmLayer {
             let beta_ptr = gates_buf.offset(nv * fp32);
             ops::gdn_decode_wy4(
                 ctx.gpu,
-                self.gdn_wy4_k,
+                self.wy4_kernel(),
                 ssm_state.h_state,
                 q_ptr,
                 k_ptr,
@@ -152,6 +377,7 @@ impl Qwen3SsmLayer {
                 conv_dim as u32, // qk_stride
                 conv_dim as u32, // v_stride
                 (nv * 2) as u32, // gb_stride
+                false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
         } else if num_tokens == 3 {
@@ -174,12 +400,15 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[t as usize],
-                    conv_bytes,
-                    stream,
-                )?;
+                // Skip t == K-1 (dead write — see the K=4 branch above).
+                if t + 1 < 3 {
+                    ctx.gpu.copy_d2d_async(
+                        ssm_state.conv_state,
+                        ssm_state.conv_state_intermediates[t as usize],
+                        conv_bytes,
+                        stream,
+                    )?;
+                }
             }
 
             let q_ptr = conv_out_buf;
@@ -189,7 +418,7 @@ impl Qwen3SsmLayer {
             let beta_ptr = gates_buf.offset(nv * fp32);
             ops::gdn_decode_wy3(
                 ctx.gpu,
-                self.gdn_wy3_k,
+                self.wy3_kernel(kd, vd, 1),
                 ssm_state.h_state,
                 q_ptr,
                 k_ptr,
@@ -207,6 +436,7 @@ impl Qwen3SsmLayer {
                 conv_dim as u32, // qk_stride
                 conv_dim as u32, // v_stride
                 (nv * 2) as u32, // gb_stride
+                false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
         } else if num_tokens == 2 {
@@ -235,12 +465,10 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[1],
-                    conv_bytes,
-                    stream,
-                )?;
+                // intermediates[1] (= K-1) is NOT written: the committed
+                // post-t1 window is already live in conv_state and the
+                // full-accept path early-returns without reading it. See the
+                // K=4 branch for the reader enumeration.
             } else {
                 let qkv_0 = deinterleaved;
                 let conv_out_0 = conv_out_buf;
@@ -283,12 +511,8 @@ impl Qwen3SsmLayer {
                     1e-6,
                     stream,
                 )?;
-                ctx.gpu.copy_d2d_async(
-                    ssm_state.conv_state,
-                    ssm_state.conv_state_intermediates[1],
-                    conv_bytes,
-                    stream,
-                )?;
+                // intermediates[1] (= K-1) is NOT written — dead write, see
+                // the K=4 branch for the reader enumeration.
             }
 
             let q_ptr = conv_out_buf;
@@ -298,7 +522,7 @@ impl Qwen3SsmLayer {
             let beta_ptr = gates_buf.offset(nv * fp32);
             ops::gdn_decode_wy2(
                 ctx.gpu,
-                self.gdn_wy2_k,
+                self.wy2_kernel(kd, vd, 1),
                 ssm_state.h_state,
                 q_ptr,
                 k_ptr,
@@ -315,110 +539,37 @@ impl Qwen3SsmLayer {
                 conv_dim as u32, // qk_stride
                 conv_dim as u32, // v_stride
                 (nv * 2) as u32, // gb_stride
+                false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
-        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && wy17_enabled() {
+        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && ctx.levers.gdn_wy17 {
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
             //
-            // Conv epilogue: single fused launch over all 17 positions when
-            // the kernel is present (writes every rollback snapshot inline —
-            // replaces 17 conv launches + 17 copy_d2d, each serialized on the
-            // in-place conv_state update at 1-token occupancy). Requires the
-            // pool-contiguous intermediates layout (slot-major, stride
-            // conv_bytes — same contiguity the WY17 GDN call below already
-            // assumes for h_state_intermediates). Kill-switch:
-            // ATLAS_GDN_FUSED_CONV17=0 restores the per-token loop for A/B.
-            let conv_inter_base = ssm_state.conv_state_intermediates[0];
-            let inter_contiguous = ssm_state
-                .conv_state_intermediates
+            // Shared pool-layout arm (fused conv_kn epilogue + one wy17
+            // launch) — body lives in trait_decode_batched_conv_gdn_wyn.rs,
+            // dispatched identically for the chain-verify K∈{5..8} widths
+            // below.
+            self.decode_batched_conv_gdn_wyn(ssm_state, ctx, args, self.gdn_wy17_k)?;
+        } else if let Some(wyn_k) = self.wyn_kernel(num_tokens, ctx.levers.gdn_wyn).filter(|_| {
+            // The wyN launch writes Hi_t at h_state_intermediates[0] +
+            // t*h_bytes — require the pool-contiguous layout it assumes
+            // (always true for ssm_pool slots); fail safe to the sequential
+            // fallback otherwise instead of corrupting memory.
+            let h_base = ssm_state.h_state_intermediates[0];
+            ssm_state
+                .h_state_intermediates
                 .iter()
-                .take(num_tokens)
+                .take(num_tokens - 1)
                 .enumerate()
-                .all(|(t, p)| p.0 == conv_inter_base.0 + (t * conv_bytes) as u64);
-            let fused_conv = self.gdn_verify_fused_conv_kn_k.0 != 0
-                && inter_contiguous
-                && !matches!(
-                    std::env::var("ATLAS_GDN_FUSED_CONV17").ok().as_deref(),
-                    Some("0")
-                );
-            if fused_conv {
-                ops::gdn_verify_fused_conv_kn(
-                    ctx.gpu,
-                    self.gdn_verify_fused_conv_kn_k,
-                    ssm_state.conv_state,
-                    deinterleaved,
-                    &self.ssm.conv1d,
-                    conv_out_buf,
-                    conv_inter_base,
-                    num_tokens as u32,
-                    conv_dim as u32,
-                    d_conv as u32,
-                    qk_ch,
-                    kd as u32,
-                    qkvz_size as u32, // input stride (BF16 elems between positions)
-                    conv_dim as u32,  // output stride (BF16 elems between positions)
-                    (conv_bytes / 4) as u32, // snapshot stride (FP32 elems)
-                    1e-6,
-                    stream,
-                )?;
-            } else {
-                for t in 0..(num_tokens as u32) {
-                    let qkv_t = deinterleaved.offset(t as usize * qkvz_size * bf16);
-                    let conv_out_t = conv_out_buf.offset(t as usize * conv_dim * bf16);
-                    ops::conv1d_update_l2norm(
-                        ctx.gpu,
-                        self.conv1d_l2norm_k,
-                        ssm_state.conv_state,
-                        qkv_t,
-                        &self.ssm.conv1d,
-                        conv_out_t,
-                        conv_dim as u32,
-                        d_conv as u32,
-                        1,
-                        qk_ch,
-                        kd as u32,
-                        1e-6,
-                        stream,
-                    )?;
-                    ctx.gpu.copy_d2d_async(
-                        ssm_state.conv_state,
-                        ssm_state.conv_state_intermediates[t as usize],
-                        conv_bytes,
-                        stream,
-                    )?;
-                }
-            }
-
-            let q_ptr = conv_out_buf;
-            let k_ptr = conv_out_buf.offset(key_dim * bf16);
-            let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
-            let gate_ptr = gates_buf;
-            let beta_ptr = gates_buf.offset(nv * fp32);
-            let inter_stride_floats = (h_bytes / 4) as u32;
-            ops::gdn_decode_wy17(
-                ctx.gpu,
-                self.gdn_wy17_k,
-                ssm_state.h_state,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_out_buf,
-                ssm_state.h_state_intermediates[0],
-                inter_stride_floats,
-                1, // batch_size
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32, // qk_stride
-                conv_dim as u32, // v_stride
-                (nv * 2) as u32, // gb_stride
-                stream,
-            )?;
+                .all(|(t, p)| p.0 == h_base.0 + (t * h_bytes) as u64)
+        }) {
+            // ── K∈{5..8} chain verify: fused WY-Chunkwise path (wy5..wy8,
+            // one K-templated kernel source). Removes the serial per-token
+            // GDN fallback at these widths. Kill-switch: ATLAS_GDN_WYN=0. ──
+            self.decode_batched_conv_gdn_wyn(ssm_state, ctx, args, wyn_k)?;
         } else {
-            // ── K!=2,17: sequential per-token path ──
+            // ── No fused arm (K>17, K∈{5..8} with wyN absent/killed, or
+            // non-pool intermediates): sequential per-token path ──
             //
             // gated_delta_rule_decode expects FP32 Q/K/V (see kernel signature),
             // but causal_conv1d_update_l2norm outputs BF16 by default. Reading

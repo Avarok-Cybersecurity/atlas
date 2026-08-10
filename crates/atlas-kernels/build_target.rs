@@ -33,13 +33,49 @@ pub(super) trait ComputeTarget: Send + Sync {
         arch: &str,
         extra_flags: &[String],
     ) -> Result<(), String>;
+
+    /// Identity of the compiler that will emit the device code, for the
+    /// closure hash the benchmark gate records.
+    ///
+    /// `None` when it cannot be determined. Callers must then omit the
+    /// attestation entirely — substituting a placeholder would make two
+    /// different toolchains hash alike, which is the one failure a
+    /// build-provenance hash exists to prevent.
+    fn compiler_id(&self) -> Option<String>;
 }
+
+/// `<binary> <args>` reduced to one stable line.
+///
+/// Compilers print several lines and often a build date; the LAST non-empty
+/// line carries the release for nvcc, hipcc and metal alike. Whitespace is
+/// collapsed so incidental formatting does not move the hash.
+fn compiler_version(bin: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = Command::new(bin).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    Some(line.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Warning numbers the strict kernel-compile validation ("clippy for kernels")
+/// intentionally tolerates. Documented like `_typos.toml`: every entry needs a
+/// rationale comment. Empty is the goal — every kernel warning fixed at source
+/// rather than suppressed.
+const KERNEL_STRICT_DIAG_SUPPRESS: &[u32] = &[
+    // (none — all kernel warnings are resolved at source)
+];
 
 struct NvidiaTarget {
     nvcc: PathBuf,
 }
 
 impl ComputeTarget for NvidiaTarget {
+    fn compiler_id(&self) -> Option<String> {
+        compiler_version(&self.nvcc, &["--version"])
+    }
+
     fn source_extension(&self) -> &str {
         "cu"
     }
@@ -58,7 +94,32 @@ impl ComputeTarget for NvidiaTarget {
         extra_flags: &[String],
     ) -> Result<(), String> {
         let mut args = vec!["--ptx".into(), format!("-arch={arch}"), "-O3".into()];
+        // The MSVC host compiler defaults to C++14, so nvcc on Windows rejects
+        // the kernels' C++17 fold expressions and structured bindings. Force the
+        // dialect there (nvcc -std=c++17 sets device + cl.exe host std). Gated to
+        // Windows so the Linux/macOS nvcc builds are byte-for-byte unchanged.
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+            args.push("-std=c++17".into());
+        }
         args.extend(extra_flags.iter().cloned());
+        // Strict kernel-compile validation — "clippy for kernels". Promote every
+        // nvcc/cudafe warning (unused variables #550-D, reorder, deprecated
+        // declarations, …) to a hard error so latent kernel-quality issues fail
+        // the build instead of silently accruing — the Windows/MSVC nvcc leg of
+        // the release matrix first surfaced a pile of these that the Linux build
+        // tolerated. On by default; set ATLAS_KERNEL_NO_STRICT=1 to disable
+        // locally (only the literal "1" disables, so ATLAS_KERNEL_NO_STRICT=0
+        // still means strict-on and never silently opts out). A clean compile
+        // emits byte-identical PTX — `--Werror` only changes behaviour when a
+        // warning actually fires — so this never alters kernel output.
+        if std::env::var("ATLAS_KERNEL_NO_STRICT").as_deref() != Ok("1") {
+            args.push("--Werror".into());
+            args.push("all-warnings".into());
+            for num in KERNEL_STRICT_DIAG_SUPPRESS {
+                args.push("-Xcudafe".into());
+                args.push(format!("--diag_suppress={num}"));
+            }
+        }
         // ATLAS_EXTRA_NVCC_FLAGS — global override for kernel bisection
         // tests. Whitespace-separated list of additional nvcc args
         // (typically `-D<MACRO>=1` to flip `#ifdef`-gated kernel paths).
@@ -94,6 +155,10 @@ struct AppleTarget {
 }
 
 impl ComputeTarget for AppleTarget {
+    fn compiler_id(&self) -> Option<String> {
+        compiler_version(&self.xcrun, &["metal", "--version"])
+    }
+
     fn source_extension(&self) -> &str {
         "metal"
     }
@@ -175,6 +240,15 @@ struct ScaleTarget {
 }
 
 impl ComputeTarget for ScaleTarget {
+    /// SCALE's nvcc lives under a per-ARCH directory that this method is not
+    /// given, so there is no one binary to interrogate. Rather than report the
+    /// toolkit ROOT — a path, not a version, that would stay constant across
+    /// SCALE upgrades and let a toolchain change slip through unhashed — this
+    /// declines, and SCALE targets simply carry no attestation.
+    fn compiler_id(&self) -> Option<String> {
+        None
+    }
+
     fn source_extension(&self) -> &str {
         "cu"
     }
@@ -252,6 +326,10 @@ struct HipTarget {
 }
 
 impl ComputeTarget for HipTarget {
+    fn compiler_id(&self) -> Option<String> {
+        compiler_version(&self.hipcc, &["--version"])
+    }
+
     fn source_extension(&self) -> &str {
         "cu"
     }
@@ -293,6 +371,16 @@ impl ComputeTarget for HipTarget {
             "-include".into(),
             "hip/hip_runtime.h".into(),
         ];
+        // The Windows HIP SDK (ROCm 6.4 clang) lacks the CUDA mask-arg warp
+        // intrinsics (__shfl_*_sync/__any_sync/__all_sync/__activemask) that
+        // Linux ROCm ships. Force-include the compat shim AFTER hip_runtime.h
+        // (so the base __shfl*/__ballot it maps onto are already declared). It
+        // is `-I{compat}` on the include path. Windows-only: Linux HIP declares
+        // these itself and must not get a second definition.
+        if cfg!(windows) {
+            args.push("-include".into());
+            args.push("atlas_hip_win_shims.h".into());
+        }
         // Translate nvcc-specific flags to their hipcc/clang equivalents so
         // KERNEL.toml `extra_nvcc_flags` (authored for nvcc) work on HIP.
         // `--fmad=false` (disable FMA contraction for determinism) → clang's

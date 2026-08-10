@@ -21,6 +21,58 @@ use super::*;
 /// Block: (128, 1, 1)
 ///
 /// `positions` must be a device pointer to a `u32[seq_len]` array.
+/// Strided RoPE: rotates ALL `num_tokens` rows in ONE launch.
+///
+/// `rope` above derives each row's address from a PACKED layout
+/// (`num_*_heads * head_dim` between tokens). The multi-seq decode buffer is not
+/// packed — Q and K live inside one interleaved `[Q|K|V|gate]` block whose rows
+/// sit `per_seq_qkv` apart — so that path was calling `rope` once per sequence
+/// with `seq_len = 1`: 258 launches/step at 4.6 us = 1.18 ms across the 16
+/// attention layers.
+///
+/// Bit-identical to n packed launches: same math, same ordering, only the row
+/// address differs. Passing the packed strides reproduces `rope` exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn rope_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k: DevicePtr,
+    positions: DevicePtr,
+    num_tokens: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    theta: f32,
+    q_row_stride: u32,
+    k_row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    assert!(
+        rotary_dim > 0,
+        "rope_strided: rotary_dim=0, nq={num_q_heads} nkv={num_kv_heads} hd={head_dim}"
+    );
+    let half_rot = (rotary_dim / 2).max(1);
+    let pos_per_block = (128 / half_rot).max(1);
+    let seq_blocks = div_ceil(num_tokens, pos_per_block);
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads + num_kv_heads, seq_blocks, 1])
+        .block([128, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k)
+        .arg_ptr(positions)
+        .arg_u32(num_tokens)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_f32(theta)
+        .arg_u32(q_row_stride)
+        .arg_u32(k_row_stride)
+        .launch(stream)
+}
+
 pub fn rope(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

@@ -108,6 +108,21 @@ pub struct SequenceState {
     /// prefill. The model uses this to tag saved snapshots and verify ownership
     /// before restoring. 0 = no session tracking (legacy behavior).
     pub session_hash: u64,
+    /// Ownership stamp for the SINGLE-SLOT whole-prompt hidden capture
+    /// (`mtp_prefill_hidden`). Written by `try_mtp_prefill_capture` when THIS
+    /// sequence's chunk 0 (re)starts the capture, with the model's monotonic
+    /// capture generation. `ensure_drafter_context` prefills the drafter only
+    /// while the stamp still matches the model's current generation — at
+    /// C>=2 interleaved prefills restart the shared capture, and without this
+    /// check a sequence's first propose could pair ITS tokens with ANOTHER
+    /// sequence's captured hiddens (poisoned drafter KV; blind is strictly
+    /// better than poisoned). 0 = never owned a capture.
+    pub mtp_capture_gen: u64,
+    /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
+    /// prefix hash so two adapters that share a token prefix never reuse each
+    /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so
+    /// behavior is byte-identical until a LoRA path stamps a non-zero id).
+    pub adapter_id: u64,
     /// Persistent paged metadata for chunked prefill, allocated lazily on the
     /// first chunk that needs paged attention.
     pub chunked_prefill_meta: Option<ChunkedPrefillPageMetadata>,
@@ -116,6 +131,38 @@ pub struct SequenceState {
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
     /// 0 when prefix caching is disabled or the prompt had no cache match.
     pub cached_prefix_tokens: usize,
+    /// Number of `block_table` entries that came FROM the prefix cache on this
+    /// sequence's lookup (`matched_blocks.len()`). The cache already holds its
+    /// own "+1" KV ref on each of those blocks, and eviction returns exactly ONE
+    /// ref per radix node — so re-bumping them in `cache_sequence` would add a
+    /// ref nothing can ever release, permanently pinning the whole reused prefix
+    /// on every warm turn until the pool wedges. 0 when there was no cache hit.
+    pub cached_prefix_blocks: usize,
+    /// The matched prefix token IDs (`tokens[..cached_prefix_tokens]`) stashed
+    /// at prefix-lookup time. `free_sequence` releases the prefix cache's radix
+    /// refs over these when `tokens` is too short to cover the prefix — i.e. a
+    /// prefill that matched a prefix (bumping radix refs) then FAILED to
+    /// allocate its suffix, so `tokens` was never populated. Without this the
+    /// `release(&tokens)` on the failure path is a no-op and the matched radix
+    /// nodes stay pinned at ref≥2 forever → the pool progressively wedges. Empty
+    /// on the common path (no match / success releases over the full `tokens`).
+    pub prefix_ref_tokens: Vec<u32>,
+    /// Whether the chunk-0 prefix-cache lookup already ran for this sequence.
+    ///
+    /// The lookup is NOT idempotent: it bumps radix refs, `inc_ref`s each
+    /// matched KV block and PUSHES it onto `block_table`. It also runs BEFORE
+    /// `ensure_blocks_through_prefill`, so a chunk-0 prefill that fails to
+    /// allocate its suffix (KV exhausted) leaves all of that applied. The
+    /// preempt-and-retry in `run_standard_chunk_loop` re-enters `prefill_chunk`
+    /// for the SAME chunk, which would run the lookup a second time — appending
+    /// the matched blocks to `block_table` again (so `block_table[i]` no longer
+    /// maps to logical block `i`) and taking a second radix ref that the single
+    /// `release` in `free_sequence` can never balance. This flag makes the
+    /// re-entry a no-op that replays chunk 0's original decision.
+    pub prefix_lookup_applied: bool,
+    /// The `skip` half of the chunk-0 lookup's return value, replayed verbatim
+    /// when `prefix_lookup_applied` short-circuits a retry.
+    pub prefix_lookup_skip: bool,
     /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
     /// guaranteed fully written for THIS sequence — either reused from a valid
     /// prefix-cache match or written by a real prefill pass this turn. Updated
@@ -176,9 +223,52 @@ pub struct SequenceState {
     /// i in [0, prompt_len-1) scoring tokens[i+1]. The final prompt
     /// position (whose target is the first GENERATED token) is excluded.
     pub prompt_logprobs: Vec<PromptTokenLogprob>,
+    /// M2 per-request LoRA routing: the adapter POOL SLOT this sequence's
+    /// requests select (NOT `slot_idx`, which is the KV/SSM pool slot). `-1`
+    /// (the default for every existing path) means "defer to the installed
+    /// active adapter" — so an unset request is byte-identical to today. Set
+    /// once from `InferenceRequest::adapter_slot()` at prefill; read by
+    /// `decode_batch` to build the per-step device `seq_slot[N]` buffer the
+    /// batched bgmv routes on.
+    pub adapter_slot: i32,
+    /// Task #25 (slot ref_count): the RESOLVED LoRA pool slot this sequence holds
+    /// a ref on (`-1` = none / not acquired — the default and every non-LoRA
+    /// path). Set at the prefill acquire (and re-acquire on swap-in resume) to
+    /// the index `Model::acquire_adapter_slot` returned; the terminal free
+    /// releases EXACTLY this index (not a re-resolved `adapter_slot`, which would
+    /// mis-decrement if `active` rotated between prefill and finish) and zeroes
+    /// it back to `-1` so release fires exactly once per acquire. Stored resolved
+    /// (not raw) so it also guards the non-scheduler alloc paths (which never
+    /// acquire) from an underflow.
+    pub acquired_adapter_slot: i32,
+    /// NLLB / M2M-100 per-request translation source-language token id (the
+    /// encoder-input prefix). `0` = use the deployment default (`--src-lang`).
+    /// Unused by every other model type.
+    pub src_lang_id: u32,
+    /// NLLB / M2M-100 per-request target-language token id (`forced_bos`).
+    /// `0` = use the deployment default (`--tgt-lang`). Unused by other models.
+    pub tgt_lang_id: u32,
+    /// NLLB beam search: number of beams for this request (`1` = greedy,
+    /// disables the beam path). Unused by every other model type.
+    pub num_beams: u32,
+    /// NLLB beam search: length penalty applied to hypothesis scores
+    /// (`1.0` = neutral). Unused by other models.
+    pub length_penalty: f32,
+    /// NLLB beam search: stop as soon as `num_beams` finished hypotheses
+    /// exist (`false` = exhaust `max_new`). Unused by other models.
+    pub early_stopping: bool,
 }
 
 impl SequenceState {
+    /// SSM-pool slot index for this sequence, if it has GDN/SSM (linear-attn)
+    /// layers. Used by the scheduler to order the decode batch by slot so the
+    /// batched-recurrent SSM + CUDA-graph contiguity invariant holds
+    /// (position i ↔ pool_base + i*stride). `None` for pure-attention models.
+    #[inline]
+    pub fn ssm_slot_idx(&self) -> Option<usize> {
+        self.ssm_slot.as_ref().and_then(|g| g.idx())
+    }
+
     /// Phase 6.3 sliding-window helper: the absolute logical block index
     /// of `block_table[0]`. Returns 0 when `--high-speed-swap` is off
     /// (`disk_block_ids` is empty then; `block_table` is the full history).
@@ -221,4 +311,4 @@ impl SequenceState {
 mod logprobs;
 mod model;
 pub use logprobs::*;
-pub use model::Model;
+pub use model::{BeamReq, Model, padded_batch_n};

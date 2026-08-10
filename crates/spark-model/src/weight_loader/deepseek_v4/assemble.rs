@@ -14,8 +14,8 @@ use crate::layers::qwen3_attention::{
     CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights, Qwen3AttentionLayer,
 };
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense,
-    dense_minus_one, quantized, quantized_v2,
+    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
+    quantized, quantized_v2,
 };
 
 /// Load one MoE expert projection, dispatching by the on-disk format so the V4
@@ -100,7 +100,7 @@ fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) 
     gpu.copy_d2h(qw.weight_scale, &mut s)?;
     std::fs::write("/tmp/atlas_expert0_w1_weight.bin", &w)?;
     std::fs::write("/tmp/atlas_expert0_w1_scale.bin", &s)?;
-    eprintln!(
+    tracing::info!(
         "ATLAS_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/atlas_expert0_w1_*.bin",
         w.len(),
         s.len()
@@ -375,8 +375,11 @@ pub fn assemble_layer(
             let wkv = dense(store, &format!("{cp}.wkv.weight"))?;
             let wgate = dense(store, &format!("{cp}.wgate.weight"))?;
             // compressor.norm is a STANDARD RMSNorm → subtract 1 for the offset kernel.
-            let norm = dense_minus_one(store, &format!("{cp}.norm.weight"), gpu)?;
-            let ape = store.get(&format!("{cp}.ape"))?.ptr;
+            let norm = dense_auto(store, &format!("{cp}.norm.weight"), gpu)?;
+            // ape is checkpoint-native F32 [ratio, proj_dim]; csa_compress indexes it
+            // as `const float*`. Normalize here so the kernel can never misread it as
+            // bf16 (the L2–L42 window-softmax corruption fixed alongside attn_sink #341).
+            let ape = super::csa_ape::load_ape_f32(store, &format!("{cp}.ape"), gpu)?;
             // 4b: allocate the persistent flat compressed-KV pool for this layer.
             // Sized to the full context (max_position_embeddings // ratio blocks)
             // so decode never overflows; each block is one hd_mla-wide FP8-E4M3
@@ -427,10 +430,11 @@ pub fn assemble_layer(
     };
 
     // Per-head attention sink logit (s_aux); present on all V4 attention layers.
-    let attn_sink = store
-        .get(&format!("{lp}.attn.attn_sink"))
-        .map(|w| w.ptr)
-        .unwrap_or(DevicePtr::NULL);
+    // Normalized to the canonical FP32 dtype contract (F32 pass-through / BF16
+    // widen / else fail); the sink-consuming kernels index it as `const float*`.
+    // Reading the checkpoint-native fp32 buffer as bf16 hard-zeroed 7 query heads.
+    let attn_sink =
+        super::attn_sink::load_attn_sink_f32(store, &format!("{lp}.attn.attn_sink"), gpu)?;
 
     // Native block-scaled FP8 weights for the hot decode GEMVs (the checkpoint
     // ships wq_a/wq_b/wo_b as FP8-E4M3 + 128×128 block scales). The decode path
@@ -548,6 +552,19 @@ pub fn assemble_layer(
             hc_eps: config.hc_eps,
         });
     }
+
+    // V4 loads its norm weights EXACTLY (no -1 pre-subtraction) and normalizes
+    // with `rms_norm_vanilla`. The only paths that would bypass that kernel are
+    // the fused residual+norm ones, taken when the mHC highway is absent — and
+    // they are offset-from-1 only, with no vanilla twin in-tree. They would
+    // silently compute `x * (1 + w)` on an exact weight. Fail loudly instead.
+    anyhow::ensure!(
+        layer.hc.is_some(),
+        "DeepSeek-V4 requires the mHC highway (hc_mult > 0, got {}): without it the fused \
+         residual+norm kernels would apply the offset-from-1 convention to exactly-loaded \
+         norm weights",
+        config.hc_mult
+    );
 
     Ok(Box::new(layer))
 }

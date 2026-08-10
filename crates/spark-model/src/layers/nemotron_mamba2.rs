@@ -18,6 +18,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
 use crate::weight_map::{DenseWeight, Fp8Weight, NemotronSsmWeights, QuantizedWeight};
 
+mod prefill;
 mod trait_impl;
 
 #[allow(dead_code)]
@@ -30,6 +31,10 @@ pub struct NemotronMamba2Layer {
     // Transposed NVFP4 weights for fast prefill GEMM (FP8 MMA, N128, cp.async)
     in_proj_t: Option<QuantizedWeight>,
     out_proj_t: Option<QuantizedWeight>,
+    // Pre-dequantized FP8 E4M3 copies of the two SSM projections, [N, K].
+    // Consumed by `fp8_gemm_t`, which has NO dequant phase at all.
+    in_proj_pd_fp8: Option<DevicePtr>,
+    out_proj_pd_fp8: Option<DevicePtr>,
     // Kernel handles — decode
     rms_norm_residual_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
@@ -42,9 +47,18 @@ pub struct NemotronMamba2Layer {
     w4a16_gemm_k: KernelHandle,
     w4a16_gemm_t_k: KernelHandle,
     w4a16_gemm_t_m128_k: KernelHandle,
+    fp8_gemm_t_k: KernelHandle,
+    fp8_fp8_gemm_t_k: KernelHandle,
+    bf16_to_fp8_k: KernelHandle,
+    w4a4_gemm_k: KernelHandle,
+    quantize_nvfp4_k: KernelHandle,
     conv1d_prefill_k: KernelHandle,
     mamba2_ssm_prefill_k: KernelHandle,
     mamba2_ssm_prefill_persistent_k: KernelHandle,
+    // SSD chunked prefill scan (tensor-core; ceil(T/64) serial links instead of T).
+    ssd_cumsum_k: KernelHandle,
+    ssd_bmm_k: KernelHandle,
+    ssd_scan_k: KernelHandle,
     // Pre-computed dimensions
     d_inner: usize,
     d_xbc: usize,
@@ -83,6 +97,8 @@ impl NemotronMamba2Layer {
             out_proj_fp8: None,
             in_proj_t: None,
             out_proj_t: None,
+            in_proj_pd_fp8: None,
+            out_proj_pd_fp8: None,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
@@ -93,8 +109,16 @@ impl NemotronMamba2Layer {
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
+            fp8_gemm_t_k: super::try_kernel(gpu, "w4a16", "fp8_gemm_t_m128_mfast"),
+            fp8_fp8_gemm_t_k: super::try_kernel(gpu, "w4a16", "fp8_fp8_gemm_t_m128_mfast"),
+            bf16_to_fp8_k: super::try_kernel(gpu, "w4a16", "bf16_to_fp8"),
+            w4a4_gemm_k: super::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
+            quantize_nvfp4_k: super::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4"),
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
             mamba2_ssm_prefill_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_prefill")?,
+            ssd_cumsum_k: super::try_kernel(gpu, "mamba2_ssd_chunk", "mamba2_ssd_cumsum"),
+            ssd_bmm_k: super::try_kernel(gpu, "mamba2_ssd_chunk", "mamba2_ssd_bmm"),
+            ssd_scan_k: super::try_kernel(gpu, "mamba2_ssd_chunk", "mamba2_ssd_scan"),
             mamba2_ssm_prefill_persistent_k: super::try_kernel(
                 gpu,
                 "mamba2_ssm",
@@ -136,6 +160,19 @@ impl NemotronMamba2Layer {
     ) {
         self.in_proj_t = in_proj_t;
         self.out_proj_t = out_proj_t;
+    }
+
+    /// Set pre-dequantized FP8 E4M3 copies of in_proj/out_proj for prefill.
+    ///
+    /// `w4a16_gemm_t_m128` dequantizes its NVFP4 B tile from FP4 to FP8 in
+    /// shared memory on every K step, and that work is redone by every M-block:
+    /// the cost is N*K*(M/M_TILE), so a 1k-token prefill pays for it 8x over.
+    /// Measured on Puzzle: ablating just that dequant ALU cut a 1k prefill from
+    /// 557 ms to 424 ms. Converting the weights once at load time removes it
+    /// entirely and lets prefill use `fp8_gemm_t`, which has no dequant phase.
+    pub fn set_fp8_prefill_weights(&mut self, in_proj: DevicePtr, out_proj: DevicePtr) {
+        self.in_proj_pd_fp8 = Some(in_proj);
+        self.out_proj_pd_fp8 = Some(out_proj);
     }
 
     /// Conv1d update with bias (Nemotron conv1d has learned bias, unlike Qwen3).

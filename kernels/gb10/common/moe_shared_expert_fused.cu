@@ -265,10 +265,42 @@ extern "C" __global__ void moe_expert_silu_down_shared(
     if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_SHARED[threadIdx.x];
 
     // Phase 1: Cooperatively precompute SiLU(gate)*up into shared memory.
-    // DeepSeek-V4 clamps the ROUTED expert swiglu inputs to ±swiglu_limit
-    // (gate<=limit, up in [-limit,limit]); the shared expert (DeepseekV4MLP)
-    // is NOT clamped. swiglu_limit = 10.0 (config; hardcoded here pending a
-    // config-threaded kernel arg).
+    // ⚠ THIS CLAMP IS KNOWN-INCONSISTENT. Do not copy it into a sibling kernel
+    // to "match"; that is how it spread in the first place. Left in place in
+    // wave 55 because every way of resolving it moves numbers for a model no
+    // box here can serve — recorded rather than guessed at.
+    //
+    // Three things are wrong with it, in increasing order of cost:
+    //
+    // 1. The old comment here claimed the shared expert "(DeepseekV4MLP) is NOT
+    //    clamped", which is why the `!is_shared` guard below exists. The
+    //    reference disagrees: `inference/model.py` in
+    //    `deepseek-ai/DeepSeek-V4-Flash` constructs BOTH `self.experts` and
+    //    `self.shared_experts` with `swiglu_limit=args.swiglu_limit`. So the
+    //    guard makes the shared expert diverge from the reference.
+    // 2. It is the ONLY kernel in this family that clamps at all.
+    //    `_t`, `_bf16*`, `_fp8*`, `_batch2*`, `_batch3*`, `moe_prefill` and
+    //    `moe_sorted_prefill` all compute a bare `silu(gf) * uf`. So for one
+    //    model: single-token decode clamps, K=2/K=3 MTP verify does not, and
+    //    concurrent decode at n>=4 (which lands in `moe_prefill`) does not
+    //    either. Same weights, same token, three different activations
+    //    depending only on how many sequences happen to be in flight.
+    // 3. Like the copy that used to live in `common/moe_silu_mul.cu`, the value
+    //    is DeepSeek-V4's `swiglu_limit` applied to every model that reaches
+    //    this decode arm — Qwen3.5/3.6 MoE, Qwen3-Next, Qwen3-VL, MiniMax-M2,
+    //    Step-3.7 — none of which declare a limit. (Gemma-4-26B escapes only
+    //    because it ships clamp-free shadows of this file and uses GELU.)
+    //
+    // The `moe_silu_mul` half of this was fixed by moving the clamp into the
+    // shadows of the two models whose configs declare a `swiglu_limit`, gated
+    // on the 27B. The same move is NOT obviously right here: the MoE arm's gate
+    // is a separate ~3.5 h bfcl-subset run on Qwen3.6-35B-A3B, and DeepSeek-V4
+    // — the model the clamp is FOR, and the one a wrong answer hurts most — has
+    // no checkpoint on any box to measure against. The real fix for all three
+    // points is one change: thread `swiglu_limit` from `ModelConfig` into a
+    // kernel argument, defaulting to "no clamp", and apply it uniformly to
+    // routed and shared alike. That needs an ABI change across this whole
+    // family, so it wants its own wave with both MoE gates budgeted.
     const float SWIGLU_LIMIT = 10.0f;
     for (unsigned int i = threadIdx.x; i < K; i += BLOCK_SIZE) {
         float gf = __bfloat162float(g_ptr[i]);

@@ -45,7 +45,12 @@ impl ToolCallParser for MinimaxXmlParser {
         true
     }
 
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String {
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &super::PromptLevers,
+    ) -> String {
         // Match MiniMax's native chat_template.jinja output exactly
         // (see `docs/tool_calling_guide.md` in MiniMaxAI/MiniMax-M2
         // on HF). The template emits `<tools>` … `</tools>` with a
@@ -53,7 +58,7 @@ impl ToolCallParser for MinimaxXmlParser {
         // invocation format.
         let mut prompt =
             String::from("# Tools\n\nYou have access to the following functions:\n\n<tools>\n");
-        let body = tool_list_body(tools, || {
+        let body = tool_list_body(tools, levers, || {
             let mut s = String::new();
             for tool in tools {
                 let json = serde_json::to_string(tool).unwrap_or_default();

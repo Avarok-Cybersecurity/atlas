@@ -117,6 +117,16 @@ struct Ctx {
 unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 
+/// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
+/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// per process) and sized by a fixed budget, not by any model's shapes: the
+/// bounds below are generous upper limits chosen to fit any realistic serving
+/// configuration, so a swap needs no reallocation and re-allocating per model
+/// would churn hundreds of megabytes for no change in what is mapped.
+///
+/// It survives a model swap for the same reason the context does. Nothing in
+/// it is derived from a model — no token ids, no weight pointers, no shapes —
+/// only scratch the library plans within.
 static CTX: OnceLock<Ctx> = OnceLock::new();
 
 fn ctx() -> Result<&'static Ctx> {
