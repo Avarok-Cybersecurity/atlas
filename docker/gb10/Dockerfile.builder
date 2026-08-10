@@ -37,6 +37,7 @@ ARG CUTLASS_DSL_VER
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
       curl ca-certificates build-essential pkg-config git cmake libclang-dev \
+      libibverbs-dev libnccl2 libnccl-dev \
       python3 python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
@@ -60,11 +61,12 @@ RUN git clone --filter=blob:none https://github.com/flashinfer-ai/flashinfer.git
     git -C ${FLASHINFER_HOME} submodule update --init --depth 1 3rdparty/cccl
 
 # CuTe-DSL runtime for the GDN AOT kernel (provides libcute_dsl_runtime.so).
-# Discover its location and expose it on the linker/loader path.
+# Discover its location and expose it on the linker/loader path. Since 4.5.0 the
+# .so lives in nvidia_cutlass_dsl/lib/ — a SIBLING of python_packages/cutlass —
+# so a glob relative to the `cutlass` module can never find it; search the pip
+# prefix instead.
 RUN pip3 install --no-cache-dir --break-system-packages "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VER}" && \
-    CUTE_RT=$(python3 -c "import importlib.util,os,glob; \
-      base=os.path.dirname(importlib.util.find_spec('cutlass').origin); \
-      print(next(iter(glob.glob(base+'/**/libcute_dsl_runtime.so', recursive=True)), ''))") && \
+    CUTE_RT=$(find /usr/local/lib /usr/lib -name libcute_dsl_runtime.so 2>/dev/null | head -1) && \
     test -n "$CUTE_RT" && ln -sf "$CUTE_RT" /usr/local/lib/libcute_dsl_runtime.so && \
     echo "cute runtime: $CUTE_RT"
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/compat:${LD_LIBRARY_PATH}
@@ -86,7 +88,10 @@ ENV ATLAS_TARGET_QUANT=*
 # Native FP4 GEMM + cuBLASLt BF16 prefill projections on by default (matches prod).
 ENV ATLAS_CUTLASS_NVFP4_GEMM=1
 
-RUN cargo build --release -p spark-server
+# CUDARC_CUDA_VERSION=13000: the vendored cudarc 0.19.2 tops out at 13.1 in its
+# nvcc-version table, so `nvcc --version` (13.2) panics without the pin. Same
+# value every CI workflow pins.
+RUN CUDARC_CUDA_VERSION=13000 cargo build --release -p spark-server
 
 # Re-link the GDN AOT shared lib from committed artifacts (gdn_holo_0.o is the
 # AOT-exported bf16 kernel; gdn_transpose.o is the k<->v state transpose). No
