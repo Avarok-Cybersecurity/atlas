@@ -79,7 +79,7 @@ export const hero = {
   badge: 'Open source. Pure Rust and CUDA. Verified on GB10.',
   headline: ['The inference engine for the', 'machine on your desk.'],
   sub:
-    'Atlas is an open source LLM engine we hand tuned for NVIDIA DGX Spark. One 2.5 GB binary, no Python, no PyTorch. What ships is what we verify, and we bench it every single release.',
+    'Atlas is an open source LLM engine we hand tuned for NVIDIA DGX Spark. One ~75 MB binary, no Python, no PyTorch. What ships is what we verify, and we bench it every single release.',
   challenge: {
     claim: 'First token in under 90 seconds on a DGX Spark.',
     lead: 'Do not take our word for it.',
