@@ -290,7 +290,11 @@ pub(super) fn enforce_request_deadlines(active: &mut [ActiveSeq]) {
 /// non-contiguous w.r.t. `slot_idx` — pre-allocated slots stay valid
 /// in place across the swap_remove, and the per-slot CUDA graph cache
 /// stays warm because the seq never moved.
-pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<ActiveSeq>) {
+pub(super) fn retire_finished_sequences(
+    model: &dyn Model,
+    active: &mut Vec<ActiveSeq>,
+    max_seq_len: usize,
+) {
     if model.ep_protocol_v2() {
         // v2 EP: slots are pre-allocated and kept in place (see doc above);
         // just drop finished seqs, no compaction.
@@ -298,7 +302,7 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
         while i < active.len() {
             if active[i].finished {
                 let mut a = active.swap_remove(i);
-                finish_sequence(model, &mut a);
+                finish_sequence(model, &mut a, max_seq_len);
             } else {
                 i += 1;
             }
@@ -323,7 +327,7 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
     let mut survivors: Vec<ActiveSeq> = Vec::with_capacity(active.len());
     for mut a in active.drain(..) {
         if a.finished {
-            finish_sequence(model, &mut a); // RAII guard releases a's own slot
+            finish_sequence(model, &mut a, max_seq_len); // RAII guard releases a's own slot
         } else {
             survivors.push(a);
         }

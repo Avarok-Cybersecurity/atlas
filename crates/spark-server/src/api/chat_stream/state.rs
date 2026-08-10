@@ -49,6 +49,15 @@ pub(super) struct StreamState {
     /// Flips true on first stop-string match or on watchdog/dedup
     /// trip; suppresses further content emissions.
     pub(super) stop_string_triggered: bool,
+    /// True only when a CLIENT `stop` sequence actually matched
+    /// (`apply_stop_string_holdback` hit) — distinct from
+    /// `stop_string_triggered`, which the watchdog/leak guards also
+    /// set as an output-suppression device. Read by `handle_done`: a
+    /// matched stop sequence is wire `finish_reason="stop"` per the
+    /// OpenAI contract, never "length" (the scheduler can still say
+    /// "length" when the cancel landed a step late and the budget ran
+    /// out first). Set via [`StreamState::note_stop_string_match`].
+    pub(super) stop_string_matched: bool,
     /// Sanitiser state: suppressing content while waiting for a
     /// matching `</parameter>` close after an orphan `<parameter=`.
     pub(super) suppressing_param_leak: bool,
@@ -194,6 +203,7 @@ impl StreamState {
             stop_string_emitted_len: 0,
             refusal_scan_buf: String::new(),
             stop_string_triggered: false,
+            stop_string_matched: false,
             suppressing_param_leak: false,
             suppress_streak_tokens: 0,
             inside_envelope: false,
@@ -229,5 +239,42 @@ impl StreamState {
             pending_retry: None,
             pending_token_ids: Vec::new(),
         }
+    }
+
+    /// A client `stop` sequence matched in the emitted text. Records
+    /// the match for `handle_done` (wire `finish_reason="stop"` — see
+    /// `stop_string_matched`) and flips the scheduler's cancel flag so
+    /// generation actually ends at the next decode boundary instead of
+    /// burning suppressed tokens until natural EOS / max_tokens (the
+    /// exact hazard the `cancel_flag` doc in `inference_types.rs`
+    /// describes).
+    pub(super) fn note_stop_string_match(&mut self) {
+        self.stop_string_matched = true;
+        self.cancel_flag
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod stop_string_match_tests {
+    use super::StreamState;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn note_stop_string_match_records_and_cancels() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut s = StreamState::new(false, false, flag.clone(), Vec::new());
+        assert!(!s.stop_string_matched, "fresh stream: no match yet");
+        assert!(!flag.load(Ordering::Acquire));
+        s.note_stop_string_match();
+        assert!(
+            s.stop_string_matched,
+            "match must be recorded for handle_done"
+        );
+        assert!(
+            flag.load(Ordering::Acquire),
+            "scheduler cancel flag must flip so generation stops"
+        );
     }
 }

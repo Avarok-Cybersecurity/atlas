@@ -34,17 +34,27 @@ const PINS: &[(&str, &str, usize)] = &[
 ];
 
 /// Targets whose copy of a kernel legitimately differs in arity from the
-/// family pin (only the 27B grew `ldb` on w4a16_gemm_t/_p3; every other
-/// target still ships the 8-param originals).
+/// family pin.
+///
+/// ★ There are none left. This used to carve out `w4a16_gemm_t`/`_p3` for
+/// every target except the 27B, on the grounds that "only the 27B grew
+/// `ldb`". That stopped being true when #429 finished the port: `ldb` is
+/// now on **all 28 `w4a16_gemm.cu` paths** (8 distinct files — `strix/common`
+/// is a symlink into `gb10/common`, and several model dirs symlink their
+/// neighbours), and `w4a16_gemm_t_ldb_drift_is_exactly_the_known_set` pins
+/// that with an EMPTY known-drift list.
+///
+/// Leaving the carve-out behind made this test red on `main` for every
+/// non-27B target — deepseek-v4-flash reported "9 params vs pin 8", which is
+/// the FIXED kernel being measured against the pre-fix expectation. The
+/// stale side was the exception, not the kernels.
+///
+/// The function is kept (rather than deleted) because it is the designated
+/// place for a future legitimate per-target divergence, and because deleting
+/// it would scatter that decision back into the call site.
 fn expected_arity(model: &str, module: &str, kernel: &str, family_pin: usize) -> usize {
-    let is_27b = model.contains("qwen3.6-27b");
-    match (module, kernel) {
-        ("w4a16", "w4a16_gemm_t") | ("w4a16", "w4a16_gemm_t_p3") if !is_27b => 8,
-        _ => {
-            let _ = family_pin;
-            family_pin
-        }
-    }
+    let _ = (model, module, kernel);
+    family_pin
 }
 
 /// Count `.param` declarations of a PTX `.entry` by name.

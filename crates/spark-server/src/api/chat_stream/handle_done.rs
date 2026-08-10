@@ -186,30 +186,13 @@ pub(super) fn handle_done(
         response_tokens_per_second: tps,
     };
 
-    let fr = if finish_reason == crate::ir::FINISH_REASON_TIMEOUT {
-        // The server-side request deadline cut this response mid-flight.
-        // It outranks every override below: a truncated turn that emitted
-        // a partial tool call would otherwise be reported "tool_calls" and
-        // the client would run a half-parsed call as if it were complete.
-        finish_reason.as_str()
-    } else if state.tool_loop_capped {
-        // A tool-call loop guard (Bug-2 name-run cap, F11 within-dedup,
-        // F5 cross-flush dedup, or F44 perm-fail) forcibly ended the
-        // response. Signal "length" — OpenAI's slot for a truncated
-        // response — so agent clients can break their outer retry
-        // loop. Without this override the response otherwise looks like
-        // a normal "tool_calls" completion (tool calls *were* emitted)
-        // and agents (opencode, etc.) cheerfully run the tools and ask
-        // the model to continue, perpetuating the loop one round at a
-        // time.
-        "length"
-    } else if state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
-        || state.salvaged_tool_call
-    {
-        "tool_calls"
-    } else {
-        finish_reason.as_str()
-    };
+    let fr = resolve_wire_finish_reason(
+        &finish_reason,
+        state.tool_loop_capped,
+        state.detector.as_ref().is_some_and(|d| d.has_tool_calls()) || state.salvaged_tool_call,
+        state.stop_string_matched,
+        state.guard_stop,
+    );
 
     // Refusal classification.
     let refusal_signal = if state.detector.as_ref().is_none_or(|d| !d.has_tool_calls()) {
@@ -293,4 +276,161 @@ pub(super) fn handle_done(
     }
 
     deltas
+}
+
+/// Stream-layer overrides on top of the scheduler's finish reason.
+/// Pure so the precedence is unit-testable. In order:
+///
+/// 1. `"timeout"` — the server-side request deadline cut this response
+///    mid-flight. It outranks every override below: a truncated turn
+///    that emitted a partial tool call would otherwise be reported
+///    "tool_calls" and the client would run a half-parsed call as if it
+///    were complete.
+/// 2. `tool_loop_capped` → `"length"` — a tool-call loop guard (Bug-2
+///    name-run cap, F11 within-dedup, F5 cross-flush dedup, or F44
+///    perm-fail) forcibly ended the response. Signal "length" — OpenAI's
+///    slot for a truncated response — so agent clients can break their
+///    outer retry loop. Without this override the response otherwise
+///    looks like a normal "tool_calls" completion (tool calls *were*
+///    emitted) and agents (opencode, etc.) cheerfully run the tools and
+///    ask the model to continue, perpetuating the loop one round at a
+///    time. NOTE: this is a deliberate, pre-existing exception to the
+///    scheduler-side invariant that "length" means "budget exhausted";
+///    kept because it is a shipped contract for exactly this doom-loop
+///    class.
+/// 3. parsed/salvaged tool calls → `"tool_calls"`.
+/// 4. `stop_string_matched` → `"stop"` — a client `stop` sequence ended
+///    this response. OpenAI (and vLLM/SGLang/TGI/llama.cpp) report a
+///    stop-sequence stop as "stop"; the scheduler can still say
+///    "length" here when the cooperative cancel landed a step late
+///    (tokens kept decoding with output suppressed and the budget ran
+///    out first).
+/// 5. a STREAM-side degeneration guard (`state.guard_stop`: the token
+///    loop watchdog or the simhash semantic-loop trip) → `"length"`,
+///    for the same reason as rule 2 and by the same invariant the
+///    scheduler applies to its own guards.
+///
+///    ★ This rung is why the scheduler-side fix alone was not enough.
+///    Those watchdogs live on the STREAM: they set `state.guard_stop`
+///    and flip `cancel_flag`, but never touch `ActiveSeq::guard_stop`.
+///    The scheduler therefore finalizes with no guard, falls to its
+///    "early finalize, budget left" rule, and says `"stop"` — which
+///    arrives here and passed through verbatim. Measured: after fixing
+///    only the scheduler path, an episode still died at 4 turns having
+///    written one file, its last turn a mid-word repetition splice
+///    labelled `stop`. The stream knew it was a guard cut and simply
+///    never said so.
+/// 6. otherwise the scheduler's reason passes through verbatim.
+fn resolve_wire_finish_reason<'a>(
+    scheduler_reason: &'a str,
+    tool_loop_capped: bool,
+    has_tool_calls: bool,
+    stop_string_matched: bool,
+    stream_guard_stop: Option<&'static str>,
+) -> &'a str {
+    if scheduler_reason == crate::ir::FINISH_REASON_TIMEOUT {
+        scheduler_reason
+    } else if tool_loop_capped {
+        "length"
+    } else if has_tool_calls {
+        "tool_calls"
+    } else if stop_string_matched {
+        "stop"
+    } else if stream_guard_stop.is_some() {
+        // A degeneration cut is a truncation: the model was mid-output.
+        // Ordered AFTER tool_calls/stop_string so a guard that trips on
+        // the same step a real tool call or client stop sequence landed
+        // still reports what actually happened.
+        "length"
+    } else {
+        scheduler_reason
+    }
+}
+
+#[cfg(test)]
+mod wire_finish_reason_tests {
+    use super::resolve_wire_finish_reason;
+    use crate::ir::FINISH_REASON_TIMEOUT;
+
+    #[test]
+    fn stop_string_match_is_stop_not_length() {
+        // The second instance of the "length is a lie" bug: a matched
+        // client stop sequence previously fell through to the
+        // scheduler's reason, which reads "length" whenever the seq
+        // burned to the budget with its output suppressed.
+        assert_eq!(
+            resolve_wire_finish_reason("length", false, false, true, None),
+            "stop"
+        );
+        // With no match, the scheduler's reason passes through.
+        assert_eq!(
+            resolve_wire_finish_reason("length", false, false, false, None),
+            "length"
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, false, false, None),
+            "stop"
+        );
+    }
+
+    #[test]
+    fn stream_side_guard_cut_reports_length() {
+        // POSITIVE. The token-loop / simhash watchdogs live on the STREAM:
+        // they set `state.guard_stop` and flip `cancel_flag`, but never
+        // touch the scheduler's `ActiveSeq::guard_stop`. The scheduler
+        // therefore finalizes with no guard and says "stop". Without this
+        // rung that "stop" reached the client, and the agentic harness
+        // read a mid-repetition truncation as a finished turn.
+        //
+        // ★ Fixing only the scheduler side left this hole: an episode
+        // still died at 4 turns having written one file, its last turn a
+        // mid-word splice labelled `stop`.
+        for guard in ["simhash_semantic_loop", "token_loop_watchdog"] {
+            assert_eq!(
+                resolve_wire_finish_reason("stop", false, false, false, Some(guard)),
+                "length",
+                "guard={guard}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_guard_does_not_outrank_what_actually_happened() {
+        // NEGATIVE. The guard rung sits BELOW tool_calls and the
+        // stop-string match, so a watchdog tripping on the same step a
+        // real tool call or a client stop sequence landed still reports
+        // the true event rather than claiming truncation.
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, true, false, Some("token_loop_watchdog")),
+            "tool_calls"
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, false, true, Some("token_loop_watchdog")),
+            "stop"
+        );
+        // And with no stream guard the scheduler's reason is untouched.
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, false, false, None),
+            "stop"
+        );
+    }
+
+    #[test]
+    fn timeout_and_tool_overrides_keep_their_rank() {
+        // Shipped contracts, unchanged by this wave.
+        assert_eq!(
+            resolve_wire_finish_reason(FINISH_REASON_TIMEOUT, true, true, true, None),
+            FINISH_REASON_TIMEOUT
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", true, true, true, None),
+            "length",
+            "tool-loop cap outranks tool_calls and the stop-string match"
+        );
+        assert_eq!(
+            resolve_wire_finish_reason("stop", false, true, true, None),
+            "tool_calls",
+            "parsed tool calls outrank the stop-string override"
+        );
+    }
 }

@@ -154,6 +154,12 @@ atlas_nvfp4_scale_bf16 = "NVFP4 scale handler; gated off with the family."
 
 [expected_absent.gated_delta_rule_wy17]
 gated_delta_rule_wy17 = "wy17 fused decode (K=17) exists only in qwen3.6-35b-a3b's module set; decode_batched checks non-NULL before dispatch (per init.rs)."
+[expected_absent.gated_delta_rule_snap]
+gated_delta_rule_decode_f32_norm_snap = "Exact-verify snapshot twin (#435/#438), shipped only in qwen3.6-27b/nvfp4; the exact arm probes handle != 0 and falls back to the parent kernel + copy_d2d snapshots (same bits, more launches)."
+gated_delta_rule_decode_f32_strided_norm_snap = "Batched exact-verify snapshot twin (#435/#438), shipped only in qwen3.6-27b/nvfp4; the batched exact form declines on handle 0 and the per-sequence exact loop serves (still exact)."
+
+[expected_absent.gdn_verify_fused_conv_kn_f32]
+gdn_verify_fused_conv_kn_f32 = "FP32 fused verify conv for the exact-verify chain (#435/#438), shipped only in qwen3.6-27b/nvfp4; probed handle != 0, absent keeps the per-token conv launches (same bits, more launches)."
 
 # ⚠ HONESTY NOTE on the four gated_delta_rule f16 arms: the FP16-h-state
 # decode arms dispatch these handles UN-PROBED once --ssm-h-dtype f16 is

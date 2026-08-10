@@ -65,6 +65,88 @@ fn all_targets_have_modules() {
     }
 }
 
+/// #438: the exact-verify `_snap` twins (#435) ship ONLY in
+/// qwen3.6-27b/nvfp4's shadow set, but `qwen3_ssm::init` issues their three
+/// lookups on EVERY GDN model. The boot gate fails CLOSED on an unresolved
+/// lookup that is not declared `[expected_absent]`, so every GDN target that
+/// does not compile these modules MUST declare them — qwen3.6-35b-a3b was
+/// unservable without this (3 required-unresolved at boot).
+///
+/// Issuer proxy: a target constructs `qwen3_ssm::init` iff it either ships
+/// `gated_delta_rule_wy17` or declares it expected-absent — a GDN target with
+/// NEITHER would already fail its own boot gate on the wy17 lookup, so a
+/// green fleet cannot contain one.
+#[test]
+#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
+fn exact_verify_snap_lookups_resolve_or_are_declared_on_every_gdn_target() {
+    const PAIRS: [(&str, &str); 3] = [
+        (
+            "gated_delta_rule_snap",
+            "gated_delta_rule_decode_f32_norm_snap",
+        ),
+        (
+            "gated_delta_rule_snap",
+            "gated_delta_rule_decode_f32_strided_norm_snap",
+        ),
+        (
+            "gdn_verify_fused_conv_kn_f32",
+            "gdn_verify_fused_conv_kn_f32",
+        ),
+    ];
+    let ships = |t: &TargetPtxSet, m: &str| t.modules.iter().any(|(name, _)| *name == m);
+    let declares = |t: &TargetPtxSet, m: &str, f: &str| {
+        t.expected_absent
+            .iter()
+            .any(|(em, ef)| *em == m && *ef == f)
+    };
+
+    let mut gdn_targets = 0usize;
+    let mut by_presence = 0usize; // pair resolves because the module is compiled (qwen3.6-27b)
+    let mut by_declaration = 0usize; // pair declared expected-absent (the #438 fix)
+    let mut violations: Vec<String> = Vec::new();
+    for t in available_targets() {
+        let issues_gdn = ships(&t, "gated_delta_rule_wy17")
+            || declares(&t, "gated_delta_rule_wy17", "gated_delta_rule_wy17");
+        if !issues_gdn {
+            continue;
+        }
+        gdn_targets += 1;
+        for (m, f) in PAIRS {
+            if ships(&t, m) {
+                by_presence += 1;
+            } else if declares(&t, m, f) {
+                by_declaration += 1;
+            } else {
+                violations.push(format!(
+                    "{} misses {m}::{f} UNDECLARED — its boot gate will refuse to serve",
+                    t.target
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "GDN targets with undeclared unresolvable snap lookups:\n{}",
+        violations.join("\n")
+    );
+    // Non-vacuity guards: the invariant must have been exercised from BOTH
+    // sides, or a build/staging regression could pass this test silently.
+    assert!(
+        gdn_targets >= 2,
+        "expected at least the 27B and 35B GDN targets, saw {gdn_targets}"
+    );
+    assert!(
+        by_presence >= 3,
+        "qwen3.6-27b must still SHIP all three snap modules — fixing the 35B \
+         by unshipping the 27B is not a fix (pairs resolved by presence: {by_presence})"
+    );
+    assert!(
+        by_declaration >= 3,
+        "at least the 35B must cover all three pairs by declaration \
+         (pairs covered: {by_declaration})"
+    );
+}
+
 #[test]
 #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
 fn ptx_for_model_lookup() {
