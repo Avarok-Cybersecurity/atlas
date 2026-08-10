@@ -160,6 +160,22 @@ fn check_shape(
     Ok(())
 }
 
+/// Derived pool stride for the expert/router pack: `max_rank` rounded UP to a
+/// multiple of 8 BF16 elements (16 bytes = one uint4, the vectorized load
+/// width of `moe_lora_gather_bgmv` / `moe_lora_grouped_down`). The packed B
+/// row stride and padded-A row count are THIS value, never the raw rank — at
+/// e.g. r=12 a raw stride is 24 bytes and every second B row starts on a
+/// non-16B-aligned address, which is undefined for the kernels' uint4 loads.
+///
+/// SSOT: the LOGICAL rank stays `peft.r` (`LoraPair.rank`); this is the one
+/// derivation point for the PADDED stride (`LoraPair.max_rank`), shared by the
+/// sizing estimator (`expert_router_bytes`) and the pack loop below so the two
+/// agree byte-for-byte. Pad rows/cols stay zero (pool pre-zeroed + zero-filled
+/// repack), so the padded contraction is bit-identical to the true-rank one.
+pub(crate) fn packed_stride(max_rank: usize) -> usize {
+    max_rank.div_ceil(8) * 8
+}
+
 /// Sizing key-lists for [`expert_router_bytes`] over one adapter's audit.
 pub(crate) fn key_lists(
     router: &RouterMap,
@@ -172,8 +188,10 @@ pub(crate) fn key_lists(
 
 /// Copy one padded A/B pair from the store into `(a_ptr, b_ptr)` and build the
 /// [`LoraPair`]. Mirrors the attention `pack_slot` copy (A contiguous [r,in];
-/// B row-repacked stride r → max_rank; pad rows/cols stay zero for padded-K
-/// correctness — the caller must pre-zero the pool).
+/// B row-repacked stride r → `stride`; pad rows/cols stay zero for padded-K
+/// correctness — the caller must pre-zero the pool). `stride` is the DERIVED
+/// [`packed_stride`] (uint4-aligned), never the raw rank — the logical rank
+/// travels separately as `LoraPair.rank = peft.r`.
 #[allow(clippy::too_many_arguments)]
 fn pack_pair(
     store: &WeightStore,
@@ -182,7 +200,7 @@ fn pack_pair(
     peft: &PeftAdapterConfig,
     out_dim: usize,
     in_dim: usize,
-    max_rank: usize,
+    stride: usize,
     gpu: &dyn GpuBackend,
     a_ptr: DevicePtr,
     b_ptr: DevicePtr,
@@ -196,9 +214,9 @@ fn pack_pair(
     let b_t = store.get(b_key)?;
     let mut b_src = vec![0u8; out_dim * peft.r * BF16_BYTES];
     gpu.copy_d2h(b_t.ptr, &mut b_src)?;
-    let mut b_host = vec![0u8; out_dim * max_rank * BF16_BYTES];
+    let mut b_host = vec![0u8; out_dim * stride * BF16_BYTES];
     for row in 0..out_dim {
-        let d = row * max_rank * BF16_BYTES;
+        let d = row * stride * BF16_BYTES;
         let s = row * peft.r * BF16_BYTES;
         b_host[d..d + peft.r * BF16_BYTES].copy_from_slice(&b_src[s..s + peft.r * BF16_BYTES]);
     }
@@ -211,7 +229,7 @@ fn pack_pair(
         k_in: in_dim as u32,
         n_out: out_dim as u32,
         scale: peft.scaling(),
-        max_rank: max_rank as u32,
+        max_rank: stride as u32,
     })
 }
 
@@ -233,6 +251,10 @@ pub(crate) fn pack_into(
     off: &mut usize,
 ) -> Result<usize> {
     const BF16_BYTES: usize = 2;
+    // ONE derivation of the uint4-aligned pool stride for this whole pack —
+    // the same [`packed_stride`] the sizing side (`expert_router_bytes`) uses,
+    // so offsets can never outrun the pool the caller sized.
+    let stride = packed_stride(max_rank);
     let mut packed = 0usize;
     let ensure = |layers: &mut [Option<LoraLayerWeights>], l: usize| {
         if layers[l].is_none() {
@@ -246,10 +268,10 @@ pub(crate) fn pack_into(
         };
         let (out_dim, in_dim) = router_dims(cfg);
         let a_ptr = DevicePtr(pool.0 + *off as u64);
-        let b_ptr = DevicePtr(pool.0 + (*off + max_rank * in_dim * BF16_BYTES) as u64);
-        *off += (max_rank * in_dim + out_dim * max_rank) * BF16_BYTES;
+        let b_ptr = DevicePtr(pool.0 + (*off + stride * in_dim * BF16_BYTES) as u64);
+        *off += (stride * in_dim + out_dim * stride) * BF16_BYTES;
         let lp = pack_pair(
-            store, a_key, b_key, peft, out_dim, in_dim, max_rank, gpu, a_ptr, b_ptr,
+            store, a_key, b_key, peft, out_dim, in_dim, stride, gpu, a_ptr, b_ptr,
         )?;
         ensure(layers, *layer);
         layers[*layer].as_mut().unwrap().router = Some(lp);
@@ -262,10 +284,10 @@ pub(crate) fn pack_into(
         };
         let (out_dim, in_dim) = proj.dims(cfg, *layer);
         let a_ptr = DevicePtr(pool.0 + *off as u64);
-        let b_ptr = DevicePtr(pool.0 + (*off + max_rank * in_dim * BF16_BYTES) as u64);
-        *off += (max_rank * in_dim + out_dim * max_rank) * BF16_BYTES;
+        let b_ptr = DevicePtr(pool.0 + (*off + stride * in_dim * BF16_BYTES) as u64);
+        *off += (stride * in_dim + out_dim * stride) * BF16_BYTES;
         let lp = pack_pair(
-            store, a_key, b_key, peft, out_dim, in_dim, max_rank, gpu, a_ptr, b_ptr,
+            store, a_key, b_key, peft, out_dim, in_dim, stride, gpu, a_ptr, b_ptr,
         )?;
         ensure(layers, *layer);
         let el = layers[*layer]

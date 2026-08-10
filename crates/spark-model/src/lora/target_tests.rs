@@ -29,6 +29,9 @@ fn expert_router_bytes_golden() {
     let ek = vec![(7usize, ExpertProj::Gate), (7usize, ExpertProj::Down)];
     let rl = vec![3usize];
     assert_eq!(expert_router_bytes(&cfg, &ek, &rl, 16), 81_920 * 3);
+    // A non-multiple-of-8 rank cap sizes at the uint4-PADDED stride (12 → 16),
+    // matching the pack loop's derived stride byte-for-byte (SSOT).
+    assert_eq!(expert_router_bytes(&cfg, &ek, &rl, 12), 81_920 * 3);
     // Empty audit → zero bytes (no expert pool allocated).
     assert_eq!(expert_router_bytes(&cfg, &[], &[], 16), 0);
 }

@@ -114,14 +114,18 @@ impl ExpertLoraLayer {
 /// `super::pool_slot_bytes` but over the audited routed-expert + router key
 /// set (real adapters target a SUBSET, so this is sized from the audit, never
 /// from `num_experts × num_layers` maxima). Per (layer, expert, proj) and per
-/// router layer: `(max_rank·in + out·max_rank)·2` BF16 bytes.
+/// router layer: `(stride·in + out·stride)·2` BF16 bytes, where `stride` is
+/// the DERIVED uint4-aligned [`super::expert_pack::packed_stride`] of
+/// `max_rank` — the same derivation the pack loop uses (SSOT), so sizing and
+/// packing agree byte-for-byte even at a non-multiple-of-8 rank cap.
 pub fn expert_router_bytes(
     cfg: &ModelConfig,
     expert_keys: &[(usize, ExpertProj)],
     router_layers: &[usize],
     max_rank: usize,
 ) -> usize {
-    let per = |out: usize, inp: usize| (max_rank * inp + out * max_rank) * 2;
+    let stride = super::expert_pack::packed_stride(max_rank);
+    let per = |out: usize, inp: usize| (stride * inp + out * stride) * 2;
     let experts: usize = expert_keys
         .iter()
         .map(|(layer, proj)| {
