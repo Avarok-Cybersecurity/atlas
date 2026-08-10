@@ -272,6 +272,75 @@ fn value_vector_offsets() {
     assert_eq!(a_log_src_off, 16);
 }
 
+/// Dense-Holo dims (Holo-3.1-0.8B, kernels/gb10/holo-3.1-0.8b/MODEL.toml):
+/// 16 key heads x kd=128, 16 value heads x vd=128, h=1024, tp=2. Exercises the
+/// qwen35_dense.rs LinearAttention TP wiring's copy plan at REAL checkpoint
+/// shapes (equal Q/K/V/Z segment widths — unlike the synthetic dims above,
+/// where V/Z are 4x wider than Q/K).
+#[test]
+fn qkvz_plan_holo_dense_dims() {
+    let mk = |tp_rank: usize| TpGdnDims {
+        tp_rank,
+        tp_size: 2,
+        h: 1024,
+        kd: 128,
+        vd: 128,
+        local_nk: 8,
+        full_nk: 16,
+        local_nv: 8,
+        full_nv: 16,
+    };
+    let d = mk(1);
+    assert_eq!(d.full_key_dim(), 2048);
+    assert_eq!(d.full_value_dim(), 2048);
+    assert_eq!(d.full_conv_dim(), 6144);
+    assert_eq!(d.full_qkvz_out(), 8192);
+    assert_eq!(d.local_qkvz_out(), 4096);
+    assert_eq!(d.qkvz_segments(), [2048, 2048, 2048, 2048]);
+
+    let row_bytes = d.h * BF16_BYTES; // 2048
+    let (ops, local_rows) =
+        segment_copy_plan(&d.qkvz_segments(), row_bytes, d.tp_rank, d.tp_size).unwrap();
+    assert_eq!(local_rows, 4096);
+    // Full segment starts (rows): Q@0, K@2048, V@4096, Z@6144.
+    // Rank-1 halves: Q[1024..2048], K[3072..4096], V[5120..6144], Z[7168..8192];
+    // packed dst rows: 0, 1024, 2048, 3072.
+    let want = [
+        CopyOp {
+            src_off: 1024 * row_bytes,
+            dst_off: 0,
+            len: 1024 * row_bytes,
+        },
+        CopyOp {
+            src_off: 3072 * row_bytes,
+            dst_off: 1024 * row_bytes,
+            len: 1024 * row_bytes,
+        },
+        CopyOp {
+            src_off: 5120 * row_bytes,
+            dst_off: 2048 * row_bytes,
+            len: 1024 * row_bytes,
+        },
+        CopyOp {
+            src_off: 7168 * row_bytes,
+            dst_off: 3072 * row_bytes,
+            len: 1024 * row_bytes,
+        },
+    ];
+    assert_eq!(ops, want);
+
+    // Rank 0 takes each segment's FIRST half; both ranks tile every segment.
+    let d0 = mk(0);
+    let (ops0, local_rows0) =
+        segment_copy_plan(&d0.qkvz_segments(), row_bytes, d0.tp_rank, d0.tp_size).unwrap();
+    assert_eq!(local_rows0, 4096);
+    for (i, op) in ops0.iter().enumerate() {
+        assert_eq!(op.src_off, i * 2048 * row_bytes);
+        assert_eq!(op.dst_off, i * 1024 * row_bytes);
+        assert_eq!(op.len, 1024 * row_bytes);
+    }
+}
+
 /// A non-divisible segment must be rejected loudly, not silently corrupt.
 #[test]
 fn segment_plan_rejects_indivisible() {

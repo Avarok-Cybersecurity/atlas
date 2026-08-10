@@ -13,3 +13,4 @@ mod group_g_parallel;
 mod group_h_salvage;
 mod streaming_frag;
 mod streaming_frag_env;
+mod streaming_leak;

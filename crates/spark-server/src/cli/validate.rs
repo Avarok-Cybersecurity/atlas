@@ -124,6 +124,17 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         ));
     }
 
+    // ── FP8 KV headroom: < 1.0 shrinks the frozen scale below the observed
+    // absmax, guaranteeing clipping on the very tokens it was measured from. ──
+    if args.fp8_kv_headroom < 1.0 {
+        v.push(Violation::new(
+            format!("--fp8-kv-headroom {} is below 1.0.", args.fp8_kv_headroom),
+            "the frozen FP8 KV scale covers headroom× the first-observe absmax; \
+             a multiplier under 1.0 clips the very values it was measured from.",
+            "use a value ≥ 1.0 (default 2.0).",
+        ));
+    }
+
     // ── FP8 KV calibration only applies to an FP8 KV cache (issue #288 example). ──
     if args.fp8_kv_calibration_tokens > 0 && args.kv_cache_dtype != "fp8" {
         v.push(Violation::new(
