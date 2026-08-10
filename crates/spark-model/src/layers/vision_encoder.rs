@@ -12,6 +12,18 @@ use spark_runtime::gpu::{DevicePtr, KernelHandle};
 pub(super) const IMAGE_PAD_TOKEN: u32 = 151_655;
 pub const IMAGE_PAD_TOKEN_ID: u32 = IMAGE_PAD_TOKEN;
 
+/// Flattened per-patch pixel dimension `C × temporal_patch_size × patch_size²`
+/// = 3 × 2 × 16 × 16 for this ViT. It is baked into the encoder, not read from
+/// config: `buf_f32` is allocated at `p_max × PATCH_DIM × 4` and the
+/// patch-embed GEMM is issued with `K = PATCH_DIM`.
+///
+/// The host side computes the same quantity from `vision_config`
+/// (`vision_preprocess::preprocess_image`), so a checkpoint declaring a
+/// different `patch_size`/`temporal_patch_size` produces a pixel buffer of a
+/// DIFFERENT length. Every use of this constant that touches a host slice must
+/// therefore check the length rather than assume it — see `patch_embed`.
+pub(crate) const PATCH_DIM: usize = 1536;
+
 pub struct ViTBlock {
     pub norm1_w: DevicePtr,
     pub norm1_b: DevicePtr,

@@ -69,7 +69,7 @@ impl Qwen3AttentionLayer {
         )?;
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             q_latent,
             &mla.q_a_norm,
             q_latent,
@@ -127,7 +127,7 @@ impl Qwen3AttentionLayer {
         // (DeepSeek-V4: kv = kv_norm(kv_proj(h))). n*nkv rows of kv_lora dims.
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             k_out,
             &mla.kv_a_norm,
             k_out,

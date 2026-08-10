@@ -33,6 +33,27 @@ include!(concat!(env!("OUT_DIR"), "/target_ptx.rs"));
 /// that silently embedded a stale module list (the 98-vs-99 regression).
 pub const KERNEL_SET_HASH: &str = env!("ATLAS_KERNEL_SET_HASH");
 
+/// What each kernel target in THIS binary was compiled from, as JSON.
+///
+/// A map of `"hardware/model/quant"` to `{hash, arch, compiler, flags}`, baked
+/// by `build.rs` at the moment the kernels were compiled. The benchmark gate
+/// copies it into a record so the record attests to the binary's sources rather
+/// than to whatever the working tree held when the record was written — a
+/// commit sha does not describe a stale `target/`, a dirty tree, or an image
+/// carried between boxes.
+///
+/// `{}` when the build compiled nothing (`ATLAS_SKIP_BUILD=1`) or could not
+/// identify its compiler. That is not an error: an empty attestation excuses no
+/// future diff, so such a binary's records behave exactly as they did before
+/// attestations existed.
+///
+/// `option_env!` rather than `env!` so the crate still builds against an
+/// `OUT_DIR` produced by an older build script.
+pub const TARGET_CLOSURES: &str = match option_env!("ATLAS_TARGET_CLOSURES") {
+    Some(json) => json,
+    None => "{}",
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // Target-aware PTX grouping
 // ═══════════════════════════════════════════════════════════════════
@@ -276,6 +297,10 @@ pub const ROLLBACK_RESTEER_CAP: u32 = 2;
 /// models ignore this (their ring is 0; they roll back to any boundary).
 pub const DECODE_ROLLBACK_RING_SLOTS: usize = 8;
 
+/// Domain salt folded into every decode cold-tier key so a decode-ring blob can
+/// never collide with a Marconi prefix-hash key on a shared store/peer.
+pub const DECODE_DOMAIN: u64 = 0xD3C0_DE12_A5B6_C7D8;
+
 impl Default for ModelBehavior {
     fn default() -> Self {
         Self {
@@ -350,6 +375,28 @@ pub struct TargetPtxSet {
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
     /// set without an explicit `--draft-model` flag.
     pub dflash: Option<DflashConfig>,
+    /// `(module, kernel)` pairs this model's kernel files DROPPED by shadowing
+    /// their `common/` namesakes — the kernel exists in `common/` but this
+    /// model's fork of the file does not define it, so it is not compiled here.
+    ///
+    /// Shadowing is whole-file, so a fork that predates a kernel added to
+    /// `common/` silently loses it: `try_kernel` returns handle 0 and whatever
+    /// depends on it fails CLOSED. The startup audit joins this against the
+    /// kernels the model actually looked up, which separates the two classes of
+    /// missing kernel — dropped-by-fork (a build defect) from
+    /// never-built-for-this-architecture (expected, e.g. MLA on a Qwen model).
+    pub shadowed_dropped: &'static [(&'static str, &'static str)],
+    /// `(module, kernel)` lookups this model's dispatch may issue and fail to
+    /// resolve WITHOUT that being an error, declared in the model's MODEL.toml
+    /// `[expected_absent]` with a mandatory stated reason per entry.
+    ///
+    /// The boot audit (`kernel_audit::classify_failures`) fails CLOSED on every
+    /// unresolved lookup that is not in this list, so the list is the entire
+    /// difference between "this model is known to run this way" and "nobody has
+    /// looked". It is TRANSITIONAL: the right fix for a lookup that can never
+    /// resolve is to gate it on config so it is never issued (see
+    /// `qwen3_attention::init_arch_gates`), which removes it from here.
+    pub expected_absent: &'static [(&'static str, &'static str)],
 }
 
 /// All compiled kernel targets and their PTX module sets.
@@ -396,75 +443,5 @@ pub fn ptx_for_config(model_type: &str, hidden_size: usize) -> Option<TargetPtxS
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_ptx_modules_non_empty() {
-        for (name, blob) in ptx_modules() {
-            assert!(
-                !blob.is_empty(),
-                "PTX module '{name}' is empty — nvcc compilation may have failed"
-            );
-            // Blobs are `&[u8]` (uniform across backends). For the NVIDIA
-            // build under test the bytes are ASCII PTX, so decode and check
-            // the `.version` directive; on a non-text backend this lossily
-            // decodes to "" and the assert would (correctly) not apply.
-            let ptx = std::str::from_utf8(blob).unwrap_or("");
-            assert!(
-                ptx.contains(".version"),
-                "PTX module '{name}' doesn't contain .version directive"
-            );
-        }
-    }
-
-    // These tests assert that PTX modules were actually compiled into the
-    // crate at build time. They require nvcc + a real CUDA toolchain — the
-    // CI host runs with `ATLAS_SKIP_BUILD=1`, which emits an empty stub
-    // registry by design (so `cargo check` / `cargo clippy` / `cargo test`
-    // can run on hosts without a GPU). Mark them `#[ignore]` so default
-    // `cargo test` is green; they're still exercised on a developer
-    // machine via `cargo test -p atlas-kernels -- --ignored` after a
-    // real PTX build.
-
-    #[test]
-    #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
-    fn module_count_matches_cu_files() {
-        let count = ptx_modules().len();
-        assert!(count >= 31, "Expected at least 31 PTX modules, got {count}");
-    }
-
-    #[test]
-    #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
-    fn available_targets_non_empty() {
-        let targets = available_targets();
-        assert!(!targets.is_empty(), "No kernel targets available");
-        assert!(
-            targets.iter().any(|t| t.target.quant == "nvfp4"),
-            "Expected at least one NVFP4 target"
-        );
-    }
-
-    #[test]
-    #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
-    fn all_targets_have_modules() {
-        for t in available_targets() {
-            assert!(
-                t.modules.len() >= 31,
-                "Target {} has only {} modules (expected >= 31)",
-                t.target,
-                t.modules.len()
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
-    fn ptx_for_model_lookup() {
-        let found = ptx_for_model("qwen3-next-80b");
-        assert!(
-            found.is_some(),
-            "ptx_for_model('qwen3-next-80b') should find the default target"
-        );
-    }
-}
+#[path = "lib_tests.rs"]
+mod tests;

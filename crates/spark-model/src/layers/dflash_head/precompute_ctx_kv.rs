@@ -89,13 +89,14 @@ impl BlockDiffusionDraftHead {
         let row_stride = l_total * 2 * kv_slab_bytes;
 
         // One-shot diagnostic dump (ATLAS_DFLASH_PRECOMPUTE_DUMP=1).
-        static PRECOMPUTE_DUMP_DONE: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
+        // Per-model latch (see `ModelStats::dumped`) rather than a static: an
+        // operator who sets the flag and then swaps models must still get the
+        // dump, instead of it being swallowed by the previous model's shot.
         let dump = std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP")
             .ok()
             .as_deref()
             == Some("1")
-            && !PRECOMPUTE_DUMP_DONE.load(std::sync::atomic::Ordering::Relaxed);
+            && ctx.stats.dumped.keyed("dflash_precompute");
         let dump_buf = |label: &str, ptr: DevicePtr, bytes: usize| -> Result<()> {
             if !dump {
                 return Ok(());
@@ -312,10 +313,6 @@ impl BlockDiffusionDraftHead {
                     stream,
                 )?;
             }
-        }
-
-        if dump {
-            PRECOMPUTE_DUMP_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         Ok(())

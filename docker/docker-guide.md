@@ -19,7 +19,8 @@ docker/
 
 - NVIDIA GPU with CUDA 13.0+ drivers
 - Docker with NVIDIA Container Toolkit (`nvidia-docker`)
-- Model weights downloaded via `huggingface-cli`
+- Model weights downloaded via the `hf` CLI (`pip install -U huggingface_hub`; the
+  binary was called `huggingface-cli` before huggingface_hub 1.0 and no longer exists)
 
 ### Download Model Weights
 
@@ -27,11 +28,11 @@ Use `--local-dir` to download weights as real files (no symlinks). This is the r
 
 ```bash
 # 80B model (~47 GB)
-huggingface-cli download nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
+hf download nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
   --local-dir /models/qwen3-next-80b
 
 # 35B model (~20 GB) — both base + extra MTP weights
-huggingface-cli download Kbenkhaled/Qwen3.5-35B-A3B-NVFP4 \
+hf download Kbenkhaled/Qwen3.5-35B-A3B-NVFP4 \
   --local-dir /models/qwen3.5-35b
 ```
 
@@ -127,12 +128,12 @@ curl http://localhost:8888/v1/chat/completions \
 |------|---------|-------------|
 | `--model-from-path` | — | Direct filesystem path to model weights |
 | `--port` | `8888` | HTTP listening port |
-| `--max-seq-len` | `4096` | Maximum sequence length (tokens) |
+| `--max-seq-len` | `32768` | Maximum sequence length (tokens) |
 | `--gpu-memory-utilization` | `0.90` | GPU memory fraction (0.0-1.0) |
 | `--speculative` | `false` | Enable MTP speculative decoding |
-| `--num-drafts` | `1` | Draft tokens per speculative step |
+| `--num-drafts` | `1`, then per-model | Draft tokens per speculative step (K = N+1). While the value is still `1`, the model's `MODEL.toml` `default_num_drafts` replaces it — `3` on qwen3.6-27b |
 | `--max-batch-size` | `8` | Max concurrent sequences per decode step |
-| `--kv-cache-dtype` | `fp8` | KV cache precision (`fp8` or `bf16`) |
+| `--kv-cache-dtype` | `fp8` | KV cache precision — `bf16`, `fp8`, `nvfp4`, `turbo2/3/4/8`, plus nine asymmetric K/V pairings |
 
 ## Performance (NVIDIA GB10 / DGX Spark)
 

@@ -1,0 +1,9 @@
+# Pinned provisioning set for the BFCL benchmark's ~/.atlas/artifacts venv.
+#
+# Pinned, not floated: BFCL scores move with the checker, so an unpinned
+# `bfcl-eval` would silently re-score against a different rubric between runs
+# and every stored baseline would become meaningless. Bumping a pin here
+# invalidates the provisioning stamp, so the venv rebuilds by itself.
+#
+# bfcl-eval carries both the AST checker and the BFCL v4 data files.
+bfcl-eval==2026.3.23

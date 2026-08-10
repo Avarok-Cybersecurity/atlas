@@ -29,11 +29,11 @@ impl LogitsProcessor for ForcedTokenFastPath {
         &self,
         _logits: &mut [f32],
         a: &mut ActiveSeq,
-        _ctx: &LogitsContext,
+        ctx: &LogitsContext,
     ) -> ProcessorOutcome {
         if !a.inside_thinking
             && a.top_logprobs.is_none()
-            && crate::scheduler::helpers::forced_token_fastpath_enabled()
+            && ctx.sampling.forced_token_fastpath
             && let Some(ref mut gs) = a.grammar_state
             && let Some(forced) = gs.forced_token()
         {

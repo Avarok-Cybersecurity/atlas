@@ -108,6 +108,13 @@ impl GroupLayout {
     pub fn group_bytes(&self) -> u64 {
         self.group_stride
     }
+
+    /// Bytes in one full block: `K` + `V` across all kv-heads, each a
+    /// `group_stride`-pitch group. This is the contiguous unit the
+    /// block-granular `StorageBackend` ops read/write in one operation.
+    pub fn block_bytes(&self) -> u64 {
+        2 * (self.num_kv_heads as u64) * self.group_stride
+    }
 }
 
 #[cfg(test)]

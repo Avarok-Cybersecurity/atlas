@@ -320,6 +320,23 @@ pub(crate) fn dense_auto(
                 dequant_fp8_to_bf16(store, prefix, gpu)
             }
         }
+        WeightDtype::UInt8 => {
+            // 4-bit-packed NVFP4, 2 values/byte: on-disk shape is [n, k/2] U8.
+            // Quantized MTP heads (centml modelopt W4A4 exports) ship every
+            // mtp.* projection this way; dense GEMV/GEMM needs BF16, so
+            // dequant once at load via the shared modelopt-aware helper
+            // (weight + weight_scale + weight_scale_2).
+            let prefix = name
+                .strip_suffix(".weight")
+                .ok_or_else(|| anyhow::anyhow!("NVFP4 tensor {name} doesn't end with .weight"))?;
+            if w.shape.len() != 2 {
+                anyhow::bail!(
+                    "dense_auto: packed NVFP4 {name} must be 2-D, got {:?}",
+                    w.shape
+                );
+            }
+            crate::weight_map::dequant_nvfp4_to_bf16(store, prefix, w.shape[0], w.shape[1] * 2, gpu)
+        }
         other => anyhow::bail!("dense_auto: unsupported dtype {:?} for {name}", other),
     }
 }

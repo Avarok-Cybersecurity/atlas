@@ -1,6 +1,6 @@
 # Installation
 
-Atlas ships as a single Docker image that contains the release binary plus all twelve compiled `(GB10, model, quant)` PTX modules. There is no "install Atlas + download kernels" step — the kernels are baked in.
+Atlas ships as a single Docker image that contains the release binary plus every compiled `(GB10, model, quant)` PTX module — **22 target sets** today, one per `kernels/gb10/<model>/<quant>/` directory. There is no "install Atlas + download kernels" step — the kernels are baked in.
 
 ## Hardware prerequisites
 
@@ -19,16 +19,20 @@ Other NVIDIA GPUs (H100, B200) and other vendors (AMD, Apple, Intel) are on the 
 docker pull avarok/atlas-gb10:latest
 ```
 
-The image is ~8 GB — it contains the Rust release binary, the 12 PTX module sets, tokenizer dependencies, and the `nvidia-container-runtime` library surfaces. No Python, no CUDA toolkit.
+The image contains the Rust release binary, all 22 PTX module sets, tokenizer dependencies, and the `nvidia-container-runtime` library surfaces. No Python, no CUDA toolkit.
 
 ## Bring your own weights
 
-Atlas loads HuggingFace `safetensors` directly. The image does **not** ship model weights. On first run, the binary resolves a HuggingFace model ID (e.g. `Sehyo/Qwen3.5-35B-A3B-NVFP4`) against `~/.cache/huggingface/hub` — download the weights once with `huggingface-cli` or let the server download-on-miss:
+Atlas loads HuggingFace `safetensors` directly. The image does **not** ship model weights. On first run, the binary resolves a HuggingFace model ID (e.g. `Sehyo/Qwen3.5-35B-A3B-NVFP4`) against `~/.cache/huggingface/hub` — download the weights once with the `hf` CLI or let the server download-on-miss:
 
 ```bash
-pip install -U "huggingface_hub[cli]"
-huggingface-cli download Sehyo/Qwen3.5-35B-A3B-NVFP4
+pip install -U huggingface_hub
+hf download Sehyo/Qwen3.5-35B-A3B-NVFP4
 ```
+
+The command is `hf`, not `huggingface-cli`: `huggingface_hub` 1.0 renamed the
+binary, and on 1.16+ the old name is gone entirely. Older docs and scripts still
+say `huggingface-cli download …`, which now fails with "command not found".
 
 Mount the cache directory into the container:
 
@@ -47,9 +51,13 @@ cd atlas
 # Full build — compiles every (gb10, model, quant) target (~6 min)
 docker build -f docker/gb10/Dockerfile -t atlas-gb10 .
 
-# Rust-only check (no CUDA)
-ATLAS_SKIP_BUILD=1 cargo clippy --workspace --all-features -- -Dwarnings
-ATLAS_SKIP_BUILD=1 cargo fmt --all -- --check
+# Rust-only check (no CUDA). CUDARC_CUDA_VERSION is needed alongside
+# ATLAS_SKIP_BUILD: without it cudarc's build script shells out to
+# `nvcc --version` and panics on a host that has no CUDA toolkit.
+# This pair is exactly what ci.yml exports. Deny-warnings comes from
+# [workspace.lints], so `-- -Dwarnings` is not needed and CI does not pass it.
+ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+cargo fmt --all -- --check
 
 # Unit tests (uses MockGpuBackend; no GPU required)
 cargo test --release
@@ -64,7 +72,7 @@ The build system reads `kernels/gb10/HARDWARE.toml` for architecture flags, enum
 
 ```bash
 docker run --rm --gpus all avarok/atlas-gb10:latest --version
-# → spark 0.1.0 (gb10, SM121, 12 target sets)
+# → spark 1.0.0-beta-preview   (the workspace version in Cargo.toml)
 docker run --rm --gpus all avarok/atlas-gb10:latest --help | head -20
 ```
 

@@ -1,0 +1,4 @@
+[2m2026-07-25T06:04:01.327062Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Weights: 17.54 GB, estimated free: 95.1 GB, actual free: 94.6 GB (reserve: 35660 MB)
+[2m2026-07-25T06:04:40.037617Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV budget self-relative (auto): baseline-free 112.6 GB − free-now 73.1 GB = Atlas-own 39.5 GB; co-tenants 9.1 GB excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)
+[2m2026-07-25T06:04:40.037621Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV cache: 121.7 GB total × 70% util = 85.2 GB budget; 39.5 GB pre-KV + 34.8 GB reserve → 10.8 GB for KV → 11072 blocks × 16 tok/block = 177152 max KV tokens
+[2m2026-07-25T06:04:41.590738Z[0m [32m INFO[0m [2mspark_model::model::ssm_snapshot[0m[2m:[0m SSM snapshot pool: Marconi 192 slots (29088 MB), decode-rollback 8 slots × 1 seqs (1212 MB), 48 layers

@@ -13,6 +13,115 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
+/// FP16 h-state twin of [`gdn_decode_f32_strided_norm`] (`ATLAS_SSM_H_FP16`).
+///
+/// The only signature difference is `h_seq_stride`: the per-sequence stride of
+/// the h-state pool in __half elements. Stage 1 keeps the pool FP32-sized, so
+/// slots are `h_state_bytes` apart while the dense FP16 footprint is half that
+/// — the stride must be passed, not inferred from the head dims.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_f16_strided_norm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    z_gate: DevicePtr,
+    norm_weight: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    z_stride: u32,
+    out_stride: u32,
+    h_seq_stride: u64,
+    eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_state)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(z_gate)
+        .arg_ptr(norm_weight)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .arg_u32(z_stride)
+        .arg_u32(out_stride)
+        .arg_u64(h_seq_stride)
+        .arg_f32(eps)
+        .launch(stream)
+}
+
+/// One-shot FP32 -> FP16 conversion of one layer's SSM h-state
+/// (`ATLAS_SSM_H_FP16`). `n` is the FP32 ELEMENT count, derived from the
+/// pool's byte size — never a duplicated shape literal.
+///
+/// Kernel: `ssm_h_state_f32_to_f16(src, dst, n)`. Grid-stride; `src` and `dst`
+/// must not alias (a narrowing compaction in place is a data race).
+pub fn ssm_h_state_f32_to_f16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    src: DevicePtr,
+    dst: DevicePtr,
+    n: u64,
+    stream: u64,
+) -> Result<()> {
+    const BLOCK: u32 = 256;
+    let blocks = div_ceil(n as u32, BLOCK).clamp(1, 4096);
+    KernelLaunch::new(gpu, kernel)
+        .grid([blocks, 1, 1])
+        .block([BLOCK, 1, 1])
+        .arg_ptr(src)
+        .arg_ptr(dst)
+        .arg_u64(n)
+        .launch(stream)
+}
+
+/// One-shot FP16 -> FP32 widening of one layer's SSM h-state
+/// (`ATLAS_SSM_H_FP16`). `n` is the FP32 ELEMENT count of the destination.
+///
+/// Kernel: `ssm_h_state_f16_to_f32(src, dst, n)`. Grid-stride; `src` and `dst`
+/// must not alias.
+pub fn ssm_h_state_f16_to_f32(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    src: DevicePtr,
+    dst: DevicePtr,
+    n: u64,
+    stream: u64,
+) -> Result<()> {
+    const BLOCK: u32 = 256;
+    let blocks = div_ceil(n as u32, BLOCK).clamp(1, 4096);
+    KernelLaunch::new(gpu, kernel)
+        .grid([blocks, 1, 1])
+        .block([BLOCK, 1, 1])
+        .arg_ptr(src)
+        .arg_ptr(dst)
+        .arg_u64(n)
+        .launch(stream)
+}
+
 /// Gated delta rule decode (recurrent SSM update, supports batched sequences).
 ///
 /// Kernel: `gated_delta_rule_decode(h_state, query, key, value,

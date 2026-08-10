@@ -33,6 +33,17 @@ use spark_runtime::weights::WeightStore;
 /// if the user didn't ask for speculative decoding, MTP tensors in the
 /// checkpoint are harmless dead weight and do not warrant a bail.
 pub fn preflight(store: &WeightStore, config: &ModelConfig, use_speculative: bool) -> Result<()> {
+    // NLLB / M2M-100 is an encoder-decoder checkpoint: the tied embedding is
+    // `model.shared.weight`, layers span separate encoder + decoder stacks, and
+    // there is cross-attention — none of which fit these decoder-only checks.
+    // `NllbGpuModel::new` validates its own weights (presence + bf16 dtype).
+    if matches!(config.model_type.as_str(), "m2m_100" | "nllb") {
+        tracing::info!(
+            "Pre-flight: NLLB/M2M-100 encoder-decoder — generic checks skipped \
+             (weights validated in NllbGpuModel::new)"
+        );
+        return Ok(());
+    }
     // Model-agnostic checks — driven purely by `store.names()` and
     // `config` (which already carries the parsed `config.json` values).
     check_quant_method(config)?;

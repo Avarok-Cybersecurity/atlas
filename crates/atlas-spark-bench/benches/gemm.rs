@@ -6,15 +6,10 @@
 //! Requires a GPU — skips gracefully if unavailable.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use atlas_core::registry::RawCudaFunc;
 use atlas_spark_bench::gpu;
 use criterion::{Criterion, criterion_group, criterion_main};
-
-static GEMM_FN: OnceLock<RawCudaFunc> = OnceLock::new();
-static W4A16_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 
 /// Dense BF16 GEMM: dense_gemm_bf16(A, B, C, M, N, K)
 /// A: [M,K], B: [N,K] row-major, C: [M,N]
@@ -22,7 +17,7 @@ static W4A16_FN: OnceLock<RawCudaFunc> = OnceLock::new();
 fn bench_dense_gemm(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &GEMM_FN, "gemm", "dense_gemm_bf16");
+    let kernel = gpu::get_kernel(reg, "gemm", "dense_gemm_bf16");
 
     let elem_bytes = 2_usize;
 
@@ -91,7 +86,7 @@ fn bench_dense_gemm(c: &mut Criterion) {
 fn bench_w4a16(c: &mut Criterion) {
     let reg = gpu::ensure_registry();
     let stream = reg.raw_stream();
-    let kernel = gpu::get_kernel(reg, &W4A16_FN, "w4a16", "w4a16_gemm");
+    let kernel = gpu::get_kernel(reg, "w4a16", "w4a16_gemm");
 
     let m: u32 = 80;
     let n: u32 = 1024;

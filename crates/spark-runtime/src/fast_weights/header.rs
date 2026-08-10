@@ -21,6 +21,10 @@ struct SafetensorsIndex {
 pub(super) struct TensorMeta {
     pub(super) name: String,
     pub(super) dtype: WeightDtype,
+    /// True when the shard stores this tensor as IEEE F16. The tensor is
+    /// staged as BF16 (`dtype` above) and the copy loop converts the bytes —
+    /// same 2-byte element size, different bit layout.
+    pub(super) from_f16: bool,
     pub(super) shape: Vec<usize>,
     /// Absolute byte offset in the file where the tensor bytes start.
     pub(super) abs_offset: u64,
@@ -94,6 +98,7 @@ pub(super) fn resolve_shards(
 /// are relative to the start of the data section; we convert to absolute file
 /// offsets up-front so downstream callers only need the fd.
 pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
+    let file_len = file.metadata()?.len();
     let mut size_buf = [0u8; 8];
     file.read_exact(&mut size_buf)?;
     let header_size = u64::from_le_bytes(size_buf) as usize;
@@ -115,19 +120,23 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             continue;
         }
         let dtype_str = info["dtype"].as_str().unwrap_or("BF16");
-        let dtype = match dtype_str {
-            "F32" => WeightDtype::FP32,
-            "BF16" => WeightDtype::BF16,
-            "U8" => WeightDtype::UInt8,
+        let (dtype, from_f16) = match dtype_str {
+            "F32" => (WeightDtype::FP32, false),
+            "BF16" => (WeightDtype::BF16, false),
+            // F16 is not store-legal (WeightDtype is closed to store dtypes):
+            // stage as BF16 and mark for byte conversion in the copy loop.
+            // centml modelopt W4A4 exports ship all unquantized tensors as F16.
+            "F16" => (WeightDtype::BF16, true),
+            "U8" => (WeightDtype::UInt8, false),
             // I8 is a 1-byte raw container; DeepSeek-V4-Flash-NVFP4 ships its MTP
             // experts' 4-bit-packed weights as I8 (vs U8 for the main layers).
             // Signedness is irrelevant for packed FP4 — the dequant kernel extracts
             // nibbles by bit ops — so treat I8 as raw bytes (UInt8), matching the
             // NVFP4 expert path.
-            "I8" => WeightDtype::UInt8,
-            "F8_E4M3" => WeightDtype::FP8E4M3,
-            "F8_E8M0" => WeightDtype::FP8E8M0,
-            "I64" => WeightDtype::Int64,
+            "I8" => (WeightDtype::UInt8, false),
+            "F8_E4M3" => (WeightDtype::FP8E4M3, false),
+            "F8_E8M0" => (WeightDtype::FP8E8M0, false),
+            "I64" => (WeightDtype::Int64, false),
             other => bail!("Unsupported safetensors dtype '{other}' for tensor {name}"),
         };
         let shape: Vec<usize> = info["shape"]
@@ -138,18 +147,22 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
                     .collect()
             })
             .unwrap_or_default();
-        let offsets = info["data_offsets"]
-            .as_array()
-            .context("tensor missing data_offsets")?;
-        let rel_start = offsets[0].as_u64().context("bad data_offsets[0]")?;
-        let rel_end = offsets[1].as_u64().context("bad data_offsets[1]")?;
-        let len = (rel_end - rel_start) as usize;
+        // Shared with the RDMA manifest builder: a reversed or past-EOF
+        // `data_offsets` pair is rejected here rather than wrapping into a
+        // `u64::MAX`-ish `len` that becomes a pread window below.
+        let span = atlas_core::safetensors::tensor_span(
+            name,
+            &info["data_offsets"],
+            data_start,
+            file_len,
+        )?;
         out.push(TensorMeta {
             name: name.clone(),
             dtype,
+            from_f16,
             shape,
-            abs_offset: data_start + rel_start,
-            len,
+            abs_offset: span.abs_offset,
+            len: span.len as usize,
         });
     }
     // Sort by offset so the reader does sequential disk access.

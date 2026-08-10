@@ -92,6 +92,7 @@ impl DraftProposer for MultiModuleMtpHead {
                 block_table: Vec::new(),
                 seq_len: 0,
                 last_num_drafted: 0,
+                last_pair_key: None,
             })
             .collect();
         Ok(Box::new(MultiModuleMtpState {
@@ -251,6 +252,7 @@ mod tests {
                     block_table: Vec::new(),
                     seq_len: 0,
                     last_num_drafted: 0,
+                    last_pair_key: None,
                 })
                 .collect(),
             last_num_drafted: 0,

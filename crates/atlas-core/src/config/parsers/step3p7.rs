@@ -64,6 +64,16 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         // partial_rotary_factors: array → remove (we handle via partial_rotary_factor scalar)
         obj.remove("partial_rotary_factors");
         // Remove other array fields that serde can't handle
+        // KNOWN LIMITATION (swiglu_limits / swiglu_limits_shared): unlike
+        // rope_theta above, which is collapsed to a usable scalar, these two are
+        // dropped with no fallback — `ModelConfig` has no field to hold them.
+        // They are PER-LAYER SwiGLU clamp limits, and discarding them does not
+        // mean "no clamp": Step-3.7 is served with whatever constant the
+        // activation kernel holds, which is 10.0 — DeepSeek-V4's value, not
+        // Step-3.7's. See kernels/gb10/step3p7-flash/nvfp4/moe_silu_mul.cu.
+        // Reading them properly means a per-layer limit threaded into a kernel
+        // argument, which is also what DeepSeek-V4 wants; until then this is a
+        // silent approximation the checkpoint already gave us the data to avoid.
         obj.remove("swiglu_limits");
         obj.remove("swiglu_limits_shared");
         obj.remove("use_rope_layers");
@@ -221,11 +231,11 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
         .unwrap_or(true);
 
     // ── Layer types ─────────────────────────────────────────────────────
-    // KNOWN LIMITATION: Step 3.7 has mixed attention (12 full + 33 sliding
-    // in 45 hidden layers). Atlas currently maps both to FullAttention.
-    // The sliding_window value (512) is set globally but not applied
-    // per-layer. For correct behaviour, Atlas would need per-layer
-    // attention type dispatch. Acceptable for initial bring-up.
+    // Step 3.7 has mixed attention (12 full + 33 sliding in 45 hidden
+    // layers). Both map to KV-cache-consuming attention types: the loader
+    // applies the 512-token sliding window per-layer (set_sliding_window)
+    // and `num_attention_layers()` counts FullAttention + SlidingAttention
+    // so KV pool sizing and layer_kv_dtypes indexing agree (SSOT).
     if config.layer_types.is_empty()
         && let Some(list) = text_config.get("layer_types").and_then(Value::as_array)
     {

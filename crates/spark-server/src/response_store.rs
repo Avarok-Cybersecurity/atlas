@@ -104,15 +104,116 @@ impl StoreBackend for NoopBackend {
 /// `{dir}/{urlencoded_id}.json`. File names are URL-encoded in case an
 /// id ever contains a path separator (shouldn't happen — our ids are
 /// `resp_<uuid>` / `chatcmpl-<uuid>` — but defense in depth).
+/// Queue depth for pending disk operations. Bounded so a stalled disk cannot
+/// grow it without limit; see [`FilesystemBackend::persist`] for what happens
+/// when it fills (it does NOT drop entries — this is functional state, not
+/// diagnostics).
+const DISK_QUEUE_DEPTH: usize = 1024;
+
+enum DiskOp {
+    Persist(Box<DiskEntry>),
+    Forget(String),
+}
+
+/// Persists entries to disk from a dedicated thread.
+///
+/// `persist` and `forget` are reached from ASYNC request handlers
+/// (`finalize_responses_stream`, `translate_chat_response_to_responses`) through
+/// the sync `ResponseStore::insert`. Writing inline blocked a tokio worker on a
+/// `write + fsync-ish rename` for every completed Responses request. The work now
+/// goes to this thread; ordering is preserved because one queue carries both
+/// writes and deletes, so a persist can never be reordered past the forget that
+/// supersedes it.
 pub struct FilesystemBackend {
     dir: PathBuf,
+    /// `None` only while `Drop` is closing the queue.
+    tx: Mutex<Option<std::sync::mpsc::SyncSender<DiskOp>>>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Latches the "disk queue full" warning so it is logged once per backend
+    /// rather than once per process — the queue it describes is this one's.
+    queue_full_warned: std::sync::atomic::AtomicBool,
+}
+
+fn write_to_disk(dir: &std::path::Path, disk: &DiskEntry) {
+    let path = dir.join(format!("{}.json", sanitize_id(&disk.id)));
+    let tmp = path.with_extension("json.tmp");
+    let bytes = match serde_json::to_vec(disk) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("response_store: serialize failed for {}: {e}", disk.id);
+            return;
+        }
+    };
+    // Write-then-rename for crash-atomicity.
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        tracing::warn!("response_store: write {}: {e}", tmp.display());
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        tracing::warn!("response_store: rename {}: {e}", path.display());
+    }
+}
+
+fn remove_from_disk(dir: &std::path::Path, id: &str) {
+    let path = dir.join(format!("{}.json", sanitize_id(id)));
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("response_store: remove {}: {e}", path.display());
+    }
 }
 
 impl FilesystemBackend {
     pub fn new(dir: impl Into<PathBuf>) -> std::io::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DiskOp>(DISK_QUEUE_DEPTH);
+        let worker_dir = dir.clone();
+        let worker = std::thread::Builder::new()
+            .name("atlas-respstore".into())
+            .spawn(move || {
+                while let Ok(op) = rx.recv() {
+                    match op {
+                        DiskOp::Persist(d) => write_to_disk(&worker_dir, &d),
+                        DiskOp::Forget(id) => remove_from_disk(&worker_dir, &id),
+                    }
+                }
+            })?;
+        Ok(Self {
+            dir,
+            tx: Mutex::new(Some(tx)),
+            worker: Mutex::new(Some(worker)),
+            queue_full_warned: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Enqueue a disk op, or run it inline if the queue is full.
+    ///
+    /// Unlike the request dumper, dropping is NOT acceptable here: a lost write
+    /// means a resumable response silently disappears after a restart. Under
+    /// sustained overload we take the blocking write rather than the data loss,
+    /// and say so once.
+    fn submit(&self, op: DiskOp) {
+        let guard = self.tx.lock();
+        let Some(tx) = guard.as_ref() else {
+            return;
+        };
+        if let Err(std::sync::mpsc::TrySendError::Full(op)) = tx.try_send(op) {
+            // Latched on the BACKEND, not in a static: the warning is about
+            // this backend's disk queue, and `&self` is right here.
+            if !self
+                .queue_full_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                tracing::warn!(
+                    "response_store: disk queue full — falling back to inline writes                      (persistence is keeping up poorly; requests will see the write latency)"
+                );
+            }
+            match op {
+                DiskOp::Persist(d) => write_to_disk(&self.dir, &d),
+                DiskOp::Forget(id) => remove_from_disk(&self.dir, &id),
+            }
+        }
     }
 
     fn path_for(&self, id: &str) -> PathBuf {
@@ -122,10 +223,28 @@ impl FilesystemBackend {
 
 /// Strip any path separator or control chars. Our ids only contain
 /// `[a-zA-Z0-9_-]`, so this is a belt-and-braces check.
+/// Maximum stem length. Bounds the filename regardless of what a client sends,
+/// which also keeps us inside every filesystem's per-component limit.
+const MAX_STEM: usize = 96;
+
+/// Map a client-supplied response id to a safe filename stem.
+///
+/// Response ids reach this from request bodies, so the result must not be able
+/// to leave the store directory (CWE-22). The allowlist is `[A-Za-z0-9_-]` and
+/// everything else — including `.`, `/`, `\\`, NUL and every Unicode separator —
+/// becomes `_`. Excluding `.` is deliberate: with no dots, `..` cannot be
+/// expressed at all, so traversal is impossible by construction rather than by
+/// argument about what the join does. The length cap bounds the rest.
+///
+/// Dropping `.` changes the on-disk name for ids that contain one. Nothing reads
+/// ids back out of filenames — `replay` takes them from the JSON body — so the
+/// only effect is that a pre-existing file for such an id is no longer matched
+/// by `forget`; TTL replay removes it on the next start.
 fn sanitize_id(id: &str) -> String {
     id.chars()
+        .take(MAX_STEM)
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
                 c
             } else {
                 '_'
@@ -193,6 +312,18 @@ fn messages_to_disk_json(msgs: &[IncomingMessage]) -> serde_json::Value {
     )
 }
 
+impl Drop for FilesystemBackend {
+    /// Close the queue and wait for the writer, so a dropped store has finished
+    /// its disk work — a fresh store replaying the same directory sees every
+    /// entry the old one accepted.
+    fn drop(&mut self) {
+        self.tx.lock().take();
+        if let Some(h) = self.worker.lock().take() {
+            let _ = h.join();
+        }
+    }
+}
+
 impl StoreBackend for FilesystemBackend {
     fn persist(&self, entry: &StoredEntry) {
         let disk = DiskEntry {
@@ -204,32 +335,11 @@ impl StoreBackend for FilesystemBackend {
             body: entry.body.clone(),
             persisted_at_unix: now_unix(),
         };
-        let path = self.path_for(&entry.id);
-        let tmp = path.with_extension("json.tmp");
-        let bytes = match serde_json::to_vec(&disk) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!("response_store: serialize failed for {}: {e}", entry.id);
-                return;
-            }
-        };
-        // Write-then-rename for crash-atomicity.
-        if let Err(e) = std::fs::write(&tmp, &bytes) {
-            tracing::warn!("response_store: write {}: {e}", tmp.display());
-            return;
-        }
-        if let Err(e) = std::fs::rename(&tmp, &path) {
-            tracing::warn!("response_store: rename {}: {e}", path.display());
-        }
+        self.submit(DiskOp::Persist(Box::new(disk)));
     }
 
     fn forget(&self, id: &str) {
-        let path = self.path_for(id);
-        if let Err(e) = std::fs::remove_file(&path)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!("response_store: remove {}: {e}", path.display());
-        }
+        self.submit(DiskOp::Forget(id.to_string()));
     }
 
     fn replay(&self, ttl: Duration) -> Vec<StoredEntry> {

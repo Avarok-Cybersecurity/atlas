@@ -82,6 +82,44 @@ We make no compromises or generalizations. Each hardware and model combination h
 
 It took a significant amount of time to build this codebase. We also know people will want to submit AI-generated PRs. We can't stop you, and in fact, given SOTA, you might just have to! The good news is that this codebase was built with enough railguards, structure, and abstraction to guide your AI to absorb the entire monorepo and contribute meaningfully. There's enough context to keep this going off the rails like a crazy train.This means ultimately that instead of waiting for days to weeks before getting model support, you can just fork this repo, and ask your AI to integrate it, then within hours you'll more likely than not have a working model running. We will not be condescending, [unlike some other inference engines out there when good-faith PRs that simply work are posted](https://github.com/ggml-org/llama.cpp/pull/18680#issuecomment-3723954542). We are not stymied by bureacracy, and want to enable the community to rapidly expand this monorepo ecosystem safely and effectively.
 
+**AI-authored PRs are the default, and the target.** If you write code by hand,
+we ask you to say which parts and why the human beat the AI — not to discourage
+you, but because every such case marks a gap in the tooling that we would rather
+close than live with. The intent is that the share of hand-written code trends
+toward zero. Human-written sections are reviewed by AI to check that claim, and
+if the review finds the human was right, that is a result worth keeping.
+
+The contribution loop has exactly two exits — merge, or back to editing:
+
+```mermaid
+flowchart TD
+    classDef human fill:#5a189a,stroke:#3c096c,color:#e0aaff
+    classDef auto fill:#1e6091,stroke:#184e77,color:#d9ed92
+    classDef gate fill:#7f4f24,stroke:#582f0e,color:#ffe6a7
+    classDef done fill:#2d6a4f,stroke:#1b4332,color:#d8f3dc
+
+    MAIN([main]):::done
+    BRANCH[branch off main]:::auto
+    OPEN[open the PR<br/>What · Why · Benchmarks · <b>Authorship</b>]:::auto
+    EDIT[make edits]:::auto
+    CHECKS[run the PR gate checks]:::gate
+    GREEN{all gates green?}:::gate
+    REVIEW[wait for human review]:::human
+    VERDICT{approved?}:::human
+    MERGE([squash and merge]):::done
+
+    MAIN --> BRANCH --> OPEN --> EDIT --> CHECKS --> GREEN
+    GREEN -- no --> EDIT
+    GREEN -- yes --> REVIEW --> VERDICT
+    VERDICT -- changes requested --> EDIT
+    VERDICT -- yes --> MERGE
+    MERGE --> MAIN
+```
+
+The per-state commands, exit conditions and the invariants an agent must not
+violate are in [`CONTRIBUTING.md`](CONTRIBUTING.md#pull-request-process) — in a
+table, because an agent should not have to infer the contract from prose.
+
 #### Theory-Friendly Codebase
 
 Arxiv is getting countless papers published every day on AI. Nobody can keep up. Yet, some papers may be relevant to this project, others may not. Research endeavors to improve quality, alignment, and speed ought to be considered by our community as something we can integrate cleanly. Feel free to open a PoC PR here and just explain what you did and why, and how it works.
@@ -270,13 +308,15 @@ We're not going to spend much real estate on benchmark theatre. The numbers belo
 
 We compete with vLLM and TensorRT-LLM on the same GB10. On Qwen3.5-35B-A3B with MTP speculative decoding, Atlas decodes faster than the same model under NVIDIA's own vLLM build on the same hardware — meaningfully faster, on numbers we can hand you the script for. We will not put a bigger figure in this paragraph than the one that comes off our own benchmark scripts, and we publish the vLLM baseline command alongside ours so you can verify both. If you reproduce a faster vLLM number, file an issue. We would rather be measured than congratulated.
 
-The kernel-by-kernel comparison against PyTorch eager (35 hyperoptimized CUDA kernels, all wins on production-relevant shapes) lives in the [benchmarks chapter](book/src/operations/benchmarks.md) along with the methodology footnotes — read them; they matter.
+The kernel-by-kernel comparison against PyTorch eager lives in the [benchmarks chapter](book/src/operations/benchmarks.md) along with the methodology footnotes — read them; they matter. That table is **32 benchmark rows over ~11 kernel families** (attention, GEMM, W4A16, MoE, conv1d, GDR, RMSNorm, SiLU×Mul, RoPE), all wins; it is not a sweep of the whole registry. The registry itself is much larger — `kernels/gb10/common/` alone holds 160 `.cu` files defining 318 `extern "C" __global__` entry points, before the per-model shadow directories.
 
 <a id="kv-cache"></a>
 
 ## 🗜️ KV Cache Quantization
 
-Atlas stores attention key/value state in one of six quantized formats, selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
+Atlas stores attention key/value state in a quantized format selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
+
+The table below is the **symmetric** set — the same format for K and V. `KvCacheDtype` (`crates/spark-runtime/src/kv_cache.rs`) accepts **16 values in total**: the six below plus `turbo2` (2-bit) and nine TurboQuant+ **asymmetric** K/V pairings (`turbo4k_turbo3v`, `turbo4k_turbo8v`, `turbo3k_turbo8v`, `bf16k_turbo4v`, `bf16k_turbo3v`, `bf16k_turbo2v`, `fp8k_turbo4v`, `fp8k_turbo3v`, `fp8k_turbo2v`) that store K at higher precision than V, since K dominates attention-score fidelity. Those are documented in [`docs/turboquant-plus.md`](docs/turboquant-plus.md); the parser is the authority on the accepted spelling.
 
 | CLI flag | Bits/element | Scale overhead | Technique | When to use |
 |---|---:|---|---|---|
@@ -324,8 +364,8 @@ sudo docker run -d --name atlas \
 Why these flags:
 
 - `--max-seq-len 65536` — 64K window for long agent traces, file reads, multi-step tool use.
-- `--kv-cache-dtype fp8 --kv-high-precision-layers auto` — half the memory of BF16, no measurable quality loss; the `auto` heuristic keeps first/last attention blocks at BF16 where the routing distribution is most sensitive.
-- `--scheduling-policy slai` — SLAi scheduler (Atlas's default) reorders concurrent sequences to keep MTP verify batches dense.
+- `--kv-cache-dtype fp8 --kv-high-precision-layers auto` — half the memory of BF16, no measurable quality loss; the boundary attention blocks stay BF16, where the routing distribution is most sensitive. `auto` is **not** a heuristic — it is a fixed alias for `2` (`serve_phases/kv_cache.rs`), alongside `max`/`all` meaning "every attention layer". Because it is non-zero it also *suppresses* the per-dtype automatic promotion that `0` would trigger under a `turbo*` KV dtype.
+- `--scheduling-policy slai` — SLAi scheduler. **Not the default** — `serve` defaults to `fifo`, so this flag has to be passed to get SLO-aware ordering. It reorders concurrent sequences to keep MTP verify batches dense and prefills shortest-prompt-first.
 - `--enable-prefix-caching` — radix-tree prefix cache; tool-use sessions reuse the system prompt + tool-defs + earlier turns.
 - `--speculative --num-drafts 2` — MTP draft head proposes 2 tokens per step. **No `--mtp-quantization` flag** ⇒ defaults to **BF16**, which gives the highest acceptance rate (lossier MTP projections lower acceptance and usually *worsen* end-to-end tok/s, despite the faster draft forward).
 - `--tool-call-parser qwen3_coder` — explicit Qwen XML tool format. Atlas auto-resolves the right parser from `tool_defaults.toml` per model; pass it anyway in production scripts.
@@ -404,11 +444,10 @@ Atlas exposes a focused set of **environment-gated diagnostic dumps** for tracki
 
 ### MoE-path dumps — `ATLAS_DUMP_EXPERT_IDS=1`
 
-Set `-e ATLAS_DUMP_EXPERT_IDS=1` on the container. The MoE prefill paths (both `forward_prefill_fp8.rs` and `forward_prefill.rs`) emit the following per-fire log lines, scoped to the **last token of the chunk** so the values are directly comparable to a single-pass reference forward at the same position:
+Set `-e ATLAS_DUMP_EXPERT_IDS=1` on the container. The markers themselves live in one place — `crates/spark-model/src/layers/moe/dump.rs` — and every MoE path calls into it (`forward_prefill.rs`, `forward_prefill_fp8.rs`, `forward_prefill_bf16.rs`, `forward_prefill_routed.rs`, `forward_batched.rs`). They emit the following per-fire log lines, scoped to the **last token of the chunk** so the values are directly comparable to a single-pass reference forward at the same position:
 
 | Log marker | Fires | What it captures | Use it to localize |
 |---|---|---|---|
-| `ATLAS_FP8_GROUPED_KERNEL` | once (FP8 only) | v1 vs v2 grouped-GEMM selection | Confirm which kernel variant is active |
 | `ATLAS_EXPERT_LOAD` | once / server | Per-expert histogram + `truncated=true/false` flag | Spot `max_m_tiles` truncation against actual routing skew |
 | `ATLAS_GATE_INPUT` | per layer × chunk | post-norm router input (`\|x\|` + `first5`) | Verify the MoE block input matches the reference |
 | `ATLAS_GATE_LOGITS` | per layer × chunk | top-10 `(idx, val)` + mean + std of raw gate logits | Catch gate-matmul drift before softmax/topK |
@@ -432,12 +471,15 @@ Together, those plus the MoE dumps above give a complete trace of the residual s
 
 ### Path-toggle env vars
 
-For bisecting *which* code path is at fault, two override toggles let you swap the routed-expert dispatch at runtime without rebuilding:
+For bisecting *which* code path is at fault, one override toggle lets you swap the routed-expert dispatch at runtime without rebuilding:
 
 | Env var | Effect |
 |---|---|
-| `ATLAS_FP8_MOE_COALESCED=0` | Forces the FP8 grouped-GEMM v1 kernel (default is v2; v1 has a documented numerical bug for some `(token, expert)` tiles) |
-| `ATLAS_FORCE_NVFP4_MOE=1` | Routes an FP8 model's MoE through the NVFP4 path — useful for cross-validating that the bug is in one specific quant path |
+| `ATLAS_FORCE_NVFP4_MOE=1` | Routes an FP8 model's MoE through the NVFP4 path — useful for cross-validating that the bug is in one specific quant path. Read at `weight_loader/qwen35/load_layers.rs`, so it applies to the Qwen3.5/3.6 loader family, not to every FP8 checkpoint |
+
+There is no longer an FP8 grouped-GEMM v1/v2 selector: `moe_fp8_grouped_gemm` is a single
+grid-compaction kernel (`kernels/gb10/common/moe_fp8_grouped_gemm.cu`), and the
+`ATLAS_FP8_MOE_COALESCED` gate that once chose between them has no read site in the tree.
 
 ### How we use these in practice — 3-step workflow
 

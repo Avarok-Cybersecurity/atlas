@@ -1,0 +1,45 @@
+# Recipe: Diffusion-Gemma-FP8-Dynamic (single-node reference serving)
+# RedHatAI FP8-dynamic (compressed-tensors w8a8) variant of DiffusionGemma.
+# Quantization is auto-detected from the checkpoint config — no --quantization flag.
+# JSON args use single braces (see diffusion-gemma-bf16.yaml header for rationale).
+
+recipe_version: "1"
+name: Diffusion-Gemma-FP8-Dynamic
+description: vLLM serving RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic on a single GB10 node
+
+model: RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic
+
+container: vllm-node
+
+solo_only: true
+
+mods:
+  - mods/diffusiongemma
+
+defaults:
+  port: 8009
+  host: 0.0.0.0
+  gpu_memory_utilization: 0.8
+  max_model_len: 131072
+  max_num_seqs: 10
+
+env: {}
+
+command: |
+  vllm serve RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --port {port} \
+    --host {host} \
+    --trust-remote-code \
+    --enable-auto-tool-choice \
+    --tool-call-parser gemma4 \
+    --load-format fastsafetensors \
+    --attention-backend TRITON_ATTN \
+    --max-num-seqs {max_num_seqs} \
+    --enable-prefix-caching \
+    --diffusion-config '{"canvas_length":256}' \
+    --override-generation-config '{"max_new_tokens": null}' \
+    --reasoning-parser gemma4 \
+    --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --chat-template fixed_chat_template.jinja

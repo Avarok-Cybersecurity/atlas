@@ -108,7 +108,7 @@ impl Qwen3AttentionLayer {
             .map_err(|e| anyhow::anyhow!("V4 attn: q_latent gemm sync failed: {e}"))?;
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             q_latent,
             &mla.q_a_norm,
             q_latent,
@@ -243,7 +243,7 @@ impl Qwen3AttentionLayer {
         // kv_latent so the cached latent, k_out and v_out are all normalized.
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             kv_latent,
             &mla.kv_a_norm,
             kv_latent,
@@ -489,7 +489,7 @@ impl Qwen3AttentionLayer {
                 .launch(stream)?;
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 compressed,
                 &comp.norm,
                 compressed,

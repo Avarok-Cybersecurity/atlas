@@ -6,7 +6,9 @@
 //! MLA attention pattern as Mistral Small 4 with DeepSeek weight naming.
 
 mod assemble;
+mod attn_sink;
 mod compute;
+mod csa_ape;
 mod load_layers;
 // MTP draft-module loader for nvidia/DeepSeek-V4-Flash-NVFP4.
 mod mtp;
@@ -20,7 +22,7 @@ use spark_runtime::weights::WeightStore;
 
 use super::ModelWeightLoader;
 use crate::layer::TransformerLayer;
-use crate::weight_map::{DenseWeight, MtpWeights, dense, dense_minus_one};
+use crate::weight_map::{DenseWeight, MtpWeights, dense, dense_auto};
 
 pub struct DeepSeekV4WeightLoader;
 
@@ -66,15 +68,16 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight> {
-        // DeepSeek-V4 uses STANDARD RMSNorm (scale = weight); subtract 1.0 so the
-        // offset-from-1 rms_norm kernel computes `1 + (w-1) = w`. See dense_minus_one.
-        if let Ok(w) = dense_minus_one(store, "norm.weight", _gpu) {
+        // DeepSeek-V4 ships HF-vanilla RMSNorm weights (scale = weight). Load them
+        // EXACTLY; the model dispatches `rms_norm_vanilla` (see
+        // `crate::ships_vanilla_norm_weights`).
+        if let Ok(w) = dense_auto(store, "norm.weight", _gpu) {
             return Ok(w);
         }
-        if let Ok(w) = dense_minus_one(store, "model.norm.weight", _gpu) {
+        if let Ok(w) = dense_auto(store, "model.norm.weight", _gpu) {
             return Ok(w);
         }
-        dense_minus_one(store, "final_norm.weight", _gpu)
+        dense_auto(store, "final_norm.weight", _gpu)
             .context("DeepSeek-V4: no final norm tensor found (tried norm.weight, model.norm.weight, final_norm.weight)")
     }
 

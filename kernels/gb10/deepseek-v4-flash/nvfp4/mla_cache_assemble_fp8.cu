@@ -74,8 +74,6 @@ extern "C" __global__ void mla_cache_assemble_fp8_batched(
             // writing zeros here (the old behaviour) made decode's V differ from
             // the prefill inline V (which uses k_out with rope), so decode
             // attention diverged from prefill and generation derailed.
-            unsigned int r = d - kv_lora;
-            (void)r;
             for (unsigned int head = 0; head < nkv; head++) {
                 unsigned long long k_idx = k_bf16_offset + head * mla_cache_dim + d;
                 unsigned long long k_cache_idx = k_cache_offset + head * mla_cache_dim + d;

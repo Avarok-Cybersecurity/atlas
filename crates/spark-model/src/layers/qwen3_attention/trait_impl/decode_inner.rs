@@ -9,7 +9,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::super::Qwen3AttentionLayer;
-use super::{diag_norm, gemma4_diag_enabled};
+use super::diag_norm;
 use crate::layer::{ForwardContext, LayerState};
 use crate::layers::ops;
 
@@ -50,7 +50,7 @@ impl Qwen3AttentionLayer {
         // Disable diagnostics during CUDA graph capture — diag_norm does d2h
         // copy + sync which invalidates stream capture (status 901).
         let gemma4_diag =
-            ctx.config.model_type == "gemma4" && gemma4_diag_enabled() && !ctx.graph_capture;
+            ctx.config.model_type == "gemma4" && ctx.levers.gemma4_diag && !ctx.graph_capture;
         // The residual stream is always BF16, so `hidden` is a BF16 buffer.
         let diag_hidden =
             |gpu: &dyn GpuBackend, ptr: DevicePtr, n: usize, stream: u64, label: &str| {
@@ -125,7 +125,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 attn_out,
                 post_norm,
                 attn_out,
@@ -184,7 +184,7 @@ impl Qwen3AttentionLayer {
             if let Some(ref post_norm) = self.post_ffn_out_norm {
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     moe_out,
                     post_norm,
                     moe_out,
@@ -265,7 +265,7 @@ impl Qwen3AttentionLayer {
             // post-MoE norm (in-place on moe_output)
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 moe_out,
                 post_norm,
                 moe_out,
@@ -284,7 +284,7 @@ impl Qwen3AttentionLayer {
             // post-dense norm (layernorm_1)
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 dense_out,
                 dense_norm,
                 dense_out,
@@ -308,7 +308,7 @@ impl Qwen3AttentionLayer {
             if let Some(ref combined_norm) = self.post_ffn_out_norm {
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     dense_out,
                     combined_norm,
                     dense_out,
@@ -352,7 +352,7 @@ impl Qwen3AttentionLayer {
             if let Some(ref post_norm) = self.post_ffn_out_norm {
                 ops::rms_norm(
                     ctx.gpu,
-                    self.rms_norm_k,
+                    self.rms_norm_w_k,
                     dense_out,
                     post_norm,
                     dense_out,
@@ -500,7 +500,7 @@ impl Qwen3AttentionLayer {
         let normed = ctx.buffers.norm_output();
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             hidden,
             &self.input_norm,
             normed,
@@ -531,7 +531,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 attn_out,
                 post_norm,
                 attn_out,
@@ -657,7 +657,7 @@ impl Qwen3AttentionLayer {
         let normed2 = ctx.buffers.norm_output();
         ops::rms_norm(
             ctx.gpu,
-            self.rms_norm_k,
+            self.rms_norm_w_k,
             hidden,
             &self.post_attn_norm,
             normed2,
@@ -672,7 +672,7 @@ impl Qwen3AttentionLayer {
         if let Some(ref post_norm) = self.post_ffn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
-                self.rms_norm_k,
+                self.rms_norm_w_k,
                 ffn_out,
                 post_norm,
                 ffn_out,

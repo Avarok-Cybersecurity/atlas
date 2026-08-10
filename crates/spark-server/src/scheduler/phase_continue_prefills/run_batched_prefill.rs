@@ -19,6 +19,7 @@ use super::super::types::PrefillInProgress;
 
 pub(super) fn run_batched_prefill_step(
     model: &dyn Model,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     prefilling: &mut [PrefillInProgress],
     completed_indices: &mut Vec<(usize, Option<u32>)>,
     max_prefill_tokens: usize,
@@ -26,7 +27,7 @@ pub(super) fn run_batched_prefill_step(
     prefill_event: u64,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
-    super::poll_innerq();
+    super::poll_innerq(model);
     // Build per-stream chunk_len (capped at max_prefill_tokens) and
     // is_last_chunk flag, then construct PrefillSlice borrowing each
     // stream's prompt_tokens and seq.
@@ -145,14 +146,18 @@ pub(super) fn run_batched_prefill_step(
         }
         // #131: grammar-constrain the FIRST token (and advance the matcher);
         // no-op without a grammar.
+        // P1-4 (2026-07-09): thread the resolved `min_p` — previously a
+        // hardcoded 0.0 inside the sampler. Kill-switch: ATLAS_NO_MTP_MINP=1.
         match sample_first_token(
             model,
             logits,
             p.temperature,
             p.top_k,
             p.top_p,
+            p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            &sched.levers.sampling(),
         ) {
             Ok(first) => {
                 tracing::info!(

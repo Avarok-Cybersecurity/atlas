@@ -10,7 +10,7 @@ use axum::response::Response;
 use std::sync::Arc;
 
 use crate::AppState;
-use crate::openai::ChatCompletionRequest;
+use crate::ir::ChatRequest;
 use crate::tool_parser;
 
 use super::super::compact::openai_error_response;
@@ -57,11 +57,39 @@ fn tool_choice_required_for_parser(
     explicit_required || parser_required
 }
 
+/// Whether the model-level tool-grammar escape hatch applies to THIS request.
+///
+/// `disable_tool_grammar` is a *model* property (MODEL.toml `[behavior]`, or
+/// the `--disable-tool-grammar` override); `tool_choice_required` is a *request*
+/// property. The escape hatch is scoped to the requests it was written for —
+/// `serve_args.rs`: "skips XGrammar structural-tag enforcement on
+/// `tool_choice="auto"` requests ... Matches vLLM's default behaviour in auto
+/// mode (vLLM only grammar-constrains when tool_choice="required")".
+///
+/// Without the `!tool_choice_required` term the hatch also swallowed
+/// `required`/specific requests, which is what `book/src/operations/tools.md`
+/// documents the grammar as implementing: it "masks the no-tool-call path, so
+/// the sampler can only produce a valid tool-call opening". Dropping the
+/// grammar there did not leave `required` wholly unenforced — the scheduler's
+/// legacy EOS-suppression backstop switches on precisely when the grammar is
+/// absent (`prefill_a_step.rs`: `req_require_tool_call && grammar_state
+/// .is_none() && tool_call_start_token.is_some()`) — but that path is weaker
+/// (it needs a `tool_call_start_token` and only suppresses EOS) and it is not
+/// the behaviour either doc promises.
+///
+/// The `minimax_xml` arm of `tool_choice_required_for_parser` is deliberately
+/// covered by the same term: that parser's grammar is what stops the
+/// `<invokeinvoke` / `<parameterparameter` degenerate-loop corruption class
+/// (see `compile_minimax_xml_tool_grammar`), so the hatch must not remove it.
+fn tool_grammar_escape_applies(disable_tool_grammar: bool, tool_choice_required: bool) -> bool {
+    disable_tool_grammar && !tool_choice_required
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
     state: &Arc<AppState>,
-    req: &ChatCompletionRequest,
+    req: &ChatRequest,
     enable_thinking: bool,
     tools_active: bool,
     suppress_tool_call: bool,
@@ -97,42 +125,52 @@ pub(super) fn build_sampling(
     let temperature = if force_temp_zero {
         0.0
     } else {
-        req.temperature.unwrap_or(state.default_temperature)
+        req.sampling
+            .temperature
+            .unwrap_or(state.default_temperature)
     };
     let top_k = if force_temp_zero {
         0
     } else {
-        req.top_k.unwrap_or(state.default_top_k)
+        req.sampling.top_k.unwrap_or(state.default_top_k)
     };
     let top_p = if force_temp_zero {
         1.0
     } else {
-        req.top_p.unwrap_or(state.default_top_p)
+        req.sampling.top_p.unwrap_or(state.default_top_p)
     };
     let top_n_sigma = if force_temp_zero {
         0.0
     } else {
-        req.top_n_sigma.unwrap_or(state.default_top_n_sigma)
+        req.sampling
+            .top_n_sigma
+            .unwrap_or(state.default_top_n_sigma)
     };
     let min_p = if force_temp_zero {
         0.0
     } else {
-        req.min_p.unwrap_or(state.default_min_p)
+        req.sampling.min_p.unwrap_or(state.default_min_p)
     };
     let repetition_penalty = if force_temp_zero {
         1.0
     } else {
-        req.repetition_penalty.unwrap_or(preset.repetition_penalty)
+        req.sampling
+            .repetition_penalty
+            .unwrap_or(preset.repetition_penalty)
     };
     let presence_penalty = if force_temp_zero {
         0.0
     } else {
-        req.presence_penalty.unwrap_or(preset.presence_penalty)
+        req.sampling
+            .presence_penalty
+            .unwrap_or(preset.presence_penalty)
     };
     let frequency_penalty = if force_temp_zero {
         0.0
     } else {
-        req.frequency_penalty.unwrap_or(preset.frequency_penalty)
+        req.sampling
+            .frequency_penalty
+            .unwrap_or(preset.frequency_penalty)
     };
     // Per-model server-side sampling SAFETY FLOOR/CEILING (MODEL.toml
     // [behavior]). Binds AFTER request/preset resolution so model stability
@@ -178,15 +216,11 @@ pub(super) fn build_sampling(
         ));
     }
 
-    // Logit bias from OpenAI (string keys) → Vec<(u32, f32)>.
+    // Logit bias (already parsed to typed pairs at the API edge).
     let mut logit_bias: Vec<(u32, f32)> = if force_temp_zero {
         Vec::new()
     } else {
-        req.logit_bias.as_ref().map_or(Vec::new(), |map| {
-            map.iter()
-                .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
-                .collect()
-        })
+        req.logit_bias.clone()
     };
 
     // Exponential `<tool_call>` bias decay. Skipped under ATLAS_FORCE_TEMP_ZERO
@@ -254,10 +288,9 @@ pub(super) fn build_sampling(
     //     is conventionally embedded in the user/system message by the
     //     caller, and capable models (Qwen3.6, etc.) follow it without
     //     server-side enforcement on free-text turns.
-    let has_response_format = req
-        .response_format
-        .as_ref()
-        .is_some_and(|rf| !matches!(rf, crate::openai::ResponseFormat::Text));
+    // The wire's `{"type":"text"}` was mapped to `None` at the edge, so
+    // presence alone means a real constraint.
+    let has_response_format = req.response_format.is_some();
     let tool_choice_none = req
         .tool_choice
         .as_ref()
@@ -268,18 +301,19 @@ pub(super) fn build_sampling(
     let use_triggers = !tool_choice_required;
     let grammar_spec: Option<GrammarSpec> = if response_format_only {
         match req.response_format.as_ref().unwrap() {
-            crate::openai::ResponseFormat::JsonObject => Some(GrammarSpec::JsonObject),
-            crate::openai::ResponseFormat::JsonSchema { json_schema } => {
-                Some(GrammarSpec::JsonSchema {
-                    schema: json_schema.schema.to_string(),
-                })
-            }
-            crate::openai::ResponseFormat::Text => None,
+            crate::ir::ResponseFormat::JsonObject => Some(GrammarSpec::JsonObject),
+            crate::ir::ResponseFormat::JsonSchema { schema, .. } => Some(GrammarSpec::JsonSchema {
+                schema: schema.to_string(),
+            }),
         }
-    } else if tools_active && state.behavior.disable_tool_grammar {
+    } else if tools_active
+        && tool_grammar_escape_applies(state.behavior.disable_tool_grammar, tool_choice_required)
+    {
         // Structure-snowballing escape hatch (arXiv:2604.06066): this
         // model tool-calls more reliably unconstrained. Tool calls are
         // still parsed from the output — just not grammar-enforced.
+        // Scoped to auto-mode requests; `required`/specific keep the
+        // grammar that enforces them (see `tool_grammar_escape_applies`).
         tracing::info!("MODEL.toml [behavior].disable_tool_grammar=true — tool-call grammar OFF");
         None
     } else if tools_active {
@@ -291,7 +325,7 @@ pub(super) fn build_sampling(
             );
         }
         let parser = state.tool_call_parser.as_ref().map(std::sync::Arc::clone);
-        let mut tools = req.tools.as_ref().cloned().unwrap_or_default();
+        let mut tools = req.tools.clone();
         if let Some(tool_parser::ToolChoice::Specific { ref function }) = req.tool_choice {
             tools.retain(|t| t.function.name == function.name);
         }
@@ -304,15 +338,11 @@ pub(super) fn build_sampling(
         None
     };
 
-    // Timeout deadline.
-    let timeout_secs = req.timeout.unwrap_or(state.request_timeout as f32);
-    let timeout_at = if timeout_secs > 0.0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(timeout_secs))
-    } else {
-        None
-    };
+    // Timeout deadline (SSOT: AppState::request_deadline).
+    let timeout_at = state.request_deadline(req.timeout_secs);
 
-    let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
+    // Pre-resolved from the wire's logprobs/top_logprobs pair at the edge.
+    let top_logprobs = req.top_logprobs;
 
     Ok(SamplingSetup {
         temperature,
@@ -337,42 +367,66 @@ pub(super) fn build_sampling(
     })
 }
 
-/// Resolve chat logprobs params (OpenAI spec): an explicit
-/// `top_logprobs` count wins (clamped 0-20); `logprobs: true` alone
-/// enables sampled-token logprobs with no alternatives (count 0);
-/// otherwise disabled.
-pub(crate) fn resolve_top_logprobs(logprobs: Option<bool>, top_logprobs: Option<u8>) -> Option<u8> {
-    match (logprobs, top_logprobs) {
-        (_, Some(n)) => Some(n.min(20)),
-        (Some(true), None) => Some(0),
-        _ => None,
-    }
-}
+// `resolve_top_logprobs` moved to the OpenAI edge (`openai/to_ir.rs`)
+// — the envelope carries the already-resolved count.
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_top_logprobs;
-    use super::tool_choice_required_for_parser;
-
-    #[test]
-    fn logprobs_true_alone_enables_with_zero_top() {
-        assert_eq!(resolve_top_logprobs(Some(true), None), Some(0));
-    }
-
-    #[test]
-    fn explicit_top_logprobs_wins_and_clamps() {
-        assert_eq!(resolve_top_logprobs(None, Some(5)), Some(5));
-        assert_eq!(resolve_top_logprobs(Some(false), Some(3)), Some(3));
-        assert_eq!(resolve_top_logprobs(Some(true), Some(99)), Some(20));
-    }
-
-    #[test]
-    fn absent_or_false_disables() {
-        assert_eq!(resolve_top_logprobs(None, None), None);
-        assert_eq!(resolve_top_logprobs(Some(false), None), None);
-    }
+    use super::{tool_choice_required_for_parser, tool_grammar_escape_applies};
 
     use crate::tool_parser::{ToolChoice, ToolChoiceFunction};
+
+    /// The escape hatch's own help text scopes it to `tool_choice="auto"`.
+    #[test]
+    fn the_escape_hatch_applies_in_auto_mode() {
+        let required = tool_choice_required_for_parser(true, None, Some("qwen3_coder"));
+
+        assert!(!required);
+        assert!(tool_grammar_escape_applies(true, required));
+    }
+
+    /// `required` is *implemented by* the grammar, so the hatch must not
+    /// remove it — the escape hatch is a model property, `required` is a
+    /// request property, and the request wins.
+    #[test]
+    fn required_mode_keeps_the_grammar_despite_the_escape_hatch() {
+        let choice = ToolChoice::Mode("required".to_string());
+        let required = tool_choice_required_for_parser(true, Some(&choice), Some("qwen3_coder"));
+
+        assert!(required);
+        assert!(!tool_grammar_escape_applies(true, required));
+    }
+
+    #[test]
+    fn specific_function_keeps_the_grammar_despite_the_escape_hatch() {
+        let choice = ToolChoice::Specific {
+            function: ToolChoiceFunction {
+                name: "memory".to_string(),
+            },
+        };
+        let required = tool_choice_required_for_parser(true, Some(&choice), Some("qwen3_coder"));
+
+        assert!(required);
+        assert!(!tool_grammar_escape_applies(true, required));
+    }
+
+    /// minimax_xml's grammar is the anti-corruption frame, not just a
+    /// tool-choice enforcer, so the hatch must not remove it either.
+    #[test]
+    fn minimax_xml_keeps_the_grammar_despite_the_escape_hatch() {
+        let required = tool_choice_required_for_parser(true, None, Some("minimax_xml"));
+
+        assert!(required);
+        assert!(!tool_grammar_escape_applies(true, required));
+    }
+
+    /// The fix must not switch the grammar ON for models that never asked
+    /// for the hatch — with the hatch off, nothing about this changes.
+    #[test]
+    fn the_hatch_being_off_is_unaffected_by_tool_choice() {
+        assert!(!tool_grammar_escape_applies(false, false));
+        assert!(!tool_grammar_escape_applies(false, true));
+    }
 
     #[test]
     fn bare_json_auto_uses_triggered_grammar() {
