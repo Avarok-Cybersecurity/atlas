@@ -397,13 +397,13 @@ fn moe_lora_delta_parity() -> Result<()> {
     let x_dec = gen_bf16(&mut rng, TE * INTER); // post-swiglu per flat slot
     let x_dec_dev = up_u16(gpu, &x_dec)?;
     let base_dec = gen_bf16(&mut rng, TE * H);
-    let dout_dev = up_u16(gpu, &base_dec)?;
+    let d_out_dev = up_u16(gpu, &base_dec)?;
     ops::moe_lora_gather_bgmv(
         gpu,
         &kernels,
         &down_route,
         x_dec_dev,
-        dout_dev,
+        d_out_dev,
         idx_dev,
         dec_map_dev,
         xa_dev,
@@ -429,7 +429,7 @@ fn moe_lora_delta_parity() -> Result<()> {
     }
     assert_tol(
         "CHECK 6 decode gather",
-        &rd_u16(gpu, dout_dev, TE * H)?,
+        &rd_u16(gpu, d_out_dev, TE * H)?,
         &want_dec,
     );
 

@@ -115,7 +115,7 @@ impl ExpertLoraLayer {
 /// set (real adapters target a SUBSET, so this is sized from the audit, never
 /// from `num_experts × num_layers` maxima). Per (layer, expert, proj) and per
 /// router layer: `(stride·in + out·stride)·2` BF16 bytes, where `stride` is
-/// the DERIVED uint4-aligned [`super::expert_pack::packed_stride`] of
+/// the DERIVED uint4-aligned `expert_pack::packed_stride` of
 /// `max_rank` — the same derivation the pack loop uses (SSOT), so sizing and
 /// packing agree byte-for-byte even at a non-multiple-of-8 rank cap.
 pub fn expert_router_bytes(
