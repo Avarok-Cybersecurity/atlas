@@ -240,7 +240,7 @@ pub fn prefill_request(
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
         };
-        finish_sequence(model, &mut a);
+        finish_sequence(model, &mut a, sched.limits.max_seq_len);
         return Ok(None);
     }
 
@@ -432,7 +432,7 @@ pub fn prefill_request(
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
         };
-        finish_sequence(model, &mut a);
+        finish_sequence(model, &mut a, sched.limits.max_seq_len);
         return Ok(None);
     }
 

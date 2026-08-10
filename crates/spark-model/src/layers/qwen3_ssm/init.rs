@@ -307,7 +307,28 @@ impl Qwen3SsmLayer {
                 "gdn_verify_fused_conv_kn",
                 "gdn_verify_fused_conv_kn_batched",
             ),
-            // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
+            // Exact-verify `_snap` twins (#435): model-shadow staged
+            // (qwen3.6-27b/nvfp4), 0 elsewhere — the exact arm then uses the
+            // parent kernel + copy_d2d snapshots (same bits, more launches).
+            // Every other GDN target declares these three lookups in its
+            // MODEL.toml [expected_absent] (#438) — the boot gate fails closed.
+            gdn_f32_norm_snap_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_snap",
+                "gated_delta_rule_decode_f32_norm_snap",
+            ),
+            gdn_f32_strided_norm_snap_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_snap",
+                "gated_delta_rule_decode_f32_strided_norm_snap",
+            ),
+            gdn_verify_fused_conv_kn_f32_k: super::super::try_kernel(
+                gpu,
+                "gdn_verify_fused_conv_kn_f32",
+                "gdn_verify_fused_conv_kn_f32",
+            ),
+            // wy17 ships only in qwen3.6-35b-a3b's and qwen3.6-27b's PTX sets;
+            // NULL elsewhere (declared [expected_absent] in those MODEL.tomls).
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(
                 gpu,

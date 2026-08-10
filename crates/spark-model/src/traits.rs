@@ -261,19 +261,14 @@ pub struct SequenceState {
 
 impl SequenceState {
     /// A detached, host-only sequence state: no GPU resources, no SSM
-    /// slot, no layer states, every counter zeroed.
-    ///
-    /// This is the ONLY way for another crate to construct a
-    /// `SequenceState` at all — `ssm_slot` is crate-private by design —
-    /// so it is what lets `spark-server`'s scheduler tests drive the real
-    /// `emit_token` over a real `ActiveSeq` instead of re-implementing
-    /// the guard under test. Same role as `SchedCtx::for_test()`: a
-    /// production-visible constructor that only tests call.
-    ///
-    /// It is deliberately NOT wired into the three in-crate literal
-    /// construction sites (NLLB `alloc_sequence`, the engine-test mock,
-    /// `trait_impl/meta.rs`) — folding those onto this default belongs in
-    /// its own change, not in a test-only fix.
+    /// slot, no layer states, every counter zeroed. The single source
+    /// for the "empty sequence" field defaults — construction sites
+    /// that own real resources build on top of it instead of repeating
+    /// the full literal (NLLB's `alloc_sequence`, the engine-test
+    /// mock), so a new field gets ONE default site. Also the only way
+    /// for other crates to construct a `SequenceState` at all (e.g.
+    /// the scheduler's lifecycle unit tests): `ssm_slot` is
+    /// crate-private by design.
     pub fn host_only(slot_idx: usize) -> Self {
         SequenceState {
             tokens: Vec::new(),

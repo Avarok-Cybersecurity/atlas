@@ -19,6 +19,8 @@
 //! - `handle_done`  — Done arm (flush, salvage, usage, dump, metrics)
 //! - `handle_error` — Error arm
 
+#[cfg(test)]
+mod cancel_guard_tests;
 mod ctx;
 mod handle_done;
 mod handle_error;
@@ -264,7 +266,20 @@ pub(crate) async fn run_chat_stream(
                 cached_prompt_tokens,
                 guard_stop,
             } => {
-                stream_state.guard_stop = guard_stop;
+                // ★ `.or()`, NOT `=`. This field began life as a scheduler-owned
+                // diagnostic (see state.rs) and the Done frame legitimately
+                // carries the scheduler's `ActiveSeq::guard_stop`. But the
+                // stream-side watchdogs in handle_token.rs also write it, and
+                // they run BEFORE this frame arrives — an unconditional
+                // assignment erased them with the scheduler's `None`.
+                //
+                // That clobber made two shipped fixes completely inert: the
+                // token-loop watchdog set `guard_stop` on the line above its
+                // `cancel_flag` store, and `handle_done` still read `None`.
+                // The adjacent `loop_watchdog_triggered` / `stop_string_triggered`
+                // flags survived, which is the built-in negative control:
+                // only this field was reset.
+                stream_state.guard_stop = stream_state.guard_stop.or(guard_stop);
                 handle_done::handle_done(
                     &mut stream_state,
                     &ctx,

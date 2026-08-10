@@ -63,6 +63,13 @@ pub(super) struct ConvGdnArgs {
     pub gates_buf: DevicePtr,
     pub conv_out_buf: DevicePtr,
     pub gdn_out_buf: DevicePtr,
+    /// Final normed-output base for THIS call's rows: the phase-8/9 buffer
+    /// (== conv_out_buf's UN-offset base) advanced by `row0 * value_dim`
+    /// BF16 — NOT by `row0 * conv_dim` like `conv_out_buf`, because phase 9
+    /// reads normed rows at `value_dim` stride from row 0. Only the exact
+    /// verify arm writes through this (its norm runs in-loop); the WY arms
+    /// leave the norm to phase 8, which derives its own destination.
+    pub normed_out: DevicePtr,
     pub h_bytes: usize,
     pub conv_bytes: usize,
     pub qkvz_size: usize,
@@ -285,6 +292,7 @@ impl Qwen3SsmLayer {
             gates_buf,
             conv_out_buf,
             gdn_out_buf,
+            normed_out: _,
             h_bytes,
             conv_bytes,
             qkvz_size,
@@ -301,6 +309,37 @@ impl Qwen3SsmLayer {
             fp32,
             stream,
         } = *args;
+
+        // ── Issue #435 route (a), OPT-IN via `--exact-verify`: the
+        // sequential-decode-exact chain (bitwise-equal to spec-off decode).
+        // All K widths. The WY / fused BF16-conv arms below are the DEFAULT —
+        // fast, but NOT bitwise-equal to spec-off (#435's divergence remains
+        // unless the flag is given; measured decode-step cost of exact is
+        // ~+22-36% at the n=8/16/32 rungs). They are also mandatory under
+        // `--ssm-h-dtype f16`, whose FP16 pool the exact arm's FP32 kernels
+        // must never read (verify_exact_enabled() is false when h_f16 is
+        // set). Phase 8 in decode_batched_inner reads the SAME predicate to
+        // skip its norm — the exact arm writes the final normed rows itself.
+        //
+        // OWED (default-divergence mitigation, investigated 2026-08-09, not
+        // implemented — needs GPU-validated kernel twins): the DOMINANT #435
+        // term (~8.6e-4 of the total; the chunkwise reordering term is only
+        // ~3.4e-8) is the BF16 conv-output STORE, not the WY algebra. The
+        // arms below consume `causal_conv1d_update_l2norm` /
+        // `gdn_verify_fused_conv_kn` whose only difference from the `_f32`
+        // twins sequential decode prefers (ssm_forward.rs:222) is
+        // `__float2bfloat16(silu)` at the store; that rounding of k/v is then
+        // committed into the FP32 H state by the WY update. Feeding these
+        // arms FP32 conv rows (the `_f32` conv kernels already exist) and
+        // adding FP32-input twins of the WY family (wy2/wy3/wy4 + resident +
+        // strided) would cut the default divergence ~4 orders of magnitude
+        // for ~1% extra traffic — the WY kernels are bandwidth-bound on H
+        // state (~16 MB/layer/step vs ~120 KB of extra conv-row bytes). It
+        // would NOT make spec-on bitwise-equal to spec-off; only
+        // `--exact-verify` does that.
+        if super::verify_exact_enabled() {
+            return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
+        }
 
         if num_tokens == 4 {
             // ── K=4 fused path: conv1d+L2norm sequential, GDN WY4 ──

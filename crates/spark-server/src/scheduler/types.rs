@@ -114,6 +114,12 @@ pub(super) struct PrefillInProgress {
 /// last token — see `derive_finish_reason`.
 pub(super) const GUARD_STOP_REQUEST_TIMEOUT: &str = "request_timeout";
 
+/// The `<tool_response>` hard stop fired: the model emitted a control token
+/// it must never generate (post-tool-call runaway). Ending the turn is
+/// correct; naming it is what makes the wire reason `"length"` instead of
+/// `"stop"`, so the client knows the server cut the response short.
+pub(super) const GUARD_STOP_TOOL_RESPONSE: &str = "tool_response_hard_stop";
+
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
     pub seq: SequenceState,

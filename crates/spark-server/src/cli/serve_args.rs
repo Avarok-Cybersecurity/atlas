@@ -201,6 +201,35 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
 
+    /// Bitwise-exact MTP verify — OPT-IN (default: off). By default,
+    /// speculative (spec-on) output is NOT bitwise-equal to non-speculative
+    /// output at temp 0; this flag is what makes it equal (issue #435).
+    ///
+    /// The default verify pass runs the WY-chunkwise / fused BF16-conv arms:
+    /// fast, but their BF16-output conv (h-state relL2 ~8.6e-4 per K=4
+    /// window, committed into persistent SSM state) plus a ~3.4e-8 chunkwise
+    /// reordering term diverge from the sequential-decode reference — an
+    /// argmax flip only needs a per-logit error above a thin top-2 margin.
+    /// With `--exact-verify` the verify pass instead runs, per token, exactly
+    /// the kernel chain sequential decode runs (measured h relL2 = 0.0), at a
+    /// measured decode-step cost of ~+35% at the n=8/K=4 verify rung, ~+22%
+    /// at n=16/K=2 and ~+36% at n=32/K=2 (GDN phase +116%/+63%/+69%).
+    ///
+    /// Opt-in follows every surveyed production engine — vLLM
+    /// (`VLLM_BATCH_INVARIANT=1`), SGLang (`--enable-deterministic-inference`,
+    /// ~34% avg slowdown), TensorRT-LLM and TGI (no exact mode at all) — none
+    /// pays for exactness by default.
+    ///
+    /// Rejected beside `--ssm-h-dtype f16`: the exact arm's kernels are FP32
+    /// readers and must never read the FP16 h-state pool.
+    ///
+    /// Replaces `--verify-wy` (removed, never in a release), which was the
+    /// opt-OUT back when exact was briefly the default.
+    ///
+    /// No legacy environment variable — new configuration is CLI-only.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub exact_verify: Option<bool>,
+
     /// Mid-chunk SSM tail capture on the prefill path (default: on).
     ///
     /// Captures GDN recurrent + conv state in-pass at the block-floored

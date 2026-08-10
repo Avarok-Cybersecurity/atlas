@@ -263,7 +263,7 @@ pub fn start_chunked_prefill(
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
         };
-        finish_sequence(model, &mut a);
+        finish_sequence(model, &mut a, sched.limits.max_seq_len);
         return Ok(StartPrefillResult::Finished);
     }
 
@@ -600,7 +600,7 @@ pub fn start_chunked_prefill(
                 timeout_at: req_timeout_at,
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
             };
-            finish_sequence(model, &mut a);
+            finish_sequence(model, &mut a, sched.limits.max_seq_len);
             Ok(StartPrefillResult::Finished)
         } else {
             Ok(StartPrefillResult::Active(ActiveSeq {

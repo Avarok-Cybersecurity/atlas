@@ -4,35 +4,145 @@
 
 use super::*;
 
+/// THE single mapping from a server-side guard (`ActiveSeq::guard_stop`)
+/// to the wire `finish_reason`. Do not map guard names to wire reasons
+/// anywhere else.
+///
+/// Every non-timeout guard reports `"length"`: the server ended the
+/// response with the model UNFINISHED. Neither enum slot is literally
+/// true — the budget was not hit either — so the choice is decided by
+/// which lie clients handle safely.
+///
+/// `"stop"` asserts "the model said what it wanted". For a mid-sentence
+/// repetition cut that is affirmatively false, and every client behaviour
+/// keyed on `"stop"` is then the WRONG action: accept, validate, commit,
+/// end the agent run. `"length"` asserts only "incomplete, serving side
+/// cut it, do not treat as final" — true in every part clients act on,
+/// and its handlers are all safe: `openai-python` raises
+/// `LengthFinishReasonError` instead of parsing truncated JSON, aider
+/// skips the auto-commit, Instructor raises `IncompleteOutputException`,
+/// pydantic-ai raises rather than accepting a half tool call.
+///
+/// The failure modes are asymmetric. A false `"length"` costs a bounded,
+/// VISIBLE retry (agents cap them). A false `"stop"` is unbounded and
+/// INVISIBLE: degenerate output silently banked as a finished answer.
+/// Measured — relabelling these guards to `"stop"` cost 2/10 then 6/10
+/// episodes of the agentic gate, because the harness stopped recognising
+/// truncation and ended runs at 3-10 turns instead of the 12-22 a
+/// recovery takes.
+///
+/// This also matches the ecosystem. On every engine WITHOUT a
+/// degeneration guard (SGLang, TGI, llama.cpp, vLLM by default) the same
+/// loop simply runs to the budget and reports `"length"`; our guard is an
+/// early, smarter budget, so `"length"` preserves parity. No engine maps a
+/// quality cut to `"stop"` by design — vLLM minted a distinct value
+/// (`"repetition"`) rather than overload it.
+///
+/// ★ And it removes an internal contradiction: `tool_loop_capped` already
+/// ships `"length"` (see `api::chat_stream::handle_done`) on exactly this
+/// reasoning — `"length"` is the OpenAI-spec slot for "forcibly truncated"
+/// and gives agents a clean hook to break their outer loop. The same
+/// argument covers `fuzzy_repetition`, `tool_envelope_stuck`,
+/// `inter_tool_prose_budget` and the simhash trip.
+///
+/// Considered alternative: putting the guard name on the wire the way
+/// vLLM ships "repetition"/"abort". Rejected — typed clients hard-fail on
+/// unknown enum VALUES (Rust `async-openai` fails deserialization
+/// outright; pydantic-ai raised on OpenRouter's non-standard "error"),
+/// and our one deliberate exception, `"timeout"`, already carries that
+/// documented risk (see `ir::FINISH_REASON_TIMEOUT`). The guard's NAME
+/// reaches diagnostics via `StreamEvent::Done.guard_stop` and the --dump
+/// body; the right home for it on the wire is an extension FIELD (unknown
+/// fields are ignored by every SDK, cf. vLLM's `stop_reason`), which is
+/// follow-up work, not a reason to keep lying in the enum.
+fn guard_stop_wire_reason(guard: &'static str) -> &'static str {
+    match guard {
+        // Defensive: the deadline guard is intercepted before the
+        // token-derived checks (see `derive_finish_reason`), so this arm
+        // is normally unreachable — kept so the mapping is total.
+        GUARD_STOP_REQUEST_TIMEOUT => crate::ir::FINISH_REASON_TIMEOUT,
+        _ => "length",
+    }
+}
+
 /// Derive the wire finish reason for a completed sequence.
 ///
-/// A server-side deadline cut outranks the token-derived reasons: the
-/// last token of a truncated response is an ordinary content token, so
-/// the token-derived path would call it "length" and the client could
-/// not tell a truncation from a legitimate max_tokens stop. Pure so the
-/// precedence is unit-testable without a model or a GPU.
+/// INVARIANT: `"length"` means "the SERVER ended the response with the
+/// model unfinished" — the token budget was exhausted (`hard_ceiling_hit`:
+/// the `max_tokens` countdown or the served context ceiling) OR a guard
+/// cut it short. `"stop"` means the MODEL finished: it sampled EOS or a
+/// stop sequence. That is the distinction clients act on, and it is the
+/// one worth keeping exact.
+///
+/// It is still NOT a catch-all. The bug this replaced derived `"length"`
+/// from "the last token wasn't EOS", which swept in stop-string matches,
+/// client cancels and early finalizes — none of which are truncations
+/// (observed live: `Done: 573 tokens (length)` under max_new_tokens=1024).
+/// Those now correctly report `"stop"`; only budget exhaustion and guard
+/// cuts report `"length"`.
+///
+/// Precedence:
+///   1. the server-side deadline → `"timeout"` — a truncation must never
+///      be mistaken for a natural stop, even when the last token is EOS;
+///   2. token-derived natural stops (EOS → `"stop"`, tool-call close →
+///      `"tool_calls"`) — what the model actually sampled outranks any
+///      other guard that tripped on the same step;
+///   3. any other guard → `guard_stop_wire_reason` (single mapping above);
+///   4. token budget exhausted → `"length"`;
+///   5. otherwise `"stop"` — an early finalize with budget left and no
+///      guard (client cancel via `cancel_flag`, dropped stream receiver,
+///      server shutdown drain): generation stopped; it did not hit the
+///      budget.
+///
+/// Pure so the precedence is unit-testable without a model or a GPU
+/// (tests in `lifecycle_tests.rs`).
 pub(super) fn derive_finish_reason(
     guard_stop: Option<&'static str>,
     last_tok: Option<u32>,
     eos_tokens: &[u32],
     tool_call_end_token: Option<u32>,
+    remaining: usize,
+    seq_len: usize,
+    max_seq_len: usize,
 ) -> &'static str {
     if guard_stop == Some(GUARD_STOP_REQUEST_TIMEOUT) {
         return crate::ir::FINISH_REASON_TIMEOUT;
     }
-    if last_tok.is_some_and(|t| eos_tokens.contains(&t)) {
-        "stop"
-    } else if last_tok == tool_call_end_token {
-        "tool_calls"
-    } else {
-        "length"
+    if let Some(t) = last_tok {
+        if eos_tokens.contains(&t) {
+            return "stop";
+        }
+        // Guarded on `Some(t)` so an EMPTY output (max_tokens==0 scoring
+        // path) on a model with no tool-call end token configured cannot
+        // satisfy `None == None` and misreport "tool_calls".
+        if Some(t) == tool_call_end_token {
+            return "tool_calls";
+        }
     }
+    if let Some(guard) = guard_stop {
+        return guard_stop_wire_reason(guard);
+    }
+    if hard_ceiling_hit(remaining, seq_len, max_seq_len) {
+        return "length";
+    }
+    "stop"
 }
 
 /// Send final response and free GPU resources for a completed sequence.
-pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
-    let last_tok = a.output_tokens.last().copied();
-    let reason = derive_finish_reason(a.guard_stop, last_tok, &a.eos_tokens, a.tool_call_end_token);
+///
+/// `max_seq_len` is the served context ceiling (`sched.limits.max_seq_len`,
+/// 0 = unlimited) — needed so the `"length"` decision reuses the exact
+/// stop predicate from `emit_step`/`decode_logits_step`.
+pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize) {
+    let reason = derive_finish_reason(
+        a.guard_stop,
+        a.output_tokens.last().copied(),
+        &a.eos_tokens,
+        a.tool_call_end_token,
+        a.remaining,
+        a.seq.seq_len,
+        max_seq_len,
+    );
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
@@ -383,80 +493,5 @@ pub fn resume_swapped_seq(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{GUARD_STOP_REQUEST_TIMEOUT, derive_finish_reason};
-    use crate::ir::FINISH_REASON_TIMEOUT;
-
-    const EOS: &[u32] = &[151645];
-    const TOOL_END: Option<u32> = Some(151658);
-
-    #[test]
-    fn timeout_is_not_reported_as_length() {
-        // The regression this wave fixes: a deadline cut lands on an
-        // ordinary content token, so the token-derived path calls it
-        // "length" — indistinguishable from a legitimate max_tokens stop.
-        assert_eq!(
-            derive_finish_reason(None, Some(42), EOS, TOOL_END),
-            "length"
-        );
-        assert_eq!(
-            derive_finish_reason(Some(GUARD_STOP_REQUEST_TIMEOUT), Some(42), EOS, TOOL_END),
-            FINISH_REASON_TIMEOUT
-        );
-    }
-
-    #[test]
-    fn timeout_outranks_eos_and_tool_call_end() {
-        // A deadline can fire on the same step that emits EOS or the
-        // tool-call close; the response is still truncated relative to
-        // what the client asked for, so "timeout" must win.
-        assert_eq!(
-            derive_finish_reason(
-                Some(GUARD_STOP_REQUEST_TIMEOUT),
-                Some(151645),
-                EOS,
-                TOOL_END
-            ),
-            FINISH_REASON_TIMEOUT
-        );
-        assert_eq!(
-            derive_finish_reason(
-                Some(GUARD_STOP_REQUEST_TIMEOUT),
-                Some(151658),
-                EOS,
-                TOOL_END
-            ),
-            FINISH_REASON_TIMEOUT
-        );
-    }
-
-    #[test]
-    fn other_guards_keep_their_token_derived_reason() {
-        // Only the deadline marker remaps. The pre-existing guards
-        // (fuzzy_repetition, tool_envelope_stuck, ...) are surfaced via
-        // `guard_stop` in the dump body and must not change the wire
-        // reason — that is a separate, already-shipped contract.
-        assert_eq!(
-            derive_finish_reason(Some("fuzzy_repetition"), Some(42), EOS, TOOL_END),
-            "length"
-        );
-        assert_eq!(
-            derive_finish_reason(Some("tool_envelope_stuck"), Some(151645), EOS, TOOL_END),
-            "stop"
-        );
-    }
-
-    #[test]
-    fn normal_stops_are_unchanged() {
-        assert_eq!(
-            derive_finish_reason(None, Some(151645), EOS, TOOL_END),
-            "stop"
-        );
-        assert_eq!(
-            derive_finish_reason(None, Some(151658), EOS, TOOL_END),
-            "tool_calls"
-        );
-        assert_eq!(derive_finish_reason(None, Some(7), EOS, TOOL_END), "length");
-    }
-}
+// Tests live in `lifecycle_tests.rs` (sibling module registered in
+// `scheduler/mod.rs`) to keep this file under the 500-line cap.

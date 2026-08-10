@@ -357,6 +357,14 @@ jobs:
             "crates/spark-model/src/layers/ops/ssm_mamba.rs"
             # 513 LoC — dev-only W4A16 BF16-v2 microbench example.
             "crates/spark-model/examples/w4a16_bf16_v2_microtest.rs"
+            # 584 LoC — dev-only #435 verify-cost microbench example (GPU
+            # required): one sequential alloc→launch→time body whose legs
+            # mirror the exact/WY kernel chains step by step; splitting
+            # fragments the launch order (same rationale as the
+            # int8_gemm_test.rs / w4a16 entries above). Landed over-cap with
+            # the #435 stack; entry added by the first follow-on commit.
+            # Tracking issue owed when this branch gets its PR.
+            "crates/spark-model/examples/x435_ssm_cost.rs"
             # 509 LoC — scheduler type surface.
             "crates/spark-server/src/scheduler/types.rs"
             # 504 LoC — MTP step driver; crossed the cap when the run context

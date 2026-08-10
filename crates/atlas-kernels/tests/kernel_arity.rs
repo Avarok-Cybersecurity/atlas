@@ -44,19 +44,26 @@ const PINS: &[(&str, &str, usize)] = &[
 /// Targets whose copy of a kernel legitimately differs in arity from the
 /// family pin.
 ///
-/// ★ THERE ARE NONE, and the exception that used to live here was STALE and
-/// WRONG. It returned 8 for `w4a16_gemm_t` / `_p3` on every non-27B target,
-/// describing the world before the `ldb` port propagated. All 28 copies of
-/// `w4a16_gemm_t` in the tree now compile 9 params (verified on `origin/main`
-/// at 4e34a9e7), so on any REAL wildcard build this test asserted 9 == 8 and
-/// failed. It went unnoticed because CI builds with `ATLAS_SKIP_BUILD=1`, which
-/// makes the whole test vacuous — see the early return below.
+/// ★ There are none left. This used to carve out `w4a16_gemm_t`/`_p3` for
+/// every target except the 27B, on the grounds that "only the 27B grew
+/// `ldb`". That stopped being true when #429 finished the port: `ldb` is
+/// now on **all 28 `w4a16_gemm.cu` paths** (8 distinct files — `strix/common`
+/// is a symlink into `gb10/common`, and several model dirs symlink their
+/// neighbours), and `w4a16_gemm_t_ldb_drift_is_exactly_the_known_set` pins
+/// that with an EMPTY known-drift list.
 ///
-/// Keep the hook: a target legitimately CAN diverge (`_p3` and
-/// `_m128_bf16_v2` ship on the 27B only, and absence is skipped, not failed).
-/// But record evidence before adding an arm — re-derive the arity from the
-/// `.cu` tree, do not trust a remembered count.
-fn expected_arity(_model: &str, _module: &str, _kernel: &str, family_pin: usize) -> usize {
+/// Leaving the carve-out behind made this test red on `main` for every
+/// non-27B target — deepseek-v4-flash reported "9 params vs pin 8", which is
+/// the FIXED kernel being measured against the pre-fix expectation. The
+/// stale side was the exception, not the kernels.
+///
+/// The function is kept (rather than deleted) because it is the designated
+/// place for a future legitimate per-target divergence, and because deleting
+/// it would scatter that decision back into the call site. Before adding an
+/// arm, record evidence — re-derive the arity from the `.cu` tree, do not
+/// trust a remembered count.
+fn expected_arity(model: &str, module: &str, kernel: &str, family_pin: usize) -> usize {
+    let _ = (model, module, kernel);
     family_pin
 }
 
