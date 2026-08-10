@@ -180,6 +180,19 @@ extern "C" __global__ void w4a16_gemm(
 
 /// Transposed layout: B_packed[K/2, N], B_scale[K/GROUP_SIZE, N]
 /// Coalesced N-dim reads — consecutive threads read consecutive N addresses.
+// `ldb` = ROW STRIDE of the transposed B, which may EXCEED N.
+//
+// ★ This is the SCALAR reference kernel — its B loads are single bytes, not
+// 16-byte `cp.async`, so it never had the CUDA-716 alignment hazard the tile
+// kernels did. It has the OTHER half of that bug all the same: every Rust
+// launcher passes nine arguments (`w4a16_gemm_n128_ldb`) and the driver ignores
+// the extra one, so B was strided by N instead of ldb wherever the two differ
+// (notably the batched MTP propose: N = --mtp-vocab, ldb = the padded lm_head
+// twin stride). Silent sheared rows, no fault.
+//
+// ★ The `gn < N` guard STAYS as N, unlike the tile kernels where loads are
+// bounded by ldb. N is the valid-COLUMN bound; the stride is what changes.
+// Since ldb >= N, reading a column below N at stride LDB is in bounds.
 extern "C" __global__ void w4a16_gemm_t(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,     // [K/2, N] transposed
@@ -188,8 +201,10 @@ extern "C" __global__ void w4a16_gemm_t(
     __nv_bfloat16* __restrict__ C,
     unsigned int M,
     unsigned int N,
-    unsigned int K
+    unsigned int K,
+    unsigned int ldb
 ) {
+    const unsigned int LDB = ldb;
     const unsigned int cta_m = blockIdx.y * M_TILE;
     const unsigned int cta_n = blockIdx.x * N_TILE;
     const unsigned int warp_id = threadIdx.x / 32;
@@ -235,11 +250,11 @@ extern "C" __global__ void w4a16_gemm_t(
 
                 if (gk < K && gn < N) {
                     unsigned int k_pair = gk / 2;
-                    unsigned char packed_byte = B_packed[(unsigned long long)k_pair * N + gn];
+                    unsigned char packed_byte = B_packed[(unsigned long long)k_pair * LDB + gn];
                     unsigned int nibble = (gk & 1) ? (packed_byte >> 4) : (packed_byte & 0xF);
 
                     unsigned int scale_group = gk / GROUP_SIZE;
-                    unsigned char scale_byte = B_scale[(unsigned long long)scale_group * N + gn];
+                    unsigned char scale_byte = B_scale[(unsigned long long)scale_group * LDB + gn];
                     __nv_fp8_e4m3 fp8;
                     *(unsigned char*)&fp8 = scale_byte;
                     float dequant_val = E2M1_LUT[nibble] * (float)fp8 * scale2;

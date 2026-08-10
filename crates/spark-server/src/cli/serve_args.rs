@@ -311,6 +311,16 @@ pub struct ServeArgs {
     #[arg(long, value_name = "JSON")]
     pub default_chat_template_kwargs: Option<String>,
 
+    /// Ignore the `jinja-templates/` override directory and render every
+    /// model off its OWN chat template (`chat_template.jinja` /
+    /// `tokenizer_config.json`), relying on the Rust message-preprocessing
+    /// (`tokenizer/message_preprocess.rs`) for Atlas's cross-cutting chat
+    /// behaviors. Default off: an override file's presence is the opt-in
+    /// signal that a model needs a template fix Rust preprocessing can't
+    /// express (see `jinja-templates/README.md`).
+    #[arg(long, default_value_t = false)]
+    pub disable_template_overrides: bool,
+
     /// Enable MTP speculative decoding. The scheduler then MEASURES the
     /// verify-step cost over the first decode steps of serving and auto-disables
     /// MTP if it is provably net-negative (verify multiplier ≥ 1 + num_drafts),
@@ -624,6 +634,16 @@ pub struct ServeArgs {
     /// Only applies when --kv-cache-dtype is fp8.
     #[arg(long, default_value_t = 0)]
     pub fp8_kv_calibration_tokens: usize,
+
+    /// Headroom multiplier applied to the first-observe absmax when the online
+    /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
+    /// write scale always equals the read scale). The first observe sees only
+    /// the first prefill chunk, so the frozen scale covers headroom× its
+    /// observed max — later tokens whose magnitude grows don't clip, at a cost
+    /// of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
+    /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
+    #[arg(long, default_value_t = 2.0)]
+    pub fp8_kv_headroom: f32,
 
     /// Path to a warmup prompt file (JSON messages or plain text).
     /// At startup, the server tokenizes and prefills this prompt, inserting the

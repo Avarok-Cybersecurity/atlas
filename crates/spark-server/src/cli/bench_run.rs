@@ -30,7 +30,7 @@ pub fn find(id: &str) -> Result<&'static BenchmarkDescriptor> {
 
 pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
     if args.pull_request_gate_check {
-        let code = gate_check_cmd()?;
+        let code = gate_check_cmd(args.pr)?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -81,7 +81,7 @@ pub(super) fn repo_root() -> Result<std::path::PathBuf> {
 /// `--pull-request-gate-check`: does THIS commit have a passing record for
 /// every required gate? Prints a line per bench and exits 1 until they all
 /// pass. Pure filesystem reads — fast enough to run on every PR in CI.
-fn gate_check_cmd() -> Result<i32> {
+fn gate_check_cmd(pr: Option<u64>) -> Result<i32> {
     let root = repo_root()?;
     let sha = gate::git_sha(&root)?;
     let gates = gate::check_gates(&root, &sha);
@@ -104,6 +104,65 @@ fn gate_check_cmd() -> Result<i32> {
             }
         }
     }
+    // ── ADVISORY: what the classified intent would have asked for ──
+    //
+    // ★ Printed AFTER the verdict and consulted by nothing. `gate::exit_code`
+    // takes only the statuses, by signature, so this cannot reach the exit code
+    // without a visible change to that function. The owner's decision is that
+    // intent stays advisory until it is proven stable; this is the reporting
+    // half of it.
+    //
+    // `atlas-governance`'s own doctrine says the ledger is advisory
+    // "permanently — adding a ledger read would make [the gate] depend on a
+    // file any job can append to". Reading it to PRINT is not that; reading it
+    // to DECIDE would be, and would need that paragraph rewritten first.
+    let roots = gate::pr_taxonomy::load(&root);
+    let source = gate::required::intent_source(&root, pr);
+    println!();
+    match (&source, &roots) {
+        (gate::required::IntentSource::NotRequested, _) => {
+            println!("intent: not evaluated (no --pr)");
+        }
+        (gate::required::IntentSource::NotRecorded { ledger }, _) => {
+            println!("intent: nothing recorded ({})", ledger.display());
+        }
+        (gate::required::IntentSource::Degraded { reason }, _) => {
+            println!("intent: DEGRADED — {reason}");
+        }
+        (_, Err(e)) => println!("intent: taxonomy unreadable — {e:#}"),
+        (
+            gate::required::IntentSource::Recorded {
+                categories,
+                skipped,
+            },
+            Ok(roots),
+        ) => {
+            let report = gate::required::report(&[], source.clone(), roots);
+            println!(
+                "intent: {} classification(s){}",
+                categories.len(),
+                if *skipped > 0 {
+                    format!(", {skipped} abstained/errored (not counted)")
+                } else {
+                    String::new()
+                }
+            );
+            for c in categories {
+                println!("        {}", c.join("/"));
+            }
+            let implied = report.set.by_intent;
+            println!(
+                "        implies: {}",
+                if implied.is_empty() {
+                    "(nothing)".to_string()
+                } else {
+                    implied.iter().cloned().collect::<Vec<_>>().join(", ")
+                }
+            );
+            println!("        advisory — does not change the verdict above or the exit code");
+        }
+    }
+
     if open.is_empty() {
         println!("all {} required gates pass", gate::REQUIRED_GATES.len());
         Ok(0)

@@ -16,6 +16,20 @@ pub struct BenchmarkArgs {
     /// Runs without a subcommand (and without an endpoint).
     #[arg(long = "pull-request-gate-check")]
     pub pull_request_gate_check: bool,
+
+    /// PR number, for the ADVISORY intent half of `--pull-request-gate-check`.
+    ///
+    /// The journey ledger is keyed by PR (`governance/pr-<n>.jsonl`), and the
+    /// gate otherwise has only a sha — so without this the classified intent
+    /// cannot be found at all.
+    ///
+    /// ★ PCND, and there is no default: guessing a PR number would attribute
+    /// another PR's classification to this one. Absent means `NotRequested`,
+    /// which is the honest reading of a local run or a push build, and the
+    /// verdict is unchanged either way — `gate::exit_code` takes only the
+    /// verdicts, by signature.
+    #[arg(long, requires = "pull_request_gate_check")]
+    pub pr: Option<u64>,
     #[command(subcommand)]
     pub command: Option<BenchmarkCommand>,
 }

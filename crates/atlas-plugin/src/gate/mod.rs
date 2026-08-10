@@ -27,6 +27,11 @@ pub mod codeowners;
 pub mod coverage;
 pub mod record;
 pub mod taxon;
+
+/// The PR INTENT taxonomy — what a change is FOR, and the benchmarks that
+/// implies. Distinct from [`taxon`], which is derived from paths.
+pub mod pr_taxonomy;
+pub mod required;
 pub mod telemetry;
 
 use std::path::{Path, PathBuf};
@@ -207,6 +212,9 @@ mod fixture_baseline;
 #[path = "coverage_map_tests.rs"]
 mod coverage_map_tests;
 
+#[cfg(test)]
+#[path = "coverage_promotion_tests.rs"]
+mod coverage_promotion_tests;
 #[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod coverage_tests;

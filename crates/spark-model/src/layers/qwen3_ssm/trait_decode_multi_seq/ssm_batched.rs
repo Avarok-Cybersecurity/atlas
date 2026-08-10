@@ -82,7 +82,17 @@ impl Qwen3SsmLayer {
         let tc_wide_ok = self.qkvz_nvfp4_t.is_some()
             && self.out_proj_nvfp4_t.is_some()
             && ssm_tc_proj_min_n().is_some_and(|min| n >= min);
-        let qkvz_ok = (self.qkvz_nvfp4.is_none() && self.w8a16_gemm_k.0 != 0)
+        // qkvz_nvfp4.is_none() covers TWO builds: the FP8 build (qkvz_fp8w
+        // Some -> batched w8a16 GEMM, needs w8a16_gemm_k) and the pure
+        // native-BF16 build (both None -> the batched `dense_gemm` fallback
+        // below, which uses dense_gemm_k — loaded with an unconditional `?`
+        // in init.rs:147, so it is always non-zero here). Gate each on the
+        // kernel it actually dispatches so the BF16 build engages the batched
+        // fast path instead of silently dropping to the per-seq loop. The FP8
+        // sub-case (qkvz_fp8w Some) is byte-identical to the old gate.
+        let qkvz_ok = (self.qkvz_nvfp4.is_none()
+            && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
+                || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
             || (self.qkvz_nvfp4.is_some()
                 && ((self.w4a16_gemv_batch4_k.0 != 0 && n <= 16) || tc_wide_ok));
         let out_ok = self.out_proj_fp8w.is_some()

@@ -90,8 +90,26 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 5] = [
+pub const BOUNDARY_FILES: [&str; 7] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
+    // `required_for` / `union` / `intent_only`: decides what the INTENT half
+    // adds on top of the path-derived floor. Once intent can escalate a gate,
+    // this file decides a verdict by the same criterion as the four below.
+    "crates/atlas-plugin/src/gate/required.rs",
+    // ★ The intent half's `coverage.rs`, and it lives OUTSIDE `PERF_PATHS`
+    // entirely — so before this entry, deleting every `_benches` line in the
+    // taxonomy invalidated nothing at all. That is the same lock-whose-key-is-
+    // -kept-inside-it shape this list was created to close, left unapplied to
+    // the half added later.
+    //
+    // `invalidates` checks BOUNDARY_FILES *before* `on_boundary`, so an
+    // off-PERF_PATHS entry works here; a test pins that.
+    //
+    // ★ THE COST IS REAL: a taxonomy edit now re-opens all five gates (~4h19m
+    // of GPU). That is deliberate. The alternative is that removing a `_benches`
+    // line silently reduces coverage with nothing to notice — and a cheap edit
+    // that quietly weakens the gate is worse than an expensive one that cannot.
+    ".github/pr-taxonomy.json",
     // `record_covers` / `invalidating_paths` / `check_record` / `compare`:
     // decides whether a record stands and whether its numbers pass.
     "crates/atlas-plugin/src/gate/check.rs",
@@ -171,6 +189,10 @@ const TTFT_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/agentic",
         "the agentic driver cannot change what a first-token latency probe measures",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change what a first-token latency probe measures",
+    ),
 ];
 
 const BFCL_EXCLUDES: &[Exclusion] = &[
@@ -183,6 +205,10 @@ const BFCL_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/agentic",
         "the agentic driver cannot change a tool-calling accuracy score",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change a tool-calling accuracy score",
+    ),
 ];
 
 const AGENTIC_EXCLUDES: &[Exclusion] = &[
@@ -194,6 +220,30 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/bfcl",
         "the BFCL driver cannot change whether the agent's webserver task succeeds",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change whether the agent's webserver task succeeds",
+    ),
+];
+
+/// What the cross-contamination candidate ignores: gate bookkeeping and the
+/// OTHER benchmark drivers, exactly as a required gate would. Its own driver
+/// directory is deliberately NOT here — a change to the detector re-opens the
+/// detector.
+const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change whether one request's state leaks into another's output",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change whether one request's state leaks into another's output",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change whether one request's state leaks into another's output",
     ),
 ];
 
@@ -224,7 +274,37 @@ pub const REQUIRED: [GateCoverage; 5] = [
 /// Registered benchmarks that are deliberately **not** gates, each with the
 /// reason. Stated rather than implied: a reader asking "why doesn't
 /// `bfcl-full` gate?" should find the answer here, not infer it from absence.
-pub const NOT_REQUIRED: [(&str, &str); 3] = [
+/// Gates that are NOT required **yet**, but are on a declared promotion path.
+///
+/// ★ The difference from [`NOT_REQUIRED`] is the whole point. Those three are
+/// permanently excused, with a reason: `bfcl-full` duplicates cheaper coverage,
+/// `concurrency-sweep` has no thresholds, `serve-matrix` measures breadth.
+/// Nothing is owed for them, ever.
+///
+/// A promotion candidate is different: it is a gate we intend to require once
+/// it has proven itself, run on release cuts in the meantime. That leaves a gap
+/// with a shape this repository has been bitten by repeatedly — **listing only
+/// what was gated silently converts "ungated" into "unaffected"**. A PR whose
+/// paths the candidate cares about can merge with nothing measured, and nothing
+/// anywhere says so.
+///
+/// So a candidate carries a FULL [`GateCoverage`], exactly as a required gate
+/// does, and [`promotion_debt`] joins it against changed paths. The telemetry
+/// renders the result as an explicit debt row. No model is involved and none is
+/// needed: it is a deterministic join between paths and records.
+///
+/// The first entry is `cross-contamination` (owner pattern: NOT_REQUIRED,
+/// then promote once proven on release cuts). `memory-convergence` is the
+/// next intended entry and cannot be listed until the benchmark exists — a
+/// candidate naming an unregistered id would be a debt row nobody can ever
+/// discharge, which is worse than no row.
+/// `every_promotion_candidate_is_a_registered_benchmark` pins that.
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
+    id: "cross-contamination",
+    excludes: CONTAMINATION_EXCLUDES,
+}];
+
+pub const NOT_REQUIRED: [(&str, &str); 4] = [
     (
         "bfcl-full",
         "the unsampled ~3600-sample draw; the two subset gates cover the same code at a \
@@ -237,6 +317,12 @@ pub const NOT_REQUIRED: [(&str, &str); 3] = [
     (
         "serve-matrix",
         "a multi-checkpoint survey used for release notes; it measures breadth, not regression",
+    ),
+    (
+        "cross-contamination",
+        "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
+         and recorded as debt until it has proven itself; a fresh gate that fails on day one \
+         would train people to override it",
     ),
 ];
 
@@ -309,4 +395,21 @@ where
 /// Look up a gate's coverage by id.
 pub fn find(id: &str) -> Option<&'static GateCoverage> {
     REQUIRED.iter().find(|g| g.id == id)
+}
+
+/// Which [`PROMOTION_CANDIDATES`] these changed paths would have invalidated.
+///
+/// This is the DEBT a merge takes on: each id returned is a gate that wanted to
+/// run, was not required to, and therefore did not. Rendering it is the whole
+/// mechanism — an unrendered debt is indistinguishable from no debt.
+pub fn promotion_debt<'a, I>(paths: I) -> Vec<&'static str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let paths: Vec<&str> = paths.into_iter().collect();
+    PROMOTION_CANDIDATES
+        .iter()
+        .filter(|gate| paths.iter().any(|p| invalidates(gate, p)))
+        .map(|gate| gate.id)
+        .collect()
 }

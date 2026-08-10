@@ -33,7 +33,8 @@ dead; and five followed_directions regexes diverged from followed_directions.py.
 before -> after, same box, N=10 tiers: webserver_ok 3/9/6/7 -> 10 and 8; followed_directions \
 0/6/4/7 -> 9 and 5; Sigma-wall 394-637 s -> 923 and 734 s, with the agent now taking 10-18 \
 turns per run instead of 3-7. One tier reached the full 10/10. REMAINING: 10/10 AND 10/10 is \
-not reachable ON DEMAND. temperature is now 0.3 -- the value the shell harness pins and the \
+not reachable ON DEMAND. temperature is 0.0 (STALE NOTE FIXED 2026-08-09: this said 0.3; \
+0.0 landed in c050ced3f and binary 8b7de2638 carries it) -- the value the harness pins and the \
 one that scored 10/10 there -- so this gate is stochastic by construction. An exact 10-of-10 \
 bar on a stochastic instrument fails a healthy build roughly half the time. OWNER DECISION, \
 deliberately not taken here: either state these bounds as a distribution over k tiers (e.g. \
@@ -62,7 +63,12 @@ min = 10.0
 max = 10.0
 
 [benchmarks.metrics.sum_wall_s]
-max = 1300.0
+# Tightened 1300 -> 1000 on 2026-08-09. Two back-to-back N=10 tiers on one
+# binary measured 733.8 s and 782.9 s, and the historical range sits at
+# 600-800 s. A 1300 s ceiling therefore sat ~60% above anything ever observed:
+# it could only ever have caught a blowup, never a regression. 1000 s keeps
+# ~25% headroom over the slowest measured tier.
+max = 1000.0
 
 [benchmarks.metrics.webserver_ok]
 min = 10.0

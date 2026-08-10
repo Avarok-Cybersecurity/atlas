@@ -108,6 +108,16 @@ pub fn step_decode_only(
                     for mut a in active.drain(..) {
                         send_error(model, &mut a, &format!("{e:#}"));
                     }
+                    // A destroyed CUDA context (issue #429) surfaces here like
+                    // any other decode error, but it is terminal: the next tick
+                    // would admit the next request onto a dead context and fail
+                    // it identically, forever. The backend has already probed
+                    // and latched by this point, so the only thing left is to
+                    // stop. `request` is idempotent, so the echoing failures of
+                    // the remaining in-flight batches do not re-trigger it.
+                    if let Some(reason) = atlas_core::fault::global().fault() {
+                        crate::tui::shutdown::request(reason);
+                    }
                     return;
                 };
                 // `remove` (not `swap_remove`) keeps the ascending SSM-slot order

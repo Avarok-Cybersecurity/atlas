@@ -48,6 +48,17 @@ pub trait TransformerLayer: Send + Sync {
         None
     }
 
+    /// Whether this layer's ONLINE FP8-KV calibration has frozen its scale.
+    /// `None` = this layer runs no online calibration (non-attention layer,
+    /// static checkpoint scales, or a non-FP8 KV dtype). The scheduler's
+    /// graph-suppression gate keys off this rather than a token count: the
+    /// scale freezes on the FIRST observe, so waiting `calibration_tokens`
+    /// tokens would run ~256+ eager steps for a calibration that finished
+    /// immediately.
+    fn fp8_calibration_frozen(&self) -> Option<bool> {
+        None
+    }
+
     /// Decode one token through this layer, modifying `hidden` in-place.
     ///
     /// # Arguments
