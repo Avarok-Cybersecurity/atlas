@@ -20,6 +20,7 @@ use crate::weight_map::{DenseWeight, MtpWeights};
 mod async_chkpt;
 mod decode_a;
 mod decode_a2;
+mod decode_a3;
 mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;

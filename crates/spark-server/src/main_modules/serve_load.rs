@@ -285,6 +285,9 @@ pub(crate) fn load_model(
     } else {
         ptx_set.behavior.fp8_kv_calibration_tokens
     };
+    // Unconditional: the serde(skip) default is 0.0, and the CLI default (2.0)
+    // is the real one. Validated ≥ 1.0 in `validate_serve_args`.
+    config.fp8_kv_headroom = args.fp8_kv_headroom;
 
     // 3. Load model weights
     spark_runtime::progress::phase(5, "weight load");
@@ -398,7 +401,12 @@ pub(crate) fn load_model(
         kv_dtype,
         layer_dtypes,
         hss_cache_blocks_per_seq,
-    } = serve_phases::resolve_kv_cache_config(&args, &config, ptx_set.behavior.default_kv_dtype)?;
+    } = serve_phases::resolve_kv_cache_config(
+        &args,
+        &config,
+        ptx_set.behavior.default_kv_dtype,
+        store.fp8_kv_scale_count(),
+    )?;
 
     // Fail-fast: every kernel handle the selected --kv-cache-dtype's dispatch
     // arms need must resolve NOW — not at first dispatch after a multi-minute
@@ -564,7 +572,7 @@ pub(crate) fn load_model(
         top_p: default_top_p,
         top_n_sigma: default_top_n_sigma,
         min_p: default_min_p,
-    } = serve_phases::load_sampling_defaults(&model_dir, &args);
+    } = serve_phases::load_sampling_defaults(&model_dir, &args, &sampling_presets.non_thinking);
 
     // 6. Load tokenizer
     spark_runtime::progress::phase(8, "tokenizer");
@@ -579,6 +587,7 @@ pub(crate) fn load_model(
         supports_thinking,
         &config.model_type,
         Some(std::path::Path::new(".")), // repo root for override templates
+        args.disable_template_overrides,
     )?;
 
     // (AM1 attractor-mask registration removed 2026-06-03 — see

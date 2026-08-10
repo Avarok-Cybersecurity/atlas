@@ -80,10 +80,19 @@ impl AtlasCudaBackend {
     pub(super) fn memset_cu(&self, ptr: DevicePtr, value: u8, bytes: usize) -> Result<()> {
         let status = unsafe { cuMemsetD8Async(ptr.0, value, bytes, self.default_stream) };
         if status != 0 {
+            // The #429 symptom surfaced here: once a kernel launch had
+            // poisoned the context, every request died on this memset. Probe
+            // so the FIRST such failure is recognised as terminal instead of
+            // being reported forever as an unrelated per-request error.
+            super::fault_probe::note_failure("cuMemsetD8Async", &format!("status {status}"));
             bail!("cuMemsetD8Async failed: status {status}");
         }
         let sync = unsafe { cuStreamSynchronize(self.default_stream) };
         if sync != 0 {
+            super::fault_probe::note_failure(
+                "cuStreamSynchronize after memset",
+                &format!("status {sync}"),
+            );
             bail!("cuStreamSynchronize after memset failed: status {sync}");
         }
         Ok(())
@@ -98,6 +107,7 @@ impl AtlasCudaBackend {
     ) -> Result<()> {
         let status = unsafe { cuMemsetD8Async(ptr.0, value, bytes, stream) };
         if status != 0 {
+            super::fault_probe::note_failure("cuMemsetD8Async", &format!("status {status}"));
             bail!("cuMemsetD8Async failed: status {status}");
         }
         Ok(())

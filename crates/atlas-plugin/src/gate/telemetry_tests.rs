@@ -16,6 +16,7 @@ fn pr(number: u64, paths: &[&str]) -> PrFacts {
         title: format!("pr {number}"),
         author: "someone".into(),
         draft: false,
+        merged: false,
         changed_paths: paths.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -186,6 +187,7 @@ fn pr_titles_cannot_break_the_table() {
         title: "evil | row\ninjection".into(),
         author: "x".into(),
         draft: false,
+        merged: false,
         changed_paths: vec![FLAGSHIP.to_string()],
     };
     let body = render(&root, &[hostile]);
@@ -218,4 +220,131 @@ fn the_mermaid_graph_is_valid_with_one_pr() {
     assert!(body.contains("```mermaid\ngraph LR\n"));
     assert!(body.contains("pr1["));
     assert!(!body.contains("--> pr1"), "no edge into the only node");
+}
+
+/// ★ The debt section is rendered even when nothing is owed — that is the
+/// whole mechanism. A section that appears only when non-empty cannot be
+/// distinguished from a section nobody wired up, and "no row" then reads as
+/// "no debt" whether or not the join ever ran.
+#[test]
+fn the_promotion_debt_section_is_always_rendered() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let prs = vec![super::PrFacts {
+        number: 1,
+        title: "a scheduler change".into(),
+        author: "someone".into(),
+        draft: false,
+        merged: false,
+        changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
+    }];
+    let body = super::render(&root, &prs);
+    assert!(
+        body.contains("### Promotion-candidate debt"),
+        "the debt heading must appear unconditionally"
+    );
+    // The candidate list is live (`cross-contamination`), so the section must
+    // carry the debt table — and a scheduler change is on the candidate's
+    // boundary, so this PR must appear in it as a row.
+    assert!(
+        body.contains("| PR | merged? |"),
+        "a non-empty candidate list must render the debt table"
+    );
+    assert!(
+        body.contains("cross-contamination"),
+        "the scheduler PR owes the contamination candidate and the row must say so"
+    );
+}
+
+/// The PR's debt is computed from its own paths, so it stays correct as the
+/// candidate list grows.
+#[test]
+fn debt_is_derived_from_the_prs_own_paths() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let prs = vec![
+        super::PrFacts {
+            number: 1,
+            title: "docs".into(),
+            author: "a".into(),
+            draft: false,
+            merged: false,
+            changed_paths: vec!["docs/adr/README.md".into()],
+        },
+        super::PrFacts {
+            number: 2,
+            title: "engine".into(),
+            author: "b".into(),
+            draft: false,
+            merged: false,
+            changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
+        },
+    ];
+    let views = super::views(&root, &prs);
+    // The discrimination is real now that `cross-contamination` is a
+    // candidate: the docs PR owes nothing, the engine PR owes the candidate.
+    assert!(
+        views[0].promotion_debt.is_empty(),
+        "a docs-only PR must owe no candidate, got {:?}",
+        views[0].promotion_debt
+    );
+    assert!(
+        views[1].promotion_debt.contains(&"cross-contamination"),
+        "an engine PR must owe the contamination candidate, got {:?}",
+        views[1].promotion_debt
+    );
+}
+
+/// A merged debt and an open debt are different things: one is coverage already
+/// gone without, the other is still a warning. The column is what keeps them
+/// from collapsing into one undifferentiated list.
+#[test]
+fn the_debt_table_distinguishes_merged_from_open() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let prs = vec![
+        super::PrFacts {
+            number: 1,
+            title: "still open".into(),
+            author: "a".into(),
+            draft: false,
+            merged: false,
+            changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
+        },
+        super::PrFacts {
+            number: 2,
+            title: "already landed".into(),
+            author: "b".into(),
+            draft: false,
+            merged: true,
+            changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
+        },
+    ];
+    let views = super::views(&root, &prs);
+    assert!(!views[0].facts.merged);
+    assert!(
+        views[1].facts.merged,
+        "the merged flag must survive views()"
+    );
+
+    let body = super::render(&root, &prs);
+    assert!(body.contains("### Promotion-candidate debt"));
+    // The header carries the column even while the candidate list is empty, so
+    // the shape is pinned before the first real row exists.
+    assert!(
+        body.contains("nothing can be owed") || body.contains("| PR | merged? |"),
+        "the debt section must either state emptiness or carry the merged column"
+    );
 }

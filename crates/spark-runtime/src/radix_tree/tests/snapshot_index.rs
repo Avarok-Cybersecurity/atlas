@@ -6,6 +6,9 @@ use crate::prefix_cache::TierEvict;
 #[path = "snapshot_lease.rs"]
 mod lease;
 
+#[path = "snapshot_insert_tier.rs"]
+mod insert_tier;
+
 /// Build an entry with an explicit recency profile. `snapshot_id` doubles
 /// as a stable identity we assert on (independent of Vec index).
 fn entry(

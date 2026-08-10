@@ -23,23 +23,33 @@
 //! comparable to that band when served exactly like this (no docker wrapper —
 //! run the binary directly):
 //!
-//! ```sh
-//! spark serve Qwen/Qwen3.6-35B-A3B-FP8 \
-//!   --max-seq-len 32768 --max-batch-size 2 --gpu-memory-utilization 0.70 \
-//!   --kv-cache-dtype bf16 --lm-head-dtype bf16 --scheduling-policy slai \
-//!   --speculative --num-drafts 1 --mtp-quantization bf16 \
-//!   --enable-prefix-caching --ssm-cache-slots 256 --ssm-checkpoint-interval 16 \
-//!   --kv-high-precision-layers auto --port 8888
-//! ```
+//! The canonical serve command, and why `--mtp-gate force` belongs in it,
+//! are documented on `DESCRIPTOR` in `descriptors.rs` — beside the thresholds
+//! they justify, rather than duplicated here where they would drift.
 //!
-//! Two pins that must not drift:
 //!
-//! * **`--lm-head-dtype bf16` is mandatory.** fp8 and nvfp4 lm-heads pass
-//!   short-prompt coherence but degenerate over this harness's long structured
-//!   trajectories (low-margin argmax flips compound turn over turn).
-//! * **Thinking stays ON** — no `--disable-thinking`. The historical band was
-//!   recorded with thinking enabled; disabling it is the TTFT/BFCL-leg recipe
-//!   (their probes count only content tokens), not Gate A's.
+//! Why `--mtp-gate force` is a DETERMINISM pin — and why the non-neutrality
+//! it works around is a BUG with an open fix — is documented on `DESCRIPTOR`
+//! in `descriptors.rs`, beside the thresholds it protects.
+//!
+//! The client
+//! side of this gate is pinned to the bone (temp 0.0, seed 0, constant prompt,
+//! normalized tool output) and none of that helps while the SERVER is choosing
+//! numeric paths by stopwatch.
+//!
+//! Proof it was really happening: two runs of the SAME binary (8b7de2638),
+//! same box, back to back — iteration 9 of the failing run left
+//! `/tmp/agent_server.log` built `--release`, while iteration 9 of the passing
+//! run wrote `/tmp/server.log` built dev. Identical inputs, divergent
+//! trajectories. Roughly one wandering trajectory in ten ends without
+//! evidencing its final directive, which is the 9/10.
+//!
+//! The 2026-07-22 campaign already declared this pin mandatory for gates. This
+//! gate never adopted it. The alternative — widening the threshold to tolerate
+//! the flip — was explicitly rejected: it would convert a determinism bug into
+//! permanent noise the gate can never see through again.
+//!
+//! Two further pins that must not drift (see `descriptors.rs`).
 
 pub mod agent;
 pub mod preflight;
@@ -164,6 +174,14 @@ impl AgenticWebserver {
         if transcript.hit_turn_cap {
             note = format!("turn cap ({}) reached; {note}", self.max_turns);
         }
+        // ★ NAME the unevidenced directives. `directions.met()` renders "5/6"
+        // and nothing recorded WHICH one — so a 9/10 was undiagnosable once the
+        // next run truncated the trajectory. The names were in `steps` the
+        // whole time; only the count was ever surfaced.
+        let missing = directions.missing();
+        if !missing.is_empty() {
+            note = format!("missing: {}; {note}", missing.join(", "));
+        }
         Ok(IterationRow {
             index,
             wall_s,
@@ -258,32 +276,15 @@ impl AgenticWebserver {
             self.rows.iter().filter(|r| r.directions.overall()).count() as f64,
         );
         m.insert("sum_wall_s".to_string(), self.total_wall());
+
+        m.extend(score::per_step_tallies(
+            &self.rows.iter().map(|r| &r.directions).collect::<Vec<_>>(),
+        ));
         m
     }
 
     fn verdict(&self) -> Verdict {
-        let n = self.rows.len();
-        let ok = self.rows.iter().filter(|r| r.webserver_ok).count();
-        let fd = self.rows.iter().filter(|r| r.directions.overall()).count();
-        let wall = self.total_wall();
-        let mut failures = Vec::new();
-        if ok < n {
-            failures.push(format!("webserver_ok {ok}/{n}"));
-        }
-        if fd < n {
-            failures.push(format!("followed_directions {fd}/{n}"));
-        }
-        if wall > self.wall_budget_s {
-            failures.push(format!("Σwall {wall:.0}s > {:.0}s", self.wall_budget_s));
-        }
-        if failures.is_empty() {
-            Verdict::pass(format!(
-                "{ok}/{n} webserver_ok · {fd}/{n} followed_directions · Σwall {wall:.0}s ≤ {:.0}s",
-                self.wall_budget_s
-            ))
-        } else {
-            Verdict::fail(failures.join(" · "))
-        }
+        score::verdict(&self.rows, self.total_wall(), self.wall_budget_s)
     }
 }
 
@@ -335,12 +336,16 @@ impl Benchmark for AgenticWebserver {
             ParamSpec::new(
                 "wall_budget_s",
                 "Σ wall budget",
-                "Total agent seconds across all iterations before the gate fails.",
+                "Total agent seconds across all iterations before the gate fails. \
+                 1000 s, tightened from 1300 on 2026-08-09: measured tiers on the \
+                 35B flagship land at 600-800 s (734 and 783 back-to-back on one \
+                 binary), so 1300 left ~60% headroom above the observed range and \
+                 could not have caught anything short of a blowup.",
                 ParamKind::Float {
                     min: 1.0,
                     max: 100_000.0,
                 },
-                ParamValue::Float(1300.0),
+                ParamValue::Float(1000.0),
             ),
             ParamSpec::new(
                 "max_turns",

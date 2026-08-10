@@ -6,7 +6,9 @@
 
 use spark_runtime::prefix_cache::PrefixMatch;
 
-use super::batch_kernel::{cache_batch_matches_compatible, check_kernel_batched_eligible};
+use super::batch_kernel::{
+    cache_batch_matches_compatible, check_kernel_batched_eligible, config_is_mla,
+};
 
 /// (chunk_len, chunk_start, is_last_chunk)
 fn s(chunk_len: usize, chunk_start: usize, is_last: bool) -> (usize, usize, usize, bool) {
@@ -93,7 +95,7 @@ fn rejects_under_two_streams() {
         std::iter::empty(),
         0,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -105,7 +107,7 @@ fn rejects_under_two_streams() {
         vec![s(4096, 0, false)],
         1,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -121,7 +123,7 @@ fn rejects_chunk_zero() {
         vec![s(4096, 0, false), s(4096, 0, false)],
         2,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -137,7 +139,7 @@ fn accepts_chunk_zero_when_explicitly_allowed() {
         vec![s(4096, 0, false), s(4096, 0, false)],
         2,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -153,7 +155,7 @@ fn accepts_uniform_paged_n_2() {
         vec![s(4096, 4096, false), s(4096, 4096, false)],
         2,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -169,7 +171,7 @@ fn rejects_mismatched_chunk_len() {
         vec![s(4096, 4096, false), s(2048, 4096, false)],
         2,
         16384,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -187,7 +189,7 @@ fn rejects_mismatched_chunk_start() {
         vec![s(4096, 12288, false), s(4096, 4096, false)],
         2,
         16384,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -203,7 +205,7 @@ fn rejects_mismatched_is_last() {
         vec![s(4096, 4096, false), s(4096, 4096, true)],
         2,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -220,7 +222,7 @@ fn rejects_arena_overflow() {
         vec![s(4096, 4096, false), s(4096, 4096, false)],
         2,
         4100,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -236,7 +238,7 @@ fn rejects_mla_model() {
         vec![s(4096, 4096, false), s(4096, 4096, false)],
         2,
         8192,
-        "mistral",
+        true,
         128,
         BIG_SCRATCH,
         TOP_K,
@@ -253,7 +255,7 @@ fn rejects_large_head_dim() {
         vec![s(4096, 4096, false), s(4096, 4096, false)],
         2,
         8192,
-        "gemma4",
+        false,
         512,
         BIG_SCRATCH,
         TOP_K,
@@ -269,7 +271,7 @@ fn accepts_n_4_uniform() {
         vec![s(2048, 2048, false); 4],
         4,
         8192,
-        "qwen3_next",
+        false,
         256,
         BIG_SCRATCH,
         TOP_K,
@@ -321,7 +323,7 @@ fn rejects_scratch_footprint_overflow() {
             streams.iter().copied(),
             4,
             arena,
-            "qwen3_next",
+            false,
             256,
             too_small,
             8,
@@ -336,7 +338,7 @@ fn rejects_scratch_footprint_overflow() {
             streams.iter().copied(),
             4,
             arena,
-            "qwen3_next",
+            false,
             256,
             enlarged,
             8,
@@ -357,7 +359,7 @@ fn raw_charge_blocks_stacking_at_production_sizes() {
         vec![s(8192, 16, false), s(8192, 16, false)],
         2,
         8200,
-        "qwen3_next",
+        false,
         128,
         BIG_SCRATCH,
         TOP_K,
@@ -375,7 +377,7 @@ fn effective_charge_allows_warm_stacking() {
         vec![s_eff(8192, 424, 16, false), s_eff(8192, 400, 16, false)],
         2,
         8200,
-        "qwen3_next",
+        false,
         128,
         BIG_SCRATCH,
         TOP_K,
@@ -394,7 +396,7 @@ fn effective_charge_still_rejects_when_sum_exceeds_arena() {
         streams,
         8,
         8200,
-        "qwen3_next",
+        false,
         128,
         BIG_SCRATCH,
         TOP_K,
@@ -415,7 +417,7 @@ fn effective_charge_rejects_zero_length_stream() {
         vec![s_eff(2048, 176, 2048, false), s_eff(2048, 0, 2048, false)],
         2,
         8192,
-        "qwen3_next",
+        false,
         128,
         BIG_SCRATCH,
         TOP_K,
@@ -423,4 +425,40 @@ fn effective_charge_rejects_zero_length_stream() {
         true,
         false,
     ));
+}
+
+/// Config-level pin of the MLA rejection: an MLA config (mistral-shaped,
+/// `kv_lora_rank = 512`) must be rejected by the batched-kernel gate THROUGH
+/// the same `config_is_mla` seam the production caller reads. Review finding
+/// on the capability conversion: sabotaging the caller's derivation
+/// (`kv_lora_rank > 0` → `false`) left all unit tests green because every
+/// test passed the bool directly. This test fails under that sabotage.
+#[test]
+fn mistral_config_is_rejected_as_mla() {
+    let mut cfg = atlas_core::config::ModelConfig::qwen3_next_80b_nvfp4();
+    // Non-MLA baseline: the derivation says no, and an otherwise-eligible
+    // batch is admitted — proving the rejection below comes from MLA alone.
+    assert!(!config_is_mla(&cfg));
+    let eligible = |is_mla: bool| {
+        check_kernel_batched_eligible(
+            vec![s(2048, 16, false), s(2048, 16, false)],
+            2,
+            8192,
+            is_mla,
+            128,
+            BIG_SCRATCH,
+            TOP_K,
+            MROPE,
+            true,
+            false,
+        )
+    };
+    assert!(eligible(config_is_mla(&cfg)));
+
+    // Mistral-Small-4 ships kv_lora_rank = 512 in config.json; the parser
+    // copies it verbatim (`parsers/mistral.rs`), so this is the config-level
+    // fact the serving path sees.
+    cfg.kv_lora_rank = 512;
+    assert!(config_is_mla(&cfg));
+    assert!(!eligible(config_is_mla(&cfg)));
 }
