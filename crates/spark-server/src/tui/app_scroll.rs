@@ -83,3 +83,7 @@ impl App {
         self.log_scroll = if next <= 0 { None } else { Some(next as usize) };
     }
 }
+
+#[cfg(test)]
+#[path = "app_scroll_tests.rs"]
+mod tests;

@@ -45,6 +45,22 @@ pub(crate) enum Phase {
     ProposeMask,
     Propose,
     MarconiCkpt,
+    /// Whole `step_mtp` invocation (outer bracket). `step_mtp − Σ StepTotal`
+    /// is the host prep/tail INSIDE the step driver but OUTSIDE the per-chunk
+    /// verify guard: classification, D-Cut planning, chunk sort, bootstrap.
+    StepOuter,
+    /// Out-of-step wall: elapsed from the previous verify step's guard drop
+    /// to the next guard construction. This is the "~14% between steps" the
+    /// wave-10 ledger left unattributed; the `loop_*` phases below name its
+    /// scheduler-tick components (whatever GAP holds beyond them is emit /
+    /// gate / verify-ctx / misc glue).
+    Gap,
+    LoopDrain,
+    LoopSnapshot,
+    LoopAdmit,
+    LoopPrefill,
+    LoopRetire,
+    LoopSwap,
     StepTotal,
 }
 
@@ -68,6 +84,14 @@ const NAMES: [&str; NUM_PHASES] = [
     "propose_mask",
     "propose",
     "marconi",
+    "step_mtp",
+    "GAP",
+    "loop_drain",
+    "loop_snapshot",
+    "loop_admit",
+    "loop_prefill",
+    "loop_retire",
+    "loop_swap",
     "TOTAL",
 ];
 
@@ -86,6 +110,12 @@ pub struct RunTiming {
     sum_us: [AtomicU64; NUM_PHASES],
     count: [AtomicU64; NUM_PHASES],
     steps: AtomicU64,
+    /// Anchor-micros of the last verify step's guard drop (0 = no step yet).
+    /// Written by [`StepTimer::drop`], read by [`StepTimer::new`] to record
+    /// [`Phase::Gap`] — the out-of-step wall between consecutive verify steps.
+    /// A per-run field, not a static, for the same reason the accumulators are:
+    /// a gap measured across a model swap describes neither model.
+    last_step_end_us: AtomicU64,
 }
 
 impl RunTiming {
@@ -99,6 +129,7 @@ impl RunTiming {
             sum_us: [const { AtomicU64::new(0) }; NUM_PHASES],
             count: [const { AtomicU64::new(0) }; NUM_PHASES],
             steps: AtomicU64::new(0),
+            last_step_end_us: AtomicU64::new(0),
         }
     }
 
@@ -192,8 +223,25 @@ pub(crate) struct StepTimer<'a> {
     timing: &'a RunTiming,
 }
 
+/// Monotonic anchor for the inter-step GAP clock. `Instant` cannot live in an
+/// atomic, so GAP timestamps are micros since this per-process anchor. The
+/// anchor is only an origin — the DIFFERENCE of two readings is what is
+/// recorded, so it is process-scoped without averaging anything across runs.
+fn anchor_us() -> u64 {
+    static ANCHOR: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    u64::try_from(ANCHOR.get_or_init(Instant::now).elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
 impl<'a> StepTimer<'a> {
     pub(crate) fn new(timing: &'a RunTiming, seq_len: usize) -> Self {
+        if timing.armed {
+            let prev = timing.last_step_end_us.load(Ordering::Relaxed);
+            if prev != 0 {
+                let gap = anchor_us().saturating_sub(prev);
+                timing.sum_us[Phase::Gap as usize].fetch_add(gap, Ordering::Relaxed);
+                timing.count[Phase::Gap as usize].fetch_add(1, Ordering::Relaxed);
+            }
+        }
         Self {
             start: Instant::now(),
             seq_len,
@@ -205,5 +253,10 @@ impl<'a> StepTimer<'a> {
 impl Drop for StepTimer<'_> {
     fn drop(&mut self) {
         step_done(self.timing, self.start, self.seq_len);
+        if self.timing.armed {
+            self.timing
+                .last_step_end_us
+                .store(anchor_us().max(1), Ordering::Relaxed);
+        }
     }
 }

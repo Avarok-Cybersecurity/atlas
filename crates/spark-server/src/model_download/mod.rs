@@ -116,7 +116,11 @@ impl DownloadError {
                 repo,
                 had_token: false,
             } => format!(
-                "{repo} requires credentials — set HF_TOKEN, or run `huggingface-cli login`"
+                // `hf auth login`, not `huggingface-cli login`: the old binary
+                // was renamed in huggingface_hub 0.34 and removed in 1.0, so
+                // the advice a gated repo hands out has to be the current one.
+                "{repo} requires credentials — set HF_TOKEN, or run `hf auth login` \
+                 (`huggingface-cli login` before huggingface_hub 1.0)"
             ),
             Self::Gated {
                 repo,

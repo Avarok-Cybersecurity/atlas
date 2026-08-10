@@ -133,6 +133,10 @@ pub struct App {
     pub run: Option<crate::tui::RunHandles>,
     pub toasts: Vec<Toast>,
     pub help_open: bool,
+    /// A `q` that would have destroyed work in flight, waiting to be answered.
+    /// Set only when [`App::work_in_flight`] named something; an idle
+    /// dashboard still quits on the first press.
+    pub confirm_quit: bool,
     pub tick: u64,
     pub should_quit: bool,
     pub detach: bool,
@@ -185,6 +189,7 @@ impl App {
             bench: BenchState::default(),
             toasts: Vec::new(),
             help_open: false,
+            confirm_quit: false,
             tick: 0,
             should_quit: false,
             detach: false,
@@ -242,12 +247,12 @@ impl App {
         if self.progress.ready && !self.awaiting_model && live.is_some() && self.kernels_for != live
         {
             let model = super::data::kernels::build();
-            if !model.missing.is_empty() {
-                let n = model.missing.len();
-                self.toast(
-                    format!("{n} kernel lookup(s) unresolved — Main ▸ Kernels"),
-                    false,
-                );
+            // ONLY the actionable class toasts: an alarm that is almost always
+            // noise is an alarm nobody reads (see `kernel_audit::FailureSplit`).
+            let n = model.missing_required.len();
+            if n > 0 {
+                let msg = format!("{n} kernel lookup(s) unresolved — Main ▸ Kernels");
+                self.toast(msg, false);
             }
             self.kernels = Some(model);
             self.kernels_for = live;
@@ -276,6 +281,10 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // A pending confirmation owns the keyboard until it is answered.
+        if self.confirm_quit && self.answer_quit_prompt(key) {
+            return;
+        }
         if self.help_open {
             self.help_open = false;
             return;
@@ -285,7 +294,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => self.on_quit_key(),
             KeyCode::Char('?') => self.help_open = true,
             KeyCode::Char('1') => self.jump(Section::Main),
             KeyCode::Char('2') => self.jump(Section::Stats),
@@ -390,25 +399,26 @@ impl App {
         let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
         let up = matches!(key.code, KeyCode::Up | KeyCode::Char('k'));
         match self.section {
+            // Both panes move through `scroll`, the same entry point the wheel
+            // uses. A second copy of "what scrolling means here" is how the
+            // keyboard came to have no ceiling while the wheel had one: `k`
+            // past the oldest line blanked the pane, and coming back cost as
+            // many presses as had been spent going up.
             Section::Main => match self.main_sub {
                 MainSub::Overview => {
                     if up {
-                        let cur = self.log_scroll.unwrap_or(0);
-                        self.log_scroll = Some(cur + 1);
+                        self.scroll(-1);
                     } else if down {
-                        match self.log_scroll {
-                            Some(1) | None => self.log_scroll = None,
-                            Some(n) => self.log_scroll = Some(n - 1),
-                        }
+                        self.scroll(1);
                     } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
                         self.log_scroll = None;
                     }
                 }
                 MainSub::Kernels => {
                     if down {
-                        self.kernel_scroll = self.kernel_scroll.saturating_add(1);
+                        self.scroll(1);
                     } else if up {
-                        self.kernel_scroll = self.kernel_scroll.saturating_sub(1);
+                        self.scroll(-1);
                     } else if matches!(key.code, KeyCode::Char('g')) {
                         self.kernel_scroll = 0;
                     }
@@ -427,19 +437,9 @@ impl App {
                     self.network_detail = !self.network_detail;
                 }
             }
-            Section::Terminal if self.term_sub == TermSub::Chat => {
-                if up {
-                    self.chat.scroll_by(1);
-                } else if down {
-                    self.chat.scroll_by(-1);
-                } else if matches!(key.code, KeyCode::PageUp) {
-                    self.chat.scroll_by(10);
-                } else if matches!(key.code, KeyCode::PageDown) {
-                    self.chat.scroll_by(-10);
-                } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
-                    self.chat.follow();
-                }
-            }
+            // Chat owns its own keys in `app_input`, where the input-focused
+            // half of the same map already lives.
+            Section::Terminal if self.term_sub == TermSub::Chat => self.on_chat_content_key(key),
             Section::Benchmarks => self.on_bench_key(key),
             Section::Terminal | Section::Stats => {}
         }
@@ -476,21 +476,15 @@ impl App {
             self.jump(*s);
         }
     }
-}
 
-/// Minimal single-line editor for the two filter boxes.
-pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
-    match key.code {
-        KeyCode::Esc => {
-            buf.clear();
-            *editing = false;
+    /// Click on one of the ACTIVE section's subsection rows — the only ones the
+    /// sidebar draws. Selects it outright rather than cycling, because a click
+    /// names the row it landed on.
+    pub fn sidebar_sub_click(&mut self, sub: usize) {
+        if sub < self.section.subs().len() {
+            self.set_sub(self.section, sub);
+            self.focus = Focus::Content;
         }
-        KeyCode::Enter => *editing = false,
-        KeyCode::Backspace => {
-            buf.pop();
-        }
-        KeyCode::Char(c) => buf.push(c),
-        _ => {}
     }
 }
 
@@ -498,3 +492,8 @@ pub(super) fn edit_line(buf: &mut String, key: KeyEvent, editing: &mut bool) {
 #[cfg(test)]
 #[path = "app_tests.rs"]
 mod tests;
+
+// The key-by-key drive of the global bindings, same reason.
+#[cfg(test)]
+#[path = "app_keys_tests.rs"]
+mod key_tests;

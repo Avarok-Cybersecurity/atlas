@@ -195,3 +195,7 @@ pub async fn drain_in_flight(grace: Duration) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+#[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod tests;

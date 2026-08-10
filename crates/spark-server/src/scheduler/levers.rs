@@ -25,6 +25,10 @@ pub struct SchedLevers {
     /// Fast masked-sampling chat path. Ships ON;
     /// `ATLAS_DISABLE_FAST_MASKED=1` opts out.
     pub fast_masked: bool,
+    /// GRAMMARLESS verify fast-greedy — the chat sibling of the #237 grammar
+    /// arm. Ships ON; `ATLAS_NO_FAST_GREEDY_CHAT=1` restores the per-seq
+    /// `[K,vocab]`-D2H slow path (the byte-invariant tie-breaking arm).
+    pub fast_greedy_chat: bool,
     /// Force temperature 0 regardless of the request. Diagnostic.
     pub force_temp_zero: bool,
     /// Apply min-p during MTP verify. Ships ON; `ATLAS_NO_MTP_MINP=1` opts out.
@@ -95,12 +99,43 @@ fn present(var: &str) -> bool {
     std::env::var(var).is_ok()
 }
 
+/// `--mtp-gate`, published before the scheduler's levers resolve.
+static MTP_GATE_FORCE_CLI: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Publish the command line's `--mtp-gate`. Call once, at serve time.
+///
+/// `None` means the flag was NOT given. Publishing the `auto` default instead
+/// sealed this cell on every `spark serve` and left `ATLAS_MTP_GATE_FORCE=1`
+/// documented but dead — the fallback below could never be reached. An absent
+/// flag now publishes nothing, so the variable works again for the scripts it
+/// exists for, and an explicit `--mtp-gate auto` still overrides it.
+pub fn set_mtp_gate_force(force: Option<bool>) {
+    if let Some(force) = force {
+        let _ = MTP_GATE_FORCE_CLI.set(force);
+    }
+}
+
+/// The `--mtp-gate force` decision IN FORCE: the flag when it was given, the
+/// legacy variable otherwise.
+///
+/// The SSOT for the resolution — `SchedLevers::from_env` reads it, and so does
+/// the startup log, which must print what is in force rather than what was
+/// asked for. Two spellings of this rule is how the log came to report `auto`
+/// on a run that was forcing.
+pub fn mtp_gate_force() -> bool {
+    MTP_GATE_FORCE_CLI
+        .get()
+        .copied()
+        .unwrap_or_else(|| opt_in("ATLAS_MTP_GATE_FORCE"))
+}
+
 impl SchedLevers {
     /// Resolve from the environment. Called once, when the run starts.
     pub fn from_env() -> Self {
         Self {
             fast_greedy_grammar: on_unless("ATLAS_DISABLE_FAST_GREEDY"),
             fast_masked: on_unless("ATLAS_DISABLE_FAST_MASKED"),
+            fast_greedy_chat: on_unless("ATLAS_NO_FAST_GREEDY_CHAT"),
             force_temp_zero: opt_in("ATLAS_FORCE_TEMP_ZERO"),
             mtp_minp: on_unless("ATLAS_NO_MTP_MINP"),
             mtp_verify_sample: on_unless("ATLAS_NO_MTP_VERIFY_SAMPLE"),
@@ -130,7 +165,9 @@ impl SchedLevers {
             // Presence-gated, not value-gated.
             decode_timing: present("ATLAS_DECODE_TIMING"),
             mtp_timing: opt_in("ATLAS_MTP_TIMING"),
-            mtp_gate_force: opt_in("ATLAS_MTP_GATE_FORCE"),
+            // `--mtp-gate force` is the configured spelling; the env var is
+            // the fallback for scripts that predate the flag.
+            mtp_gate_force: mtp_gate_force(),
             adadec_diagnostic: present("ATLAS_ADADEC_DIAGNOSTIC"),
 
             loop_watchdog: AtomicBool::new(false),
@@ -143,6 +180,7 @@ impl SchedLevers {
         Self {
             fast_greedy_grammar: true,
             fast_masked: true,
+            fast_greedy_chat: true,
             force_temp_zero: false,
             mtp_minp: true,
             mtp_verify_sample: true,
@@ -179,6 +217,7 @@ impl SchedLevers {
             fast_greedy_grammar: self.fast_greedy_grammar,
             mtp_verify_sample: self.mtp_verify_sample,
             fast_masked: self.fast_masked,
+            fast_greedy_chat: self.fast_greedy_chat,
             adadec_diagnostic: self.adadec_diagnostic,
             dflash_masked_verify: self.dflash_masked_verify,
             disable_watchdogs: self.disable_watchdogs,
@@ -235,6 +274,30 @@ mod tests {
         assert!(d.loop_watchdog());
         d.set_loop_watchdog(false);
         assert!(!d.loop_watchdog());
+    }
+
+    #[test]
+    fn an_absent_mtp_gate_flag_leaves_the_legacy_variable_reachable() {
+        // The whole of the fix: publishing the clap default sealed
+        // `MTP_GATE_FORCE_CLI` on every `spark serve`, so the
+        // `ATLAS_MTP_GATE_FORCE` fallback in `mtp_gate_force` could never run
+        // even though `--help` documents it. `None` must not seal.
+        //
+        // ★ The cell is process-global with no reset, so this is the only test
+        // in this binary that may write it — a second writer would make both
+        // order-dependent.
+        for _ in 0..3 {
+            set_mtp_gate_force(None);
+        }
+        set_mtp_gate_force(Some(true));
+        assert!(
+            mtp_gate_force(),
+            "an absent flag must leave the cell open for the next writer"
+        );
+        assert!(
+            SchedLevers::from_env().mtp_gate_force,
+            "and the carried levers read the same resolution — one rule, not two"
+        );
     }
 
     #[test]

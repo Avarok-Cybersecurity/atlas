@@ -144,6 +144,14 @@ fn startup(
         anyhow::bail!("{msg}");
     }
 
+    // Publish the kernel-path flags the command line owns, BEFORE anything can
+    // read them. Each of these used to be an `ATLAS_*` variable read at its own
+    // call site; they are configuration, so they belong on the command line
+    // where `--help` lists them, `ps` shows them, and a recipe can be read
+    // without a ten-line env preamble. The environment stays honoured as a
+    // fallback for scripts that predate the flags.
+    super::serve_flags::publish_kernel_flags(&args);
+
     // No model named: the dashboard is the front door. Everything above this
     // point is process-scoped — banner, signal listeners, the TUI thread, flag
     // validation — and everything below is model-dependent, which is exactly

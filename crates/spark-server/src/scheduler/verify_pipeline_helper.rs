@@ -236,11 +236,19 @@ pub fn verify_pick_with_pipeline(
 /// `argmax_ids` is the GPU-graphed argmax already returned by
 /// `decode_verify_graphed*`; used as the fallback for the failure
 /// path and as the array length source.
+///
+/// `row_base` (batched-MTP E12): first logits row of THIS sequence's
+/// verify span within the shared `[R, vocab]` logits buffer. Single-
+/// sequence verify paths pass 0 (rows 0..K — unchanged behaviour);
+/// the batched K=4 verify passes `i*4` for sequence i so every read
+/// (fast-path single-logit probes and the slow-path D2H) targets the
+/// sequence's own rows.
 pub fn verify_pick_all_with_pipeline(
     model: &dyn Model,
     argmax_ids: &[u32],
     a: &mut ActiveSeq,
     ctx: &LogitsContext,
+    row_base: usize,
 ) -> Vec<u32> {
     use crate::scheduler::mtp_timing::Phase;
     let k = argmax_ids.len();
@@ -254,7 +262,7 @@ pub fn verify_pick_all_with_pipeline(
     // pipeline provably cannot change any pick, so the raw argmax IS the
     // masked pick and the [K, vocab] D2H is skipped entirely. Any
     // ineligible position falls through to the slow path for the call.
-    if let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx) {
+    if let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx, row_base) {
         return picks;
     }
 
@@ -350,7 +358,7 @@ pub fn verify_pick_all_with_pipeline(
                         crate::scheduler::fast_greedy::logit_is_positive(
                             model,
                             logits_base,
-                            i,
+                            row_base + i,
                             vocab,
                             tok,
                         )
@@ -392,6 +400,78 @@ pub fn verify_pick_all_with_pipeline(
         // else: fall through to the slow path (matcher restored above).
     }
 
+    // ── GRAMMARLESS fast-greedy (2026-07-30): the same #237 gate, minus the
+    // bitmask ──
+    //
+    // The fast path above required `grammar_state.is_some()`, so plain chat —
+    // the EASIEST regime (no mask to consult at all) — unconditionally paid
+    // the slow tail below: per SEQUENCE per STEP, a blocking D2H of its
+    // [K+1, vocab] logits rows (2 x 248,077 x BF16 = 992,308 B on the 27B at
+    // the 16:1 ladder). The C=16 profile (PROGRESS_LOG 6.12) measured 2,541
+    // such copies = 2.5 GB per 16x300-token burst, ~16 stream-drain waits per
+    // step — the single largest slice of the host-bound decode wall.
+    //
+    // Eligibility mirrors the grammar arm exactly: greedy (temp==0 or forced),
+    // not inside thinking, penalties classified by the SSOT `fast_greedy`
+    // gate (Neutral, or ReduceOnly with the per-token immunity proof — same
+    // scoped history, same `logit_is_positive` 2-byte probe). When every
+    // position qualifies, the GPU argmax IS the masked-greedy pick and the
+    // [K,vocab] D2H is skipped entirely.
+    //
+    // Same behavioral trade #237 shipped for grammar sequences: GPU-argmax
+    // tie-breaking near equal logits can differ from the host FP32 scan, so
+    // emitted tokens are NOT byte-invariant vs the slow path at near-ties.
+    // Kill switch: ATLAS_NO_FAST_GREEDY_CHAT=1 restores the slow path.
+    let chat_fast_gate = if ctx.sampling.fast_greedy_chat
+        && a.grammar_state.is_none()
+        && !a.inside_thinking
+        && (a.temperature == 0.0 || ctx.sampling.force_temp_zero)
+    {
+        crate::scheduler::fast_greedy::classify_penalties(
+            &crate::scheduler::sample_step::penalty_params_for(
+                a,
+                crate::scheduler::sample_step::PositionKind::Verify,
+                0.0,
+                None,
+                Vec::new(),
+            ),
+        )
+    } else {
+        crate::scheduler::fast_greedy::PenaltyGate::Blocked
+    };
+    if chat_fast_gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
+        let t_fast = std::time::Instant::now();
+        let vocab = model.vocab_size();
+        let logits_base = model.logits_buffer_ptr();
+        let scoped_history: Vec<u32> =
+            if chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly {
+                crate::scheduler::sample_step::penalty_history_scope(
+                    &a.output_tokens,
+                    ctx.tool_call_end_token,
+                )
+                .to_vec()
+            } else {
+                Vec::new()
+            };
+        let all_immune = argmax_ids.iter().enumerate().all(|(i, &tok)| {
+            chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
+                || crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
+                    crate::scheduler::fast_greedy::logit_is_positive(
+                        model,
+                        logits_base,
+                        row_base + i,
+                        vocab,
+                        tok,
+                    )
+                })
+        });
+        ctx.timing.record(Phase::FastGreedy, t_fast);
+        if all_immune {
+            return argmax_ids.to_vec(); // no D2H, no CPU pipeline
+        }
+        // else: some position needs the penalty-aware pipeline — slow path.
+    }
+
     let vocab = model.vocab_size();
     // BF16 always for verify path: `decode_verify_graphed_*` writes BF16
     // to `logits_buffer()`. The FP32-lm_head path (Gemma-4 dense) does
@@ -401,7 +481,12 @@ pub fn verify_pick_all_with_pipeline(
     let t_d2h = std::time::Instant::now();
     let mut buf = vec![0u8; total];
     if model
-        .copy_logits_to_host(model.logits_buffer_ptr(), &mut buf)
+        .copy_logits_to_host(
+            model
+                .logits_buffer_ptr()
+                .offset(row_base * vocab * elem_bytes),
+            &mut buf,
+        )
         .is_err()
     {
         return argmax_ids.to_vec();

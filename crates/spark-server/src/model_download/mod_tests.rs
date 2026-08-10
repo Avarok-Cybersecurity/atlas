@@ -316,7 +316,7 @@ fn the_token_precedence_rule_prefers_the_environment_then_the_login_file() {
     // Nothing anywhere: public models need no token, so this is normal.
     assert_eq!(pick_token(&[None, None], None), None);
 
-    // The login file is the fallback — what `huggingface-cli login` writes,
+    // The login file is the fallback — what `hf auth login` writes,
     // which a user who has "logged in" expects to work.
     assert_eq!(
         pick_token(&[None, None], Some("from-file")).as_deref(),

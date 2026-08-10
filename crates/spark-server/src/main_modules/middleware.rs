@@ -298,6 +298,57 @@ pub(crate) fn apply_rate_headers(
     );
 }
 
+/// The body a `/v1/*` request gets once the GPU fault latch is set.
+///
+/// Pure, so both branches are testable without a live router. Returns `None`
+/// while healthy — the caller then runs the request normally.
+///
+/// Shape is OpenAI's error envelope, because every client that talks to this
+/// server already parses it; a bare string here is a parse failure at the
+/// client and an unexplained hang for the user.
+pub(crate) fn fault_rejection(
+    path: &str,
+    fault: Option<&str>,
+) -> Option<(axum::http::StatusCode, serde_json::Value)> {
+    // Only the inference surface is refused. `/health*` MUST still answer —
+    // it is how an operator and an orchestrator learn what happened, and
+    // rejecting it would turn a diagnosable fault into a silent one.
+    if !path.starts_with("/v1/") {
+        return None;
+    }
+    let reason = fault?;
+    Some((
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::json!({
+            "error": {
+                "message": format!(
+                    "The server's GPU context is unrecoverable and it is shutting down: \
+                     {reason}"
+                ),
+                "type": "server_error",
+                "code": "gpu_fault",
+            }
+        }),
+    ))
+}
+
+/// Refuse inference requests once the GPU context is known dead (issue #429).
+///
+/// Without this, a poisoned context produced an unbounded stream of 500s: each
+/// request was admitted, scheduled, and killed deep in the driver. A 503 here
+/// is both faster and *honest* — 500 says "your request failed", 503 says "this
+/// server cannot serve anything", and only the second is true.
+pub(crate) async fn gpu_fault_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match fault_rejection(req.uri().path(), atlas_core::fault::global().fault()) {
+        None => next.run(req).await,
+        Some((code, body)) => (code, axum::Json(body)).into_response(),
+    }
+}
+
 #[cfg(test)]
 #[path = "middleware_tests.rs"]
 mod tests;

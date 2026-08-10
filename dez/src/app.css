@@ -1,0 +1,236 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* ── Design tokens ────────────────────────────────────────────────────────
+   One accent hue (amber), used sparingly. Every foreground/background pair
+   below is >= 4.5:1 in both themes; large display text is >= 3:1.
+   Fonts are system stacks on purpose — self-hosting zero bytes beats
+   shipping a webfont, and a CDN font would contradict the pitch.       */
+:root {
+  color-scheme: dark light;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  --measure: 68ch;
+  --page: 1120px;
+  --gutter: clamp(1rem, 4vw, 2.5rem);
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  --step--1: clamp(0.82rem, 0.79rem + 0.14vw, 0.9rem);
+  --step-0: clamp(0.95rem, 0.91rem + 0.2vw, 1.05rem);
+  --step-1: clamp(1.12rem, 1.04rem + 0.4vw, 1.35rem);
+  --step-2: clamp(1.4rem, 1.24rem + 0.8vw, 1.9rem);
+  --step-3: clamp(1.9rem, 1.5rem + 2vw, 3.1rem);
+
+  --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+
+/* Dark is the default; light is opt-in via media query or [data-theme]. */
+:root,
+:root[data-theme='dark'] {
+  --bg: #0c0d10;
+  --bg-raised: #131519;
+  --bg-sunken: #08090b;
+  --fg: #e7e9ee;
+  --fg-muted: #9aa0ab;
+  --border: #23262d;
+  --border-strong: #333842;
+  --accent: #ff9d4d; /* 8.4:1 on --bg */
+  --accent-quiet: #ffb375;
+  --accent-wash: rgba(255, 157, 77, 0.1);
+  --on-accent: #1a0e03;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.6), 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme='light'] {
+  --bg: #fbfbfc;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f1f2f4;
+  --fg: #16181d;
+  --fg-muted: #5b616e; /* 6.2:1 on --bg */
+  --border: #e0e2e7;
+  --border-strong: #c6cad2;
+  --accent: #9c4200; /* 6.6:1 on --bg */
+  --accent-quiet: #b04d00;
+  --accent-wash: rgba(156, 66, 0, 0.07);
+  --on-accent: #fff8f2;
+  --shadow: 0 1px 2px rgba(16, 18, 23, 0.06), 0 8px 24px rgba(16, 18, 23, 0.07);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #fbfbfc;
+    --bg-raised: #ffffff;
+    --bg-sunken: #f1f2f4;
+    --fg: #16181d;
+    --fg-muted: #5b616e;
+    --border: #e0e2e7;
+    --border-strong: #c6cad2;
+    --accent: #9c4200;
+    --accent-quiet: #b04d00;
+    --accent-wash: rgba(156, 66, 0, 0.07);
+    --on-accent: #fff8f2;
+    --shadow: 0 1px 2px rgba(16, 18, 23, 0.06), 0 8px 24px rgba(16, 18, 23, 0.07);
+  }
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100svh;
+  /* 320px floor: nothing may cause a horizontal page scroll. */
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--step-0);
+  line-height: 1.65;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+img,
+svg,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-weight: 620;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--step-3);
+}
+h2 {
+  font-size: var(--step-2);
+}
+h3 {
+  font-size: var(--step-1);
+  letter-spacing: -0.01em;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+code,
+kbd,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ── Focus ──────────────────────────────────────────────────────────────
+   A real, visible ring — never `outline: none`. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--gutter);
+  top: 0;
+  z-index: 100;
+  transform: translateY(-120%);
+  padding: 0.6rem 1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  color: var(--fg);
+  text-decoration: none;
+  transition: transform 0.15s var(--ease);
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
+/* ── Layout primitives ──────────────────────────────────────────────────── */
+.container {
+  width: 100%;
+  max-width: var(--page);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+.section {
+  padding-block: clamp(3.5rem, 8vw, 6.5rem);
+  border-top: 1px solid var(--border);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.lede {
+  max-width: var(--measure);
+  color: var(--fg-muted);
+  font-size: var(--step-1);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────
+   Honour the OS setting globally, then again per-component. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -439,11 +439,33 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
     }
 
     if state.stop_string_triggered {
+        // The tool guards (F11 within-response dedup, hard-validation
+        // reject, loop cap) reuse `stop_string_triggered` as a generic
+        // "end this response" flag. But the scheduler keeps generating for
+        // a few tokens after the flag is set (cancel latency), and on a
+        // tool-call *runaway* those tokens are raw markup —
+        // `<tool_call><function=…><parameter=…>…</tool_call></_call>` —
+        // re-emitted here. A raw passthrough (the old behaviour) leaked
+        // that markup into `content` because this branch returns BEFORE the
+        // detector/sanitizer fork below. Route the delta through the
+        // buffered `sanitize_content_chunk` so multi-token markers that
+        // straddle deltas (`</_call>` = `</` `_` `call` `>`) are reassembled
+        // and scrubbed. For a genuine stop string, legitimate trailing
+        // content is untouched — the sanitizer only removes tool markup.
         if !delta.is_empty() {
-            deltas.push(StreamDelta::Content {
-                text: delta,
-                token_ids: state.take_ids_if(ctx.req_return_token_ids),
-            });
+            let cleaned = sanitize_content_chunk(
+                &delta,
+                &mut state.tag_scan_buf,
+                &mut state.suppressing_param_leak,
+                &mut state.inside_envelope,
+                &ctx.leak_markers,
+            );
+            if !cleaned.is_empty() {
+                deltas.push(StreamDelta::Content {
+                    text: cleaned,
+                    token_ids: state.take_ids_if(ctx.req_return_token_ids),
+                });
+            }
         }
         return deltas;
     }

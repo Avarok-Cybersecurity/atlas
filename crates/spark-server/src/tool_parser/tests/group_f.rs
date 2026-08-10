@@ -6,10 +6,12 @@ use super::super::*;
 // ────────────────────────────────────────────────────────────────────────
 // Backfill / validation repair for delegation tools (opencode / Claude Code
 // `task`). These exercise `backfill_required_params` +
-// `validate_single_tool_call` directly. They live here (not in `group_a`,
-// the historical backfill home) because `group_a` is disabled (commented
-// out of `tests.rs` pending the `parse_minimax_xml_call` cleanup). A new
-// group keeps the regression COMPILED and RUNNING.
+// `validate_single_tool_call` directly. They live here rather than in
+// `group_a`, the historical backfill home, because `group_a` was disabled at
+// the time — commented out of `tests.rs` over a claim that its helpers had
+// been refactored away. That claim was false (`parse_minimax_xml_call` only
+// lacked `pub(super)`), and `group_a` is compiled and running again, so this
+// group is now a sibling by history rather than by necessity.
 // ────────────────────────────────────────────────────────────────────────
 
 #[test]

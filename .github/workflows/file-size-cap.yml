@@ -1,6 +1,16 @@
 name: File size cap (≤500 LoC per .rs)
 
+# Read-only: this job only greps the checkout.
+permissions:
+  contents: read
+
 on:
+  # Manually runnable. During the 2026-08-06 Actions incident, webhook triggers
+  # were throttled to aid recovery, so pushes stopped creating runs at all --
+  # and with no dispatch trigger there was no way to ask for one. A check that
+  # can only be started by an event you do not control is a check you cannot
+  # get a verdict from when you most need it.
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main, master]
@@ -14,7 +24,7 @@ jobs:
     name: Enforce ≤500 LoC per source file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check no .rs file exceeds 500 lines
         shell: bash
@@ -141,7 +151,6 @@ jobs:
             # Allow-listed to unblock the PR; clean splits tracked as follow-up
             # (per-file Ctx/State or sub-module extraction, Atlas idiom).
             "crates/atlas-kernels/build.rs"
-            "crates/atlas-quant/src/fp8.rs"
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
             "crates/spark-model/src/layers/moe/forward.rs"
@@ -298,6 +307,63 @@ jobs:
             "crates/spark-model/src/layers/ops/gemm_dense.rs"
             "crates/spark-model/src/layers/qwen3_ssm/trait_decode_batched_conv_gdn.rs"
             "crates/spark-model/src/model/trait_impl/mod.rs"
+            # -- PR #373 (prefix-cache refcount fixes) carry-over --
+            # 505 LoC — paged KV block pool. Sat at 493 (under cap); the two
+            # refcount fixes push it 12 over: `return_evicted_block` must release
+            # only the prefix cache's own ref (force-zeroing freed blocks a live
+            # sequence still held → aliased KV pointer → CUDA-700), and `dec_ref`
+            # is now saturating because `debug_assert` is compiled out in release
+            # with no `overflow-checks`, so a 0-ref decrement wrapped to u32::MAX
+            # and pinned the block forever. Both need their "why" inline — the
+            # bugs are invisible from the code alone. Comments already trimmed
+            # 520 → 505. Single `impl PagedKvCache` (alloc/free/refcount/block IO)
+            # whose ordering is read top-to-bottom, same rationale as the other
+            # compute/state-heavy entries above. Clean split (block IO → sibling)
+            # tracked as follow-up.
+            "crates/spark-runtime/src/kv_cache/paged_impl.rs"
+            # ── Wave-55 integration (perf/enterprise-concurrency-v2 -> main) ──
+            # Thirteen of the fifteen below were ALREADY over the cap on the
+            # branch tip before this merge; two (`model/types.rs`,
+            # `scheduler/mtp_step.rs`) crossed it in the merge itself, from the
+            # union of main's carried-context refactor with the campaign's
+            # multi-sequence work. All fifteen are the enterprise-concurrency
+            # campaign's compute/dispatch surfaces, where the read order IS the
+            # launch order; splitting them mid-campaign is exactly the change
+            # that would have gone unmeasured. Split tracked as follow-up.
+            #
+            # 698 LoC — batched MTP drafter forward (n-row propose).
+            "crates/spark-model/src/layers/mtp_head/forward_batch.rs"
+            # 647 LoC — R-row batched verify forward + graph capture.
+            "crates/spark-model/src/model/trait_impl/verify_e.rs"
+            # 617 LoC — multi-seq decode driver + graph-key selection.
+            "crates/spark-model/src/model/trait_impl/decode_a2.rs"
+            # 596 LoC — batched GDN recurrent decode scan.
+            "crates/spark-model/src/layers/qwen3_ssm/trait_decode_multi_seq/ssm_batched_recurrent.rs"
+            # 545 LoC — quantized weight-map layouts (MMQ SoA + transposed twins).
+            "crates/spark-model/src/weight_map/quantized.rs"
+            # 536 LoC — model-wide type/field surface; grew by the union of
+            # main's `ModelLevers`/`GemmDispatch` carriers with the campaign's
+            # verify-pool and FP16-h-state fields.
+            "crates/spark-model/src/model/types.rs"
+            # 532 LoC — decode phase B (drafter prefill + carry).
+            "crates/spark-model/src/model/trait_impl/decode_b.rs"
+            # 525 LoC — speculative trait impl (propose/verify plumbing).
+            "crates/spark-model/src/model/trait_impl/speculative.rs"
+            # 524 LoC — SSM snapshot capture/restore.
+            "crates/spark-model/src/model/ssm_snapshot.rs"
+            # 522 LoC — speculation mode/width resolution.
+            "crates/spark-model/src/speculative.rs"
+            # 518 LoC — Mamba/SSM op wrappers.
+            "crates/spark-model/src/layers/ops/ssm_mamba.rs"
+            # 513 LoC — dev-only W4A16 BF16-v2 microbench example.
+            "crates/spark-model/examples/w4a16_bf16_v2_microtest.rs"
+            # 509 LoC — scheduler type surface.
+            "crates/spark-server/src/scheduler/types.rs"
+            # 504 LoC — MTP step driver; crossed the cap when the run context
+            # was threaded through the bootstrap/verify dispatch in this merge.
+            "crates/spark-server/src/scheduler/mtp_step.rs"
+            # 502 LoC — /v1/completions handler.
+            "crates/spark-server/src/api/completions.rs"
           )
 
           violations=0

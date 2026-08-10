@@ -31,7 +31,7 @@ The cost is a grammar compilation step (~ms for typical JSON schemas), amortised
 
 ## How Atlas uses it
 
-Atlas ships XGrammar as a vendored dependency (`vendor/xgrammar-rs/`) with Rust bindings. The call sites:
+Atlas ships XGrammar as a **pure-Rust in-tree crate**, `crates/xgrammar` — a from-scratch port of mlc-ai/xgrammar v0.1.32, with no C++ core, no `cxx` FFI bridge and no build script. (It was previously a vendored `vendor/xgrammar-rs/` binding wrapping the C++ engine; that directory is gone.) The call sites:
 
 - **Tool calls** — when the request includes `tools: [...]`, Atlas derives an XGrammar grammar from the function schemas + the model's tool-call format (Hermes JSON, Qwen3-coder XML, Mistral JSON). The grammar enforces: opening delimiter → valid function name → opening args bracket → schema-conforming JSON/XML → closing delimiter. `--tool-max-tokens` caps the total argument-generation length.
 - **Response-format structured output** — OpenAI-compatible `response_format: {type: json_schema, json_schema: {...}}`. Atlas compiles the schema into an XGrammar grammar and constrains the entire response.
@@ -74,7 +74,7 @@ The one place where constrained decoding can interact badly with sampling: very 
 
 ## Files to read
 
-- `vendor/xgrammar-rs/` — the XGrammar Rust bindings.
+- `crates/xgrammar/` — the engine itself; `DESIGN.md` there covers the Tier-3 synthesis and `PORT_PLAN.md` the port roadmap.
 - `crates/spark-server/src/grammar/` — per-request grammar compilation and mask application.
-- `crates/spark-server/src/tool_parser.rs` — tool-call format → grammar translation.
-- `docs/adr/0010-vendor-xgrammar.md` — the decision record behind vendoring XGrammar.
+- `crates/spark-server/src/tool_parser/` — tool-call format → grammar translation.
+- `docs/adr/0010-vendor-xgrammar.md` — the decision record behind the original vendoring (superseded by the pure-Rust port).

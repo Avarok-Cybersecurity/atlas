@@ -19,12 +19,21 @@ use super::*;
 use spark_runtime::gpu::GpuBackend;
 
 pub fn log_cutlass_nvfp4_route(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) {
+    // Routing telemetry, not a warning: the dedup key includes M, and
+    // prefill produces a new M per token count, so at WARN this spammed the
+    // production channel on every agentic request (and a polluted WARN
+    // stream misdirects real investigations). Skip the dedup probe entirely
+    // unless a subscriber would take the debug event — this runs per routed
+    // GEMM call.
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
     // De-duplicated on the BACKEND (`OpCache::first_shape`), not in a static:
     // the shapes a model dispatches are its own, and a process-wide set
     // suppresses the first route line for every shape a previous model
     // happened to use — the lines that say which kernel this model took.
     if gpu.op_cache().first_shape(name, m, n, k) {
-        tracing::warn!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
+        tracing::debug!("CUTLASS_NVFP4_ROUTE {name} M={m} N={n} K={k}");
     }
 }
 

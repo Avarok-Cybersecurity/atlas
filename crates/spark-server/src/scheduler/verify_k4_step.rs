@@ -5,8 +5,8 @@
 use super::*;
 
 #[path = "verify_k4_step/stats.rs"]
-mod stats;
-use stats::{k4_record_outcome, k4_record_positional};
+pub(super) mod stats;
+use stats::k4_record_positional;
 
 /// K=4 verify: [last_token, draft1, draft2, draft3] → [v0, v1, v2, v3].
 /// Four outcomes: accept 0, 1, 2, or 3 drafts.
@@ -104,6 +104,7 @@ pub fn step_verify_k4(
             &[v0_argmax, v1_argmax, v2_argmax, v3_argmax],
             a,
             verify_ctx,
+            0,
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),
@@ -143,6 +144,10 @@ pub fn step_verify_k4(
         drafts[2] == v2,
         a.seq.seq_len,
     );
+    // Width-attributed accept telemetry (ATLAS_MTP_ACCEPT_DEBUG): this is the
+    // SINGLE-sequence step, i.e. the n=1 row of the same table the batched
+    // step fills for n>=2.
+    crate::scheduler::mtp_accept_debug::record(1, 3, drafts[0] == v0, num_accepted);
 
     // ATLAS_MTP_REFEED_ACCEPTED: same contract as `verify_k3_step` — ring the
     // TARGET's true hidden for verify rows 0..=num_accepted under labels
@@ -164,7 +169,7 @@ pub fn step_verify_k4(
 
     // Extract logprobs from verify logits buffer (K=4 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
-        extract_verify_logprobs(model, &[v0, v1, v2, v3], top_logprobs)
+        extract_verify_logprobs(model, &[v0, v1, v2, v3], top_logprobs, 0)
     } else {
         Vec::new()
     };
@@ -191,205 +196,20 @@ pub fn step_verify_k4(
         a.seq.seq_len
     );
 
-    if num_accepted == 3 {
-        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
-        if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned(), sched);
-        }
-        if !a.finished {
-            emit_token(a, drafts[2], verify_lps.get(2).cloned(), sched);
-        }
-        if !a.finished {
-            emit_token(a, v3, verify_lps.get(3).cloned(), sched);
-        }
-        if a.finished {
-            return;
-        }
-        a.last_token = v3;
-
-        // Item #2 (STree-style in-place K=4 verify commit). Full accept
-        // (num_accepted=k=4): the verify kernel already wrote the canonical
-        // h_state, so the commit is a no-op.
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 4, 4) {
-            // SSM state is no longer trustworthy — terminate, do not continue.
-            tracing::error!("commit_accepted_prefix (K=4 accept-4): {e:#}");
-            a.finished = true;
-            return;
-        }
-        if let Err(e) = model.save_hidden_for_mtp(3, 0) {
-            tracing::error!("save_hidden_for_mtp(3): {e:#}");
-            return;
-        }
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 3, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v3,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
-            }
-        }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 ACCEPT-3: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
-        k4_record_outcome(sched, 3, a.seq.seq_len);
-    } else if num_accepted == 2 {
-        a.seq.seq_len -= 1;
-        a.seq.tokens.pop();
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 2, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
-        // (num_accepted=3 < k=4): rewind live h_state to intermediate[2]
-        // (state after the third accepted token).
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 4) {
-            tracing::error!("commit_accepted_prefix (K=4 accept-3): {e:#}");
-            a.finished = true;
-            return;
-        }
-        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
-        if !a.finished {
-            emit_token(a, drafts[1], verify_lps.get(1).cloned(), sched);
-        }
-        if !a.finished {
-            emit_token(a, v2, verify_lps.get(2).cloned(), sched);
-        }
-        if a.finished {
-            return;
-        }
-        a.last_token = v2;
-        if let Err(e) = model.save_hidden_for_mtp(2, 0) {
-            tracing::error!("save_hidden_for_mtp(2): {e:#}");
-            return;
-        }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v2,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
-            }
-        }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
-        k4_record_outcome(sched, 2, a.seq.seq_len);
-    } else if num_accepted == 1 {
-        a.seq.seq_len -= 2;
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
-        // (num_accepted=2 < k=4): rewind live h_state to intermediate[1].
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 4) {
-            tracing::error!("commit_accepted_prefix (K=4 accept-2): {e:#}");
-            a.finished = true;
-            return;
-        }
-        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
-        if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned(), sched);
-        }
-        if a.finished {
-            return;
-        }
-        a.last_token = v1;
-        if let Err(e) = model.save_hidden_for_mtp(1, 0) {
-            tracing::error!("save_hidden_for_mtp(1): {e:#}");
-            return;
-        }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v1,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
-            }
-        }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
-        k4_record_outcome(sched, 1, a.seq.seq_len);
-    } else {
-        a.seq.seq_len -= 3;
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
-        if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
-            tracing::error!("trim_proposer_state: {e:#}");
-        }
-        // Item #2 (STree-style in-place K=4 verify commit). Partial accept
-        // (num_accepted=1 < k=4): rewind live h_state to intermediate[0]
-        // (state after the always-accepted bonus token).
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 4) {
-            tracing::error!("commit_accepted_prefix (K=4 accept-1): {e:#}");
-            a.finished = true;
-            return;
-        }
-        emit_token(a, v0, verify_lps.first().cloned(), sched);
-        if a.finished {
-            return;
-        }
-        a.last_token = v0;
-        if let Err(e) = model.save_hidden_for_mtp(0, 0) {
-            tracing::error!("save_hidden_for_mtp(0): {e:#}");
-            return;
-        }
-        let t_propose = Instant::now();
-        let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        match model.run_mtp_propose_multi(
-            v0,
-            a.seq.seq_len,
-            num_drafts,
-            &mut a.seq,
-            0,
-            _mtp_grammar_mask.as_deref(),
-        ) {
-            Ok(d) if !d.is_empty() => a.pending_drafts = d,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("run_mtp_propose_multi: {e:#}");
-            }
-        }
-        let propose_us = t_propose.elapsed().as_micros();
-        tracing::debug!(
-            "K4 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",
-            a.seq.seq_len
-        );
-        k4_record_outcome(sched, 0, a.seq.seq_len);
-    }
+    // Accept/rewind/emit/re-propose: the four verdict branches live in
+    // `verify_k4_verdict.rs` (E9 extraction, behavior-identical), shared
+    // with the batched multi-seq path. `VerifyRow` reads the accepted
+    // hidden off the live verify forward exactly as before.
+    k4_apply_verdict(
+        model,
+        a,
+        sched,
+        drafts,
+        &[v0, v1, v2, v3],
+        verify_lps,
+        num_drafts,
+        num_accepted,
+        K4Hidden::VerifyRow,
+        verify_us,
+    );
 }

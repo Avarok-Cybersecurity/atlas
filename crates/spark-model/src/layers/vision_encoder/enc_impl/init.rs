@@ -5,7 +5,7 @@
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
-use super::super::{MergerLayer, ViTBlock, VisionEncoder};
+use super::super::{MergerLayer, PATCH_DIM, ViTBlock, VisionEncoder};
 
 impl VisionEncoder {
     pub fn new(
@@ -37,7 +37,7 @@ impl VisionEncoder {
             "non-square pos_embed: {num_position_embeddings} is not a perfect square"
         );
 
-        let buf_f32 = gpu.alloc(p_max * 1536 * 4)?;
+        let buf_f32 = gpu.alloc(p_max * PATCH_DIM * 4)?;
         let buf_h1 = gpu.alloc(p_max * hidden_size * 2)?;
         let buf_h2 = gpu.alloc(p_max * hidden_size * 2)?;
         let buf_wide = gpu.alloc(p_max * intermediate_size * 2)?;

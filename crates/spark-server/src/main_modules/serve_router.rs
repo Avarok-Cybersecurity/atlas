@@ -13,7 +13,8 @@ use axum::routing::{get, post};
 use crate::anthropic;
 use crate::api;
 use crate::main_modules::middleware::{
-    openai_observability_middleware, rate_limit_middleware, require_auth_middleware,
+    gpu_fault_middleware, openai_observability_middleware, rate_limit_middleware,
+    require_auth_middleware,
 };
 
 pub(crate) async fn build_and_serve(
@@ -104,6 +105,7 @@ pub(crate) async fn build_and_serve(
         .route("/v1/moderations", post(api::moderations_stub))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
+        .route("/hardware", get(api::hardware))
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))
@@ -121,6 +123,10 @@ pub(crate) async fn build_and_serve(
         // The HOST, not a bound AppState. Binding one here is what deadlocked
         // the first live swap: the clone kept `request_tx` open, the scheduler
         // never drained, and the join never returned.
+        // Outside the limiter and auth: once the GPU is dead the answer is the
+        // same for every caller, authenticated or not, and there is no reason
+        // to spend a rate-limit reservation on a request that cannot run.
+        .layer(axum::middleware::from_fn(gpu_fault_middleware))
         .layer(axum::middleware::from_fn_with_state(
             host.clone(),
             rate_limit_middleware,

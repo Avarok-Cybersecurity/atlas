@@ -212,7 +212,7 @@ fn a_recipe_cannot_turn_off_authentication() {
     // deliberately not among the flags `carry_process_flags` carries. If the
     // live policy were read from those args, swapping to any recipe that omits
     // them — which is every recipe in the published catalogue — would silently
-    // unauthenticate the endpoint.
+    // leave the endpoint unauthenticated.
     //
     // It is not read from them: the policy is installed on the host before the
     // listener binds and no swap path touches it. This test exists so that

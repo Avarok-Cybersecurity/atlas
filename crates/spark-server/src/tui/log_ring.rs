@@ -137,22 +137,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ring_caps_and_tails() {
-        for i in 0..(CAP + 10) {
-            push(LogLine {
-                at: SystemTime::now(),
-                level: Level::INFO,
-                target: "t".into(),
-                message: format!("m{i}"),
-            });
-        }
-        let t = tail(5);
-        assert_eq!(t.len(), 5);
-        assert_eq!(t.last().unwrap().message, format!("m{}", CAP + 9));
-        assert!(seq() >= (CAP + 10) as u64);
-    }
-}
+#[path = "log_ring_tests.rs"]
+mod tests;

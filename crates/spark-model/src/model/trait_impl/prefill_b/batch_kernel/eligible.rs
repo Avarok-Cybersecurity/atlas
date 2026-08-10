@@ -11,8 +11,20 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use atlas_core::config::ModelConfig;
+
 use super::super::super::super::types::TransformerModel;
 use crate::traits::PrefillSlice;
+
+/// The fact the batched-kernel gate reads: MLA attention (kv_lora_rank > 0),
+/// i.e. `AttentionType::Mla` — read directly rather than rebuilding the full
+/// ModelCapabilities struct on this per-prefill-batch hot path. A named seam
+/// so the config→rejection derivation is pinned by a test
+/// (`mistral_config_is_rejected_as_mla` in `batch_kernel_tests.rs`) instead of
+/// living as an inline expression no test can see.
+pub(in crate::model) fn config_is_mla(config: &ModelConfig) -> bool {
+    config.kv_lora_rank > 0
+}
 
 /// Whether chunk-0 streams may use the batched (paged) prefill path. Enabled by
 /// `ATLAS_Q12_BATCHED_FIRST_CHUNK=1` or `ATLAS_PREFILL_CODISPATCH=1` (the latter
@@ -59,13 +71,38 @@ impl TransformerModel {
             return false;
         }
         let varlen = varlen_prefill_enabled();
+        // Effective staged length per stream. `peek_matched_tokens` is a
+        // read-only probe: no refs taken, no LRU touch, no hit/miss counted, so
+        // it is safe to call from a pure pre-flight check.
+        let bs = self.kv_cache.lock().block_size();
+        let effective_arena = effective_arena_charge_enabled();
+        let eff = |s: &PrefillSlice<'_>| -> usize {
+            if !effective_arena {
+                return s.chunk_len;
+            }
+            let matched =
+                self.prefix_cache
+                    .peek_matched_tokens(s.prompt_tokens, bs, s.seq.adapter_id);
+            let skip = matched.saturating_sub(s.chunk_start).min(s.chunk_len);
+            // A fully-cached LAST chunk still stages one token so the LM head
+            // has a row to read (`proc_range` re-embeds it). A fully-cached
+            // MIDDLE chunk stages nothing — reported as 0 so the caller can
+            // reject the batch (see the zero-length guard below); it must never
+            // be admitted, because a zero-token stream is degenerate in the
+            // packed cu_seqlens layout (empty segment, and `running_proc_off +=
+            // 0` leaves it sharing an offset with the next stream).
+            match s.chunk_len - skip {
+                0 if s.is_last_chunk => 1,
+                n => n,
+            }
+        };
         check_kernel_batched_eligible(
             streams
                 .iter()
-                .map(|s| (s.chunk_len, s.chunk_start, s.is_last_chunk)),
+                .map(|s| (s.chunk_len, eff(s), s.chunk_start, s.is_last_chunk)),
             streams.len(),
             self.buffers.max_batch_tokens(),
-            &self.config.model_type,
+            config_is_mla(&self.config),
             self.config.head_dim,
             self.buffers.scratch_bytes(),
             self.config.num_experts_per_tok,
@@ -139,7 +176,7 @@ pub(in crate::model) fn check_kernel_batched_eligible<I>(
     streams: I,
     n: usize,
     arena_cap: usize,
-    model_type: &str,
+    is_mla: bool,
     head_dim: usize,
     scratch_cap: usize,
     top_k: usize,
@@ -148,15 +185,18 @@ pub(in crate::model) fn check_kernel_batched_eligible<I>(
     varlen: bool,
 ) -> bool
 where
-    I: IntoIterator<Item = (usize, usize, bool)>,
+    I: IntoIterator<Item = (usize, usize, usize, bool)>,
 {
     if n < 2 {
         return false;
     }
     // No MLA layers in stack (batched attention doesn't support MLA).
-    // Conservatively check via model_type — mistral is the only MLA
-    // model in Atlas today.
-    if model_type == "mistral" {
+    // Keyed on the MLA capability (AttentionType::Mla, i.e. kv_lora_rank>0),
+    // which is architecture-generic: it covers mistral AND deepseek_v4 (the
+    // old `model_type=="mistral"` string silently missed the latter, though
+    // deepseek_v4 was already rejected one check later by head_dim>256, so the
+    // outcome is unchanged on every model shipped today).
+    if is_mla {
         return false;
     }
     // No HDIM=512 layers (Gemma-4 long-attention).
@@ -166,7 +206,7 @@ where
     let mut first: Option<(usize, usize, bool)> = None;
     let mut total = 0usize;
     let mut max_chunk_len = 0usize;
-    for (chunk_len, chunk_start, is_last) in streams {
+    for (chunk_len, eff_len, chunk_start, is_last) in streams {
         // `chunk_start` and `is_last_chunk` must match across streams (different
         // `chunk_start` → different `effective_seq_len_start`; mixing `is_last`
         // can't dispatch finalize_last + save_checkpoint together). `chunk_len`
@@ -180,8 +220,24 @@ where
                 }
             }
         }
-        total += chunk_len;
-        max_chunk_len = max_chunk_len.max(chunk_len);
+        // Charge the arena by the tokens that will actually be STAGED, not the
+        // raw chunk. The packed layout advances by `proc_count`
+        // (batch_kernel.rs `running_proc_off += proc_count`), and a prefix hit
+        // collapses proc_count to the uncached suffix — `proc_range` re-embeds
+        // exactly that span, so a warm stream occupies a fraction of its chunk.
+        // Summing raw `chunk_len` charged for tokens the cache means we never
+        // compute, which on an 8192-chunk / 8200-arena config made N>=2 stacking
+        // arithmetically impossible no matter how warm the cache was.
+        // `eff_len == chunk_len` when the caller cannot prove a hit, so this is
+        // never more permissive than the old bound without evidence.
+        // Zero-token stream: degenerate in the packed layout. Reject the whole
+        // batch and let it run per-stream, where a fully-cached middle chunk is
+        // handled correctly by `proc_range`'s EarlyReturn.
+        if eff_len == 0 {
+            return false;
+        }
+        total += eff_len;
+        max_chunk_len = max_chunk_len.max(eff_len);
     }
     let Some((_chunk_len, chunk_start, _)) = first else {
         return false;
@@ -201,4 +257,16 @@ where
     // streams dirty and the fallback would re-run setup → corruption).
     // VARLEN: size the scratch pre-flight by the worst-case per-stream length.
     spark_runtime::buffers::q12_batched_scratch_bytes(n, max_chunk_len, top_k, mrope) <= scratch_cap
+}
+
+/// `ATLAS_Q12_EFFECTIVE_ARENA=1` — charge the Q12 batched-prefill arena budget
+/// by the tokens each stream will actually stage (chunk minus the cached
+/// prefix) instead of its raw chunk length.
+///
+/// Default OFF. The permissive bound is only sound while the staged span really
+/// is the uncached suffix; the staging loop asserts that per stream and bails to
+/// the per-stream path if a mid-batch eviction shrinks a match after the probe.
+pub(in crate::model) fn effective_arena_charge_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_Q12_EFFECTIVE_ARENA").as_deref() == Ok("1"))
 }

@@ -132,10 +132,28 @@ impl Recipe {
         }
         let mut merged = self.defaults.clone();
         for (key, value) in overrides {
-            if !merged.contains_key(key) {
+            // A key the recipe does not list is an ADDITION, not an error. The
+            // case that forces this: exercising fp8 KV needs BOTH
+            // `kv_cache_dtype` (which every recipe pins) and
+            // `fp8_kv_calibration_tokens` (which none of them mention) — and a
+            // setting is absent from `defaults:` precisely because the recipe
+            // does not use it, which is exactly when you need to add it.
+            //
+            // Refusing here was never the typo shield it looked like: `argv` is
+            // rendered and handed straight back through clap by `serve_args`,
+            // and clap rejects an unknown flag by name with suggestions. So the
+            // shield is still up and is the SSOT one — this check was a second,
+            // staler copy of it that also blocked the legitimate case.
+            //
+            // What clap CANNOT catch is a key `flag_for` drops (`NOT_FLAGS`):
+            // that renders to nothing, parses fine, and silently serves the
+            // unmodified config. So that one is refused here, where it is
+            // visible.
+            if !merged.contains_key(key) && schema::flag_for(key).is_none() {
                 let known: Vec<&str> = merged.keys().map(String::as_str).collect();
                 bail!(
-                    "{}: {key:?} is not one of this recipe's settings: {}",
+                    "{}: {key:?} is not a serve flag, so setting it would change nothing. \
+                     This recipe's settings: {}",
                     self.id,
                     known.join(", ")
                 );

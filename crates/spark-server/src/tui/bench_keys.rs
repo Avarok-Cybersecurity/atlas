@@ -238,3 +238,7 @@ impl BenchState {
         Outcome::None
     }
 }
+
+#[cfg(test)]
+#[path = "bench_keys_tests.rs"]
+mod tests;

@@ -73,6 +73,47 @@ fn content_deltas_accumulate_text_and_token_count() {
 }
 
 #[test]
+fn a_reasoning_delta_is_a_token_and_starts_the_clock() {
+    // Regression: a thinking model streams `reasoning_content` first, and
+    // counting only `content` made TTFT measure the time to the END of the
+    // reasoning block. On a short prompt the reply is reasoning ALMOST
+    // ENTIRELY -- 59 of 64 tokens on the observed run -- so the benchmark
+    // reported "no token was emitted" and measured nothing at all.
+    let mut out = ChatOutcome::default();
+    assert!(
+        apply_chunk(
+            &sse(r#"{"choices":[{"delta":{"reasoning_content":"Let me think"}}]}"#),
+            &mut out
+        ),
+        "a reasoning delta must count as carried, or it cannot start the TTFT clock"
+    );
+    assert!(apply_chunk(
+        &sse(r#"{"choices":[{"delta":{"content":"4"}}]}"#),
+        &mut out
+    ));
+    // Reasoning stays OUT of `text`: every scorer downstream parses `text`
+    // for the answer, so folding thinking into it would score the model's
+    // chain of thought as its reply.
+    assert_eq!(out.text, "4", "reasoning must not leak into the answer");
+    assert_eq!(out.reasoning, "Let me think");
+    assert_eq!(
+        out.completion_tokens, 2,
+        "both are decoded tokens -- the server's usage.completion_tokens \
+         includes reasoning_tokens, and the streamed count must agree"
+    );
+}
+
+#[test]
+fn an_empty_reasoning_delta_carries_nothing() {
+    let mut out = ChatOutcome::default();
+    assert!(!apply_chunk(
+        &sse(r#"{"choices":[{"delta":{"reasoning_content":""}}]}"#),
+        &mut out
+    ));
+    assert_eq!(out.completion_tokens, 0);
+}
+
+#[test]
 fn tool_call_deltas_assemble_by_index() {
     let mut out = ChatOutcome::default();
     apply_chunk(

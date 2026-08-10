@@ -97,3 +97,39 @@ max_thinking_budget = 2048
 # (pass-7 fib regression). Let the model think, and the server's
 # `reasoning_parser = "qwen"` strips the block before returning `content`.
 thinking_default = true
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels` (9 lookups).
+# All are try_kernel() probes; every fallback path dispatch reaches
+# resolves on this target.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+layers::tgemm_kernel probes it, falls back to w4a16_gemm_t (resolves
+on this target's shadow). UNMEASURED for this target — candidate, not
+loss."""
+w4a16_gemm_t_k64_p3 = "Same family; layers::k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves here)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; layers::k64_n64_kernel returns 0-handle, dispatch gates on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; prefill_weights gates on handle != 0, falls back through the resolved w4a16 path."
+fp8_gemm_t_m128_mfast = """
+M128-mfast FP8 GEMM; nemotron_mamba2/prefill gates the probe
+(handle != 0 && n >= 512) and falls back to the bf16-A FP8 path that
+resolves from common w4a16."""
+fp8_fp8_gemm_t_m128_mfast = "Same family — the pre-cast-A fp8 path falls back to the bf16-A arm that resolves."
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b. nemotron_mamba2 probes
+it and falls back to w4a4_gemm (resolves from common). UNMEASURED."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_relu2 = """
+ReLU^2-gated grouped GEMM; shipped only in nemotron-labs-3-puzzle-75b's
+shadow. prefill_sorted gates on handle != 0 ('let fused = ...') and
+falls back to the base ptrtable grouped GEMM (resolves)."""
+
+[expected_absent.moe_w4a4]
+moe_w4a4_grouped_gemm_relu2 = """
+ReLU^2-gated W4A4 grouped GEMM; shipped only in nemotron-labs-3-puzzle's
+moe_w4a4_grouped.cu shadow. prefill_sorted gates on handle != 0 before
+firing; the base MoE path served by moe_w4a16 remains available."""
