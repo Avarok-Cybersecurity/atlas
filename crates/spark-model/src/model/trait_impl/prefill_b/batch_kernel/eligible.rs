@@ -11,8 +11,20 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+use atlas_core::config::ModelConfig;
+
 use super::super::super::super::types::TransformerModel;
 use crate::traits::PrefillSlice;
+
+/// The fact the batched-kernel gate reads: MLA attention (kv_lora_rank > 0),
+/// i.e. `AttentionType::Mla` — read directly rather than rebuilding the full
+/// ModelCapabilities struct on this per-prefill-batch hot path. A named seam
+/// so the config→rejection derivation is pinned by a test
+/// (`mistral_config_is_rejected_as_mla` in `batch_kernel_tests.rs`) instead of
+/// living as an inline expression no test can see.
+pub(in crate::model) fn config_is_mla(config: &ModelConfig) -> bool {
+    config.kv_lora_rank > 0
+}
 
 /// Whether chunk-0 streams may use the batched (paged) prefill path. Enabled by
 /// `ATLAS_Q12_BATCHED_FIRST_CHUNK=1` or `ATLAS_PREFILL_CODISPATCH=1` (the latter
@@ -90,7 +102,7 @@ impl TransformerModel {
                 .map(|s| (s.chunk_len, eff(s), s.chunk_start, s.is_last_chunk)),
             streams.len(),
             self.buffers.max_batch_tokens(),
-            &self.config.model_type,
+            config_is_mla(&self.config),
             self.config.head_dim,
             self.buffers.scratch_bytes(),
             self.config.num_experts_per_tok,
@@ -164,7 +176,7 @@ pub(in crate::model) fn check_kernel_batched_eligible<I>(
     streams: I,
     n: usize,
     arena_cap: usize,
-    model_type: &str,
+    is_mla: bool,
     head_dim: usize,
     scratch_cap: usize,
     top_k: usize,
@@ -179,9 +191,12 @@ where
         return false;
     }
     // No MLA layers in stack (batched attention doesn't support MLA).
-    // Conservatively check via model_type — mistral is the only MLA
-    // model in Atlas today.
-    if model_type == "mistral" {
+    // Keyed on the MLA capability (AttentionType::Mla, i.e. kv_lora_rank>0),
+    // which is architecture-generic: it covers mistral AND deepseek_v4 (the
+    // old `model_type=="mistral"` string silently missed the latter, though
+    // deepseek_v4 was already rejected one check later by head_dim>256, so the
+    // outcome is unchanged on every model shipped today).
+    if is_mla {
         return false;
     }
     // No HDIM=512 layers (Gemma-4 long-attention).
