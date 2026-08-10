@@ -55,7 +55,83 @@ impl TransformerModel {
         }
     }
 
-    pub fn set_lora_weights(&mut self, lora: Option<crate::lora::LoraWeights>) -> Result<()> {
+    /// Feature-1: resolve the MoE-LoRA fold decision for a single-request pass
+    /// from that request's `adapter_slot`. See [`crate::layer::MoeLoraRoute`].
+    /// Base / non-active requests skip (base tokens pay nothing); only the
+    /// installed active adapter's request folds; a request for a different,
+    /// non-installed adapter refuses loudly. No pool resident ⇒ `Fold` (inert:
+    /// the fold hook no-ops on the layer's `self.lora == None`).
+    pub(crate) fn moe_lora_route(&self, adapter_slot: i32) -> crate::layer::MoeLoraRoute {
+        let (active, has) = match self.lora.as_ref() {
+            Some(lw) => (lw.active as i32, true),
+            None => (-1, false),
+        };
+        crate::lora::resolve_moe_lora_route(adapter_slot, active, has)
+    }
+
+    /// Read the per-decode MoE route stamped at the `Model` entry (decode/verify
+    /// `ForwardContext`s use this instead of a hardcoded `Fold`).
+    pub(crate) fn decode_moe_route(&self) -> crate::layer::MoeLoraRoute {
+        match self
+            .decode_moe_route
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => crate::layer::MoeLoraRoute::Skip,
+            2 => crate::layer::MoeLoraRoute::Refuse,
+            _ => crate::layer::MoeLoraRoute::Fold,
+        }
+    }
+
+    fn store_decode_moe_route(&self, route: crate::layer::MoeLoraRoute) {
+        let v = match route {
+            crate::layer::MoeLoraRoute::Skip => 0,
+            crate::layer::MoeLoraRoute::Fold => 1,
+            crate::layer::MoeLoraRoute::Refuse => 2,
+        };
+        self.decode_moe_route
+            .store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Stamp the per-decode MoE route from a single request's `adapter_slot`.
+    pub(crate) fn stamp_decode_moe_single(&self, adapter_slot: i32) {
+        self.store_decode_moe_route(self.moe_lora_route(adapter_slot));
+    }
+
+    /// Stamp from a decode batch — 3-way reduction over the rows' per-seq routes
+    /// (SOLID Incr-4). Any row routing to a NON-active adapter (`Refuse`) stamps
+    /// `Refuse`: the single-active phase-1 fold cannot honor a second adapter's
+    /// identity (the device gather-BGMV checks only the SIGN of the per-row map,
+    /// so a non-active slot would silently fold the ACTIVE adapter's tables), so
+    /// `decode_batch_compute_main` bails host-side before graph lookup. Else any
+    /// adapter-owning row stamps `Fold` (the batched per-row map skips base rows
+    /// individually, so base seqs in a mixed batch still decode clean). Only when
+    /// EVERY row is base (or an empty batch) does it stamp `Skip` (nothing to
+    /// fold; base decode stays byte-identical).
+    pub(crate) fn stamp_decode_moe_batch(&self, seqs: &[&mut crate::traits::SequenceState]) {
+        use crate::layer::MoeLoraRoute;
+        let mut any_fold = false;
+        for s in seqs.iter() {
+            match self.moe_lora_route(s.adapter_slot) {
+                MoeLoraRoute::Refuse => {
+                    self.store_decode_moe_route(MoeLoraRoute::Refuse);
+                    return;
+                }
+                MoeLoraRoute::Fold => any_fold = true,
+                MoeLoraRoute::Skip => {}
+            }
+        }
+        self.store_decode_moe_route(if any_fold {
+            MoeLoraRoute::Fold
+        } else {
+            MoeLoraRoute::Skip
+        });
+    }
+
+    // The batched/mixed-decode Refuse guard is the PURE
+    // `crate::lora::ensure_decode_route_servable` (unit-tested there), called
+    // by both batched decode entries before graph lookup.
+
+    pub fn set_lora_weights(&mut self, mut lora: Option<crate::lora::LoraWeights>) -> Result<()> {
         if let Some(ref lw) = lora {
             // eager-on-rotate: ONLY the global rotate/swap re-point path forces
             // eager decode. A multi-adapter pool no longer implies eager —
@@ -95,7 +171,69 @@ impl TransformerModel {
                 self.lora_rotatable,
             );
         }
+        // Feature-2 Stage 2: build the token-overlay tables from the Stage-1 raw
+        // uploads now that the served embed/lm_head tables exist (they did NOT
+        // at loader time — the two-stage build closes that ordering gap). Only
+        // an adapter that actually shipped overlay tensors reaches the builder;
+        // a run with no overlay leaves `self.overlays == None` (byte-identical).
+        if let Some(ref mut lw) = lora {
+            let raws = std::mem::take(&mut lw.overlay_raw);
+            if raws.iter().any(|r| r.is_some()) {
+                self.build_token_overlays(lw.max_loras, &raws)?;
+            }
+        }
         self.lora = lora;
+        Ok(())
+    }
+
+    /// Stage 2 of the token-overlay build: row-diff each staged adapter's raw
+    /// overlay tensors against the served embed/lm_head tables, compact the
+    /// override rows, and materialize the `[max_loras]` device tables. Sets
+    /// `self.overlays` only when some slot actually overrides a row.
+    fn build_token_overlays(
+        &mut self,
+        max_loras: usize,
+        raws: &[Option<crate::lora::OverlayRawSlot>],
+    ) -> Result<()> {
+        // Tie: lm_head aliases embed (shared buffer OR a quantized head derived
+        // from embed) ⇒ the logit recompute reuses the embed override rows.
+        let tied = self.lm_head_weight.weight.0 == self.embed_tokens.weight.0
+            || self.lm_head_nvfp4.is_some()
+            || self.lm_head_fp8.is_some();
+        let vocab = self.config.vocab_size;
+        let h = self.config.hidden_size;
+        let served_embed = self.embed_tokens.weight;
+        let served_lmhead = self.lm_head_weight.weight;
+        let stream = self.gpu.default_stream();
+        let mut overlays: Vec<Option<crate::lora::EmbedOverlay>> =
+            (0..max_loras).map(|_| None).collect();
+        for (k, raw) in raws.iter().enumerate() {
+            if let Some(slot) = raw
+                && k < max_loras
+            {
+                overlays[k] = crate::lora::build_overlay(
+                    self.gpu.as_ref(),
+                    &self.overlay_kernels,
+                    slot,
+                    served_embed,
+                    served_lmhead,
+                    vocab,
+                    h,
+                    tied,
+                    stream,
+                )?;
+            }
+        }
+        let set =
+            crate::lora::TokenOverlaySet::from_slots(self.gpu.as_ref(), overlays, max_loras, tied)?;
+        if set.any_active() {
+            tracing::info!(
+                "LoRA overlay: token-overlay tables built (max_n_override={}, tied={})",
+                set.max_n_override,
+                tied,
+            );
+            self.overlays = Some(set);
+        }
         Ok(())
     }
 
@@ -137,43 +275,84 @@ impl TransformerModel {
             let Some(layer_weights) = layers.get(idx).and_then(|o| o.as_ref()) else {
                 continue;
             };
-            let attn = layer
-                .as_any_mut()
-                .and_then(|a| a.downcast_mut::<crate::layers::Qwen3AttentionLayer>())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "LoRA: adapted layer {idx} is not a Qwen3AttentionLayer \
-                         (loader/adapter layer-type mismatch)"
-                    )
-                })?;
-            let attn_weights = ops::lora_delta::LoraAttnWeights {
-                // #30: the global layer index (from `self.layers.enumerate()`) —
-                // the key the request slot's GLOBAL-layer-indexed pairs use.
-                layer_idx: idx,
-                q: layer_weights.q_proj,
-                k: layer_weights.k_proj,
-                v: layer_weights.v_proj,
-                o: layer_weights.o_proj,
-                kernels,
-                q_route: mk_route(idx, LoraModule::QProj, &layer_weights.q_proj),
-                k_route: mk_route(idx, LoraModule::KProj, &layer_weights.k_proj),
-                v_route: mk_route(idx, LoraModule::VProj, &layer_weights.v_proj),
-                o_route: mk_route(idx, LoraModule::OProj, &layer_weights.o_proj),
-            };
-            let ffn_weights = if layer_weights.gate_proj.is_some()
+            let has_moe = layer_weights.router.is_some()
+                || layer_weights
+                    .experts
+                    .as_ref()
+                    .is_some_and(|e| !e.is_empty());
+            let has_attn_ffn = layer_weights.q_proj.is_some()
+                || layer_weights.k_proj.is_some()
+                || layer_weights.v_proj.is_some()
+                || layer_weights.o_proj.is_some()
+                || layer_weights.gate_proj.is_some()
                 || layer_weights.up_proj.is_some()
-                || layer_weights.down_proj.is_some()
-            {
-                Some(ops::lora_delta::LoraFfnWeights {
-                    gate: layer_weights.gate_proj,
-                    up: layer_weights.up_proj,
-                    down: layer_weights.down_proj,
+                || layer_weights.down_proj.is_some();
+            let any = layer
+                .as_any_mut()
+                .ok_or_else(|| anyhow::anyhow!("LoRA: adapted layer {idx} is not downcastable"))?;
+            // Full-attention layer: attention + dense-FFN + MoE. Linear-attention
+            // (GDN/SSM) layer: MoE ONLY — its attention projections are rejected at
+            // classify, but its MoE FFN exists on every layer, so a real all-layer
+            // MoE adapter routes its router/expert deltas here too.
+            if let Some(attn) = any.downcast_mut::<crate::layers::Qwen3AttentionLayer>() {
+                let attn_weights = ops::lora_delta::LoraAttnWeights {
+                    // #30: the global layer index (from `self.layers.enumerate()`) —
+                    // the key the request slot's GLOBAL-layer-indexed pairs use.
+                    layer_idx: idx,
+                    q: layer_weights.q_proj,
+                    k: layer_weights.k_proj,
+                    v: layer_weights.v_proj,
+                    o: layer_weights.o_proj,
                     kernels,
-                })
+                    q_route: mk_route(idx, LoraModule::QProj, &layer_weights.q_proj),
+                    k_route: mk_route(idx, LoraModule::KProj, &layer_weights.k_proj),
+                    v_route: mk_route(idx, LoraModule::VProj, &layer_weights.v_proj),
+                    o_route: mk_route(idx, LoraModule::OProj, &layer_weights.o_proj),
+                };
+                let ffn_weights = if layer_weights.gate_proj.is_some()
+                    || layer_weights.up_proj.is_some()
+                    || layer_weights.down_proj.is_some()
+                {
+                    Some(ops::lora_delta::LoraFfnWeights {
+                        gate: layer_weights.gate_proj,
+                        up: layer_weights.up_proj,
+                        down: layer_weights.down_proj,
+                        kernels,
+                    })
+                } else {
+                    None
+                };
+                attn.set_lora_weights(attn_weights, ffn_weights)?;
+                if has_moe {
+                    attn.set_moe_lora_weights(
+                        layer_weights.router,
+                        layer_weights.experts.clone().unwrap_or_default(),
+                        kernels,
+                        self.gpu.as_ref(),
+                    )?;
+                }
+            } else if let Some(ssm) = any.downcast_mut::<crate::layers::Qwen3SsmLayer>() {
+                if has_attn_ffn {
+                    anyhow::bail!(
+                        "LoRA: attention/dense-FFN delta on linear-attention layer {idx} — \
+                         classify should have rejected this (only MoE router/experts are \
+                         valid on GDN layers)"
+                    );
+                }
+                if has_moe {
+                    ssm.set_moe_lora_weights(
+                        layer_weights.router,
+                        layer_weights.experts.clone().unwrap_or_default(),
+                        kernels,
+                        self.gpu.as_ref(),
+                    )?;
+                }
             } else {
-                None
-            };
-            attn.set_lora_weights(attn_weights, ffn_weights)?;
+                anyhow::bail!(
+                    "LoRA: adapted layer {idx} is neither a Qwen3AttentionLayer nor a \
+                     Qwen3SsmLayer (loader/adapter layer-type mismatch)"
+                );
+            }
             installed += 1;
         }
         Ok(installed)

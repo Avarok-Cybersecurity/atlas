@@ -169,6 +169,7 @@ impl TransformerModel {
             max_blocks_per_seq: max_blocks,
             num_seqs: 1,
             seq_slot,
+            moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
         // CUDA graphs cannot capture NCCL all-reduce (it runs on a separate
@@ -255,6 +256,7 @@ impl TransformerModel {
             token_ids: Some(self.buffers.token_ids()),
             routed_lora_layers: None, // #30: single-seq decode never routes prefill.
             midchunk_capture: None,
+            moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.
@@ -313,7 +315,7 @@ impl TransformerModel {
         let probe_layers = !use_graphs
             && seq.seq_len == seq.prompt_len
             && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
-        self.decode_forward_body(
+        if let Err(e) = self.decode_forward_body(
             hidden,
             residual,
             seq,
@@ -322,52 +324,23 @@ impl TransformerModel {
             probe_layers,
             use_graphs,
             stream,
-        )?;
-
-        // Decode-step diagnostic for Gemma-4 degeneration analysis. Only fires
-        // when ATLAS_DIAG_GEMMA4=1 (which also disables CUDA graphs upstream,
-        // so the d2h sync below is safe). Reads top-5 tokens by logit so we
-        // can see whether the LM head produced a near-tie or a confident bad
-        // pick. (B4 — Creative haiku degeneration loop diagnostic.)
-        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
-            self.gpu.synchronize(stream)?;
-            let n_logits = self.config.vocab_size;
-            // Read the buffer the LM head actually wrote to. With Gemma-4
-            // dense the single-token decode lm_head produces FP32 in
-            // `logits_fp32_buf`; the BF16 buffer would be all zeros there.
-            let logit_vals: Vec<f32> = if self.use_fp32_logits {
-                let mut buf = vec![0u8; n_logits * 4];
-                if let Err(e) = self.gpu.copy_d2h(self.logits_fp32_buf, &mut buf) {
-                    tracing::error!("ATLAS_DIAG_GEMMA4: copy_d2h(logits_fp32_buf): {e:#}");
-                }
-                buf.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect()
-            } else {
-                let mut buf = vec![0u8; n_logits * 2];
-                if let Err(e) = self.gpu.copy_d2h(self.buffers.logits(), &mut buf) {
-                    tracing::error!("ATLAS_DIAG_GEMMA4: copy_d2h(logits BF16): {e:#}");
-                }
-                buf.chunks_exact(2)
-                    .map(|c| {
-                        let bits = u16::from_le_bytes([c[0], c[1]]);
-                        f32::from_bits((bits as u32) << 16)
-                    })
-                    .collect()
-            };
-            let max = logit_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let min = logit_vals.iter().cloned().fold(f32::INFINITY, f32::min);
-            let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
-            idx.sort_by(|&a, &b| {
-                logit_vals[b]
-                    .partial_cmp(&logit_vals[a])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let top5: Vec<(usize, f32)> = idx.iter().take(5).map(|&i| (i, logit_vals[i])).collect();
-            tracing::warn!(
-                "DIAG decode logits: max={max:.4} min={min:.4} prev_token={token} top5={top5:?}",
-            );
+        ) {
+            // If the body errored WHILE a capture is recording (e.g. a MoE LoRA
+            // refuse — router/non-active adapter/mixed batch — bails out of a
+            // captured decode step), the stream is left in the capturing state.
+            // Left as-is, the caller's cleanup (`free_sequence` → `zero_slot` /
+            // `synchronize`) fails with STREAM_CAPTURE_UNSUPPORTED and every
+            // subsequent op on this stream is poisoned — a single refused request
+            // bricks the whole server. Release the stream (discarding the partial
+            // graph) before propagating; no-op when not capturing. Graphs stay
+            // enabled: the next decode step begins a fresh capture.
+            self.gpu.abort_capture_if_active(stream);
+            return Err(e);
         }
+
+        // Decode-step diagnostic for Gemma-4 degeneration analysis (no-op unless
+        // ATLAS_DIAG_GEMMA4=1). Split into decode_a_diag.rs for the LoC budget.
+        self.diag_gemma4_decode_logits(token, stream)?;
 
         if capture_active {
             match self.gpu.end_capture(stream) {

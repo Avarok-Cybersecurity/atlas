@@ -309,6 +309,27 @@ impl Qwen3AttentionLayer {
         Ok(())
     }
 
+    /// Feature-1: install this layer's MoE router + routed-expert LoRA onto its
+    /// `FfnComponent::Moe`. The MoE FFN lives in `self.ffn` or (some loaders)
+    /// `self.moe_ffn` — try both, else the adapter targeted experts on a layer
+    /// with no MoE FFN (hard reject). Scratch is allocated inside
+    /// `crate::layers::MoeLayer::set_lora_weights`.
+    pub fn set_moe_lora_weights(
+        &mut self,
+        router: Option<crate::layers::ops::lora_delta::LoraPair>,
+        experts: crate::lora::ExpertLoraLayer,
+        kernels: crate::layers::ops::lora_delta::LoraKernels,
+        gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        if let crate::layers::FfnComponent::Moe(m) = &mut self.ffn {
+            return m.set_lora_weights(router, experts, kernels, gpu);
+        }
+        if let Some(crate::layers::FfnComponent::Moe(m)) = &mut self.moe_ffn {
+            return m.set_lora_weights(router, experts, kernels, gpu);
+        }
+        anyhow::bail!("LoRA: router/expert deltas installed on a layer with no MoE FFN component")
+    }
+
     /// Transpose FP8 weights for fast prefill (`w8a16_gemm_t`: coalesced
     /// reads). Must be called after [`Self::set_fp8_weights`]. Allocates
     /// new GPU buffers.

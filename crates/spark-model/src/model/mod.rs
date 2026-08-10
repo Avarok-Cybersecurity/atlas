@@ -33,6 +33,7 @@ pub(crate) mod impl_a3;
 pub(crate) mod impl_b1;
 pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
+pub(crate) mod impl_b3_accessors;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
 pub(crate) mod mtp_carry;
@@ -45,6 +46,7 @@ mod ssm_snapshot_teardown;
 pub(crate) mod ssm_spill_gate;
 pub(crate) mod ssm_spill_staging;
 pub(crate) mod ssm_tier;
+pub(crate) mod token_overlay;
 pub(crate) mod trait_impl;
 pub(crate) mod types;
 

@@ -23,6 +23,9 @@ fn adapter_names_and_slot_resolve() {
         target_modules: vec!["k_proj".into()],
         use_rslora: false,
         layers_to_transform: None,
+        trainable_token_indices: Vec::new(),
+        modules_to_save: Vec::new(),
+        lora_embedding: false,
     };
     let mk_slot = |name: &str| AdapterSlot {
         name: name.to_string(),
@@ -37,6 +40,8 @@ fn adapter_names_and_slot_resolve() {
         max_loras: 8,
         pool: DevicePtr(0),
         pool_bytes: 0,
+        expert_pool: None,
+        expert_pool_bytes: 0,
         slots: vec![mk_slot("alpha"), mk_slot("beta")],
         active: 0,
         tables: BTreeMap::new(),
@@ -45,6 +50,7 @@ fn adapter_names_and_slot_resolve() {
         pinned: 2,
         last_used: (0..8).map(|_| AtomicU64::new(0)).collect(),
         lru_tick: AtomicU64::new(0),
+        overlay_raw: Vec::new(),
     };
     assert_eq!(lw.adapter_names(), vec!["alpha", "beta"]);
     assert_eq!(lw.slot_of("beta"), Some(1));
@@ -79,6 +85,9 @@ fn slot_generation_bump_freshens_adapter_id() {
         target_modules: vec!["k_proj".into()],
         use_rslora: false,
         layers_to_transform: None,
+        trainable_token_indices: Vec::new(),
+        modules_to_save: Vec::new(),
+        lora_embedding: false,
     };
     let mut lw = LoraWeights {
         name: "sol".into(),
@@ -87,6 +96,8 @@ fn slot_generation_bump_freshens_adapter_id() {
         max_loras: 4,
         pool: DevicePtr(0),
         pool_bytes: 0,
+        expert_pool: None,
+        expert_pool_bytes: 0,
         slots: vec![AdapterSlot {
             name: "sol".into(),
             adapter_config: peft.clone(),
@@ -100,6 +111,7 @@ fn slot_generation_bump_freshens_adapter_id() {
         pinned: 1,
         last_used: (0..4).map(|_| AtomicU64::new(0)).collect(),
         lru_tick: AtomicU64::new(0),
+        overlay_raw: Vec::new(),
     };
     let id_v1 = lw.adapter_id_for_slot(0);
     assert_eq!(id_v1, adapter_id_hash("sol", 0));
@@ -120,6 +132,9 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
         target_modules: vec!["k_proj".into()],
         use_rslora: false,
         layers_to_transform: None,
+        trainable_token_indices: Vec::new(),
+        modules_to_save: Vec::new(),
+        lora_embedding: false,
     };
     let mk_slot = |name: &str| AdapterSlot {
         name: name.to_string(),
@@ -134,6 +149,8 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
         max_loras: 4,
         pool: DevicePtr(0),
         pool_bytes: 0,
+        expert_pool: None,
+        expert_pool_bytes: 0,
         slots: vec![mk_slot("alpha"), mk_slot("beta")],
         active: 1, // active != 0 so we can prove `-1 -> active` resolution
         tables: BTreeMap::new(),
@@ -142,6 +159,7 @@ fn ref_count_acquire_release_balance_and_busy_gate() {
         pinned: 2,
         last_used: (0..4).map(|_| AtomicU64::new(0)).collect(),
         lru_tick: AtomicU64::new(0),
+        overlay_raw: Vec::new(),
     };
 
     // acquire(0) returns the resolved index 0 and increments its counter.

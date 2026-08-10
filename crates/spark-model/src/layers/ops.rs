@@ -87,6 +87,8 @@ mod moe_grouped_a2;
 mod moe_grouped_b;
 #[path = "ops/moe_grouped_fp4.rs"]
 mod moe_grouped_fp4;
+#[path = "ops/moe_lora_grouped.rs"]
+pub mod moe_lora_grouped;
 #[path = "ops/moe_prefill.rs"]
 mod moe_prefill;
 #[path = "ops/norm.rs"]
@@ -128,6 +130,7 @@ mod ssm_mamba;
 mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
+pub mod token_overlay;
 
 pub use activations::*;
 pub use derived_weights::{Derivation, DerivedWeights};
@@ -160,6 +163,7 @@ pub use moe_grouped_a2::*;
 #[allow(unused_imports)]
 pub(crate) use moe_grouped_b::*;
 pub use moe_grouped_fp4::*;
+pub use moe_lora_grouped::*;
 pub use moe_prefill::*;
 pub use norm::*;
 pub use nvfp4_mmq::*;

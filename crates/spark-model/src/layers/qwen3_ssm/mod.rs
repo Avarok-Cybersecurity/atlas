@@ -429,6 +429,7 @@ pub mod gdn_flags;
 mod init;
 mod init_fp8;
 mod init_q2;
+mod lora;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;

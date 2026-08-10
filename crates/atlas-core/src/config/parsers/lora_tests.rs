@@ -100,6 +100,21 @@ fn gdn_module_rejected_named() {
 }
 
 #[test]
+fn router_gate_target_accepted() {
+    // Feature-1: the MoE router leaf `gate` (DISTINCT from `gate_proj`) is
+    // accepted by the config gate; the runtime key gate + ATLAS_LORA_EXPERTS
+    // decide whether it actually loads.
+    let mut j = base_json();
+    j["target_modules"] = serde_json::json!(["gate"]);
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert_eq!(cfg.target_modules, vec!["gate"]);
+    // Full-path router entry validates on its leaf too.
+    let mut j = base_json();
+    j["target_modules"] = serde_json::json!(["model.layers.3.mlp.gate"]);
+    assert!(parse_peft_adapter_config(&j.to_string()).is_ok());
+}
+
+#[test]
 fn all_linear_rejected_named() {
     let mut j = base_json();
     j["target_modules"] = serde_json::json!("all-linear");
@@ -120,9 +135,16 @@ fn dora_bias_rank_pattern_rejected_named() {
             "REJECT(rank_pattern)",
         ),
         (
+            // `lm_head`/`embed_tokens` now ACCEPT (token overlay); an
+            // arbitrary module still rejects.
             "modules_to_save",
-            serde_json::json!(["lm_head"]),
+            serde_json::json!(["classifier"]),
             "REJECT(modules_to_save)",
+        ),
+        (
+            "target_parameters",
+            serde_json::json!(["mlp.experts.gate_up_proj"]),
+            "REJECT(target_parameters)",
         ),
         (
             "peft_type",
@@ -152,4 +174,95 @@ fn zero_rank_rejected() {
     let mut j = base_json();
     j["r"] = serde_json::json!(0);
     assert!(parse_peft_adapter_config(&j.to_string()).is_err());
+}
+
+// ---- Feature 2: token overlay (embed / lm_head / vocab-extension) ----
+
+#[test]
+fn modules_to_save_embed_lmhead_accepted() {
+    let mut j = base_json();
+    j["modules_to_save"] = serde_json::json!(["embed_tokens", "lm_head"]);
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert_eq!(cfg.modules_to_save, vec!["embed_tokens", "lm_head"]);
+}
+
+#[test]
+fn modules_to_save_full_path_validates_on_leaf() {
+    let mut j = base_json();
+    j["modules_to_save"] = serde_json::json!(["base_model.model.model.embed_tokens"]);
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert_eq!(cfg.modules_to_save, vec!["embed_tokens"]);
+}
+
+#[test]
+fn modules_to_save_unknown_leaf_rejected() {
+    let mut j = base_json();
+    j["modules_to_save"] = serde_json::json!(["embed_tokens", "score"]);
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(modules_to_save)"), "{err}");
+}
+
+#[test]
+fn trainable_token_indices_list_form_parsed() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!([256205, 42, 42, 7]);
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    // deduped, first-occurrence order preserved (delta rows align to it)
+    assert_eq!(cfg.trainable_token_indices, vec![256205, 42, 7]);
+}
+
+#[test]
+fn trainable_token_indices_dict_form_unioned() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!({
+        "embed_tokens": [256205, 10],
+        "lm_head": [10, 99]
+    });
+    let mut cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    // Order across dict values is object-iteration dependent; compare as a set.
+    cfg.trainable_token_indices.sort_unstable();
+    assert_eq!(cfg.trainable_token_indices, vec![10, 99, 256205]);
+}
+
+#[test]
+fn trainable_token_indices_negative_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!([-1]);
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+}
+
+#[test]
+fn empty_target_modules_with_overlay_accepted() {
+    // A pure `trainable_tokens` adapter targets no LoRA module.
+    let mut j = base_json();
+    j["target_modules"] = serde_json::json!([]);
+    j["trainable_token_indices"] = serde_json::json!([256205]);
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert!(cfg.target_modules.is_empty());
+    assert_eq!(cfg.trainable_token_indices, vec![256205]);
+}
+
+#[test]
+fn empty_target_modules_without_overlay_rejected() {
+    let mut j = base_json();
+    j["target_modules"] = serde_json::json!([]);
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(target_modules)"), "{err}");
+}
+
+#[test]
+fn absent_target_modules_with_modules_to_save_accepted() {
+    let mut j = base_json();
+    j.as_object_mut().unwrap().remove("target_modules");
+    j["modules_to_save"] = serde_json::json!(["lm_head"]);
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert!(cfg.target_modules.is_empty());
+    assert_eq!(cfg.modules_to_save, vec!["lm_head"]);
 }

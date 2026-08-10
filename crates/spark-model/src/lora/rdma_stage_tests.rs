@@ -102,6 +102,9 @@ fn rebuild_slot_layers_sets_rank_and_pointers() {
         target_modules: vec!["k_proj".into()],
         use_rslora: false,
         layers_to_transform: None,
+        trainable_token_indices: Vec::new(),
+        modules_to_save: Vec::new(),
+        lora_embedding: false,
     };
     let layers = rebuild_slot_layers(&targets, &cfg, &peft, pool, 2, max_rank).unwrap();
     let lw = layers[layer].as_ref().expect("layer 3 rebuilt");

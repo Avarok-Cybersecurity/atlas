@@ -20,7 +20,7 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
             &cfg
         )
         .unwrap(),
-        (3, LoraModule::KProj, AdapterAb::A)
+        (3, LoraTarget::Attn(LoraModule::KProj), AdapterAb::A)
     );
     assert_eq!(
         classify_key(
@@ -28,7 +28,7 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
             &cfg
         )
         .unwrap(),
-        (3, LoraModule::VProj, AdapterAb::B)
+        (3, LoraTarget::Attn(LoraModule::VProj), AdapterAb::B)
     );
     assert_eq!(
         classify_key(
@@ -36,7 +36,7 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
             &cfg
         )
         .unwrap(),
-        (7, LoraModule::OProj, AdapterAb::A)
+        (7, LoraTarget::Attn(LoraModule::OProj), AdapterAb::A)
     );
     assert_eq!(
         classify_key(
@@ -44,7 +44,7 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
             &cfg
         )
         .unwrap(),
-        (11, LoraModule::GateProj, AdapterAb::B)
+        (11, LoraTarget::Attn(LoraModule::GateProj), AdapterAb::B)
     );
     assert_eq!(
         classify_key(
@@ -52,7 +52,7 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
             &cfg
         )
         .unwrap(),
-        (47, LoraModule::DownProj, AdapterAb::A)
+        (47, LoraTarget::Attn(LoraModule::DownProj), AdapterAb::A)
     );
 
     // q_proj IS supported (gated interleaved [Q|gate] folds like k/v/o on a
@@ -63,7 +63,7 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
             &cfg
         )
         .unwrap(),
-        (3, LoraModule::QProj, AdapterAb::A)
+        (3, LoraTarget::Attn(LoraModule::QProj), AdapterAb::A)
     );
 
     // Rejects — every unsupported shape is a NAMED hard error, never a
@@ -86,6 +86,152 @@ fn classify_key_maps_supported_and_rejects_unsupported() {
     );
     // A non-PEFT key (no `base_model.model.` prefix) → rejected.
     assert!(classify_key("model.layers.3.self_attn.k_proj.weight", &cfg).is_err());
+}
+
+#[test]
+fn classify_key_maps_experts_and_router() {
+    // Factory cfg: num_experts = 512, FullAttention layers 3,7,…
+    let cfg = cfg();
+    // A routed-expert projection → Expert { n, proj } on a full-attention layer.
+    assert_eq!(
+        classify_key(
+            "base_model.model.model.layers.7.mlp.experts.42.gate_proj.lora_A.weight",
+            &cfg
+        )
+        .unwrap(),
+        (
+            7,
+            LoraTarget::Expert {
+                n: 42,
+                proj: ExpertProj::Gate
+            },
+            AdapterAb::A
+        )
+    );
+    assert_eq!(
+        classify_key(
+            "base_model.model.model.layers.11.mlp.experts.0.down_proj.lora_B.weight",
+            &cfg
+        )
+        .unwrap(),
+        (
+            11,
+            LoraTarget::Expert {
+                n: 0,
+                proj: ExpertProj::Down
+            },
+            AdapterAb::B
+        )
+    );
+    // The multimodal `.language_model.` trunk segment before `.layers.` is
+    // prefix-agnostic (same as attention).
+    assert_eq!(
+        classify_key(
+            "base_model.model.model.language_model.layers.7.mlp.experts.3.up_proj.lora_A.weight",
+            &cfg
+        )
+        .unwrap(),
+        (
+            7,
+            LoraTarget::Expert {
+                n: 3,
+                proj: ExpertProj::Up
+            },
+            AdapterAb::A
+        )
+    );
+    // The MoE router `mlp.gate` (DISTINCT from `mlp.gate_proj`) → Router.
+    assert_eq!(
+        classify_key(
+            "base_model.model.model.layers.3.mlp.gate.lora_A.weight",
+            &cfg
+        )
+        .unwrap(),
+        (3, LoraTarget::Router, AdapterAb::A)
+    );
+
+    // Experts + router are valid on a NON-full-attention (GDN/linear) layer too
+    // — MoE FFN exists on every layer, so a real Qwen3.6/Holo adapter targets
+    // them there. Layer 0 is linear-attention in the factory cfg.
+    assert_eq!(
+        classify_key(
+            "base_model.model.model.layers.0.mlp.experts.5.down_proj.lora_A.weight",
+            &cfg
+        )
+        .unwrap(),
+        (
+            0,
+            LoraTarget::Expert {
+                n: 5,
+                proj: ExpertProj::Down
+            },
+            AdapterAb::A
+        )
+    );
+    assert_eq!(
+        classify_key(
+            "base_model.model.model.layers.0.mlp.gate.lora_B.weight",
+            &cfg
+        )
+        .unwrap(),
+        (0, LoraTarget::Router, AdapterAb::B)
+    );
+    // But an ATTENTION target on that same linear-attention layer stays rejected.
+    assert!(
+        classify_key(
+            "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight",
+            &cfg
+        )
+        .is_err()
+    );
+
+    // Named rejects (never a silent skip):
+    // expert index out of range.
+    assert!(
+        classify_key(
+            "base_model.model.model.layers.3.mlp.experts.999.gate_proj.lora_A.weight",
+            &cfg
+        )
+        .is_err()
+    );
+    // fused/unindexed expert layout (target_parameters spelling) — phase-3.
+    assert!(
+        classify_key(
+            "base_model.model.model.layers.3.mlp.experts.gate_up_proj.lora_A.weight",
+            &cfg
+        )
+        .is_err()
+    );
+    // fused per-expert gate_up_proj — phase-3.
+    assert!(
+        classify_key(
+            "base_model.model.model.layers.3.mlp.experts.5.gate_up_proj.lora_A.weight",
+            &cfg
+        )
+        .is_err()
+    );
+    // unknown expert projection.
+    assert!(
+        classify_key(
+            "base_model.model.model.layers.3.mlp.experts.5.wat_proj.lora_A.weight",
+            &cfg
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn classify_key_rejects_experts_on_dense_model() {
+    // num_experts == 0 (dense) → expert LoRA is a named reject.
+    let mut dense = cfg();
+    dense.num_experts = 0;
+    assert!(
+        classify_key(
+            "base_model.model.model.layers.3.mlp.experts.0.gate_proj.lora_A.weight",
+            &dense
+        )
+        .is_err()
+    );
 }
 
 #[test]

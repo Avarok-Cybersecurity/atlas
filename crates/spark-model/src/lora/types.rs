@@ -96,6 +96,35 @@ pub struct LoraLayerWeights {
     pub gate_proj: Option<LoraPair>,
     pub up_proj: Option<LoraPair>,
     pub down_proj: Option<LoraPair>,
+    /// Feature-1: MoE router (`mlp.gate`) delta on the routing logits. `None`
+    /// unless the adapter targets the router AND `ATLAS_LORA_EXPERTS=1`.
+    pub router: Option<LoraPair>,
+    /// Feature-1: this layer's routed-expert LoRA coverage (sparse per-expert
+    /// pairs). `None` for attention/dense-only adapters or when expert LoRA is
+    /// disabled. Packed into a SEPARATE expert allocation (not the equal-slot
+    /// attention pool), so the BGMV route tables + slot offset math are
+    /// untouched.
+    pub experts: Option<ExpertLoraLayer>,
+}
+
+impl LoraLayerWeights {
+    /// A zeroed per-layer entry (all modules unadapted). Used by the pack loops
+    /// to lazily create a layer entry the first time any module — attention,
+    /// router, or expert — lands on it.
+    pub fn empty(layer_idx: usize) -> Self {
+        Self {
+            layer_idx,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            o_proj: None,
+            gate_proj: None,
+            up_proj: None,
+            down_proj: None,
+            router: None,
+            experts: None,
+        }
+    }
 }
 
 /// One packed pool slot: a resident adapter's own name/config + its per-layer
@@ -145,6 +174,13 @@ pub struct LoraWeights {
     /// One fixed-address allocation holding every padded A/B for every slot.
     pub pool: DevicePtr,
     pub pool_bytes: usize,
+    /// Feature-1: separate fixed-address allocation for the router + routed-
+    /// expert padded A/B (sized from the audited key set, NOT `num_experts ×
+    /// num_layers`). `None` when no adapter targets experts/router (byte-
+    /// identical to the pre-Feature-1 pool). Deliberately outside the equal-size
+    /// attention pool so `pool_slot_bytes` + the BGMV route tables are untouched.
+    pub expert_pool: Option<DevicePtr>,
+    pub expert_pool_bytes: usize,
     /// The resident adapters, slot-indexed (`slots[k]` lives at pool byte
     /// offset `k * pool_slot_bytes`). `len() <= max_loras`.
     pub slots: Vec<AdapterSlot>,
@@ -189,6 +225,12 @@ pub struct LoraWeights {
     /// Task #27: monotonic source for `last_used` ticks (never wraps in
     /// practice). Bumped once per acquire.
     pub lru_tick: AtomicU64,
+    /// Feature-2 (token overlay): per-slot Stage-1 raw overlay upload, `len ==
+    /// slots.len()` (padding slots push `None`). Consumed + cleared by
+    /// `set_lora_weights` (Stage 2 `build_overlay`), which needs the served
+    /// embed/lm_head tables that only exist after weight load. `Vec::new()` /
+    /// all-`None` ⇒ no overlay adapter ⇒ byte-identical to a no-overlay build.
+    pub overlay_raw: Vec<Option<super::overlay_build::OverlayRawSlot>>,
 }
 
 /// Task #27: a per-slot snapshot for the pure victim-selection policy. Taken on

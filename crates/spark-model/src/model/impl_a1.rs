@@ -467,6 +467,15 @@ impl TransformerModel {
         // EP command buffer for token broadcast (4 bytes, u32)
         let ep_cmd_buf = gpu.alloc(4)?;
 
+        // SOLID Incr-4: dedicated fixed-address buffer for the batched-decode MoE
+        // per-row fold map. max_batch_size i32 rows (e.g. 32·4 = 128 B). Allocated
+        // unconditionally like ep_cmd_buf/mtp_hidden_save — self.lora is populated
+        // post-construction (set_lora_weights), so we can't gate on it here, and
+        // the cost is negligible. Fixed address → graph-safe; contents copied per
+        // decode step. Moving the map off the +160 metadata gap frees seq_slot to
+        // reclaim +128..+256, lifting the concurrent-LoRA decode cap from 8 to 32.
+        let moe_row_adapter_buf = gpu.alloc(max_batch_size.max(1) * 4)?;
+
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
@@ -645,6 +654,8 @@ impl TransformerModel {
         // value is dead code and must not suppress CUDA graphs.
         let has_fp8_calibration = config.fp8_kv_calibration_tokens > 0
             && kv_cache.dtype() == spark_runtime::kv_cache::KvCacheDtype::Fp8;
+        // Feature-2 overlay kernels: resolve before `gpu` is moved into Self.
+        let overlay_kernels = crate::layers::ops::token_overlay::OverlayKernels::new(gpu.as_ref());
         Ok(Self {
             // Installed by the factory after construction: the layers read
             // from the store during `new`, so it cannot be moved in here.
@@ -767,6 +778,7 @@ impl TransformerModel {
             ssm_h_f32_to_f16_kernel: ssm_h_f32_to_f16_k,
             ssm_h_f16_scratch: std::sync::OnceLock::new(),
             ssm_norm_ptrs_buf: ssm_norm_ptrs,
+            moe_row_adapter_buf,
             gdn_buf_qkv: gdn_qkv,
             gdn_buf_gate_beta: gdn_gate_beta,
             gdn_buf_out: gdn_out,
@@ -777,6 +789,10 @@ impl TransformerModel {
             use_fp32_logits,
             logits_fp32_buf,
             embed_scale_kernel,
+            overlays: None,
+            overlay_kernels,
+            overlay_route_slot: std::sync::atomic::AtomicI32::new(-1),
+            decode_moe_route: std::sync::atomic::AtomicI32::new(1), // Fold (safe default)
         })
     }
 }
