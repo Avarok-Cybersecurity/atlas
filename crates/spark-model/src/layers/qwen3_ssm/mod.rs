@@ -427,6 +427,7 @@ fn ssm_m128_min_m() -> Option<u32> {
 mod debug;
 pub mod gdn_flags;
 mod init;
+mod init_fp8;
 mod init_q2;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
