@@ -22,8 +22,16 @@
 /// job; ARITY of what is present is this test's job.
 const PINS: &[(&str, &str, usize)] = &[
     ("w4a16", "w4a16_gemm", 8),
-    ("w4a16", "w4a16_gemm_t", 9), // +ldb (27B); other targets pin 8 below via EXCEPTIONS
+    ("w4a16", "w4a16_gemm_t", 9), // +ldb — EVERY target, see `expected_arity`
     ("w4a16", "w4a16_gemm_t_p3", 9),
+    // The deep-K twins take NO stride. They are reached through the 9-arg
+    // `w4a16_gemm_n128` launcher (dense_ffn's small-M arm), which is safe only
+    // because the driver ignores the surplus argument AND the FFN twins are
+    // built unpadded. Pinned at 8 so that growing one of them a stride without
+    // giving its launcher a real `ldb` to pass fails here.
+    ("w4a16", "w4a16_gemm_t_k64", 8),
+    ("w4a16", "w4a16_gemm_t_k64_p3", 8),
+    ("w4a16", "w4a16_gemm_t_k64_n64_p3", 8),
     ("w4a16", "w4a16_gemm_t_m128", 8),
     ("w4a16", "w4a16_gemm_t_m128_bf16", 8),
     ("w4a16", "w4a16_gemm_t_m128_bf16_v2", 9), // the ldb kernel — the shipped-bug case
@@ -34,17 +42,22 @@ const PINS: &[(&str, &str, usize)] = &[
 ];
 
 /// Targets whose copy of a kernel legitimately differs in arity from the
-/// family pin (only the 27B grew `ldb` on w4a16_gemm_t/_p3; every other
-/// target still ships the 8-param originals).
-fn expected_arity(model: &str, module: &str, kernel: &str, family_pin: usize) -> usize {
-    let is_27b = model.contains("qwen3.6-27b");
-    match (module, kernel) {
-        ("w4a16", "w4a16_gemm_t") | ("w4a16", "w4a16_gemm_t_p3") if !is_27b => 8,
-        _ => {
-            let _ = family_pin;
-            family_pin
-        }
-    }
+/// family pin.
+///
+/// ★ THERE ARE NONE, and the exception that used to live here was STALE and
+/// WRONG. It returned 8 for `w4a16_gemm_t` / `_p3` on every non-27B target,
+/// describing the world before the `ldb` port propagated. All 28 copies of
+/// `w4a16_gemm_t` in the tree now compile 9 params (verified on `origin/main`
+/// at 4e34a9e7), so on any REAL wildcard build this test asserted 9 == 8 and
+/// failed. It went unnoticed because CI builds with `ATLAS_SKIP_BUILD=1`, which
+/// makes the whole test vacuous — see the early return below.
+///
+/// Keep the hook: a target legitimately CAN diverge (`_p3` and
+/// `_m128_bf16_v2` ship on the 27B only, and absence is skipped, not failed).
+/// But record evidence before adding an arm — re-derive the arity from the
+/// `.cu` tree, do not trust a remembered count.
+fn expected_arity(_model: &str, _module: &str, _kernel: &str, family_pin: usize) -> usize {
+    family_pin
 }
 
 /// Count `.param` declarations of a PTX `.entry` by name.
