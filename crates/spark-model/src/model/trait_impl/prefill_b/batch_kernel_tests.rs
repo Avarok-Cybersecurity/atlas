@@ -302,7 +302,7 @@ fn accepts_varlen_batch_when_packed_footprint_fits() {
         MROPE,
     );
     assert!(check_kernel_batched_eligible(
-        streams, 4, arena, "laguna", 128, scratch, TOP_K, MROPE, true, true,
+        streams, 4, arena, false, 128, scratch, TOP_K, MROPE, true, true,
     ));
 }
 
