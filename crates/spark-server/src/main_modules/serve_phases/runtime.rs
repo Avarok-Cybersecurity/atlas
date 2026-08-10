@@ -177,7 +177,8 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             tools.top_p,
         );
     }
-    crate::scheduler::set_enable_loop_watchdog(ptx_set.behavior.enable_loop_watchdog);
+    // The content-loop watchdog value reaches the scheduler as
+    // `SchedLevers::loop_watchdog`, armed in `serve`; this phase only audits it.
     crate::scheduler::set_enable_think_loop_watchdog(ptx_set.behavior.enable_think_loop_watchdog);
     if !ptx_set.behavior.enable_think_loop_watchdog {
         tracing::info!(
@@ -196,7 +197,9 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     // auto-watchdogs (content-loop, inter-tool prose, F2 confidence,
     // mid-word </think>, thinking-loop). Empirical test toggle —
     // surface its state prominently at boot.
-    if crate::scheduler::disable_watchdogs() {
+    if crate::scheduler::parse_disable_watchdogs(
+        std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref(),
+    ) {
         tracing::warn!(
             "Model behavior: ALL auto-watchdogs DISABLED via ATLAS_DISABLE_WATCHDOGS=1 \
              (content-loop, inter-tool prose, F2 confidence early-stop, mid-word </think> \
@@ -204,18 +207,10 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
              Use only for empirical-test runs — re-enable for production."
         );
     }
-    // Phase-A: per-model watchdog tunables from MODEL.toml [behavior].
+    // Phase-A: per-model watchdog tunables from MODEL.toml [behavior]. The
+    // values themselves reach the scheduler as `SchedCtx::watchdog`, built in
+    // `serve` before the scheduler thread spawns; this phase only audits them.
     let b = &ptx_set.behavior;
-    crate::scheduler::set_watchdog_params(crate::scheduler::WatchdogParams {
-        think_loop_min_repeats: b.think_loop_min_repeats as usize,
-        think_loop_scan_window: b.think_loop_scan_window as usize,
-        confidence_early_stop: b.confidence_early_stop,
-        confidence_run_length: b.confidence_run_length,
-        fuzzy_repeat_tolerance_div: b.fuzzy_repeat_tolerance_div as usize,
-        max_inter_tool_prose: b.max_inter_tool_prose,
-        max_post_think_content_tokens: b.max_post_think_content_tokens,
-        rollback_resteer: b.rollback_resteer,
-    });
     if !b.confidence_early_stop {
         tracing::info!("Model behavior: F2 confidence early-stop DISABLED");
     }
@@ -244,7 +239,8 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
         );
     }
     // Phase-B: TSCG tool-schema compilation (MODEL.toml [behavior].tscg).
-    crate::tscg::set_tscg_enabled(b.tscg);
+    // The value itself reaches the renderers via `AppState::prompt_levers`;
+    // this phase only audits it.
     if b.tscg {
         tracing::info!("Model behavior: TSCG tool-schema compilation ENABLED (compact signatures)");
     }

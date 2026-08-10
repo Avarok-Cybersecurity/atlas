@@ -4,6 +4,10 @@
 
 use super::*;
 
+// The AtomicU64 counters that lived here are now `SchedCtx::stats`
+// (`scheduler::spec_stats::SpecStats`), so a run's acceptance rate describes
+// the model that produced it rather than blending two across a swap.
+
 // Periodic ACCEPT/REJECT summary counters (P4, 2026-05-24).
 // Replaces the earlier `is_multiple_of(50)` per-step gate which hid
 // accept events behind seq_len happenstance. We now log a single
@@ -11,18 +15,36 @@ use super::*;
 // Atomics are fine: scheduler runs on a single thread today, but
 // future multi-scheduler builds remain race-free.
 const K2_SUMMARY_PERIOD: u64 = 100;
-static K2_ACCEPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static K2_REJECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[inline]
-fn k2_record_outcome(accepted: bool, seq_len: usize) {
-    let counter = if accepted { &K2_ACCEPTS } else { &K2_REJECTS };
+fn k2_record_outcome(
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    accepted: bool,
+    seq_len: usize,
+) {
+    let counter = if accepted {
+        &sched.stats.k2_accepts
+    } else {
+        &sched.stats.k2_rejects
+    };
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let total = K2_ACCEPTS.load(std::sync::atomic::Ordering::Relaxed)
-        + K2_REJECTS.load(std::sync::atomic::Ordering::Relaxed);
+    let total = sched
+        .stats
+        .k2_accepts
+        .load(std::sync::atomic::Ordering::Relaxed)
+        + sched
+            .stats
+            .k2_rejects
+            .load(std::sync::atomic::Ordering::Relaxed);
     if total >= K2_SUMMARY_PERIOD {
-        let accepts = K2_ACCEPTS.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let rejects = K2_REJECTS.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let accepts = sched
+            .stats
+            .k2_accepts
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let rejects = sched
+            .stats
+            .k2_rejects
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
         let total = (accepts + rejects).max(1);
         let pct = 100.0 * (accepts as f64) / (total as f64);
         // A6 (2026-05-26): MTP K=2 acceptance rate as a free drift
@@ -59,12 +81,13 @@ fn k2_record_outcome(accepted: bool, seq_len: usize) {
 pub fn step_verify_k2(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts: &[u32],
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
-    use crate::scheduler::mtp_timing::{self, Phase};
+    use crate::scheduler::mtp_timing::Phase;
     let t_step = Instant::now();
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
@@ -72,7 +95,7 @@ pub fn step_verify_k2(
         a.finished = true;
         return;
     }
-    mtp_timing::record(Phase::SyncSecondary, t_sync);
+    sched.timing.record(Phase::SyncSecondary, t_sync);
     let sync_us = t_sync.elapsed().as_micros();
 
     // EP: broadcast verify K=2 command + tokens so worker runs decode_verify_graphed in lockstep.
@@ -91,7 +114,7 @@ pub fn step_verify_k2(
         }
     }
 
-    mtp_timing::record(Phase::EpBroadcast, t_ep);
+    sched.timing.record(Phase::EpBroadcast, t_ep);
     let ep_us = t_ep.elapsed().as_micros();
 
     let t_verify = Instant::now();
@@ -120,14 +143,12 @@ pub fn step_verify_k2(
             }
         }
     };
-    mtp_timing::record(Phase::VerifyForward, t_verify);
+    sched.timing.record(Phase::VerifyForward, t_verify);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax) = (result_vec[0], result_vec[1]);
 
-    let (v0, v1) = if dflash_verify_raw_argmax
-        && !crate::scheduler::verify_pipeline_helper::dflash_masked_verify_enabled()
-    {
+    let (v0, v1) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
         // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD) basis.
         (v0_argmax, v1_argmax)
     } else {
@@ -139,6 +160,7 @@ pub fn step_verify_k2(
             &[v0_argmax, v1_argmax],
             a,
             verify_ctx,
+            0,
         );
         (
             processed.first().copied().unwrap_or(v0_argmax),
@@ -149,7 +171,7 @@ pub fn step_verify_k2(
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
     let verify_lps = if let Some(top_logprobs) = a.top_logprobs {
-        extract_verify_logprobs(model, &[v0, v1], top_logprobs)
+        extract_verify_logprobs(model, &[v0, v1], top_logprobs, 0)
     } else {
         Vec::new()
     };
@@ -172,9 +194,9 @@ pub fn step_verify_k2(
 
     if accepted {
         // ── ACCEPTED ──
-        emit_token(a, drafts[0], verify_lps.first().cloned());
+        emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
         if !a.finished {
-            emit_token(a, v1, verify_lps.get(1).cloned());
+            emit_token(a, v1, verify_lps.get(1).cloned(), sched);
         }
         if a.finished {
             return;
@@ -193,7 +215,7 @@ pub fn step_verify_k2(
             a.finished = true;
             return;
         }
-        mtp_timing::record(Phase::Commit, t_commit);
+        sched.timing.record(Phase::Commit, t_commit);
 
         // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
         // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
@@ -208,15 +230,15 @@ pub fn step_verify_k2(
             tracing::error!("save_hidden_for_mtp(1): {e:#}");
             return;
         }
-        mtp_timing::record(Phase::SaveHidden, t_save);
+        sched.timing.record(Phase::SaveHidden, t_save);
         let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        mtp_timing::record(Phase::TrimProposer, t_trim);
+        sched.timing.record(Phase::TrimProposer, t_trim);
         let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        mtp_timing::record(Phase::ProposeMask, t_mask);
+        sched.timing.record(Phase::ProposeMask, t_mask);
         let t_propose = Instant::now();
         match model.run_mtp_propose_multi(
             v1,
@@ -232,7 +254,7 @@ pub fn step_verify_k2(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
-        mtp_timing::record(Phase::Propose, t_propose);
+        sched.timing.record(Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during
         // spec-decode. Power-user diagnostics:
@@ -243,13 +265,13 @@ pub fn step_verify_k2(
             "K2 ACCEPT: ep={ep_us}μs sync={sync_us}μs verify={verify_us}μs propose={propose_us}μs seq_len={}",
             a.seq.seq_len
         );
-        k2_record_outcome(true, a.seq.seq_len);
+        k2_record_outcome(sched, true, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
         let t_marconi = Instant::now();
         model.decode_marconi_checkpoint(&mut a.seq);
-        mtp_timing::record(Phase::MarconiCkpt, t_marconi);
-        mtp_timing::step_done(t_step, a.seq.seq_len);
+        sched.timing.record(Phase::MarconiCkpt, t_marconi);
+        mtp_timing::step_done(&sched.timing, t_step, a.seq.seq_len);
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;
@@ -259,7 +281,7 @@ pub fn step_verify_k2(
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
-        mtp_timing::record(Phase::TrimProposer, t_trim);
+        sched.timing.record(Phase::TrimProposer, t_trim);
         // Item #2 (STree-style in-place K=2 verify commit). K=2 reject means
         // num_accepted=1 (last_token is always accepted): the in-place
         // commit rewinds live h_state to intermediate[0] (state after the
@@ -270,9 +292,9 @@ pub fn step_verify_k2(
             a.finished = true;
             return;
         }
-        mtp_timing::record(Phase::Commit, t_commit);
+        sched.timing.record(Phase::Commit, t_commit);
 
-        emit_token(a, v0, verify_lps.first().cloned());
+        emit_token(a, v0, verify_lps.first().cloned(), sched);
         if a.finished {
             return;
         }
@@ -283,10 +305,10 @@ pub fn step_verify_k2(
             tracing::error!("save_hidden_for_mtp(0): {e:#}");
             return;
         }
-        mtp_timing::record(Phase::SaveHidden, t_save);
+        sched.timing.record(Phase::SaveHidden, t_save);
         let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
-        mtp_timing::record(Phase::ProposeMask, t_mask);
+        sched.timing.record(Phase::ProposeMask, t_mask);
         let t_propose = Instant::now();
         match model.run_mtp_propose_multi(
             v0,
@@ -302,7 +324,7 @@ pub fn step_verify_k2(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
-        mtp_timing::record(Phase::Propose, t_propose);
+        sched.timing.record(Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         let new_draft = a.pending_drafts.first().copied().unwrap_or(0);
         // REJECT log demoted from `info!` to `debug!` to match the
@@ -317,12 +339,12 @@ pub fn step_verify_k2(
             v0,
             new_draft,
         );
-        k2_record_outcome(false, a.seq.seq_len);
+        k2_record_outcome(sched, false, a.seq.seq_len);
         // #155 iter3: block-aligned Marconi checkpoint (live SSM state is
         // canonical post-commit). Fires only at interval boundaries.
         let t_marconi = Instant::now();
         model.decode_marconi_checkpoint(&mut a.seq);
-        mtp_timing::record(Phase::MarconiCkpt, t_marconi);
-        mtp_timing::step_done(t_step, a.seq.seq_len);
+        sched.timing.record(Phase::MarconiCkpt, t_marconi);
+        mtp_timing::step_done(&sched.timing, t_step, a.seq.seq_len);
     }
 }

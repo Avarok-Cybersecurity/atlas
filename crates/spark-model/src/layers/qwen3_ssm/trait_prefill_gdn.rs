@@ -6,14 +6,10 @@ use super::*;
 
 mod batched;
 
-/// `ATLAS_GDN_BATCHED_FLA=1` → route the co-dispatch batched GDN scan through the
-/// chunk-parallel FLA kernels at batch=N (fills chunk_delta_h's 32→32N CTAs)
-/// instead of the occupancy-starved wy64 family. Default off (opt-in A/B).
-pub(super) fn gdn_batched_fla_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| std::env::var("ATLAS_GDN_BATCHED_FLA").ok().as_deref() == Some("1"))
-}
+// The `OnceLock<bool>` static that lived here is now a field on
+// `layers::ops::ModelLevers` — resolved when the model is built and carried
+// on `ForwardContext`, because a static outlives the model whose flags it
+// encodes.
 
 impl Qwen3SsmLayer {
     pub(super) fn prefill_gdn_full_inner(

@@ -29,6 +29,7 @@ pub mod precision_schedule;
 pub mod preflight;
 pub mod quant_format;
 pub mod speculative;
+pub mod ssm_reserve;
 pub mod tp_shard;
 pub mod traits;
 pub mod vision_preprocess;

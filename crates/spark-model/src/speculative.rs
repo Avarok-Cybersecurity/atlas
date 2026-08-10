@@ -5,11 +5,16 @@
 //! Defines the [`DraftProposer`] trait for speculative decoding strategies.
 //! MTP implements this first; EAGLE-3 can implement later without engine changes.
 
+pub mod ladder;
 pub mod tree_shape;
+
+pub use ladder::{mtp_ladder_disabled, mtp_ladder_drafts, mtp_max_seqs};
 
 use std::any::Any;
 
 use anyhow::Result;
+use atlas_core::config::ModelConfig;
+use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use crate::layer::ForwardContext;
@@ -53,15 +58,42 @@ pub fn draft_conf_tau() -> f32 {
 /// the two offline yields the per-depth conditional top-k coverage that
 /// gates the tree-speculation build (Phase 0 of the tree-spec plan).
 /// Value-parsed, not presence-checked (`=0` really is off).
+///
+/// The SSOT parse. Both `ModelLevers::shadow_topk` (spark-model) and
+/// `SchedLevers::shadow_topk` (spark-server) resolve through it once per run
+/// rather than caching the answer in a `OnceLock` that a swap would pin.
 pub fn shadow_topk() -> usize {
-    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ATLAS_MTP_SHADOW_TOPK")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0)
-            .min(8)
-    })
+    std::env::var("ATLAS_MTP_SHADOW_TOPK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(8)
+}
+
+/// True when the MTP cap is raised above one sequence. The catchup ring
+/// (`types.rs` `mtp_catchup_ring` + meta), the refeed label convention, and
+/// the carry slot (`mtp_carry.rs`) are SINGLE-SEQUENCE structures — one ring,
+/// one label range, one slot. Running them with n concurrently-verifying
+/// sequences interleaves unrelated hiddens under one label space and breaks
+/// `after_verify`'s env-keyed trim contract (`mtp_rows_to_trim`). Disabling
+/// them process-wide when the cap > 1 is the only consistent option; a
+/// slot-keyed ring is recorded follow-up work (acceptance debt at n>1).
+pub fn mtp_multi_seq_mode() -> bool {
+    mtp_max_seqs() > 1
+}
+
+/// `ATLAS_MTP_ACCEPT_DEBUG` (PRESENCE): per-BATCH-WIDTH acceptance telemetry.
+///
+/// The shipped K ladder gives `k_drafts == 2` at n in [5, 8], and the existing
+/// positional counters (`k4_record_positional`) are gated on `k_drafts == 3`,
+/// so at the C=8 operating point NOTHING reported p1 — only the na histogram.
+/// This gate turns on a per-n line reporting p1, mean accepted and the derived
+/// tokens/step, which is the quantity the C=8 arithmetic is written in.
+/// Counters only (no D2H, no sync), but it logs per period, so keep it off in
+/// timed legs unless the leg IS the accept measurement.
+pub fn mtp_accept_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MTP_ACCEPT_DEBUG").is_ok())
 }
 
 /// Drafter catch-up feed on serial->speculative transitions
@@ -70,8 +102,10 @@ pub fn shadow_topk() -> usize {
 /// rows are batch-fed into the drafter KV so it never runs stale. Wrong
 /// feeds cannot corrupt output (verification rejects bad drafts) — the
 /// stake is acceptance only, which is the flip gate's metric.
+/// Force-off in multi-seq MTP mode (single-sequence ring; see
+/// [`mtp_multi_seq_mode`]).
 pub fn mtp_catchup_enabled() -> bool {
-    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1")
+    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
 }
 
 /// Re-feed ACCEPTED draft rows with the target's TRUE hidden state
@@ -191,8 +225,11 @@ pub fn mtp_catchup_enabled() -> bool {
 /// Both dwarf this flag, and (2) also changes what this flag is worth: a
 /// drafter that can actually see the prompt is a different drafter. **Build
 /// (2) first, then re-measure this.**
+///
+/// Force-off in multi-seq MTP mode: the refeed label space is single-sequence
+/// (see [`mtp_multi_seq_mode`]).
 pub fn mtp_refeed_accepted_enabled() -> bool {
-    std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
+    std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
 }
 
 /// Deliberate off-by-N perturbation of the re-feed's ring LABEL
@@ -349,6 +386,48 @@ pub trait DraftProposer: Send + Sync {
         grammar_bitmask: Option<&[i32]>,
         target_hidden_stack: Option<DevicePtr>,
     ) -> Result<Vec<u32>>;
+
+    /// Batched cross-sequence propose: draft `num_drafts` tokens for each of
+    /// `n = last_tokens.len()` sequences, reading every drafter weight ONCE
+    /// per draft position instead of once per sequence (the measured C=4
+    /// serialization: 12 x ~5 ms per-seq drafter forwards per batched verify
+    /// step, ~62 ms of the ~180 ms step).
+    ///
+    /// Row i of every slice belongs to sequence i; `target_hiddens[i]` is
+    /// that sequence's accepted-position hidden ([1, hidden] BF16, may be
+    /// non-contiguous across i). Chains autoregressively per sequence like
+    /// `propose` — position j uses (draft_{j-1}, drafter's own hidden row i).
+    ///
+    /// Returns `Ok(None)` when unsupported (caller falls back to the per-seq
+    /// `propose` loop); `Ok(Some(drafts))` with `drafts[i].len() ==
+    /// num_drafts` on success. Grammar-constrained sequences must not reach
+    /// this path (callers gate on grammarless).
+    #[allow(clippy::too_many_arguments)]
+    fn propose_batch(
+        &self,
+        _last_tokens: &[u32],
+        _target_hiddens: &[DevicePtr],
+        _positions: &[usize],
+        _num_drafts: usize,
+        _states: &mut [&mut dyn ProposerState],
+        _ctx: &ForwardContext,
+        _stream: u64,
+        _out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        Ok(None)
+    }
+
+    /// The widest batch [`Self::propose_batch`] can carry in ONE drafter
+    /// forward per draft position, derived from this proposer's resolved
+    /// kernels and the arena's row capacities. `1` = per-sequence only.
+    ///
+    /// Callers chunk by this instead of a hardcoded constant: a fixed cap of
+    /// 4 made a 16-sequence step run 4 drafter forwards per position, each
+    /// re-reading the whole drafter — the batched-propose lever's own cost
+    /// re-introduced by its caller.
+    fn propose_batch_max(&self, _buffers: &BufferArena, _config: &ModelConfig) -> usize {
+        1
+    }
 
     /// Prefill the drafter's own context (KV cache) over the prompt, before
     /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).

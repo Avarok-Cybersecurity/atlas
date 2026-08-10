@@ -14,6 +14,11 @@ use crate::grammar::{GrammarEngine, GrammarError};
 use xgrammar::CompiledGrammar;
 
 /// Global counter for unique tool call IDs across all requests.
+/// STATIC, DELIBERATELY — process lifecycle. It generates the `call_*` ids
+/// Atlas hands to clients, and uniqueness must hold across EVERY call the
+/// process emits: an agent holds tool-call ids across turns, and a model
+/// swap mid-session must not restart the sequence and collide with an id the
+/// client is still tracking. It is an id source, not a measurement.
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate a globally unique tool call ID.
@@ -246,12 +251,23 @@ impl LeakMarkers {
     };
 }
 
+pub use prompt_levers::PromptLevers;
+
 pub trait ToolCallParser: Send + Sync {
     /// Parser name for logging (e.g. "hermes", "qwen3_coder").
     fn name(&self) -> &str;
 
     /// Generate the system prompt that teaches the model how to make tool calls.
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String;
+    ///
+    /// `levers` carries the model's `[behavior]` prompt-rendering decisions
+    /// (currently TSCG). Passed in rather than read from a global so a
+    /// parser renders under the levers of the model it was loaded for.
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &PromptLevers,
+    ) -> String;
 
     /// Format assistant tool_calls as text for multi-turn chat template injection.
     fn format_tool_calls(&self, calls: &[IncomingToolCall]) -> String;
@@ -446,6 +462,7 @@ mod parse_tools_tag;
 mod pipeline;
 mod pipeline_helpers;
 mod poolside_v1;
+mod prompt_levers;
 mod qwen3_coder;
 mod qwen3_xml;
 mod streaming;

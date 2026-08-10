@@ -19,6 +19,40 @@ use super::*;
 ///
 /// Kernel: `rms_norm(input, weight, output, hidden_size, eps)`
 /// Grid: (num_tokens, 1, 1)  Block: (min(hidden_size, 1024), 1, 1)
+/// Strided RMS norm: `num_groups` groups of `rows_per_group` rows in ONE launch,
+/// groups `row_stride` ELEMENTS apart, rows packed at `hidden_size` inside a group.
+///
+/// `rms_norm` above assumes one packed [num_tokens, hidden_size] block. The
+/// multi-seq q/k head-norms are packed only WITHIN a sequence — each sequence's
+/// heads sit inside its own interleaved [Q|K|V|gate] block — so that path was
+/// launching the packed kernel once per sequence (516 launches/step, 0.76 ms).
+/// Bit-identical: one block per row either way, same math, same reduction.
+#[allow(clippy::too_many_arguments)]
+pub fn rms_norm_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    rows_per_group: u32,
+    num_groups: u32,
+    hidden_size: u32,
+    eps: f32,
+    row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows_per_group, num_groups, 1])
+        .block([hidden_size.min(1024), 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(hidden_size)
+        .arg_f32(eps)
+        .arg_u32(row_stride)
+        .launch(stream)
+}
+
 pub fn rms_norm(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

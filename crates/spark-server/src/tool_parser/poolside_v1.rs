@@ -11,7 +11,12 @@ impl ToolCallParser for PoolsideV1Parser {
         "poolside_v1"
     }
 
-    fn system_prompt(&self, _tools: &[ToolDefinition], _tool_choice: &ToolChoice) -> String {
+    fn system_prompt(
+        &self,
+        _tools: &[ToolDefinition],
+        _tool_choice: &ToolChoice,
+        _levers: &PromptLevers,
+    ) -> String {
         String::new()
     }
 

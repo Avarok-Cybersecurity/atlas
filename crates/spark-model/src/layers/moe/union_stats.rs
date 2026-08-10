@@ -15,33 +15,32 @@
 //! after a stream sync — nanoseconds amortized. Aggregate is logged every
 //! [`LOG_EVERY`] samples.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
-use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::gpu::DevicePtr;
 
 const SAMPLE_EVERY: u64 = 64;
 const LOG_EVERY: u64 = 64;
 
-static CALLS: AtomicU64 = AtomicU64::new(0);
-static SAMPLES: AtomicU64 = AtomicU64::new(0);
-static UNIQUE_SUM: AtomicU64 = AtomicU64::new(0);
-static SLOTS_SUM: AtomicU64 = AtomicU64::new(0);
-
-fn enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_MOE_UNION_STATS").ok().as_deref() == Some("1"))
-}
+// The four counters that lived here are now `ModelStats::moe_union`, reached
+// through `ForwardContext`. Expert-union density is a property of ONE model's
+// router: summed across a swap the periodic aggregate reports a mean of two
+// routers, which describes neither. The `OnceLock<bool>` that gated sampling
+// is likewise `ModelLevers::moe_union_stats`, passed in by the caller.
 
 /// Sample the expert-index union for one MoE layer's verify batch.
 /// `indices_dev` = `[m * top_k]` u32 expert ids, already written on `stream`.
 pub(super) fn maybe_sample_expert_union(
-    gpu: &dyn GpuBackend,
+    // The whole context, not three fields off it: the lever, the counters and
+    // the backend are all this model's, and taking them separately made the
+    // call site three lines longer than the thing it gates.
+    ctx: &crate::layer::ForwardContext<'_>,
     indices_dev: DevicePtr,
     m: usize,
     top_k: usize,
     stream: u64,
 ) {
-    if !enabled() {
+    if !ctx.levers.moe_union_stats {
         return;
     }
     // NEVER sync/copy inside a CUDA-graph capture — it invalidates the
@@ -49,10 +48,11 @@ pub(super) fn maybe_sample_expert_union(
     // decode_verify_graphed, 2026-07-20). Graph REPLAYS run no host code at
     // all, so this tap inherently samples only eager verify steps; disable
     // graphs for full-fidelity measurement runs.
+    let gpu = ctx.gpu;
     if gpu.stream_is_capturing(stream) {
         return;
     }
-    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    let call = ctx.stats.moe_union.calls.fetch_add(1, Ordering::Relaxed);
     if !call.is_multiple_of(SAMPLE_EVERY) {
         return;
     }
@@ -72,12 +72,18 @@ pub(super) fn maybe_sample_expert_union(
     ids.sort_unstable();
     ids.dedup();
     let unique = ids.len() as u64;
-    UNIQUE_SUM.fetch_add(unique, Ordering::Relaxed);
-    SLOTS_SUM.fetch_add(n as u64, Ordering::Relaxed);
-    let s = SAMPLES.fetch_add(1, Ordering::Relaxed) + 1;
+    ctx.stats
+        .moe_union
+        .unique_sum
+        .fetch_add(unique, Ordering::Relaxed);
+    ctx.stats
+        .moe_union
+        .slots_sum
+        .fetch_add(n as u64, Ordering::Relaxed);
+    let s = ctx.stats.moe_union.samples.fetch_add(1, Ordering::Relaxed) + 1;
     if s.is_multiple_of(LOG_EVERY) {
-        let uniq = UNIQUE_SUM.load(Ordering::Relaxed) as f64 / s as f64;
-        let slots = SLOTS_SUM.load(Ordering::Relaxed) as f64 / s as f64;
+        let uniq = ctx.stats.moe_union.unique_sum.load(Ordering::Relaxed) as f64 / s as f64;
+        let slots = ctx.stats.moe_union.slots_sum.load(Ordering::Relaxed) as f64 / s as f64;
         tracing::info!(
             "moe-union-stats: samples={s} mean_unique_experts={uniq:.1} \
              mean_routed_slots={slots:.1} overlap_saving={:.0}% (m={m} top_k={top_k})",

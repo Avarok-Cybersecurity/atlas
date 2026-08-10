@@ -81,3 +81,70 @@ extern "C" __global__ void ssm_state_clamp_norm_fused(
         }
     }
 }
+
+// ── FP16 h-state twin (ATLAS_SSM_H_FP16) ──────────────────────────────────
+//
+// Additive: never aliases `ssm_state_clamp_norm_fused`, which stays the only
+// kernel the FP32 path ever launches. Identical arithmetic — the accumulation
+// and the clamp are FP32, only the storage is narrowed — so a state that is
+// bit-identical modulo the FP16 round-trip stays bit-identical through it.
+//
+// Selected by `normalize_ssm_states_dispatch` from the sequence's own
+// `SsmLayerState::h_is_f16`. In stage 1 that predicate is false at every one
+// of this function's call sites, because stage 1 leaves prefill FP32
+// end-to-end and this normalize only ever runs on a PREFILLING sequence (the
+// one decode-path caller, `decode_a`, is gated on `mamba_num_heads > 0`, which
+// is 0 for GDN). It exists so stage 2 — native FP16 writes in the prefill/
+// chunk/WY kernels — does not have to reopen the dispatch.
+
+#include <cuda_fp16.h>
+
+extern "C" __global__ void ssm_state_clamp_norm_fused_f16(
+    __half** __restrict__ h_state_ptrs,  // [num_layers] device pointers
+    unsigned int num_heads,
+    unsigned int k_dim,
+    unsigned int v_dim
+) {
+    const unsigned int head = blockIdx.x;
+    const unsigned int layer = blockIdx.y;
+    const unsigned int tid = threadIdx.x;
+    if (head >= num_heads || tid >= v_dim) return;
+
+    __half* H = h_state_ptrs[layer] + (unsigned long long)head * k_dim * v_dim;
+
+    float local_sq = 0.0f;
+    for (unsigned int j = 0; j < k_dim; j++) {
+        float v = __half2float(H[j * v_dim + tid]);
+        local_sq += v * v;
+    }
+
+    unsigned int mask = __activemask();
+    float warp_sum = local_sq;
+    warp_sum += __shfl_down_sync(mask, warp_sum, 16);
+    warp_sum += __shfl_down_sync(mask, warp_sum, 8);
+    warp_sum += __shfl_down_sync(mask, warp_sum, 4);
+    warp_sum += __shfl_down_sync(mask, warp_sum, 2);
+    warp_sum += __shfl_down_sync(mask, warp_sum, 1);
+
+    __shared__ float norm_sums[4];
+    unsigned int warp_id = tid / 32;
+    unsigned int lane_id = tid % 32;
+    if (lane_id == 0) norm_sums[warp_id] = warp_sum;
+    __syncthreads();
+
+    if (tid < 4) {
+        float s = norm_sums[tid];
+        s += __shfl_down_sync(0xf, s, 2);
+        s += __shfl_down_sync(0xf, s, 1);
+        norm_sums[0] = s;
+    }
+    __syncthreads();
+    float head_norm_sq = norm_sums[0];
+
+    if (head_norm_sq > MAX_NORM * MAX_NORM) {
+        float scale = MAX_NORM * rsqrtf(head_norm_sq);
+        for (unsigned int j = 0; j < k_dim; j++) {
+            H[j * v_dim + tid] = __float2half(__half2float(H[j * v_dim + tid]) * scale);
+        }
+    }
+}

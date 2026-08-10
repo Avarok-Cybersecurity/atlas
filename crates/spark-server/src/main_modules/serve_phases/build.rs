@@ -31,7 +31,7 @@ pub(crate) fn build_prefix_cache(
 pub(crate) fn build_model(
     args: &cli::ServeArgs,
     config: &ModelConfig,
-    store: &spark_runtime::weights::WeightStore,
+    store: spark_runtime::weights::WeightStore,
     gpu: Box<dyn spark_runtime::gpu::GpuBackend>,
     max_batch_tokens: usize,
     kv_dtype: spark_runtime::kv_cache::KvCacheDtype,

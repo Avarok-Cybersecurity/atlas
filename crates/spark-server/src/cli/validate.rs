@@ -24,6 +24,8 @@ use super::ServeArgs;
 const LM_HEAD_DTYPES: &[&str] = &["default", "bf16", "nvfp4", "fp8"];
 const MTP_QUANTS: &[&str] = &["bf16", "fp8", "nvfp4"];
 const SCHEDULING_POLICIES: &[&str] = &["fifo", "slai"];
+const SSM_H_DTYPES: &[&str] = &["f32", "f16"];
+const MTP_GATES: &[&str] = &["auto", "force"];
 const TOOL_CALL_PARSERS: &[&str] = &[
     "hermes",
     "qwen3_coder",
@@ -66,6 +68,31 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         &args.lm_head_dtype,
         LM_HEAD_DTYPES,
     );
+    if let Some(dtype) = &args.ssm_h_dtype {
+        check_enum(&mut v, "--ssm-h-dtype", dtype, SSM_H_DTYPES);
+    }
+    // Only when it was given: absent means "let ATLAS_MTP_GATE_FORCE decide",
+    // and validating an unwritten value would reject nothing but confuse the
+    // reader of this list.
+    if let Some(gate) = &args.mtp_gate {
+        check_enum(&mut v, "--mtp-gate", gate, MTP_GATES);
+    }
+    // The FP16 h-state twins live ONLY on the fused-norm decode arm. Without
+    // it the dispatch lands on an FP32-only kernel pointed at an FP16 pool,
+    // which does not fault — it emits fluent garbage. Reject the pair here,
+    // in milliseconds, rather than at the first decode step of a benchmark.
+    // `!= Some(true)`, not `== Some(false)`: an ABSENT `--gdn-fused-norm` beside
+    // an explicit `--ssm-h-dtype f16` publishes fused_norm OFF (the three GDN
+    // flags are one cell), so absent is just as dangerous here as explicit off.
+    if args.ssm_h_dtype.as_deref() == Some("f16") && args.gdn_fused_norm != Some(true) {
+        v.push(Violation::new(
+            "--ssm-h-dtype f16 without --gdn-fused-norm",
+            "the FP16 h-state twins exist only on the fused-norm decode arm; the unfused \
+             arms (gated_delta_rule_decode, ..._decode_f32_strided) are FP32-only and \
+             would read the FP16 pool as FP32 — fluent garbage, not an error",
+            "add --gdn-fused-norm, or use --ssm-h-dtype f32",
+        ));
+    }
     check_enum(
         &mut v,
         "--mtp-quantization",
@@ -267,6 +294,7 @@ mod tests {
         argv.extend_from_slice(extra);
         match super::super::Cli::parse_from(argv).command {
             super::super::Command::Serve(a) => a,
+            super::super::Command::Benchmark(_) => unreachable!("this test parses a serve command"),
         }
     }
 
@@ -296,6 +324,72 @@ mod tests {
             ]))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn an_absent_lever_flag_parses_as_unspecified() {
+        // `None` is not the same as the default VALUE, and the difference is
+        // load-bearing: publishing a default seals the cell these two flags
+        // write to, which turned `ATLAS_SSM_TAIL_MIDCHUNK=0` and
+        // `ATLAS_MTP_GATE_FORCE=1` into documented, echoed, silent no-ops under
+        // `spark serve`. Absent has to stay absent all the way to
+        // `publish_kernel_flags` for the fallback to be reachable.
+        let a = parse(&[]);
+        assert!(a.ssm_tail_midchunk.is_none(), "ATLAS_SSM_TAIL_MIDCHUNK");
+        assert!(a.mtp_gate.is_none(), "ATLAS_MTP_GATE_FORCE");
+        assert!(a.ssm_h_dtype.is_none(), "ATLAS_SSM_H_FP16");
+        assert!(a.gdn_fused_norm.is_none(), "ATLAS_GDN_FUSED_NORM");
+        assert!(
+            a.ssm_batched_recurrent.is_none(),
+            "ATLAS_SSM_BATCHED_RECURRENT"
+        );
+
+        let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
+        assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");
+        assert_eq!(a.mtp_gate.as_deref(), Some("force"));
+    }
+
+    #[test]
+    fn the_bare_gdn_switches_still_mean_on() {
+        // `Option<bool>` must not turn a presence switch into one that DEMANDS
+        // a value: every recipe and frozen command line writes them bare, and
+        // silently requiring `--gdn-fused-norm true` would break all of them.
+        let a = parse(&["--gdn-fused-norm", "--ssm-batched-recurrent"]);
+        assert_eq!(a.gdn_fused_norm, Some(true));
+        assert_eq!(a.ssm_batched_recurrent, Some(true));
+        // And an explicit off is now expressible, which it was not before.
+        let a = parse(&["--gdn-fused-norm", "false"]);
+        assert_eq!(a.gdn_fused_norm, Some(false));
+    }
+
+    #[test]
+    fn f16_h_state_still_needs_the_fused_norm_arm() {
+        // Absent counts as off: one GDN flag publishes all three, so
+        // `--ssm-h-dtype f16` alone reaches the FP32-only kernel with an FP16
+        // pool — fluent garbage, not a fault.
+        assert!(validate_serve_args(&parse(&["--ssm-h-dtype", "f16"])).is_err());
+        assert!(
+            validate_serve_args(&parse(&["--ssm-h-dtype", "f16", "--gdn-fused-norm"])).is_ok(),
+            "the supported pairing"
+        );
+        assert!(
+            validate_serve_args(&parse(&[
+                "--ssm-h-dtype",
+                "f16",
+                "--gdn-fused-norm",
+                "false"
+            ]))
+            .is_err(),
+            "and an explicit off is refused just as an absent one is"
+        );
+    }
+
+    #[test]
+    fn a_mistyped_mtp_gate_is_still_caught() {
+        // Making the flag optional must not make its typo check optional.
+        let err = validate_serve_args(&parse(&["--mtp-gate", "always"])).unwrap_err();
+        assert!(err.contains("--mtp-gate"), "{err}");
+        assert!(err.contains("auto, force"), "names the valid values: {err}");
     }
 
     #[test]

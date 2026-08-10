@@ -14,6 +14,9 @@
 
 use anyhow::{Result, bail};
 
+mod hd128;
+pub use hd128::ragged_prefill_bf16_hd128;
+
 #[cfg(atlas_flashinfer)]
 use std::ffi::c_void;
 #[cfg(atlas_flashinfer)]
@@ -61,36 +64,6 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
 
-    // head_dim=128 (Laguna). Same ABI as hd256 plus `window_left` after
-    // `causal`: -1 = full causal attention, otherwise sliding_window - 1.
-    #[allow(clippy::too_many_arguments)]
-    fn atlas_fi_ragged_prefill_bf16_hd128(
-        q: *const c_void,
-        k: *const c_void,
-        v: *const c_void,
-        o: *mut c_void,
-        qo_indptr_h: *const i32,
-        kv_indptr_h: *const i32,
-        qo_indptr_d: *const i32,
-        kv_indptr_d: *const i32,
-        batch: u32,
-        total_qo_rows: u32,
-        total_kv_rows: u32,
-        num_qo_heads: u32,
-        num_kv_heads: u32,
-        head_dim: u32,
-        sm_scale: f32,
-        causal: i32,
-        window_left: i32,
-        float_ws: *mut c_void,
-        float_ws_bytes: usize,
-        int_ws: *mut c_void,
-        int_ws_bytes: usize,
-        pinned_int_ws: *mut c_void,
-        pinned_int_ws_bytes: usize,
-        stream: *mut c_void,
-    ) -> i32;
-
     #[cfg(atlas_flashinfer)]
     fn cuMemAlloc_v2(dptr: *mut u64, bytesize: usize) -> i32;
     #[cfg(atlas_flashinfer)]
@@ -118,6 +91,16 @@ unsafe impl Send for Workspaces {}
 #[cfg(atlas_flashinfer)]
 unsafe impl Sync for Workspaces {}
 #[cfg(atlas_flashinfer)]
+/// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
+/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// per process) and sized by a fixed budget, not by any model's shapes: the
+/// bounds below are generous upper limits chosen to fit any realistic serving
+/// configuration, so a swap needs no reallocation and re-allocating per model
+/// would churn hundreds of megabytes for no change in what is mapped.
+///
+/// It survives a model swap for the same reason the context does. Nothing in
+/// it is derived from a model — no token ids, no weight pointers, no shapes —
+/// only scratch the library plans within.
 static WS: OnceLock<Workspaces> = OnceLock::new();
 
 // Max config the persistent workspaces are sized for. Generous upper bounds for
@@ -274,115 +257,6 @@ pub fn ragged_prefill_bf16_hd256(
             head_dim,
             sm_scale,
             causal,
-            stream,
-        );
-        bail!("FlashInfer support was not built; set FLASHINFER_HOME when building")
-    }
-}
-
-/// Ragged batched prefill attention, BF16, **head_dim=128** (Laguna), GQA.
-///
-/// Same contract as [`ragged_prefill_bf16_hd256`] but with a sliding-window
-/// bound. `sliding_window` is the Atlas convention (mask when `q - k >= w`,
-/// see `kernels/gb10/common/inferspark_prefill.cu`); pass `None` for the
-/// full-attention layers. It is converted to FlashInfer's `window_left`
-/// (= `w - 1`) internally.
-///
-/// Passing the window is not just a correctness requirement for Laguna's 36
-/// sliding-window-512 layers — FlashInfer's scheduler uses it to skip
-/// out-of-window KV tiles entirely, so it is also where the speedup comes from.
-#[allow(clippy::too_many_arguments)]
-pub fn ragged_prefill_bf16_hd128(
-    q: u64,
-    k: u64,
-    v: u64,
-    o: u64,
-    qo_indptr_h: &[i32],
-    kv_indptr_h: &[i32],
-    qo_indptr_d: u64,
-    kv_indptr_d: u64,
-    batch: u32,
-    total_qo_rows: u32,
-    total_kv_rows: u32,
-    num_qo_heads: u32,
-    num_kv_heads: u32,
-    head_dim: u32,
-    sm_scale: f32,
-    causal: bool,
-    sliding_window: Option<u32>,
-    stream: u64,
-) -> Result<()> {
-    #[cfg(atlas_flashinfer)]
-    {
-        if head_dim != 128 {
-            bail!("ragged_prefill_bf16_hd128 is head_dim=128 only (got {head_dim})");
-        }
-        if qo_indptr_h.len() != (batch + 1) as usize || kv_indptr_h.len() != (batch + 1) as usize {
-            bail!("indptr host slices must be batch+1 long");
-        }
-        // Atlas masks at (q - k) >= w; FlashInfer keeps kv within window_left of
-        // the query, so window_left = w - 1. w == 0 means "no window".
-        let window_left: i32 = match sliding_window {
-            Some(w) if w > 0 => (w - 1) as i32,
-            _ => -1,
-        };
-        let ws = workspaces()?;
-        let st = unsafe {
-            atlas_fi_ragged_prefill_bf16_hd128(
-                q as *const c_void,
-                k as *const c_void,
-                v as *const c_void,
-                o as *mut c_void,
-                qo_indptr_h.as_ptr(),
-                kv_indptr_h.as_ptr(),
-                qo_indptr_d as *const i32,
-                kv_indptr_d as *const i32,
-                batch,
-                total_qo_rows,
-                total_kv_rows,
-                num_qo_heads,
-                num_kv_heads,
-                head_dim,
-                sm_scale,
-                if causal { 1 } else { 0 },
-                window_left,
-                ws.float_ws as *mut c_void,
-                ws.float_sz,
-                ws.int_ws as *mut c_void,
-                ws.int_sz,
-                ws.pinned_int_ws as *mut c_void,
-                ws.pinned_sz,
-                stream as *mut c_void,
-            )
-        };
-        if st != 0 {
-            bail!(
-                "FlashInfer ragged prefill hd128 failed: status {st} \
-                 (batch={batch}, qo={total_qo_rows}, window_left={window_left})"
-            );
-        }
-        Ok(())
-    }
-    #[cfg(not(atlas_flashinfer))]
-    {
-        let _ = (
-            q,
-            k,
-            v,
-            o,
-            qo_indptr_h,
-            kv_indptr_h,
-            qo_indptr_d,
-            kv_indptr_d,
-            batch,
-            total_qo_rows,
-            total_kv_rows,
-            num_qo_heads,
-            num_kv_heads,
-            head_dim,
-            sm_scale,
-            causal,
-            sliding_window,
             stream,
         );
         bail!("FlashInfer support was not built; set FLASHINFER_HOME when building")
@@ -555,7 +429,7 @@ mod tests {
                 cudaFree(p as *mut c_void);
             }
         }
-        eprintln!("FLASHINFER_RAGGED worst_cos={worst_cos:.6} max_rel={max_rel:.4}");
+        tracing::debug!("FLASHINFER_RAGGED worst_cos={worst_cos:.6} max_rel={max_rel:.4}");
         assert!(
             worst_cos > 0.99,
             "FlashInfer ragged prefill diverges from CPU ref: cos {worst_cos}"

@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use std::sync::Arc;
+use crate::main_modules::model_host::CurrentModel;
 
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-
-use crate::AppState;
 
 use super::handlers_stream::*;
 use super::helpers::*;
@@ -24,7 +21,7 @@ use super::types::*;
 /// response back into Anthropic format. The Anthropic-specific surface
 /// is strictly format conversion — no policy or sampling decisions are
 /// made here.
-pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
+pub async fn messages(CurrentModel(state): CurrentModel, body: axum::body::Bytes) -> Response {
     // 1. Parse the Anthropic request.
     let req: MessagesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -139,7 +136,7 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
 ///
 /// Claude Code calls this to validate the model and estimate token usage.
 pub async fn count_tokens(
-    State(state): State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<MessagesRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {

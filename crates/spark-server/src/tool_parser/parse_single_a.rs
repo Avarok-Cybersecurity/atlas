@@ -111,7 +111,7 @@ pub(super) fn parse_one_call(text: &str, idx: u32) -> Option<ToolCall> {
 /// `parse_tool_calls` (normalized to plain `<tool_call>` on entry and
 /// then dropped by the outer loop). This function only sees the
 /// inner body.
-fn parse_minimax_xml_call(text: &str, idx: u32) -> Option<ToolCall> {
+pub(super) fn parse_minimax_xml_call(text: &str, idx: u32) -> Option<ToolCall> {
     let _ = idx;
     let invoke_start = text
         .find("<invoke name=\"")

@@ -49,9 +49,7 @@ impl MoeLayer {
                 == Some("1")
         {
             // One-time per-process log so we can verify the env-gated route is hit.
-            static LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if ctx.stats.once("log:moe_route") {
                 tracing::info!(
                     "FRANKENSTEIN: routing DFlash capture-layer MoE decode through forward_prefill(M=1) (one-time log)"
                 );

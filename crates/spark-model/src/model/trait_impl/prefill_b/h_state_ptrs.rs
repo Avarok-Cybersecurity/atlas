@@ -62,6 +62,12 @@ impl TransformerModel {
         }
 
         let dst = self.buffers.scratch().offset(scratch_offset_bytes);
+        // SAFETY: `h_ptrs` was `with_capacity(n)` but is also FILLED to `n` —
+        // the loop above iterates `seqs` (`n = seqs.len()`) and pushes exactly
+        // once per iteration, and its only early exit is the `?` on the
+        // downcast, which returns instead of reaching here. So
+        // `h_ptrs.len() == n` and `n * size_of::<u64>()` covers only written
+        // elements, never the uninitialised capacity tail.
         let bytes = unsafe {
             std::slice::from_raw_parts(h_ptrs.as_ptr() as *const u8, n * std::mem::size_of::<u64>())
         };

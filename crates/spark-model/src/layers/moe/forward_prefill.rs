@@ -181,7 +181,7 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
-        } else if ops::cublas_gemm_enabled() && n > 1 {
+        } else if ctx.dispatch.cublas_gemm && n > 1 {
             ops::cublas_bf16_proj_dense(
                 router_in,
                 self.weights.gate.weight,

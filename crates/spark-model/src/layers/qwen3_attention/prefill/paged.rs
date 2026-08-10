@@ -555,9 +555,7 @@ impl Qwen3AttentionLayer {
                 let indptr_h = &bmeta.cu_seqlens_host;
                 let indptr_d = bmeta.cu_seqlens.0;
                 {
-                    use std::sync::atomic::{AtomicBool, Ordering};
-                    static LOGGED: AtomicBool = AtomicBool::new(false);
-                    if !LOGGED.swap(true, Ordering::Relaxed) {
+                    if ctx.stats.once("log:flashinfer_prefill_varlen") {
                         tracing::warn!(
                             "FLASHINFER_PREFILL(varlen) batch={batch} total={total} \
                              num_tokens={num_tokens} cu_seqlens={indptr_h:?} \
@@ -713,7 +711,7 @@ impl Qwen3AttentionLayer {
             // (grid [2, ceil(n/16)]) so the kernel is badly underutilized.
             // A/B (ISL 1024/8192, C=1): sTTFT 765->747 / 4177->4068 ms = ~2.5%.
             // dense_gemm_tc stays as the fallback when cuBLAS is off.
-            if ops::cublas_gemm_enabled() {
+            if ctx.dispatch.cublas_gemm {
                 ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
             } else {
                 ops::dense_gemm_tc(

@@ -621,12 +621,16 @@ extern "C" __global__ void KERNEL_NAME(
 //   m/l: [64][2]   =  0.5 KB
 // ============================================================================
 
-// Under SCALE/gfx1151 the BR64=64 large-chunk prefill kernels are
-// COMPILE-ONLY (force_br32_prefill routes all dispatch to the BR=32
-// kernel — see HARDWARE.toml / paged_attn.rs). BR64=32 here only needs
-// to make them fit RDNA3.5's 64 KB LDS so the binary builds; they are
-// never launched on AMD, so the host grid (still BR64=64) is irrelevant.
-// NVIDIA keeps BR64=64 verbatim.
+// Under SCALE/gfx1151 the _64 large-chunk prefill kernels ARE still
+// dispatched (paged_attn.rs picks them on chunk length alone); clamping
+// BR64 to 32 is what makes them fit RDNA3.5's 64 KB LDS. The host grid
+// is clamped to match by cfg!(atlas_scale) in ops/prefill_attn_main_a.rs
+// and ops/prefill_attn_main_b.rs — the two MUST agree, or CTAs are spaced
+// 64 rows apart while each writes 32 and half of every band is left
+// unwritten. NVIDIA keeps BR64=64 verbatim.
+// (An earlier comment here claimed a `force_br32_prefill` HARDWARE.toml
+// key routed dispatch away from these kernels. No such routing ever
+// existed at this tip; the key had no reader and has been removed.)
 #if defined(__SCALE__)
 #define BR64 32
 #else

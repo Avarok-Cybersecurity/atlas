@@ -39,6 +39,12 @@ use super::super::super::types::TransformerModel;
 use crate::layer::BatchedAttnMetadata;
 use crate::traits::{PrefillSlice, SequenceState};
 
+// `block_ptrs_bytes` below is computed from `size_of::<DevicePtr>()` while the
+// host-side staging Vecs (`bt_ptrs`, `sl_ptrs`) hold plain `u64`s — that byte
+// count is only a valid bound on those Vecs if the two widths agree. Assert it
+// at compile time rather than assume the single-field wrapper never grows.
+const _: () = assert!(std::mem::size_of::<DevicePtr>() == std::mem::size_of::<u64>());
+
 /// Per-stream metadata needed to stage one entry of the batched arrays.
 /// Built by the per-stream Phase 1-3 setup and consumed by
 /// `stage_batched_attn_metadata`.
@@ -221,75 +227,44 @@ impl TransformerModel {
         // packed contiguously. Upload to scratch at scratch_offset_bytes.
         let scratch_base = self.buffers.scratch().offset(scratch_offset_bytes);
 
-        // Host-side pack into pinned buffer at the correct relative offsets.
-        let pinned = stg.ptr;
-        unsafe {
-            let mut cursor = 0usize;
-            // positions
-            std::ptr::copy_nonoverlapping(
-                stg.positions.as_ptr() as *const u8,
-                pinned.add(cursor),
-                pos_bytes,
-            );
-            cursor = pos_aligned;
-            if use_mrope {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions_h.as_ptr() as *const u8,
-                    pinned.add(cursor),
-                    pos_bytes,
-                );
-                cursor += pos_aligned;
-                std::ptr::copy_nonoverlapping(
-                    stg.positions_w.as_ptr() as *const u8,
-                    pinned.add(cursor),
-                    pos_bytes,
-                );
-                cursor += pos_aligned;
-            }
-            // slots
-            std::ptr::copy_nonoverlapping(
-                stg.slots.as_ptr() as *const u8,
-                pinned.add(cursor),
-                slot_bytes,
-            );
-            cursor += slot_aligned;
-            // block_table_ptrs
-            std::ptr::copy_nonoverlapping(
-                bt_ptrs.as_ptr() as *const u8,
-                pinned.add(cursor),
-                block_ptrs_bytes,
-            );
-            cursor += block_ptrs_aligned;
-            // seq_len_ptrs
-            std::ptr::copy_nonoverlapping(
-                sl_ptrs.as_ptr() as *const u8,
-                pinned.add(cursor),
-                block_ptrs_bytes,
-            );
-            cursor += seq_len_ptrs_aligned;
-            // cu_seqlens [n+1] i32
-            std::ptr::copy_nonoverlapping(
-                cu_seqlens_host.as_ptr() as *const u8,
-                pinned.add(cursor),
-                cu_seqlens_bytes,
-            );
-            cursor += cu_seqlens_aligned;
-            // kv_lens [n] i32
-            std::ptr::copy_nonoverlapping(
-                kv_lens_host.as_ptr() as *const u8,
-                pinned.add(cursor),
-                kv_lens_bytes,
-            );
-            cursor += kv_lens_aligned;
-            assert!(
-                cursor <= stg.bytes,
-                "stage_batched_attn_metadata: pinned overflow {cursor} > {}",
-                stg.bytes
-            );
-            let pinned_slice = std::slice::from_raw_parts(pinned, cursor);
-            self.gpu
-                .copy_h2d_async(pinned_slice, scratch_base, stream)?;
+        // Host-side pack into the pinned buffer at the correct relative offsets.
+        //
+        // Each field's length is derived from the source it copies — the
+        // `total_tokens` positions/slots the nested loops above pushed, the `n`
+        // pointer entries, the `n + 1` cu_seqlens — and `put_prefix_at` refuses
+        // if a source turns out shorter than the layout expects. The
+        // destination bound used to be an `assert!(cursor <= stg.bytes)` AFTER
+        // all six copies, which could only fire once they had already run off
+        // the end of the allocation; the packer checks each one first.
+        //
+        // The `*_aligned` round-ups leave up to 4 pad bytes per field that no
+        // copy writes. `pad_to` carries them into the uploaded range — they are
+        // initialised because `alloc_host_pinned` zeroes the region (see the
+        // `pinned_pack` module docs), and keeping them makes this upload
+        // byte-for-byte what it was before.
+        let mut pack = stg.packer_for(scratch_cap.saturating_sub(scratch_offset_bytes));
+        let mut cursor = 0usize;
+        pack.put_prefix_at("positions", cursor, &stg.positions, total_tokens)?;
+        cursor = pos_aligned;
+        if use_mrope {
+            pack.put_prefix_at("positions_h", cursor, &stg.positions_h, total_tokens)?;
+            cursor += pos_aligned;
+            pack.put_prefix_at("positions_w", cursor, &stg.positions_w, total_tokens)?;
+            cursor += pos_aligned;
         }
+        pack.put_prefix_at("slots", cursor, &stg.slots, total_tokens)?;
+        cursor += slot_aligned;
+        pack.put_prefix_at("block_table_ptrs", cursor, &bt_ptrs, n)?;
+        cursor += block_ptrs_aligned;
+        pack.put_prefix_at("seq_len_ptrs", cursor, &sl_ptrs, n)?;
+        cursor += seq_len_ptrs_aligned;
+        pack.put_prefix_at("cu_seqlens", cursor, &cu_seqlens_host, n + 1)?;
+        cursor += cu_seqlens_aligned;
+        pack.put_prefix_at("kv_lens", cursor, &kv_lens_host, n)?;
+        cursor += kv_lens_aligned;
+        pack.pad_to(cursor)?;
+        self.gpu
+            .copy_h2d_async_retained(pack.packed(), scratch_base, stream)?;
 
         Ok(BatchedAttnMetadata {
             positions_stacked: scratch_base,

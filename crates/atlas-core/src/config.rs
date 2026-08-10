@@ -326,6 +326,18 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub weight_prefix: String,
 
+    /// `--profile`: skip CUDA graphs, sync and time each layer.
+    ///
+    /// Carried here rather than through `ATLAS_PROFILE`, which `serve.rs` used
+    /// to `set_var` at runtime under a `// SAFETY: called before any threads
+    /// are spawned` comment that was **already false** — the tokio pool, the
+    /// startup blocking thread, the signal listener, the TUI thread and the
+    /// OOM watchdog all exist by then, and a concurrent `getenv` during
+    /// `setenv` is UB. A field on the config the model already receives has
+    /// none of that hazard.
+    #[serde(skip)]
+    pub profile: bool,
+
     // ── Expert Parallelism (set at runtime, not from config.json) ──
     #[serde(skip)]
     pub ep_rank: usize,

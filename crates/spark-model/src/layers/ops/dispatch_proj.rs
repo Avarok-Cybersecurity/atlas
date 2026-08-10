@@ -70,16 +70,14 @@ pub fn cublas_fp8_proj(
 /// `cublas_fp8_rowwise_proj`. Returns `(fp8_weight_ptr, per_row_scale_ptr)`.
 fn requant_weight_rowwise_fp8_cached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     fp8w: &crate::weight_map::Fp8Weight,
     stream: u64,
 ) -> anyhow::Result<(u64, u64)> {
     use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<u64, (u64, u64)>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&p) = cache.lock().unwrap().get(&fp8w.weight.0) {
-        return Ok(p);
+    let cache_key = fp8w.weight.0;
+    if let Some(hit) = derived.get_pair(super::Derivation::RowwiseFp8, cache_key) {
+        return Ok(hit);
     }
     let (n, k) = (fp8w.n, fp8w.k);
     // 1. block-fp8 → BF16 (transient scratch, freed after re-quant).
@@ -118,10 +116,11 @@ fn requant_weight_rowwise_fp8_cached(
         .launch(stream)?;
     gpu.synchronize(stream)?; // re-quant must finish before the transient bf16 is freed
     gpu.free(bf16)?;
-    cache
-        .lock()
-        .unwrap()
-        .insert(fp8w.weight.0, (w_fp8.0, w_scale.0));
+    derived.insert_pair(
+        super::Derivation::RowwiseFp8,
+        cache_key,
+        (w_fp8.0, w_scale.0),
+    );
     Ok((w_fp8.0, w_scale.0))
 }
 
@@ -134,6 +133,7 @@ fn requant_weight_rowwise_fp8_cached(
 #[allow(clippy::too_many_arguments)]
 pub fn cublas_fp8_rowwise_proj(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     act_bf16: spark_runtime::gpu::DevicePtr,
     act_fp8_scratch: spark_runtime::gpu::DevicePtr,
     act_scale_scratch: spark_runtime::gpu::DevicePtr,
@@ -145,7 +145,7 @@ pub fn cublas_fp8_rowwise_proj(
     stream: u64,
 ) -> anyhow::Result<()> {
     use spark_runtime::kernel_args::KernelLaunch;
-    let (w_fp8, w_scale) = requant_weight_rowwise_fp8_cached(gpu, fp8w, stream)?;
+    let (w_fp8, w_scale) = requant_weight_rowwise_fp8_cached(gpu, derived, fp8w, stream)?;
     // Per-token row-wise quant of the activation → fp8 [M,K] + scale [M].
     let qk = gpu.kernel("quant_rowwise_fp8", "quant_rowwise_fp8")?;
     KernelLaunch::new(gpu, qk)
@@ -175,16 +175,14 @@ pub fn cublas_fp8_rowwise_proj(
 /// scales (the holo layout). Backs [`cublas_bf16_proj`].
 fn dequant_fp8_bf16_cached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     fp8w: &crate::weight_map::Fp8Weight,
     stream: u64,
 ) -> anyhow::Result<u64> {
     use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&p) = cache.lock().unwrap().get(&fp8w.weight.0) {
-        return Ok(p);
+    let cache_key = fp8w.weight.0;
+    if let Some(hit) = derived.get_ptr(super::Derivation::Bf16, cache_key) {
+        return Ok(hit);
     }
     let (n, kk) = (fp8w.n, fp8w.k);
     let out = gpu.alloc(n as usize * kk as usize * 2)?; // BF16 [N,K]
@@ -207,7 +205,7 @@ fn dequant_fp8_bf16_cached(
         .arg_u32(sk)
         .arg_u32(1) // scale_is_fp32
         .launch(stream)?;
-    cache.lock().unwrap().insert(fp8w.weight.0, out.0);
+    derived.insert_ptr(super::Derivation::Bf16, cache_key, out.0);
     Ok(out.0)
 }
 
@@ -247,6 +245,7 @@ fn dequant_fp8_bf16_uncached(
 #[allow(clippy::too_many_arguments)]
 pub fn cublas_bf16_proj(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     act: spark_runtime::gpu::DevicePtr,
     fp8w: &crate::weight_map::Fp8Weight,
     out: spark_runtime::gpu::DevicePtr,
@@ -255,7 +254,7 @@ pub fn cublas_bf16_proj(
     k: u32,
     stream: u64,
 ) -> anyhow::Result<()> {
-    let w_bf16 = dequant_fp8_bf16_cached(gpu, fp8w, stream)?;
+    let w_bf16 = dequant_fp8_bf16_cached(gpu, derived, fp8w, stream)?;
     spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, w_bf16, out.0, m, n, k, stream)
 }
 
@@ -281,6 +280,7 @@ pub fn cublas_bf16_proj_dense(
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_bf16_proj(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     act: spark_runtime::gpu::DevicePtr,
     fp8w: &crate::weight_map::Fp8Weight,
     out: spark_runtime::gpu::DevicePtr,
@@ -289,7 +289,7 @@ pub fn cutlass_bf16_proj(
     k: u32,
     stream: u64,
 ) -> anyhow::Result<()> {
-    let w_bf16 = dequant_fp8_bf16_cached(gpu, fp8w, stream)?;
+    let w_bf16 = dequant_fp8_bf16_cached(gpu, derived, fp8w, stream)?;
     spark_runtime::cutlass::bf16_gemm_act_weight_t(act.0, w_bf16, out.0, m, n, k, stream)
 }
 
@@ -304,28 +304,29 @@ pub fn cutlass_bf16_proj(
 /// transposed and the GEMM produces garbage (cos≈0 vs reference).
 fn cutlass_nvfp4_weight_transposed_cached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     weight_t: &crate::weight_map::QuantizedWeight,
     n: u32,
     k: u32,
     stream: u64,
 ) -> anyhow::Result<u64> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&p) = cache.lock().unwrap().get(&weight_t.weight.0) {
-        return Ok(p);
+    let cache_key = weight_t.weight.0;
+    if let Some(hit) = derived.get_ptr(super::Derivation::CutlassNvfp4Transposed, cache_key) {
+        return Ok(hit);
     }
     let dst = gpu.alloc((n as usize) * (k as usize) / 2)?;
     spark_runtime::cutlass::transpose_nvfp4_packed_kton(weight_t.weight.0, dst.0, n, k, stream)?;
     gpu.synchronize(stream)?;
-    cache.lock().unwrap().insert(weight_t.weight.0, dst.0);
+    derived.insert_ptr(super::Derivation::CutlassNvfp4Transposed, cache_key, dst.0);
     Ok(dst.0)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_nvfp4_proj(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    // The backend and this model's derived-weight cache travel together
+    // everywhere they are used; taking the context instead of the pair keeps
+    // the call sites one line each.
+    ctx: &crate::layer::ForwardContext<'_>,
     act: spark_runtime::gpu::DevicePtr,
     weight_t: &crate::weight_map::QuantizedWeight,
     out: spark_runtime::gpu::DevicePtr,
@@ -334,7 +335,8 @@ pub fn cutlass_nvfp4_proj(
     k: u32,
     stream: u64,
 ) -> anyhow::Result<()> {
-    let packed = cutlass_nvfp4_weight_transposed_cached(gpu, weight_t, n, k, stream)?;
+    let (gpu, derived) = (ctx.gpu, ctx.derived);
+    let packed = cutlass_nvfp4_weight_transposed_cached(gpu, derived, weight_t, n, k, stream)?;
     spark_runtime::cutlass::nvfp4_gemm_bf16_act_weight_t(
         act.0,
         packed,
@@ -350,15 +352,13 @@ pub fn cutlass_nvfp4_proj(
 
 fn cutlass_nvfp4_weight_from_fp8_cached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
     fp8w: &crate::weight_map::Fp8Weight,
     stream: u64,
 ) -> anyhow::Result<(u64, u64)> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<u64, (u64, u64)>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&p) = cache.lock().unwrap().get(&fp8w.weight.0) {
-        return Ok(p);
+    let cache_key = fp8w.weight.0;
+    if let Some(hit) = derived.get_pair(super::Derivation::CutlassNvfp4FromFp8, cache_key) {
+        return Ok(hit);
     }
 
     let n = fp8w.n as usize;
@@ -371,10 +371,11 @@ fn cutlass_nvfp4_weight_from_fp8_cached(
     )?;
     gpu.synchronize(stream)?;
     gpu.free(w_bf16)?;
-    cache
-        .lock()
-        .unwrap()
-        .insert(fp8w.weight.0, (packed_t.0, scale_t.0));
+    derived.insert_pair(
+        super::Derivation::CutlassNvfp4FromFp8,
+        cache_key,
+        (packed_t.0, scale_t.0),
+    );
     Ok((packed_t.0, scale_t.0))
 }
 
@@ -383,7 +384,10 @@ fn cutlass_nvfp4_weight_from_fp8_cached(
 /// Atlas-transposed NVFP4 data/scales and reused for future calls.
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_nvfp4_proj_from_fp8(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    // The backend and this model's derived-weight cache travel together
+    // everywhere they are used; taking the context instead of the pair keeps
+    // the call sites one line each.
+    ctx: &crate::layer::ForwardContext<'_>,
     act: spark_runtime::gpu::DevicePtr,
     fp8w: &crate::weight_map::Fp8Weight,
     out: spark_runtime::gpu::DevicePtr,
@@ -392,7 +396,8 @@ pub fn cutlass_nvfp4_proj_from_fp8(
     k: u32,
     stream: u64,
 ) -> anyhow::Result<()> {
-    let (packed_t, scale_t) = cutlass_nvfp4_weight_from_fp8_cached(gpu, fp8w, stream)?;
+    let (gpu, derived) = (ctx.gpu, ctx.derived);
+    let (packed_t, scale_t) = cutlass_nvfp4_weight_from_fp8_cached(gpu, derived, fp8w, stream)?;
     spark_runtime::cutlass::nvfp4_gemm_bf16_act_weight_t(
         act.0, packed_t, scale_t, 1.0, out.0, m, n, k, stream,
     )

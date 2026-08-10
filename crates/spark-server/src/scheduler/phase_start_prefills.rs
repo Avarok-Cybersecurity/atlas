@@ -13,6 +13,7 @@ use crate::grammar::GrammarEngine;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_new_requests(
     model: &dyn Model,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     new_reqs: Vec<InferenceRequest>,
     chunked: bool,
     always_mixed: bool,
@@ -230,6 +231,7 @@ pub(super) fn start_new_requests(
                 max_prefill_tokens
             };
             match start_chunked_prefill(
+                sched,
                 think_end_token,
                 think_start_token,
                 tool_call_start_token,
@@ -271,6 +273,7 @@ pub(super) fn start_new_requests(
         } else {
             // Legacy non-chunked path.
             match prefill_request(
+                sched,
                 think_end_token,
                 think_start_token,
                 tool_call_start_token,

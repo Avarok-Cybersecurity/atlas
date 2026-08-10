@@ -105,6 +105,10 @@ impl TransformerModel {
             buffers: &self.buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
+            dispatch: &self.dispatch,
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
             attn_metadata: Some(attn_metadata),
             profile: profile_now,
             comm: self.comm_ref(),
@@ -217,17 +221,24 @@ impl TransformerModel {
                 self.gpu.synchronize(stream)?;
                 layer_times.push(lt0.elapsed().as_micros());
             }
-            // MLA diagnostic: per-layer hidden norm for Mistral (once per session)
-            static CHUNK_DIAG_DONE: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
+            // MLA diagnostic: per-layer hidden norm for Mistral (once per model).
+            // Per-model latch (see `ModelStats::dumped`) rather than a static: an
+            // operator who sets the flag and then swaps models must still get the
+            // dump, instead of it being swallowed by the previous model's shot.
             if profile_now
                 && self.config.model_type == "mistral"
-                && !CHUNK_DIAG_DONE.load(std::sync::atomic::Ordering::Relaxed)
+                && self.stats.dumped.keyed("mla_chunk_norms")
             {
                 self.gpu.synchronize(stream)?;
                 let last_offset = (proc_count - 1) * self.config.hidden_size * 4;
                 let h_sz = self.config.hidden_size;
                 let mut buf = vec![0u16; h_sz];
+                // SAFETY: `buf` is `vec![0u16; h_sz]` on the line above, so it
+                // owns exactly `h_sz * size_of::<u16>()` initialised bytes and
+                // its length equals its capacity. `bytes` is the only live
+                // reference to that allocation for its whole lifetime — last
+                // used on the `copy_d2h` line below, and `buf` is not read again
+                // until after that.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, h_sz * 2)
                 };
@@ -241,9 +252,7 @@ impl TransformerModel {
                         "LAYER_NORM L{i}/{}: hidden_norm={norm:.4}",
                         self.layers.len()
                     );
-                    if i == self.layers.len() - 1 {
-                        CHUNK_DIAG_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    if i == self.layers.len() - 1 {}
                 }
             }
             // Diagnostic: dump hidden state norm after first 4 and last 4 layers
@@ -317,7 +326,7 @@ impl TransformerModel {
 
         // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
         // rows for the whole-prompt drafter prefill. No-op when disabled.
-        self.try_mtp_prefill_capture(effective_seq_len_start, proc_count, stream)?;
+        self.try_mtp_prefill_capture(seq, effective_seq_len_start, proc_count, stream)?;
         if let Some(t0) = prefill_t0 {
             self.gpu.synchronize(stream)?;
             let total_us = t0.elapsed().as_micros();

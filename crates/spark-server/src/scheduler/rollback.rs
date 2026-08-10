@@ -204,8 +204,9 @@ pub fn rollback_to_boundary(
     a: &mut ActiveSeq,
     min_keep: usize,
     model: &dyn Model,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) -> RollbackOutcome {
-    if !watchdog_params().rollback_resteer {
+    if !sched.watchdog.rollback_resteer {
         return RollbackOutcome::Fallback(RollbackFallback::Disabled);
     }
     // Streaming requests flush every token to the client as it is
@@ -217,8 +218,8 @@ pub fn rollback_to_boundary(
     if a.rollback_count >= atlas_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
     }
-    let mask = match boundary_token_mask() {
-        Some(m) => m,
+    let mask = match sched.masks.boundary.as_ref() {
+        Some(m) => m.clone(),
         None => return RollbackOutcome::Fallback(RollbackFallback::NoBoundary),
     };
 
@@ -308,7 +309,11 @@ pub fn rollback_to_boundary(
 /// so it never points at stale GPU state — the sequence simply has one
 /// fewer eligible rollback boundary, which the correctness gate handles
 /// by declining.
-pub fn snapshot_boundary_if_ssm(a: &mut ActiveSeq, model: &dyn Model) {
+pub fn snapshot_boundary_if_ssm(
+    a: &mut ActiveSeq,
+    model: &dyn Model,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+) {
     if !model.has_ssm_layers() || !a.ssm_rollback_ring.is_enabled() {
         return;
     }
@@ -316,7 +321,7 @@ pub fn snapshot_boundary_if_ssm(a: &mut ActiveSeq, model: &dyn Model) {
     // rollback can target. Without the mask there is no boundary
     // information, so nothing to snapshot (fail-open: rollback would
     // also find no boundary).
-    let Some(mask) = boundary_token_mask() else {
+    let Some(mask) = sched.masks.boundary.clone() else {
         return;
     };
     let Some(&last) = a.output_tokens.last() else {
@@ -440,25 +445,9 @@ pub trait RomHead: Send + Sync {
     fn repetition_onset_score(&self, recent_tokens: &[u32]) -> f32;
 }
 
-static ROM_HEAD: std::sync::OnceLock<std::sync::Arc<dyn RomHead>> = std::sync::OnceLock::new();
-
-/// Install a trained ROM detection head. Idempotent. Called at startup
-/// only when `[behavior].rom_head` names a loadable artifact. When never
-/// called, [`rom_head`] returns `None` and F2 remains the fallback.
-/// Intentionally unused until the artifact loader lands (see the
-/// ROM-scaffold comment block above).
-#[allow(dead_code)]
-pub fn set_rom_head(head: std::sync::Arc<dyn RomHead>) {
-    let _ = ROM_HEAD.set(head);
-}
-
-/// Read the installed ROM head, if any. `None` until [`set_rom_head`]
-/// runs — callers MUST treat `None` as "use the F2 fallback".
-/// Intentionally unused until the artifact loader lands.
-#[allow(dead_code)]
-pub fn rom_head() -> Option<std::sync::Arc<dyn RomHead>> {
-    ROM_HEAD.get().cloned()
-}
+// A trained ROM head belongs to the MODEL that was trained with it, so the
+// seam is `SchedCtx::rom_head` rather than a process global — correct by
+// construction before the artifact loader lands, rather than after.
 
 #[cfg(test)]
 #[path = "rollback_tests.rs"]

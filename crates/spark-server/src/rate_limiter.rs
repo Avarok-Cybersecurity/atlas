@@ -55,6 +55,42 @@ impl RateLimitConfig {
     pub fn is_enabled(&self) -> bool {
         self.rpm > 0 || self.tpm > 0
     }
+
+    /// What to advertise as the token limit.
+    ///
+    /// `burst_tpm` floors at 1 so the bucket maths never divides by zero, but
+    /// with `tpm == 0` the token axis is NOT enforced — advertising a limit of
+    /// 1 tells a client honouring these headers that it has one token left,
+    /// when in fact it has no token limit at all. Report the same
+    /// "effectively unlimited" value the disabled path uses.
+    fn advertised_tpm(&self) -> u64 {
+        if self.tpm > 0 {
+            self.burst_tpm
+        } else {
+            1_000_000_000
+        }
+    }
+
+    /// The same, for the request axis.
+    fn advertised_rpm(&self) -> u64 {
+        if self.rpm > 0 {
+            self.burst_rpm
+        } else {
+            1_000_000
+        }
+    }
+
+    /// Remaining to advertise on each axis: the real figure when the axis is
+    /// enforced, and one consistent with `advertised_*` when it is not. A
+    /// limit of "unlimited" beside a remaining of 1 is a contradiction the
+    /// client has to resolve, and it will resolve it the cautious way.
+    fn advertised_remaining_tpm(&self, avail: u64) -> u64 {
+        if self.tpm > 0 { avail } else { 999_999_999 }
+    }
+
+    fn advertised_remaining_rpm(&self, avail: u64) -> u64 {
+        if self.rpm > 0 { avail } else { 999_999 }
+    }
 }
 
 fn read_env_u64(key: &str, default: u64) -> u64 {
@@ -271,13 +307,13 @@ impl RateLimiter {
             return RateDecision {
                 allowed: false,
                 requests: BucketSnapshot {
-                    limit: self.cfg.burst_rpm,
-                    remaining: req_avail.max(0.0) as u64,
+                    limit: self.cfg.advertised_rpm(),
+                    remaining: self.cfg.advertised_remaining_rpm(req_avail.max(0.0) as u64),
                     reset_secs: req_reset,
                 },
                 tokens: BucketSnapshot {
-                    limit: self.cfg.burst_tpm,
-                    remaining: tok_avail.max(0.0) as u64,
+                    limit: self.cfg.advertised_tpm(),
+                    remaining: self.cfg.advertised_remaining_tpm(tok_avail.max(0.0) as u64),
                     reset_secs: tok_reset,
                 },
                 retry_after_secs: req_reset.max(1),
@@ -303,13 +339,13 @@ impl RateLimiter {
             return RateDecision {
                 allowed: false,
                 requests: BucketSnapshot {
-                    limit: self.cfg.burst_rpm,
-                    remaining: req_avail.max(0.0) as u64,
+                    limit: self.cfg.advertised_rpm(),
+                    remaining: self.cfg.advertised_remaining_rpm(req_avail.max(0.0) as u64),
                     reset_secs: req_reset,
                 },
                 tokens: BucketSnapshot {
-                    limit: self.cfg.burst_tpm,
-                    remaining: tok_avail.max(0.0) as u64,
+                    limit: self.cfg.advertised_tpm(),
+                    remaining: self.cfg.advertised_remaining_tpm(tok_avail.max(0.0) as u64),
                     reset_secs: tok_reset,
                 },
                 retry_after_secs: tok_reset.max(1),
@@ -322,13 +358,13 @@ impl RateLimiter {
         RateDecision {
             allowed: true,
             requests: BucketSnapshot {
-                limit: self.cfg.burst_rpm,
-                remaining: req_avail.max(0.0) as u64,
+                limit: self.cfg.advertised_rpm(),
+                remaining: self.cfg.advertised_remaining_rpm(req_avail.max(0.0) as u64),
                 reset_secs: req_reset,
             },
             tokens: BucketSnapshot {
-                limit: self.cfg.burst_tpm,
-                remaining: tok_avail.max(0.0) as u64,
+                limit: self.cfg.advertised_tpm(),
+                remaining: self.cfg.advertised_remaining_tpm(tok_avail.max(0.0) as u64),
                 reset_secs: tok_reset,
             },
             retry_after_secs: 0,
@@ -415,3 +451,7 @@ fn hash_token(tok: &str) -> String {
 #[cfg(test)]
 #[path = "rate_limiter/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rate_limiter/advertised_tests.rs"]
+mod advertised_limit_tests;

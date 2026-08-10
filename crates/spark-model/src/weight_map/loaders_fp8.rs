@@ -179,15 +179,13 @@ pub(crate) fn quantize_to_nvfp4(
         1.0
     };
 
-    // Diagnostic: log absmax result for first few quantizations
-    {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static QUANT_DIAG: AtomicUsize = AtomicUsize::new(0);
-        if QUANT_DIAG.fetch_add(1, Ordering::Relaxed) < 5 {
-            tracing::info!(
-                "quantize_to_nvfp4: n={n} k={k} total={total} global_max={global_max:.6} scale2={scale2:.8} grid1={grid1}",
-            );
-        }
+    // Diagnostic: the first few quantizations report their absmax. Counted on
+    // the BACKEND, so a second model loaded into the process reports its own
+    // instead of inheriting a spent counter.
+    if gpu.op_cache().first_n("diag:quantize_nvfp4_absmax", 5) {
+        tracing::info!(
+            "quantize_to_nvfp4: n={n} k={k} total={total} global_max={global_max:.6} scale2={scale2:.8} grid1={grid1}",
+        );
     }
 
     // Phase 2: Quantize

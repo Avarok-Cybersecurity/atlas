@@ -21,6 +21,23 @@
 
 #define K_DIM 128
 
+// MAX_STATE_NORM: if ||h[head]||_F > this, scale h down. 0 = disabled.
+//
+// Tuning: 100.0 was too aggressive — at 6K+ tokens with large system prompts,
+// state norms legitimately reach 200-500 and clipping destroys information
+// needed for instruction following. 1000.0 allows natural state growth while
+// still preventing numerical overflow (FP32 max ~ 3.4e38).
+//
+// SHADOW PARITY: this block is the verbatim guard from `common/gated_delta_rule.cu`.
+// This file already `#ifdef`-guards on SSM_STATE_NORM_ENABLED (in
+// gated_delta_rule_decode_f32_strided_norm) but never defined it, so the clamp
+// was silently compiled OUT here while it is live in common/ and in the 27B
+// shadow. Defining it restores parity with the reference implementation.
+#ifndef SSM_STATE_NORM_ENABLED
+#define SSM_STATE_NORM_ENABLED
+#define SSM_STATE_MAX_NORM 1000.0f
+#endif
+
 __device__ __forceinline__ void gdn_unpack_bf16x2(unsigned int packed, float& v0, float& v1) {
     v0 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(packed & 0xFFFF)));
     v1 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(packed >> 16)));
@@ -1518,3 +1535,179 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm(
 //
 // Grid: (num_v_heads, batch, 1)
 // Block: (BLOCK_SIZE, 1, 1)
+
+// ── Ported verbatim from kernels/gb10/common/gated_delta_rule.cu ──
+// Shadow-drift repair: this model-specific file whole-file-shadows common/,
+// so the kernel below was silently dropped (try_kernel -> handle 0) even
+// though this model's decode path dispatches it. Exact piecewise copy — do
+// not edit here without re-syncing common/.
+
+// ============================================================================
+// FUSED conv1d_update_l2norm + recurrence + gated-RMS-norm decode kernel.
+//
+// Collapses the per-seq SSM decode critical-path chain `conv1d_l2norm -> gdn ->
+// gated_norm` (3 dependent kernels) into ONE, shortening the decode dependency
+// chain (decode is GPU-~93%-idle = chain-depth bound; the existing gdn+norm
+// fusion already gave +18% c4). Race-free via a PER-K-HEAD grid: each block owns
+// k-head kh AND its `head_repeat` v-heads, so it conv-updates its own q/k AND v
+// conv_state exclusively (no cross-block conv_state share -> no race).
+//
+// Grid: [num_k_heads, batch].  Block: head_repeat * v_dim threads.
+//   thread tid: which_v = tid / v_dim, vlocal = tid % v_dim, vh = kh*head_repeat+which_v.
+// Requires (validated by the Rust dispatch gate): head_repeat*v_dim == blockDim,
+//   2*k_dim <= blockDim (q+k conv covered one-per-thread), k_dim == v_dim.
+// new_input/conv layout is [Q(num_k_heads*k_dim) | K(...) | V(num_v_heads*v_dim)].
+extern "C" __global__ void gated_delta_rule_decode_f32_conv_norm(
+    float* __restrict__ h_state,
+    float* __restrict__ conv_state,            // [batch, conv_dim, d_conv]
+    const __nv_bfloat16* __restrict__ new_input, // [batch, conv_dim] deint qkvz
+    const __nv_bfloat16* __restrict__ conv_weight, // [conv_dim, d_conv]
+    const float* __restrict__ conv_bias,       // [conv_dim] or null
+    const float* __restrict__ gate,            // [batch, num_v_heads]
+    const float* __restrict__ beta,            // [batch, num_v_heads]
+    const __nv_bfloat16* __restrict__ z_gate,  // [batch, num_v_heads, v_dim]
+    const __nv_bfloat16* __restrict__ norm_weight, // [v_dim]
+    __nv_bfloat16* __restrict__ output,        // [batch, num_v_heads, v_dim]
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int conv_dim,
+    unsigned int d_conv,
+    float l2_eps,
+    float eps
+) {
+    const unsigned int kh = blockIdx.x;
+    const unsigned int b  = blockIdx.y;
+    if (kh >= num_k_heads || b >= batch_size) return;
+
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int tid     = threadIdx.x;
+    const unsigned int which_v = tid / v_dim;       // 0..head_repeat-1
+    const unsigned int vlocal  = tid % v_dim;       // 0..v_dim-1
+    const unsigned int vh      = kh * head_repeat + which_v;
+    const unsigned int key_dim_total = num_k_heads * k_dim;   // Q block width
+
+    __shared__ float smem_q[128];
+    __shared__ float smem_k[128];
+    __shared__ float warp_sums[8];     // 8 warps for a 256-thread block
+
+    // ---- Step 1: conv1d_update + SiLU for this block's q/k channel (one/thread) ----
+    // tid [0,k_dim) -> q head kh ; tid [k_dim,2*k_dim) -> k head kh.
+    float qk_silu = 0.0f;
+    const bool is_q = (tid < k_dim);
+    const bool is_k = (tid >= k_dim && tid < 2 * k_dim);
+    if (is_q || is_k) {
+        const unsigned int ch = is_q ? (kh * k_dim + tid)
+                                     : (key_dim_total + kh * k_dim + (tid - k_dim));
+        float* state = conv_state + ((unsigned long long)(b * conv_dim + ch)) * d_conv;
+        for (unsigned int i = 0; i < d_conv - 1; i++) state[i] = state[i + 1];
+        state[d_conv - 1] = (float)new_input[b * conv_dim + ch];
+        const __nv_bfloat16* w = conv_weight + (unsigned long long)ch * d_conv;
+        float acc = (conv_bias != nullptr) ? conv_bias[ch] : 0.0f;
+        for (unsigned int k = 0; k < d_conv; k++) acc += state[k] * (float)w[k];
+        qk_silu = acc / (1.0f + __expf(-acc));
+    }
+    // L2-norm q (warps 0-3) and k (warps 4-7) groups separately.
+    {
+        float sq = qk_silu * qk_silu;
+        for (int off = 16; off >= 1; off >>= 1) sq += __shfl_down_sync(0xFFFFFFFF, sq, off);
+        if ((tid & 31) == 0) warp_sums[tid >> 5] = sq;
+        __syncthreads();
+        const unsigned int grp = tid >> 7;   // 0 = q, 1 = k
+        float total = warp_sums[grp * 4 + 0] + warp_sums[grp * 4 + 1]
+                    + warp_sums[grp * 4 + 2] + warp_sums[grp * 4 + 3];
+        float inv = rsqrtf(total + l2_eps);
+        if (is_q) smem_q[tid] = qk_silu * inv;
+        else if (is_k) smem_k[tid - k_dim] = qk_silu * inv;
+    }
+
+    // ---- Step 1b: conv1d_update + SiLU for this thread's V channel (no L2) ----
+    float v_i = 0.0f;
+    {
+        const unsigned int vch = 2 * key_dim_total + vh * v_dim + vlocal;
+        float* state = conv_state + ((unsigned long long)(b * conv_dim + vch)) * d_conv;
+        for (unsigned int i = 0; i < d_conv - 1; i++) state[i] = state[i + 1];
+        state[d_conv - 1] = (float)new_input[b * conv_dim + vch];
+        const __nv_bfloat16* w = conv_weight + (unsigned long long)vch * d_conv;
+        float acc = (conv_bias != nullptr) ? conv_bias[vch] : 0.0f;
+        for (unsigned int k = 0; k < d_conv; k++) acc += state[k] * (float)w[k];
+        v_i = acc / (1.0f + __expf(-acc));
+    }
+    __syncthreads();   // smem_q / smem_k complete before recurrence reads them
+
+    // ---- Step 2: gated-delta recurrence for v-head vh, v_dim index vlocal ----
+    float* H = h_state + ((unsigned long long)(b * num_v_heads + vh)) * k_dim * v_dim;
+    const float g_raw = gate[b * num_v_heads + vh];
+    const float g  = fminf(fmaxf(g_raw, 1e-6f), 1.0f - 1e-6f);
+    const float bt = beta[b * num_v_heads + vh];
+
+    float hk_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = H[(j + 0) * v_dim + vlocal];
+        float h1 = H[(j + 1) * v_dim + vlocal];
+        float h2 = H[(j + 2) * v_dim + vlocal];
+        float h3 = H[(j + 3) * v_dim + vlocal];
+        hk_dot += h0 * smem_k[j] + h1 * smem_k[j+1] + h2 * smem_k[j+2] + h3 * smem_k[j+3];
+    }
+    const float v_new = (v_i - g * hk_dot) * bt;
+
+    float q_dot = 0.0f;
+    #pragma unroll 4
+    for (unsigned int j = 0; j < k_dim; j += 4) {
+        float h0 = g * H[(j+0)*v_dim+vlocal] + smem_k[j]   * v_new;
+        float h1 = g * H[(j+1)*v_dim+vlocal] + smem_k[j+1] * v_new;
+        float h2 = g * H[(j+2)*v_dim+vlocal] + smem_k[j+2] * v_new;
+        float h3 = g * H[(j+3)*v_dim+vlocal] + smem_k[j+3] * v_new;
+        H[(j+0)*v_dim+vlocal] = h0;
+        H[(j+1)*v_dim+vlocal] = h1;
+        H[(j+2)*v_dim+vlocal] = h2;
+        H[(j+3)*v_dim+vlocal] = h3;
+        q_dot += h0 * smem_q[j] + h1 * smem_q[j+1] + h2 * smem_q[j+2] + h3 * smem_q[j+3];
+    }
+
+    // ---- State-norm clamp (per v-head; reduce within this which_v group) ----
+    #ifdef SSM_STATE_NORM_ENABLED
+    {
+        float local_sq = 0.0f;
+        for (unsigned int j = 0; j < k_dim; j++) {
+            float hv = H[j * v_dim + vlocal];
+            local_sq += hv * hv;
+        }
+        for (int off = 16; off >= 1; off >>= 1)
+            local_sq += __shfl_down_sync(0xFFFFFFFF, local_sq, off);
+        __syncthreads();   // reuse warp_sums
+        if ((tid & 31) == 0) warp_sums[tid >> 5] = local_sq;
+        __syncthreads();
+        const unsigned int grp = tid >> 7;
+        float head_norm_sq = warp_sums[grp*4+0] + warp_sums[grp*4+1]
+                           + warp_sums[grp*4+2] + warp_sums[grp*4+3];
+        if (head_norm_sq > SSM_STATE_MAX_NORM * SSM_STATE_MAX_NORM) {
+            float scale = SSM_STATE_MAX_NORM * rsqrtf(head_norm_sq);
+            for (unsigned int j = 0; j < k_dim; j++) H[j * v_dim + vlocal] *= scale;
+        }
+    }
+    #endif
+
+    // ---- Step 3: gated RMS norm (per v-head) -> output ----
+    const float x = q_dot * rsqrtf((float)k_dim);
+    float sum_sq = x * x;
+    for (int off = 16; off >= 1; off >>= 1) sum_sq += __shfl_down_sync(0xFFFFFFFF, sum_sq, off);
+    __syncthreads();   // reuse warp_sums
+    if ((tid & 31) == 0) warp_sums[tid >> 5] = sum_sq;
+    __syncthreads();
+    {
+        const unsigned int grp = tid >> 7;
+        float total = warp_sums[grp*4+0] + warp_sums[grp*4+1]
+                    + warp_sums[grp*4+2] + warp_sums[grp*4+3];
+        const float rms = rsqrtf(total / (float)v_dim + eps);
+        const float zg = (float)z_gate[(unsigned long long)(b * num_v_heads + vh) * v_dim + vlocal];
+        const float wv = (float)norm_weight[vlocal];
+        const float sg = zg / (1.0f + expf(-zg));
+        output[(unsigned long long)(b * num_v_heads + vh) * v_dim + vlocal]
+            = __float2bfloat16(x * rms * wv * sg);
+    }
+}
+

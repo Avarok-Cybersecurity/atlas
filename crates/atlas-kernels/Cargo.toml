@@ -1,6 +1,6 @@
 [package]
 name = "atlas-kernels"
-version = "0.1.1"
+version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
 description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{quant}/*.cu"
@@ -9,6 +9,18 @@ description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{qua
 atlas-core = { workspace = true }
 
 [build-dependencies]
+toml = "0.8"
+# The closure hash the gate uses to scope a kernel change. Computed HERE, in
+# the build that produces the binary, so a benchmark record can attest to what
+# the binary was actually compiled from rather than to whatever the tree
+# happened to hold when the record was written.
+atlas-closure = { path = "../atlas-closure" }
+serde_json.workspace = true
+
+# Same crate the build script already pulls, so Cargo.lock is unchanged.
+# `tests/kernel_shadow_detector.rs` reads the `[modules]` and `[shadow_exempt]`
+# tables out of the real KERNEL.toml files rather than restating them.
+[dev-dependencies]
 toml = "0.8"
 
 [lints]

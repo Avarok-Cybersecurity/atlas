@@ -93,6 +93,16 @@ pub struct DrafterContext {
     pub carry: bool,
 }
 
+impl Default for DrafterContext {
+    /// [`BOTH`](DrafterContext::BOTH) — prefill and carry are on unless the
+    /// environment turns them off. Spelled out rather than derived, because a
+    /// derived `Default` would be `false, false`, which is the kill-switch
+    /// state and not the shipped policy.
+    fn default() -> Self {
+        Self::BOTH
+    }
+}
+
 impl DrafterContext {
     /// The shipped configuration.
     pub const BOTH: Self = Self {
@@ -128,13 +138,17 @@ pub fn resolve(disable: Option<&str>, prefill_only: Option<&str>) -> DrafterCont
     DrafterContext::BOTH
 }
 
-/// The process-wide resolved configuration, read from the environment once and
-/// logged once. Called from model construction, so the log line lands in the
-/// serve log at startup — previously neither half was observable from the log
-/// at all, only from the launcher's `-e` flags.
-pub fn config() -> DrafterContext {
-    static CFG: std::sync::OnceLock<DrafterContext> = std::sync::OnceLock::new();
-    *CFG.get_or_init(|| {
+/// Resolve this model's drafter-context policy from the environment, logging
+/// the outcome once per model so it lands in the serve log at startup —
+/// previously neither half was observable from the log at all, only from the
+/// launcher's `-e` flags.
+///
+/// Called once from model construction; the result is `ModelLevers::drafter`.
+/// It was a `OnceLock`, which meant a second model inherited the first one's
+/// drafter policy AND logged nothing, so the discrepancy was invisible in
+/// exactly the place built to make it visible.
+pub fn resolve_from_env() -> DrafterContext {
+    {
         let disable = std::env::var(DISABLE_ENV).ok();
         let prefill_only = std::env::var(PREFILL_ONLY_ENV).ok();
         let cfg = resolve(disable.as_deref(), prefill_only.as_deref());
@@ -168,7 +182,7 @@ pub fn config() -> DrafterContext {
             );
         }
         cfg
-    })
+    }
 }
 
 fn on_off(b: bool) -> &'static str {

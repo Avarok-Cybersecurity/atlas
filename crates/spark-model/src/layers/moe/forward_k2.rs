@@ -6,6 +6,9 @@ use anyhow::Context as _;
 
 use super::*;
 
+mod originals;
+mod unified_t;
+
 impl MoeLayer {
     /// Fused K=2 forward: process 2 tokens through MoE in 5 kernel launches.
     ///
@@ -32,6 +35,19 @@ impl MoeLayer {
             && self.moe_expert_silu_down_shared_bf16_batch2_k.0 != 0
             && !is_ep;
         if self.bf16_gate_weight_ptrs.is_some() && !use_bf16_batch2 {
+            return self.forward_batched(input, 2, ctx, stream);
+        }
+        // E8M0 (native MXFP4, per-32 E8M0 scale) routed experts MUST NOT reach the
+        // unified-T batch2 kernel `moe_expert_gate_up_shared_batch2_t`: it is an
+        // NVFP4 kernel that hardcodes GROUP_SIZE=16 and would read `inter·h/16`
+        // scale bytes from the correctly-sized `inter·h/32` E8M0 scale buffer — a
+        // 2× over-read → CUDA_ERROR_ILLEGAL_ADDRESS (it also E4M3-decodes E8M0
+        // scale bytes → garbage even in-bounds). No E8M0 batch2 kernel exists, so
+        // route both verify tokens through the per-token unified-T path
+        // (`forward_batched`), whose `use_t_layout_for_prefill` branch selects the
+        // GS32 `_e8m0` kernel via `e8m0_or` — the same correct path ordinary decode
+        // already uses. Mirrors the BF16 fallback above.
+        if k2_e8m0_needs_per_token(self.experts_scale_kind) {
             return self.forward_batched(input, 2, ctx, stream);
         }
         // Mixed NVFP4-routed / BF16-shared (Laguna): the fused batch2 kernels
@@ -160,13 +176,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
-        super::union_stats::maybe_sample_expert_union(
-            ctx.gpu,
-            indices_dev,
-            2,
-            top_k as usize,
-            stream,
-        );
+        super::union_stats::maybe_sample_expert_union(ctx, indices_dev, 2, top_k as usize, stream);
 
         if k2_diag {
             ctx.gpu
@@ -313,222 +323,43 @@ impl MoeLayer {
                 stream,
             )?;
         } else if self.use_t_layout_for_decode() {
-            // Phase 8a unified-layout NVFP4 batch=2 verify (MTP K=2). Hybrid
-            // mode skips this branch — small-N MTP verify wins on warp-
-            // reduction originals.
-            let gate_t = self
-                .gate_ptrs_t
-                .as_ref()
-                .expect("gate_ptrs_t under unified_t");
-            let up_t = self.up_ptrs_t.as_ref().expect("up_ptrs_t under unified_t");
-            let down_t = self
-                .down_ptrs_t
-                .as_ref()
-                .expect("down_ptrs_t under unified_t");
-            let null_qw = QuantizedWeight::null();
-            // Mixed config: force the in-kernel shared expert off (NULL weights
-            // → the kernel skips it) and compute it in BF16 below instead. The
-            // NVFP4 shared_*_t tables are load-time placeholders whose values
-            // would be numerically wrong for this checkpoint.
-            let (sh_gate_t, sh_up_t, sh_down_t) = if mixed_bf16_shared {
-                (&null_qw, &null_qw, &null_qw)
-            } else {
-                (
-                    self.shared_gate_t.as_ref().unwrap_or(&null_qw),
-                    self.shared_up_t.as_ref().unwrap_or(&null_qw),
-                    self.shared_down_t.as_ref().unwrap_or(&null_qw),
-                )
-            };
-            ops::moe_expert_gate_up_shared_batch2_t(
-                ctx.gpu,
-                self.moe_expert_gate_up_shared_batch2_t_k,
+            self.forward_k2_unified_t(
                 input,
-                gate_t.packed_ptrs,
-                gate_t.scale_ptrs,
-                gate_t.scale2_vals,
-                expert_gate_out,
-                up_t.packed_ptrs,
-                up_t.scale_ptrs,
-                up_t.scale2_vals,
-                expert_up_out,
                 indices_dev,
-                sh_gate_t,
-                shared_gate_scratch,
-                sh_up_t,
-                shared_up_scratch,
-                inter,
-                h,
-                top_k,
-                stream,
-            )?;
-            ops::moe_expert_silu_down_shared_batch2_t(
-                ctx.gpu,
-                self.moe_expert_silu_down_shared_batch2_t_k,
-                expert_gate_out,
-                expert_up_out,
-                down_t.packed_ptrs,
-                down_t.scale_ptrs,
-                down_t.scale2_vals,
-                expert_down_out,
-                indices_dev,
-                shared_gate_scratch,
-                shared_up_scratch,
-                sh_down_t,
-                shared_down_out,
-                h,
-                inter,
-                top_k,
-                stream,
-            )?;
-            // Mixed config: one batched BF16 shared-expert pass for both tokens
-            // (3 GEMMs + silu_mul total, vs 4 launches per token in the
-            // per-token fallback). Must run after silu_down_t, which owns the
-            // shared scratch buffers for the non-mixed case.
-            if mixed_bf16_shared {
-                let shared_inter = ctx.config.shared_expert_intermediate_size as u32;
-                self.run_bf16_shared_expert(
-                    input,
-                    2,
-                    h,
-                    shared_inter,
-                    shared_gate_scratch,
-                    shared_up_scratch,
-                    shared_down_out,
-                    ctx,
-                    stream,
-                )?;
-            }
-            // The _t branch previously returned without writing moe_output at
-            // all — every sibling branch ends in this blend.
-            let shared_for_blend = if is_ep && !shared_down_out.is_null() {
-                ctx.gpu
-                    .memset_async(expert_gate_out, 0, 2 * h as usize * 2, stream)?;
-                expert_gate_out
-            } else {
-                shared_down_out
-            };
-            ops::moe_weighted_sum_blend_batch2(
-                ctx.gpu,
-                self.moe_weighted_sum_blend_batch2,
-                output,
-                expert_down_out,
                 weights_dev,
-                shared_for_blend,
-                input,
-                self.weights.shared_expert_gate.weight,
+                expert_gate_out,
+                expert_up_out,
+                expert_down_out,
+                shared_gate_scratch,
+                shared_up_scratch,
+                shared_down_out,
+                output,
+                inter,
                 h,
                 top_k,
-                h,
+                is_ep,
+                mixed_bf16_shared,
+                ctx,
                 stream,
             )?;
         } else {
-            // NVFP4 batch2 path (originals layout)
-            let null_shared = QuantizedWeight::null();
-            // NOTE: `hidden_size >= 3072` is a proxy for "this model ships the
-            // 256-thread moe_shared_expert_fused_batch2 source" (e.g.
-            // kernels/gb10/qwen3.5-122b-a10b/nvfp4/, BLOCK_SIZE 256 +
-            // THREADS_PER_OUT 64). Laguna satisfies the proxy but ships NO
-            // override, so it resolves to kernels/gb10/common/ which is
-            // BLOCK_SIZE 128 => THREADS_PER_OUT 32, and warps 4-7 redundantly
-            // recompute the next block's columns. Output is value-identical and
-            // the re-read hits L2, so an A/B of 128-vs-256 here measured only
-            // +4% at C=4 and 0% at C=2 -- real but minor. See HANDOFF.md.
-            let batch2_block = if ctx.config.hidden_size >= 3072 {
-                256u32
-            } else {
-                128u32
-            };
-            ops::moe_expert_gate_up_shared_batch2(
-                ctx.gpu,
-                self.moe_expert_gate_up_shared_batch2,
+            self.forward_k2_originals(
                 input,
-                self.gate_ptrs.packed_ptrs,
-                self.gate_ptrs.scale_ptrs,
-                self.gate_ptrs.scale2_vals,
-                expert_gate_out,
-                self.up_ptrs.packed_ptrs,
-                self.up_ptrs.scale_ptrs,
-                self.up_ptrs.scale2_vals,
-                expert_up_out,
                 indices_dev,
-                if mixed_bf16_shared {
-                    &null_shared
-                } else {
-                    &self.weights.shared_expert.gate_proj
-                },
-                shared_gate_scratch,
-                if mixed_bf16_shared {
-                    &null_shared
-                } else {
-                    &self.weights.shared_expert.up_proj
-                },
-                shared_up_scratch,
-                inter,
-                h,
-                top_k,
-                batch2_block,
-                stream,
-            )?;
-            ops::moe_expert_silu_down_shared_batch2(
-                ctx.gpu,
-                self.moe_expert_silu_down_shared_batch2,
-                expert_gate_out,
-                expert_up_out,
-                self.down_ptrs.packed_ptrs,
-                self.down_ptrs.scale_ptrs,
-                self.down_ptrs.scale2_vals,
-                expert_down_out,
-                indices_dev,
-                shared_gate_scratch,
-                shared_up_scratch,
-                if mixed_bf16_shared {
-                    &null_shared
-                } else {
-                    &self.weights.shared_expert.down_proj
-                },
-                shared_down_out,
-                h,
-                inter,
-                top_k,
-                batch2_block,
-                stream,
-            )?;
-            // Mixed config: one batched BF16 shared-expert pass for both tokens,
-            // replacing the placeholder the kernel was told (via NULL) to skip.
-            if mixed_bf16_shared {
-                let shared_inter = ctx.config.shared_expert_intermediate_size as u32;
-                self.run_bf16_shared_expert(
-                    input,
-                    2,
-                    h,
-                    shared_inter,
-                    shared_gate_scratch,
-                    shared_up_scratch,
-                    shared_down_out,
-                    ctx,
-                    stream,
-                )?;
-            }
-            // EP fix: after silu_down, expert_gate_out is free — use as zero buffer
-            let shared_for_blend = if is_ep && !shared_down_out.is_null() {
-                ctx.gpu
-                    .memset_async(expert_gate_out, 0, 2 * h as usize * 2, stream)?;
-                expert_gate_out
-            } else {
-                shared_down_out
-            };
-            ops::moe_weighted_sum_blend_batch2(
-                ctx.gpu,
-                self.moe_weighted_sum_blend_batch2,
-                output,
-                expert_down_out,
                 weights_dev,
-                shared_for_blend,
-                input,
-                self.weights.shared_expert_gate.weight,
+                expert_gate_out,
+                expert_up_out,
+                expert_down_out,
+                shared_gate_scratch,
+                shared_up_scratch,
+                shared_down_out,
+                output,
+                inter,
                 h,
                 top_k,
-                h,
+                is_ep,
+                mixed_bf16_shared,
+                ctx,
                 stream,
             )?;
         }
@@ -578,3 +409,28 @@ impl MoeLayer {
         Ok(())
     }
 }
+
+/// Block width for the NVFP4 batch2 MoE GEMVs — 128 (one warp per output pair)
+/// or 256 (two warps joined through smem, which pays off once K is large). This
+/// was inlined at the call site, where it read as a proxy for "is this model's
+/// kernel one of the three 256-wide shadows" and over-fired for every other MoE
+/// model at hidden_size ≥ 3072, launching them twice as wide as their `#define
+/// BLOCK_SIZE 128`. The kernel reads `blockDim.x` now, so this is pure tuning.
+pub(crate) fn batch2_block_width(hidden_size: usize) -> u32 {
+    if hidden_size >= 3072 { 256 } else { 128 }
+}
+
+/// K=2-verify MoE dispatch guard. E8M0 (native MXFP4, per-32 E8M0 scale) routed
+/// experts MUST take the per-token unified-T path (GS32 `_e8m0` kernel via
+/// `e8m0_or`), NOT the GS16 NVFP4 `moe_expert_gate_up_shared_batch2_t` batch2
+/// kernel: that kernel reads `inter·h/16` scale bytes from the correctly-sized
+/// `inter·h/32` E8M0 scale buffer — a 2× over-read → CUDA_ERROR_ILLEGAL_ADDRESS.
+/// Pure decision, unit-tested and wired at the top of `forward_k2`.
+pub(crate) fn k2_e8m0_needs_per_token(scale_kind: crate::weight_map::WeightQuantFormat) -> bool {
+    matches!(scale_kind, crate::weight_map::WeightQuantFormat::Mxfp4E8m0)
+}
+
+// Focused dispatch tests live in a sibling file to keep this file ≤500 LoC.
+#[cfg(test)]
+#[path = "forward_k2_dispatch_tests.rs"]
+mod k2_dispatch_tests;

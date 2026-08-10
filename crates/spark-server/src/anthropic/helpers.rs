@@ -65,6 +65,12 @@ pub(super) fn convert_stop_reason(finish_reason: &str) -> &'static str {
         // stop reason (2025-05 API), not a normal end_turn — clients
         // branch on this to avoid retrying verbatim.
         "content_filter" => "refusal",
+        // The Anthropic vocabulary has no deadline reason. "max_tokens" is
+        // its only "the output is truncated" slot — mapping a deadline cut
+        // to the default "end_turn" would tell the client the turn is
+        // COMPLETE, which is the exact silent-truncation bug this reason
+        // exists to prevent.
+        crate::ir::FINISH_REASON_TIMEOUT => "max_tokens",
         _ => "end_turn",
     }
 }

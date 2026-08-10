@@ -14,7 +14,10 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 mod transformer_layer;
-pub use transformer_layer::TransformerLayer;
+pub use transformer_layer::{
+    TransformerLayer, VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS,
+    VERIFY_WY_TABLE_STRIDE_BYTES, VERIFY_WY_TABLES_PER_LAYER,
+};
 
 /// Per-layer persistent state tracked across decode steps.
 ///
@@ -57,6 +60,16 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// Storage dtype of `h_state`: `false` = FP32 (the only format prefill
+    /// ever writes), `true` = FP16 packed into the first half of the same
+    /// FP32-sized pool region (`ATLAS_SSM_H_FP16`).
+    ///
+    /// This is the single source of truth for the h-state format. The decode
+    /// mixer flips it exactly once per sequence, on the first decode step
+    /// after any FP32 writer touched the slot, so no caller has to know where
+    /// the prefill->decode edge is. It rides through swap-out/swap-in because
+    /// `state_io` mutates these states in place rather than rebuilding them.
+    pub h_is_f16: bool,
 }
 
 impl LayerState for SsmLayerState {
@@ -223,6 +236,23 @@ pub struct ForwardContext<'a> {
     pub gpu: &'a dyn GpuBackend,
     /// Model configuration (dimensions, hyperparameters).
     pub config: &'a ModelConfig,
+    /// Which GEMM implementation each projection takes. Carried rather than
+    /// read from a static so it cannot outlive the model whose flags it
+    /// encodes — see `layers::ops::GemmDispatch`.
+    pub dispatch: &'a crate::layers::ops::GemmDispatch,
+    /// Re-encoded copies of this model's weights, memoized for this model's
+    /// lifetime. Carried rather than kept in a static keyed by device pointer,
+    /// where a recycled address would HIT after a model swap.
+    pub derived: &'a crate::layers::ops::DerivedWeights,
+    /// Kernel-path levers for this model — the SSM/GDN variant, FFN routing,
+    /// MoE quantization, LoRA mode, diagnostics. The non-GEMM half of the
+    /// lever set; `dispatch` is the GEMM half.
+    pub levers: &'a crate::layers::ops::ModelLevers,
+    /// This model's diagnostic counters and one-shot dump latches. Carried
+    /// for the same reason as `levers`: a counter that spans a model swap
+    /// averages two models and describes neither, and a one-shot latch that
+    /// already fired swallows the next model's dump.
+    pub stats: &'a crate::layers::ops::ModelStats,
     /// Pre-uploaded attention metadata (None if no attention layers).
     pub attn_metadata: Option<AttnMetadataDev>,
     /// Profile mode: sync+time per-operation within layers.

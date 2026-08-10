@@ -13,11 +13,26 @@
 //
 // Grid: gate_up_batch2  (ceil(N/8), 2*(top_k+1), 2)
 //       silu_down_batch2 (ceil(N/8), 2*(top_k+1), 1)
+//
+// Block width is chosen by the HOST (`MoeLayer::forward_k2`) and read back
+// here from `blockDim.x` — it is deliberately NOT a `#define`. It used to be
+// one, and the host launched 256 threads whenever hidden_size >= 3072 while
+// only three model shadows actually defined BLOCK_SIZE 256; every other
+// large-hidden MoE model inherited this file's 128 and got a block twice as
+// wide as the code it was compiled for. Threads 128..255 then recomputed the
+// NEXT block's two columns and stored the same bits over them: correct output,
+// twice the loads. Deriving the decomposition from `blockDim.x` is the one
+// size the host and the device cannot disagree about.
+//
+// Supported widths: 128 (one warp per output pair) and 256 (two warps per
+// output pair, joined through smem). Anything else is treated as 128, which
+// is wasteful but never wrong — the same benign failure mode as before.
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
-#define BLOCK_SIZE 128
+#define BLOCK_NARROW 128
+#define BLOCK_WIDE 256
 #define N_PER_BLOCK 4
 #define WARP_SIZE 32
 #define GROUP_SIZE 16
@@ -44,9 +59,234 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
 }
 #endif
 
+// Reduce the per-thread partials of one output pair and store them. Shared by
+// gate_up and silu_down, which used to carry a copy each.
+//
+// BLOCK=128 → 32 threads (one warp) per output pair, shuffle reduction only:
+//             bit-for-bit the reduction this file has always done.
+// BLOCK=256 → 64 threads (two warps) per output pair; the two warp partials
+//             are joined through `smem_reduce`, matching what the 122B / M2 /
+//             step3.7 shadows of this file did in their own copy.
+template <unsigned int BLOCK>
+__device__ void reduce_store_batch2(
+    float acc1, float acc2,
+    __nv_bfloat16* __restrict__ out,
+    unsigned int n1, unsigned int n2,
+    unsigned int local_out, unsigned int lane,
+    bool active, bool have_n2
+) {
+    constexpr unsigned int THREADS_PER_OUT = BLOCK / N_PER_BLOCK;
+    constexpr unsigned int WARPS_PER_OUT = THREADS_PER_OUT / WARP_SIZE;
+
+    if constexpr (WARPS_PER_OUT == 1) {
+        if (active) {
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+                acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
+            if (lane == 0) out[n1] = __float2bfloat16(acc1);
+
+            if (have_n2) {
+                #pragma unroll
+                for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+                    acc2 += __shfl_down_sync(0xFFFFFFFF, acc2, offset);
+                if (lane == 0) out[n2] = __float2bfloat16(acc2);
+            }
+        }
+    } else {
+        // Declared HERE, not beside THREADS_PER_OUT above: at BLOCK=128 the
+        // shuffle branch is taken and a file-scope declaration is never
+        // referenced, which nvcc reports as #177-D — a warning on the Linux
+        // toolchain and a hard error under the Windows CUDA build's stricter
+        // flags, where it broke `windows-x86_64-nvidia-cuda`. Scoping it to the
+        // branch that uses it also retires the `(WARPS_PER_OUT > 1) ? … : 1`
+        // guard the old declaration needed purely to avoid a zero-length array
+        // in the case that never touched it.
+        constexpr unsigned int SMEM_RED = N_PER_BLOCK * 2 * WARPS_PER_OUT;
+        __shared__ float smem_reduce[SMEM_RED];
+        const unsigned int warp_lane = lane % WARP_SIZE;
+        const unsigned int warp_in_output = lane / WARP_SIZE;
+        if (active) {
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+                acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
+                acc2 += __shfl_down_sync(0xFFFFFFFF, acc2, offset);
+            }
+            if (warp_lane == 0) {
+                smem_reduce[local_out * 2 * WARPS_PER_OUT + warp_in_output * 2] = acc1;
+                smem_reduce[local_out * 2 * WARPS_PER_OUT + warp_in_output * 2 + 1] = acc2;
+            }
+        }
+        __syncthreads();
+
+        if (active && lane == 0) {
+            float final1 = 0.0f, final2 = 0.0f;
+            #pragma unroll
+            for (unsigned int w = 0; w < WARPS_PER_OUT; w++) {
+                final1 += smem_reduce[local_out * 2 * WARPS_PER_OUT + w * 2];
+                final2 += smem_reduce[local_out * 2 * WARPS_PER_OUT + w * 2 + 1];
+            }
+            out[n1] = __float2bfloat16(final1);
+            if (have_n2) out[n2] = __float2bfloat16(final2);
+        }
+    }
+}
+
+// Per-output-pair gate/up GEMV, parameterised on the block width so that
+// THREADS_PER_OUT stays a compile-time constant on both instantiations.
+template <unsigned int BLOCK>
+__device__ void gate_up_gemv_batch2(
+    const __nv_bfloat16* __restrict__ A_token,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    float s2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int N, unsigned int K
+) {
+    constexpr unsigned int THREADS_PER_OUT = BLOCK / N_PER_BLOCK;
+    static_assert(THREADS_PER_OUT % WARP_SIZE == 0, "output group must be whole warps");
+
+    const unsigned int local_out = threadIdx.x / THREADS_PER_OUT;
+    const unsigned int lane = threadIdx.x % THREADS_PER_OUT;
+
+    const unsigned int n1 = blockIdx.x * (N_PER_BLOCK * 2) + local_out * 2;
+    const unsigned int n2 = n1 + 1;
+    // Tail columns used to `return` here — in front of the __syncthreads()
+    // below, which is undefined behaviour when only part of the block takes
+    // it. Carry it as a predicate instead so every thread reaches the barrier.
+    const bool active = (n1 < N);
+    const bool have_n2 = (n2 < N);
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K8 = K / 8;
+
+    __shared__ float s_lut[16];
+    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_BATCH2[threadIdx.x];
+    __syncthreads();
+
+    float acc1 = 0.0f, acc2 = 0.0f;
+
+    if (active) {
+        for (unsigned int k8 = lane; k8 < K8; k8 += THREADS_PER_OUT) {
+            uint4 a_data = ((const uint4*)A_token)[k8];
+            const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
+            const unsigned int base_k = k8 * 8;
+
+            unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
+            unsigned int sg = base_k / GROUP_SIZE;
+            unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + sg];
+            float sc1 = atlas_dec_e4m3(sb1) * s2;
+
+            unsigned int packed4_2 = have_n2 ?
+                *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
+            unsigned char sb2 = have_n2 ? B_scale[(unsigned long long)n2 * num_groups + sg] : 0;
+            float sc2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
+
+            #pragma unroll
+            for (int b = 0; b < 4; b++) {
+                unsigned char bv1 = (packed4_1 >> (b * 8)) & 0xFF;
+                float w1l = s_lut[bv1 & 0xF] * sc1, w1h = s_lut[bv1 >> 4] * sc1;
+                unsigned char bv2 = (packed4_2 >> (b * 8)) & 0xFF;
+                float w2l = s_lut[bv2 & 0xF] * sc2, w2h = s_lut[bv2 >> 4] * sc2;
+                __nv_bfloat16 al, ah;
+                *(unsigned short*)&al = (unsigned short)(a_raw[b] & 0xFFFF);
+                *(unsigned short*)&ah = (unsigned short)(a_raw[b] >> 16);
+                float afl = __bfloat162float(al), afh = __bfloat162float(ah);
+                acc1 += afl * w1l + afh * w1h;
+                acc2 += afl * w2l + afh * w2h;
+            }
+        }
+    }
+
+    reduce_store_batch2<BLOCK>(acc1, acc2, C, n1, n2, local_out, lane, active, have_n2);
+}
+
+// Per-output-pair SiLU+down GEMV. Phase 1 precomputes SiLU(gate)*up into
+// dynamic shared memory (K floats, sized by the launcher), phase 2 is the
+// down-projection GEMV over it.
+template <unsigned int BLOCK>
+__device__ void silu_down_gemv_batch2(
+    const __nv_bfloat16* __restrict__ g_ptr,
+    const __nv_bfloat16* __restrict__ u_ptr,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    float s2,
+    __nv_bfloat16* __restrict__ out,
+    unsigned int N, unsigned int K
+) {
+    constexpr unsigned int THREADS_PER_OUT = BLOCK / N_PER_BLOCK;
+    static_assert(THREADS_PER_OUT % WARP_SIZE == 0, "output group must be whole warps");
+
+    const unsigned int local_out = threadIdx.x / THREADS_PER_OUT;
+    const unsigned int lane = threadIdx.x % THREADS_PER_OUT;
+
+    const unsigned int n1 = blockIdx.x * (N_PER_BLOCK * 2) + local_out * 2;
+    const unsigned int n2 = n1 + 1;
+    // Predicate, not a `return`: the tail columns must still fill their slice
+    // of s_act and reach the __syncthreads() that publishes it.
+    const bool active = (n1 < N);
+    const bool have_n2 = (n2 < N);
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K8 = K / 8;
+
+    __shared__ float s_lut[16];
+    // Dynamic: K floats, sized by the launcher (issue #85 -- the old
+    // static s_act[1024] overflowed for Mistral-Small-4's
+    // expert_hidden_dim=2048, illegal-addressing on the first batched
+    // K=2 FFN; matches the extern pattern the _t variant already uses).
+    extern __shared__ float s_act[];
+
+    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_BATCH2[threadIdx.x];
+
+    // Phase 1: Precompute SiLU(gate)*up into shared memory
+    for (unsigned int i = threadIdx.x; i < K; i += BLOCK) {
+        float gf = __bfloat162float(g_ptr[i]);
+        float uf = __bfloat162float(u_ptr[i]);
+        s_act[i] = (gf / (1.0f + __expf(-gf))) * uf;
+    }
+    __syncthreads();
+
+    // Phase 2: GEMV reading precomputed activation from shared memory
+    float acc1 = 0.0f, acc2 = 0.0f;
+
+    if (active) {
+        for (unsigned int k8 = lane; k8 < K8; k8 += THREADS_PER_OUT) {
+            const unsigned int base_k = k8 * 8;
+
+            unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
+            unsigned int sg = base_k / GROUP_SIZE;
+            unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + sg];
+            float sc1 = atlas_dec_e4m3(sb1) * s2;
+
+            unsigned int packed4_2 = have_n2 ?
+                *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
+            unsigned char sb2 = have_n2 ? B_scale[(unsigned long long)n2 * num_groups + sg] : 0;
+            float sc2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
+
+            #pragma unroll
+            for (int b = 0; b < 4; b++) {
+                float al = s_act[base_k + b * 2];
+                float ah = s_act[base_k + b * 2 + 1];
+
+                unsigned char bv1 = (packed4_1 >> (b * 8)) & 0xFF;
+                float w1l = s_lut[bv1 & 0xF] * sc1, w1h = s_lut[bv1 >> 4] * sc1;
+                unsigned char bv2 = (packed4_2 >> (b * 8)) & 0xFF;
+                float w2l = s_lut[bv2 & 0xF] * sc2, w2h = s_lut[bv2 >> 4] * sc2;
+
+                acc1 += al * w1l + ah * w1h;
+                acc2 += al * w2l + ah * w2h;
+            }
+        }
+    }
+
+    reduce_store_batch2<BLOCK>(acc1, acc2, out, n1, n2, local_out, lane, active, have_n2);
+}
+
 // ── Fused Gate+Up 2x with shared expert — K=2 batch variant ──
 //
-// Grid: (ceil(N/8), 2*(top_k+1), 2)  Block: (128, 1, 1)
+// Grid: (ceil(N/8), 2*(top_k+1), 2)  Block: (128 or 256, 1, 1)
 // blockIdx.y: 0..2*top_k-1 = routed (token=y/top_k, slot=y%top_k)
 //             2*top_k..2*top_k+1 = shared (token=y-2*top_k)
 extern "C" __global__ void moe_expert_gate_up_shared_batch2(
@@ -108,7 +348,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_batch2(
                 const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
                 __nv_bfloat16* z = sh_gate_out + (unsigned long long)token * N;
                 for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N;
-                     i += BLOCK_SIZE) {
+                     i += blockDim.x) {
                     z[n_base + i] = __float2bfloat16(0.0f);
                 }
                 return;
@@ -120,7 +360,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_batch2(
                 const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
                 __nv_bfloat16* z = sh_up_out + (unsigned long long)token * N;
                 for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N;
-                     i += BLOCK_SIZE) {
+                     i += blockDim.x) {
                     z[n_base + i] = __float2bfloat16(0.0f);
                 }
                 return;
@@ -142,81 +382,27 @@ extern "C" __global__ void moe_expert_gate_up_shared_batch2(
             s2 = up_scale2_vals[expert_id];
             C = up_out + (unsigned long long)flat_slot * N;
         }
-        // EP: NULL pointer means remote expert — write zero output and return
+        // EP: NULL pointer means remote expert — write zero output and return.
+        // Block-uniform, so this return is not a partial-block exit.
         if (B_packed == 0) {
             const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
-            for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N; i += BLOCK_SIZE) {
+            for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N; i += blockDim.x) {
                 C[n_base + i] = __float2bfloat16(0.0f);
             }
             return;
         }
     }
 
-    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;
-    const unsigned int local_out = threadIdx.x / threads_per_out;
-    const unsigned int lane = threadIdx.x % threads_per_out;
-
-    const unsigned int n1 = blockIdx.x * (N_PER_BLOCK * 2) + local_out * 2;
-    const unsigned int n2 = n1 + 1;
-    if (n1 >= N) return;
-    const bool have_n2 = (n2 < N);
-
-    const unsigned int half_K = K / 2;
-    const unsigned int num_groups = K / GROUP_SIZE;
-    const unsigned int K8 = K / 8;
-
-    __shared__ float s_lut[16];
-    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_BATCH2[threadIdx.x];
-    __syncthreads();
-
-    float acc1 = 0.0f, acc2 = 0.0f;
-
-    for (unsigned int k8 = lane; k8 < K8; k8 += threads_per_out) {
-        uint4 a_data = ((const uint4*)A_token)[k8];
-        const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
-        const unsigned int base_k = k8 * 8;
-
-        unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
-        unsigned int sg = base_k / GROUP_SIZE;
-        unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + sg];
-        float sc1 = atlas_dec_e4m3(sb1) * s2;
-
-        unsigned int packed4_2 = have_n2 ?
-            *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
-        unsigned char sb2 = have_n2 ? B_scale[(unsigned long long)n2 * num_groups + sg] : 0;
-        float sc2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
-
-        #pragma unroll
-        for (int b = 0; b < 4; b++) {
-            unsigned char bv1 = (packed4_1 >> (b * 8)) & 0xFF;
-            float w1l = s_lut[bv1 & 0xF] * sc1, w1h = s_lut[bv1 >> 4] * sc1;
-            unsigned char bv2 = (packed4_2 >> (b * 8)) & 0xFF;
-            float w2l = s_lut[bv2 & 0xF] * sc2, w2h = s_lut[bv2 >> 4] * sc2;
-            __nv_bfloat16 al, ah;
-            *(unsigned short*)&al = (unsigned short)(a_raw[b] & 0xFFFF);
-            *(unsigned short*)&ah = (unsigned short)(a_raw[b] >> 16);
-            float afl = __bfloat162float(al), afh = __bfloat162float(ah);
-            acc1 += afl * w1l + afh * w1h;
-            acc2 += afl * w2l + afh * w2h;
-        }
-    }
-
-    #pragma unroll
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
-    if (lane == 0) C[n1] = __float2bfloat16(acc1);
-
-    if (have_n2) {
-        #pragma unroll
-        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-            acc2 += __shfl_down_sync(0xFFFFFFFF, acc2, offset);
-        if (lane == 0) C[n2] = __float2bfloat16(acc2);
+    if (blockDim.x == BLOCK_WIDE) {
+        gate_up_gemv_batch2<BLOCK_WIDE>(A_token, B_packed, B_scale, s2, C, N, K);
+    } else {
+        gate_up_gemv_batch2<BLOCK_NARROW>(A_token, B_packed, B_scale, s2, C, N, K);
     }
 }
 
 // ── Fused SiLU+Down 2x with shared expert — K=2 batch variant ──
 //
-// Grid: (ceil(N/8), 2*(top_k+1), 1)  Block: (128, 1, 1)
+// Grid: (ceil(N/8), 2*(top_k+1), 1)  Block: (128 or 256, 1, 1)
 extern "C" __global__ void moe_expert_silu_down_shared_batch2(
     const __nv_bfloat16* __restrict__ gate_out,  // [2*top_k, inter] BF16
     const __nv_bfloat16* __restrict__ up_out,    // [2*top_k, inter] BF16
@@ -263,7 +449,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch2(
             const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
             __nv_bfloat16* z = sh_down_out + (unsigned long long)token * N;
             for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N;
-                 i += BLOCK_SIZE) {
+                 i += blockDim.x) {
                 z[n_base + i] = __float2bfloat16(0.0f);
             }
             return;
@@ -279,74 +465,14 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch2(
         s2 = scale2_vals[expert_id];
         g_ptr = gate_out + (unsigned long long)flat_slot * K;
         u_ptr = up_out + (unsigned long long)flat_slot * K;
-        // EP: NULL pointer means remote expert — write zero output and return
+        // EP: NULL pointer means remote expert — write zero output and return.
+        // Block-uniform, so this return is not a partial-block exit.
         if (B_packed == 0) {
             const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
-            for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N; i += BLOCK_SIZE) {
+            for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N; i += blockDim.x) {
                 C[(unsigned long long)(token * top_k + expert_slot) * N + n_base + i] = __float2bfloat16(0.0f);
             }
             return;
-        }
-    }
-
-    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;
-    const unsigned int local_out = threadIdx.x / threads_per_out;
-    const unsigned int lane = threadIdx.x % threads_per_out;
-
-    const unsigned int n1 = blockIdx.x * (N_PER_BLOCK * 2) + local_out * 2;
-    const unsigned int n2 = n1 + 1;
-    if (n1 >= N) return;
-    const bool have_n2 = (n2 < N);
-
-    const unsigned int half_K = K / 2;
-    const unsigned int num_groups = K / GROUP_SIZE;
-    const unsigned int K8 = K / 8;
-
-    __shared__ float s_lut[16];
-    // Dynamic: K floats, sized by the launcher (issue #85 -- the old
-    // static s_act[1024] overflowed for Mistral-Small-4's
-    // expert_hidden_dim=2048, illegal-addressing on the first batched
-    // K=2 FFN; matches the extern pattern the _t variant already uses).
-    extern __shared__ float s_act[];
-
-    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_BATCH2[threadIdx.x];
-
-    // Phase 1: Precompute SiLU(gate)*up into shared memory
-    for (unsigned int i = threadIdx.x; i < K; i += BLOCK_SIZE) {
-        float gf = __bfloat162float(g_ptr[i]);
-        float uf = __bfloat162float(u_ptr[i]);
-        s_act[i] = (gf / (1.0f + __expf(-gf))) * uf;
-    }
-    __syncthreads();
-
-    // Phase 2: GEMV reading precomputed activation from shared memory
-    float acc1 = 0.0f, acc2 = 0.0f;
-
-    for (unsigned int k8 = lane; k8 < K8; k8 += threads_per_out) {
-        const unsigned int base_k = k8 * 8;
-
-        unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
-        unsigned int sg = base_k / GROUP_SIZE;
-        unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + sg];
-        float sc1 = atlas_dec_e4m3(sb1) * s2;
-
-        unsigned int packed4_2 = have_n2 ?
-            *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
-        unsigned char sb2 = have_n2 ? B_scale[(unsigned long long)n2 * num_groups + sg] : 0;
-        float sc2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
-
-        #pragma unroll
-        for (int b = 0; b < 4; b++) {
-            float al = s_act[base_k + b * 2];
-            float ah = s_act[base_k + b * 2 + 1];
-
-            unsigned char bv1 = (packed4_1 >> (b * 8)) & 0xFF;
-            float w1l = s_lut[bv1 & 0xF] * sc1, w1h = s_lut[bv1 >> 4] * sc1;
-            unsigned char bv2 = (packed4_2 >> (b * 8)) & 0xFF;
-            float w2l = s_lut[bv2 & 0xF] * sc2, w2h = s_lut[bv2 >> 4] * sc2;
-
-            acc1 += al * w1l + ah * w1h;
-            acc2 += al * w2l + ah * w2h;
         }
     }
 
@@ -355,16 +481,10 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch2(
         ? (sh_down_out + (unsigned long long)token * N)
         : (C + (unsigned long long)(token * top_k + expert_slot) * N);
 
-    #pragma unroll
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
-    if (lane == 0) out[n1] = __float2bfloat16(acc1);
-
-    if (have_n2) {
-        #pragma unroll
-        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-            acc2 += __shfl_down_sync(0xFFFFFFFF, acc2, offset);
-        if (lane == 0) out[n2] = __float2bfloat16(acc2);
+    if (blockDim.x == BLOCK_WIDE) {
+        silu_down_gemv_batch2<BLOCK_WIDE>(g_ptr, u_ptr, B_packed, B_scale, s2, out, N, K);
+    } else {
+        silu_down_gemv_batch2<BLOCK_NARROW>(g_ptr, u_ptr, B_packed, B_scale, s2, out, N, K);
     }
 }
 

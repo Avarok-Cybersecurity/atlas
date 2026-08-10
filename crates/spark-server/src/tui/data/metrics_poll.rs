@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::metrics;
-use crate::scheduler::snapshot::{self, SchedulerSnapshot};
+use crate::scheduler::snapshot::SchedulerSnapshot;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -74,6 +74,15 @@ pub struct StatsModel {
     // Spec decode accept per K: (k_label, accepted, total).
     pub spec_accept: Vec<(String, u64, u64)>,
     // Memory.
+    /// True once a real device reading has been taken.
+    ///
+    /// ★ The three figures below are plain `f64` and default to 0.0, so on a
+    /// box with no GPU or no NVML they render as `atlas 0.0 GB · free 0.0`
+    /// with a 0 % gauge — a MEASUREMENT OF ZERO rather than "unavailable".
+    /// This file already gets that right for TTFT (an `Option` that renders as
+    /// `—`); the GPU tile did not. Nothing else on this dashboard fabricates a
+    /// number, which is why the fabricated one stood out.
+    pub gpu_known: bool,
     pub gpu_free_gb: f64,
     pub gpu_total_gb: f64,
     pub atlas_used_gb: f64,
@@ -120,6 +129,7 @@ impl Default for StatsModel {
             prefix_hit_tokens: 0,
             entropy: 0.0,
             spec_accept: Vec::new(),
+            gpu_known: false,
             gpu_free_gb: 0.0,
             gpu_total_gb: 0.0,
             atlas_used_gb: 0.0,
@@ -148,7 +158,7 @@ fn hist_percentile(buckets: &TtftBuckets, p: f64) -> Option<f64> {
 
 impl StatsModel {
     /// Take one sample. Call at ~1 Hz from the TUI event loop.
-    pub fn sample(&mut self) {
+    pub fn sample(&mut self, run: Option<&crate::tui::RunHandles>) {
         let now = Instant::now();
         self.requests_total = metrics::REQUESTS_TOTAL.get();
         self.requests_active = metrics::REQUESTS_ACTIVE.get();
@@ -198,21 +208,30 @@ impl StatsModel {
         // Spec-decode accept per K from the labeled counter vec.
         self.spec_accept = spec_accept_from_gather();
 
-        // Prefix cache + sampler globals.
-        let hits = spark_runtime::prefix_cache::cache_hit_count();
-        let misses = spark_runtime::prefix_cache::cache_miss_count();
-        self.prefix_hit_tokens = spark_runtime::prefix_cache::cache_hit_tokens_total();
+        // Prefix cache + sampler globals. Scoped to the CURRENT model: the
+        // cumulative counters behind these are what /metrics exports, and
+        // after a swap they still carry the previous model's cache activity,
+        // which is not what this pane is describing.
+        let (hits, misses, hit_tokens) = spark_runtime::run_metrics::cache_counts_this_run();
+        self.prefix_hit_tokens = hit_tokens;
         self.prefix_hit_rate = (hits + misses > 0).then(|| hits as f64 / (hits + misses) as f64);
         self.entropy = spark_runtime::sampler::last_entropy() as f64;
         self.entropy_history.push(self.entropy);
 
         // Memory.
-        if let Some(free) = super::gpu_free_bytes() {
-            self.gpu_free_gb = free as f64 / GIB;
-        }
-        if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
-            self.gpu_total_gb = baseline as f64 / GIB;
-            self.atlas_used_gb = (self.gpu_total_gb - self.gpu_free_gb).max(0.0);
+        // Both reads must land: `atlas_used` is a DIFFERENCE of the two, so
+        // one without the other is not a smaller truth, it is a wrong number.
+        match (
+            super::gpu_free_bytes(),
+            spark_runtime::gpu::baseline_free_bytes(),
+        ) {
+            (Some(free), Some(baseline)) => {
+                self.gpu_free_gb = free as f64 / GIB;
+                self.gpu_total_gb = baseline as f64 / GIB;
+                self.atlas_used_gb = (self.gpu_total_gb - self.gpu_free_gb).max(0.0);
+                self.gpu_known = true;
+            }
+            _ => self.gpu_known = false,
         }
         if let Some((avail, total)) = host_mem_gb() {
             self.host_avail_gb = avail;
@@ -220,7 +239,7 @@ impl StatsModel {
         }
 
         // Scheduler snapshot.
-        self.sched = snapshot::read();
+        self.sched = run.and_then(|r| r.snapshot.read());
         if let Some(s) = self.sched {
             self.queue_history.push(s.pending_len as f64);
         }

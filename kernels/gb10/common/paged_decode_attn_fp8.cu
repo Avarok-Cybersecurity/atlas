@@ -39,20 +39,30 @@ __device__ __forceinline__ void unpack2_bf16(unsigned int packed, float& v0, flo
     v1 = __bfloat162float(__ushort_as_bfloat16((unsigned short)(packed >> 16)));
 }
 
-// Unpack 4 FP8 E4M3 from uint32 → 4 F32 with dequant scale
-__device__ __forceinline__ void unpack4_fp8(
-    unsigned int packed, float dq_scale,
+// Unpack 4 FP8 E4M3 from uint32 → 4 F32, UNSCALED (2026-07-30 decode-perf
+// fix). Dequant is linear, so the k/v scale is hoisted OUT of the inner
+// loops entirely: k_scale folds into the per-position score multiply
+// (score_scale = inv_sqrt_d * k_scale) and v_scale into the single
+// per-warp smem write of o_reg. The old per-element path (4x scalar
+// cvt_fp8_to_halfraw + half2float + mul per u32) made this kernel
+// conversion-bound — measured 4.8 -> 2.1 tok/s per-stream at C=8 agentic
+// vs BF16 KV (PROGRESS_LOG 6.20b). Paired fp8x2 cvts halve the
+// instruction count; byte order: low byte = element 0 (matches the
+// scalar unpack it replaces).
+__device__ __forceinline__ void unpack4_fp8_raw(
+    unsigned int packed,
     float& v0, float& v1, float& v2, float& v3
 ) {
-    __nv_fp8_storage_t b0 = (__nv_fp8_storage_t)(packed & 0xFF);
-    __nv_fp8_storage_t b1 = (__nv_fp8_storage_t)((packed >> 8) & 0xFF);
-    __nv_fp8_storage_t b2 = (__nv_fp8_storage_t)((packed >> 16) & 0xFF);
-    __nv_fp8_storage_t b3 = (__nv_fp8_storage_t)((packed >> 24) & 0xFF);
-    // FP8 → half_raw → float, then multiply by dequant scale
-    v0 = __half2float(__nv_cvt_fp8_to_halfraw(b0, __NV_E4M3)) * dq_scale;
-    v1 = __half2float(__nv_cvt_fp8_to_halfraw(b1, __NV_E4M3)) * dq_scale;
-    v2 = __half2float(__nv_cvt_fp8_to_halfraw(b2, __NV_E4M3)) * dq_scale;
-    v3 = __half2float(__nv_cvt_fp8_to_halfraw(b3, __NV_E4M3)) * dq_scale;
+    __half2_raw h01 = __nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(packed & 0xFFFF), __NV_E4M3);
+    __half2_raw h23 = __nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(packed >> 16), __NV_E4M3);
+    const float2 f01 = __half22float2(*reinterpret_cast<const __half2*>(&h01));
+    const float2 f23 = __half22float2(*reinterpret_cast<const __half2*>(&h23));
+    v0 = f01.x;
+    v1 = f01.y;
+    v2 = f23.x;
+    v3 = f23.y;
 }
 
 // ============================================================================
@@ -116,6 +126,11 @@ extern "C" __global__ void paged_decode_attn_fp8(
     if (my_end > seq_len) my_end = seq_len;
     if (my_start > seq_len) my_start = seq_len;
 
+    // Hoisted dequant scales (see unpack4_fp8_raw): raw-K dots get
+    // k_scale here, once per position; raw-V o_reg gets v_scale once at
+    // the smem write below.
+    const float score_scale = inv_sqrt_d * k_scale;
+
     float m = -1e30f;
     float l = 0.0f;
     float o_reg[VEC_BF16];
@@ -159,7 +174,8 @@ extern "C" __global__ void paged_decode_attn_fp8(
                     k_packed[b][i] = k32[i];
             }
 
-            // Compute BC dot products (FP8 dequant + dot)
+            // Compute BC dot products (raw FP8 dot; k_scale folded into
+            // score_scale — see unpack4_fp8_raw)
             float scores[BC];
             #pragma unroll
             for (int b = 0; b < BC; b++) {
@@ -167,14 +183,14 @@ extern "C" __global__ void paged_decode_attn_fp8(
                 #pragma unroll
                 for (int i = 0; i < VEC_U32_FP8; i++) {
                     float k0, k1, k2, k3;
-                    unpack4_fp8(k_packed[b][i], k_scale, k0, k1, k2, k3);
+                    unpack4_fp8_raw(k_packed[b][i], k0, k1, k2, k3);
                     dot += q_reg[4*i]   * k0 + q_reg[4*i+1] * k1
                          + q_reg[4*i+2] * k2 + q_reg[4*i+3] * k3;
                 }
                 #pragma unroll
                 for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
                     dot += __shfl_xor_sync(0xffffffff, dot, offset);
-                scores[b] = dot * inv_sqrt_d;
+                scores[b] = dot * score_scale;
             }
 
             // Load BC V vectors
@@ -208,14 +224,14 @@ extern "C" __global__ void paged_decode_attn_fp8(
             }
             m = m_new;
 
-            // V accumulate (FP8 dequant)
+            // V accumulate (raw FP8; v_scale applied ONCE at the smem write)
             #pragma unroll
             for (int b = 0; b < BC; b++) {
                 float ef = exp_factors[b];
                 #pragma unroll
                 for (int i = 0; i < VEC_U32_FP8; i++) {
                     float v0, v1, v2, v3;
-                    unpack4_fp8(v_packed[b][i], v_scale, v0, v1, v2, v3);
+                    unpack4_fp8_raw(v_packed[b][i], v0, v1, v2, v3);
                     o_reg[4*i]   += ef * v0;
                     o_reg[4*i+1] += ef * v1;
                     o_reg[4*i+2] += ef * v2;
@@ -232,7 +248,7 @@ extern "C" __global__ void paged_decode_attn_fp8(
             #pragma unroll
             for (int i = 0; i < VEC_U32_FP8; i++) {
                 float k0, k1, k2, k3;
-                unpack4_fp8(k32[i], k_scale, k0, k1, k2, k3);
+                unpack4_fp8_raw(k32[i], k0, k1, k2, k3);
                 dot += q_reg[4*i] * k0 + q_reg[4*i+1] * k1
                      + q_reg[4*i+2] * k2 + q_reg[4*i+3] * k3;
             }
@@ -240,7 +256,7 @@ extern "C" __global__ void paged_decode_attn_fp8(
             for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
                 dot += __shfl_xor_sync(0xffffffff, dot, offset);
 
-            float score = dot * inv_sqrt_d;
+            float score = dot * score_scale;
             float m_new = fmaxf(m, score);
             float exp_old = __expf(m - m_new);
             float exp_new = __expf(score - m_new);
@@ -251,7 +267,7 @@ extern "C" __global__ void paged_decode_attn_fp8(
             #pragma unroll
             for (int i = 0; i < VEC_U32_FP8; i++) {
                 float v0, v1, v2, v3;
-                unpack4_fp8(v32[i], v_scale, v0, v1, v2, v3);
+                unpack4_fp8_raw(v32[i], v0, v1, v2, v3);
                 o_reg[4*i]   = o_reg[4*i]   * exp_old + exp_new * v0;
                 o_reg[4*i+1] = o_reg[4*i+1] * exp_old + exp_new * v1;
                 o_reg[4*i+2] = o_reg[4*i+2] * exp_old + exp_new * v2;
@@ -272,9 +288,12 @@ extern "C" __global__ void paged_decode_attn_fp8(
         smem_m[warp_id] = m;
         smem_l[warp_id] = l;
     }
+    // v_scale applied exactly once per output element here (o_reg
+    // accumulated raw-V throughout; the merge below is linear so scaling
+    // before it is equivalent to scaling each accumulate).
     #pragma unroll
     for (int i = 0; i < VEC_BF16; i++) {
-        smem_o[warp_id][vec_offset_bf16 + i] = o_reg[i];
+        smem_o[warp_id][vec_offset_bf16 + i] = o_reg[i] * v_scale;
     }
     __syncthreads();
 
@@ -394,6 +413,9 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
     #pragma unroll
     for (int i = 0; i < VEC_BF16; i++) o_reg[i] = 0.0f;
 
+    // Hoisted dequant scales (see unpack4_fp8_raw / the main kernel).
+    const float score_scale = inv_sqrt_d * k_scale;
+
     // cache_stride (block-level) passed from host; head_stride_kv (within-block) always contiguous.
     unsigned long long head_stride_kv = (unsigned long long)num_kv_heads * head_dim;
 
@@ -411,7 +433,7 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
         #pragma unroll
         for (int i = 0; i < VEC_U32_FP8; i++) {
             float k0, k1, k2, k3;
-            unpack4_fp8(k32[i], k_scale, k0, k1, k2, k3);
+            unpack4_fp8_raw(k32[i], k0, k1, k2, k3);
             dot += q_reg[4*i] * k0 + q_reg[4*i+1] * k1
                  + q_reg[4*i+2] * k2 + q_reg[4*i+3] * k3;
         }
@@ -419,7 +441,7 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
         for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
             dot += __shfl_xor_sync(0xffffffff, dot, offset);
 
-        float score = dot * inv_sqrt_d;
+        float score = dot * score_scale;
         float m_new = fmaxf(m_val, score);
         float exp_old = __expf(m_val - m_new);
         float exp_new = __expf(score - m_new);
@@ -433,7 +455,7 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
         #pragma unroll
         for (int i = 0; i < VEC_U32_FP8; i++) {
             float v0, v1, v2, v3;
-            unpack4_fp8(v32[i], v_scale, v0, v1, v2, v3);
+            unpack4_fp8_raw(v32[i], v0, v1, v2, v3);
             o_reg[4*i]   = o_reg[4*i]   * exp_old + exp_new * v0;
             o_reg[4*i+1] = o_reg[4*i+1] * exp_old + exp_new * v1;
             o_reg[4*i+2] = o_reg[4*i+2] * exp_old + exp_new * v2;
@@ -451,9 +473,11 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
         smem_m[warp_id] = m_val;
         smem_l[warp_id] = l_val;
     }
+    // v_scale applied exactly once per output element (raw-V o_reg; the
+    // tree merge and the splitk reduce kernel are both linear in o).
     #pragma unroll
     for (int i = 0; i < VEC_BF16; i++) {
-        smem_o[warp_id][vec_offset_bf16 + i] = o_reg[i];
+        smem_o[warp_id][vec_offset_bf16 + i] = o_reg[i] * v_scale;
     }
     __syncthreads();
 

@@ -23,6 +23,13 @@ pub(super) fn bf16_batchm_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_BF16_QKV_BATCHM").ok().as_deref() != Some("0"))
 }
 
+/// Fused [q|k|v] projection GEMM (one N=14336 launch instead of three).
+/// Kill switch: `ATLAS_NO_FUSED_QKV=1` restores the three separate GEMMs.
+fn fused_qkv_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_FUSED_QKV").ok().as_deref() != Some("1"))
+}
+
 impl Qwen3AttentionLayer {
     pub(super) fn ms_phase_qkv(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
         let MultiSeqCtx {
@@ -298,11 +305,63 @@ impl Qwen3AttentionLayer {
             nkv,
             hd,
             eps,
+            bf16,
             q_proj_bytes,
             per_seq_qkv,
             qkv_buf,
             ..
         } = *c;
+        // ONE launch per norm for all n sequences. Each sequence's head-rows are
+        // packed at `hd` inside its own [Q|K|V|gate] block, and the blocks sit
+        // `per_seq_qkv` apart — exactly the (rows_per_group, num_groups,
+        // row_stride) shape `rms_norm_strided` takes. The per-sequence loop below
+        // was 516 launches/step across the 16 attention layers (0.76 ms).
+        // Bit-identical: one block per row either way. Kill: ATLAS_NO_QK_NORM_STRIDED=1.
+        fn qk_norm_strided_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_NO_QK_NORM_STRIDED").ok().as_deref() != Some("1")
+            })
+        }
+        if n > 1
+            && self.rms_norm_strided_k.0 != 0
+            && qk_norm_strided_enabled()
+            && per_seq_qkv.is_multiple_of(bf16)
+        {
+            let stride_e = (per_seq_qkv / bf16) as u32;
+            if !self.attn.q_norm.weight.is_null() {
+                ops::rms_norm_strided(
+                    fwd.gpu,
+                    self.rms_norm_strided_k,
+                    qkv_buf,
+                    &self.attn.q_norm,
+                    qkv_buf,
+                    nq,
+                    n as u32,
+                    hd,
+                    eps,
+                    stride_e,
+                    stream,
+                )?;
+            }
+            if !self.attn.k_norm.weight.is_null() {
+                let k0 = qkv_buf.offset(q_proj_bytes);
+                ops::rms_norm_strided(
+                    fwd.gpu,
+                    self.rms_norm_strided_k,
+                    k0,
+                    &self.attn.k_norm,
+                    k0,
+                    nkv,
+                    n as u32,
+                    hd,
+                    eps,
+                    stride_e,
+                    stream,
+                )?;
+            }
+            return Ok(());
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
@@ -578,12 +637,30 @@ impl Qwen3AttentionLayer {
             // tile is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K
             // shapes. Mirrors dense_ffn::w4a16_prefill_gemm; same
             // ATLAS_FFN_SMALLM=0 kill-switch.
-            fn small_m_enabled() -> bool {
-                static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                *ON.get_or_init(|| std::env::var("ATLAS_FFN_SMALLM").ok().as_deref() != Some("0"))
-            }
-            if m <= 64 && k.is_multiple_of(32) && small_m_enabled() {
-                if k >= 8192 && k.is_multiple_of(64) && self.w4a16_gemm_t_k64_k.0 != 0 {
+            // The `OnceLock<bool>` static that lived here is now a field on
+            // `layers::ops::ModelLevers` — resolved when the model is built and carried
+            // on `ForwardContext`, because a static outlives the model whose flags it
+            // encodes.
+            if m <= 64 && k.is_multiple_of(32) && c.fwd.levers.ffn_small_m {
+                if k >= crate::layers::w4a16_k64_min_k()
+                    && k.is_multiple_of(64)
+                    && self.w4a16_gemm_t_k64_k.0 != 0
+                {
+                    // Narrow-N deep-K twin: bit-identical, and 1.42x at the
+                    // o_proj shape (N=5120, K=6144 -> 40 CTAs on 48 SMs).
+                    if self.w4a16_gemm_t_k64_n64_k.0 != 0 && crate::layers::k64_n64_wins(m, n) {
+                        return ops::w4a16_gemm(
+                            gpu,
+                            self.w4a16_gemm_t_k64_n64_k,
+                            input,
+                            wt,
+                            output,
+                            m,
+                            n,
+                            k,
+                            stream,
+                        );
+                    }
                     return ops::w4a16_gemm_n128(
                         gpu,
                         self.w4a16_gemm_t_k64_k,
@@ -682,16 +759,47 @@ impl Qwen3AttentionLayer {
         // the row stride matches the batch3 output — the scatter below is
         // identical.
         let q_scratch = fwd.buffers.ssm_qkvz();
-        self.wide_verify_gemm(
-            c,
-            normed,
-            q_nvfp4,
-            self.q_nvfp4_t.as_ref(),
-            q_scratch,
-            n as u32,
-            q_proj_dim,
-            h as u32,
-        )?;
+        let kv_dim_e = (nkv * hd) as usize;
+        // FUSED [q|k|v]: one N=14336 GEMM instead of three (96/8/8 CTAs). The
+        // k/v shapes are N=1024 => 8 CTAs on 48 SMs, the worst-utilised kernels
+        // in the model (23.6 GB/s, 9.75x off floor). Bit-identical — same dot
+        // products, relocated along N — and the loader only builds the twin when
+        // q/k/v share one `weight_scale_2`.
+        // Kill switch: ATLAS_NO_FUSED_QKV=1.
+        let fused_n = q_proj_dim as usize + 2 * kv_dim_e;
+        // n > 8 is REQUIRED, not an optimisation: `wide_verify_gemm` early-returns
+        // on the batched-GEMV arms for m <= 8 using the BASE (non-transposed)
+        // weight and ignoring `w_t` entirely, so a fused N would read past the
+        // q_proj weight. Only at m > 8 is the transposed tile GEMM guaranteed.
+        // n varies as sequences finish, so this is hit at every concurrency.
+        let use_fused = fused_qkv_enabled() && self.qkv_nvfp4_t.is_some() && n > 8;
+        if use_fused {
+            // per_seq_qkv == q_proj_bytes + 2*kv_bytes == fused_n*bf16, so the
+            // fused GEMM's [n, fused_n] output IS the qkv_buf layout byte for
+            // byte. Write straight into it and skip the scatter entirely —
+            // that removes 3 GEMMs AND 48 D2D copies per attention layer.
+            self.wide_verify_gemm(
+                c,
+                normed,
+                q_nvfp4,
+                self.qkv_nvfp4_t.as_ref(),
+                qkv_buf,
+                n as u32,
+                fused_n as u32,
+                h as u32,
+            )?;
+        } else {
+            self.wide_verify_gemm(
+                c,
+                normed,
+                q_nvfp4,
+                self.q_nvfp4_t.as_ref(),
+                q_scratch,
+                n as u32,
+                q_proj_dim,
+                h as u32,
+            )?;
+        }
         if self.gated && !self.q_lora_active() {
             // Split interleaved [Q|Gate] → deinterleaved, in place, all n rows
             // (grid is per-token). Matches what w4a16_gemv_qg_batch3 does inline.
@@ -700,11 +808,15 @@ impl Qwen3AttentionLayer {
             ops::deinterleave_qg(
                 fwd.gpu,
                 self.deinterleave_qg_k,
-                q_scratch,
+                if use_fused { qkv_buf } else { q_scratch },
                 n as u32,
                 nq,
                 hd,
-                q_proj_dim,
+                if use_fused {
+                    fused_n as u32
+                } else {
+                    q_proj_dim
+                },
                 stream,
             )?;
         }
@@ -714,29 +826,32 @@ impl Qwen3AttentionLayer {
         let kv_bytes = kv_dim as usize * bf16;
         let k_scratch = fwd.buffers.attn_output();
         let v_scratch = k_scratch.offset(n * kv_bytes);
-        self.wide_verify_gemm(
-            c,
-            normed,
-            k_nvfp4,
-            self.k_nvfp4_t.as_ref(),
-            k_scratch,
-            n as u32,
-            kv_dim,
-            h as u32,
-        )?;
-        self.wide_verify_gemm(
-            c,
-            normed,
-            v_nvfp4,
-            self.v_nvfp4_t.as_ref(),
-            v_scratch,
-            n as u32,
-            kv_dim,
-            h as u32,
-        )?;
+        if !use_fused {
+            self.wide_verify_gemm(
+                c,
+                normed,
+                k_nvfp4,
+                self.k_nvfp4_t.as_ref(),
+                k_scratch,
+                n as u32,
+                kv_dim,
+                h as u32,
+            )?;
+            self.wide_verify_gemm(
+                c,
+                normed,
+                v_nvfp4,
+                self.v_nvfp4_t.as_ref(),
+                v_scratch,
+                n as u32,
+                kv_dim,
+                h as u32,
+            )?;
+        }
 
         // Scatter contiguous Q/K/V into the per-seq interleaved qkv_buf.
-        for i in 0..n {
+        // Not needed when fused: the GEMM already wrote that exact layout.
+        for i in (0..n).take_while(|_| !use_fused) {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
             let v_out_i = k_out_i.offset(kv_bytes);

@@ -142,7 +142,7 @@ mod tests {
             Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
         let result = build_model(
             config,
-            &store,
+            store,
             Box::new(gpu),
             1,
             16,

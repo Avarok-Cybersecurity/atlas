@@ -742,7 +742,7 @@ impl Qwen3AttentionLayer {
             // through the same cuBLASLt path q/k/v/o use (bf16_gemm_act_weight_t),
             // which handles small N better (~2.5% C=1 prefill, A/B ISL 1024/8192);
             // dense_gemm_tc stays as the fallback when cuBLAS is off.
-            if ops::cublas_gemm_enabled() {
+            if ctx.dispatch.cublas_gemm {
                 ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
             } else {
                 ops::dense_gemm_tc(

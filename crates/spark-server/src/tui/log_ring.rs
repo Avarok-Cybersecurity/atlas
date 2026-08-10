@@ -34,28 +34,49 @@ pub struct LogLine {
     pub message: String,
 }
 
-static RING: Mutex<VecDeque<LogLine>> = Mutex::new(VecDeque::new());
-/// Monotone counter of lines ever pushed — lets the pane detect "n new lines
-/// while scrolled up" without diffing contents.
-static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The captured log lines and the count of lines ever pushed.
+///
+/// One object rather than two loose globals, because the count only means
+/// anything relative to the ring it counts: the pane detects "n new lines
+/// while scrolled up" by comparing them, and a reset of one without the other
+/// reads as "no new lines".
+struct Captured {
+    lines: Mutex<VecDeque<LogLine>>,
+    /// Monotone count of lines ever pushed.
+    seq: std::sync::atomic::AtomicU64,
+}
+
+/// STATIC, DELIBERATELY — process lifecycle. This backs a `tracing` subscriber
+/// Layer, and a subscriber is installed once per process, before any model
+/// exists and after every model is gone. Events arrive from every thread in
+/// the program (weight load, scheduler, HTTP, the panic hook), and the panic
+/// hook in particular must be able to dump it with no `self` in hand. Scoping
+/// it to a run would mean losing exactly the lines that explain a failure to
+/// start or a failure to stop.
+static CAPTURED: Captured = Captured {
+    lines: Mutex::new(VecDeque::new()),
+    seq: std::sync::atomic::AtomicU64::new(0),
+};
 
 fn push(line: LogLine) {
-    let mut ring = RING.lock();
+    let mut ring = CAPTURED.lines.lock();
     if ring.len() == CAP {
         ring.pop_front();
     }
     ring.push_back(line);
-    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    CAPTURED
+        .seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Total lines ever captured (for new-line badges while scrolled).
 pub fn seq() -> u64 {
-    SEQ.load(std::sync::atomic::Ordering::Relaxed)
+    CAPTURED.seq.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Clone out the newest `n` lines (oldest-first order preserved).
 pub fn tail(n: usize) -> Vec<LogLine> {
-    let ring = RING.lock();
+    let ring = CAPTURED.lines.lock();
     let skip = ring.len().saturating_sub(n);
     ring.iter().skip(skip).cloned().collect()
 }
@@ -116,22 +137,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ring_caps_and_tails() {
-        for i in 0..(CAP + 10) {
-            push(LogLine {
-                at: SystemTime::now(),
-                level: Level::INFO,
-                target: "t".into(),
-                message: format!("m{i}"),
-            });
-        }
-        let t = tail(5);
-        assert_eq!(t.len(), 5);
-        assert_eq!(t.last().unwrap().message, format!("m{}", CAP + 9));
-        assert!(seq() >= (CAP + 10) as u64);
-    }
-}
+#[path = "log_ring_tests.rs"]
+mod tests;

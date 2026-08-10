@@ -33,8 +33,11 @@ fn call(arguments: serde_json::Value) -> ToolCall {
 
 #[test]
 fn poolside_parser_does_not_reinject_tool_prompt() {
-    let prompt =
-        PoolsideV1Parser.system_prompt(&[write_file_tool()], &ToolChoice::Mode("auto".to_string()));
+    let prompt = PoolsideV1Parser.system_prompt(
+        &[write_file_tool()],
+        &ToolChoice::Mode("auto".to_string()),
+        &crate::tool_parser::PromptLevers::OFF,
+    );
 
     assert!(prompt.is_empty());
 }

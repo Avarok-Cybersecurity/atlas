@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+mod evict;
+
 type NodeId = usize;
 
 pub(super) struct RadixNode {
@@ -292,7 +294,7 @@ impl RadixTreeInner {
         block_size: usize,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> Vec<u32> {
+    ) -> crate::prefix_cache::InsertAcquired {
         let access = self.next_access();
         let root_id = self.root_for_insert(adapter_id);
         let mut current = root_id;
@@ -317,6 +319,10 @@ impl RadixTreeInner {
         // Re-insertion of an already-cached (node, disk_id) pair is NOT an
         // acquisition — the cache's ref already covers it.
         let mut newly_acquired: Vec<u32> = Vec::new();
+        // Blocks the cache starts / stops storing here; the caller takes and
+        // releases exactly one KV ref each. See `InsertAcquired`.
+        let mut newly_owned_blocks: Vec<u32> = Vec::new();
+        let mut released_blocks: Vec<u32> = Vec::new();
 
         for i in 0..num_blocks {
             let chunk = &tokens[i * block_size..(i + 1) * block_size];
@@ -353,7 +359,8 @@ impl RadixTreeInner {
                 parent_ctx_hash = ctx_hash;
                 current = child;
             } else {
-                self.nodes[current].partial_suffix = None;
+                // A real child supersedes the partial slot; release its ref.
+                released_blocks.extend(self.nodes[current].partial_suffix.take().map(|p| p.1));
                 let node = RadixNode {
                     children: HashMap::new(),
                     block_idx: block_table[i],
@@ -366,6 +373,7 @@ impl RadixTreeInner {
                     partial_suffix: None,
                 };
                 let child_id = self.alloc_node(node);
+                newly_owned_blocks.push(block_table[i]);
                 self.nodes[current]
                     .children
                     .insert(chunk.to_vec(), child_id);
@@ -394,93 +402,25 @@ impl RadixTreeInner {
             // full-block path above). This branch fires rarely — partial
             // slots are tail-only and typically unique per-prefix.
             let prior = self.nodes[current].partial_suffix.as_ref().map(|p| p.2);
+            // The cache owns a KV ref on the partial block exactly as it does on
+            // a node's own block — `walk` hands it out and `evict` hands it back,
+            // so an unreferenced one sits on the free list while still cached.
+            // See `InsertAcquired` for the failure this prevents.
+            let prior_block = self.nodes[current].partial_suffix.as_ref().map(|p| p.1);
             self.nodes[current].partial_suffix = Some((partial_toks, partial_block, partial_disk));
+            if prior_block != Some(partial_block) {
+                newly_owned_blocks.push(partial_block);
+                released_blocks.extend(prior_block);
+            }
             if hss_active && partial_disk != u32::MAX && prior != Some(partial_disk) {
                 newly_acquired.push(partial_disk);
             }
         }
 
-        newly_acquired
-    }
-
-    /// Evict up to `num_blocks` LRU zero-ref leaf nodes.
-    /// Returns physical block indices that were freed plus parallel
-    /// disk-block IDs (Phase 6.1.e). When HSS isn't in use, every disk_id
-    /// in the result is `u32::MAX` and the caller should ignore them; the
-    /// public-trait wrapper filters those out into the returned
-    /// `EvictedBlocks::disk_block_ids`.
-    pub(super) fn evict(&mut self, num_blocks: usize) -> (Vec<u32>, Vec<u32>) {
-        let mut freed_phys = Vec::new();
-        let mut freed_disk = Vec::new();
-        if num_blocks == 0 {
-            return (freed_phys, freed_disk);
+        crate::prefix_cache::InsertAcquired {
+            disk_block_ids: newly_acquired,
+            blocks: newly_owned_blocks,
+            released_blocks,
         }
-
-        loop {
-            if freed_phys.len() >= num_blocks {
-                break;
-            }
-
-            let mut best: Option<(NodeId, u64)> = None;
-            for (id, node) in self.nodes.iter().enumerate() {
-                // Roots (one per adapter_id) carry `parent == None` and
-                // `block_idx == u32::MAX`; the block_idx guard below already
-                // excludes them, but skip explicitly for clarity.
-                if node.parent.is_none() {
-                    continue;
-                }
-                if node.ref_count <= 1 && node.children.is_empty() && node.block_idx != u32::MAX {
-                    match best {
-                        None => best = Some((id, node.last_access)),
-                        Some((_, best_access)) if node.last_access < best_access => {
-                            best = Some((id, node.last_access));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            match best {
-                Some((node_id, _)) => {
-                    let block = self.nodes[node_id].block_idx;
-                    let disk = self.nodes[node_id].disk_block_id;
-                    freed_phys.push(block);
-                    freed_disk.push(disk);
-
-                    if let Some((_, partial_block, partial_disk)) =
-                        self.nodes[node_id].partial_suffix.take()
-                    {
-                        freed_phys.push(partial_block);
-                        freed_disk.push(partial_disk);
-                    }
-
-                    if let Some(parent_id) = self.nodes[node_id].parent
-                        && let Some(key) = self.nodes[node_id].parent_key.clone()
-                    {
-                        self.nodes[parent_id].children.remove(&key);
-                    }
-
-                    self.nodes[node_id].block_idx = u32::MAX;
-                    self.nodes[node_id].disk_block_id = u32::MAX;
-                    self.nodes[node_id].children.clear();
-                    self.nodes[node_id].parent = None;
-                    self.nodes[node_id].parent_key = None;
-                    self.nodes[node_id].partial_suffix = None;
-                    self.free_nodes.push(node_id);
-                }
-                None => break,
-            }
-        }
-
-        (freed_phys, freed_disk)
-    }
-
-    pub(super) fn num_entries(&self) -> usize {
-        // Count non-root, non-deleted nodes. Roots (per adapter_id) and freed
-        // nodes both carry `block_idx == u32::MAX`, so this filter excludes them.
-        self.nodes
-            .iter()
-            .filter(|n| n.block_idx != u32::MAX)
-            .count()
     }
 }

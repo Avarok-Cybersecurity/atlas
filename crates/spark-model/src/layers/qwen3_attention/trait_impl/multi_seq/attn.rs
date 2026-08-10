@@ -10,8 +10,19 @@ use spark_runtime::kv_cache::PagedKvCache;
 use super::ctx::MultiSeqCtx;
 use crate::layer::AttnMetadataDev;
 use crate::layers::ops;
-use crate::layers::qwen3_attention::HeadGateActivation;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
+
+/// One batched `reshape_and_cache` launch for all N sequences instead of one
+/// launch per sequence. Kill switch: `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1`.
+fn batch_cache_write_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("ATLAS_NO_ATTN_BATCH_CACHE_WRITE")
+            .ok()
+            .as_deref()
+            != Some("1")
+    })
+}
 
 impl Qwen3AttentionLayer {
     /// Phase 3: per-token RoPE (each sequence has its own position).
@@ -23,11 +34,44 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
+            bf16,
             q_proj_bytes,
             per_seq_qkv,
             qkv_buf,
             ..
         } = *c;
+        // ONE launch for all n sequences when the strided kernel is present. The
+        // packed `rope` derives row addresses from num_*_heads*head_dim, but these
+        // rows sit `per_seq_qkv` apart inside the interleaved [Q|K|V|gate] block,
+        // so the per-sequence loop below was calling it n times with seq_len=1 —
+        // 258 launches/step at 4.6 us = 1.18 ms across the 16 attention layers.
+        // Bit-identical: same math and ordering, only the row address differs.
+        // Kill switch: ATLAS_NO_ROPE_STRIDED=1.
+        fn rope_strided_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_NO_ROPE_STRIDED").ok().as_deref() != Some("1"))
+        }
+        if n > 1 && self.rope_strided_k.0 != 0 && rope_strided_enabled() {
+            let stride_e = (per_seq_qkv / bf16) as u32;
+            return ops::rope_strided(
+                fwd.gpu,
+                self.rope_strided_k,
+                qkv_buf,
+                qkv_buf.offset(q_proj_bytes),
+                meta.positions,
+                n as u32,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(fwd.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(fwd.config.rope_theta as f32),
+                stride_e,
+                stride_e,
+                stream,
+            );
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
@@ -92,6 +136,34 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
         let kv_stride = nkv * hd;
+        // The reshape_and_cache kernels already take `num_tokens` plus explicit
+        // key/value row strides ("row stride may differ", reshape_and_cache.cu),
+        // and their grid is [num_tokens,1,1] — so all N sequences go in ONE
+        // launch. `slot` and `positions` are already contiguous per-sequence
+        // arrays. Each sequence's K row sits `per_seq_qkv` bytes after the last,
+        // so the row stride is that gap in ELEMENTS.
+        //
+        // `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1` restores the per-sequence loop.
+        let k_out_0 = qkv_buf.offset(q_proj_bytes);
+        let v_out_0 = k_out_0.offset((nkv * hd) as usize * bf16);
+        if n > 1 && batch_cache_write_enabled() && per_seq_qkv.is_multiple_of(bf16) {
+            let row_stride = (per_seq_qkv / bf16) as u32;
+            return self.write_kv_cache(
+                fwd.gpu,
+                k_out_0,
+                v_out_0,
+                kv_cache,
+                meta.slot,
+                n as u32,
+                nkv,
+                hd,
+                bs,
+                row_stride,
+                row_stride,
+                stream,
+                fwd.graph_capture,
+            );
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
@@ -138,28 +210,62 @@ impl Qwen3AttentionLayer {
             qkv_buf,
             ..
         } = *c;
-        // Build contiguous Q buffer [N, nq*hd] for batched attention.
-        let q_contiguous = fwd.buffers.ssm_qkvz();
-        for i in 0..n {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            fwd.gpu.copy_d2d_async(
-                q_out_i,
-                q_contiguous.offset(i * q_dim as usize * bf16),
-                q_dim as usize * bf16,
-                stream,
-            )?;
-        }
-        let attn_out = fwd.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
-
         // TurboQuant WHT bookends (mirrors decode/attention_forward.rs).
         // The cache holds WHT(K)/WHT(V) for turbo dtypes: rotate the batched
         // Q rows before the paged decode and rotate the output back after —
         // without these the multi-seq batched decode scores raw Q against
         // rotated K and returns output in the rotated-V basis.
+        // Hoisted above the Q staging below: those rotations mutate the staged
+        // buffer IN PLACE, so they are exactly what makes the copy unskippable.
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
         let k_is_turbo = wht_k_dtype.is_wht_rotated();
         let v_is_turbo = wht_v_dtype.is_wht_rotated();
+
+        // ── Q for the batched paged decode ────────────────────────────────
+        // `run_paged_decode` already takes an explicit `q_stride` and the kernel
+        // indexes `Q + seq_idx*q_stride` (paged_decode_attn.cu:96, splitk twin
+        // :364), so when nothing rewrites Q we can point it straight at the
+        // interleaved [Q|K|V|gate] block and read in place — the rows are simply
+        // `per_seq_qkv` apart instead of packed.
+        //
+        // That removes 16 layers x 16 seqs = 256 D2D copies of 12288 B per step
+        // (0.19 ms of GPU copy plus 0.23 ms of host issue measured by nsys), and
+        // 256 nodes from the captured graph. Bit-identical: same values, same
+        // kernel, only the addressing changes.
+        //
+        // NOT skippable under TurboQuant: the innerQ/WHT bookends below rotate
+        // the staged buffer in place, and `qkv_buf` must not be mutated.
+        // Kill switch: ATLAS_NO_ATTN_Q_INPLACE=1.
+        fn q_inplace_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_NO_ATTN_Q_INPLACE").ok().as_deref() != Some("1")
+            })
+        }
+        let q_inplace =
+            !k_is_turbo && !v_is_turbo && q_inplace_enabled() && per_seq_qkv.is_multiple_of(bf16);
+        let q_contiguous = if q_inplace {
+            qkv_buf
+        } else {
+            let staged = fwd.buffers.ssm_qkvz();
+            for i in 0..n {
+                let q_out_i = qkv_buf.offset(i * per_seq_qkv);
+                fwd.gpu.copy_d2d_async(
+                    q_out_i,
+                    staged.offset(i * q_dim as usize * bf16),
+                    q_dim as usize * bf16,
+                    stream,
+                )?;
+            }
+            staged
+        };
+        let q_stride = if q_inplace {
+            (per_seq_qkv / bf16) as u32
+        } else {
+            nq * hd
+        };
+        let attn_out = fwd.buffers.attn_output();
+        let inv_sqrt_d = self.effective_attn_scale(hd);
         let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -196,8 +302,9 @@ impl Qwen3AttentionLayer {
             hd,
             bs,
             inv_sqrt_d,
-            nq * hd,
+            q_stride,
             fwd.buffers.splitk_workspace(),
+            fwd.levers.max_decode_seqs,
             stream,
         )?;
         if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {
@@ -211,237 +318,6 @@ impl Qwen3AttentionLayer {
         }
         Ok(attn_out)
     }
-
-    /// Phase 6: gate multiply (when gated) + O projection. Writes to
-    /// `o_out`. Returns the o_out buffer pointer.
-    pub(super) fn ms_phase_o_proj(
-        &self,
-        c: &MultiSeqCtx<'_>,
-        attn_out: DevicePtr,
-    ) -> Result<DevicePtr> {
-        let MultiSeqCtx {
-            fwd,
-            n,
-            stream,
-            h,
-            nq,
-            hd,
-            bf16,
-            q_dim,
-            per_seq_qkv,
-            qkv_buf,
-            normed,
-            ..
-        } = *c;
-        if self.gated {
-            for i in 0..n {
-                let gate_i = qkv_buf.offset(i * per_seq_qkv + q_dim as usize * bf16);
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                ops::sigmoid_gate_mul(
-                    fwd.gpu,
-                    self.sigmoid_gate_mul_k,
-                    attn_out_i,
-                    gate_i,
-                    attn_out_i,
-                    q_dim,
-                    stream,
-                )?;
-            }
-        }
-
-        if let Some(ref g_proj) = self.head_gate_weight {
-            let gate_buf = qkv_buf;
-            // See the decode-path note: N = nq = 72 gives dense_gemm_tc only
-            // ceil(72/64) = 2 CTAs. Use the batched GEMV (ceil(N/4) CTAs), which
-            // also keeps this consistent with the single-sequence decode path.
-            if self.dense_gemv_batchm_k.0 != 0 && super::qkv::bf16_batchm_enabled() {
-                ops::dense_gemv_batchm(
-                    fwd.gpu,
-                    self.dense_gemv_batchm_k,
-                    normed,
-                    g_proj,
-                    gate_buf,
-                    n as u32,
-                    nq,
-                    h as u32,
-                    nq, // gate rows are nq BF16 elements apart
-                    stream,
-                )?;
-            } else {
-                ops::dense_gemm_tc(
-                    fwd.gpu,
-                    self.dense_gemm_tc_k,
-                    normed,
-                    g_proj,
-                    gate_buf,
-                    n as u32,
-                    nq,
-                    h as u32,
-                    stream,
-                )?;
-            }
-            match self.head_gate_activation {
-                HeadGateActivation::Sigmoid => ops::sigmoid_gate_mul_head_broadcast(
-                    fwd.gpu,
-                    self.sigmoid_gate_head_broadcast_k,
-                    attn_out,
-                    gate_buf,
-                    attn_out,
-                    nq,
-                    hd,
-                    n as u32,
-                    stream,
-                )?,
-                HeadGateActivation::Softplus => ops::softplus_gate_mul_head_broadcast(
-                    fwd.gpu,
-                    self.softplus_gate_head_broadcast_k,
-                    attn_out,
-                    gate_buf,
-                    attn_out,
-                    nq,
-                    hd,
-                    n as u32,
-                    stream,
-                )?,
-            }
-        }
-
-        let o_out = fwd.buffers.moe_output();
-        if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
-            // ATLAS_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
-            // attn_out is contiguous [n, q_dim] and o_out is [n, h], so a single
-            // batched GEMM reads the BF16 o_proj weight ONCE for all n sequences
-            // instead of once per sequence (per-seq dense_gemv re-read it N×).
-            //
-            // At small n the batched GEMV beats dense_gemm: dense_gemm's grid is
-            // [ceil(N/16), ceil(M/16)] with a 16-row tile, so M<=8 wastes >=50%
-            // of every tile and it is a scalar FFMA kernel (~89 GB/s measured)
-            // against a ~274 GB/s streaming GEMV. o_proj is N=h=3072, K=nq*hd,
-            // i.e. the same weight bytes as q_proj -- worth the branch.
-            if (2..=8).contains(&n)
-                && self.dense_gemv_batchm_k.0 != 0
-                && super::qkv::bf16_batchm_enabled()
-            {
-                ops::dense_gemv_batchm(
-                    fwd.gpu,
-                    self.dense_gemv_batchm_k,
-                    attn_out,
-                    o_bf16,
-                    o_out,
-                    n as u32,
-                    h as u32,
-                    nq * hd,
-                    h as u32, // o_out rows are h BF16 elements apart
-                    stream,
-                )?;
-            } else {
-                ops::dense_gemm(
-                    fwd.gpu,
-                    self.dense_gemm_k,
-                    attn_out,
-                    o_bf16,
-                    o_out,
-                    n as u32,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
-            }
-        } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
-            // FP8 native: per-token w8a16_gemv for O projection.
-            for i in 0..n {
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                let o_out_i = o_out.offset(i * h * bf16);
-                ops::w8a16_gemv(
-                    fwd.gpu,
-                    self.w8a16_gemv_k,
-                    attn_out_i,
-                    o_fp8.weight,
-                    o_fp8.row_scale,
-                    o_out_i,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
-            }
-        } else if n == 3 && !self.attn.o_proj.is_null() {
-            ops::w4a16_gemv_batch3(
-                fwd.gpu,
-                self.w4a16_gemv_batch3_k,
-                attn_out,
-                &self.attn.o_proj,
-                o_out,
-                h as u32,
-                nq * hd,
-                stream,
-            )?;
-        } else if n == 2 && !self.attn.o_proj.is_null() {
-            ops::w4a16_gemv_batch2(
-                fwd.gpu,
-                self.w4a16_gemv_batch2_k,
-                attn_out,
-                &self.attn.o_proj,
-                o_out,
-                h as u32,
-                nq * hd,
-                stream,
-            )?;
-        } else if !self.attn.o_proj.is_null() {
-            // WIDE-VERIFY BATCHED O-PROJ (DFlash γ=16, n>3). One GEMM reads
-            // the o_proj weight ONCE for all n rows instead of the per-row
-            // GEMV loop below. attn_out is contiguous [n, q_dim]; o_out is
-            // contiguous [n, h]; both already laid out for a single M=n GEMM
-            // (no scatter). Uses the pipelined m128_v2 kernel when the
-            // transposed weight is present (base M64 GEMM is the slow path).
-            self.wide_verify_gemm(
-                c,
-                attn_out,
-                &self.attn.o_proj,
-                self.o_nvfp4_t.as_ref(),
-                o_out,
-                n as u32,
-                h as u32,
-                nq * hd,
-            )?;
-        } else {
-            for i in 0..n {
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                let o_out_i = o_out.offset(i * h * bf16);
-                ops::w4a16_gemv(
-                    fwd.gpu,
-                    self.w4a16_gemv_k,
-                    attn_out_i,
-                    &self.attn.o_proj,
-                    o_out_i,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
-            }
-        }
-
-        // ── Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
-        // contiguous [n, q_dim]); base_out = o_out (contiguous [n, h]) folded in
-        // place — matches the single-seq apply_lora_delta on o after o_proj.
-        // No-op unless a routing table is installed AND seq_slot is non-null.
-        if let Some(ref lw) = self.lora
-            && c.seq_slot.0 != 0
-            && let Some(ref route) = lw.o_route
-        {
-            ops::lora_delta::apply_lora_bgmv(
-                fwd.gpu,
-                &lw.kernels,
-                route,
-                attn_out,
-                o_out,
-                c.seq_slot,
-                n as u32,
-                q_dim,    // x row stride (elements): attn_out is [n, q_dim]
-                h as u32, // out row stride (elements): o_out is [n, h] contiguous
-                fwd.buffers.lora_xa(),
-                stream,
-            )?;
-        }
-        Ok(o_out)
-    }
 }
+
+mod o_proj;

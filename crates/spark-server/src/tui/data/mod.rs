@@ -4,6 +4,7 @@
 //! state (prometheus counters, scheduler snapshot, kernel audit, HF cache).
 //! Nothing here touches the scheduler thread's locals.
 
+pub mod catalogue;
 pub mod kernels;
 pub mod library;
 pub mod metrics_poll;

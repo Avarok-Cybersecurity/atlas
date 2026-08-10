@@ -13,6 +13,10 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
+#[path = "ops/derived_weights.rs"]
+mod derived_weights;
+#[path = "ops/dispatch_config.rs"]
+mod dispatch_config;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
@@ -43,6 +47,10 @@ mod gemm_dense;
 mod gemm_dense_int8;
 #[path = "ops/gemm_fp4.rs"]
 mod gemm_fp4;
+#[path = "ops/model_stats.rs"]
+pub mod model_stats;
+pub use model_stats::ModelStats;
+
 #[path = "ops/gemm_fp8_prefill.rs"]
 mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]
@@ -57,6 +65,8 @@ mod kv_cache_fp8k;
 mod kv_cache_turbok;
 #[path = "ops/lora_delta.rs"]
 pub mod lora_delta;
+#[path = "ops/model_levers.rs"]
+mod model_levers;
 #[path = "ops/moe_atomic_c4.rs"]
 mod moe_atomic_c4;
 #[path = "ops/moe_expert.rs"]
@@ -113,6 +123,8 @@ mod ssm_preproc;
 mod ssm_ssd;
 
 pub use activations::*;
+pub use derived_weights::{Derivation, DerivedWeights};
+pub use dispatch_config::GemmDispatch;
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use embeddings::*;
@@ -129,6 +141,7 @@ pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
+pub use model_levers::ModelLevers;
 pub use moe_atomic_c4::*;
 pub use moe_expert::*;
 pub use moe_expert_more::*;

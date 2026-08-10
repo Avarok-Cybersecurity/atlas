@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
+use crate::prefix_cache::TierEvict;
 
 #[path = "snapshot_lease.rs"]
 mod lease;
@@ -196,7 +197,16 @@ fn evict_to_tier_spills_not_removes() {
     // id 3 = fresh 8192 anchor (recency 100); id 9 = cold deep tail (recency 50).
     let mut idx = index(vec![entry(3, 1, 8192, 100), entry(9, 1, 16000, 50)], 1);
     let before = idx.len();
-    let (freed_slot, key) = idx.evict_to_tier().expect("a resident victim exists");
+    let TierEvict::Spill {
+        slot: freed_slot,
+        key,
+        ..
+    } = idx
+        .evict_to_tier(/*min_tokens*/ 0)
+        .expect("a resident victim exists")
+    else {
+        panic!("an ungated evict must SPILL, not drop");
+    };
     // No tail-protect (env off) → the coldest entry (deep tail id 9) is the
     // victim — the #278 pathology, but harmless here because we SPILL it
     // (faultable back in) rather than drop it.
@@ -209,6 +219,51 @@ fn evict_to_tier_spills_not_removes() {
     assert_eq!(idx.evict_lru(), Some(3));
 }
 
+/// The SPILL-side cost gate. A victim shallower than `min_tokens` must be
+/// DROPPED — entry removed, no tier key, `tier_spills` untouched — not left
+/// marked `tiered` with no bytes behind it, which would make every warm turn
+/// pay a blob-sized `store.get` to discover a miss.
+#[test]
+fn shallow_victim_is_dropped_not_spilled() {
+    // Single 100-token entry, gate at 1024 → too shallow to repay a spill.
+    let mut idx = index(vec![entry(9, 1, 100, 50)], 1);
+    let before = idx.len();
+    let ev = idx
+        .evict_to_tier(/*min_tokens*/ 1024)
+        .expect("a victim exists");
+    assert_eq!(
+        ev,
+        TierEvict::Drop {
+            slot: 9,
+            depth: 100
+        }
+    );
+    assert_eq!(idx.len(), before - 1, "entry REMOVED, not kept findable");
+    assert_eq!(idx.stats.tier_spills, 0, "a dropped victim is not a spill");
+    assert_eq!(idx.stats.evictions, 1, "it is a plain eviction");
+    // Nothing left to evict — and nothing tiered was left behind.
+    assert_eq!(idx.evict_to_tier(1024), None);
+}
+
+/// Same victim, deep enough: spilled and still findable.
+#[test]
+fn deep_victim_is_spilled_under_the_gate() {
+    let mut idx = index(vec![entry(9, 1, 16000, 50)], 1);
+    let ev = idx
+        .evict_to_tier(/*min_tokens*/ 1024)
+        .expect("a victim exists");
+    assert_eq!(
+        ev,
+        TierEvict::Spill {
+            slot: 9,
+            key: 9,
+            depth: 16000
+        }
+    );
+    assert_eq!(idx.len(), 1, "entry kept, findable for fault-in");
+    assert_eq!(idx.stats.tier_spills, 1);
+}
+
 /// A spilled entry is invisible to the non-tier `lookup` (never hands back a
 /// stale slot) but is found by `lookup_tiered` as `Tier(key)`.
 #[test]
@@ -218,7 +273,12 @@ fn spilled_entry_lookup_semantics() {
     let ph = super::hash_token_prefix(&toks, 50, 0);
     idx.insert(ph, /*slot*/ 4, /*session*/ 7, /*tok*/ 50);
     // Spill it.
-    let (freed, key) = idx.evict_to_tier().unwrap();
+    let TierEvict::Spill {
+        slot: freed, key, ..
+    } = idx.evict_to_tier(0).unwrap()
+    else {
+        panic!("an ungated evict must SPILL, not drop");
+    };
     assert_eq!((freed, key), (4, ph));
 
     // Non-tier lookup ignores the spilled entry → miss (safe recompute).
@@ -238,7 +298,7 @@ fn promote_rehomes_to_hbm() {
     let toks: Vec<u32> = (0..30).collect();
     let ph = super::hash_token_prefix(&toks, 30, 0);
     idx.insert(ph, 1, 7, 30);
-    idx.evict_to_tier().unwrap();
+    idx.evict_to_tier(0).unwrap();
 
     assert!(idx.promote(ph, /*new_slot*/ 12));
     assert_eq!(idx.stats.tier_fault_ins, 1);
@@ -255,9 +315,9 @@ fn evict_to_tier_none_when_all_spilled() {
     let mut idx = SsmSnapshotIndex::new();
     idx.insert(10, 0, 7, 5);
     idx.insert(20, 1, 7, 6);
-    assert!(idx.evict_to_tier().is_some());
-    assert!(idx.evict_to_tier().is_some());
-    assert_eq!(idx.evict_to_tier(), None, "nothing resident left to spill");
+    assert!(idx.evict_to_tier(0).is_some());
+    assert!(idx.evict_to_tier(0).is_some());
+    assert_eq!(idx.evict_to_tier(0), None, "nothing resident left to spill");
     assert_eq!(idx.evict_lru(), None, "nothing resident left to drop");
 }
 
@@ -267,7 +327,7 @@ fn evict_to_tier_none_when_all_spilled() {
 fn reinsert_unspills() {
     let mut idx = SsmSnapshotIndex::new();
     idx.insert(0xAA, 1, 7, 40);
-    idx.evict_to_tier().unwrap();
+    idx.evict_to_tier(0).unwrap();
     // Fresh save of the same prefix into slot 5 re-homes it to resident.
     idx.insert(0xAA, 5, 7, 40);
     // The entry is resident again at slot 5; the drop path can free it.

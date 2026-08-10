@@ -175,7 +175,7 @@ impl MoeLayer {
                     k,
                     stream,
                 )
-            } else if ops::cublas_gemm_enabled() {
+            } else if ctx.dispatch.cublas_gemm {
                 // Multi-token shared expert: cuBLASLt BF16 beats the hand-written
                 // mma.sync GEMM. The single-token arm above stays on the GEMV —
                 // decode-sized shapes do not repay cuBLAS heuristic overhead.

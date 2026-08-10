@@ -79,6 +79,16 @@ pub struct Usage {
     pub response_tokens_per_second: f64,
 }
 
+/// Wire string for a response cut short by the server-side request
+/// deadline (`--request-timeout`, or the per-request `timeout` field).
+///
+/// Deliberately NOT one of OpenAI's four spec reasons: a deadline
+/// truncation must be distinguishable from a legitimate `max_tokens`
+/// stop ("length") and from a natural end ("stop"), or the client
+/// silently loses output with no way to tell. It is carried as
+/// `FinishReason::Other` and round-trips verbatim through `as_wire`.
+pub const FINISH_REASON_TIMEOUT: &str = "timeout";
+
 /// Why generation stopped. `Other` preserves unknown engine reasons
 /// losslessly (PCND: no silent default).
 #[derive(Debug, Clone, PartialEq, Eq)]

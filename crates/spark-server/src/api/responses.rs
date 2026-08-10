@@ -2,6 +2,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+use crate::main_modules::model_host::CurrentModel;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
@@ -45,7 +46,7 @@ use super::inference_types::*;
 use super::sanitizer::*;
 
 pub async fn responses_endpoint(
-    state: State<Arc<AppState>>,
+    CurrentModel(state): CurrentModel,
     req: Result<Json<crate::openai::ResponsesRequest>, JsonRejection>,
 ) -> Response {
     let Json(r) = match req {
@@ -132,8 +133,14 @@ pub async fn responses_endpoint(
     }
 
     if streaming {
-        return responses_endpoint_stream(state, chat_req, metadata, store_flag, conversation_id)
-            .await;
+        return responses_endpoint_stream(
+            CurrentModel(state),
+            chat_req,
+            metadata,
+            store_flag,
+            conversation_id,
+        )
+        .await;
     }
 
     // Capture the input transcript BEFORE moving chat_req into the handler
@@ -144,7 +151,7 @@ pub async fn responses_endpoint(
     // request. Use the _inner variant because we already have a parsed
     // struct (no raw bytes available to dump at this layer; the Responses
     // handler dumps at its own entry point if --dump is enabled).
-    let resp = chat_completions_inner(state.0.clone(), None, chat_req.into(), None).await;
+    let resp = chat_completions_inner(state.clone(), None, chat_req.into(), None).await;
     let conv_pair = conversation_id.map(|cid| (state.conversation_store.clone(), cid));
     translate_chat_response_to_responses(
         resp,

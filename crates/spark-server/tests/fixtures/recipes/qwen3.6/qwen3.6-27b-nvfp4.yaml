@@ -1,0 +1,77 @@
+recipe_version: "2"
+model: nvidia/Qwen3.6-27B-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:dev
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-27B (nvidia modelopt NVFP4, dense hybrid SSM+Attn) — the
+    DEFAULT 27B recipe: the agentic + tool-calling config on a single
+    GB10, at llama.cpp TTFT parity with the Atlas decode win intact.
+
+    Checkpoint choice: this recipe previously pointed at
+    unsloth/Qwen3.6-27B-NVFP4. On 2026-07-10 unsloth re-quantized and
+    re-uploaded that repo as a MIXED-PRECISION checkpoint — NVFP4 for
+    layers 0-55, FP8 E4M3 with a per-row `weight_scale` for layers 56-63,
+    plus FP8 linear_attn projections — which no Atlas release could load
+    ("Weight '...layers.56.mlp.gate_proj.weight_global_scale' not found in
+    store", or "Expected FP32 for ...linear_attn.in_proj_qkv.weight_scale,
+    got BF16"). Atlas loads that layout as of atlas#297, but the default
+    recipes now track the nvidia checkpoint, whose on-disk format has been
+    stable since 2026-06-12 and does not move under users. The unsloth
+    build is still available as qwen3.6-27b-nvfp4-unsloth.
+
+    num_drafts is pinned to 1 deliberately. `speculative: true` alone does
+    NOT select the best MTP depth — it happens to coincide with
+    MODEL.toml's `default_num_drafts = 1` here, but pin it so the recipe
+    stays correct if that default moves. Measured on the 27B dense
+    NVFP4 family: K=1 21.78 tok/s vs 14.25 no-spec (+53%); K=2 and K=3 are
+    both worse. Do not raise it.
+
+    Config notes:
+    - ssm_cache_slots 128 / ssm_checkpoint_interval 32 is the validated
+      pair; with atlas#287 the interval no longer matters for the warm
+      tail (16-token replay at interval 0 and 32 alike) — 32 keeps
+      intra-turn checkpoints for branchy/partial-prefix reuse.
+    - qwen3_coder parser with disable_tool_grammar true is mandatory for
+      parallel tool calls — grammar-constraining collapses them to 0.00.
+    - bf16 KV at 32k context: the 27B quality gates were run with bf16 KV;
+      fp8 KV frees memory for longer contexts but was not part of that
+      validation.
+    - The prior unsloth-checkpoint gate (2026-07-10, 1007-turn agentic e2e
+      + BFCL ST-995 vs llama.cpp cfff1fc Q4_K_M) measured BFCL 89.59
+      normalized, warm TTFT median 1403 ms vs llama 1431, TPOT 58.2 vs
+      85.8 ms, 1.38x end-to-end wall. Those numbers belong to the unsloth
+      checkpoint, not this one — see qwen3.6-27b-nvfp4-unsloth.
+
+    REQUIRES avarok/atlas-gb10:dev (>= 2026-07-10T19:18Z), which carries
+    the SSM snapshot-eviction fix (atlas#287). Before it, deep
+    conversations froze the warm-restore anchor and replayed up to 18.6k
+    tokens/turn through the GDN layers (TTFT tail to 40 s). :latest lags —
+    check the tag date before substituting.
+  maintainer: avarok
+  category: agent
+  model_params: 27B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 32768
+  max_batch_size: 1
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.85
+  enable_prefix_caching: true
+  ssm_cache_slots: 128
+  ssm_checkpoint_interval: 32
+  speculative: true
+  # Measured optimum for the 27B dense NVFP4 family (see description).
+  # `speculative: true` alone does not pick this — pin it.
+  num_drafts: 1
+  mtp_quantization: bf16
+  tool_call_parser: qwen3_coder
+  disable_tool_grammar: true
+  disable_thinking: true
