@@ -425,7 +425,10 @@ impl TransformerModel {
 
         // Refuse a non-active-adapter decode row host-side (mirrors
         // decode_batch_compute_main); base + active rows in the mixed batch fold fine.
-        self.reject_decode_moe_refuse(&decode_ctx, "mixed_forward decode")?;
+        crate::lora::ensure_decode_route_servable(
+            decode_ctx.moe_lora_route,
+            "mixed_forward decode",
+        )?;
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             // 6a. Decode: N sequences × 1 token each on hidden[0..padded_n*H)

@@ -159,3 +159,26 @@ fn decode_map_full_cap_32_all_active() {
     assert_eq!(map, vec![0i32; 32]);
     assert_eq!(map.len(), 32);
 }
+
+// ── Item-1 (PR #335 gate): batched-decode pre-lookup Refuse guard ───────────
+
+#[test]
+fn decode_route_guard_refuses_only_refuse() {
+    use super::ensure_decode_route_servable as guard;
+    // Negative pair: Skip (pure-base batch) and Fold (active-adapter batch)
+    // must pass — the fold/no-op paths are servable.
+    assert!(guard(MoeLoraRoute::Skip, "decode_batch_compute_main").is_ok());
+    assert!(guard(MoeLoraRoute::Fold, "decode_batch_compute_main").is_ok());
+    // Positive: a Refuse batch (row routed to a NON-active adapter) must bail
+    // loudly BEFORE the fold — the row map would silently serve base weights.
+    let err = guard(MoeLoraRoute::Refuse, "decode_batch_compute_main")
+        .expect_err("Refuse must not be servable");
+    assert!(
+        err.to_string().contains("non-active adapter"),
+        "guard must explain the refusal: {err}"
+    );
+    assert!(
+        err.to_string().contains("decode_batch_compute_main"),
+        "guard must name the refusing path: {err}"
+    );
+}

@@ -326,11 +326,12 @@ impl Qwen3SsmLayer {
                     // per-token loop's ~24 serial launches (which also aliased
                     // scratch → forced cross-token serialization) + a wsum_blend
                     // starved to 8 blocks. Measured +7-19% concurrent decode.
-                    // `forward_token_major_decode` calls `reject_decode_lora`
-                    // FIRST (before any GPU work) and errors on a LoRA-active
-                    // (Fold/Refuse) route or non-NVFP4 weights — fall back to the
-                    // proven per-row `forward_batched` in that case, no side
-                    // effects. Opt out fully with ATLAS_MOE_LEGACY_PERTOKEN_DECODE=1.
+                    // LoRA (SOLID Incr-4): with a resident MoE adapter,
+                    // `forward_token_major_decode` DELEGATES to the per-row
+                    // `forward_batched` folds before any GPU work (presence
+                    // gate, like forward_k2/k3); the `.is_err()` fallback below
+                    // remains for non-NVFP4 weights / genuine errors only.
+                    // Opt out fully with ATLAS_MOE_LEGACY_PERTOKEN_DECODE=1.
                     if self
                         .ffn
                         .forward_token_major_decode(normed_base, n, ctx, stream)

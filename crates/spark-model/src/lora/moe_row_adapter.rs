@@ -21,6 +21,23 @@
 
 use crate::layer::MoeLoraRoute;
 
+/// SOLID Incr-4 host-side pre-lookup guard for the BATCHED decode entries
+/// (`decode_batch_compute_main`, `mixed_forward`): a batch containing a row
+/// routed to a NON-active adapter (`Refuse`) cannot be served by the
+/// single-active fold — [`build_moe_row_adapter_decode`] defensively maps such
+/// rows to base, so proceeding would SILENTLY serve base weights for an
+/// adapter-routed request. Call BEFORE any graph lookup/capture so captured
+/// `padded_n` graphs stay route-agnostic. Pure (no `self`, no GPU) so the
+/// decision is unit-testable without hardware.
+pub fn ensure_decode_route_servable(route: MoeLoraRoute, path: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !matches!(route, MoeLoraRoute::Refuse),
+        "MoE LoRA {path}: a sequence routes to a non-active adapter under single-active \
+         phase-1; refusing rather than mis-folding the active adapter. One adapter per batch."
+    );
+    Ok(())
+}
+
 /// Resolve the Feature-1 MoE-LoRA fold decision for a single-request pass.
 ///
 /// `adapter_slot` is the request's `SequenceState.adapter_slot` (`< 0` = no

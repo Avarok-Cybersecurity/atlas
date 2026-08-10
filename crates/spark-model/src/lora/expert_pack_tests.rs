@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use atlas_core::config::PeftAdapterConfig;
-use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
 
 use super::{ExpertMap, RouterMap, key_lists, pack_into, packed_stride, present};
@@ -142,7 +142,10 @@ fn pack_into_r12_is_uint4_aligned_and_matches_sizing() {
     .unwrap();
     assert_eq!(packed, 2);
     // Sizing/packing SSOT: the pack consumed exactly what the estimator sized.
-    assert_eq!(off, sized, "pack_into offsets must match expert_router_bytes");
+    assert_eq!(
+        off, sized,
+        "pack_into offsets must match expert_router_bytes"
+    );
 
     let rp = layers[3].as_ref().unwrap().router.as_ref().unwrap();
     let ep = layers[7].as_ref().unwrap().experts.as_ref().unwrap();
