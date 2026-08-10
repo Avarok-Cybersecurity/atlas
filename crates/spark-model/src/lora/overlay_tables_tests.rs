@@ -32,6 +32,7 @@ fn embed(rows: u64, ids: u64, sm: u64, n: u32, lm: Option<LmHeadOverlay>) -> Emb
         ids_dev: DevicePtr(ids),
         slot_map: DevicePtr(sm),
         n_override: n,
+        vocab: 640,
         lmhead: lm,
     }
 }
@@ -77,6 +78,42 @@ fn untied_with_lmhead_uses_distinct_rows() {
     assert_eq!(u64s(&gpu, set.lmhead_ids_table, 1), vec![0xE0]);
     assert_eq!(u32s(&gpu, set.n_override_table, 1), vec![2]);
     assert_eq!(set.max_n_override, 2);
+    // The embed bound table must carry the EMBED count (3), never the
+    // lm_head count (2) — they diverge exactly on this untied shape, so this
+    // is the assert that catches a table mix-up.
+    assert_eq!(u32s(&gpu, set.embed_n_table, 1), vec![3]);
+}
+
+// CWE-125 guard plumbing: the embed kernel's two bounds come from HERE, so pin
+// them. Positive: a resident slot publishes its embed n_override and the
+// build-time vocab. Negative: an empty slot stays 0 (kernel `slot_map == NULL`
+// / `slot >= 0` skip), and an empty pool records vocab 0.
+#[test]
+fn embed_bound_table_and_vocab_are_published() {
+    let gpu = MockGpuBackend::new();
+    let ov = embed(0xA0, 0xB0, 0xC0, 3, None);
+    let set = TokenOverlaySet::from_slots(&gpu, vec![Some(ov), None], 2, true).unwrap();
+    assert_eq!(u32s(&gpu, set.embed_n_table, 2), vec![3, 0]);
+    assert_eq!(set.vocab, 640);
+
+    let empty = TokenOverlaySet::from_slots(&gpu, vec![None, None], 2, true).unwrap();
+    assert_eq!(empty.vocab, 0);
+    assert_eq!(u32s(&gpu, empty.embed_n_table, 2), vec![0, 0]);
+}
+
+// Two resident slots built against DIFFERENT vocabs cannot share the kernel's
+// single `ids[r] < vocab` bound — from_slots must refuse, not pick one.
+#[test]
+fn mixed_vocab_slots_are_refused() {
+    let gpu = MockGpuBackend::new();
+    let a = embed(0xA0, 0xB0, 0xC0, 3, None);
+    let mut b = embed(0xA1, 0xB1, 0xC1, 1, None);
+    b.vocab = 768;
+    let err = match TokenOverlaySet::from_slots(&gpu, vec![Some(a), Some(b)], 2, true) {
+        Err(e) => e,
+        Ok(_) => panic!("mixed-vocab overlay slots must be refused"),
+    };
+    assert!(err.to_string().contains("mixed-vocab"), "{err}");
 }
 
 #[test]

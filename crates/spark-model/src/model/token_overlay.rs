@@ -102,9 +102,11 @@ impl TransformerModel {
             active,
             set.embed_slot_map_table,
             set.embed_rows_table,
+            set.embed_n_table,
             out,
             num_tokens,
             self.config.hidden_size as u32,
+            set.vocab,
             stream,
         )
     }

@@ -58,6 +58,12 @@ fn build_overlay_delta_path_compacts_and_maps() {
         .expect("delta trainable id 5 overrides one row");
 
     assert_eq!(ov.n_override, 1);
+    // CWE-125 guard SSOT: `vocab` must be the slot_map length build_overlay
+    // actually allocated — the embed kernel's `ids[r] < vocab` bound.
+    assert_eq!(ov.vocab, vocab as u32);
+    // Builder invariant the kernel's `slot < n_tab[s]` guard leans on: every
+    // non-negative slot_map entry is a compact index < n_override.
+    // (Checked below over the full map once `smi` is read back.)
     // ids buffer = [5].
     let mut idb = vec![0u8; 4];
     gpu.copy_d2h(ov.ids_dev, &mut idb).unwrap();
@@ -72,6 +78,10 @@ fn build_overlay_delta_path_compacts_and_maps() {
     assert_eq!(smi[5], 0);
     assert_eq!(smi[0], -1);
     assert_eq!(smi[7], -1);
+    assert!(
+        smi.iter().all(|&v| v < ov.n_override as i32),
+        "slot_map entries must be compact indices < n_override: {smi:?}"
+    );
     // rows[0] = f32→bf16(dvals).
     let mut rb = vec![0u8; h * 2];
     gpu.copy_d2h(ov.rows, &mut rb).unwrap();

@@ -26,6 +26,15 @@ pub struct TokenOverlaySet {
     pub embed_slot_map_table: DevicePtr,
     /// `u64[max_loras]` → `bf16*[n,h]` embed override rows.
     pub embed_rows_table: DevicePtr,
+    /// `u32[max_loras]` EMBED n_override per slot — the row count of each
+    /// slot's `embed_rows_table` cell, the embed kernel's `slot < n` bound
+    /// (CWE-125 guard). Distinct from `n_override_table`, which is the
+    /// LM_HEAD count (0 for an untied slot with no lm_head overlay).
+    pub embed_n_table: DevicePtr,
+    /// `slot_map` length shared by every resident overlay (each slot records
+    /// the served vocab it was built against; `from_slots` REFUSES a mix) —
+    /// the embed kernel's `ids[r] < vocab` bound (CWE-125 guard).
+    pub vocab: u32,
     /// `u64[max_loras]` → `bf16*[n,h]` lm_head override rows (== embed cell when tied).
     pub lmhead_rows_table: DevicePtr,
     /// `u64[max_loras]` → `u32*[n]` lm_head override ids (== embed cell when tied).
@@ -67,15 +76,28 @@ impl TokenOverlaySet {
     ) -> Result<Self> {
         let mut slot_map_tab = vec![0u64; max_loras];
         let mut embed_rows_tab = vec![0u64; max_loras];
+        let mut embed_n_tab = vec![0u32; max_loras];
         let mut lmhead_rows_tab = vec![0u64; max_loras];
         let mut lmhead_ids_tab = vec![0u64; max_loras];
         let mut n_override_tab = vec![0u32; max_loras];
         let mut max_n_override = 0u32;
+        let mut vocab = 0u32;
 
         for (k, ov) in overlays.iter().enumerate() {
             let Some(ov) = ov else { continue };
             slot_map_tab[k] = ov.slot_map.0;
             embed_rows_tab[k] = ov.rows.0;
+            embed_n_tab[k] = ov.n_override;
+            // One build pass sizes every slot_map to the same served vocab; a
+            // mix would make the kernel's single `ids[r] < vocab` bound wrong
+            // for some slot, so REFUSE it rather than guess a bound.
+            anyhow::ensure!(
+                vocab == 0 || vocab == ov.vocab,
+                "token-overlay: slot {k} was built against vocab {} but an \
+                 earlier slot against {vocab}; refusing mixed-vocab overlay tables",
+                ov.vocab
+            );
+            vocab = ov.vocab;
             let (rows, ids, n) = match (&ov.lmhead, tied) {
                 (Some(lm), _) => (lm.rows.0, lm.ids_dev.0, lm.n_override),
                 (None, true) => (ov.rows.0, ov.ids_dev.0, ov.n_override),
@@ -90,6 +112,8 @@ impl TokenOverlaySet {
         Ok(Self {
             embed_slot_map_table: mk_u64(gpu, &slot_map_tab)?,
             embed_rows_table: mk_u64(gpu, &embed_rows_tab)?,
+            embed_n_table: mk_u32(gpu, &embed_n_tab)?,
+            vocab,
             lmhead_rows_table: mk_u64(gpu, &lmhead_rows_tab)?,
             lmhead_ids_table: mk_u64(gpu, &lmhead_ids_tab)?,
             n_override_table: mk_u32(gpu, &n_override_tab)?,

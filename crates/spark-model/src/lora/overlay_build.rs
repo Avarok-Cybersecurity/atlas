@@ -66,6 +66,10 @@ pub struct EmbedOverlay {
     pub ids_dev: DevicePtr,  // u32[n_override] ascending vocab ids
     pub slot_map: DevicePtr, // i32[vocab], -1 default
     pub n_override: u32,
+    /// `slot_map` length — the served vocab this overlay was built against.
+    /// Recorded HERE (where `slot_map` is allocated) as the SSOT bound the
+    /// embed kernel's `ids[r] < vocab` guard checks against (CWE-125).
+    pub vocab: u32,
     pub lmhead: Option<LmHeadOverlay>,
 }
 
@@ -357,6 +361,7 @@ pub fn build_overlay(
         ids_dev: embed.ids_dev,
         slot_map: slot_map_dev,
         n_override: embed.n,
+        vocab: vocab as u32,
         lmhead,
     }))
 }

@@ -79,8 +79,10 @@ pub fn embed_rowdiff(
 
 /// In-place row-replace of overridden vocab rows on the residual stream after
 /// the embed gather (BEFORE `scale_embeddings`). Per row `r`: `s = seq_slot[r]`
-/// (or `active` when NULL); `s<0` skip; `slot=slot_map_tab[s][ids[r]]`; `slot<0`
-/// skip; copy `rows_tab[s][slot]` over `out[r]`.
+/// (or `active` when NULL); `s<0` skip; `ids[r]>=vocab` skip (no overlay entry
+/// for a token beyond the overlay's served-vocab snapshot — CWE-125 guard);
+/// `slot=slot_map_tab[s][ids[r]]`; `slot<0` or `slot>=n_tab[s]` skip; copy
+/// `rows_tab[s][slot]` over `out[r]`.
 #[allow(clippy::too_many_arguments)]
 pub fn embed_overlay_routed(
     gpu: &dyn GpuBackend,
@@ -90,9 +92,11 @@ pub fn embed_overlay_routed(
     active: i32,
     slot_map_tab: DevicePtr, // u64[L]
     rows_tab: DevicePtr,     // u64[L]
+    n_tab: DevicePtr,        // u32[L] embed n_override per slot
     out: DevicePtr,          // [n, h] bf16 in place
     num_tokens: u32,
     h: u32,
+    vocab: u32, // slot_map length (served vocab at overlay build)
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -103,8 +107,10 @@ pub fn embed_overlay_routed(
         .arg_i32(active)
         .arg_ptr(slot_map_tab)
         .arg_ptr(rows_tab)
+        .arg_ptr(n_tab)
         .arg_ptr(out)
         .arg_u32(h)
+        .arg_u32(vocab)
         .launch(stream)
 }
 
