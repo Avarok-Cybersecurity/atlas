@@ -99,6 +99,14 @@ pub fn emit_token(
         a.think_skip_count += 1;
         if a.think_skip_count >= 50 {
             a.finished = true;
+            // Name the cut -- MTP twin of the decode_logits_step site; see
+            // `GUARD_STOP_THINK_SKIP` for why an unnamed skip-site finish
+            // wires "stop" and silently ends an agentic run.
+            a.guard_stop = Some(GUARD_STOP_THINK_SKIP);
+            tracing::debug!(
+                "</think> think-skip watchdog hard-stop fired (50 consecutive strays); \
+                 ending turn"
+            );
         }
         return;
     }

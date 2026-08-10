@@ -120,6 +120,21 @@ pub(super) const GUARD_STOP_REQUEST_TIMEOUT: &str = "request_timeout";
 /// `"stop"`, so the client knows the server cut the response short.
 pub(super) const GUARD_STOP_TOOL_RESPONSE: &str = "tool_response_hard_stop";
 
+/// The stray-`</think>` watchdog fired: 50 CONSECUTIVE `</think>` outside a
+/// thinking span (the documented long-context degeneration) forced the turn
+/// closed. Same class as `GUARD_STOP_TOOL_RESPONSE` above: `</think>` is NOT
+/// eos-registered for any served model (measured 2026-08-10 across the HF
+/// cache: Qwen3.6 family eos = {248046 `<|im_end|>`, 248044}, `</think>` =
+/// 248069; Nemotron eos = {2, 11}, `</think>` = 13; Qwen3-VL/Coder eos =
+/// {151645, 151643}, `</think>` = 151668), and the site skips the token
+/// rather than pushing it, so without a name this SERVER cut fell through
+/// every rung of `derive_finish_reason` and wired `"stop"`. The agentic
+/// harness's `was_cut_off()` grants a recovery turn only on `"length"`, so
+/// the mislabel silently ended the whole run. Contrast `<|im_start|>`,
+/// which IS eos-registered (pushed in `tokenizer_runtime.rs::im_start_id`)
+/// — naming a guard THERE would reintroduce the opposite mislabel.
+pub(super) const GUARD_STOP_THINK_SKIP: &str = "think_skip_watchdog";
+
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
     pub seq: SequenceState,

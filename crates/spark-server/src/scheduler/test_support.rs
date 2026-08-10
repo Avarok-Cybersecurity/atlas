@@ -20,7 +20,7 @@ use anyhow::Result;
 use spark_model::traits::SequenceState;
 use std::time::Instant;
 
-const EOS: &[u32] = &[151645];
+pub(super) const EOS: &[u32] = &[151645];
 const TOOL_END: Option<u32> = Some(151658);
 
 pub(super) type RespRx = tokio::sync::oneshot::Receiver<Result<InferenceResponse>>;

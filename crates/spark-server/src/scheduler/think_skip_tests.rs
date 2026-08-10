@@ -20,9 +20,10 @@
 //!    "fixed" by defanging the watchdog.
 
 use super::emit_step::emit_token;
+use super::lifecycle::derive_finish_reason;
 use super::sched_ctx::SchedCtx;
-use super::test_support::test_seq;
-use super::types::ActiveSeq;
+use super::test_support::{EOS, test_seq};
+use super::types::{ActiveSeq, GUARD_STOP_THINK_SKIP};
 
 /// Qwen3's `</think>`. Distinct from the fixture's EOS (151645) and
 /// tool-call close (151658) so neither of those paths is entered.
@@ -144,6 +145,84 @@ fn the_watchdog_rearms_after_content_defuses_it() {
         a.finished,
         "the watchdog must re-arm: a fresh run of {SKIP_LIMIT} consecutive \
          strays after a reset must still stop the turn"
+    );
+}
+
+/// The exact wiring `finish_sequence` performs over the sequence — kept as
+/// one helper so both wire-reason tests below derive the reason the way
+/// production does, not a re-implementation.
+fn wire_reason(a: &ActiveSeq) -> &'static str {
+    derive_finish_reason(
+        a.guard_stop,
+        a.output_tokens.last().copied(),
+        &a.eos_tokens,
+        a.tool_call_end_token,
+        a.remaining,
+        a.seq.seq_len,
+        0, // max_seq_len unlimited — the ceiling rung stays out of the way
+    )
+}
+
+#[test]
+fn the_watchdog_cut_names_its_guard_and_wires_length() {
+    // POSITIVE for the guard-naming fix. The watchdog SKIPS the stray
+    // tokens (they are never pushed), so `last_tok` is not `</think>` and
+    // `</think>` is not eos-registered anyway (Qwen3.6 eos = {248046,
+    // 248044}, `</think>` = 248069). Unnamed, `derive_finish_reason` falls
+    // through every rung and wires "stop" — and the agentic harness's
+    // `was_cut_off()` (atlas-plugin agent.rs) grants a recovery turn ONLY
+    // on "length", so a "stop" with no tool calls ends the whole run.
+    let sched = SchedCtx::for_test();
+    let mut a = content_phase_seq();
+    for i in 1..SKIP_LIMIT {
+        emit_token(&mut a, THINK_END, None, &sched);
+        assert!(
+            a.guard_stop.is_none(),
+            "guard named before the threshold (stray #{i}) — the name must \
+             mark the CUT, not the counting"
+        );
+    }
+    emit_token(&mut a, THINK_END, None, &sched);
+    assert!(a.finished);
+    assert_eq!(
+        a.guard_stop,
+        Some(GUARD_STOP_THINK_SKIP),
+        "the watchdog cut must name its guard at the call site"
+    );
+    assert_eq!(
+        wire_reason(&a),
+        "length",
+        "a server-side watchdog cut with budget left is a truncation; \
+         \"length\" is what lets an agentic client recover the turn"
+    );
+}
+
+#[test]
+fn a_genuine_eos_stop_is_not_converted_to_length() {
+    // NEGATIVE — guards over-application. The fix names ONE cut; a model
+    // that finishes naturally must still wire "stop", even after a
+    // below-threshold burst of strays on the same turn.
+    let sched = SchedCtx::for_test();
+    let mut a = content_phase_seq();
+    a.min_tokens = 0; // the fixture's 7 would suppress a bare EOS
+    for i in 0..5 {
+        emit_token(&mut a, content_token(i), None, &sched);
+    }
+    for _ in 0..3 {
+        emit_token(&mut a, THINK_END, None, &sched);
+    }
+    emit_token(&mut a, EOS[0], None, &sched);
+    assert!(a.finished, "EOS must finish the turn");
+    assert!(
+        a.guard_stop.is_none(),
+        "a natural EOS finish must NOT name a guard — that would relabel a \
+         real model stop as a server truncation and grant phantom recovery \
+         turns"
+    );
+    assert_eq!(
+        wire_reason(&a),
+        "stop",
+        "the model finished; the wire must say so"
     );
 }
 
