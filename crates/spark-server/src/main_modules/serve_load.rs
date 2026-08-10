@@ -285,6 +285,9 @@ pub(crate) fn load_model(
     } else {
         ptx_set.behavior.fp8_kv_calibration_tokens
     };
+    // Unconditional: the serde(skip) default is 0.0, and the CLI default (2.0)
+    // is the real one. Validated ≥ 1.0 in `validate_serve_args`.
+    config.fp8_kv_headroom = args.fp8_kv_headroom;
 
     // 3. Load model weights
     spark_runtime::progress::phase(5, "weight load");

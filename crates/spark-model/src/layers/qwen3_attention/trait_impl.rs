@@ -94,6 +94,12 @@ impl TransformerLayer for Qwen3AttentionLayer {
         Some(self)
     }
 
+    fn fp8_calibration_frozen(&self) -> Option<bool> {
+        self.fp8_calibration
+            .as_ref()
+            .map(|cal| !cal.is_calibrating())
+    }
+
     fn decode(
         &self,
         hidden: DevicePtr,

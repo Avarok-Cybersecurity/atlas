@@ -51,6 +51,8 @@ struct CalibrationInner {
 /// struct (required by `TransformerLayer` trait).
 pub struct Fp8KvCalibration {
     inner: Mutex<CalibrationInner>,
+    /// Headroom multiplier on the first-observe absmax (CLI `--fp8-kv-headroom`).
+    headroom: f32,
     /// GPU buffer for absmax reduction output: `[1]` f32 for K, `[1]` f32 for V.
     /// Layout: `[k_absmax: f32, v_absmax: f32]` = 8 bytes.
     absmax_buf: DevicePtr,
@@ -71,8 +73,17 @@ impl Fp8KvCalibration {
     ///   freeze — the scale is now frozen on the FIRST observe (before any KV is
     ///   persisted), so a warmup window would only reintroduce the write/read
     ///   scale mismatch. Any value > 0 simply enables online calibration.
+    /// `headroom`: multiplier on the first-observe absmax when freezing
+    ///   (`--fp8-kv-headroom`, CLI-validated ≥ 1.0; clamped here as defense in
+    ///   depth because a sub-1.0 value guarantees clipping).
     /// `gpu`: GPU backend for allocating the absmax reduction buffer.
-    pub fn new(_warmup_tokens: usize, gpu: &dyn GpuBackend) -> Result<Self> {
+    pub fn new(_warmup_tokens: usize, headroom: f32, gpu: &dyn GpuBackend) -> Result<Self> {
+        let headroom = if headroom >= 1.0 {
+            headroom
+        } else {
+            tracing::warn!("fp8-kv headroom {headroom} < 1.0 guarantees clipping; clamped to 1.0");
+            1.0
+        };
         let absmax_kernel = gpu.kernel("reshape_and_cache", "bf16_absmax")?;
         // Allocate 8 bytes: [k_absmax: f32, v_absmax: f32]
         let absmax_buf = gpu.alloc(8)?;
@@ -93,6 +104,7 @@ impl Fp8KvCalibration {
                 k_scale: 2.0,
                 v_scale: 2.0,
             }),
+            headroom,
             absmax_buf,
             absmax_kernel,
         })
@@ -197,15 +209,12 @@ impl Fp8KvCalibration {
             // lifetime — the exact invariant the EMA-recal guard below documents.
             // `warmup_tokens` no longer gates the freeze (kept for API compat).
             //
-            // CALIB_HEADROOM: the first observe sees only the first prefill chunk,
-            // so size the scale to cover CALIB_HEADROOM× its observed max, giving
-            // headroom for later tokens whose magnitude grows (trades <1 bit of
-            // precision for no clipping). Overridable via ATLAS_FP8_KV_HEADROOM.
-            let headroom = std::env::var("ATLAS_FP8_KV_HEADROOM")
-                .ok()
-                .and_then(|v| v.parse::<f32>().ok())
-                .filter(|h| *h >= 1.0)
-                .unwrap_or(2.0);
+            // Headroom: the first observe sees only the first prefill chunk, so
+            // size the scale to cover headroom× its observed max, covering later
+            // tokens whose magnitude grows (trades <1 bit of precision for no
+            // clipping). CLI `--fp8-kv-headroom`, threaded through ModelConfig —
+            // deliberately NOT an env var (no knobs outside the command line).
+            let headroom = self.headroom;
             inner.k_scale = (inner.k_running_max * headroom / FP8_E4M3_MAX).max(MIN_SCALE);
             inner.v_scale = (inner.v_running_max * headroom / FP8_E4M3_MAX).max(MIN_SCALE);
             inner.frozen = true;
@@ -264,5 +273,54 @@ impl Fp8KvCalibration {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use spark_runtime::gpu::GpuBackend;
+    use spark_runtime::gpu::mock::MockGpuBackend;
+
+    use super::Fp8KvCalibration;
+
+    /// The write/read-scale invariant, as a fails-without-the-fix test: the
+    /// scale a batch is WRITTEN with must be the scale every later read
+    /// dequantizes with, so after the first observe the scale may never move.
+    ///
+    /// On the pre-fix design this fails: the first 10-token observe leaves the
+    /// placeholder scale (2.0) live, and the observe that crosses the
+    /// `warmup_tokens = 256` boundary re-derives it (with the mock's zeroed
+    /// absmax buffer, to `MIN_SCALE` = 1e-12) — every entry written before the
+    /// boundary is then dequantized ~6× off in production, and here the
+    /// snapshot comparison trips.
+    #[test]
+    fn scale_frozen_on_first_observe_never_moves() {
+        let gpu = MockGpuBackend::new();
+        let cal = Fp8KvCalibration::new(256, 2.0, &gpu).expect("mock construct");
+        let k = gpu.alloc(4096).expect("k buf");
+        let v = gpu.alloc(4096).expect("v buf");
+        let stream = gpu.default_stream();
+
+        // First observe: a 10-token first prefill chunk. The fix freezes HERE,
+        // before any KV has been persisted.
+        cal.observe(&gpu, k, v, 10, 8, 128, stream)
+            .expect("observe");
+        assert!(
+            !cal.is_calibrating(),
+            "scale must freeze on the first observe"
+        );
+        let frozen = cal.scales();
+
+        // Cross the old warmup boundary (256 tokens) in later observes.
+        for _ in 0..30 {
+            cal.observe(&gpu, k, v, 10, 8, 128, stream)
+                .expect("observe");
+        }
+        assert_eq!(
+            cal.scales(),
+            frozen,
+            "the frozen scale moved after later observes — pre-freeze KV would \
+             now dequantize through a different scale than it was written with"
+        );
     }
 }

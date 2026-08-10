@@ -28,6 +28,20 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 impl TransformerModel {
+    /// Whether the online FP8-KV calibration has frozen its scale, model-wide.
+    ///
+    /// Every calibrating attention layer freezes on ITS first observe within
+    /// the same first forward pass, so the first layer that reports a state
+    /// speaks for all of them. `true` when NO layer runs online calibration —
+    /// there is nothing to wait for, and the graph-suppression gate below is
+    /// additionally guarded by `fp8_kv_calibration_tokens > 0`.
+    pub(in crate::model) fn fp8_calibration_frozen(&self) -> bool {
+        self.layers
+            .iter()
+            .find_map(|l| l.fp8_calibration_frozen())
+            .unwrap_or(true)
+    }
+
     pub(super) fn decode_dispatch(
         &self,
         token: u32,
@@ -159,12 +173,16 @@ impl TransformerModel {
 
         // CUDA graphs cannot capture NCCL all-reduce (it runs on a separate
         // stream) or cuStreamSynchronize calls. Suppress for EP and profile.
-        // Re-enable graphs once FP8 calibration is frozen.
+        // Re-enable graphs once FP8 calibration is frozen — keyed on the
+        // ACTUAL frozen flag, not a token count: the scale freezes on the
+        // first observe, and the old `seq_len > calibration_tokens + 10` gate
+        // kept every process eager for ~266 tokens waiting on a calibration
+        // that had already finished.
         if self.config.fp8_kv_calibration_tokens > 0
             && self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
-            && seq.seq_len > self.config.fp8_kv_calibration_tokens + 10
+            && self.fp8_calibration_frozen()
         {
             self.suppress_graphs
                 .store(false, std::sync::atomic::Ordering::Relaxed);
