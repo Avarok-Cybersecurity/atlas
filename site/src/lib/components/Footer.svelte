@@ -1,5 +1,5 @@
 <script>
-  import { footer, contactEmails, discordUrl, mlperfTrademark } from '$lib/data.js';
+  import { footer, contactEmails, discordUrl, mlperfTrademark, nvidiaInceptionUrl } from '$lib/data.js';
 </script>
 
 <footer>
@@ -26,6 +26,12 @@
         <a href={`mailto:${e}`}>{e}</a>
       {/each}
     </div>
+  </div>
+
+  <div class="footer-member">
+    <a href={nvidiaInceptionUrl} target="_blank" rel="noopener noreferrer">
+      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="114" loading="lazy" />
+    </a>
   </div>
 
   <div class="footer-legal">

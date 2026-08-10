@@ -29,7 +29,8 @@ export const gateSrcUrl =
 export const discussionsUrl = 'https://github.com/Avarok-Cybersecurity/atlas/discussions';
 export const goodFirstIssuesUrl =
   'https://github.com/Avarok-Cybersecurity/atlas/labels/good%20first%20issue';
-export const contactEmails = ['debaterishaqui@gmail.com', 'thomas@avarok.net'];
+// Single source of truth for contact addresses (footer + reach-out section).
+export const contactEmails = ['thomas@atlasinference.io', 'azeez@atlasinference.io'];
 
 // third-party artifacts (link-or-cut, each verified live July 2026)
 export const transformersPrUrl = 'https://github.com/huggingface/transformers/pull/46423';
@@ -41,6 +42,7 @@ export const mlperfResultsUrl = 'https://mlcommons.org/benchmarks/inference-data
 export const mlcommonsEndpointsPrUrl = 'https://github.com/mlcommons/endpoints/pull/346';
 export const mlcommonsArticleUrl =
   'https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/';
+export const nvidiaInceptionUrl = 'https://www.nvidia.com/en-us/startups/';
 
 // --- brand -------------------------------------------------------------------
 export const tagline = 'Pure Rust inference, tuned for the machine on your desk.';
@@ -397,7 +399,7 @@ export const reachout = {
       body: 'Got silicon you want Atlas running on. Send it our way and watch what we do with it.'
     }
   ],
-  emails: ['thomas@avarok.net', 'debaterishaqui@gmail.com'],
+  emails: contactEmails,
   discordCta: 'Or pull up in Discord'
 };
 
