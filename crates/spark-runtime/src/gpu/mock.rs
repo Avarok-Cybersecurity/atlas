@@ -4,6 +4,7 @@
 use super::*;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub struct MockAlloc {
@@ -17,6 +18,14 @@ pub struct MockGpuBackend {
     allocs: Mutex<HashMap<u64, MockAlloc>>,
     next_ptr: Mutex<u64>,
     launches: Mutex<Vec<MockLaunch>>,
+    /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
+    /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
+    /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
+    /// 66 MB) and nothing caught it, because the bytes were correct.
+    syncs: AtomicUsize,
+    d2h_blocking: AtomicUsize,
+    d2h_async: AtomicUsize,
+    host_pinned_allocs: AtomicUsize,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +48,10 @@ impl MockGpuBackend {
             allocs: Mutex::new(HashMap::new()),
             next_ptr: Mutex::new(0x1000_0000),
             launches: Mutex::new(Vec::new()),
+            syncs: AtomicUsize::new(0),
+            d2h_blocking: AtomicUsize::new(0),
+            d2h_async: AtomicUsize::new(0),
+            host_pinned_allocs: AtomicUsize::new(0),
         }
     }
 
@@ -48,6 +61,29 @@ impl MockGpuBackend {
 
     pub fn launch_count(&self) -> usize {
         self.launches.lock().len()
+    }
+
+    /// `synchronize` calls so far — a proxy for "full stream drains", the cost
+    /// a batched gather exists to amortize.
+    pub fn sync_count(&self) -> usize {
+        self.syncs.load(Ordering::Relaxed)
+    }
+
+    /// BLOCKING `copy_d2h` calls (each one drains the stream on the real
+    /// backend). A bulk gather must have zero of these.
+    pub fn d2h_blocking_count(&self) -> usize {
+        self.d2h_blocking.load(Ordering::Relaxed)
+    }
+
+    /// `copy_d2h_async` calls (enqueue-only).
+    pub fn d2h_async_count(&self) -> usize {
+        self.d2h_async.load(Ordering::Relaxed)
+    }
+
+    /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
+    /// re-allocated per event instead of reused.
+    pub fn host_pinned_alloc_count(&self) -> usize {
+        self.host_pinned_allocs.load(Ordering::Relaxed)
     }
 
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
@@ -118,10 +154,23 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn copy_d2h(&self, src: DevicePtr, dst: &mut [u8]) -> Result<()> {
+        self.d2h_blocking.fetch_add(1, Ordering::Relaxed);
         let allocs = self.allocs.lock();
         // Support offset pointers: find the allocation containing src
         let (offset, alloc) = find_alloc(&allocs, src)
             .ok_or_else(|| anyhow::anyhow!("copy_d2h: ptr {src} not allocated"))?;
+        dst.copy_from_slice(&alloc.data[offset..offset + dst.len()]);
+        Ok(())
+    }
+
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], _stream: u64) -> Result<()> {
+        // Counted separately from `copy_d2h` and NOT delegating to it, so a
+        // test can distinguish the batched shape from the blocking one (the
+        // trait's default impl forwards, which would make them indistinguishable).
+        self.d2h_async.fetch_add(1, Ordering::Relaxed);
+        let allocs = self.allocs.lock();
+        let (offset, alloc) = find_alloc(&allocs, src)
+            .ok_or_else(|| anyhow::anyhow!("copy_d2h_async: ptr {src} not allocated"))?;
         dst.copy_from_slice(&alloc.data[offset..offset + dst.len()]);
         Ok(())
     }
@@ -148,6 +197,7 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn synchronize(&self, _stream: u64) -> Result<()> {
+        self.syncs.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -155,6 +205,7 @@ impl GpuBackend for MockGpuBackend {
         0
     }
 
+    #[track_caller]
     fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
         Ok(KernelHandle(0xDEAD))
     }
@@ -171,8 +222,29 @@ impl GpuBackend for MockGpuBackend {
         self.memset(ptr, value, bytes)
     }
 
+    fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
+        // Same heap allocation as the trait default (the mock cannot page-lock);
+        // overridden solely to COUNT, so a test can prove a staging buffer is
+        // allocated once and reused rather than per event.
+        self.host_pinned_allocs.fetch_add(1, Ordering::Relaxed);
+        let layout = std::alloc::Layout::from_size_align(bytes, 64)
+            .map_err(|e| anyhow::anyhow!("invalid layout: {e}"))?;
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            anyhow::bail!("host alloc failed: {bytes} bytes");
+        }
+        Ok(ptr)
+    }
+
     fn total_memory(&self) -> Result<usize> {
         Ok(128 * 1024 * 1024 * 1024) // 128 GB
+    }
+
+    fn sm_count(&self) -> Result<u32> {
+        // Rationale (PCND): tests that exercise occupancy-gated dispatch need
+        // SOME machine width; 48 is the GB10 value the model targets, chosen
+        // so mock runs take the same branch production does.
+        Ok(48)
     }
 
     fn free_memory(&self) -> Result<usize> {

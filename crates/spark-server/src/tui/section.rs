@@ -60,3 +60,7 @@ impl Section {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "section_tests.rs"]
+mod tests;

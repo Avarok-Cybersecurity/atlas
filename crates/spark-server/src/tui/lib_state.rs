@@ -75,6 +75,13 @@ pub struct LibState {
     launch_result: Option<Receiver<String>>,
     /// The store root, so a refresh knows where the cache lives.
     pub(super) root: Option<std::path::PathBuf>,
+    /// There is no recipe store to attach, and there will not be one.
+    ///
+    /// `ArtifactStore::discover()` fails only on process-lifetime facts —
+    /// neither `ATLAS_HOME` nor `HOME` set, or `ATLAS_HOME` empty — so a retry
+    /// cannot succeed. Without this the tick saw `!attached()` and tried again
+    /// ten times a second, warning each time; see `events_rules::tick_work`.
+    pub(super) recipes_unavailable: bool,
 
     // --- config form ---
     /// Edited values, keyed as the recipe keys them. Only touched keys appear,
@@ -468,3 +475,11 @@ mod tests;
 #[cfg(test)]
 #[path = "lib_state_more_tests.rs"]
 mod more_tests;
+
+#[cfg(test)]
+#[path = "lib_state_recipe_tests.rs"]
+mod recipe_tests;
+
+#[cfg(test)]
+#[path = "lib_state_list_tests.rs"]
+mod list_tests;

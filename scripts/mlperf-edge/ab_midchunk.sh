@@ -29,7 +29,7 @@
 # 867 s = 21.1% of a 4104 s wall) that is worth up to ~148 s.
 #
 # It also makes two flags in the frozen config STOP BEING INERT: with
-# MIDCHUNK=0 nothing is ever marked `is_tail`, so ATLAS_SSM_TAIL_PROTECT=1 and
+# MIDCHUNK=0 nothing is ever marked `is_tail`, so and
 # ATLAS_SSM_TAIL_LEASE_TTL=128 currently govern an empty set (snapshot.rs says
 # so in as many words).
 #
@@ -64,7 +64,7 @@ for leg in mc_off mc_on; do
   # shellcheck disable=SC2086
   sudo docker run -d --name atlas-mc --network host --gpus all --ipc=host \
     -e ATLAS_NO_FFN_NVFP4_MMQ=1 $MC -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
     -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \

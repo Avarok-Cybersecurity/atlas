@@ -23,6 +23,7 @@
 //! codec) and the concrete RDMA/HBM tier implementations deliberately do NOT
 //! live here — they belong to the consumer crates that build on this core.
 
+mod aligned;
 mod direct_swap;
 // Positional file I/O shared by every tier that keeps one File open across
 // concurrent record accesses; see pio.rs for why it is here and not duplicated.

@@ -142,3 +142,7 @@ impl LibState {
 #[cfg(test)]
 #[path = "lib_dates_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lib_dates_more_tests.rs"]
+mod more_tests;

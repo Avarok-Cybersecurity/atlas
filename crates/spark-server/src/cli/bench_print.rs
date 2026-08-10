@@ -195,6 +195,8 @@ pub struct StdoutReporter {
     pub quiet: bool,
     last_phase: String,
     last_status: String,
+    /// The last frame log line printed, so a repeated frame does not repeat it.
+    last_frame_log: String,
 }
 
 impl StdoutReporter {
@@ -203,6 +205,7 @@ impl StdoutReporter {
             quiet,
             last_phase: String::new(),
             last_status: String::new(),
+            last_frame_log: String::new(),
         }
     }
 }
@@ -236,6 +239,31 @@ impl RunReporter for StdoutReporter {
     }
 
     fn frame(&mut self, frame: &BenchmarkResult) {
+        // Frame log lines, BEFORE the phase early-return.
+        //
+        // ★ These used to be dropped entirely: `PluginEvent::Log` was printed
+        // but a `BenchmarkResult`'s own `log` was not, so every diagnostic a
+        // benchmark attaches to a frame was visible in the TUI and invisible
+        // on the CLI -- the mode the PR gate runs in. That is how a BFCL run
+        // drew n=972 instead of its pinned 1004 while the guard written to
+        // catch precisely that printed its warning into nowhere.
+        //
+        // Emitted before the phase check because a warning must not depend on
+        // whether its frame happened to also change phase.
+        for line in &frame.log {
+            if !self.quiet
+                || matches!(
+                    line.level,
+                    atlas_plugin::LogLevel::Warn | atlas_plugin::LogLevel::Error
+                )
+            {
+                let text = format!("  {:?}: {}", line.level, line.text);
+                if text != self.last_frame_log {
+                    self.last_frame_log = text.clone();
+                    eprintln!("{text}");
+                }
+            }
+        }
         if self.quiet || frame.phase == self.last_phase {
             return;
         }

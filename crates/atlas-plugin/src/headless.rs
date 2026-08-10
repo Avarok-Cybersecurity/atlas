@@ -200,7 +200,7 @@ fn dispatch(
         ExecutorMessage::Frame(f) => {
             reporter.frame(&f);
             if f.status.is_terminal() {
-                *terminal = Some(f);
+                *terminal = Some(*f);
             }
         }
     }

@@ -27,16 +27,24 @@ pub fn extract_logprobs_from_f32(
 ///
 /// Copies `[K, vocab_size]` BF16 logits D2H, converts to FP32, and extracts
 /// top-K logprobs per position. Returns empty Vec on copy failure.
+///
+/// `row_base` (batched-MTP E12): first logits row of this sequence's verify
+/// span within the shared `[R, vocab]` buffer. Single-sequence callers pass
+/// 0 (unchanged behaviour); the batched K=4 verify passes `i*4` for seq i.
 pub fn extract_verify_logprobs(
     model: &dyn Model,
     tokens: &[u32],
     k_logprobs: u8,
+    row_base: usize,
 ) -> Vec<crate::api::TokenLogprobs> {
     let k = tokens.len();
     let vocab = model.vocab_size();
     let mut buf = vec![0u8; k * vocab * 2]; // BF16
     if model
-        .copy_logits_to_host(model.logits_buffer_ptr(), &mut buf)
+        .copy_logits_to_host(
+            model.logits_buffer_ptr().offset(row_base * vocab * 2),
+            &mut buf,
+        )
         .is_err()
     {
         return Vec::new();

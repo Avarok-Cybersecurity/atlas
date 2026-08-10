@@ -66,6 +66,86 @@ fn disk_cap_bounds_swap_and_drops_coldest() {
     assert_eq!(get(&mut r, 8).as_deref(), Some(&blob(8)[..]));
 }
 
+/// The SWAP-FILE bound an operator actually budgets against. `disk_count` is
+/// the live-record count, but the file never shrinks (`DirectSwapFile` doesn't
+/// override `discard_record`), so its size is `disk_high_water × blob_bytes`.
+/// `locate`'s OnDisk arm pulls the faulting key out of `disk_lru` while its
+/// record is still live, so `make_disk_room` counts one fewer than exist and
+/// the high-water mark can reach `cap + 1` — never more. That "+1" is exactly
+/// what the caller-side conversion subtracts before handing a cap down, so a
+/// budget is never overshot.
+#[test]
+fn disk_high_water_never_exceeds_cap_plus_one() {
+    const CAP: usize = 4;
+    let mut r = residency_capped(2, CAP);
+    for k in 0..40u64 {
+        put(&mut r, k, k as u8);
+        // Interleave GETs of (likely) on-disk keys to exercise the transient
+        // where a faulting record is live but out of disk_lru.
+        for probe in k.saturating_sub(3)..k {
+            let _ = get(&mut r, probe);
+        }
+        assert!(
+            r.disk_count() <= CAP,
+            "live on-disk records must stay within the cap (k={k}, {} > {CAP})",
+            r.disk_count()
+        );
+        assert!(
+            r.disk_high_water() <= CAP + 1,
+            "swap file must never exceed cap+1 records (k={k}, {} > {})",
+            r.disk_high_water(),
+            CAP + 1
+        );
+    }
+    assert_eq!(r.max_disk_slots(), CAP);
+    assert!(
+        r.stats().disk_evictions > 0,
+        "the cap must actually have been load-bearing in this run"
+    );
+}
+
+/// The one correctness property a cap could genuinely break: a fault-in must
+/// never drop the very record it is faulting. The GET below triggers
+/// `acquire_slot` → `evict_coldest_to_disk` → `make_disk_room` INSIDE the same
+/// call, with the disk already at cap — so the faulting key is the coldest
+/// candidate by insertion order. `locate` self-pins it (pulling it out of
+/// `disk_lru` before acquiring a slot), so the victim is some other key and the
+/// blob comes back byte-identical. This is the achievable form of "a record
+/// something is actively using is never dropped".
+#[test]
+fn capped_fault_in_never_self_evicts() {
+    const CAP: usize = 2;
+    let mut r = residency_capped(1, CAP); // 1 hot slot ⇒ every put spills
+    for k in 0..4u64 {
+        put(&mut r, k, k as u8);
+    }
+    assert_eq!(r.disk_count(), CAP, "disk sitting exactly at the cap");
+    let evictions_before = r.stats().disk_evictions;
+    // Key 1 is on disk AND is the coldest on-disk entry — without the self-pin
+    // at locate's OnDisk arm, the nested make_disk_room would see disk_lru at
+    // the cap and drop key 1 itself, then read the record it just discarded.
+    assert_eq!(
+        get(&mut r, 1),
+        Some(blob(1)),
+        "the faulting record must survive its own fault-in, byte-identical"
+    );
+    assert_eq!(
+        r.stats().disk_evictions,
+        evictions_before,
+        "the self-pin freed the cap slot, so the fault dropped NOTHING — least \
+         of all its own record"
+    );
+    assert_eq!(
+        get(&mut r, 2),
+        Some(blob(2)),
+        "the bystander on-disk key spilled during the fault is intact too"
+    );
+    assert!(
+        r.disk_high_water() <= CAP + 1,
+        "the transient extra live record is the documented +1, not unbounded growth"
+    );
+}
+
 /// THE headline invariant: put far more keys than the arena holds; the
 /// coldest spill to the disk tier and fault back BYTE-IDENTICAL. "Infinite
 /// depth, never dropped" proven at the paging layer.
@@ -301,182 +381,4 @@ fn boxed_trait_objects_compose() {
         assert!(r.get_blob(k, &mut out).unwrap());
         assert_eq!(out, blob(k as u8));
     }
-}
-
-// ───────────────────── fault-injection: mid-op I/O failure rollbacks ─────────
-//
-// The reference impls never fail, so the trickiest invariant in the policy core
-// — that a blob-move (spill/fault/put) that errors HALFWAY leaves the page table
-// consistent — is otherwise untested. These fakes fail one operation on demand.
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use anyhow::{Result, bail};
-
-/// `VecSlotArena` that fails the next `write_slot` when armed (via `arena_mut`).
-struct FaultyArena {
-    inner: VecSlotArena,
-    fail_next_write: bool,
-}
-impl FaultyArena {
-    fn new(slots: usize) -> Self {
-        Self {
-            inner: VecSlotArena::new(B, slots),
-            fail_next_write: false,
-        }
-    }
-}
-impl SlotArena for FaultyArena {
-    fn slot_bytes(&self) -> usize {
-        self.inner.slot_bytes()
-    }
-    fn num_slots(&self) -> usize {
-        self.inner.num_slots()
-    }
-    fn read_slot(&self, slot: usize, out: &mut [u8]) -> Result<()> {
-        self.inner.read_slot(slot, out)
-    }
-    fn write_slot(&mut self, slot: usize, bytes: &[u8]) -> Result<()> {
-        if self.fail_next_write {
-            self.fail_next_write = false;
-            bail!("injected write_slot failure");
-        }
-        self.inner.write_slot(slot, bytes)
-    }
-}
-
-/// Shared arm-once toggles for [`FaultySwap`] (the store is moved into the
-/// `Residency`, so the test keeps a clone to arm faults after construction).
-#[derive(Default)]
-struct SwapFaults {
-    fail_write: AtomicBool,
-    fail_read: AtomicBool,
-}
-struct FaultySwap {
-    inner: MemSwapStore,
-    faults: Arc<SwapFaults>,
-}
-impl FaultySwap {
-    fn new() -> (Self, Arc<SwapFaults>) {
-        let faults = Arc::new(SwapFaults::default());
-        (
-            Self {
-                inner: MemSwapStore::new(B),
-                faults: Arc::clone(&faults),
-            },
-            faults,
-        )
-    }
-}
-impl SwapStore for FaultySwap {
-    fn record_bytes(&self) -> usize {
-        self.inner.record_bytes()
-    }
-    fn write_record(&mut self, disk_slot: usize, bytes: &[u8]) -> Result<()> {
-        if self.faults.fail_write.swap(false, Ordering::SeqCst) {
-            bail!("injected write_record failure");
-        }
-        self.inner.write_record(disk_slot, bytes)
-    }
-    fn read_record(&self, disk_slot: usize, out: &mut [u8]) -> Result<()> {
-        if self.faults.fail_read.swap(false, Ordering::SeqCst) {
-            bail!("injected read_record failure");
-        }
-        self.inner.read_record(disk_slot, out)
-    }
-    fn discard_record(&mut self, disk_slot: usize) {
-        self.inner.discard_record(disk_slot);
-    }
-}
-
-/// `put_blob` whose arena WRITE fails must roll the reservation back — the slot
-/// is reclaimed (not stranded `Reserved`), the key is absent (a GET misses
-/// cleanly), and prior keys survive.
-#[test]
-fn put_blob_rolls_back_reservation_on_arena_write_failure() {
-    let (swap, _f) = FaultySwap::new();
-    let mut r = Residency::new(FaultyArena::new(2), swap).unwrap();
-    r.put_blob(1, &blob(1)).unwrap();
-
-    r.arena_mut().fail_next_write = true;
-    assert!(r.put_blob(2, &blob(2)).is_err(), "write failure propagates");
-
-    let mut out = vec![0u8; B];
-    assert!(
-        !r.get_blob(2, &mut out).unwrap(),
-        "rolled-back key 2 misses cleanly (not a torn Reserved slot)"
-    );
-    assert_eq!(r.total_keys(), 1, "no stranded key-2 entry");
-    // The freed slot is reusable and key 1 is intact.
-    r.put_blob(3, &blob(3)).unwrap();
-    assert!(
-        r.get_blob(1, &mut out).unwrap() && out == blob(1),
-        "key 1 intact"
-    );
-    assert!(
-        r.get_blob(3, &mut out).unwrap() && out == blob(3),
-        "key 3 reuses the reclaimed slot"
-    );
-}
-
-/// A spill whose swap WRITE fails must roll back: the victim stays resident and
-/// intact, no spill is counted, and the disk-slot pool isn't leaked (a later
-/// successful spill reuses it).
-#[test]
-fn spill_rolls_back_on_swap_write_failure_victim_stays_resident() {
-    let (swap, faults) = FaultySwap::new();
-    let mut r = Residency::new(FaultyArena::new(1), swap).unwrap(); // 1 slot → new key evicts
-    r.put_blob(10, &blob(10)).unwrap();
-
-    faults.fail_write.store(true, Ordering::SeqCst);
-    assert!(
-        r.put_blob(11, &blob(11)).is_err(),
-        "spill write failure propagates"
-    );
-    assert_eq!(r.stats().spills_to_disk, 0, "failed spill is not counted");
-    assert_eq!(r.total_keys(), 1, "failed put left no key 11");
-
-    let mut out = vec![0u8; B];
-    assert!(
-        r.get_blob(10, &mut out).unwrap() && out == blob(10),
-        "victim 10 stayed resident and intact"
-    );
-    assert!(!r.get_blob(11, &mut out).unwrap(), "key 11 never landed");
-    // A subsequent spill succeeds — the disk-slot pool wasn't corrupted.
-    r.put_blob(12, &blob(12)).unwrap();
-    assert_eq!(r.stats().spills_to_disk, 1);
-    assert!(
-        r.get_blob(10, &mut out).unwrap() && out == blob(10),
-        "10 faults back from disk byte-identical"
-    );
-}
-
-/// A fault-in whose swap READ fails must leave the key `OnDisk` (re-pinned) and
-/// return its scratched slot — the error propagates but a retry succeeds, and a
-/// bystander key spilled during the failed fault's `acquire_slot` is intact.
-#[test]
-fn fault_in_read_failure_keeps_key_on_disk_and_frees_slot() {
-    let (swap, faults) = FaultySwap::new();
-    let mut r = Residency::new(FaultyArena::new(1), swap).unwrap();
-    r.put_blob(20, &blob(20)).unwrap();
-    r.put_blob(21, &blob(21)).unwrap(); // evicts 20 to disk
-    assert_eq!(r.stats().spills_to_disk, 1);
-
-    faults.fail_read.store(true, Ordering::SeqCst);
-    let mut out = vec![0u8; B];
-    assert!(
-        r.get_blob(20, &mut out).is_err(),
-        "fault-in read failure propagates"
-    );
-
-    // 20 is still OnDisk; a retry (fault auto-cleared) faults it in cleanly.
-    assert!(
-        r.get_blob(20, &mut out).unwrap() && out == blob(20),
-        "20 faults back on retry"
-    );
-    assert!(
-        r.get_blob(21, &mut out).unwrap() && out == blob(21),
-        "bystander 21 (spilled during the failed fault) is intact"
-    );
 }

@@ -282,6 +282,7 @@ pub fn build_model(
         max_batch_tokens,
         max_seq_len,
         kv_block_size,
+        max_batch_size,
         gpu.as_ref(),
     )?;
 
@@ -495,13 +496,16 @@ pub fn build_model(
         // --max-seq-len. With paged KV (blocks allocated on demand) that almost
         // never holds for real agent traffic (mixed/shorter sequences), so a high
         // --max-seq-len (e.g. 64K for long agent contexts) needlessly caps
-        // --max-batch-size. ATLAS_KV_OVERCOMMIT=1 downgrades the hard error to a
+        // --max-batch-size. Overcommit (DEFAULT ON since wave 10: config of
+        // record for the native bs=32 rung) downgrades the hard error to a
         // warning: the scheduler admits up to max_batch_size and the pool fills on
         // demand (a genuinely over-long burst gets back-pressured by the block
-        // allocator, not a boot-time refusal).
-        let overcommit = matches!(
+        // allocator, not a boot-time refusal). Kill switch: ATLAS_KV_OVERCOMMIT=0
+        // (or =false) restores the boot-time hard refusal. Value is parsed, not
+        // presence-checked.
+        let overcommit = !matches!(
             std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("0") | Ok("false")
         );
         if overcommit {
             tracing::warn!(
@@ -521,7 +525,7 @@ pub fn build_model(
                  but --max-batch-size={} was requested. \
                  KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
                  Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
-                 or set ATLAS_KV_OVERCOMMIT=1 to allow on-demand paged allocation.",
+                 or unset ATLAS_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
                 max_concurrent,
                 max_seq_len,
                 max_batch_size,

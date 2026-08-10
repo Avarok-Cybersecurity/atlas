@@ -23,6 +23,20 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<(usize, bool)> {
         let bs = kv_cache.block_size();
+        // Retry re-entry (scheduler preempt-and-retry on KV exhaustion): chunk 0
+        // already acquired this sequence's prefix — it `inc_ref`d each matched
+        // block and pushed it onto `block_table` BEFORE the allocation that
+        // failed. Re-running would push those blocks a second time and take a
+        // second radix ref that nothing releases. Replay the original decision.
+        if chunk_start == 0 && seq.prefix_lookup_applied {
+            tracing::debug!(
+                "prefix lookup re-entered at chunk 0 (retry): replaying \
+                 skip_to={} skip={} without re-acquiring the cached prefix",
+                seq.marconi_skip_to,
+                seq.prefix_lookup_skip,
+            );
+            return Ok((seq.marconi_skip_to, seq.prefix_lookup_skip));
+        }
         if chunk_start == 0 {
             // Prompt-logprob collection needs a live hidden row for EVERY
             // position — a cache/Marconi skip would leave gaps. Force the
@@ -84,6 +98,17 @@ impl TransformerModel {
             }
             let matched = prefix_match.matched_tokens;
             seq.cached_prefix_tokens = matched;
+            seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
+            // Stash the matched prefix so `free_sequence` can release the radix
+            // refs the lookup just bumped even if this prefill fails to allocate
+            // its suffix before `seq.tokens` is populated (else those nodes leak
+            // and the block pool progressively wedges). Cleared on the no-match
+            // path so a later cache-less turn on the same seq doesn't over-release.
+            if matched > 0 {
+                seq.prefix_ref_tokens = tokens[..matched].to_vec();
+            } else {
+                seq.prefix_ref_tokens.clear();
+            }
             seq.prompt_len = total;
             for &block_idx in &prefix_match.matched_blocks {
                 kv_cache.inc_ref(block_idx);
@@ -134,15 +159,41 @@ impl TransformerModel {
                 let exact_without_hidden = snap_tok == matched
                     && matched == total
                     && !self.ssm_snapshots.has_hidden(snap_id);
+                // The bypass must be decided HERE, not after the restore below.
+                // It used to be checked ~80 lines further down, where it set
+                // `skip = false` to force a full recompute — but by then
+                // `restore()` had ALREADY overwritten the SSM pool with the
+                // snapshot state, so the "full recompute" ran on top of a
+                // restored (non-zero) starting state and the flag did the
+                // opposite of what it documents (measured: 2/10 -> 5/10
+                // distinct warm completions with the old position).
+                //
+                // BYPASS IS THE DEFAULT. The exact-full-prompt shortcut is UNSOUND BY
+                // CONSTRUCTION, not merely buggy: computing the last token needs
+                // SSM state@(N-1), the snapshot holds state@N, and the recurrence
+                // is not invertible, so state@(N-1) cannot be recovered. The path
+                // therefore re-runs token N-1 from state@N (a deliberate
+                // "double-advance"), patches the SSM state back afterwards — and
+                // leaves the KV it wrote for position N-1 CORRUPTED, in a block
+                // SHARED with the prefix cache. `ctx.gdn_exact_replay`'s own doc
+                // in layer.rs describes this same poisoning for the GDN path.
+                // `ATLAS_MARCONI_EXACT=1` re-enables it for A/B.
+                let bypass_exact = snap_tok == matched
+                    && matched == total
+                    && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
                 // Session gate applies ONLY to TAIL snapshots (their state
                 // bleeds past the exact prefix). Exact / is_tail_sibling
                 // snapshots are content-addressed by the verified token prefix
                 // and safe cross-session — matching the KV radix. Gating them on
                 // the (unstable) session_hash is what rejected every valid warm-
                 // turn anchor and forced recompute-all. See lookup_tiered.
-                if snap_tok > 0
+                // Below `marconi_min_tokens()` the snapshot restore costs more in lost
+                // drafter acceptance than the skipped prefill saves — see the helper.
+                if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                    && snap_tok > 0
                     && matched <= total
                     && !exact_without_hidden
+                    && !bypass_exact
                     && (!prefix_match.ssm_snapshot_is_tail
                         || self
                             .ssm_snapshots
@@ -234,12 +285,12 @@ impl TransformerModel {
             if skip
                 && prefix_match.ssm_snapshot_tokens == matched
                 && matched == total
-                && std::env::var("ATLAS_NO_MARCONI_EXACT").as_deref() == Ok("1")
+                && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1")
             {
                 skip = false;
                 seq.marconi_exact_snap = None;
                 tracing::info!(
-                    "ATLAS_NO_MARCONI_EXACT: bypassing exact-leaf snapshot shortcut \
+                    "exact-leaf snapshot shortcut bypassed (default; ATLAS_MARCONI_EXACT=1 re-enables) \
                      for {matched}-token full hit — recomputing all KV+SSM"
                 );
             }
@@ -304,6 +355,8 @@ impl TransformerModel {
                 0
             };
             seq.marconi_skip_to = skip_tokens;
+            seq.prefix_lookup_skip = skip;
+            seq.prefix_lookup_applied = true;
             Ok((skip_tokens, skip))
         } else if seq.marconi_skip_to > 0 {
             // Chunk 1+: inherit skip info from chunk 0's prefix cache lookup.

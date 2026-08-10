@@ -201,6 +201,13 @@ pub trait GpuBackend: Send + Sync {
     fn default_stream(&self) -> u64;
 
     /// Look up a kernel function by module and function name.
+    ///
+    /// `#[track_caller]` on the DECLARATION is what makes the caller location
+    /// survive the `&dyn GpuBackend` vtable — every lookup in Atlas goes
+    /// through dynamic dispatch, so without it the audit can only ever name
+    /// the backend's own line. The location is what turns an unresolved-lookup
+    /// report from a name list into a work item.
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
 
     /// This backend's memoized kernel handles and scratch allocations.
@@ -227,14 +234,54 @@ pub trait GpuBackend: Send + Sync {
         None
     }
 
-    /// Async host-to-device copy (no stream synchronization).
+    /// Async host-to-device copy: **`src` may be dropped or overwritten the
+    /// moment this returns.**
     ///
-    /// **Lifetime requirement**: the source buffer must remain valid until the
-    /// copy completes (i.e., until the next synchronization point on this
-    /// stream). All current callers use stack-local byte arrays or pinned
-    /// memory that outlives the stream sync, satisfying this requirement.
+    /// That is what the ~90 call sites in `spark-model` rely on — nearly all
+    /// hand over a stack array or local `Vec` that dies at the end of the
+    /// statement — and it used to hold only by accident. See
+    /// [`crate::pinned_hosts`] for why, and for how the CUDA backend now MAKES
+    /// the promise true (page-locked source ⇒ it buys the ordering that the
+    /// pageable path gets from the driver for free) instead of inheriting it.
+    ///
+    /// Use [`GpuBackend::copy_h2d_async_retained`] when the source outlives the
+    /// next synchronisation and the extra ordering is not wanted.
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, _stream: u64) -> Result<()> {
         self.copy_h2d(src, dst)
+    }
+
+    /// Async host-to-device copy for a source the CALLER keeps alive.
+    ///
+    /// `src` must remain valid, and must not be rewritten, until the next
+    /// synchronisation point on `stream`. In exchange it never inserts an
+    /// implicit sync — what makes a batched scatter out of one pinned staging
+    /// blob (N enqueues + one `synchronize`) worth doing; see
+    /// [`GpuBackend::copy_d2h_async`] for the measured shape. The name marks,
+    /// greppably, every site making a promise the compiler cannot check.
+    fn copy_h2d_async_retained(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
+        // Default: the transient path. Strictly stronger ordering than promised,
+        // so it is always correct — just not always the fastest.
+        self.copy_h2d_async(src, dst, stream)
+    }
+
+    /// Async device-to-host copy (no stream synchronization).
+    ///
+    /// The counterpart of [`GpuBackend::copy_h2d_async`], and the ONLY D2H
+    /// primitive usable for a batched gather: `copy_d2h` and
+    /// `copy_d2h_on_stream` both `cuStreamSynchronize` INSIDE the call, so an
+    /// N-chunk gather pays N full stream drains. Measured cost of that shape:
+    /// the SSM snapshot spill moved 66,846,720 B as 60 blocking `copy_d2h`
+    /// calls in ~400 ms (~165 MB/s), while the mirror-image scatter
+    /// (`copy_h2d_async` ×60 + ONE `synchronize`) moved the same bytes through
+    /// the same host buffer in ~28 ms.
+    ///
+    /// **Lifetime requirement** (same as `copy_h2d_async`): the destination
+    /// buffer must remain valid, and must not be read or re-used, until the
+    /// next synchronization point on this stream.
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], _stream: u64) -> Result<()> {
+        // Mock/metal fall back to the blocking copy: correct (a stricter
+        // ordering than promised), just not batched.
+        self.copy_d2h(src, dst)
     }
 
     /// Async device-to-device copy (no stream synchronization).
@@ -311,6 +358,14 @@ pub trait GpuBackend: Send + Sync {
     /// Free device memory in bytes.
     fn free_memory(&self) -> Result<usize>;
 
+    /// Number of streaming multiprocessors (CUDA SMs / HIP CUs) on the device.
+    ///
+    /// Queried from the driver, never assumed: dispatch rules that ask "does
+    /// this grid still fill the machine?" are wrong on every part whose SM
+    /// count differs from the one they were tuned on. Callers must resolve it
+    /// ONCE at construction and keep the value, not call it per launch.
+    fn sm_count(&self) -> Result<u32>;
+
     /// Create a new CUDA stream (for overlapping work).
     fn create_stream(&self) -> Result<u64> {
         Ok(0) // Default: return legacy stream
@@ -355,6 +410,15 @@ pub trait GpuBackend: Send + Sync {
         Ok(())
     }
 
+    /// Device-side alias of a page-locked host pointer from
+    /// [`Self::alloc_host_pinned`] (cuMemHostGetDevicePointer). On UMA parts
+    /// (GB10) this lets a KERNEL write results directly into host-visible
+    /// memory, eliminating the copy-engine op for tiny readbacks entirely.
+    /// Default: unsupported.
+    fn host_ptr_to_device(&self, _host: *mut u8) -> Result<DevicePtr> {
+        anyhow::bail!("host_ptr_to_device: not supported by this backend")
+    }
+
     /// Allocate page-locked (pinned) host memory for efficient async H2D.
     ///
     /// On DGX Spark (UMA/LPDDR5X), pinned memory enables true async DMA
@@ -363,6 +427,13 @@ pub trait GpuBackend: Send + Sync {
     ///
     /// Returns a raw pointer to `bytes` of page-locked host memory.
     /// Caller must call `free_host_pinned` to release.
+    ///
+    /// **The returned region is ZEROED.** Callers pack these buffers with
+    /// alignment padding between fields and then form a `&[u8]` over the whole
+    /// packed range for one `copy_h2d`; a slice over a never-written byte is UB
+    /// no matter what the device later does with it. Every implementation must
+    /// uphold this — `cuMemAllocHost_v2` and `newBufferWithLength` do not zero
+    /// on their own and their wrappers memset explicitly.
     fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut u8> {
         // Default: regular heap allocation (mock backend, no pinning)
         let layout = std::alloc::Layout::from_size_align(bytes, 64)
@@ -396,34 +467,5 @@ impl fmt::Display for DevicePtr {
 pub mod mock;
 
 #[cfg(test)]
-mod tests {
-    use super::mock::MockGpuBackend;
-    use super::*;
-
-    #[test]
-    fn test_mock_alloc_free() {
-        let gpu = MockGpuBackend::new();
-        let ptr = gpu.alloc(1024).unwrap();
-        assert!(!ptr.is_null());
-        assert_eq!(gpu.alloc_count(), 1);
-        gpu.free(ptr).unwrap();
-        assert_eq!(gpu.alloc_count(), 0);
-    }
-
-    #[test]
-    fn test_mock_copy_roundtrip() {
-        let gpu = MockGpuBackend::new();
-        let ptr = gpu.alloc(8).unwrap();
-        let src = [1u8, 2, 3, 4, 5, 6, 7, 8];
-        gpu.copy_h2d(&src, ptr).unwrap();
-        let mut dst = [0u8; 8];
-        gpu.copy_d2h(ptr, &mut dst).unwrap();
-        assert_eq!(src, dst);
-    }
-
-    #[test]
-    fn test_device_ptr_offset() {
-        let ptr = DevicePtr(0x1000);
-        assert_eq!(ptr.offset(256).0, 0x1100);
-    }
-}
+#[path = "gpu_tests.rs"]
+mod tests;

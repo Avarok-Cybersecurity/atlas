@@ -118,14 +118,7 @@ pub(super) async fn run_blocking(
                 top_logprobs: p.logprobs_k,
                 prompt_logprobs: if req.echo { p.logprobs_k } else { None },
                 echo: req.echo,
-                timeout_at: {
-                    let secs = state.request_timeout as f32;
-                    if secs > 0.0 {
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
-                    } else {
-                        None
-                    }
-                },
+                timeout_at: state.request_deadline(None),
                 response_tx: tx,
             };
 

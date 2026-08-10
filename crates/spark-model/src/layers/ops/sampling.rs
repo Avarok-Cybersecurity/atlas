@@ -36,6 +36,63 @@ pub fn argmax_bf16(
         .launch(stream)
 }
 
+/// Batched argmax: ONE launch, one block per row, instead of n serial launches of
+/// the single-row `argmax_bf16` (which is a one-CTA reduction and so uses 1 of 48
+/// SMs). Byte-identical — each block runs the identical per-row body.
+#[allow(clippy::too_many_arguments)]
+pub fn argmax_bf16_batch(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    logits: DevicePtr,
+    out: DevicePtr,
+    vocab_size: u32,
+    n_rows: u32,
+    row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n_rows, 1, 1])
+        .block([1024, 1, 1])
+        .arg_ptr(logits)
+        .arg_ptr(out)
+        .arg_u32(vocab_size)
+        .arg_u32(row_stride)
+        .launch(stream)
+}
+
+/// Batched argmax that ALSO writes each row's top-1 log-probability
+/// (`out_logprob[row] = log softmax(row)[argmax]`, FP32), computed by online
+/// softmax in the same pass — same bandwidth as `argmax_bf16_batch`, same
+/// index semantics.
+///
+/// Consumer: D-Cut verification-depth pruning, whose ranking key is the prefix
+/// SUM of these log-probabilities (= the log of the prefix product of survival
+/// probabilities). Separate kernel so every existing `argmax_bf16_batch` caller
+/// stays byte-identical and an unresolved handle is a silent 0 the caller gates
+/// on.
+#[allow(clippy::too_many_arguments)]
+pub fn argmax_bf16_batch_lp(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    logits: DevicePtr,
+    out: DevicePtr,
+    out_logprob: DevicePtr,
+    vocab_size: u32,
+    n_rows: u32,
+    row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n_rows, 1, 1])
+        .block([1024, 1, 1])
+        .arg_ptr(logits)
+        .arg_ptr(out)
+        .arg_ptr(out_logprob)
+        .arg_u32(vocab_size)
+        .arg_u32(row_stride)
+        .launch(stream)
+}
+
 /// GPU-side argmax + embedding lookup — eliminates D2H sync in MTP propose.
 ///
 /// Reads the argmax result from `argmax_out`, looks up the embedding row

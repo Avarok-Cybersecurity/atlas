@@ -45,9 +45,13 @@ pub fn drive(bench: &mut dyn DynBenchmark) -> impl Stream<Item = Result<Benchmar
 }
 
 /// What the render thread receives from a run.
+///
+/// `Frame` is boxed: a terminal [`BenchmarkResult`] is several times larger
+/// than an [`PluginEvent`], and without indirection every event in flight
+/// pays the frame's full size.
 pub enum ExecutorMessage {
     Event(PluginEvent),
-    Frame(BenchmarkResult),
+    Frame(Box<BenchmarkResult>),
 }
 
 /// The render thread's control surface for one in-flight run.
@@ -64,7 +68,11 @@ impl RunHandle {
     pub fn drain(&self) -> Vec<ExecutorMessage> {
         let mut out: Vec<ExecutorMessage> =
             self.events.try_iter().map(ExecutorMessage::Event).collect();
-        out.extend(self.frames.try_iter().map(ExecutorMessage::Frame));
+        out.extend(
+            self.frames
+                .try_iter()
+                .map(|f| ExecutorMessage::Frame(Box::new(f))),
+        );
         out
     }
 

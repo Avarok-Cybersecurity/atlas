@@ -31,10 +31,16 @@ Atlas is an inference server that runs locally with GPU access. The primary thre
 
 ## Automated Auditing
 
-Atlas runs automated security checks in CI:
+Atlas runs one automated security check in CI:
 
-- **`cargo deny`** — Audits dependencies for known advisories, license compliance, and banned crates (weekly + on every PR)
-- **`cppcheck`** — Static analysis on CUDA kernel source
+- **`cargo deny`** — Audits dependencies for known advisories, license compliance, and banned crates. Runs on every pull request, on pushes to `main` that touch `Cargo.toml`/`Cargo.lock`/`deny.toml`, and weekly. See `.github/workflows/security.yml`.
+
+There is **no** automated static analysis of the CUDA kernel sources. Kernel
+memory safety is covered by human review and by the runtime kernel audit, not
+by a CI tool. This section previously advertised a `cppcheck` job that has
+never existed in this repository; claiming a control you do not run is worse
+than claiming none, because it tells a reader a class of defect is already
+being looked for.
 
 ## Disclosure Policy
 

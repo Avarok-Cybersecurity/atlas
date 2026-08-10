@@ -100,6 +100,10 @@ pub struct Qwen3AttentionLayer {
     /// HC `hc_head` kernel handle (NULL when HC disabled).
     pub(super) hc_head_k: KernelHandle,
     // ── Transposed weights for prefill GEMM ──
+    /// Fused [q|k|v] transposed twin (N = q_proj_dim + 2*kv_dim). Present only
+    /// when the three projections share one `weight_scale_2` — the GEMM applies
+    /// a single scale2 per launch. `None` => the three separate GEMMs run.
+    pub(super) qkv_nvfp4_t: Option<QuantizedWeight>,
     pub(super) q_nvfp4_t: Option<QuantizedWeight>,
     pub(super) k_nvfp4_t: Option<QuantizedWeight>,
     pub(super) v_nvfp4_t: Option<QuantizedWeight>,
@@ -139,6 +143,10 @@ pub struct Qwen3AttentionLayer {
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
     pub(super) rope_k: KernelHandle,
+    /// Strided sibling: rotates all n sequences in ONE launch. 0 when absent.
+    pub(super) rope_strided_k: KernelHandle,
+    /// Strided sibling of `rms_norm_w_k`: all n sequences in ONE launch. 0 when absent.
+    pub(super) rms_norm_strided_k: KernelHandle,
     /// MRoPE-interleaved kernel.
     pub(super) rope_mrope_interleaved_k: KernelHandle,
     /// K-only MRoPE kernel used when Q RoPE is fused into Q deinterleave/norm.
@@ -233,6 +241,9 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemm_k: KernelHandle,
     pub(super) w4a16_gemm_t_k: KernelHandle,
     pub(super) w4a16_gemm_t_k64_k: KernelHandle,
+    /// K64 with a 64-wide N tile: same math, 2x the CTAs. `KernelHandle(0)`
+    /// when absent or killed by `ATLAS_NO_K64_N64`.
+    pub(super) w4a16_gemm_t_k64_n64_k: KernelHandle,
     pub(super) w4a16_gemm_t_m128_k: KernelHandle,
     /// LOSSLESS BF16-TC variant of t_m128 for QKV/o projection prefill (FP4→BF16
     /// dequant + BF16 MMA, no FP8 activation crush). Opt-in via ATLAS_BF16_TC_PROJ

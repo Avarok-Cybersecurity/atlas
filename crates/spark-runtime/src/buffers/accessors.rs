@@ -142,6 +142,11 @@ impl BufferArena {
     pub fn max_batch_tokens(&self) -> usize {
         self.max_batch_tokens
     }
+    /// Derived batched-decode metadata layout (rows/offsets). Byte-identical
+    /// to the legacy fixed 32-row layout for every serve `max_batch_size <= 32`.
+    pub fn decode_meta(&self) -> super::DecodeMetaLayout {
+        self.decode_meta
+    }
     pub fn sizes(&self) -> &BufferSizes {
         &self.sizes
     }
