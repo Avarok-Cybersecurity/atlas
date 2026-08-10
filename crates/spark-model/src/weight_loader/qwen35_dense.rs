@@ -289,7 +289,19 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // grid=[div_ceil(intermediate_size,64),..] on the first prefill.
             // Snapshot fresh D2D copies BEFORE the free (the clone is an
             // independent allocation the layer owns for its lifetime).
-            let ffn_bf16_snapshot = if matches!(variant, Nvfp4Variant::Bf16Raw) {
+            // Native keep-packed ternary Q2_0 (ATLAS_GGUF_NATIVE_Q2=1): when the
+            // GGUF loader tagged gate/up/down as `PackedQ2_0`, DON'T requant to
+            // NVFP4 — install the raw 2-bit blocks and dispatch `q2_0_gemv` at
+            // decode. Requires tp_size=1 (packed-block sharding is unimplemented).
+            // Flag off → tensors are BF16, `ffn_q2` is false, path unchanged.
+            let ffn_q2 = config.tp_world_size.max(1) == 1
+                && proj_q2_group(store, &format!("{lp}.mlp.gate_proj")).is_some()
+                && proj_q2_group(store, &format!("{lp}.mlp.up_proj")).is_some()
+                && proj_q2_group(store, &format!("{lp}.mlp.down_proj")).is_some();
+            // Keep-packed projections are 2-bit blocks, not BF16 — there is
+            // nothing to snapshot (dense_auto has no PackedQ2_0 arm and would
+            // abort the load), and the ffn_q2 arm below owns their compute.
+            let ffn_bf16_snapshot = if !ffn_q2 && matches!(variant, Nvfp4Variant::Bf16Raw) {
                 let inter = if config.intermediate_size > 0 {
                     config.intermediate_size
                 } else {
@@ -318,15 +330,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             } else {
                 None
             };
-            // Native keep-packed ternary Q2_0 (ATLAS_GGUF_NATIVE_Q2=1): when the
-            // GGUF loader tagged gate/up/down as `PackedQ2_0`, DON'T requant to
-            // NVFP4 — install the raw 2-bit blocks and dispatch `q2_0_gemv` at
-            // decode. Requires tp_size=1 (packed-block sharding is unimplemented).
-            // Flag off → tensors are BF16, `ffn_q2` is false, path unchanged.
-            let ffn_q2 = config.tp_world_size.max(1) == 1
-                && proj_q2_group(store, &format!("{lp}.mlp.gate_proj")).is_some()
-                && proj_q2_group(store, &format!("{lp}.mlp.up_proj")).is_some()
-                && proj_q2_group(store, &format!("{lp}.mlp.down_proj")).is_some();
 
             let ffn_weights = if ffn_q2 {
                 // NULL NVFP4 fallback: decode uses the packed weights; prefill /
