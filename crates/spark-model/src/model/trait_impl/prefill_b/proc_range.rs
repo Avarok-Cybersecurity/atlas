@@ -73,6 +73,9 @@ impl TransformerModel {
                     // Need to process at least the last token for logits.
                     // Re-embed just the last token into hidden[0].
                     let last_tok = tokens[chunk_start + chunk_len - 1];
+                    // SAFETY: 4 == `size_of::<u32>()` bytes over the single,
+                    // fully initialised `last_tok` local on the line above (an
+                    // in-bounds copy out of `tokens`).
                     let last_tok_bytes: &[u8] = unsafe {
                         std::slice::from_raw_parts(&last_tok as *const u32 as *const u8, 4)
                     };
@@ -103,6 +106,11 @@ impl TransformerModel {
                 let uncached_start = chunk_start + skip_in_chunk;
                 let uncached_count = chunk_len - skip_in_chunk;
                 let uncached_tokens = &tokens[uncached_start..uncached_start + uncached_count];
+                // SAFETY: `uncached_tokens` is sliced on the line above with an
+                // END bound of `uncached_start + uncached_count`, so its length
+                // IS `uncached_count` (an out-of-range range panics in that
+                // slice index first) and the byte length is
+                // `uncached_tokens.len() * size_of::<u32>()` over a live `&[u32]`.
                 let token_ids_bytes: &[u8] = unsafe {
                     std::slice::from_raw_parts(
                         uncached_tokens.as_ptr() as *const u8,

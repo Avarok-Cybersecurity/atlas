@@ -54,7 +54,12 @@ impl ToolCallParser for Qwen3CoderParser {
         true
     }
 
-    fn system_prompt(&self, tools: &[ToolDefinition], tool_choice: &ToolChoice) -> String {
+    fn system_prompt(
+        &self,
+        tools: &[ToolDefinition],
+        tool_choice: &ToolChoice,
+        levers: &super::PromptLevers,
+    ) -> String {
         // Match the model's native Jinja chat_template exactly:
         // Tool definitions as JSON (not XML), response format as XML.
         let mut prompt =
@@ -81,7 +86,7 @@ impl ToolCallParser for Qwen3CoderParser {
                 t
             })
             .collect();
-        if crate::tscg::tscg_enabled() {
+        if levers.tscg {
             // TSCG: compact function signatures replace the JSON body.
             prompt.push_str(&crate::tscg::compile_tools(&f33_tools));
             prompt.push('\n');

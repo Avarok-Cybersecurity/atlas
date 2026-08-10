@@ -19,6 +19,18 @@ impl StreamingToolDetector {
     /// string (still valid JSON). Returns `(norm_key, json_value_string)`.
     pub(super) fn coerce_kv(&self, raw_key: &str, raw_value: &str) -> (String, String) {
         let name = self.current_tc_name.clone().unwrap_or_default();
+        // Echo-attractor salvage (2026-07-09): re-split `parameter=filePath>…`
+        // shapes where the real key leaked into the value — same SSOT helper
+        // as the buffered pipeline (validation.rs step 2.5). Guarded on
+        // `emitted_keys` so a properly-streamed key is never duplicated in
+        // the fragment JSON.
+        let salvaged =
+            crate::tool_parser::salvage_echoed_param(&self.tools, &name, raw_key, raw_value)
+                .filter(|(real_key, _)| !self.emitted_keys.contains(real_key));
+        let (raw_key, raw_value) = match &salvaged {
+            Some((real_key, real_val)) => (real_key.as_str(), real_val.as_str()),
+            None => (raw_key, raw_value),
+        };
         let norm_key = crate::tool_parser::normalize_param_name(&self.tools, &name, raw_key);
         let fallback = || serde_json::to_string(raw_value).unwrap_or_else(|_| "\"\"".to_string());
         let single = serde_json::to_string(&serde_json::json!({ norm_key.clone(): raw_value }));
@@ -74,8 +86,20 @@ impl StreamingToolDetector {
                 };
                 let gt_at = key_region + rel_gt;
                 let value_region = gt_at + 1;
-                let Some(rel_close) = self.buffer[value_region..limit].find("</parameter>") else {
-                    break; // value not closed yet — not complete
+                // P0-2 (2026-07-09): VIRTUAL close on the garbled
+                // close-reopen signature. At depth the model can drop the
+                // `>` of a close, emitting `</parameter<parameter=KEY>` —
+                // grammar-legal value content the exact-literal scan would
+                // swallow into the previous value (real key+path lost, then
+                // backfilled as ""). Close the value at the garble and
+                // resume scanning at the reopen so the next param parses.
+                let exact = self.buffer[value_region..limit].find("</parameter>");
+                let garbled = self.buffer[value_region..limit].find("</parameter<parameter=");
+                let (rel_close, advance) = match (exact, garbled) {
+                    (Some(e), Some(g)) if g < e => (g, "</parameter".len()),
+                    (Some(e), _) => (e, "</parameter>".len()),
+                    (None, Some(g)) => (g, "</parameter".len()),
+                    (None, None) => break, // value not closed yet — not complete
                 };
                 let close_at = value_region + rel_close;
                 // Mirror parse_single_b.rs:79-105: key + value are both `.trim()`.
@@ -94,7 +118,7 @@ impl StreamingToolDetector {
                 outputs.push(DetectorOutput::ToolCallArgsFragment { fragment, idx });
                 self.incremental_emitted = true;
                 self.emitted_keys.push(norm_key);
-                self.current_tc_emitted = close_at + "</parameter>".len();
+                self.current_tc_emitted = close_at + advance;
             }
 
             if final_close {
@@ -194,5 +218,91 @@ impl StreamingToolDetector {
             }
         }
         outputs
+    }
+}
+
+impl StreamingToolDetector {
+    /// Handle a bare `<function...` block (no `<tool_call>` wrapper).
+    ///
+    /// Returns `true` when the caller's scan loop should `continue` (a complete
+    /// block was consumed), `false` when it should `break` and wait for tokens.
+    ///
+    /// Split out of `streaming_impl.rs::process` to stay under the 500 LoC cap.
+    ///
+    /// ## Why this streams now
+    /// The bare `<function=NAME>` shape is what the `qwen3_xml` parser — the
+    /// shipped GB10 config — actually receives. It used to fall straight through
+    /// to `break`, so a client saw NOTHING of a tool call until the whole block
+    /// had been generated and parsed, while the `<tool_call>`-wrapped shape had
+    /// been streaming its header and each completed parameter all along. This
+    /// closes that asymmetry with the SAME machinery rather than a second copy.
+    ///
+    /// Measured caveat: this moves FIRST-BYTE latency only. A `stream=False` A/B
+    /// showed total request latency is unchanged (+1.4 ms), so it improves
+    /// responsiveness and reported TTFT, NOT wall.
+    pub(super) fn process_bare_function(&mut self, outputs: &mut Vec<DetectorOutput>) -> bool {
+        let Some(func_pos) = self.buffer.find("<function") else {
+            return false;
+        };
+        if func_pos > 0 {
+            let before = self.buffer[..func_pos].to_string();
+            self.buffer = self.buffer[func_pos..].to_string();
+            outputs.push(DetectorOutput::Content(before));
+        }
+
+        if let Some(end) = bare_function_end(&self.buffer) {
+            // If this call was already streamed incrementally below, its header
+            // and completed params are ALREADY on the wire. Re-emitting a whole
+            // `ToolCall` here would deliver the call TWICE, so close it the way
+            // the `<tool_call>` arm does: residual fragments + `ToolCallEnd`.
+            // These two paths MUST stay mutually exclusive.
+            if !self.buffer_args && self.incremental_emitted {
+                let idx = self.call_counter as usize;
+                let frags = self.stream_ready_fragments(end, true);
+                outputs.extend(frags);
+                outputs.push(DetectorOutput::ToolCallEnd { idx });
+                self.call_counter += 1;
+                self.emitted_tool_calls = true;
+                self.buffer = self.buffer[end..].to_string();
+                self.reset_call_state();
+                return true;
+            }
+            let block = self.buffer[..end].to_string();
+            self.buffer = self.buffer[end..].to_string();
+            let (_, calls) = parse_bare_function_calls(&block);
+            for tc in calls {
+                let idx = self.call_counter as usize;
+                self.call_counter += 1;
+                self.emitted_tool_calls = true;
+                outputs.push(DetectorOutput::ToolCall(tc, idx));
+            }
+            self.reset_call_state();
+            return true;
+        }
+
+        // Block not closed yet — emit the header as soon as the name is known,
+        // then any newly-complete `<parameter=...>` fragments.
+        //
+        // `stream_ready_fragments` scans from `current_tc_emitted` for
+        // `<parameter=` / `</parameter>` pairs, so the leading `<function=NAME>`
+        // still sitting in the buffer is simply skipped — no stripping needed.
+        if self.current_tc_name.is_none()
+            && let Some(name) = extract_streaming_name(&self.buffer)
+        {
+            let id = next_tool_call_id();
+            let idx = self.call_counter as usize;
+            outputs.push(DetectorOutput::ToolCallStart {
+                id: id.clone(),
+                name: name.clone(),
+                idx,
+            });
+            self.current_tc_name = Some(name);
+            self.current_tc_id = Some(id);
+        }
+        if !self.buffer_args && self.current_tc_name.is_some() {
+            let frags = self.stream_ready_fragments(self.buffer.len(), false);
+            outputs.extend(frags);
+        }
+        false
     }
 }

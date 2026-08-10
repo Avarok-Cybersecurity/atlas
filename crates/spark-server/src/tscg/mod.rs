@@ -38,21 +38,11 @@ mod sdm;
 
 use crate::tool_parser::ToolDefinition;
 
-/// Boot-time TSCG enable flag, set once from the resolved
-/// `ModelBehavior.tscg`. Mirrors the `enable_loop_watchdog` pattern.
-static TSCG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Set once at startup from MODEL.toml `[behavior].tscg`. Idempotent.
-pub fn set_tscg_enabled(enabled: bool) {
-    let _ = TSCG_ENABLED.set(enabled);
-}
-
-/// Whether tool schemas should be TSCG-compiled for this model. Defaults
-/// to `false` until `set_tscg_enabled` runs, so any pre-boot caller and
-/// the unit tests see the unmodified JSON path.
-pub fn tscg_enabled() -> bool {
-    *TSCG_ENABLED.get().unwrap_or(&false)
-}
+// The boot-time `TSCG_ENABLED` OnceLock is gone: `[behavior].tscg` is a
+// per-model value, and a `OnceLock` set once per process would have pinned
+// the first model's answer for every later one. It is now
+// `tool_parser::PromptLevers::tscg`, built in `AppState` and passed to
+// `system_prompt` / the chat template.
 
 /// Compile a tool list into the compact TSCG block. The result replaces
 /// the JSON `<tools>` body inside a parser's `system_prompt()`.
@@ -128,8 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn disabled_by_default() {
-        // No `set_tscg_enabled` call in this test → flag is false.
-        assert!(!tscg_enabled());
+    fn a_default_model_does_not_compile_its_schemas() {
+        // Was `assert!(!tscg_enabled())` against the process-wide OnceLock.
+        // The same guarantee is now a property of the value the renderers
+        // are handed, so it holds per model instead of per process.
+        assert!(!crate::tool_parser::PromptLevers::default().tscg);
     }
 }

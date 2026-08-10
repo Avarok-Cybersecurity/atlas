@@ -1,0 +1,32 @@
+recipe_version: "2"
+model: Sehyo/Qwen3.5-122B-A10B-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+min_nodes: 2
+max_nodes: 2
+
+metadata:
+  description: |
+    Qwen3.5-122B (A10B MoE) NVFP4, expert parallelism across two GB10 nodes
+    via NCCL over RoCEv2. Validated end-to-end at ~51 tok/s decode (Atlas
+    QUICKSTART). Both ranks must carry the same `--speculative` and
+    `--mtp-quantization` flags — the worker's MTP verify lands in the SSM
+    layer otherwise (Atlas-internal tracking: feedback_ep2_mtp_flags).
+  maintainer: avarok
+  category: agent
+  model_params: 122B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  ep_size: 2
+  max_model_len: 4096
+  max_batch_size: 1
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.70
+  scheduling_policy: slai
+  speculative: true
+  mtp_quantization: bf16

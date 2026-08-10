@@ -201,6 +201,80 @@ impl InferenceRequest {
         }
     }
 
+    /// M2 per-request LoRA routing: the adapter pool slot this request selects
+    /// (`-1` = defer to installed active). Copied onto `SequenceState.adapter_slot`
+    /// by the scheduler at prefill; the batched decode routes the bgmv on it.
+    pub fn adapter_slot(&self) -> i32 {
+        match self {
+            InferenceRequest::Blocking { adapter_slot, .. } => *adapter_slot,
+            InferenceRequest::Streaming { adapter_slot, .. } => *adapter_slot,
+        }
+    }
+
+    /// Per-request source-language token id (0 = deployment default). Copied
+    /// onto `SequenceState.src_lang_id` by the scheduler at prefill.
+    pub fn src_lang_id(&self) -> u32 {
+        match self {
+            InferenceRequest::Blocking { src_lang_id, .. } => *src_lang_id,
+            InferenceRequest::Streaming { src_lang_id, .. } => *src_lang_id,
+        }
+    }
+
+    /// Per-request target-language token id (0 = deployment default). Copied
+    /// onto `SequenceState.tgt_lang_id` by the scheduler at prefill.
+    pub fn tgt_lang_id(&self) -> u32 {
+        match self {
+            InferenceRequest::Blocking { tgt_lang_id, .. } => *tgt_lang_id,
+            InferenceRequest::Streaming { tgt_lang_id, .. } => *tgt_lang_id,
+        }
+    }
+
+    /// NLLB beam search: beams per request (1 = greedy). Copied onto
+    /// `SequenceState.num_beams` by the scheduler at prefill.
+    pub fn num_beams(&self) -> u32 {
+        match self {
+            InferenceRequest::Blocking { num_beams, .. } => *num_beams,
+            InferenceRequest::Streaming { num_beams, .. } => *num_beams,
+        }
+    }
+
+    /// NLLB beam search: length penalty. Copied onto
+    /// `SequenceState.length_penalty` by the scheduler at prefill.
+    pub fn length_penalty(&self) -> f32 {
+        match self {
+            InferenceRequest::Blocking { length_penalty, .. } => *length_penalty,
+            InferenceRequest::Streaming { length_penalty, .. } => *length_penalty,
+        }
+    }
+
+    /// NLLB beam search: early stopping. Copied onto
+    /// `SequenceState.early_stopping` by the scheduler at prefill.
+    pub fn early_stopping(&self) -> bool {
+        match self {
+            InferenceRequest::Blocking { early_stopping, .. } => *early_stopping,
+            InferenceRequest::Streaming { early_stopping, .. } => *early_stopping,
+        }
+    }
+
+    /// Max new tokens for this request. Read (non-consuming) by the beam
+    /// co-dispatch pre-pass to build a `BeamReq` before the admit loop consumes
+    /// the request.
+    pub fn max_tokens(&self) -> usize {
+        match self {
+            InferenceRequest::Blocking { max_tokens, .. } => *max_tokens,
+            InferenceRequest::Streaming { max_tokens, .. } => *max_tokens,
+        }
+    }
+
+    /// Clone the prompt-token `Arc` (cheap) — used by the beam co-dispatch
+    /// pre-pass to build a `BeamReq` without consuming the request.
+    pub fn prompt_tokens_arc(&self) -> std::sync::Arc<Vec<u32>> {
+        match self {
+            InferenceRequest::Blocking { prompt_tokens, .. } => prompt_tokens.clone(),
+            InferenceRequest::Streaming { prompt_tokens, .. } => prompt_tokens.clone(),
+        }
+    }
+
     /// Whether thinking mode is enabled for this request.
     pub fn enable_thinking(&self) -> bool {
         match self {
@@ -227,7 +301,9 @@ impl InferenceRequest {
 
     /// Per-request override for the vLLM-anchored token-loop detector.
     /// `None` = use the boot-global watchdog parameters.
-    pub fn repetition_detection(&self) -> Option<crate::openai::RepetitionDetectionParams> {
+    pub fn repetition_detection(
+        &self,
+    ) -> Option<crate::api::inference_types::RepetitionDetectionParams> {
         match self {
             InferenceRequest::Blocking {
                 repetition_detection,
@@ -364,7 +440,17 @@ pub(crate) fn tokenize_stop_sequences(
 
 /// Strip any matching stop sequence from the end of the output text.
 /// Per OpenAI spec, returned text must not contain the stop sequence.
-pub(crate) fn strip_stop_sequences(mut text: String, stops: &[String]) -> String {
+pub(crate) fn strip_stop_sequences(text: String, stops: &[String]) -> String {
+    strip_stop_sequences_matched(text, stops).0
+}
+
+/// [`strip_stop_sequences`], also reporting WHICH stop sequence matched
+/// (feeds Anthropic's `stop_sequence` response field via the IR's
+/// `matched_stop`).
+pub(crate) fn strip_stop_sequences_matched(
+    mut text: String,
+    stops: &[String],
+) -> (String, Option<String>) {
     // Try longest-first so overlapping prefixes (`["</answer", "</answer>"]`)
     // don't truncate at the shorter (wrong) match boundary. strip_suffix
     // is end-anchored, so usually only one of the two end-matches at a
@@ -374,10 +460,10 @@ pub(crate) fn strip_stop_sequences(mut text: String, stops: &[String]) -> String
     for s in sorted {
         if let Some(stripped) = text.strip_suffix(s.as_str()) {
             text.truncate(stripped.len());
-            break;
+            return (text, Some(s.clone()));
         }
     }
-    text
+    (text, None)
 }
 
 /// Strip `<think>...</think>` reasoning content from model output.

@@ -3,5 +3,7 @@
 //! Test split for radix tree — moved out of `radix_tree.rs` because
 //! the combined test file exceeded the workspace 500-LoC budget.
 
+mod adapter;
 mod basic;
 mod snapshot;
+mod snapshot_reap;

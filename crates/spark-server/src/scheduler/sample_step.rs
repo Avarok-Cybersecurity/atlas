@@ -81,6 +81,22 @@ pub(super) fn strip_in_tool_opener_bias(
     logit_bias.retain(|&(id, delta)| id != tc_open || delta <= 0.0);
 }
 
+/// P1-4 (2026-07-09): the min_p actually handed to the sampler at the sites
+/// that previously passed hardcoded `0.0` literals — the caller's resolved
+/// value (request value, already floored by MODEL.toml `min_p_floor` in
+/// `sampling_setup`), or `0.0` under the kill-switch.
+///
+/// Those literals bypassed the exact FP8/NVFP4 argmax-flip safety net the
+/// floor exists for. Threading the resolved value is the SSOT wiring fix and
+/// is on by default; `ATLAS_NO_MTP_MINP=1` restores the literals. The switch
+/// is `SchedLevers::mtp_minp`, read off the run's levers rather than a static.
+pub(super) fn effective_min_p(
+    min_p: f32,
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
+) -> f32 {
+    if levers.mtp_minp { min_p } else { 0.0 }
+}
+
 /// Build the penalty/bias-carrying [`SamplingParams`] for one sequence —
 /// the SINGLE source of truth for the repetition / presence / frequency /
 /// LZ / DRY penalty gates + the A4 floor shared by the non-MTP decode path
@@ -189,6 +205,13 @@ pub(super) fn penalty_params_for(
 /// position, returning the temperature-sampled tokens.
 ///
 /// Falls back to `argmax_tokens` if the D2H copy fails.
+///
+/// P1-3 (2026-07-09): SUPERSEDED (still dead code). This standalone helper
+/// sampled the RAW verify logits, so a resurrected call here would bypass
+/// the grammar bitmask + pipeline masks. Its sampling logic now lives
+/// INSIDE the pipeline path (`verify_pipeline_helper::verify_pick_with_pipeline`,
+/// step 4a) where it runs over the already-masked-and-penalised logits —
+/// the pick is grammar-legal by construction. Kept for reference only.
 #[allow(dead_code)]
 pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f32) -> Vec<u32> {
     if temperature == 0.0 {
@@ -232,16 +255,26 @@ pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f3
         .collect()
 }
 
-/// Sample one token from device logits, applying temperature/top-k/top-p if non-greedy.
+/// Sample one token from device logits, applying temperature/top-k/top-p/min-p if non-greedy.
 ///
 /// `suppress_ids`: token IDs to mask to -inf before sampling (e.g. EOS on first token).
+///
+/// P1-4 (2026-07-09): `min_p` is the sequence's RESOLVED min_p (request
+/// value with the MODEL.toml `min_p_floor` already applied by
+/// `sampling_setup`). This site previously hardcoded `min_p: 0.0` in its
+/// internal `SamplingParams`, so the only stochastic first-token sample
+/// under MTP bypassed the FP8 argmax-flip safety net the floor documents
+/// (min_p_floor = 0.05 on this model family). Kill-switch:
+/// `ATLAS_NO_MTP_MINP=1` restores the old 0.0 literal via [`effective_min_p`].
 pub fn sample_token(
     model: &dyn Model,
     logits: DevicePtr,
     temperature: f32,
     top_k: u32,
     top_p: f32,
+    min_p: f32,
     suppress_ids: &[u32],
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     if temperature == 0.0 && suppress_ids.is_empty() {
         return model.argmax_on_device(logits, 0);
@@ -296,7 +329,8 @@ pub fn sample_token(
             top_k,
             top_p,
             top_n_sigma: 0.0,
-            min_p: 0.0,
+            // P1-4 (2026-07-09): caller's resolved min_p, not a 0.0 literal.
+            min_p: effective_min_p(min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             presence_penalty: 0.0,
@@ -338,6 +372,7 @@ pub fn sample_token_with_grammar(
     mut grammar_state: Option<&mut GrammarState>,
     penalties: &SamplingParams,
     history: &[u32],
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     // ── FAST PATH (#3, 2026-06-02): on-GPU greedy pick under grammar ──
     // The MTP bootstrap sample (~1 token/step) otherwise D2Hs + dequants the
@@ -353,9 +388,9 @@ pub fn sample_token_with_grammar(
     // an argmax that is not in the scoped `history` and has a positive raw
     // logit (proof in `fast_greedy` module docs). `history` here is already
     // the scoped span the slow path feeds to `apply_penalties_and_bias`.
-    if crate::scheduler::verify_pipeline_helper::fast_greedy_grammar_enabled()
+    if levers.fast_greedy_grammar
         && suppress_ids.is_empty()
-        && (temperature == 0.0 || crate::scheduler::decode_logits_seq::force_temp_zero_enabled())
+        && (temperature == 0.0 || levers.force_temp_zero)
     {
         let gate = crate::scheduler::fast_greedy::classify_penalties(penalties);
         if gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked {
@@ -433,7 +468,15 @@ pub fn sample_token_with_grammar(
             top_k,
             top_p,
             top_n_sigma: 0.0,
-            min_p: 0.0,
+            // P1-4 (2026-07-09): thread the sequence's resolved min_p from
+            // the SSOT `penalties` struct (built by `penalty_params_for`,
+            // which copies `a.min_p` — request value + MODEL.toml
+            // `min_p_floor` applied in `sampling_setup`). This was a
+            // hardcoded 0.0, so the MTP BOOTSTRAP token — one of only two
+            // stochastic sample points under MTP — bypassed the FP8
+            // argmax-flip safety net the floor documents. Kill-switch:
+            // ATLAS_NO_MTP_MINP=1 restores the 0.0 literal.
+            min_p: effective_min_p(penalties.min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
             presence_penalty: 0.0,
@@ -473,24 +516,46 @@ pub fn sample_token_with_grammar(
 ///
 /// Penalties are neutral here (empty history on the first token makes every
 /// penalty a no-op), matching the existing non-grammar first-token contract.
+///
+/// P1-4 (2026-07-09): `min_p` is the sequence's RESOLVED min_p (request
+/// value with the MODEL.toml `min_p_floor` already applied by
+/// `sampling_setup`), threaded from the prefill call sites that previously
+/// let a hardcoded 0.0 reach the sampler. The first token is the other of
+/// the only two stochastic sample points under MTP (with the bootstrap),
+/// so the unfloored min_p let the FP8/NVFP4 degenerate logit tail be
+/// sampled exactly where the floor was designed to block it. Kill-switch:
+/// `ATLAS_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
 pub fn sample_first_token(
     model: &dyn Model,
     logits: DevicePtr,
     temperature: f32,
     top_k: u32,
     top_p: f32,
+    min_p: f32,
     suppress_ids: &[u32],
     grammar_state: Option<&mut GrammarState>,
+    levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
     let Some(gs) = grammar_state else {
-        return sample_token(model, logits, temperature, top_k, top_p, suppress_ids);
+        return sample_token(
+            model,
+            logits,
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            suppress_ids,
+            levers,
+        );
     };
     let neutral = SamplingParams {
         temperature,
         top_k,
         top_p,
         top_n_sigma: 0.0,
-        min_p: 0.0,
+        // P1-4 (2026-07-09): resolved min_p, consumed via `penalties.min_p`
+        // inside `sample_token_with_grammar` (kill-switch applied there).
+        min_p,
         logit_bias: Vec::new(),
         repetition_penalty: 1.0,
         presence_penalty: 0.0,
@@ -515,6 +580,7 @@ pub fn sample_first_token(
         Some(gs),
         &neutral,
         &[],
+        levers,
     )?;
     // Advance the matcher past the first token (the emit_step accept_token
     // only runs for tokens 2..N). A grammar-disallowed first token here would

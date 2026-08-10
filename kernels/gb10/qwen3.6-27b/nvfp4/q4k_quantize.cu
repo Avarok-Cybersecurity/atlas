@@ -13,7 +13,7 @@ struct atlas_bq4k { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[12
 
 __device__ __forceinline__ int nearest_int(float fval) {
     float val = fval + 12582912.f;
-    int i; __builtin_memcpy(&i, &val, sizeof(int));
+    int i = __float_as_int(val); // bit-reinterpret float->int (portable to MSVC/nvcc)
     return (i & 0x007fffff) - 0x00400000;
 }
 __device__ __forceinline__ float fmaxf_(float a, float b){ return a>b?a:b; }

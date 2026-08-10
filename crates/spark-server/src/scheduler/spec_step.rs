@@ -14,6 +14,7 @@ use super::*;
 pub fn step_self_spec(
     model: &dyn Model,
     active: &mut [ActiveSeq],
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     num_drafts: usize,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
@@ -72,7 +73,7 @@ pub fn step_self_spec(
 
     if draft_tokens.is_empty() {
         // No drafts: emit token_0 and continue
-        emit_token(a, token_0, None);
+        emit_token(a, token_0, None, sched);
         if !a.finished {
             a.last_token = token_0;
         }
@@ -111,26 +112,27 @@ pub fn step_self_spec(
         &verified_argmax,
         a,
         verify_ctx,
+        0,
     );
 
     // 6. Compare draft vs verified, count acceptances
     let n_drafts = draft_tokens.len();
     let mut num_accepted = 0;
 
-    emit_token(a, token_0, None);
+    emit_token(a, token_0, None, sched);
     if a.finished {
         return;
     }
 
     for i in 0..n_drafts {
         if draft_tokens[i] == verified[i] {
-            emit_token(a, draft_tokens[i], None);
+            emit_token(a, draft_tokens[i], None, sched);
             if a.finished {
                 return;
             }
             num_accepted += 1;
         } else {
-            emit_token(a, verified[i], None);
+            emit_token(a, verified[i], None, sched);
             if a.finished {
                 return;
             }
@@ -140,7 +142,7 @@ pub fn step_self_spec(
     }
 
     if num_accepted == n_drafts && n_drafts > 0 {
-        emit_token(a, verified[n_drafts], None);
+        emit_token(a, verified[n_drafts], None, sched);
         if !a.finished {
             a.last_token = verified[n_drafts];
         }
@@ -176,6 +178,7 @@ pub fn step_self_spec(
 pub fn step_ngram(
     model: &dyn Model,
     active: &mut [ActiveSeq],
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     proposer: &mut NgramProposer,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
@@ -184,7 +187,8 @@ pub fn step_ngram(
     if !a.pending_drafts.is_empty() {
         // ── Phase B: Verify pending draft ──
         let drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
-        step_ngram_verify(model, a, &drafts, proposer, verify_ctx);
+        a.pending_draft_conf.clear();
+        step_ngram_verify(model, a, sched, &drafts, proposer, verify_ctx);
     } else {
         // ── Phase A: Bootstrap decode + N-gram propose ──
         if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
@@ -212,7 +216,7 @@ pub fn step_ngram(
         // Observe the token for future predictions
         proposer.observe(&a.seq.tokens, tok);
 
-        emit_token(a, tok, None);
+        emit_token(a, tok, None, sched);
         if a.finished {
             return;
         }
@@ -235,6 +239,7 @@ pub fn step_ngram(
 pub fn step_ngram_verify(
     model: &dyn Model,
     a: &mut ActiveSeq,
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
     drafts: &[u32],
     proposer: &mut NgramProposer,
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
@@ -286,6 +291,7 @@ pub fn step_ngram_verify(
         &[v0_argmax, v1_argmax],
         a,
         verify_ctx,
+        0,
     );
     let v0 = processed.first().copied().unwrap_or(v0_argmax);
     let v1 = processed.get(1).copied().unwrap_or(v1_argmax);
@@ -306,9 +312,9 @@ pub fn step_ngram_verify(
         proposer.observe(&a.seq.tokens[..a.seq.tokens.len() - 1], drafts[0]);
         proposer.observe(&a.seq.tokens, v1);
 
-        emit_token(a, drafts[0], None);
+        emit_token(a, drafts[0], None, sched);
         if !a.finished {
-            emit_token(a, v1, None);
+            emit_token(a, v1, None, sched);
         }
         if a.finished {
             return;
@@ -347,7 +353,7 @@ pub fn step_ngram_verify(
         // Observe: context ending with last_token → v0 is the correct next token
         proposer.observe(&a.seq.tokens, v0);
 
-        emit_token(a, v0, None);
+        emit_token(a, v0, None, sched);
         if a.finished {
             return;
         }
@@ -391,6 +397,27 @@ pub fn mtp_grammar_mask_for(a: &mut ActiveSeq) -> Option<Vec<i32>> {
         return None;
     }
     Some(gs.bitmask_data().to_vec())
+}
+
+/// BUG#4 clamp, complete fix (2026-07-09): when a grammar is active, propose
+/// only ONE draft. `run_mtp_propose_multi` masks every draft position with
+/// the SAME position-0 bitmask snapshot (`mtp_head` warns "mask held fixed
+/// across draft positions"), so draft\[1..\] is drafted against a stale mask —
+/// grammar-illegal continuations get proposed, truncated at the boundary
+/// (`truncate_drafts_at_grammar_boundary`), and acceptance collapses. The
+/// original BUG#4 fix (2026-06-02) applied this clamp only in the Phase-A
+/// bootstrap (`mtp_step.rs`); the five verify-path re-propose sites
+/// (`verify_k2_step`, `verify_k3_step`) kept passing raw `num_drafts`, which
+/// is why the warning spammed on every step after the first during grammar-
+/// constrained tool calls (live opencode 42.5k session, 2026-07-09). SSOT
+/// for all six propose sites — semantics identical to the bootstrap clamp
+/// (`grammar_state.is_some()`). No-op when grammar is inactive: full K kept.
+pub fn effective_drafts_under_grammar(a: &ActiveSeq, num_drafts: usize) -> usize {
+    if a.grammar_state.is_some() {
+        1
+    } else {
+        num_drafts
+    }
 }
 
 /// Truncate a draft list at the first token the grammar would

@@ -7,14 +7,20 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use crate::weight_map::DenseWeight;
 
 fn alloc_or_managed(gpu: &dyn GpuBackend, bytes: usize) -> Result<DevicePtr> {
-    static USE_MANAGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if USE_MANAGED.load(std::sync::atomic::Ordering::Relaxed) {
+    // Latched on the BACKEND, not in a static: after a model is unloaded the
+    // memory pressure that caused the fallback is gone, and the next load
+    // should try device memory again instead of inheriting a UVM sentence
+    // from a model that is no longer resident.
+    if gpu.op_cache().alloc_fell_back() {
         return gpu.alloc_managed(bytes);
     }
     match gpu.alloc(bytes) {
         Ok(p) => Ok(p),
         Err(_) => {
-            USE_MANAGED.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                "GPU alloc failed ({bytes} bytes) — switching to managed for remaining allocations"
+            );
+            gpu.op_cache().note_alloc_fallback();
             gpu.alloc_managed(bytes)
         }
     }

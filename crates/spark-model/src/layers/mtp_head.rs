@@ -24,6 +24,45 @@ use crate::weight_map::{
     DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight, quantize_to_fp8, quantize_to_nvfp4,
 };
 
+/// Drafter context prefill — **ON by default**, cached once.
+///
+/// The target prefill captures every position's final-layer hidden and the MTP
+/// drafter's KV cache is batch-prefilled over the whole prompt before the first
+/// propose(), mirroring vLLM's MTP proposer prefill. The drafter's KV entries
+/// are pure functions of its input pair `(embed(token_{i+1}), target_hidden_i)`
+/// — a single-layer drafter's K/V do not depend on its own attention outputs —
+/// so the prefill needs only the fc + k/v projections + norms + RoPE + cache
+/// write, no attention pass.
+///
+/// Policy, including the kill switch and the coupling to the cross-turn carry
+/// (which this half is useless without), lives in
+/// `crate::model::drafter_context` — the single source of truth.
+pub fn mtp_drafter_prefill_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+    levers.drafter.prefill
+}
+
+/// Dedicated scratch for the batched drafter prefill (allocated in
+/// `MtpHead::new` only when [`mtp_drafter_prefill_enabled`]). All buffers are
+/// sized for [`prefill::PREFILL_CHUNK`] rows; dedicated (not aliased onto the
+/// shared arena) so the pass has no aliasing hazards against target buffers.
+pub(crate) struct MtpPrefillScratch {
+    pub embed: DevicePtr,
+    pub normed_embed: DevicePtr,
+    pub normed_hidden: DevicePtr,
+    pub concat: DevicePtr,
+    pub fc_out: DevicePtr,
+    pub normed2: DevicePtr,
+    pub k_out: DevicePtr,
+    pub v_out: DevicePtr,
+    /// RoPE rotates Q and K in one launch; prefill discards Q, but the kernel
+    /// still needs a writable [chunk, nq*hd] region.
+    pub q_scratch: DevicePtr,
+    /// u32 RoPE positions, one per row.
+    pub pos_dev: DevicePtr,
+    /// i64 KV slot mapping, one per row.
+    pub slot_dev: DevicePtr,
+}
+
 /// MTP head weight precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MtpQuantization {
@@ -33,6 +72,21 @@ pub enum MtpQuantization {
     Fp8,
     /// BF16 (2 bytes/weight) — highest accuracy, slowest MTP forward.
     Bf16,
+}
+
+impl MtpQuantization {
+    /// Whether the batched drafter prefill can run at this precision.
+    ///
+    /// NECESSARY, not sufficient — `prefill::prefill_drafter` remains the
+    /// authority and re-checks the actual weight variants and kernel handles.
+    /// This predicate exists so the caller can skip the `max_seq_len x hidden`
+    /// BF16 prompt-hidden buffer (335 MB at 32k/h=5120, 2.7 GB at 256k) for a
+    /// head that could never use it. It is exact by construction:
+    /// `quantize_proj` produces `ProjectionWeight::Bf16` for, and only for,
+    /// [`MtpQuantization::Bf16`].
+    pub fn supports_drafter_prefill(self) -> bool {
+        matches!(self, Self::Bf16)
+    }
 }
 
 impl std::str::FromStr for MtpQuantization {
@@ -67,6 +121,12 @@ pub struct MtpProposerState {
     /// Number of drafts produced in the last propose() call.
     /// Used by after_verify to know how many entries to trim.
     pub last_num_drafted: usize,
+    /// Sequence-space pair key of the newest drafter row (a `forward_one`
+    /// call with RoPE position `p` writes pair key `p - 1`). `seq_len` alone
+    /// cannot locate the drafter in the sequence — without drafter prefill
+    /// the row space is compacted (accepted pairs only) and drifts from the
+    /// sequence position. `None` until the first row is written.
+    pub last_pair_key: Option<usize>,
 }
 
 impl ProposerState for MtpProposerState {
@@ -149,6 +209,10 @@ pub struct MtpHead {
     embed_from_argmax_k: KernelHandle,
     /// Fixed device buffer (4 bytes) for deferred draft token ID readback.
     draft_token_id_dev: DevicePtr,
+    /// Chain confidence of the last propose (f32 bits; min top-1 softmax
+    /// prob across drafts). Written by `forward_one` when
+    /// `draft_conf_tau() > 0`; reset to 1.0 at each propose start.
+    pub(super) last_conf_bits: std::sync::atomic::AtomicU32,
     // BF16/FP8 kernel handles (None if NVFP4 mode)
     dense_gemv_k: Option<KernelHandle>,
     dense_gemv_fp8w_k: Option<KernelHandle>,
@@ -157,6 +221,62 @@ pub struct MtpHead {
     moe_topk_k: Option<KernelHandle>,
     moe_silu_mul_k: Option<KernelHandle>,
     moe_weighted_sum_blend_k: Option<KernelHandle>,
+    /// Batched BF16 GEMM for the drafter-prefill pass (0 when absent).
+    dense_gemm_k: KernelHandle,
+    /// Tensor-core pipelined BF16 GEMM (`dense_gemm_bf16_pipelined`) for the
+    /// batched cross-sequence propose (0 when absent). Measured at M=4 on the
+    /// drafter shapes: 2.7x the 4x-GEMV per-seq loop (5.1 vs 14.4 ms per
+    /// draft position).
+    dense_gemm_pipelined_k: KernelHandle,
+    /// `w4a16_gemv_batch{4,8,16,32}` for the batched-propose LM head (0 when
+    /// absent): reads the shared NVFP4 LM head once for up to MAX_M
+    /// sequences. Selected per batch width by
+    /// [`MtpHead::lm_head_batch_kernel`]; per-row accumulation order is
+    /// identical across instantiations (one `w4a16_gemv_batchm_impl`), so
+    /// output is bit-identical at matching M.
+    w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
+    w4a16_gemv_batch32_k: KernelHandle,
+    /// Padded transposed twin of the SHARED main LM head for the batched
+    /// propose at n >= 5: `(weight_t, ldb)` with `ldb = align_up(vocab, 128)`
+    /// (248192 on the 27B checkpoint — vocab 248077 is ODD, so every 16-byte
+    /// `cp.async` B load MUST use the padded row stride; the unpadded stride
+    /// is the campaign's sticky CUDA-716). `None` when the drafter has a
+    /// DEDICATED draft head (`mtp_lm_head_nvfp4` — the twin describes the
+    /// main head only), when the main twin was not built
+    /// (`ATLAS_NO_LMHEAD_TGEMM=1`), or under the propose-local kill switch
+    /// `ATLAS_NO_MTP_LMHEAD_TGEMM` (PRESENCE — `=0` is NOT off). Zero extra
+    /// memory: this aliases the twin `impl_a1` already allocated.
+    pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
+    /// `w4a16_gemm_t` tile GEMM for the twin (3-deep pipeline variant when
+    /// present, same resolver as decode_a2's lm_head). 0-handle = twin path
+    /// dead, batched GEMV fallback unchanged.
+    pub(super) w4a16_gemm_t_k: KernelHandle,
+    /// Drafter attention metadata for the batched propose:
+    /// `[PROPOSE_META_SEQS, propose_meta_stride]` bytes, one slab per
+    /// sequence. A dedicated allocation, NOT an offset into the shared
+    /// `scratch` arena — the old fixed `scratch + 49152 + i*2048` layout ran
+    /// past the end of a 27B-shaped scratch at n > 8 (silent out-of-range
+    /// H2D → sticky CUDA-700, the #110 failure mode).
+    propose_meta: DevicePtr,
+    /// Per-sequence stride of `propose_meta`, computed at construction from
+    /// `max_seq_len` (`batch_caps::propose_meta_stride_env`, floor 2048,
+    /// override `ATLAS_PROPOSE_META_STRIDE=<bytes>`). The fixed 2048 capped
+    /// the block table at 448 entries = 7,168 tokens — sized in the 4K era;
+    /// 10-20K agentic contexts made the batched propose fall back
+    /// permanently (PROGRESS_LOG 5.2/6.17).
+    propose_meta_stride: usize,
+    /// `argmax_bf16_batch` for the batched-propose per-row argmax (0 when
+    /// absent; falls back to the serial per-row scan).
+    argmax_batch_k: KernelHandle,
+    /// `argmax_bf16_batch_lp` — the same batched argmax that ALSO emits each
+    /// row's top-1 log-probability. Resolved with `try_kernel`, so 0 means the
+    /// module predates this kernel; D-Cut gates on it and declines rather than
+    /// silently proposing without confidences.
+    argmax_batch_lp_k: KernelHandle,
+    /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
+    prefill_scratch: Option<MtpPrefillScratch>,
 }
 
 impl MtpHead {
@@ -240,132 +360,13 @@ impl MtpHead {
     }
 }
 
+mod batch_caps;
+mod draft_proposer;
 mod forward;
+mod forward_batch;
 mod moe_forward;
 mod new;
-
-impl DraftProposer for MtpHead {
-    fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>> {
-        Ok(Box::new(MtpProposerState {
-            block_table: Vec::new(),
-            seq_len: 0,
-            last_num_drafted: 0,
-        }))
-    }
-
-    fn propose(
-        &self,
-        last_token: u32,
-        target_hidden: DevicePtr,
-        position: usize,
-        num_drafts: usize,
-        state: &mut dyn ProposerState,
-        ctx: &ForwardContext,
-        stream: u64,
-        draft_embed_target: Option<DevicePtr>,
-        grammar_bitmask: Option<&[i32]>,
-        _target_hidden_stack: Option<DevicePtr>,
-    ) -> Result<Vec<u32>> {
-        let mtp_state = state
-            .as_any_mut()
-            .downcast_mut::<MtpProposerState>()
-            .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
-
-        let mut drafts = Vec::with_capacity(num_drafts);
-        let mut current_token = last_token;
-        let mut current_hidden = target_hidden;
-
-        for i in 0..num_drafts {
-            // Only the LAST draft gets GPU-side embedding (it's the one
-            // used in the next verify step).
-            let embed_target = if i == num_drafts - 1 {
-                draft_embed_target
-            } else {
-                None
-            };
-            // Grammar-masked drafting (num_drafts==1 path only for now).
-            // For num_drafts > 1 we would need to speculatively advance the
-            // matcher between drafts and roll back before returning; the
-            // current scheduler only uses num_drafts==1, so we pass the same
-            // mask for every i and warn loudly if K>1 + grammar combine.
-            if grammar_bitmask.is_some() && i > 0 {
-                tracing::warn!(
-                    "MTP grammar-masked drafting called with num_drafts>1 (i={i}); \
-                     mask held fixed across draft positions — acceptance may drop."
-                );
-            }
-            let mask_for_draft = grammar_bitmask;
-            let draft = self.forward_one(
-                current_token,
-                current_hidden,
-                position + i,
-                mtp_state,
-                ctx,
-                stream,
-                embed_target,
-                mask_for_draft,
-            )?;
-            tracing::debug!(
-                "MTP propose[{i}]: token={current_token} pos={} mtp_seq_len={} → draft={draft}",
-                position + i,
-                mtp_state.seq_len,
-            );
-            drafts.push(draft);
-            current_token = draft;
-            // For subsequent drafts, use the MTP head's own hidden state
-            current_hidden = ctx.buffers.hidden_states();
-        }
-
-        mtp_state.last_num_drafted = drafts.len();
-        Ok(drafts)
-    }
-
-    fn read_deferred_draft_token(&self, gpu: &dyn GpuBackend) -> Result<u32> {
-        self.read_deferred_draft_token(gpu)
-    }
-
-    fn after_verify(
-        &self,
-        num_accepted: usize,
-        state: &mut dyn ProposerState,
-        _stream: u64,
-    ) -> Result<()> {
-        let mtp_state = state
-            .as_any_mut()
-            .downcast_mut::<MtpProposerState>()
-            .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
-
-        // Trim rejected drafts from MTP KV cache.
-        // num_drafted was recorded in the last propose() call.
-        // We trim `num_drafted - num_accepted` entries.
-        // e.g. K=2: drafted 1, accepted 0 → trim 1. accepted 1 → trim 0.
-        // e.g. K=3: drafted 2, accepted 0 → trim 2. accepted 1 → trim 1. accepted 2 → trim 0.
-        let num_drafted = mtp_state.last_num_drafted.max(1);
-        let num_to_trim = num_drafted.saturating_sub(num_accepted);
-        let old_sl = mtp_state.seq_len;
-        if num_to_trim > 0 {
-            mtp_state.seq_len = mtp_state.seq_len.saturating_sub(num_to_trim);
-        }
-        tracing::debug!(
-            "MTP after_verify: accepted={num_accepted} drafted={num_drafted} trim={num_to_trim} mtp_seq_len: {old_sl} → {}",
-            mtp_state.seq_len,
-        );
-        Ok(())
-    }
-
-    fn free_state(&self, _gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
-        let mtp_state = state
-            .as_any_mut()
-            .downcast_mut::<MtpProposerState>()
-            .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
-        if !mtp_state.block_table.is_empty() {
-            self.kv_cache.lock().free_blocks(&mtp_state.block_table);
-            mtp_state.block_table.clear();
-        }
-        mtp_state.seq_len = 0;
-        Ok(())
-    }
-}
+mod prefill;
 
 #[cfg(test)]
 mod tests {
@@ -377,9 +378,82 @@ mod tests {
             block_table: vec![0, 1, 2],
             seq_len: 42,
             last_num_drafted: 0,
+            last_pair_key: None,
         });
         let mtp = state.as_any().downcast_ref::<MtpProposerState>().unwrap();
         assert_eq!(mtp.seq_len, 42);
         assert_eq!(mtp.block_table.len(), 3);
+    }
+}
+
+/// How many drafter KV rows `after_verify` must drop.
+///
+/// * Rejected rows always go: `num_drafted - num_accepted`.
+/// * With `refeed_accepted` (ATLAS_MTP_REFEED_ACCEPTED), the ACCEPTED rows
+///   that were written with the drafter's own hidden also go — that is every
+///   accepted draft except the first. Draft 1 consumed the target's verified
+///   hidden (`mtp_hidden_save`) and is correct; drafts 2.. each consumed the
+///   previous draft's drafter-side residual. Those rows are rebuilt from the
+///   catch-up ring on the next propose, with the target's true hidden.
+///
+/// Never returns more than `num_drafted` — the drafter cannot un-write rows it
+/// never wrote, and over-trimming would corrupt the compacted row space by
+/// desynchronising `seq_len` from `last_pair_key`.
+pub(crate) fn mtp_rows_to_trim(
+    num_drafted: usize,
+    num_accepted: usize,
+    refeed_accepted: bool,
+) -> usize {
+    let rejected = num_drafted.saturating_sub(num_accepted);
+    let accepted_with_drafter_hidden = if refeed_accepted {
+        num_accepted.saturating_sub(1)
+    } else {
+        0
+    };
+    (rejected + accepted_with_drafter_hidden).min(num_drafted)
+}
+
+#[cfg(test)]
+mod refeed_trim_tests {
+    use super::mtp_rows_to_trim;
+
+    #[test]
+    fn flag_off_is_exactly_the_legacy_behaviour() {
+        // Legacy: trim only the rejected rows. These are the K=2/3/4 cases
+        // the schedulers actually produce.
+        assert_eq!(mtp_rows_to_trim(1, 0, false), 1); // K=2 reject
+        assert_eq!(mtp_rows_to_trim(1, 1, false), 0); // K=2 accept
+        assert_eq!(mtp_rows_to_trim(2, 0, false), 2); // K=3 reject
+        assert_eq!(mtp_rows_to_trim(2, 1, false), 1); // K=3 accept-1
+        assert_eq!(mtp_rows_to_trim(2, 2, false), 0); // K=3 accept-2
+        assert_eq!(mtp_rows_to_trim(3, 3, false), 0); // K=4 accept-3
+    }
+
+    #[test]
+    fn flag_on_also_drops_accepted_rows_past_the_first() {
+        // The first accepted draft used the TARGET hidden — it stays.
+        assert_eq!(mtp_rows_to_trim(1, 1, true), 0); // K=2 accept: nothing extra
+        assert_eq!(mtp_rows_to_trim(2, 1, true), 1); // K=3 accept-1: rejected only
+        assert_eq!(mtp_rows_to_trim(2, 2, true), 1); // K=3 accept-2: drop draft 2
+        assert_eq!(mtp_rows_to_trim(3, 2, true), 2); // K=4 accept-2: 1 rejected + 1
+        assert_eq!(mtp_rows_to_trim(3, 3, true), 2); // K=4 accept-3: drop drafts 2,3
+    }
+
+    #[test]
+    fn full_reject_is_identical_with_and_without_the_flag() {
+        // Nothing was accepted, so there is no drafter-hidden row to rebuild.
+        for d in 0..8 {
+            assert_eq!(mtp_rows_to_trim(d, 0, true), mtp_rows_to_trim(d, 0, false));
+        }
+    }
+
+    #[test]
+    fn never_trims_more_rows_than_were_drafted() {
+        for d in 0..8 {
+            for a in 0..=d + 2 {
+                assert!(mtp_rows_to_trim(d, a, true) <= d, "d={d} a={a}");
+                assert!(mtp_rows_to_trim(d, a, false) <= d, "d={d} a={a}");
+            }
+        }
     }
 }

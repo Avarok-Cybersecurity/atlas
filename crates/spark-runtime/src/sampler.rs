@@ -5,39 +5,44 @@
 //! Phase 1: Greedy argmax (CPU-side D2H + argmax).
 //! Future: temperature, top-k, top-p, min-p, repetition penalty.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::gpu::{DevicePtr, GpuBackend};
 use anyhow::Result;
 
-// ── Global entropy tracking ──
-// Stores the latest per-token entropy and counts of low-entropy streaks.
-// AtomicU32 stores f32 bits for lock-free reads.
-
-static LAST_ENTROPY: AtomicU32 = AtomicU32::new(0);
-static LOW_ENTROPY_TOKENS: AtomicU64 = AtomicU64::new(0);
-static TOTAL_SAMPLED_TOKENS: AtomicU64 = AtomicU64::new(0);
+// The entropy gauges are fields of the single run mailbox,
+// `crate::run_metrics::RunMetrics` — see that module for why one static and
+// not none, and why it is cleared at run start.
 
 /// Read the most recent per-token entropy (nats).
 pub fn last_entropy() -> f32 {
-    f32::from_bits(LAST_ENTROPY.load(Ordering::Relaxed))
+    f32::from_bits(
+        crate::run_metrics::metrics()
+            .last_entropy
+            .load(Ordering::Relaxed),
+    )
 }
 
 /// Total tokens with entropy < 0.3 (potential degeneration).
 pub fn low_entropy_token_count() -> u64 {
-    LOW_ENTROPY_TOKENS.load(Ordering::Relaxed)
+    crate::run_metrics::metrics()
+        .low_entropy_tokens
+        .load(Ordering::Relaxed)
 }
 
 /// Total tokens sampled (for computing low-entropy ratio).
 pub fn total_sampled_token_count() -> u64 {
-    TOTAL_SAMPLED_TOKENS.load(Ordering::Relaxed)
+    crate::run_metrics::metrics()
+        .total_sampled_tokens
+        .load(Ordering::Relaxed)
 }
 
 pub(super) fn record_entropy(entropy: f32) {
-    LAST_ENTROPY.store(entropy.to_bits(), Ordering::Relaxed);
-    TOTAL_SAMPLED_TOKENS.fetch_add(1, Ordering::Relaxed);
+    let m = crate::run_metrics::metrics();
+    m.last_entropy.store(entropy.to_bits(), Ordering::Relaxed);
+    m.total_sampled_tokens.fetch_add(1, Ordering::Relaxed);
     if entropy < 0.3 {
-        LOW_ENTROPY_TOKENS.fetch_add(1, Ordering::Relaxed);
+        m.low_entropy_tokens.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -460,33 +465,89 @@ pub fn sample_with_params(data: &[u8], params: &SamplingParams) -> u32 {
     sample_with_params_history(data, params, &[])
 }
 
-/// Argmax over FP32 values stored as raw bytes (4 bytes per element, little-endian).
-pub fn argmax_f32(data: &[u8]) -> u32 {
-    debug_assert!(data.len().is_multiple_of(4));
-    let n = data.len() / 4;
-    if n == 0 {
-        return 0;
-    }
-
-    let mut best_idx: u32 = 0;
-    let mut best_val = read_f32(data, 0);
-
-    for i in 1..n {
-        let val = read_f32(data, i);
-        if val > best_val {
-            best_val = val;
-            best_idx = i as u32;
+/// Argmax over an f32 slice with the strict-`>` FIRST-index-wins tie-break.
+///
+/// SSOT for this pick: the verify path (`spark-server`'s
+/// `verify_pipeline_helper/argmax.rs`) calls here too. The naive
+/// `if v > best { best = v; idx = i }` loop carries a dependency through BOTH
+/// the running value and the index, which blocks vectorisation — measured
+/// 1.19 ms for 4x248k on the verify path before the two-pass rewrite (5.95x).
+///
+/// Equivalence to that loop, including the awkward cases: `>` is false for
+/// NaN in both passes so NaN never wins (all-NaN => -inf max, pass 2 finds no
+/// equal, falls back to 0 — same as the loop); IEEE -0.0 == +0.0 so neither
+/// `>` nor `==` separates them and the first zero encountered is returned
+/// either way. `f32::max` is deliberately avoided (it returns the non-NaN
+/// operand, which would let a NaN-adjacent value win where `>` ignored it).
+pub fn argmax_first_wins_f32(v: &[f32]) -> u32 {
+    const LANES: usize = 8;
+    let mut acc = [f32::NEG_INFINITY; LANES];
+    let mut chunks = v.chunks_exact(LANES);
+    for c in &mut chunks {
+        for (a, &x) in acc.iter_mut().zip(c) {
+            if x > *a {
+                *a = x;
+            }
         }
     }
-    best_idx
+    let mut best = f32::NEG_INFINITY;
+    for &a in acc.iter() {
+        if a > best {
+            best = a;
+        }
+    }
+    for &x in chunks.remainder() {
+        if x > best {
+            best = x;
+        }
+    }
+    v.iter()
+        .position(|&x| x == best)
+        .unwrap_or(0)
+        .try_into()
+        .unwrap_or(0)
 }
 
-/// Read an f32 value from a byte slice at element index `i`.
-#[inline]
-pub(super) fn read_f32(data: &[u8], i: usize) -> f32 {
-    let off = i * 4;
-    let bytes = [data[off], data[off + 1], data[off + 2], data[off + 3]];
-    f32::from_le_bytes(bytes)
+/// Argmax over FP32 values stored as raw bytes (4 bytes per element, little-endian).
+/// First-index-wins, identical to [`argmax_first_wins_f32`] — same two-pass
+/// shape, iterating the byte chunks directly so no `Vec<f32>` is materialised.
+pub fn argmax_f32(data: &[u8]) -> u32 {
+    debug_assert!(data.len().is_multiple_of(4));
+    let vals = || {
+        data.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    };
+    // Lane-based pass 1 for the same reason as `argmax_first_wins_f32`: a
+    // serial float-max fold is a strict-IEEE dependency chain the compiler
+    // will not vectorise.
+    const LANES: usize = 8;
+    let mut acc = [f32::NEG_INFINITY; LANES];
+    let mut it = data.chunks_exact(4 * LANES);
+    for block in &mut it {
+        for (a, c) in acc.iter_mut().zip(block.chunks_exact(4)) {
+            let x = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            if x > *a {
+                *a = x;
+            }
+        }
+    }
+    let mut best = f32::NEG_INFINITY;
+    for &a in acc.iter() {
+        if a > best {
+            best = a;
+        }
+    }
+    for c in it.remainder().chunks_exact(4) {
+        let x = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        if x > best {
+            best = x;
+        }
+    }
+    vals()
+        .position(|x| x == best)
+        .unwrap_or(0)
+        .try_into()
+        .unwrap_or(0)
 }
 
 /// Legacy: argmax over BF16 values (still used by argmax_on_device fallback).

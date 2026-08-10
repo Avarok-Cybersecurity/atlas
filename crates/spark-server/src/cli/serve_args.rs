@@ -6,13 +6,98 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+/// Default for `--request-timeout`, in seconds. Named rather than inlined
+/// in the clap attribute because it is a production behavior with a
+/// user-visible consequence (a cut response), not an anonymous literal:
+/// PCND requires the default be documented and overridable, and this is
+/// the single place it is defined.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 300;
+
 /// Arguments for the `serve` subcommand.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, PartialEq)]
 pub struct ServeArgs {
     /// HuggingFace model ID (e.g. "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4")
     /// or a local directory path containing config.json.
-    #[arg(value_name = "MODEL", required_unless_present = "model_from_path")]
+    /// Optional: omit both this and `--model-from-path` to boot into the
+    /// Library and pick a model there. That is a TTY-only affordance — plain
+    /// mode has no Library to fall back to, so `validate_serve_args` rejects
+    /// the combination rather than starting a server that can serve nothing.
+    #[arg(value_name = "MODEL")]
     pub model: Option<String>,
+
+    /// Load a different model when a request names one, ollama-style.
+    ///
+    /// OFF by default, and the default is the point: even narrowed to models
+    /// with a known recipe, one stray request becomes a multi-minute outage for
+    /// every other client on the box, and a benchmark sweep naming a sibling
+    /// checkpoint would swap mid-run. Only a request whose `model` resolves to
+    /// a DIFFERENT known recipe acts — absent, unknown, or already-live names
+    /// are served by the current model exactly as they are today.
+    #[arg(long)]
+    pub auto_swap: bool,
+
+    /// Forbid request-triggered model loading outright.
+    ///
+    /// For deployments where the served model is part of the contract: a
+    /// client must never be able to change what the endpoint is running, no
+    /// matter what else is on the command line.
+    ///
+    /// **This WINS over `--auto-swap`** rather than conflicting with it. A
+    /// conflict error would be the wrong behaviour here: the enabling flag
+    /// typically comes from a shared base config or an image's default command,
+    /// and the operator locking the deployment down appends theirs. Refusing to
+    /// start would punish exactly the person doing the safe thing, and — worse
+    /// — the natural workaround is to delete the deny flag.
+    ///
+    /// Only affects REQUEST-triggered swaps. An operator at the dashboard can
+    /// still change the model; this is about what a client can cause.
+    #[arg(long)]
+    pub no_auto_swap: bool,
+
+    /// Serve even when kernel lookups this model's dispatch issued did not
+    /// resolve.
+    ///
+    /// A lookup that returns handle 0 does not error — the caller takes a
+    /// slower (or disabled) dispatch path and nothing says so. That is how the
+    /// 27B ran with concurrent decode pinned to its per-sequence fallback while
+    /// every gate stayed green, so the default is to REFUSE to start and print
+    /// the full list with each dispatch site.
+    ///
+    /// Passing this does not suppress the report: the same enumerated list is
+    /// logged at `warn!` on every boot. A flag that muted the warning would
+    /// recreate the bug it exists to catch.
+    ///
+    /// This replaces `ATLAS_ALLOW_SHADOWED_KERNELS`, which covered only the
+    /// shadow-dropped subset — one switch, and a CLI flag rather than an
+    /// environment variable so it is visible in the command that started the
+    /// process.
+    #[arg(long, default_value_t = false)]
+    pub dangerously_allow_unresolved_kernel_lookups: bool,
+
+    /// Resolve all kernels for the model and exit, reporting any that did not
+    /// resolve. Does not start the server. The EXIT CODE IS THE NUMBER of
+    /// unresolved kernels — 0 means every lookup resolved.
+    ///
+    /// A dry run that stops immediately after the kernel audit: config, GPU
+    /// init, weight load and model construction all run (every lookup lives in
+    /// a layer constructor, so a check that skipped them would resolve a
+    /// DIFFERENT set than a real serve), then the report is printed and the
+    /// process exits. The scheduler is never started and no port is bound.
+    ///
+    /// A POSIX status is 8 bits, so the code is CLAMPED at 255 — 256 would be
+    /// reported as 0, i.e. a broken model reading as a pass. Whenever the clamp
+    /// bites, the true count is printed alongside it and carried in the JSON.
+    ///
+    /// The exit code IGNORES
+    /// `--dangerously-allow-unresolved-kernel-lookups`: a check whose answer
+    /// another flag can silence is worth nothing. Passing both still prints the
+    /// full list and still exits with the count.
+    ///
+    /// A one-line JSON object (`{"atlas_kernel_check": …}`) is printed on
+    /// stdout after the human report, so a sweep over every target can
+    /// aggregate without parsing prose.
+    #[arg(long, default_value_t = false)]
+    pub check_kernels: bool,
 
     /// Load model directly from this filesystem path (skips HF cache resolution).
     #[arg(long, value_name = "PATH")]
@@ -47,11 +132,112 @@ pub struct ServeArgs {
     /// KV cache dtype (fp8, bf16, or nvfp4).
     /// Default: fp8. NVFP4 uses less memory but may lose coherence at long context
     /// without --kv-high-precision-layers. FP8 is the safe default.
+    ///
+    /// The `turbo2`/`turbo3`/`turbo4`/`turbo8` variants (and the asymmetric
+    /// `*k_*v` pairs built from them) are EXPERIMENTAL: they are not built for
+    /// every kernel target, and a target that lacks them fails the kv-cache
+    /// kernel preflight at startup rather than serving on a fallback.
     #[arg(long, default_value = "fp8")]
     pub kv_cache_dtype: String,
 
-    /// LM-head precision: `default` (model-config-driven), `bf16` (final vocab projection
-    /// in BF16 — the SAFE DEFAULT, matches vLLM checkpoint precision), `nvfp4` (force the
+    // ── GDN / SSM decode path ──
+    //
+    // These four were `ATLAS_*` environment variables. They are CONFIGURATION,
+    // not diagnostics: the enterprise-concurrency campaign's best recipe needs
+    // three of them, and a recipe that has to carry a ten-line env block is a
+    // recipe nobody can read or audit. A CLI flag satisfies PCND exactly as an
+    // env var does — the value is explicit, never implicit — while also being
+    // discoverable in `--help` and visible in `ps`. The environment variables
+    // remain honoured as a fallback so existing scripts keep working; the flag
+    // WINS when both are given.
+    /// Storage dtype for the GDN decode h-state: `f32` (default) or `f16`.
+    ///
+    /// The decode scan is pure state traffic — it runs at ~90% of GB10's
+    /// row-strided ceiling — so halving the state footprint halves its time:
+    /// +13.25% at C=16, +19.67% at C=32, and 1.286x WALL at C=64.
+    ///
+    /// f32 stays the default deliberately. `f16` changes the h-state numerics,
+    /// which shifts drafter accept patterns and therefore the emitted
+    /// trajectory: a +3.17% token tax was measured in the speculation-ON
+    /// regime (C=1/8/32, p=0.030) and 0.23% with speculation off. The tax
+    /// vanishes at C=64. Choose it per workload — which is precisely why it is
+    /// a flag and not a default.
+    ///
+    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when NONE of the three
+    /// GDN flags is given. `GdnFlags` is published as one cell, so any of them
+    /// takes the whole decision away from the environment; `warn_shadowed_env`
+    /// says so when that happens rather than leaving it to be discovered in a
+    /// benchmark number.
+    #[arg(long)]
+    pub ssm_h_dtype: Option<String>,
+
+    /// Fused GDN output-norm kernel on the decode path (default: off).
+    ///
+    /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
+    /// fused-norm arm, and the unfused arm is FP32-only. Left opt-in because
+    /// its bitwise gate could not certify output-equivalence — the CONTROL leg
+    /// (two identical serves) itself differed on 7 of 42 completions at C=4/16,
+    /// so the flag legs' 5-6 differences are not separable from run-to-run
+    /// nondeterminism. Under PCND an unproven numerics change is explicit
+    /// configuration, not a default.
+    ///
+    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
+    ///
+    /// `Option` so that ABSENT is distinguishable from `false`: publishing the
+    /// clap default sealed the flags cell on every boot, which made the legacy
+    /// variable inert while `--help` still documented it. Bare
+    /// `--gdn-fused-norm` still means on; `--gdn-fused-norm false` is the
+    /// explicit off.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub gdn_fused_norm: Option<bool>,
+
+    /// Batched multi-sequence GDN recurrent decode kernel (default: off).
+    ///
+    /// One strided launch across the batch instead of one per sequence.
+    /// Same bitwise-certification gap as `--gdn-fused-norm`; see that flag.
+    ///
+    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`, on the same terms as
+    /// `--gdn-fused-norm`, and `Option` for the same reason.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub ssm_batched_recurrent: Option<bool>,
+
+    /// Mid-chunk SSM tail capture on the prefill path (default: on).
+    ///
+    /// Captures GDN recurrent + conv state in-pass at the block-floored
+    /// matched-prefix boundary, removing the ~868 ms extra forward pass the
+    /// clamp-based tail-checkpoint path costs on a warm turn. Off is
+    /// byte-identical to the pre-2026-07-19 baseline.
+    ///
+    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
+    ///
+    /// Absent is not the same as `--ssm-tail-midchunk true`, which is why there
+    /// is no clap default here: publishing a default sealed the runtime's cell
+    /// on every boot and made that documented opt-out a silent no-op. Give the
+    /// flag to decide, omit it to let the environment decide, and with neither
+    /// it is on.
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub ssm_tail_midchunk: Option<bool>,
+
+    /// MTP throughput gate: `auto` (default) or `force`.
+    ///
+    /// `auto` arms the arbiter, which measures whether speculative verify is
+    /// net-positive in the current regime and stops paying for it when it is
+    /// not. `force` DISARMS the arbiter so verify steps keep flowing even
+    /// where it would measure them net-negative — a diagnostic, needed to
+    /// collect verify samples for attribution, and never a production setting:
+    /// if forcing wins, the GATE is miscalibrated and that is the fix, not
+    /// this flag. To run without speculation at all, omit `--speculative`.
+    ///
+    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force` when this flag is
+    /// ABSENT. As with `--ssm-tail-midchunk`, there is no clap default: a
+    /// published default would seal the scheduler's cell to `auto` on every
+    /// boot and silently ignore the variable it documents.
+    #[arg(long)]
+    pub mtp_gate: Option<String>,
+
+    /// LM-head precision: `default` (the clap default — no override, the model config
+    /// decides), `bf16` (final vocab projection in BF16 — the SAFE CHOICE, and what to pass
+    /// when the config picks something lower; matches vLLM checkpoint precision), `nvfp4` (force the
     /// model's NVFP4-packed lm_head), or `fp8` (runtime-quantize the lm_head to FP8 E4M3
     /// per-row, w8a16_gemv decode). The big vocab projection (~1.78 GB/token BF16 at a
     /// 248K vocab) is the single largest per-token weight read; `fp8` halves it and `nvfp4`
@@ -416,8 +602,13 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 64)]
     pub high_speed_swap_cache_blocks_per_seq: u32,
 
-    /// Default request timeout in seconds. 0 = no timeout.
-    #[arg(long, default_value_t = 300)]
+    /// Server-side deadline for a single request, in seconds. A request
+    /// that exceeds it is CUT and the response is reported with
+    /// `finish_reason="timeout"` (never "length") plus a WARN log naming
+    /// the slot, elapsed time and tokens emitted — a truncation must never
+    /// look like a normal completion. `0` disables the deadline entirely.
+    /// Overridable per request via the OpenAI `timeout` field.
+    #[arg(long, default_value_t = DEFAULT_REQUEST_TIMEOUT_SECS)]
     pub request_timeout: u32,
 
     /// Enable per-kernel profiling: sync + time each operation within layers.
@@ -457,6 +648,12 @@ pub struct ServeArgs {
     /// Setting `ATLAS_FAST_LOAD=0` has the same effect.
     #[arg(long, default_value_t = false)]
     pub no_fast_load: bool,
+
+    /// Disable the interactive TUI dashboard even on a TTY, keeping the plain
+    /// log stream. The TUI also auto-disables when stdout/stdin is not an
+    /// interactive terminal (pipes, `docker -d`, CI) or `ATLAS_NO_TUI=1`.
+    #[arg(long, default_value_t = false)]
+    pub no_tui: bool,
 
     /// Ask the fast loader to prefetch each buffered shard before per-tensor
     /// reads. Useful on NFS-backed model stores with many small tensors per
@@ -503,4 +700,139 @@ pub struct ServeArgs {
     /// `ps`/`/proc/<pid>/cmdline`. Use `--auth-tokens-file` instead.
     #[arg(long, value_name = "TOKEN", conflicts_with = "auth_tokens_file")]
     pub auth_token: Option<String>,
+
+    /// LoRA adapter to serve, as NAME=PATH_OR_HF_ID (e.g.
+    /// `holo-sft=/data/adapters/holo-sft` or `holo-sft=org/holo-31-08b-lora`).
+    /// Repeatable: each adapter loads into its own pool slot at startup and is
+    /// advertised by GET /v1/models; requests route per-slot via the `adapter`
+    /// field (unset = the installed active adapter). Runtime BF16 delta —
+    /// never merged into the base weights.
+    #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
+    pub lora_adapter: Vec<(String, String)>,
+
+    /// NLLB/M2M-100 ONLY: source-language token for translation (e.g.
+    /// `eng_Latn`). Prepended to the encoder input. Required when serving an
+    /// `m2m_100`/`nllb` checkpoint; ignored otherwise.
+    #[arg(long)]
+    pub src_lang: Option<String>,
+
+    /// NLLB/M2M-100 ONLY: target-language token (`forced_bos`, e.g. `fra_Latn`,
+    /// `gvn_Latn`). Forced as the first decoded token. Required when serving an
+    /// `m2m_100`/`nllb` checkpoint; ignored otherwise.
+    #[arg(long)]
+    pub tgt_lang: Option<String>,
+
+    /// Maximum LoRA adapter rank. The A/B slot pool and delta scratch buffers
+    /// are allocated rank-padded to this value at startup (frozen v1 layout
+    /// contract); an adapter whose `r` exceeds it is rejected at load.
+    #[arg(long, default_value_t = 64)]
+    pub max_lora_rank: usize,
+
+    /// Maximum number of LoRA adapter slots in the rank-padded pool. Slots
+    /// beyond the startup-resident adapters are cache headroom for demand
+    /// promotion (`--lora-stageable`).
+    #[arg(long, default_value_t = 8)]
+    pub max_loras: usize,
+
+    /// Task #27: a STAGEABLE (promotable-but-not-resident) LoRA adapter, as
+    /// `NAME=PEER_STAGE_ID=CONFIG_DIR` (repeatable). NAME is what a request's
+    /// `adapter` field asks for; PEER_STAGE_ID is the adapter's id on the
+    /// `$ATLAS_LORA_PEER` weight peer; CONFIG_DIR is a local dir with
+    /// `adapter_config.json` (the peer manifest carries no r/alpha, so the peft
+    /// scaling is read from here at startup). A request naming a stageable
+    /// adapter triggers an on-miss RDMA promotion into a cache pool slot instead
+    /// of a 404. Requires `$ATLAS_LORA_PEER`. Empty = today's resident-only
+    /// behaviour, byte-identical.
+    #[arg(long, value_name = "NAME=PEER_ID=DIR", value_parser = parse_lora_stageable_spec)]
+    pub lora_stageable: Vec<(String, String, String)>,
+
+    /// A DISK-stageable (promotable-but-not-resident, NO peer) LoRA adapter, as
+    /// `NAME=PATH_OR_HF_ID` (repeatable). A request naming NAME triggers an
+    /// on-miss DISK fault-in into a cache pool slot (LRU-evicted) instead of a
+    /// 404 — the no-RDMA sibling of `--lora-stageable`. Needs
+    /// `ATLAS_LORA_ROTATE=1` (so decode runs eager and the disk swap can
+    /// re-point a cache slot) and `--max-loras > resident count` for cache
+    /// headroom. Empty = today's behaviour, byte-identical.
+    #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
+    pub lora_stageable_disk: Vec<(String, String)>,
+}
+
+/// Value parser for `--lora-adapter NAME=PATH_OR_HF_ID`.
+fn parse_lora_adapter_spec(s: &str) -> Result<(String, String), String> {
+    let (name, spec) = s
+        .split_once('=')
+        .ok_or_else(|| format!("--lora-adapter must be NAME=PATH_OR_HF_ID, got '{s}'"))?;
+    if name.is_empty() || spec.is_empty() {
+        return Err(format!("--lora-adapter: empty name or path in '{s}'"));
+    }
+    Ok((name.to_string(), spec.to_string()))
+}
+
+/// Value parser for `--lora-stageable NAME=PEER_ID=DIR` (Task #27). Splits into
+/// exactly three non-empty parts on the first two `=` (a filesystem DIR may
+/// itself contain no `=`; peer ids and names never do). All three parts are
+/// required — a missing DIR would leave the promoted adapter with no peft
+/// scaling source.
+fn parse_lora_stageable_spec(s: &str) -> Result<(String, String, String), String> {
+    let mut parts = s.splitn(3, '=');
+    let name = parts.next().unwrap_or("");
+    let peer_id = parts.next().unwrap_or("");
+    let dir = parts.next().unwrap_or("");
+    if name.is_empty() || peer_id.is_empty() || dir.is_empty() {
+        return Err(format!(
+            "--lora-stageable must be NAME=PEER_ID=DIR (all three non-empty), got '{s}'"
+        ));
+    }
+    Ok((name.to_string(), peer_id.to_string(), dir.to_string()))
+}
+
+#[cfg(test)]
+mod stageable_spec_tests {
+    use super::{parse_lora_adapter_spec, parse_lora_stageable_spec};
+
+    #[test]
+    fn parses_disk_stageable() {
+        // `--lora-stageable-disk NAME=PATH_OR_HF_ID` reuses parse_lora_adapter_spec.
+        assert_eq!(
+            parse_lora_adapter_spec("cold-a=/data/adapters/cold-a"),
+            Ok(("cold-a".to_string(), "/data/adapters/cold-a".to_string()))
+        );
+        assert_eq!(
+            parse_lora_adapter_spec("cold-b=org/cold-b-lora"),
+            Ok(("cold-b".to_string(), "org/cold-b-lora".to_string()))
+        );
+        assert!(parse_lora_adapter_spec("cold-a").is_err());
+        assert!(parse_lora_adapter_spec("=/data/adapters/cold-a").is_err());
+        assert!(parse_lora_adapter_spec("cold-a=").is_err());
+    }
+
+    #[test]
+    fn parses_three_parts() {
+        assert_eq!(
+            parse_lora_stageable_spec("sparky=stage-7=/data/adapters/sparky"),
+            Ok((
+                "sparky".to_string(),
+                "stage-7".to_string(),
+                "/data/adapters/sparky".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_parts() {
+        assert!(parse_lora_stageable_spec("sparky").is_err());
+        assert!(parse_lora_stageable_spec("sparky=stage-7").is_err());
+        assert!(parse_lora_stageable_spec("=stage-7=/dir").is_err());
+        assert!(parse_lora_stageable_spec("sparky==/dir").is_err());
+        assert!(parse_lora_stageable_spec("sparky=stage-7=").is_err());
+    }
+
+    #[test]
+    fn dir_may_contain_equals_after_first_two() {
+        // splitn(3) keeps everything after the 2nd '=' as the DIR.
+        assert_eq!(
+            parse_lora_stageable_spec("n=p=/weird/dir=x"),
+            Ok(("n".to_string(), "p".to_string(), "/weird/dir=x".to_string()))
+        );
+    }
 }

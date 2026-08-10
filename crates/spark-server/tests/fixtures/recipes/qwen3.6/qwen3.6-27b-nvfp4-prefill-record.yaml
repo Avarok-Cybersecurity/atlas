@@ -1,0 +1,72 @@
+recipe_version: "2"
+model: nvidia/Qwen3.6-27B-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-27B (dense, NVIDIA mixed-precision NVFP4: MLP W4A16_NVFP4 gs16,
+    attn/GDN projections FP8) with the 2026-07-02 prefill record stack.
+    Cold prefill measured on a single GB10, solo, coherence 10/10:
+      2k 1088 / 4k 1077 / 8k 1057 / 16k 982 / 29k 911 tok/s
+    (1.24-1.75x llama.cpp Q4_K_M on identical prompts/probes; 16k TTFT
+    28.6s -> 16.3s vs the pre-record baseline). Warm multi-turn TTFT
+    median 2217-2253 ms via tail SSM checkpoints (beats llama.cpp's 2401
+    on the identical 22-turn driver).
+
+    REQUIRES a build carrying Avarok-Cybersecurity/atlas PR #223
+    (perf/qwen36-27b-prefill-nvfp4: attn transposed-NVFP4 routing,
+    ATLAS_FFN_NVFP4_MMQ, FlashInfer-GDN AOT bridge, tail SSM
+    checkpoints). Not yet in a tagged container release — until then,
+    build the branch with ATLAS_TARGET_MODEL=qwen3.6-27b
+    ATLAS_TARGET_QUANT=nvfp4.
+
+    Env stack (the record configuration; each flag is opt-in and
+    independently coherence-gated 10/10):
+      ATLAS_FFN_NVFP4_MMQ=1     # vendored llama Blackwell FP4 block-scale
+                                # MMQ for FFN gate/up (80 TFLOP/s vs 51)
+      ATLAS_GDN_REGRESIDENT=1   # register-resident GDN warm replay.
+                                # HISTORICAL: this variable was live when the
+                                # record was set, but PR #369 folded the lever
+                                # default-ON and now only the kill switch
+                                # ATLAS_NO_GDN_REGRESIDENT=1 is read. Setting
+                                # the line above today does nothing (the lever
+                                # is already on); it is kept so the recorded
+                                # configuration stays readable as written.
+      ATLAS_GDN_FLASHINFER=1    # FlashInfer GDN chunked prefill (+17-20%)
+      ATLAS_GDN_LIB=<repo>/3rdparty_patches/gdn_aot/libatlasgdn.so
+      CUTE_DSL_ARCH=sm_121a
+      LD_LIBRARY_PATH must include the cute-dsl runtime
+      (nvidia_cutlass_dsl/lib) and the CUDA libs.
+
+    Checkpoint-interval note: with the tail-SSM-checkpoint fix, prefill
+    chunks stay full-size at EVERY interval (the old interval=16
+    256-token micro-chunking is gone) and warm restores work even at
+    interval 0; 16 remains a good default for branchy/partial-prefix
+    reuse. For DEEP multi-turn conversations (100+ turns) also require
+    atlas#287 (snapshot-eviction fix, merged 2026-07-10, in :dev from
+    2026-07-11): without it the warm-restore anchor freezes and replays
+    up to 18.6k tokens/turn regardless of interval. See the
+    qwen3.6-27b-nvfp4-unsloth-agentic recipe for the validated agentic
+    golden config.
+  maintainer: avarok
+  category: agent
+  model_params: 27B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 36864
+  max_batch_size: 1
+  kv_cache_dtype: fp8
+  kv_high_precision_layers: auto
+  gpu_memory_utilization: 0.72
+  enable_prefix_caching: true
+  ssm_cache_slots: 256
+  ssm_checkpoint_interval: 16
+  tool_call_parser: hermes
+  disable_thinking: true

@@ -13,6 +13,10 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
+#[path = "ops/derived_weights.rs"]
+mod derived_weights;
+#[path = "ops/dispatch_config.rs"]
+mod dispatch_config;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
@@ -28,11 +32,27 @@ mod fp8_moe_batch_a;
 #[path = "ops/fp8_moe_batch_b.rs"]
 mod fp8_moe_batch_b;
 #[path = "ops/gdn_flashinfer.rs"]
+// The FlashInfer GDN bridge uses dlopen/dlsym, which do not exist on Windows.
+// The absent variant is mounted at the SAME module path so both call sites
+// (trait_prefill_recur, trait_prefill_gdn) need no cfg — they already gate on
+// `available()`, which is simply always false there.
+#[cfg(unix)]
+pub mod gdn_flashinfer;
+#[cfg(not(unix))]
+#[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]
 mod gemm_dense_int8;
+#[path = "ops/gemm_fp4.rs"]
+mod gemm_fp4;
+#[path = "ops/model_stats.rs"]
+pub mod model_stats;
+pub use model_stats::ModelStats;
+
+#[path = "ops/gemm_fp8_prefill.rs"]
+mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
 #[path = "ops/hyper_connection.rs"]
@@ -43,6 +63,10 @@ mod kv_cache;
 mod kv_cache_fp8k;
 #[path = "ops/kv_cache_turbok.rs"]
 mod kv_cache_turbok;
+#[path = "ops/lora_delta.rs"]
+pub mod lora_delta;
+#[path = "ops/model_levers.rs"]
+mod model_levers;
 #[path = "ops/moe_atomic_c4.rs"]
 mod moe_atomic_c4;
 #[path = "ops/moe_expert.rs"]
@@ -57,6 +81,8 @@ mod moe_grouped_a;
 mod moe_grouped_a2;
 #[path = "ops/moe_grouped_b.rs"]
 mod moe_grouped_b;
+#[path = "ops/moe_grouped_fp4.rs"]
+mod moe_grouped_fp4;
 #[path = "ops/moe_prefill.rs"]
 mod moe_prefill;
 #[path = "ops/norm.rs"]
@@ -93,8 +119,12 @@ mod ssm_gdn_batched;
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
 mod ssm_preproc;
+#[path = "ops/ssm_ssd.rs"]
+mod ssm_ssd;
 
 pub use activations::*;
+pub use derived_weights::{Derivation, DerivedWeights};
+pub use dispatch_config::GemmDispatch;
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use embeddings::*;
@@ -104,11 +134,14 @@ pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
 pub use gemm_dense::*;
 pub use gemm_dense_int8::*;
+pub use gemm_fp4::*;
+pub use gemm_fp8_prefill::*;
 pub use gemm_quant::*;
 pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
+pub use model_levers::ModelLevers;
 pub use moe_atomic_c4::*;
 pub use moe_expert::*;
 pub use moe_expert_more::*;
@@ -117,6 +150,7 @@ pub use moe_grouped_a::*;
 pub use moe_grouped_a2::*;
 #[allow(unused_imports)]
 pub(crate) use moe_grouped_b::*;
+pub use moe_grouped_fp4::*;
 pub use moe_prefill::*;
 pub use norm::*;
 pub use nvfp4_mmq::*;
@@ -136,3 +170,4 @@ pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
+pub use ssm_ssd::*;

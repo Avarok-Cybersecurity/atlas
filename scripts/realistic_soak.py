@@ -58,7 +58,7 @@ TOOLS = [
 DECODE_LENS = [64, 128, 200, 300]
 
 
-def build_request(rng, kinds, prefix_hit_rate, model, img_urls):
+def build_request(rng, kinds, prefix_hit_rate, model, img_urls, think_rate):
     """Return (body, kind, think). body is a full chat-completions payload."""
     target = rng.choices(SIZES, weights=SIZE_WEIGHTS)[0]
     shared_tok = int(target * max(0.0, min(1.0, prefix_hit_rate)))
@@ -70,7 +70,7 @@ def build_request(rng, kinds, prefix_hit_rate, model, img_urls):
                                   ).format(nonce) * (unique_tok // 16)
 
     kind = rng.choice(kinds)
-    think = rng.random() < args_think_rate            # thinking on/off mix
+    think = rng.random() < think_rate                 # thinking on/off mix
     text_q = {
         "fact": "\nExtract every entity, channel, and operator mentioned as a JSON array.",
         "tool": "\nUsing the tools, fetch the temperature metric for sector G-12, then query the DB for anomalies.",
@@ -95,11 +95,8 @@ def build_request(rng, kinds, prefix_hit_rate, model, img_urls):
 def stream_chat(url, body, timeout):
     t0 = time.time(); ttft = None; pt = ct = cached = rtok = 0; toolcall = False; txt = []
     try:
-        _hdrs = {"Content-Type": "application/json"}
-        _key = os.environ.get("VLLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        if _key:
-            _hdrs["Authorization"] = f"Bearer {_key}"
-        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=_hdrs)
+        req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             for raw in r:
                 ln = raw.decode("utf-8", "ignore").strip()
@@ -138,7 +135,6 @@ def main():
     ap.add_argument("--duration", type=int, default=120, help="soak seconds (default 2 min; override for long soaks)")
     ap.add_argument("--clients", type=int, default=6)
     ap.add_argument("--vision", action="store_true", help="include image requests (model MUST support vision)")
-    ap.add_argument("--vision-only", action="store_true", help="image-only request mix (pure image-concurrency benchmark); implies --vision")
     ap.add_argument("--image-dir", default=DEFAULT_IMAGE_DIR,
                     help="dir of test images cycled across vision requests (default: committed tests/fixtures/images)")
     ap.add_argument("--prefix-hit-rate", type=float, default=0.0,
@@ -152,10 +148,6 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-error-rate", type=float, default=2.0, help="fail (exit 1) above this %% errors")
     args = ap.parse_args()
-    if args.vision_only:
-        args.vision = True
-    global args_think_rate
-    args_think_rate = args.think_rate
 
     chat_url = args.url.rstrip("/") + "/v1/chat/completions"
     try:
@@ -174,11 +166,8 @@ def main():
                 with open(os.path.join(args.image_dir, f), "rb") as fh:
                     img_urls.append(f"data:image/{mt};base64," + base64.b64encode(fh.read()).decode())
             if img_urls:
-                # --vision-only: pure image-concurrency benchmark (the 8-image set);
-                # otherwise img joins the fact/tool mix.
-                kinds = ["img"] if args.vision_only else kinds + ["img"]
-                print(f"vision: {len(img_urls)} test images from {args.image_dir}"
-                      f"{' (vision-only)' if args.vision_only else ''}", flush=True)
+                kinds.append("img")
+                print(f"vision: {len(img_urls)} test images from {args.image_dir}", flush=True)
             else:
                 print(f"--vision set but no images in {args.image_dir}; text-only", file=sys.stderr)
         except Exception as e:
@@ -199,12 +188,17 @@ def main():
             if r["ok"]:
                 st["ct"] += r["ct"]; st["pt"] += r["pt"]; st["cached"] += r["cached"]
                 st["rtok"] += r["rtok"]; st["tc"] += int(r["toolcall"]); lat.append(r["el"])
+            else:
+                # Count failures so errs=/err_rate and the --max-error-rate exit-1
+                # gate actually work (previously st["err"] was never incremented).
+                st["err"] += 1
+                print(f"  [err] {kind}: {r.get('err', 'unknown')}", file=sys.stderr, flush=True)
         return r["ok"]
 
     def oneshot_client(cid, rng):
         consec = 0
         while time.time() < stop:
-            body, kind, think = build_request(rng, kinds, args.prefix_hit_rate, args.model, img_urls)
+            body, kind, think = build_request(rng, kinds, args.prefix_hit_rate, args.model, img_urls, args.think_rate)
             ok = record(stream_chat(chat_url, body, args.timeout), kind, think)
             consec = 0 if ok else consec + 1
             if consec:
@@ -217,7 +211,7 @@ def main():
         consec = 0
         while time.time() < stop:
             # seed the thread with a shared cacheable preamble + opening question
-            body, _, think = build_request(rng, ["fact"], args.prefix_hit_rate, args.model, img_urls)
+            body, _, think = build_request(rng, ["fact"], args.prefix_hit_rate, args.model, img_urls, args.think_rate)
             msgs = body["messages"]
             thread_tok = 0; turns = 0
             with lock:

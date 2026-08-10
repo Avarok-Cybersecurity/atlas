@@ -437,9 +437,44 @@ pub struct PagedKvCache {
     /// Default: 1 on alloc, freed when decremented to 0.
     block_ref_counts: Vec<u32>,
     config: KvCacheConfig,
+    /// Per-block refcount event history (`ATLAS_KV_TRACE=1`; inert otherwise).
+    trace: block_trace::BlockTrace,
 }
 
+mod block_trace;
 mod paged_impl;
+/// Release both pools of every layer.
+///
+/// Each layer allocates its K and V pools separately, so freeing per layer is
+/// correct. The block bookkeeping (`free_blocks`, `block_ref_counts`) is host
+/// state indexing into those pools — cleared with them so a released cache
+/// cannot hand out a block into freed memory.
+impl atlas_core::scope::ModelResource<dyn crate::gpu::GpuBackend> for PagedKvCache {
+    fn label(&self) -> &'static str {
+        "kv cache"
+    }
+
+    fn release(&mut self, gpu: &dyn crate::gpu::GpuBackend) -> anyhow::Result<()> {
+        let mut first_error = None;
+        for layer in self.layers.drain(..) {
+            for ptr in [layer.k_pool, layer.v_pool] {
+                if let Err(e) = gpu.free(ptr)
+                    && first_error.is_none()
+                {
+                    first_error = Some(e);
+                }
+            }
+        }
+        self.free_blocks.clear();
+        self.block_ref_counts.clear();
+        self.num_blocks = 0;
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

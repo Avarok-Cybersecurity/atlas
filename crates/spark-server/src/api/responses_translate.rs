@@ -11,7 +11,7 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::stored::extract_assistant_incoming_message;
+use super::stored::assistant_incoming_from_ir;
 use crate::AppState;
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
@@ -76,107 +76,52 @@ pub(super) fn build_responses_usage(u: &serde_json::Value) -> crate::openai::Res
     }
 }
 
-/// Translate a `ChatCompletionResponse` (already serialized in the Response)
-/// into a `ResponsesResponse`. Only handles the JSON success path —
-/// error responses are forwarded unchanged.
+/// Encode the pipeline outcome for the Responses API surface. A
+/// blocking success arrives as the canonical response IR (typed — no
+/// serialized-body re-parse); error envelopes pass through unchanged.
 ///
 /// When `store` is provided and `store_flag` is true, the final
 /// `{input_messages + assistant turn}` transcript is persisted under
 /// `resp_<id>` so a follow-up `previous_response_id` lookup can resume.
 pub(super) async fn translate_chat_response_to_responses(
-    resp: Response,
+    outcome: super::chat::ChatOutcome,
     req_metadata: Option<std::collections::HashMap<String, String>>,
     store: Option<Arc<crate::response_store::ResponseStore>>,
     input_messages: Vec<crate::openai::IncomingMessage>,
     store_flag: bool,
     conversation: Option<(Arc<crate::conversation_store::ConversationStore>, String)>,
 ) -> Response {
-    let (parts, body) = resp.into_parts();
-    if !parts.status.is_success() {
-        return Response::from_parts(parts, body);
-    }
-    let bytes = match axum::body::to_bytes(body, 16 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(e) => {
+    let chat = match outcome {
+        super::chat::ChatOutcome::Http(r) => return r,
+        // Unreachable: this encoder serves the non-streaming endpoint.
+        super::chat::ChatOutcome::Streaming(_) => {
             return openai_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("adapter body read failed: {e}"),
+                "internal: expected blocking outcome".to_string(),
             );
         }
+        super::chat::ChatOutcome::Blocking(ir) => *ir,
     };
-    let chat: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(c) => c,
-        Err(_) => {
-            // Not a chat-completion success body — pass through.
-            return axum::response::Response::builder()
-                .status(parts.status)
-                .body(axum::body::Body::from(bytes))
-                .unwrap_or_else(|_| {
-                    openai_error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "adapter passthrough failed".into(),
-                    )
-                });
-        }
-    };
-    let id = chat
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("chatcmpl-unknown")
-        .to_string();
-    let model = chat
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let created = chat
-        .get("created")
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(crate::openai::unix_timestamp);
+    // Wire-compatible ids: the historical path embedded the full
+    // `chatcmpl-<uuid>` id inside the item ids.
+    let full_id = format!("chatcmpl-{}", chat.id);
     let mut output: Vec<crate::openai::ResponsesOutputItem> = Vec::new();
-    if let Some(choice) = chat
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-    {
-        let msg = choice
-            .get("message")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
-            for (i, tc) in tool_calls.iter().enumerate() {
-                let call_id = tc
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name = tc
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let arguments = tc
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                output.push(crate::openai::ResponsesOutputItem::FunctionCall {
-                    id: format!("fc_{}_{}", id, i),
-                    call_id,
-                    name,
-                    arguments,
-                    status: "completed",
-                });
-            }
+    if let Some(choice) = chat.choices.first() {
+        for (i, tc) in choice.tool_calls.iter().enumerate() {
+            output.push(crate::openai::ResponsesOutputItem::FunctionCall {
+                id: format!("fc_{}_{}", full_id, i),
+                call_id: tc.id.clone(),
+                name: tc.name.clone(),
+                arguments: tc.arguments.to_string(),
+                status: "completed",
+            });
         }
-        if let Some(text) = msg.get("content").and_then(|v| v.as_str()) {
-            let annotations: Option<Vec<crate::openai::Annotation>> = msg
-                .get("annotations")
-                .and_then(|a| serde_json::from_value(a.clone()).ok());
+        if let Some(text) = choice.content.as_deref() {
+            // URL-citation annotations derived from the final content,
+            // matching the chat surface's encoder.
+            let annotations = crate::openai::merged_annotations(text);
             output.push(crate::openai::ResponsesOutputItem::Message {
-                id: format!("msg_{}", id),
+                id: format!("msg_{}", full_id),
                 status: "completed",
                 role: "assistant",
                 content: vec![crate::openai::ResponsesContentPart::OutputText {
@@ -186,30 +131,27 @@ pub(super) async fn translate_chat_response_to_responses(
             });
         }
     }
-    let u = chat
-        .get("usage")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
     let usage = crate::openai::ResponsesUsage {
-        input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-        input_tokens_details: u
-            .get("prompt_tokens_details")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()),
-        output_tokens: u
-            .get("completion_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize,
-        output_tokens_details: u
-            .get("completion_tokens_details")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()),
-        total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+        input_tokens: chat.usage.prompt_tokens,
+        input_tokens_details: Some(crate::openai::PromptTokensDetails {
+            cached_tokens: chat.usage.cached_prompt_tokens,
+            audio_tokens: 0,
+        }),
+        output_tokens: chat.usage.completion_tokens,
+        output_tokens_details: Some(crate::openai::CompletionTokensDetails {
+            reasoning_tokens: chat.usage.reasoning_tokens,
+            audio_tokens: 0,
+            accepted_prediction_tokens: 0,
+            rejected_prediction_tokens: 0,
+        }),
+        total_tokens: chat.usage.prompt_tokens + chat.usage.completion_tokens,
     };
-    let resp_id = format!("resp_{}", id.trim_start_matches("chatcmpl-"));
+    let resp_id = format!("resp_{}", chat.id);
     let resp = crate::openai::ResponsesResponse {
         id: resp_id.clone(),
         object: "response",
-        created_at: created,
-        model: model.clone(),
+        created_at: chat.created,
+        model: chat.model.clone(),
         status: "completed",
         error: None,
         output,
@@ -233,14 +175,14 @@ pub(super) async fn translate_chat_response_to_responses(
     if store_flag && let Some(store) = store {
         let mut transcript = input_messages.clone();
         // Append the assistant turn so subsequent resumes see it.
-        if let Some(assistant_msg) = extract_assistant_incoming_message(&chat) {
+        if let Some(assistant_msg) = assistant_incoming_from_ir(&chat) {
             transcript.push(assistant_msg);
         }
         store.insert(crate::response_store::StoredEntry {
             id: resp_id,
             kind: crate::response_store::StoredKind::Response,
-            model: model.clone(),
-            created_at: created,
+            model: chat.model.clone(),
+            created_at: chat.created,
             messages: transcript,
             body: body.clone(),
             last_access: std::time::Instant::now(),
@@ -262,14 +204,10 @@ pub(super) async fn translate_chat_response_to_responses(
             })
             .collect();
         let assistant_text = chat
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .choices
+            .first()
+            .and_then(|c| c.content.as_deref())
+            .unwrap_or("");
         if !assistant_text.is_empty() {
             batch.push(serde_json::json!({
                 "type": "message",

@@ -3,45 +3,9 @@
 //! Byte sizes for the per-pass GPU buffer arena.
 
 use atlas_core::config::ModelConfig;
+use atlas_core::device::sm121::NUM_SMS;
 
-/// Streams assumed when provisioning scratch for the Q12 kernel-batched
-/// prefill path. The per-stream metadata region scales with N, so the
-/// scratch buffer must be sized for a realistic max concurrent batched
-/// streams. Beyond this, `check_kernel_batched_eligible` falls the dispatch
-/// back to the per-stream path (which respects the same arena cap), so this
-/// bound only governs how often the fast path is available — never safety.
-pub const Q12_SIZING_STREAMS: usize = 8;
-
-/// Exact scratch footprint (bytes) of the Q12 kernel-batched prefill staging
-/// for `n` streams of `chunk_len` tokens each. SSOT for both scratch sizing
-/// (`BufferSizes::from_config`) and the pre-flight eligibility check
-/// (`check_kernel_batched_eligible`), so the two can never disagree about
-/// whether a batch fits. Mirrors the staging layout in `batch_kernel.rs`
-/// (MoE topk area + N per-stream meta blocks) and `stage_batched.rs`
-/// (stacked positions ×(3 if MRoPE) + slots + block/seq_len pointer arrays)
-/// plus the per-SSM-layer `h_state_ptrs` JIT slot.
-pub fn q12_batched_scratch_bytes(n: usize, chunk_len: usize, top_k: usize, mrope: bool) -> usize {
-    let total = n * chunk_len;
-    // MoE topk staging (indices+weights, both ×n streams), 64-byte aligned.
-    let moe = ((total * top_k * 4 * 2) + 63) & !63;
-    // Per-stream meta block — same formula as batch_kernel.rs.
-    let per_stream_meta = ((chunk_len * 16) + 64).max(4096);
-    // Stacked BatchedAttnMetadata (stage_batched.rs layout).
-    let pos = (total * 4 + 7) & !7;
-    let pos_streams = if mrope { 3 } else { 1 };
-    let slot = (total * 8 + 7) & !7;
-    let ptrs = ((n * std::mem::size_of::<u64>()) + 7) & !7;
-    // VARLEN cu_seqlens [n+1] i32 prefix-sum, staged after the pointer arrays
-    // (stage_batched.rs:122-126). This term scales with n, so omitting it made
-    // the SSOT under-count grow with batch size: at n>=4 the h_state_ptrs JIT
-    // slot overlapped a live per-stream pointer table → cross-stream KV/GDN
-    // bleed in decode (n<=3 clean, absorbed by over-provisioning slack).
-    let cu_seqlens = (((n + 1) * 4) + 7) & !7;
-    let stage_meta = pos_streams * pos + slot + 2 * ptrs + cu_seqlens;
-    // h_state_ptrs JIT slot consumed per SSM layer (N device pointers).
-    let h_state_ptrs = n * std::mem::size_of::<u64>();
-    moe + n * per_stream_meta + stage_meta + h_state_ptrs
-}
+use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
 /// Byte sizes of each buffer, derived from ModelConfig.
 #[derive(Debug, Clone)]
@@ -74,6 +38,10 @@ pub struct BufferSizes {
     /// GDN FLA chunked-prefill scratch (single buffer, sub-divided W|U|S|uc).
     /// 0 unless the model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
     pub gdn_fla_scratch: usize,
+    /// Mamba-2 SSD chunked-scan scratch (single buffer, sub-divided dt | dA_cumsum | CB).
+    /// 0 unless the model has Mamba-2 SSM layers. Shared across layers: they run
+    /// sequentially on one stream, so one allocation serves all 40.
+    pub ssd_scratch: usize,
     /// Grouped O-projection latent: `[M, o_groups*o_lora_rank]` BF16 (V4-Flash).
     /// 256 (placeholder) when `o_groups == 0`.
     pub o_latent: usize,
@@ -108,6 +76,23 @@ pub struct BufferSizes {
     pub fp8_act: usize,
     /// Per-128-block FP32 scales paired with `fp8_act` (one f32 per 128 elems).
     pub fp8_act_scale: usize,
+    /// LoRA shrink output `xa = x@Aᵀ`: [m, adapter_max_rank] BF16.
+    /// 0 (→ NULL alloc) when no adapter is configured (adapter_max_rank == 0).
+    pub lora_xa: usize,
+    /// LoRA expand output `delta = xa@Bᵀ`: [m, max target n_out] BF16, where
+    /// max n_out = max(hidden, intermediate) — covers k/v/o/gate/up/down in
+    /// v0 (q_proj is excluded). 0 (→ NULL) when no adapter.
+    pub lora_delta: usize,
+    /// LoRA hidden-activation scratch [m, intermediate_size] BF16 for the
+    /// runtime delta path on FFN projections. 0 (→ NULL) when no adapter.
+    pub lora_hact: usize,
+    /// LoRA per-request routing slots `[m]` i32 — one adapter SLOT index per
+    /// prefilling token (all equal for a single-request prefill; resolves
+    /// `-1`→active before upload). Dedicated buffer (not a packed meta offset)
+    /// so the m-element prefill slot array never collides with the per-path
+    /// positions/slots/block_table region. 0 (→ NULL) when no adapter
+    /// (adapter_max_rank == 0).
+    pub lora_seq_slot: usize,
 }
 
 impl BufferSizes {
@@ -124,7 +109,11 @@ impl BufferSizes {
         max_batch_tokens: usize,
         max_seq_len: usize,
         kv_block_size: usize,
+        max_batch_size: usize,
     ) -> Self {
+        // Derived batched-decode metadata layout (rows = max(32, bs)).
+        // Byte-identical sizing for every bs <= 32; see `decode_meta.rs`.
+        let decode_meta = super::DecodeMetaLayout::for_max_batch_size(max_batch_size);
         let bf16 = 2;
         let m = max_batch_tokens;
         let h = config.hidden_size;
@@ -147,8 +136,14 @@ impl BufferSizes {
         //
         // B) Batched decode/verify metadata:
         //   [0 .. 32768): fixed metadata region
-        //   [32768 .. 32768+768): decode metadata (positions, slots, seq_lens)
-        //   [32768+768 .. ): block table (padded_n × max_blocks × 4 bytes)
+        //   [32768 .. 32768+24R): decode metadata (positions, seq_slot,
+        //     slots, seq_lens; R = decode-meta rows, `decode_meta.rs` —
+        //     24R = 768 at the 32-row floor)
+        //   [32768+24R .. ): decode block table (padded_n × max_blocks × 4 B)
+        //   Batched MTP verify (verify_e.rs) overlays the SAME base with
+        //   96-row gaps: meta [32768, 32768+1920), bt at +2048 (bt_rows=96).
+        //   Each path re-uploads its own layout pre-dispatch; sizing takes
+        //   the wider (verify) envelope.
         //
         // MoE scratch: 2 * M * top_k * 4 (indices [M*top_k] u32 + weights [M*top_k] f32)
         let moe_scratch = 2 * m * top_k * 4;
@@ -172,11 +167,21 @@ impl BufferSizes {
         let bt_end = bt_offset + max_blocks * 4;
         let sl_offset = (bt_end + 3) & !3;
         let prefill_meta = sl_offset + 4;
-        // Block table metadata: max(batch_size=8, K=4 verify, K=γ DFlash verify)
-        // rows × max_blocks × 4 bytes. DFlash γ-block verify uses up to γ+1=17
-        // rows (γ=16 for Qwen3.6-DFlash), so size for the worst case.
-        let bt_rows = 32usize; // headroom for K=γ DFlash verify (typical γ=16, K=17)
-        let bt_meta = 32768 + 768 + bt_rows * max_blocks * 4;
+        // Block table metadata: the widest user is the batched MTP verify
+        // (verify_e.rs) at R = 96 rows (n=32 × k=3 rows, the wave-11
+        // depth-at-width envelope — 32:2), whose bt staging sits at
+        // meta_base+2048 (wider 96-row gaps: positions 384 | seq_slot 384 |
+        // slots 768 | seq_lens 384). Batched decode (padded_n ≤ 32) and
+        // DFlash K=γ+1=17 verify keep the narrow +768 layout — strictly
+        // inside this envelope.
+        let bt_rows = 96usize; // batched verify R cap (VERIFY_ROW_CAP, verify_e2.rs)
+        // Envelope = max(verify 96-row overlay, DERIVED decode layout).
+        // The decode layout (`decode_meta.rs`, rows = max(32, bs)) sits
+        // strictly inside the verify overlay for every rows <= 64 (bt at
+        // 24R <= 1536 < 2048, rows <= 96), so this max() changes NOTHING
+        // for bs <= 64; it only grows the scratch once rows > ~85.
+        let bt_meta =
+            32768 + (2048 + bt_rows * max_blocks * 4).max(decode_meta.meta_bytes(max_blocks));
         let scratch_min = 64 * 1024;
         // Q12 kernel-batched prefill stages N per-stream meta blocks plus a
         // stacked BatchedAttnMetadata block — a strictly larger footprint than
@@ -216,11 +221,19 @@ impl BufferSizes {
             k_max * h * bf16
         };
 
-        // Logits: only last token used during prefill. Cap at 32 tokens
-        // (sufficient for decode=1, batched_decode=8, spec_verify≤5,
-        // DFlash K=γ verify with γ=16 → K=17 tokens — bumped from 16
-        // for DFlash K=γ headroom; matches `bt_rows` cap above).
-        let logits_tokens = m.min(32);
+        // Logits: only last token used during prefill. Cap at 96 tokens —
+        // the batched MTP verify's R = Σ ks row cap (n=32 × k=3 rows, the
+        // wave-11 depth-at-width envelope; VERIFY_ROW_CAP in verify_e2.rs).
+        // This also covers decode=1, batched decode padded_n<=32 PLUS the
+        // run_standard mixed path (`decode_b2`) parking prefill logits at
+        // row `padded_n` = 32 (the old 33-row bound), spec_verify≤5, and
+        // DFlash K=γ+1=17. ~45 MB at vocab 248320 (was ~30 MB at 64 rows,
+        // ~16 MB at 33).
+        // Derived floor for wide native batches: the run_standard mixed path
+        // (`decode_b2`) parks prefill logits at row `padded_n`, which can be
+        // as high as `decode_meta.rows()` — so the arena must hold rows+1.
+        // Inert (96) for every rows <= 95, i.e. all bs <= 95.
+        let logits_tokens = m.min(96.max(decode_meta.rows() + 1));
 
         // Mamba-2 d_inner may exceed hidden_size; norm_output and attn_output must fit.
         let mamba2_d_inner = config.mamba2_d_inner();
@@ -229,7 +242,11 @@ impl BufferSizes {
         // Split-K decode workspace: NUM_SMS * (head_dim + 2) * sizeof(f32).
         // Partials from split CTAs are stored as [o[head_dim], m, l] per split.
         // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
-        let splitk_workspace = 48 * (hd + 2) * 4;
+        // Read NUM_SMS rather than repeating its value: run_paged_decode derives
+        // num_splits from the same constant, so a literal here is a second source
+        // of truth that under-allocates — silently, into out-of-bounds device
+        // writes — the moment the constant moves.
+        let splitk_workspace = NUM_SMS as usize * (hd + 2) * 4;
 
         // The residual stream is always BF16.
         let residual_elem = bf16;
@@ -237,9 +254,29 @@ impl BufferSizes {
         // FP8 block-scaled activation scratch for prefill projections. The
         // widest contract dim across call sites is hidden (qkv / ssm-qkvz) or
         // q_heads*head_dim (o_proj). 1 byte/elem fp8 + one f32 per 128-block.
-        let max_proj_k = h.max(q_heads * hd);
+        // Mamba-2 out_proj contracts over d_inner (may exceed hidden), and its
+        // prefill input is FP8-precast into this buffer.
+        let max_proj_k = h.max(q_heads * hd).max(mamba2_d_inner);
         let fp8_act = m * max_proj_k;
         let fp8_act_scale = m * max_proj_k.div_ceil(128) * 4;
+        // LoRA scratch — only when an adapter is configured (adapter_max_rank
+        // set programmatically pre-build). Widest target n_out =
+        // max(hidden, intermediate, q_proj): covers k/v, o/down (hidden),
+        // gate/up (intermediate), and gated q_proj (2*q_heads*head_dim, which
+        // can exceed both — e.g. 35B 2*16*256=8192 > hidden 4096).
+        let (lora_xa, lora_delta, lora_hact, lora_seq_slot) = if config.adapter_max_rank > 0 {
+            let max_n = h
+                .max(config.intermediate_size)
+                .max(q_proj_mul * q_heads * hd);
+            (
+                m * config.adapter_max_rank * bf16,
+                m * max_n * bf16,
+                m * config.intermediate_size * bf16,
+                m * 4, // [m] i32 per-request routing slots (prefill path)
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
 
         // GDN FLA chunked-prefill scratch — ONE buffer holding W|U|S|uc back-to-back,
         // sized for the chunked-prefill arena (nt = ceil(max_batch_tokens / CHUNK)).
@@ -249,6 +286,18 @@ impl BufferSizes {
         //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ;
         //   S  [nt*nv][kd][vd] bf16 ; gc [nt*nv][CHUNK] f32.
         const FLA_CHUNK: usize = 64;
+        // SSD chunked scan (mamba2_ssd_*): dt[H][nc][L] f32 + dA_cs[H][nc][L] f32
+        //                                 + CB[nc][G][L][L] f32,  L = 64.
+        const SSD_L: usize = 64;
+        let ssd_scratch = if config.mamba_num_heads > 0 && config.ssm_state_size > 0 {
+            let nc = m.div_ceil(SSD_L) + 1;
+            let hh = config.mamba_num_heads;
+            let gg = config.n_groups.max(1);
+            (hh * nc * SSD_L * 4) * 2 + nc * gg * SSD_L * SSD_L * 4
+        } else {
+            0
+        };
+
         let gdn_fla_scratch = if config.linear_num_value_heads > 0
             && config.linear_key_head_dim == 128
             && config.linear_value_head_dim == 128
@@ -370,6 +419,7 @@ impl BufferSizes {
             expert_down_out,
             splitk_workspace,
             gdn_fla_scratch,
+            ssd_scratch,
             // Grouped O-projection latent (V4-Flash): [M, o_groups*o_lora_rank].
             o_latent: (m * config.o_groups * config.o_lora_rank * bf16).max(256),
             // Zero-filled weight for unweighted RMSNorm (q_b_norm).
@@ -401,6 +451,10 @@ impl BufferSizes {
             ffn_act_scale,
             fp8_act,
             fp8_act_scale,
+            lora_xa,
+            lora_delta,
+            lora_hact,
+            lora_seq_slot,
         }
     }
 
@@ -427,6 +481,7 @@ impl BufferSizes {
             + self.expert_down_out
             + self.splitk_workspace
             + self.gdn_fla_scratch
+            + self.ssd_scratch
             + self.hc_streams
             + self.hc_post
             + self.hc_comb
@@ -436,5 +491,9 @@ impl BufferSizes {
             + self.ffn_act_scale
             + self.fp8_act
             + self.fp8_act_scale
+            + self.lora_xa
+            + self.lora_delta
+            + self.lora_hact
+            + self.lora_seq_slot
     }
 }

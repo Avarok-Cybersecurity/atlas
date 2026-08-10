@@ -149,12 +149,12 @@ extern "C" __global__ void w4a16_gemm(
 
         v16bf a;
         #pragma unroll
-        for (int i = 0; i < 16; i++) a[i] = (__bf16)smem_A[warp_m_offset + (lane_id & 15)][i];
+        for (int i = 0; i < 16; i++) a[i] = (__bf16)(float)smem_A[warp_m_offset + (lane_id & 15)][i];
         #pragma unroll
         for (int nb = 0; nb < 4; nb++) {
             v16bf b;
             #pragma unroll
-            for (int k = 0; k < 16; k++) b[k] = (__bf16)smem_B[k][nb * 16 + (lane_id & 15)];
+            for (int k = 0; k < 16; k++) b[k] = (__bf16)(float)smem_B[k][nb * 16 + (lane_id & 15)];
             acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]);
         }
         __syncthreads();
@@ -175,14 +175,26 @@ extern "C" __global__ void w4a16_gemm(
 // B_packed[K/2, N], B_scale[K/GROUP_SIZE, N]. Dequant NVFP4→BF16.
 // 8 WMMA n-sub-tiles (128 N / 16). K_STEP_T=32 → 2 WMMA K=16 ops per step.
 // ═══════════════════════════════════════════════════════════════════
+// `ldb` = ROW STRIDE of the transposed B, which may EXCEED N. MUST MATCH THE
+// CUDA COPY at kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu — the Rust caller
+// (`w4a16_gemm_n128_ldb`) passes this argument on EVERY platform.
+//
+// Without the parameter this kernel silently strided the lm_head transposed twin
+// by N while the twin is built with a PADDED stride (vocab 248077 -> 248192),
+// shearing every row past the first and producing garbage logits at padded_n>=5
+// — with NO fault, because RDNA tolerates the unaligned access that traps on
+// CUDA as 716. `kernels/strix/` is a symlink to the GB10 file and inherited the
+// fix; this HIP copy is a real file and had to be updated in lockstep.
 extern "C" __global__ void w4a16_gemm_t(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,
     const unsigned char* __restrict__ B_scale,
     const float scale2,
     __nv_bfloat16* __restrict__ C,
-    unsigned int M, unsigned int N, unsigned int K
+    unsigned int M, unsigned int N, unsigned int K,
+    unsigned int ldb
 ) {
+    const unsigned int LDB = ldb;
     const unsigned int cta_n = blockIdx.x * N_TILE_LG;
     const unsigned int cta_m = blockIdx.y * M_TILE;
     const unsigned int warp_id = threadIdx.x / 32;
@@ -221,13 +233,13 @@ extern "C" __global__ void w4a16_gemm_t(
             unsigned int gke = (kb) + (kp << 1); \
             unsigned int gns = cta_n + ns; \
             sync_copy_16(&smem_Bp[(buf)][kp][ns], \
-                &B_packed[(unsigned long long)(gke >> 1) * N + gns], \
-                (gke + 1 <= K) && (gns + 15 < N)); \
+                &B_packed[(unsigned long long)(gke >> 1) * LDB + gns], \
+                (gke + 1 <= K) && (gns + 15 < LDB)); \
             if (kp < K_STEP_T / GROUP_SIZE) { \
                 unsigned int sg = (kb) / GROUP_SIZE + kp; \
                 sync_copy_16(&smem_Bs[(buf)][kp][ns], \
-                    &B_scale[(unsigned long long)sg * N + gns], \
-                    (gns + 15 < N)); \
+                    &B_scale[(unsigned long long)sg * LDB + gns], \
+                    (gns + 15 < LDB)); \
             } \
         } \
     } while(0)
@@ -260,14 +272,14 @@ extern "C" __global__ void w4a16_gemm_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
                 for (int k = 0; k < 16; k++) \
-                    b[k] = (__bf16)smem_B_bf16[nc][h * 16 + k]; \
+                    b[k] = (__bf16)(float)smem_B_bf16[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -361,14 +373,14 @@ extern "C" __global__ void fp8_gemm_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
                 for (int k = 0; k < 16; k++) \
-                    b[k] = (__bf16)atlas_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
+                    b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -507,14 +519,14 @@ extern "C" __global__ void fp8_fp8_gemm_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)atlas_e4m3_to_f32(smem_Af[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
+                a[i] = (__bf16)(float)atlas_e4m3_to_f32(smem_Af[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
                 for (int k = 0; k < 16; k++) \
-                    b[k] = (__bf16)atlas_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
+                    b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -658,14 +670,14 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)smem_A_k64[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
+                a[i] = (__bf16)(float)smem_A_k64[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]; \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
                 for (int k = 0; k < 16; k++) \
-                    b[k] = (__bf16)smem_B_bf16_k64[nc][h * 16 + k]; \
+                    b[k] = (__bf16)(float)smem_B_bf16_k64[nc][h * 16 + k]; \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -802,14 +814,14 @@ void w4a16_gemm_t_m128(
                 v16bf a; \
                 _Pragma("unroll") \
                 for (int i = 0; i < 16; i++) \
-                    a[i] = (__bf16)smem_A[(a_buf)][m_row][h * 16 + i]; \
+                    a[i] = (__bf16)(float)smem_A[(a_buf)][m_row][h * 16 + i]; \
                 _Pragma("unroll") \
                 for (int nb = 0; nb < 8; nb++) { \
                     unsigned int nc = nb * 16 + (lane_id & 15); \
                     v16bf b; \
                     _Pragma("unroll") \
                     for (int k = 0; k < 16; k++) \
-                        b[k] = (__bf16)smem_B_bf16[nc][h * 16 + k]; \
+                        b[k] = (__bf16)(float)smem_B_bf16[nc][h * 16 + k]; \
                     acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
                 } \
             } \
@@ -922,14 +934,14 @@ void fp8_gemm_t_m128(
                 v16bf a; \
                 _Pragma("unroll") \
                 for (int i = 0; i < 16; i++) \
-                    a[i] = (__bf16)smem_A[(a_buf)][m_row][h * 16 + i]; \
+                    a[i] = (__bf16)(float)smem_A[(a_buf)][m_row][h * 16 + i]; \
                 _Pragma("unroll") \
                 for (int nb = 0; nb < 8; nb++) { \
                     unsigned int nc = nb * 16 + (lane_id & 15); \
                     v16bf b; \
                     _Pragma("unroll") \
                     for (int k = 0; k < 16; k++) \
-                        b[k] = (__bf16)atlas_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
+                        b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
                     acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
                 } \
             } \
@@ -1034,14 +1046,14 @@ void fp8_fp8_gemm_t_m128(
                 v16bf a; \
                 _Pragma("unroll") \
                 for (int i = 0; i < 16; i++) \
-                    a[i] = (__bf16)atlas_e4m3_to_f32(smem_Af[(a_buf)][m_row][h * 16 + i]); \
+                    a[i] = (__bf16)(float)atlas_e4m3_to_f32(smem_Af[(a_buf)][m_row][h * 16 + i]); \
                 _Pragma("unroll") \
                 for (int nb = 0; nb < 8; nb++) { \
                     unsigned int nc = nb * 16 + (lane_id & 15); \
                     v16bf b; \
                     _Pragma("unroll") \
                     for (int k = 0; k < 16; k++) \
-                        b[k] = (__bf16)atlas_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
+                        b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
                     acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
                 } \
             } \

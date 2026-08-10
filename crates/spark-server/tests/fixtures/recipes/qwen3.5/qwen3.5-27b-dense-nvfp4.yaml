@@ -1,0 +1,33 @@
+recipe_version: "2"
+model: Kbenkhaled/Qwen3.5-27B-NVFP4
+runtime: atlas
+container: avarok/atlas-gb10:latest
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.5-27B Dense — hybrid SSM + Attention, no MoE, no MTP.
+    Best for quality-sensitive tasks where throughput is less critical
+    (~14 tok/s decode at concurrency=1 per the Atlas QUICKSTART).
+
+    Note: the dense Qwen 27B variants (3.5 and 3.6) have a known
+    post-`</think>` repetition attractor on long-code prompts (chess-game
+    stress sweep, 2026-05-05). Atlas ships with `enable_loop_watchdog =
+    true` for these models in MODEL.toml — the period-N sentence-
+    repetition detector in the scheduler catches it and ends generation
+    cleanly. If you see `finish_reason: "length"` at low token counts on
+    a repetitive output, that's the watchdog firing.
+  maintainer: avarok
+  category: agent
+  model_params: 27B
+  model_dtype: nvfp4
+  quantization: nvfp4
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 8192
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai

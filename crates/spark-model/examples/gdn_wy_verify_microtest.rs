@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Equivalence oracle for the K∈{2,3,4} WY speculative-verify GDN kernels
-//! (`gated_delta_rule_wy2/wy3/wy4`) against an N-step sequential single-token
-//! GDN recurrence reference.
+//! (`gated_delta_rule_wy2/wy3/wy4`) and the pool-layout chain-verify
+//! K∈{5..8} kernels (`gated_delta_rule_wy5..wy8`, templated wyN source)
+//! against an N-step sequential single-token GDN recurrence reference.
 //!
 //! This is the losslessness foundation for the in-place SSM verify-commit
 //! change (item #2 of the MTP hybrid spec-decode fix): the in-place commit
@@ -17,6 +18,13 @@
 //!   (2) run the matching `gated_delta_rule_wy{K}` once;
 //!   (3) assert per-token output cos ≥ 0.99999 AND committed-state cos
 //!       ≥ 0.99999 (final H for full-accept, intermediate[n-1] for prefix-n).
+//!
+//! K=2 and K=3 additionally run the register-resident twins
+//! (`gated_delta_rule_wy2_resident` / `gated_delta_rule_wy3_resident`) on
+//! the same inputs and assert BITWISE equality of output/intermediates/
+//! final-H against the base kernels — the residency levers' losslessness
+//! proof (their contract is verbatim accumulation order with the Pass 2 H
+//! re-read served from registers).
 //!
 //!   cargo run -p spark-model --release --example gdn_wy_verify_microtest \
 //!       --features cuda,gpu-examples
@@ -74,6 +82,12 @@ fn dn_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
+/// Exact bitwise equality over f32 slices (parity oracle for the
+/// register-resident wy2 twin — cosine is NOT the bar there, bytes are).
+fn bits_eq(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
 fn cos(a: &[f32], b: &[f32]) -> f64 {
     let (mut dot, mut na, mut nb) = (0f64, 0f64, 0f64);
     for (x, y) in a.iter().zip(b) {
@@ -200,6 +214,11 @@ fn run_wy(
         .arg_u32((NK * KD) as u32) // qk_stride
         .arg_u32((NV * VD) as u32) // v_stride
         .arg_u32(NV as u32) // gb_stride
+        // state_is_table = 0 (contiguous). The wy2/wy3/wy4 signatures grew
+        // this trailing arg with the K-generic table form; it was previously
+        // MISSING here, leaving the kernel to read an undefined param slot
+        // (worked only because it happened to read 0). Pass it explicitly.
+        .arg_u32(0)
         .launch(0)?;
     g.synchronize(0)?;
 
@@ -214,6 +233,80 @@ fn run_wy(
     }
     for ip in inters {
         let _ = g.free(ip);
+    }
+    Ok((out, inter_h, final_h))
+}
+
+/// Run a pool-layout wyN kernel (wy5..wy8 signature == wy17: contiguous
+/// intermediates pool + inter_stride_floats) once. Same input packing as
+/// `run_wy`; returns (interleaved output, intermediates[0..K-1], final H).
+fn run_wyn(
+    g: &dyn GpuBackend,
+    kernel: spark_runtime::gpu::KernelHandle,
+    h0: &[f32],
+    q: &[Vec<bf16>],
+    key: &[Vec<bf16>],
+    val: &[Vec<bf16>],
+    gate: &[Vec<f32>],
+    beta: &[Vec<f32>],
+    k: usize,
+) -> Result<(Vec<f32>, Vec<Vec<f32>>, Vec<f32>)> {
+    use spark_runtime::kernel_args::KernelLaunch;
+    let mut q_flat = Vec::with_capacity(k * NK * KD);
+    let mut k_flat = Vec::with_capacity(k * NK * KD);
+    let mut v_flat = Vec::with_capacity(k * NV * VD);
+    let mut g_flat = Vec::with_capacity(k * NV);
+    let mut b_flat = Vec::with_capacity(k * NV);
+    for t in 0..k {
+        q_flat.extend_from_slice(&q[t]);
+        k_flat.extend_from_slice(&key[t]);
+        v_flat.extend_from_slice(&val[t]);
+        g_flat.extend_from_slice(&gate[t]);
+        b_flat.extend_from_slice(&beta[t]);
+    }
+    let h_numel = NV * KD * VD;
+    let hp = up_f32(g, h0)?;
+    let qp = up_bf16(g, &q_flat)?;
+    let kp = up_bf16(g, &k_flat)?;
+    let vp = up_bf16(g, &v_flat)?;
+    let gp = up_f32(g, &g_flat)?;
+    let bp = up_f32(g, &b_flat)?;
+    let op = g.alloc(k * NV * VD * 2)?;
+    // Contiguous pool of (K-1) intermediates, stride = h_numel floats —
+    // the production ssm_pool slot layout the dispatch arm requires.
+    let inter_pool = g.alloc((k - 1) * h_numel * 4)?;
+
+    KernelLaunch::new(g, kernel)
+        .grid([NV as u32, 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(hp)
+        .arg_ptr(qp)
+        .arg_ptr(kp)
+        .arg_ptr(vp)
+        .arg_ptr(gp)
+        .arg_ptr(bp)
+        .arg_ptr(op)
+        .arg_ptr(inter_pool)
+        .arg_u32(h_numel as u32) // inter_stride_floats
+        .arg_u32(1) // batch_size
+        .arg_u32(NK as u32)
+        .arg_u32(NV as u32)
+        .arg_u32(KD as u32)
+        .arg_u32(VD as u32)
+        .arg_u32((NK * KD) as u32) // qk_stride
+        .arg_u32((NV * VD) as u32) // v_stride
+        .arg_u32(NV as u32) // gb_stride
+        .launch(0)?;
+    g.synchronize(0)?;
+
+    let out = dn_bf16(g, op, k * NV * VD)?;
+    let mut inter_h = Vec::with_capacity(k - 1);
+    for t in 0..k - 1 {
+        inter_h.push(dn_f32(g, inter_pool.offset(t * h_numel * 4), h_numel)?);
+    }
+    let final_h = dn_f32(g, hp, h_numel)?;
+    for p in [hp, qp, kp, vp, gp, bp, op, inter_pool] {
+        let _ = g.free(p);
     }
     Ok((out, inter_h, final_h))
 }
@@ -234,11 +327,28 @@ fn main() -> Result<()> {
             4usize,
             g.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
         ),
+        // Pool-layout chain-verify kernels (templated wyN source).
+        (
+            5usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy5")?,
+        ),
+        (
+            6usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy6")?,
+        ),
+        (
+            7usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy7")?,
+        ),
+        (
+            8usize,
+            g.kernel("gated_delta_rule_wyn", "gated_delta_rule_wy8")?,
+        ),
     ];
 
     let mut all_ok = true;
     // Multiple random layers (seeds) per K to exercise diverse H_0/inputs.
-    for &k in &[2usize, 3, 4] {
+    for &k in &[2usize, 3, 4, 5, 6, 7, 8] {
         let wk = wy.iter().find(|(kk, _)| *kk == k).unwrap().1;
         for layer in 0..6u64 {
             let mut r = Lcg(0xD17A ^ (k as u64) << 8 ^ layer);
@@ -272,7 +382,11 @@ fn main() -> Result<()> {
                 .collect();
 
             let (ref_out, ref_h) = sequential_ref(&h0, &q, &key, &val, &gate, &beta, k);
-            let (wy_out, wy_inter, wy_final) = run_wy(g, wk, &h0, &q, &key, &val, &gate, &beta, k)?;
+            let (wy_out, wy_inter, wy_final) = if k <= 4 {
+                run_wy(g, wk, &h0, &q, &key, &val, &gate, &beta, k)?
+            } else {
+                run_wyn(g, wk, &h0, &q, &key, &val, &gate, &beta, k)?
+            };
 
             // Per-token output cosine: wy_out is interleaved [token, vh, vd].
             let mut min_out_cos = 1.0f64;
@@ -295,6 +409,32 @@ fn main() -> Result<()> {
                 "K={k} layer={layer}  out_cos={min_out_cos:.7} state_cos={min_state_cos:.7}  {}",
                 if ok { "PASS" } else { "FAIL" }
             );
+
+            // ── Register-resident wy2/wy3 twins: BITWISE parity vs base ──
+            // Same inputs through `gated_delta_rule_wy{2,3}_resident`;
+            // output, intermediates and final H must be byte-identical (the
+            // twins' contract is verbatim accumulation order with the Pass 2
+            // H re-read served from registers). Cosine tolerance does not
+            // apply here.
+            if k == 2 || k == 3 {
+                let name = if k == 2 {
+                    "gated_delta_rule_wy2_resident"
+                } else {
+                    "gated_delta_rule_wy3_resident"
+                };
+                let wk_res = g.kernel(name, name)?;
+                let (res_out, res_inter, res_final) =
+                    run_wy(g, wk_res, &h0, &q, &key, &val, &gate, &beta, k)?;
+                let pok = bits_eq(&res_out, &wy_out)
+                    && res_inter.len() == wy_inter.len()
+                    && res_inter.iter().zip(&wy_inter).all(|(a, b)| bits_eq(a, b))
+                    && bits_eq(&res_final, &wy_final);
+                all_ok &= pok;
+                eprintln!(
+                    "K={k} layer={layer}  wy{k}_resident BITWISE parity: {}",
+                    if pok { "PASS" } else { "FAIL" }
+                );
+            }
         }
     }
     eprintln!(

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+[package]
+name = "atlas-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Atlas: plugin + benchmark abstraction and registry driven by the spark-server TUI"
+
+# HARD CONSTRAINT: no GPU, no model, no server dependency. This crate drives a
+# served endpoint over HTTP and shells out to provisioned artifacts; it must
+# stay buildable (and unit-testable) without CUDA, so the benchmark suite can be
+# reasoned about and tested on any box.
+[dependencies]
+atlas-closure = { path = "../atlas-closure" }
+# BENCH.toml — a model's benchmarks and thresholds, beside the model.
+toml = "0.8"
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tracing = "0.1"
+# `Stream` for `Benchmark::run`, `BoxFuture` for the dyn-safe bridge.
+futures = "0.3"
+# Benchmarks are I/O state machines: TCP to the endpoint, child processes for
+# the BFCL artifacts, timers for warmup/timeouts. No `rt-multi-thread` — the
+# executor runs on the server's existing runtime.
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt",
+    "sync",
+    "time",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true
