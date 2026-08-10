@@ -587,6 +587,7 @@ pub(crate) fn load_model(
         supports_thinking,
         &config.model_type,
         Some(std::path::Path::new(".")), // repo root for override templates
+        args.disable_template_overrides,
     )?;
 
     // (AM1 attractor-mask registration removed 2026-06-03 — see

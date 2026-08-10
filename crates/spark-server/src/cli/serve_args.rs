@@ -311,6 +311,16 @@ pub struct ServeArgs {
     #[arg(long, value_name = "JSON")]
     pub default_chat_template_kwargs: Option<String>,
 
+    /// Ignore the `jinja-templates/` override directory and render every
+    /// model off its OWN chat template (`chat_template.jinja` /
+    /// `tokenizer_config.json`), relying on the Rust message-preprocessing
+    /// (`tokenizer/message_preprocess.rs`) for Atlas's cross-cutting chat
+    /// behaviors. Default off: an override file's presence is the opt-in
+    /// signal that a model needs a template fix Rust preprocessing can't
+    /// express (see `jinja-templates/README.md`).
+    #[arg(long, default_value_t = false)]
+    pub disable_template_overrides: bool,
+
     /// Enable MTP speculative decoding. The scheduler then MEASURES the
     /// verify-step cost over the first decode steps of serving and auto-disables
     /// MTP if it is provably net-negative (verify multiplier ≥ 1 + num_drafts),
