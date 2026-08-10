@@ -347,6 +347,12 @@ pub struct ModelConfig {
     /// 0 = disabled (use static scales from checkpoint or uncalibrated 1.0).
     #[serde(skip)]
     pub fp8_kv_calibration_tokens: usize,
+    /// Headroom multiplier on the first-observe absmax when freezing the online
+    /// FP8 KV scale (`--fp8-kv-headroom`, default 2.0). The first observe sees
+    /// only the first prefill chunk, so the frozen scale covers headroom× its
+    /// observed max — later tokens that grow don't clip, at <1 bit of precision.
+    #[serde(skip)]
+    pub fp8_kv_headroom: f32,
 
     // ── Gemma-4 specific ──
     /// Final logit softcapping: logits = cap * tanh(logits / cap).

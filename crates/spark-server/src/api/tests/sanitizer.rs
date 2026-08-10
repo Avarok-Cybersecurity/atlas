@@ -10,6 +10,12 @@
 use super::harness::Stream;
 use crate::tool_parser::{LeakMarkers, Qwen3CoderParser, ToolCallParser};
 
+use crate::api::sanitizer::sanitize_content_chunk;
+use crate::api::stream_guards::flush_content_sanitizer;
+
+#[path = "sanitizer_chunk_tests.rs"]
+mod sanitizer_tests;
+
 fn qwen() -> LeakMarkers {
     Qwen3CoderParser.leak_markers()
 }
