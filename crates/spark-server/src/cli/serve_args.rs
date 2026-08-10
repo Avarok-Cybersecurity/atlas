@@ -625,6 +625,16 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 0)]
     pub fp8_kv_calibration_tokens: usize,
 
+    /// Headroom multiplier applied to the first-observe absmax when the online
+    /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
+    /// write scale always equals the read scale). The first observe sees only
+    /// the first prefill chunk, so the frozen scale covers headroom× its
+    /// observed max — later tokens whose magnitude grows don't clip, at a cost
+    /// of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
+    /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
+    #[arg(long, default_value_t = 2.0)]
+    pub fp8_kv_headroom: f32,
+
     /// Path to a warmup prompt file (JSON messages or plain text).
     /// At startup, the server tokenizes and prefills this prompt, inserting the
     /// resulting KV cache + SSM snapshot into the prefix cache. This eliminates
