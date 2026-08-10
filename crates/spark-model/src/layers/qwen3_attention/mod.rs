@@ -84,35 +84,6 @@ pub(crate) fn split_ref_seqs(num_seqs: u32, max_decode_seqs: u32) -> u32 {
     max_decode_seqs.max(num_seqs)
 }
 
-#[cfg(test)]
-mod split_ref_seqs_tests {
-    use super::split_ref_seqs;
-
-    #[test]
-    fn the_split_count_does_not_move_with_co_batch_size() {
-        // The whole point of the pin: one sequence decoded alone and the same
-        // sequence co-batched with fifteen others must see the same reduction
-        // tree, or the non-associative split-merge flips its temp-0 argmax.
-        let pin = 16;
-        assert_eq!(split_ref_seqs(1, pin), split_ref_seqs(8, pin));
-        assert_eq!(split_ref_seqs(1, pin), pin);
-    }
-
-    #[test]
-    fn a_batch_larger_than_the_pin_clamps_up() {
-        // `num_splits` must never exceed what the fixed-size split-K workspace
-        // supports for the actual batch.
-        assert_eq!(split_ref_seqs(32, 16), 32);
-    }
-
-    #[test]
-    fn two_models_can_pin_to_different_batches() {
-        // Was a `OnceLock`, so the second model to load silently kept the
-        // first's max batch — and with it the first model's split count.
-        assert_ne!(split_ref_seqs(1, 4), split_ref_seqs(1, 16));
-    }
-}
-
 /// Host-time accumulator for the FFN/MoE half of prefill layers
 /// (`ATLAS_PREFILL_HOST_TIMING=1`). Summed across layers and read+reset once
 /// per prefill by the layer loop, so the attention half can be derived as
@@ -149,4 +120,33 @@ pub fn take_attn_phase_us() -> [u64; 4] {
         o[i] = a.swap(0, std::sync::atomic::Ordering::Relaxed);
     }
     o
+}
+
+#[cfg(test)]
+mod split_ref_seqs_tests {
+    use super::split_ref_seqs;
+
+    #[test]
+    fn the_split_count_does_not_move_with_co_batch_size() {
+        // The whole point of the pin: one sequence decoded alone and the same
+        // sequence co-batched with fifteen others must see the same reduction
+        // tree, or the non-associative split-merge flips its temp-0 argmax.
+        let pin = 16;
+        assert_eq!(split_ref_seqs(1, pin), split_ref_seqs(8, pin));
+        assert_eq!(split_ref_seqs(1, pin), pin);
+    }
+
+    #[test]
+    fn a_batch_larger_than_the_pin_clamps_up() {
+        // `num_splits` must never exceed what the fixed-size split-K workspace
+        // supports for the actual batch.
+        assert_eq!(split_ref_seqs(32, 16), 32);
+    }
+
+    #[test]
+    fn two_models_can_pin_to_different_batches() {
+        // Was a `OnceLock`, so the second model to load silently kept the
+        // first's max batch — and with it the first model's split count.
+        assert_ne!(split_ref_seqs(1, 4), split_ref_seqs(1, 16));
+    }
 }

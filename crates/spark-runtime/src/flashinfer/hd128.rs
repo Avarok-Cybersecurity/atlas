@@ -46,7 +46,7 @@ unsafe extern "C" {
 
 /// Ragged batched prefill attention, BF16, **head_dim=128** (Laguna), GQA.
 ///
-/// Same contract as [`ragged_prefill_bf16_hd256`] but with a sliding-window
+/// Same contract as [`super::ragged_prefill_bf16_hd256`] but with a sliding-window
 /// bound. `sliding_window` is the Atlas convention (mask when `q - k >= w`,
 /// see `kernels/gb10/common/inferspark_prefill.cu`); pass `None` for the
 /// full-attention layers. It is converted to FlashInfer's `window_left`
