@@ -55,3 +55,26 @@ noise = 0.4
 [benchmarks.metrics.samples]
 min = 995
 max = 995
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "concurrency-sweep"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+default = true
+status = "unmeasured"
+note = """\
+The DENSE half of the concurrency curve. Declared here so the intent is on \
+record for both architectures: the C=1..32 latency/throughput ladder is \
+measured on dense AND MoE, because they do not share a decode path — the \
+dense FFN batches over all rows via forward_prefill while a 256-expert MoE \
+takes the grouped-GEMM arm, and a regression can hit one without touching \
+the other. A curve measured on one model cannot speak for the other.
+
+NO [benchmarks.metrics] TABLE ON PURPOSE. concurrency-sweep is a promotion \
+candidate, not a required gate, and it has never been run on main at C=32. \
+A guessed threshold a run could clear would report PASS for something nobody \
+measured — the exact failure this file's header warns about. Thresholds land \
+here after the first measured run, and that run is what promotes the bench \
+from PROMOTION_CANDIDATES to REQUIRED.\
+"""

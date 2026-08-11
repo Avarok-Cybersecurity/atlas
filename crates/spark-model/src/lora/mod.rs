@@ -19,16 +19,31 @@
 //! (audit/pack + the load entry points). Every public name re-exports at its
 //! own visibility so `crate::lora::X` / `spark_model::lora::X` paths are stable.
 
+mod audit;
 mod env;
+mod expert_apply;
+mod expert_pack;
 mod key;
 mod loading;
+mod moe_row_adapter;
+mod overlay;
+mod overlay_build;
+mod overlay_tables;
 mod slot_math;
+mod target;
 mod types;
 
+pub(crate) use audit::{AuditedAdapter, audit_adapter};
 pub use env::*;
+pub use expert_apply::*;
 pub use key::*;
 pub use loading::*;
+pub use moe_row_adapter::*;
+pub use overlay::*;
+pub use overlay_build::*;
+pub use overlay_tables::*;
 pub use slot_math::*;
+pub use target::*;
 pub use types::*;
 
 // RDMA LoRA staging pulls `spark_storage::{LoraAbKind, LoraLandTarget}`, which

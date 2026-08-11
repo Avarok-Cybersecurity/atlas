@@ -16,90 +16,33 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // SOLID Incr-4: batched decode folds the routed-expert gate/up + down
+        // LoRA delta per token (below) AND the router (mlp.gate) delta on the
+        // whole-batch gate_logits before top-k (`apply_router_lora_batched`,
+        // after the gate GEMM), all gated by the device per-row `row_adapter` map
+        // so base rows no-op and the launches are route-agnostic under capture.
+        // The `reject_decode_lora` / `reject_batched_router_lora` bails are lifted
+        // here; a batch containing a NON-active adapter (`Refuse`) is bailed
+        // host-side in `decode_batch_compute_main` before graph lookup, so it
+        // never reaches these folds. `row_adapter_base` is the fixed-address
+        // `[num_seqs]` i32 map uploaded per step (MoE `-1 = base` semantics);
+        // `DevicePtr(0)` when no adapter is resident, in which case the fold hooks
+        // fall back to the request-granularity `moe_route_gate` (a homogeneous
+        // batch folds all rows; base skips) — see
+        // `apply_expert_lora_decode_{gateup,down}` and `apply_router_lora_batched`.
+        let row_adapter_base = ctx
+            .attn_metadata
+            .as_ref()
+            .map_or(DevicePtr::NULL, |m| m.moe_row_adapter);
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
-        let bf16 = 2usize;
         let n = num_tokens as u32;
+        let bf16 = 2usize;
 
-        // FP32 gate path (ATLAS_FP32_GATE): keep the router GEMM accumulator in
-        // FP32 through top-K so two experts whose logits differ by less than a
-        // BF16 ULP no longer flip routing (the cross-compiler routing-cascade
-        // trigger on gfx1151). Only the softmax-routed dense-gate path is
-        // covered — the NVFP4 gate and the sigmoid+bias path keep BF16. Falls
-        // back to BF16 if the f32 kernels are absent on this target.
-        // ATLAS_FP32_ROUTING: the SSM-side norm already wrote an FP32 router_in
-        // (residual_add_rms_norm_gatef32 → moe_router_in_f32); the gate GEMM
-        // reads it at full precision via dense_gemm_f32in. Supersedes the
-        // gate-only ATLAS_FP32_GATE (which keeps the BF16 router_in but f32 gate
-        // accumulation). Either way the gate logits + top-K run in FP32.
-        let fp32_routing = self.fp32_routing_active();
-        let fp32_gate = fp32_routing
-            || (self.gate_nvfp4.is_none()
-                && self.correction_bias_dev.is_none()
-                && self.dense_gemm_f32out.0 != 0
-                && self.moe_topk_f32.0 != 0
-                && std::env::var("ATLAS_FP32_GATE").as_deref() == Ok("1"));
-        let gate_elem = if fp32_gate { 4usize } else { bf16 };
-
-        // Gemma-4 router pre-norm (no-op for other models).
-        let router_in = self.router_input(input, n, h, ctx, stream)?;
-        // Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
-        let gate_logits = if fp32_gate {
-            ctx.buffers.gate_logits_f32() // [N, num_experts] FP32
-        } else {
-            ctx.buffers.gate_logits() // [N, num_experts] BF16
-        };
-        if let Some(ref nvfp4) = self.gate_nvfp4 {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm,
-                router_in,
-                nvfp4,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
-        } else if fp32_routing {
-            // FP32 router_in (from residual_add_rms_norm_gatef32) × bf16 gate.
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_f32in,
-                ctx.buffers.moe_router_in_f32(),
-                &self.weights.gate,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                if fp32_gate {
-                    self.dense_gemm_f32out
-                } else {
-                    self.dense_gemm
-                },
-                router_in,
-                &self.weights.gate,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
-        }
-        // Routing-divergence diagnostic (no-op unless ATLAS_DUMP_EXPERT_IDS=1):
-        // last-token gate logits, so the batched path can be compared to gb10
-        // the same way the grouped paths are (HIP MoE routing-flip bisection).
-        // The dump reads BF16; skip it on the FP32-gate path.
-        if !fp32_gate {
-            super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
-        }
+        let (gate_logits, fp32_gate, gate_elem) =
+            self.batched_gate_logits(input, n, h, num_experts, row_adapter_base, ctx, stream)?;
 
         // Per-token: topK routing + expert dispatch + weighted sum
         let h_usize = h as usize;
@@ -121,6 +64,17 @@ impl MoeLayer {
             let scratch = ctx.buffers.scratch();
             let indices_dev = scratch;
             let weights_dev = scratch.offset(top_k as usize * 4);
+
+            // Per-row LoRA map slice for THIS token: the fold's `n_slots == top_k`
+            // (`row/top_k == 0`), so token `t`'s entry is `row_adapter_base + t*4`
+            // (i32). The offset is a structural loop constant → a fixed address
+            // baked correctly per captured graph. NULL base stays NULL (no
+            // per-row map; the hooks then use the request gate).
+            let ra_t = if row_adapter_base.0 != 0 {
+                row_adapter_base.offset(t * 4)
+            } else {
+                DevicePtr::NULL
+            };
 
             if let Some(tid2eid) = self.tid2eid_dev {
                 // DeepSeek-V4 hash routing: expert selection is static
@@ -228,6 +182,18 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                // SOLID Incr-4: fold gate/up delta BEFORE the fused silu+down.
+                self.apply_expert_lora_decode_gateup(
+                    expert_gate_out,
+                    expert_up_out,
+                    input_t,
+                    indices_dev,
+                    top_k,
+                    top_k,
+                    ra_t,
+                    ctx,
+                    stream,
+                )?;
                 ops::moe_expert_silu_down_shared_bf16(
                     ctx.gpu,
                     self.moe_expert_silu_down_shared_bf16_k,
@@ -270,6 +236,18 @@ impl MoeLayer {
                     inter,
                     h,
                     top_k,
+                    stream,
+                )?;
+                // SOLID Incr-4: fold gate/up delta BEFORE the fused silu+down.
+                self.apply_expert_lora_decode_gateup(
+                    expert_gate_out,
+                    expert_up_out,
+                    input_t,
+                    indices_dev,
+                    top_k,
+                    top_k,
+                    ra_t,
+                    ctx,
                     stream,
                 )?;
                 ops::moe_expert_silu_down_shared_fp8(
@@ -341,6 +319,18 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                // SOLID Incr-4: fold gate/up delta BEFORE the fused silu+down.
+                self.apply_expert_lora_decode_gateup(
+                    expert_gate_out,
+                    expert_up_out,
+                    input_t,
+                    indices_dev,
+                    top_k,
+                    top_k,
+                    ra_t,
+                    ctx,
+                    stream,
+                )?;
                 ops::moe_expert_silu_down_shared_t(
                     ctx.gpu,
                     self.e8m0_or(
@@ -388,6 +378,18 @@ impl MoeLayer {
                     top_k,
                     stream,
                 )?;
+                // SOLID Incr-4: fold gate/up delta BEFORE the fused silu+down.
+                self.apply_expert_lora_decode_gateup(
+                    expert_gate_out,
+                    expert_up_out,
+                    input_t,
+                    indices_dev,
+                    top_k,
+                    top_k,
+                    ra_t,
+                    ctx,
+                    stream,
+                )?;
                 ops::moe_expert_silu_down_shared(
                     ctx.gpu,
                     self.moe_expert_silu_down_shared,
@@ -408,6 +410,23 @@ impl MoeLayer {
                     stream,
                 )?;
             }
+
+            // SOLID Incr-4: fold the routed-expert down_proj delta into this
+            // token's `expert_down_out` (slot-major [top_k, hidden]) IN PLACE,
+            // recomputing x = silu(gate)*up from the still-materialized
+            // gate/up out — BEFORE the weighted-sum blend (so the router weight
+            // scales base+delta). Route-agnostic via `ra_t` (base rows no-op).
+            self.apply_expert_lora_decode_down(
+                expert_gate_out,
+                expert_up_out,
+                expert_down_out,
+                indices_dev,
+                top_k,
+                top_k,
+                ra_t,
+                ctx,
+                stream,
+            )?;
 
             ops::moe_weighted_sum_blend(
                 ctx.gpu,

@@ -40,10 +40,16 @@ pub struct GdnFlags {
     pub batched_recurrent: bool,
     /// `--exact-verify`: run the sequential-decode-EXACT per-token MTP-verify
     /// chain (issue #435 route (a)) instead of the default WY-chunkwise /
-    /// fused BF16-conv arms. OPT-IN, default OFF: by default #435's
-    /// divergence REMAINS — spec-on output is NOT bitwise-equal to spec-off
-    /// at temp 0. The measured decode-step cost of exact (~+22-36% at the
-    /// n=8/16/32 verify rungs) is why; see the flag's help in `serve_args.rs`.
+    /// fused BF16-conv arms. OPT-IN, default OFF; the measured decode-step
+    /// cost (~+22-36% at the n=8/16/32 verify rungs) is why.
+    ///
+    /// SCOPE: this makes the GDN/SSM verify chain exact. It does NOT deliver
+    /// end-to-end spec-on == spec-off, because every FFN and attention
+    /// projection dispatches on ROW COUNT (verify K=4 takes
+    /// `w4a16_gemv_batch4`, decode takes `w4a16_gemv`) and those separate
+    /// implementations round differently — ~5e-5 of lanes by 1 ULP, on every
+    /// shape measured (#459). Closing that needs single-row routing for the
+    /// whole verify forward, which is future work.
     pub exact_verify: bool,
 }
 

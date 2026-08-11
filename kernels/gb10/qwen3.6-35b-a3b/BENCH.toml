@@ -149,3 +149,22 @@ max = 1647.98
 
 [benchmarks.metrics.p90_ms]
 max = 4814.44
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "concurrency-sweep"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "unmeasured"
+note = """\
+The MoE half of the concurrency curve — the sibling of the dense entry in \
+qwen3.6-27b/BENCH.toml, and the reason both exist. The MoE decode path takes \
+the grouped-GEMM expert arm above the width gate (n >= 16, layers/mod.rs \
+moe_grouped_decode_min_rows) where the dense path never does, so C=16 and \
+C=32 exercise code on this model that the dense sweep cannot reach at any \
+concurrency.
+
+NO [benchmarks.metrics] TABLE ON PURPOSE — see the dense entry. Unmeasured \
+means unmeasured; thresholds follow the first run on main.\
+"""

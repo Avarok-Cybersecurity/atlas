@@ -13,8 +13,10 @@ mod accessors;
 pub mod decode_meta;
 mod sizes;
 mod sizes_q12;
+mod sizes_q2;
 pub use decode_meta::{DECODE_META_MAX_ROWS, DECODE_META_MIN_ROWS, DecodeMetaLayout};
 pub use sizes::BufferSizes;
+pub use sizes_q2::q2_dequant_scratch_bytes;
 pub use sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
 /// Pre-allocated GPU buffers for a single forward pass.
@@ -104,6 +106,9 @@ pub struct BufferArena {
     fp8_act: DevicePtr,
     /// Persistent per-128-block FP32 scales paired with `fp8_act`.
     fp8_act_scale: DevicePtr,
+    /// Persistent BF16 transient-dequant scratch for native keep-packed Q2_0
+    /// prefill. Reused per projection — replaces a per-matmul alloc/sync/free.
+    q2_dequant_scratch: DevicePtr,
     /// LoRA shrink scratch `xa = x@Aᵀ`: [M, adapter_max_rank] BF16.
     /// NULL when no adapter is configured.
     lora_xa: DevicePtr,
@@ -116,6 +121,10 @@ pub struct BufferArena {
     /// LoRA per-request routing slots `[M]` i32 for the prefill path (one
     /// adapter SLOT index per prefilling token). NULL when no adapter.
     lora_seq_slot: DevicePtr,
+    /// Persistent q8_1_mmq activation scratch for native Q2_0 MMQ prefill
+    /// (`ATLAS_GGUF_NATIVE_Q2_MMQ`). Shared by every kept-packed projection;
+    /// each seam quantizes its activation here then runs the packed MMQ GEMM.
+    q2_act_q8: DevicePtr,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Derived batched-decode metadata layout (rows = max(32, serve
@@ -206,6 +215,12 @@ impl BufferArena {
         };
         let fp8_act = gpu.alloc(sizes.fp8_act)?;
         let fp8_act_scale = gpu.alloc(sizes.fp8_act_scale)?;
+        // Q2_0 prefill dequant scratch. 0 → NULL unless ATLAS_GGUF_NATIVE_Q2.
+        let q2_dequant_scratch = if sizes.q2_dequant_scratch > 0 {
+            gpu.alloc(sizes.q2_dequant_scratch)?
+        } else {
+            DevicePtr::NULL
+        };
         // LoRA scratch: only allocate when an adapter is configured
         // (size 0 → NULL; cuMemAlloc rejects 0-byte allocations).
         let lora_xa = if sizes.lora_xa > 0 {
@@ -225,6 +240,12 @@ impl BufferArena {
         };
         let lora_seq_slot = if sizes.lora_seq_slot > 0 {
             gpu.alloc(sizes.lora_seq_slot)?
+        } else {
+            DevicePtr::NULL
+        };
+        // Q2_0 MMQ prefill q8_1 activation scratch. 0 → NULL unless ATLAS_GGUF_NATIVE_Q2_MMQ.
+        let q2_act_q8 = if sizes.q2_act_q8 > 0 {
+            gpu.alloc(sizes.q2_act_q8)?
         } else {
             DevicePtr::NULL
         };
@@ -272,10 +293,12 @@ impl BufferArena {
             ffn_act_scale,
             fp8_act,
             fp8_act_scale,
+            q2_dequant_scratch,
             lora_xa,
             lora_delta,
             lora_hact,
             lora_seq_slot,
+            q2_act_q8,
             max_batch_tokens,
             decode_meta,
             sizes,
@@ -340,6 +363,8 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             lora_delta,
             lora_hact,
             lora_seq_slot,
+            q2_dequant_scratch,
+            q2_act_q8,
         } = self;
         // Every pointer, then NULL it: `release` must be idempotent because a
         // `Drop` backstop may call it again, and `free` already no-ops on NULL.
@@ -381,6 +406,8 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             *lora_delta,
             *lora_hact,
             *lora_seq_slot,
+            *q2_dequant_scratch,
+            *q2_act_q8,
         ];
         let mut first_error = None;
         for ptr in owned {
@@ -427,6 +454,8 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
         *lora_delta = DevicePtr::NULL;
         *lora_hact = DevicePtr::NULL;
         *lora_seq_slot = DevicePtr::NULL;
+        *q2_dequant_scratch = DevicePtr::NULL;
+        *q2_act_q8 = DevicePtr::NULL;
         match first_error {
             Some(e) => Err(e),
             None => Ok(()),

@@ -129,7 +129,8 @@ img, svg, video { max-width: 100%; }
   .proof-item { font-size: 0.86rem; }
 
   /* cards and instruments */
-  .verified-grid .receipt, .hero-receipt .receipt { max-width: none; }
+  /* .receipt-hit tracks its receipt so the corner chip stays on the corner. */
+  .verified-grid .receipt, .hero-receipt .receipt, .hero-receipt .receipt-hit { max-width: none; }
   .hw-card { padding: 1.5rem 1.35rem; }
   .news-card, .reach-card, .road-card, .contrib-card { padding: 1.35rem 1.3rem; }
   .method-card { padding: 1.25rem 1.3rem; }

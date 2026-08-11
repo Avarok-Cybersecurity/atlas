@@ -196,6 +196,18 @@ impl Qwen3AttentionLayer {
             norm_vanilla: crate::ships_vanilla_norm_weights(config),
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            dequant_q2_0_gn_k: super::super::try_kernel(
+                gpu,
+                "dequant_gguf_bf16",
+                "dequant_q2_0_gn_to_bf16",
+            ),
+            // Resolved by `set_packed_q2_weights`, never here: q2_0_mmq /
+            // the Q8_1 quantizer ship only in GGUF-serving targets, and an
+            // unconditional probe fails the boot audit everywhere else.
+            q2_0_mmq_nc_k: KernelHandle(0),
+            q2_0_mmq_wc_k: KernelHandle(0),
+            q4k_quant_act_k: KernelHandle(0),
+            q2_0_gemv_k: super::super::try_kernel(gpu, "q2_0_gemv_vec", "q2_0_gemv_vec"),
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),

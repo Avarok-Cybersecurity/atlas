@@ -98,7 +98,16 @@ impl Qwen3SsmLayer {
         let out_ok = self.out_proj_fp8w.is_some()
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
-        if n < 2 || !self.sequential_qkvz || !use_f32_conv || !use_f32_gdn || !qkvz_ok || !out_ok {
+        // Tier-1c keep-packed Q2_0 has no batched packed GEMM; decline so the
+        // per-seq fallback (`ssm_forward` → `q2_0_gemv_vec`) handles it.
+        if n < 2
+            || !self.sequential_qkvz
+            || !use_f32_conv
+            || !use_f32_gdn
+            || !qkvz_ok
+            || !out_ok
+            || self.qkvz_q2.is_some()
+        {
             // Say WHY, once. Declining is silent otherwise, and the fallback
             // re-streams the ~50 MB QKVZ/out_proj weights once per sequence —
             // the difference between decode that scales with N and decode that

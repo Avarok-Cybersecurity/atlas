@@ -116,6 +116,25 @@ impl BufferArena {
     pub fn fp8_act_scale(&self) -> DevicePtr {
         self.fp8_act_scale
     }
+    /// Persistent BF16 transient-dequant scratch for native keep-packed Q2_0
+    /// prefill. Reused per projection: dequant into it, GEMM reads it (same
+    /// stream), no free. NULL unless `ATLAS_GGUF_NATIVE_Q2`.
+    pub fn q2_dequant_scratch(&self) -> DevicePtr {
+        self.q2_dequant_scratch
+    }
+    /// Allocated byte size of `q2_dequant_scratch` (debug bounds-check).
+    pub fn q2_dequant_scratch_bytes(&self) -> usize {
+        self.sizes.q2_dequant_scratch
+    }
+    /// Persistent q8_1 activation scratch for native Q2_0 MMQ prefill
+    /// (`ATLAS_GGUF_NATIVE_Q2_MMQ`). NULL unless the flag is set.
+    pub fn q2_act_q8(&self) -> DevicePtr {
+        self.q2_act_q8
+    }
+    /// Allocated byte size of `q2_act_q8` (debug bounds-check).
+    pub fn q2_act_q8_bytes(&self) -> usize {
+        self.sizes.q2_act_q8
+    }
     pub fn splitk_workspace(&self) -> DevicePtr {
         self.splitk_workspace
     }

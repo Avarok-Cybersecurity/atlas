@@ -122,6 +122,21 @@ pub struct AttnMetadataDev {
     /// graph. `DevicePtr(0)` on every non-routed path (single-seq decode,
     /// prefill, verify, MLA, MTP) — the bgmv apply sites no-op when it is null.
     pub seq_slot: DevicePtr,
+    /// SOLID Incr-4 (batched decode MoE fold): `[num_seqs]` i32 per-row adapter
+    /// map for the MoE expert gather-BGMV fold, at this device address. MoE
+    /// semantics (distinct from `seq_slot`): `< 0` = base / no fold (device
+    /// kernel skips the row); `>= 0` = fold the installed active adapter's
+    /// per-expert delta on that row. Built by
+    /// [`crate::lora::build_moe_row_adapter_decode`] and uploaded each decode
+    /// step to a stable address (a dedicated fixed-address buffer,
+    /// `TransformerModel::moe_row_adapter_buf`, alloc'd once at init), so the
+    /// batched fold stays inside the captured decode graph and is route-agnostic across
+    /// replays (base rows no-op individually). `DevicePtr(0)` when no adapter is
+    /// resident and on every non-batched path (the fold hooks then fall back to
+    /// the request-granularity `moe_route_gate`). NOT the `seq_slot` buffer —
+    /// that resolves `-1 → active` (attention defer-to-active), which would fold
+    /// the adapter onto base rows here.
+    pub moe_row_adapter: DevicePtr,
 }
 
 /// Q12 batched-prefill device-side metadata.
@@ -288,6 +303,13 @@ pub struct ForwardContext<'a> {
     /// `cap_local` and copy the @tb state into the reserved snapshot slot.
     /// `None` (default) => no split, byte-identical to prior behavior.
     pub midchunk_capture: Option<MidchunkCapture<'a>>,
+    /// Feature-1 MoE-LoRA per-request fold decision for this forward pass,
+    /// resolved by `TransformerModel::moe_lora_route` from the owning request's
+    /// `adapter_slot`. Governs the prefill router/expert fold hooks
+    /// (`layers/moe/lora.rs`). Ignored when no MoE adapter is installed
+    /// (`self.lora == None` short-circuits first — byte-identical off). Default
+    /// `Fold` keeps legacy single-request call sites unchanged.
+    pub moe_lora_route: MoeLoraRoute,
 }
 
 /// Per-pass descriptor for mid-chunk SSM tail capture. Points at the reserved
@@ -322,6 +344,35 @@ pub struct MidchunkCapture<'a> {
     pub h_dsts_early: &'a [DevicePtr],
     /// Per-SSM-layer conv_state dst for the `tb - block_size` slot.
     pub conv_dsts_early: &'a [DevicePtr],
+}
+
+/// Feature-1 MoE-LoRA fold decision for a single forward pass.
+///
+/// The MoE router/expert delta is a SINGLE globally-installed adapter (phase 1):
+/// this gate makes the prefill fold per-request without a device kernel, exactly
+/// mirroring the attention BGMV `seq_slot < 0` skip but at request granularity.
+/// A base request pays nothing; a packed/mixed batch refuses loudly rather than
+/// fold one adapter onto every row (the device-side per-row fold that would let
+/// a mixed batch skip base rows individually is the documented follow-up —
+/// `docs/design/lora-solid.md` Incr 1/3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MoeLoraRoute {
+    /// Single-request pass whose request owns the installed active MoE adapter:
+    /// FOLD. Genuine single-seq decode now folds the router + expert gate/up/down
+    /// deltas at this altitude (mirroring prefill); the remaining back-compat
+    /// paths (multi-seq / verify) still bail via `reject_decode_lora` before the
+    /// fold, so their `Fold` value is inert there. Also the default.
+    #[default]
+    Fold,
+    /// Single-request pass that is base (`adapter_slot < 0`, no adapter) or
+    /// routes to a different, non-installed adapter: SKIP the fold entirely.
+    /// Base tokens pay nothing (request-granularity mirror of the attention
+    /// BGMV `seq_slot < 0` early-return).
+    Skip,
+    /// Multi-request / packed / codispatch batch whose per-row adapter identity
+    /// cannot be honored without the device-side per-row fold (follow-up): the
+    /// fold REFUSES loudly rather than mis-apply one adapter to every row.
+    Refuse,
 }
 
 /// A single transformer layer performing the full per-layer computation.

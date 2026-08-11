@@ -35,6 +35,24 @@ pub(crate) fn load_weight_store(
 ) -> Result<spark_runtime::weights::WeightStore> {
     use spark_runtime::weights::WeightLoader;
     let mult = quant_multiplier(config);
+
+    // GGUF checkpoints are dequantized to BF16 by a dedicated loader; take that
+    // path whenever a .gguf file is present (fast/safetensors loaders can't read it).
+    if spark_runtime::weights::find_gguf(model_dir).is_some() {
+        tracing::info!("Detected GGUF weights; using GgufLoader (GPU dequant → BF16)");
+        let mut loader = if ep_size > 1 {
+            spark_runtime::weights::GgufLoader::with_ep(ep_rank, ep_size, config.num_experts)
+        } else {
+            spark_runtime::weights::GgufLoader::new()
+        };
+        loader.peak_memory_multiplier = mult;
+        let store = loader
+            .load(model_dir, gpu, oom_reserve_bytes)
+            .context("Failed to load model weights (GGUF loader)")?;
+        tracing::info!("Loaded {} weight tensors (GGUF)", store.len());
+        return Ok(store);
+    }
+
     let use_fast_load =
         !args.no_fast_load && std::env::var("ATLAS_FAST_LOAD").ok().as_deref() != Some("0");
     let store = if use_fast_load {

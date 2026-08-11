@@ -6,12 +6,18 @@ translation-focused *encoder-decoder* (seq2seq) transformer.
 
 ## Why a separate crate
 
-Atlas's production engine is **decoder-only and GPU-only**: the
-`TransformerLayer`/paged-KV/scheduler stack assumes causal autoregressive
-generation, and `GpuBackend` has no CPU implementation. NLLB is a seq2seq model
-(bidirectional encoder + decoder cross-attention + sinusoidal absolute
-positions + ReLU FFN + biased LayerNorm), so the `spark-model` marker loader for
-`model_type = "m2m_100" | "nllb"` deliberately fails fast.
+Atlas's production engine is **GPU-only** (`GpuBackend` has no CPU
+implementation), and its *generic* `TransformerLayer`/paged-KV/scheduler stack
+is decoder-only — it assumes causal autoregressive generation. NLLB is a seq2seq
+model (bidirectional encoder + decoder cross-attention + sinusoidal absolute
+positions + ReLU FFN + biased LayerNorm), so the *generic* `spark-model` marker
+loader for `model_type = "m2m_100" | "nllb"` deliberately fails fast.
+
+NLLB **is** served on the GPU, but through a *dedicated* encoder-decoder runtime
+(`spark-model` `model/nllb`, `NllbGpuModel`) that `build_model` selects before
+the generic loader — including straight from an NLLB **GGUF** (arch `nllb`),
+whose `enc/dec.blk.N.*` tensors the GPU loader remaps in
+`spark-runtime` `weights::gguf::names` (the same map this crate applies on CPU).
 
 This crate is the *"load it at least on CPU"* path: a dependency-light, fp32
 port of HuggingFace `M2M100ForConditionalGeneration` that actually loads the
@@ -40,6 +46,26 @@ cargo run -p spark-nllb --release --bin nllb-translate -- \
 `--src` / `--tgt` are NLLB FLORES-200 language codes (`eng_Latn`, `fra_Latn`,
 `spa_Latn`, `deu_Latn`, …). `--beams N` sets the beam width (default `5`, the
 NLLB default; `--beams 1` is greedy).
+
+### GGUF weights
+
+Weights can instead be read from an NLLB **GGUF** file (architecture `nllb`,
+F16/F32 — e.g. `acceldium/nllb-200-3.3B-GGUF`) with `--gguf`:
+
+```bash
+nllb-translate --model /path/to/nllb-200-3.3B-st \
+    --gguf /path/to/nllb-3.3B.gguf \
+    --src eng_Latn --tgt fra_Latn "Hello, how are you?"
+# -> Bonjour, comment allez vous ?   (byte-identical to the safetensors path)
+```
+
+`--model` still supplies `config.json` + `tokenizer.json` (the GGUF does not
+carry the HF tokenizer this runtime needs). The GGUF is parsed by a small
+self-contained reader (`src/gguf.rs`, F16→f32 / F32 only, no K-quant path); its
+`enc/dec.blk.N.*` tensor names are remapped to the HuggingFace M2M-100 keys by
+`weights::map_gguf_name`. The learned `position_embd.weight` is skipped — the
+model regenerates sinusoidal positions. Because the shipped GGUF is F16, outputs
+match the fp32 safetensors path (verified identical on the test sentences).
 
 ## Validation
 

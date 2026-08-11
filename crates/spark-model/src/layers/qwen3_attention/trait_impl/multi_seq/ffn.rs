@@ -132,7 +132,13 @@ impl Qwen3AttentionLayer {
                 (n * h) as u32,
                 stream,
             )?;
-        } else if !force_seq_ffn && self.ffn.is_dense() {
+        } else if !force_seq_ffn
+            && (self.ffn.is_dense() || crate::layers::moe_grouped_decode_for(n))
+        {
+            // TASK-167 (gx10): mirror the SSM-side ATLAS_MOE_GROUPED_DECODE arm
+            // for the attention layers' MoE — at large n the per-token loop
+            // below re-reads each routed expert per token; forward_prefill
+            // reads each distinct expert once (same body as the dense branch).
             // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, n=17). The dense FFN
             // (Qwen3.6-27B is dense) batches over all n rows via
             // `forward_prefill`, reading gate/up/down ONCE instead of the
@@ -199,18 +205,35 @@ impl Qwen3AttentionLayer {
             // dominates). Each forward() writes moe_output[0]; consume it
             // immediately before the next iteration overwrites it.
             let normed_base = fwd.buffers.norm_output();
-            for i in 0..n {
-                let hidden_i = hidden.offset(i * h * residual_elem);
-                let normed2_i = normed_base.offset(i * h * bf16);
-                let moe_out = self.ffn.forward(normed2_i, fwd, stream)?;
+            if std::env::var("ATLAS_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
+                // Batched MoE decode over all N tokens (mirrors the SSM multi-seq
+                // path): the routed per-token expert kernels run under one call so
+                // the Feature-1 LoRA fold (which the per-token `forward` refuses
+                // for num_seqs>1) applies via `forward_batched`'s per-row map.
+                self.ffn.forward_batched(normed_base, n, fwd, stream)?;
+                let moe_out = fwd.buffers.moe_output();
                 ops::residual_add(
                     fwd.gpu,
                     self.residual_add_k,
-                    hidden_i,
+                    hidden,
                     moe_out,
-                    h as u32,
+                    (n * h) as u32,
                     stream,
                 )?;
+            } else {
+                for i in 0..n {
+                    let hidden_i = hidden.offset(i * h * residual_elem);
+                    let normed2_i = normed_base.offset(i * h * bf16);
+                    let moe_out = self.ffn.forward(normed2_i, fwd, stream)?;
+                    ops::residual_add(
+                        fwd.gpu,
+                        self.residual_add_k,
+                        hidden_i,
+                        moe_out,
+                        h as u32,
+                        stream,
+                    )?;
+                }
             }
         }
         Ok(())

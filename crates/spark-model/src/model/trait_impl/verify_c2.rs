@@ -167,6 +167,7 @@ impl TransformerModel {
             max_blocks_per_seq: max_blocks,
             num_seqs: k as u32,
             seq_slot,
+            moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
@@ -198,6 +199,7 @@ impl TransformerModel {
             token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
+            moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

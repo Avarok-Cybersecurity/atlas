@@ -25,6 +25,13 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
+        // Keep-packed Q2_0 (Tier-1c): transient-dequant o_proj then dense GEMM.
+        if let Some(r) =
+            self.try_q2_prefill(ctx, self.o_weight.as_ref(), attn_out, o_out, n, stream)
+        {
+            r?;
+            return Ok(o_out);
+        }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
         // Native FP4 o_proj: quantize attn_out to NVFP4 and consume o_proj in
         // its original NVFP4 form. OPT-IN ONLY -- see the QKV path's comment.

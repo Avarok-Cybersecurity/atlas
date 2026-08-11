@@ -15,8 +15,8 @@ use crate::tp_shard::{
     shard_quantized_nvfp4,
 };
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Fp8Weight, MtpWeights, Nvfp4Variant, SsmWeights, dense,
-    dense_auto, dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant,
+    AttentionWeights, DenseWeight, Fp8Weight, MtpWeights, Nvfp4Variant, PackedQ2Weight, SsmWeights,
+    dense, dense_auto, dense_f32_safe, dense_keep_f32, dequant_nvfp4_to_bf16, detect_nvfp4_variant,
     gpu_concat_rows, interleave_ba, load_dense_ffn, load_fp8_block_scaled_as_fp8weight,
     load_kv_scales, load_mtp, quantize_to_nvfp4, quantized_auto,
 };
@@ -25,6 +25,39 @@ use crate::weight_map::{
 /// (`weight_scale_inv` or 2D `weight_scale`) — i.e. a native FP8 checkpoint
 /// projection that should load as `Fp8Weight` rather than be requantized to
 /// NVFP4. Mirrors `qwen35::load_layers::proj_is_native_fp8`.
+/// The Q2_0 group size if `{prefix}.weight` is a keep-packed ternary tensor
+/// (`WeightDtype::PackedQ2_0`, produced by the GGUF loader under
+/// `ATLAS_GGUF_NATIVE_Q2=1`), else `None`. When `None` for every projection the
+/// FFN takes the unchanged BF16→NVFP4 path, so the default (flag-off) behavior
+/// is byte-identical.
+fn proj_q2_group(store: &WeightStore, prefix: &str) -> Option<u16> {
+    store
+        .get(&format!("{prefix}.weight"))
+        .ok()
+        .and_then(|w| w.q2_group())
+}
+
+/// Build a [`PackedQ2Weight`] borrowing the store's packed `block_q2_0` buffer.
+/// The buffer is owned by the `WeightStore` (freed with it), so this only wraps
+/// the pointer + `[n, k]` + group; no dequant, no allocation.
+fn packed_q2_from_store(store: &WeightStore, prefix: &str) -> Result<PackedQ2Weight> {
+    let w = store.get(&format!("{prefix}.weight"))?;
+    let group = w
+        .q2_group()
+        .ok_or_else(|| anyhow::anyhow!("{prefix}.weight is not keep-packed Q2_0"))?;
+    anyhow::ensure!(
+        w.shape.len() == 2,
+        "packed Q2_0 {prefix}.weight must be 2D, got {:?}",
+        w.shape
+    );
+    Ok(PackedQ2Weight {
+        weight: w.ptr,
+        n: w.shape[0] as u32,
+        k: w.shape[1] as u32,
+        group,
+    })
+}
+
 fn proj_is_native_fp8(store: &WeightStore, prefix: &str) -> bool {
     let is_fp8_weight = store
         .get(&format!("{prefix}.weight"))
@@ -256,7 +289,19 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // grid=[div_ceil(intermediate_size,64),..] on the first prefill.
             // Snapshot fresh D2D copies BEFORE the free (the clone is an
             // independent allocation the layer owns for its lifetime).
-            let ffn_bf16_snapshot = if matches!(variant, Nvfp4Variant::Bf16Raw) {
+            // Native keep-packed ternary Q2_0 (ATLAS_GGUF_NATIVE_Q2=1): when the
+            // GGUF loader tagged gate/up/down as `PackedQ2_0`, DON'T requant to
+            // NVFP4 — install the raw 2-bit blocks and dispatch `q2_0_gemv` at
+            // decode. Requires tp_size=1 (packed-block sharding is unimplemented).
+            // Flag off → tensors are BF16, `ffn_q2` is false, path unchanged.
+            let ffn_q2 = config.tp_world_size.max(1) == 1
+                && proj_q2_group(store, &format!("{lp}.mlp.gate_proj")).is_some()
+                && proj_q2_group(store, &format!("{lp}.mlp.up_proj")).is_some()
+                && proj_q2_group(store, &format!("{lp}.mlp.down_proj")).is_some();
+            // Keep-packed projections are 2-bit blocks, not BF16 — there is
+            // nothing to snapshot (dense_auto has no PackedQ2_0 arm and would
+            // abort the load), and the ffn_q2 arm below owns their compute.
+            let ffn_bf16_snapshot = if !ffn_q2 && matches!(variant, Nvfp4Variant::Bf16Raw) {
                 let inter = if config.intermediate_size > 0 {
                     config.intermediate_size
                 } else {
@@ -285,10 +330,33 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             } else {
                 None
             };
-            let ffn_weights = load_dense_ffn(
-                store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
-            )?;
+
+            let ffn_weights = if ffn_q2 {
+                // NULL NVFP4 fallback: decode uses the packed weights; prefill /
+                // batched paths bail (Tier-2). No NVFP4 allocation → memory win.
+                use crate::weight_map::QuantizedWeight;
+                crate::layers::dense_ffn::DenseFfnWeights {
+                    gate_proj: QuantizedWeight::null(),
+                    up_proj: QuantizedWeight::null(),
+                    down_proj: QuantizedWeight::null(),
+                    gate_proj_t: None,
+                    up_proj_t: None,
+                    down_proj_t: None,
+                }
+            } else {
+                load_dense_ffn(
+                    store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
+                )?
+            };
             let mut dffn = DenseFfnLayer::new(ffn_weights, gpu)?;
+            if ffn_q2 {
+                dffn.set_q2_weights(
+                    packed_q2_from_store(store, &format!("{lp}.mlp.gate_proj"))?,
+                    packed_q2_from_store(store, &format!("{lp}.mlp.up_proj"))?,
+                    packed_q2_from_store(store, &format!("{lp}.mlp.down_proj"))?,
+                    gpu,
+                );
+            }
             if ffn_fp8 {
                 let load_ffn_fp8 = |name: &str| {
                     load_fp8_block_scaled_as_fp8weight(store, &format!("{lp}.mlp.{name}"), gpu)
@@ -324,6 +392,75 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // Bf16Raw installs a BF16 dense O-proj after the layer is
                     // built; other variants leave this None (NVFP4/FP8 dispatch).
                     let mut o_dense_bf16: Option<DenseWeight> = None;
+
+                    // Native keep-packed ternary Q2_0 (Tier-1c): when the GGUF
+                    // loader tagged q/k/v/o as `PackedQ2_0` (transform-free
+                    // full-attention projections), install the raw 2-bit blocks
+                    // and dispatch `q2_0_gemv_vec` at decode / transient-dequant
+                    // at prefill — no NVFP4 requant, no `_t` copies. Requires
+                    // tp_size=1 (packed-block sharding is unimplemented). Bonsai
+                    // has no kill-switch here; the whole path is gated upstream
+                    // by ATLAS_GGUF_NATIVE_Q2 (else these tensors are BF16 and
+                    // `attn_q2` is false). ATLAS_NO_Q2_ATTN forces the BF16 path
+                    // for A/B bisection.
+                    let attn_q2 = tp_size == 1
+                        && std::env::var_os("ATLAS_NO_Q2_ATTN").is_none()
+                        && proj_q2_group(store, &format!("{p}.q_proj")).is_some()
+                        && proj_q2_group(store, &format!("{p}.k_proj")).is_some()
+                        && proj_q2_group(store, &format!("{p}.v_proj")).is_some()
+                        && proj_q2_group(store, &format!("{p}.o_proj")).is_some();
+                    if attn_q2 {
+                        let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
+                        let attn = AttentionWeights {
+                            q_proj: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            k_proj: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            v_proj: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            o_proj: crate::weight_map::QuantizedWeight::null(),
+                            q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
+                            k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                            q_norm_full: None,
+                            k_norm_full: None,
+                            k_scale,
+                            v_scale,
+                        };
+                        let mut attn_layer = Qwen3AttentionLayer::new(
+                            input_norm,
+                            attn,
+                            post_attn_norm,
+                            ffn,
+                            attn_idx,
+                            None,
+                            None,
+                            None,
+                            gpu,
+                            layer_kv_dtypes[attn_idx],
+                            config.fp8_kv_calibration_tokens,
+                            config,
+                        )?;
+                        attn_layer.set_packed_q2_weights(
+                            packed_q2_from_store(store, &format!("{p}.q_proj"))?,
+                            packed_q2_from_store(store, &format!("{p}.k_proj"))?,
+                            packed_q2_from_store(store, &format!("{p}.v_proj"))?,
+                            packed_q2_from_store(store, &format!("{p}.o_proj"))?,
+                            gpu,
+                        );
+                        tracing::info!(
+                            "ATTN[{lp}] native keep-packed Q2_0: q/k/v/o 2-bit \
+                             (q2_0_gemv_vec decode; transient-dequant prefill)"
+                        );
+                        layers.push(Box::new(attn_layer));
+                        attn_idx += 1;
+                        if (i + 1) % 10 == 0 {
+                            tracing::info!("Loaded layers 0..{}", i + 1);
+                        }
+                        continue;
+                    }
                     let (attn, q_nvfp4, k_nvfp4, v_nvfp4) = match variant {
                         Nvfp4Variant::CompressedTensors => {
                             // NVFP4-from-disk path: column-parallel Q/K/V, row-parallel O.
@@ -652,6 +789,100 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let z_rows = dims.full_value_dim();
                     let value_dim = nv * config.linear_value_head_dim;
                     let la = format!("{lp}.linear_attn");
+
+                    // Native keep-packed ternary Q2_0 GDN (Tier-1c): the GGUF
+                    // loader kept `in_proj_qkv` (V-region row-permuted) and
+                    // `in_proj_z` (row-permuted) 2-bit. Byte-concat them into the
+                    // fused [Q|K|V|Z] `qkvz` and dispatch `q2_0_gemv_vec` at decode
+                    // / transient-dequant at prefill. `out_proj` (a within-row
+                    // COLUMN reorder) is NOT packed here — it stays NVFP4. a/b/
+                    // conv1d/norm/A_log stay BF16/F32. Requires tp_size=1.
+                    // ATLAS_NO_Q2_GDN forces the BF16/NVFP4 path for A/B bisection.
+                    let gdn_q2 = config.tp_world_size.max(1) == 1
+                        && std::env::var_os("ATLAS_NO_Q2_GDN").is_none()
+                        && proj_q2_group(store, &format!("{la}.in_proj_qkv")).is_some()
+                        && proj_q2_group(store, &format!("{la}.in_proj_z")).is_some();
+                    if gdn_q2 {
+                        let qkv_q2 = packed_q2_from_store(store, &format!("{la}.in_proj_qkv"))?;
+                        let z_q2 = packed_q2_from_store(store, &format!("{la}.in_proj_z"))?;
+                        anyhow::ensure!(
+                            qkv_q2.group == z_q2.group && qkv_q2.k == z_q2.k,
+                            "GDN packed qkv/z group|k mismatch ({},{} vs {},{})",
+                            qkv_q2.group,
+                            qkv_q2.k,
+                            z_q2.group,
+                            z_q2.k
+                        );
+                        // Byte-concat packed rows: [Q|K|V] ++ [Z]. Each row is
+                        // (k/group)*block_bytes; whole-row copy never splits a block.
+                        let group = qkv_q2.group as usize;
+                        let block_bytes = 2 + group / 4;
+                        let row_bytes = (qkv_q2.k as usize / group) * block_bytes;
+                        let qkv_bytes = qkv_q2.n as usize * row_bytes;
+                        let z_bytes = z_q2.n as usize * row_bytes;
+                        let qkvz_buf = gpu.alloc(qkv_bytes + z_bytes)?;
+                        gpu.copy_d2d(qkv_q2.weight, qkvz_buf, qkv_bytes)?;
+                        gpu.copy_d2d(z_q2.weight, qkvz_buf.offset(qkv_bytes), z_bytes)?;
+                        let qkvz_q2 = PackedQ2Weight {
+                            weight: qkvz_buf,
+                            n: qkv_q2.n + z_q2.n,
+                            k: qkv_q2.k,
+                            group: qkv_q2.group,
+                        };
+                        // out_proj + a/b/conv1d/norm are BF16/F32 in the store
+                        // (sidecar dequanted the reorder tensors). out_proj → NVFP4.
+                        let in_proj_a = dense_auto(store, &format!("{la}.in_proj_a.weight"), gpu)?;
+                        let in_proj_b = dense_auto(store, &format!("{la}.in_proj_b.weight"), gpu)?;
+                        let conv1d = dense(store, &format!("{la}.conv1d.weight"))?;
+                        let a_log = dense_keep_f32(store, &format!("{la}.A_log"), gpu)?;
+                        let dt_bias = dense_keep_f32(store, &format!("{la}.dt_bias"), gpu)?;
+                        let norm = dense_f32_safe(store, &format!("{la}.norm.weight"), gpu)?;
+                        let ba_dense = interleave_ba(&in_proj_a, &in_proj_b, nv, nk, h, gpu)?;
+                        let out_proj_dense =
+                            dense_auto(store, &format!("{la}.out_proj.weight"), gpu)?;
+                        let out_proj_nvfp4 = quantize_to_nvfp4(
+                            &out_proj_dense,
+                            h,
+                            value_dim,
+                            gpu,
+                            absmax_k,
+                            quantize_k,
+                            stream,
+                        )?;
+                        let out_proj_nvfp4_t =
+                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+                        gpu.free(out_proj_dense.weight)?;
+                        let ssm = SsmWeights {
+                            in_proj_qkvz: DenseWeight {
+                                weight: spark_runtime::gpu::DevicePtr::NULL,
+                            },
+                            in_proj_ba: ba_dense,
+                            conv1d,
+                            a_log,
+                            dt_bias,
+                            norm,
+                            out_proj: out_proj_nvfp4,
+                        };
+                        let mut layer = Qwen3SsmLayer::new_sequential(
+                            input_norm,
+                            ssm,
+                            post_attn_norm,
+                            ffn,
+                            None,
+                            None,
+                            Some(out_proj_nvfp4_t),
+                            config,
+                            gpu,
+                        )?;
+                        layer.set_packed_q2_qkvz(qkvz_q2, gpu);
+                        layer.predequant_for_prefill(gpu, config, stream)?;
+                        tracing::info!(
+                            "SSM[{lp}] native keep-packed Q2_0 GDN: qkvz 2-bit \
+                             (concat qkv+z row-permuted), out_proj NVFP4"
+                        );
+                        layers.push(Box::new(layer));
+                        continue;
+                    }
 
                     // SSM projections are loaded per-projection by on-disk dtype:
                     // each of in_proj_qkv / in_proj_z / out_proj may independently

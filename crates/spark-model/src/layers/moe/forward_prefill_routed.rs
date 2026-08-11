@@ -319,6 +319,21 @@ impl MoeLayer {
         // 6. Activation+mul for routed experts + grouped down GEMM (K64 pipelined).
         let expert_down_out = ctx.buffers.expert_down_out();
         if max_m_tiles > 0 {
+            // Feature-1: fold the routed-expert gate/up_proj LoRA deltas onto the
+            // sorted `expert_gate_out`/`expert_up_out` BEFORE `silu_mul` consumes
+            // them in place (x = token-major `expert_input`, gathered per sorted
+            // row). No-op unless gate/up deltas are installed. Covers all five
+            // nvfp4 gate_up sub-branches (all wrote sorted BF16 gate/up).
+            self.apply_expert_lora_prefill_gateup(
+                expert_gate_out,
+                expert_up_out,
+                expert_input,
+                expert_offsets,
+                sorted_token_ids,
+                total_expanded,
+                ctx,
+                stream,
+            )?;
             ops::silu_mul(
                 ctx.gpu,
                 self.moe_act_mul,

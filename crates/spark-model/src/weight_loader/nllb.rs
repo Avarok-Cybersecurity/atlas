@@ -4,9 +4,15 @@
 //!
 //! NLLB-200 checkpoints declare `model_type = "m2m_100"` and use an
 //! encoder-decoder architecture with learned absolute positions and decoder
-//! cross-attention. Atlas's executable model stack is currently decoder-only;
-//! this loader is registered so the model type has a single, explicit
-//! fail-fast path while the CUDA and Metal target metadata can resolve.
+//! cross-attention. NLLB **is** served on the GPU, but through a dedicated
+//! encoder-decoder runtime (`crate::model::nllb`, `NllbGpuModel`) that
+//! `build_model` constructs *before* consulting this loader — see
+//! `crate::factory::build`. This marker exists only because the generic
+//! `ModelWeightLoader` table needs an entry for the model type; the generic
+//! `TransformerLayer`/paged-KV pipeline is decoder-only and cannot express the
+//! encoder self-attention + decoder cross-attention that NLLB requires, so
+//! every generic entry point here fails fast. Reaching one means the dedicated
+//! serve path was bypassed (a routing bug), not that NLLB is unsupported.
 
 use anyhow::{Result, bail};
 use atlas_core::config::ModelConfig;
@@ -23,7 +29,7 @@ pub struct NllbWeightLoader;
 impl NllbWeightLoader {
     fn unsupported() -> anyhow::Error {
         anyhow::anyhow!(
-            "NLLB / m2m_100 checkpoints are recognized, but Atlas does not yet implement the encoder-decoder runtime required by facebook/nllb-200-3.3B (encoder self-attention + decoder cross-attention + learned absolute positions)"
+            "NLLB / m2m_100 is served by the dedicated GPU encoder-decoder runtime (spark_model::model::nllb::NllbGpuModel), which build_model selects before this loader; the generic decoder-only ModelWeightLoader pipeline cannot serve it. Reaching this loader means the dedicated serve path was bypassed."
         )
     }
 }

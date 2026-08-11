@@ -513,12 +513,14 @@ pub(crate) fn default_conv_kernel() -> usize {
 
 mod dispatch;
 mod factory;
+mod gguf;
 mod methods;
 mod parsers;
 #[cfg(test)]
 mod tests;
 
 pub use dispatch::parse_config;
+pub use gguf::{GgufConfigInputs, GgufMeta, config_from_gguf};
 pub use parsers::{
     PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, parse_mistral_params,
     parse_peft_adapter_config, parse_quantization_config,

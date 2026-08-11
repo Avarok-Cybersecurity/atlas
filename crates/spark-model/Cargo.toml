@@ -142,6 +142,10 @@ name = "w8a16_gemv_batch4_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "q2_0_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "moe_blend_microtest"
 required-features = ["cuda", "gpu-examples"]
 

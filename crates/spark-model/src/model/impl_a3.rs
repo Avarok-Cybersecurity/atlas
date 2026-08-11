@@ -315,6 +315,10 @@ impl TransformerModel {
                 stream,
             )?;
         }
+        // Feature-2: overlay overridden logit columns AFTER the base projection,
+        // BEFORE softcap. Uniform-active route (seq_slot NULL); BF16 logits.
+        // No-op when no overlay is installed.
+        self.apply_lmhead_overlay(hidden, DevicePtr(0), logits, num_tokens, false, stream)?;
         // Apply logit softcapping: logits = cap * tanh(logits / cap)
         if self.logit_softcap_kernel.0 != 0 {
             let cap = self.config.final_logit_softcapping;
@@ -397,6 +401,10 @@ impl TransformerModel {
                 stream,
             )?;
         }
+        // Feature-2: overlay overridden logit columns AFTER the base projection,
+        // BEFORE softcap. Single-token; `fp32` selects the f32-logits kernel.
+        // No-op when no overlay is installed.
+        self.apply_lmhead_overlay(hidden, DevicePtr(0), logits, 1, fp32, stream)?;
         // Apply logit softcapping: logits = cap * tanh(logits / cap)
         if self.logit_softcap_kernel.0 != 0 || self.logit_softcap_fp32_kernel.0 != 0 {
             let cap = self.config.final_logit_softcapping;
