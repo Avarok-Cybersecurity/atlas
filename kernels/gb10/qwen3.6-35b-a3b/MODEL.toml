@@ -403,3 +403,22 @@ gdn_verify_fused_conv_kn_f32 = """
 FP32 fused verify conv for the exact-verify chain (#435), shipped only
 in qwen3.6-27b/nvfp4. Probed handle != 0; absent, the exact chain keeps
 its per-token conv launches (same bits, more launches)."""
+
+# The GGUF keep-packed kernel families (Ternary-Bonsai) ship only in
+# qwen3.6-27b/nvfp4. Qwen3SsmLayer::new probes them unconditionally so a
+# GGUF checkpoint can serve on any GDN model, but a safetensors NVFP4
+# checkpoint never installs packed-Q2 weights (`qkvz_q2` stays None) and
+# never quantizes activations to Q8_1 — every dispatch site is behind a
+# handle != 0 probe AND a packed-weights presence check.
+[expected_absent.q2_0_mmq]
+atlas_q2_0_mmq128_nc = """
+Ternary keep-packed MMQ (Bonsai GGUF Tier-2). Probed for packed-Q2
+weights only; a safetensors NVFP4 checkpoint never installs packed-Q2
+weights, so the arm is unreachable here."""
+atlas_q2_0_mmq128_wc = "Same family — unreachable without packed-Q2 weights."
+
+[expected_absent.q4k_mmq]
+atlas_q8_1_quantize_ds4_bf16 = """
+Q8_1 activation quantize feeding the keep-packed MMQ path (GGUF Tier-2).
+Only reachable behind the same packed-Q2/Q4K weight presence checks;
+never installed from a safetensors NVFP4 checkpoint."""
