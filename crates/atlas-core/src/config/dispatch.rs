@@ -190,6 +190,17 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             // Architecture flags
             config.attn_gated = false;
             config.weight_prefix = "backbone".to_string();
+            // Nemotron-H attention is NoPE: the reference NemotronHAttention
+            // projects q/k/v straight into attention with NO rotary embedding
+            // (position is carried by the mamba layers; config.json ships a
+            // vestigial rope_theta that the reference never reads). Applying
+            // RoPE here scrambled long-range q·k addressing: in-context
+            // retrieval died beyond ~50 tokens (needle-probe verified against
+            // the checkpoint's own vLLM serving) while short-range fluency
+            // survived on the SSM state. rotary_dim() == 0 makes every rope
+            // wrapper skip its launch.
+            config.partial_rotary_factor = 0.0;
+            config.rotary_dim = 0;
             // Parse hybrid_override_pattern → layer_types (Nano / Super)
             if !config.hybrid_override_pattern.is_empty() && config.layer_types.is_empty() {
                 config.layer_types = config

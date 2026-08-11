@@ -53,7 +53,9 @@ fn test_parse_nemotron_h_config() {
     assert_eq!(cfg.layer_type(1), LayerType::Moe); // E
     assert_eq!(cfg.layer_type(5), LayerType::FullAttention); // *
     assert_eq!(cfg.gqa_ratio(), 16); // 32/2
-    assert_eq!(cfg.rotary_dim(), 128); // partial_rotary_factor=1.0
+    // NoPE: the reference NemotronHAttention applies no rotary embedding
+    // (position is carried by the mamba layers) — rope launches must skip.
+    assert_eq!(cfg.rotary_dim(), 0);
     assert_eq!(cfg.routed_scaling_factor, 2.5);
 }
 
