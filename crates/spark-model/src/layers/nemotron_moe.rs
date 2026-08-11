@@ -45,6 +45,12 @@ pub struct NemotronMoeLayer {
     topk_sigmoid_k: KernelHandle,
     moe_expert_gemv_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
+    /// Native-FP8 decode GEMV for the shared-expert up_proj (see
+    /// `NemotronMoeWeights::shared_up_fp8`). 0 when unavailable.
+    w8a16_gemv_k: KernelHandle,
+    /// Native-FP8 prefill GEMM for the shared expert. 0 when unavailable.
+    w8a16_gemm_k: KernelHandle,
+    w8a16_gemm_pipelined_k: KernelHandle,
     relu2_down_shared_k: KernelHandle,
     weighted_sum_scale_k: KernelHandle,
     residual_add_k: KernelHandle,
@@ -146,6 +152,13 @@ impl NemotronMoeLayer {
             topk_sigmoid_k: gpu.kernel("moe_topk_sig", "moe_topk_sigmoid")?,
             moe_expert_gemv_k: gpu.kernel("moe_expert_gemv", "moe_expert_gemv")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
+            w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
+            w8a16_gemm_pipelined_k: super::try_kernel(
+                gpu,
+                "w8a16_gemm_pipelined",
+                "w8a16_gemm_pipelined",
+            ),
             relu2_down_shared_k: gpu.kernel("moe_relu2_fused", "moe_expert_relu2_down_shared")?,
             weighted_sum_scale_k: gpu.kernel("relu2", "moe_weighted_sum_scale")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
@@ -212,6 +225,7 @@ impl NemotronMoeLayer {
 
 mod decode_helpers;
 mod prefill_fallback;
+mod prefill_shared_up;
 mod prefill_sorted;
 mod prefill_weights;
 mod ptr_tables;
@@ -308,94 +322,9 @@ impl TransformerLayer for NemotronMoeLayer {
         // Always compute shared expert UP — even when batched path overwrites it later.
         // The batched UP kernel writes shared_up_out for shared blocks, but we need
         // this result for the per-token fallback path AND it's harmless to overwrite.
-        // Native FP4 tensor cores: shared_up consumed in its ORIGINAL NVFP4 form
-        // (no FP8 or transposed copies), activations quantized to NVFP4 in one
-        // pass. Same gates as the SSM W4A4 path; ATLAS_NO_SHARED_W4A4=1 disables.
-        let w4a4 = n >= 512
-            && self.w4a4_gemm_k.0 != 0
-            && self.quantize_nvfp4_k.0 != 0
-            && ctx.buffers.fp8_act_bytes() >= (shared_inter as usize).max(h) * (n as usize)
-            && std::env::var("ATLAS_NO_SHARED_W4A4").is_err();
-        if w4a4 {
-            let a4 = ctx.buffers.fp8_act();
-            let a4_sf = a4.offset((n as usize) * h / 2);
-            ops::quantize_bf16_to_nvfp4(
-                ctx.gpu,
-                self.quantize_nvfp4_k,
-                normed,
-                a4,
-                a4_sf,
-                n,
-                h as u32,
-                stream,
-            )?;
-            ops::w4a4_gemm_mfast(
-                ctx.gpu,
-                self.w4a4_gemm_k,
-                a4,
-                a4_sf,
-                &self.weights.shared_up,
-                shared_up_out_base,
-                n,
-                shared_inter,
-                h as u32,
-                stream,
-            )?;
-        } else if let Some(w_fp8) = self.shared_up_pd_fp8 {
-            ops::fp8_gemm_m128_mfast(
-                ctx.gpu,
-                self.fp8_gemm_m128_k,
-                normed,
-                w_fp8,
-                shared_up_out_base,
-                n,
-                shared_inter,
-                h as u32,
-                stream,
-            )?;
-        } else if let Some(ref sut) = self.shared_up_t {
-            // Same NVFP4 weights, better kernel: w4a16_gemm_t_m128 tiles M at 128
-            // (half the B panel passes of w4a16_gemm_t's 64) and puts M on the fast
-            // grid axis so those passes hit L2. Costs nothing extra -- the transposed
-            // copy already exists -- and needs no FP8 residency.
-            if n > 128 && self.w4a16_gemm_t_m128_k.0 != 0 {
-                ops::w4a16_gemm_n128_m128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_m128_k,
-                    normed,
-                    sut,
-                    shared_up_out_base,
-                    n,
-                    shared_inter,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w4a16_gemm_n128(
-                    ctx.gpu,
-                    self.w4a16_gemm_t_k,
-                    normed,
-                    sut,
-                    shared_up_out_base,
-                    n,
-                    shared_inter,
-                    h as u32,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm_k,
-                normed,
-                &self.weights.shared_up,
-                shared_up_out_base,
-                n,
-                shared_inter,
-                h as u32,
-                stream,
-            )?;
-        }
+        // Arm selection (native FP8 → W4A4 → pre-dequant FP8 → transposed NVFP4
+        // → plain W4A16) lives in `prefill_shared_up.rs` (500-LoC cap split).
+        self.prefill_shared_up(normed, shared_up_out_base, n, h, shared_inter, ctx, stream)?;
 
         // ── 4. LatentMoE: batched fc1_latent GEMM [N, H] → [N, L] ──
         // Use attn_output as temp buffer (m*max_dim*2, large enough for [N, L]).

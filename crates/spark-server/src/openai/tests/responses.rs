@@ -193,3 +193,95 @@ fn responses_in_progress_event_name() {
     };
     assert_eq!(responses_event_name(&ev), "response.in_progress");
 }
+
+// ── reasoning wire format ───────────────────────────────────────────
+// The Responses surface must carry the thinking trace as a first-class
+// `reasoning` output item + `response.reasoning_summary_*` stream
+// events — dropping it (the historical behavior) left reasoning-model
+// turns invisible to Responses-API clients.
+
+#[test]
+fn reasoning_item_wire_shape() {
+    let item = ResponsesOutputItem::Reasoning {
+        id: "rs_1".into(),
+        summary: vec![ResponsesSummaryPart::SummaryText {
+            text: "thought".into(),
+        }],
+    };
+    let json = serde_json::to_string(&item).unwrap();
+    assert!(json.contains("\"type\":\"reasoning\""), "{json}");
+    assert!(
+        json.contains("\"summary\":[{\"type\":\"summary_text\",\"text\":\"thought\"}]"),
+        "{json}"
+    );
+}
+
+#[test]
+fn reasoning_summary_stream_events_wire_shape() {
+    let delta = ResponsesStreamEvent::ReasoningSummaryTextDelta {
+        sequence_number: 3,
+        item_id: "rs_1".into(),
+        output_index: 0,
+        summary_index: 0,
+        delta: "thinking".into(),
+    };
+    assert_eq!(
+        responses_event_name(&delta),
+        "response.reasoning_summary_text.delta"
+    );
+    let json = serde_json::to_string(&delta).unwrap();
+    assert!(
+        json.contains("\"type\":\"response.reasoning_summary_text.delta\""),
+        "{json}"
+    );
+    assert!(json.contains("\"summary_index\":0"), "{json}");
+    assert!(json.contains("\"delta\":\"thinking\""), "{json}");
+    // The chat surface's spelling must NOT leak into Responses events —
+    // strict SDKs deserialize exactly the spec fields.
+    assert!(!json.contains("reasoning_content"), "{json}");
+
+    let added = ResponsesStreamEvent::ReasoningSummaryPartAdded {
+        sequence_number: 2,
+        item_id: "rs_1".into(),
+        output_index: 0,
+        summary_index: 0,
+        part: ResponsesSummaryPart::SummaryText {
+            text: String::new(),
+        },
+    };
+    assert_eq!(
+        responses_event_name(&added),
+        "response.reasoning_summary_part.added"
+    );
+    let json = serde_json::to_string(&added).unwrap();
+    assert!(
+        json.contains("\"part\":{\"type\":\"summary_text\",\"text\":\"\"}"),
+        "{json}"
+    );
+
+    let text_done = ResponsesStreamEvent::ReasoningSummaryTextDone {
+        sequence_number: 4,
+        item_id: "rs_1".into(),
+        output_index: 0,
+        summary_index: 0,
+        text: "thinking".into(),
+    };
+    assert_eq!(
+        responses_event_name(&text_done),
+        "response.reasoning_summary_text.done"
+    );
+
+    let part_done = ResponsesStreamEvent::ReasoningSummaryPartDone {
+        sequence_number: 5,
+        item_id: "rs_1".into(),
+        output_index: 0,
+        summary_index: 0,
+        part: ResponsesSummaryPart::SummaryText {
+            text: "thinking".into(),
+        },
+    };
+    assert_eq!(
+        responses_event_name(&part_done),
+        "response.reasoning_summary_part.done"
+    );
+}

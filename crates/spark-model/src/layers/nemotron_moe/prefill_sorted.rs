@@ -94,8 +94,42 @@ impl NemotronMoeLayer {
 
         // 5c. Grouped UP GEMM: [sorted, K_expert] → [sorted, p.inter]
         let expert_up_out = ctx.buffers.expert_up_out();
+        // Defence in depth for the same class of bug: these arena buffers are
+        // reused across requests and nothing else zeroes them, so any row a future
+        // change fails to write would leak the previous request's activations
+        // rather than merely being wrong. `ATLAS_MOE_NO_ZERO_INTERMEDIATES=1` skips.
+        if std::env::var("ATLAS_MOE_NO_ZERO_INTERMEDIATES").is_err() {
+            ctx.gpu.memset_async(
+                expert_up_out,
+                0,
+                (total_expanded as usize) * (p.inter as usize) * 2,
+                stream,
+            )?;
+        }
         let avg_per_expert = (p.num_tokens * p.top_k as usize).div_ceil(ne);
-        let max_m_tiles = (avg_per_expert * 2).div_ceil(64).max(1) as u32;
+        // `max_m_tiles` is the grouped GEMM's grid.y, so it must cover the LARGEST
+        // number of tokens any single expert receives — not an estimate of it.
+        // The old bound was `2 * avg_per_expert`, and routing is content-dependent
+        // and imbalanced: any expert over 2x the average had its extra rows simply
+        // never computed, and those rows kept whatever the PREVIOUS request left in
+        // `expert_up_out`.
+        //
+        // That made temperature-0 output NONDETERMINISTIC. Measured: the same
+        // request at 1429 prompt tokens returned first-token 'Red' 5 times and
+        // 'The' once; with this bound it is stable, and stable at 729/4229/7869/
+        // 12629/16829 too. It also explains replies containing text from no prompt
+        // we sent ("The cat sat on the mat"), which is another request's residue.
+        //
+        // The true per-expert max is only known on device after the sort, so bound
+        // by the worst case — one expert taking every routed token. Blocks past an
+        // expert's real tile count exit immediately, so the cost is launch overhead,
+        // not work. `ATLAS_MOE_MAX_M_TILES_ESTIMATE=1` restores the old bound for an
+        // A/B; it is not safe to serve on.
+        let max_m_tiles = if std::env::var("ATLAS_MOE_MAX_M_TILES_ESTIMATE").is_ok() {
+            (avg_per_expert * 2).div_ceil(64).max(1) as u32
+        } else {
+            (total_expanded as usize).div_ceil(64).max(1) as u32
+        };
         // Native FP4 up GEMM: latent activations quantized to NVFP4 once per layer,
         // expert weights consumed as raw E2M1 + scales (no LUT dequant), relu^2
         // fused. OPT-IN ONLY (ATLAS_MOE_W4A4=1): although the latent is a linear
@@ -142,7 +176,7 @@ impl NemotronMoeLayer {
                 stream,
             )?;
         } else if let Some(ref upt) = self.up_ptrs_t {
-            ops::moe_w4a16_grouped_gemm_ptrtable(
+            ops::moe_w4a16_grouped_gemm_ptrtable_n128(
                 ctx.gpu,
                 self.moe_grouped_gemm_n128_k,
                 expert_input,
@@ -170,7 +204,7 @@ impl NemotronMoeLayer {
             // relu^2 fused into the UP GEMM's store when the epilogue variant is
             // compiled -- saves a full read+write of expert_up_out.
             let fused = self.moe_grouped_gemm_relu2_k.0 != 0;
-            ops::moe_w4a16_grouped_gemm_ptrtable(
+            ops::moe_w4a16_grouped_gemm_ptrtable_n128(
                 ctx.gpu,
                 if fused {
                     self.moe_grouped_gemm_relu2_k
@@ -203,8 +237,16 @@ impl NemotronMoeLayer {
 
         // 5e. Grouped DOWN GEMM: [sorted, p.inter] → [sorted, expert_out_dim]
         let expert_down_out = ctx.buffers.expert_down_out();
+        if std::env::var("ATLAS_MOE_NO_ZERO_INTERMEDIATES").is_err() {
+            ctx.gpu.memset_async(
+                expert_down_out,
+                0,
+                (total_expanded as usize) * (expert_out_dim as usize) * 2,
+                stream,
+            )?;
+        }
         if let Some(ref dpt) = self.down_ptrs_t {
-            ops::moe_w4a16_grouped_gemm_ptrtable(
+            ops::moe_w4a16_grouped_gemm_ptrtable_n128(
                 ctx.gpu,
                 self.moe_grouped_gemm_n128_k,
                 expert_up_out,
@@ -221,7 +263,7 @@ impl NemotronMoeLayer {
                 stream,
             )?;
         } else {
-            ops::moe_w4a16_grouped_gemm_ptrtable(
+            ops::moe_w4a16_grouped_gemm_ptrtable_n128(
                 ctx.gpu,
                 self.moe_grouped_gemm_k,
                 expert_up_out,
@@ -267,12 +309,45 @@ impl NemotronMoeLayer {
         // wide dynamic range -- and quantizing it to FP4 measurably degraded long-
         // prompt outputs (hallucinated MC options, repetition loops) while the
         // normed-input W4A4 GEMMs stayed clean. ATLAS_SHARED_W4A4_DOWN=1 to test.
-        let w4a4_down = p.n >= 512
+        // Native FP8 from the checkpoint beats every arm below: w4a4_down would
+        // quantize relu^2 activations to 4 bits, and `shared_down_pd_fp8` is FP8
+        // re-derived from the NVFP4 requant, i.e. already degraded. Suppress
+        // w4a4_down when the real bytes are available.
+        let native_down = self
+            .weights
+            .shared_down_fp8
+            .as_ref()
+            .filter(|_| self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0);
+        let w4a4_down = native_down.is_none()
+            && p.n >= 512
             && self.w4a4_gemm_k.0 != 0
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (p.shared_inter as usize) * (p.n as usize)
             && std::env::var("ATLAS_SHARED_W4A4_DOWN").is_ok();
-        if w4a4_down {
+        if let Some(fp8w) = native_down {
+            let (kern, pipelined) = if self.w8a16_gemm_pipelined_k.0 != 0 {
+                (self.w8a16_gemm_pipelined_k, true)
+            } else {
+                (self.w8a16_gemm_k, false)
+            };
+            let f = if pipelined {
+                ops::w8a16_gemm_pipelined
+            } else {
+                ops::w8a16_gemm
+            };
+            f(
+                ctx.gpu,
+                kern,
+                p.shared_up_out_base,
+                fp8w.weight,
+                fp8w.row_scale,
+                shared_down_out,
+                p.n,
+                p.h as u32,
+                p.shared_inter,
+                stream,
+            )?;
+        } else if w4a4_down {
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((p.n as usize) * (p.shared_inter as usize) / 2);
             ops::quantize_bf16_to_nvfp4(

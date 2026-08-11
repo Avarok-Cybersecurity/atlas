@@ -184,7 +184,9 @@
 {%- for message in loop_messages -%}
     {%- set ns.prev_message_type = None -%}
     {%- set role = 'model' if message['role'] == 'assistant' else message['role'] -%}
+    {%- if role != 'tool' -%}
         {{- '<|turn>' + role + '\n' }}
+    {%- endif -%}
 
             {%- if message['tool_calls'] -%}
                 {%- for tool_call in message['tool_calls'] -%}
@@ -224,13 +226,20 @@
                 {%- set ns.prev_message_type = 'tool_response' -%}
             {%- endif -%}
 
-            {%- if message['content'] is string -%}
+            {%- if role == 'tool' -%}
+                {{- '<|tool_response>' -}}
+                {{- message['content'] | trim -}}
+                {{- '<tool_response|>' -}}
+                {%- set ns.prev_message_type = 'tool_response' -%}
+            {%- endif -%}
+
+            {%- if message['content'] is string and role != 'tool' -%}
                 {%- if role == 'model' -%}
                     {{- strip_thinking(message['content']) -}}
                 {%- else -%}
                     {{- message['content'] | trim -}}
                 {%- endif -%}
-            {%- elif message['content'] is sequence -%}
+            {%- elif message['content'] is sequence and role != 'tool' -%}
                 {%- for item in message['content'] -%}
                     {%- if item['type'] == 'text' -%}
                         {%- if role == 'model' -%}
@@ -251,7 +260,7 @@
                 {%- endfor -%}
             {%- endif -%}
 
-        {%- if not (message['tool_responses'] and not message['content']) -%}
+        {%- if role != 'tool' and not (message['tool_responses'] and not message['content']) -%}
             {{- '<turn|>\n' -}}
         {%- endif -%}
 {%- endfor -%}
@@ -269,7 +278,7 @@
         `compile_gemma4_tool_grammar` grammar constraint, this forces the
         model to emit a structured tool call instead of narrative text (the
         WARN root cause on 26B Search + 31B Weather/Search). -#}
-    {%- if tools -%}
+    {%- if tools and ns.prev_message_type != 'tool_response' -%}
         {{- '<|tool_call>call:' -}}
     {%- endif -%}
 {%- endif -%}

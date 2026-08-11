@@ -4,6 +4,33 @@
   import DiscordIcon from './DiscordIcon.svelte';
 
   let copied = $state(false);
+  let dashboardOpen = $state(false);
+
+  // PRPL "lazy-load": the dashboard is on-click only, so its component (and the
+  // gate-records JSON it pulls in) stays out of the initial bundle. Hovering or
+  // focusing the receipt starts the fetch early, so by click time the module is
+  // usually already here; the skeleton in dashboard.css covers the rest.
+  let Dashboard = $state(null);
+  let dashboardError = $state(false);
+  let dashboardModule = null;
+  function preloadDashboard() {
+    dashboardModule ??= import('./BenchmarkDashboard.svelte');
+    return dashboardModule;
+  }
+  async function openDashboard() {
+    dashboardOpen = true;
+    try {
+      Dashboard = (await preloadDashboard()).default;
+    } catch {
+      dashboardModule = null; // allow retry on next open
+      dashboardError = true;
+    }
+  }
+  function closeDashboard() {
+    dashboardOpen = false;
+    dashboardError = false;
+  }
+
   async function copy() {
     try {
       await navigator.clipboard.writeText(runCommand);
@@ -12,6 +39,9 @@
     } catch {}
   }
 </script>
+
+<!-- The loaded dashboard handles Escape itself; this covers the skeleton phase. -->
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && dashboardOpen && !Dashboard) closeDashboard(); }} />
 
 <section class="hero">
   <div class="hero-inner">
@@ -41,7 +71,40 @@
     </div>
 
     <div class="hero-receipt">
-      <Receipt compact={true} />
+      <button
+        type="button"
+        class="receipt-hit"
+        onclick={openDashboard}
+        onpointerenter={preloadDashboard}
+        onfocus={preloadDashboard}
+        aria-haspopup="dialog"
+        aria-label="Open the benchmark dashboard"
+      >
+        <Receipt compact={true} />
+        <span class="receipt-open-hint">benchmark dashboard →</span>
+      </button>
     </div>
   </div>
 </section>
+
+{#if dashboardOpen}
+  {#if Dashboard}
+    <Dashboard onclose={closeDashboard} />
+  {:else}
+    <!-- Same .bd-backdrop/.bd classes as the real dialog: identical dimensions,
+         so the swap from skeleton to dashboard causes zero layout shift. -->
+    <div class="bd-backdrop" onclick={closeDashboard} role="presentation">
+      <div class="bd bd-skeleton" role="dialog" aria-modal="true" aria-label="Benchmark dashboard, loading" aria-busy="true" onclick={(e) => e.stopPropagation()}>
+        {#if dashboardError}
+          <p class="bd-skeleton-error">Couldn’t load the dashboard (network?). Close and try again.</p>
+        {:else}
+          <div class="bd-skeleton-bar" style="width: 38%"></div>
+          <div class="bd-skeleton-bar" style="width: 62%"></div>
+          <div class="bd-skeleton-chart"></div>
+          <div class="bd-skeleton-chart"></div>
+        {/if}
+        <button type="button" class="bd-close bd-skeleton-close" onclick={closeDashboard} aria-label="Close dashboard">✕</button>
+      </div>
+    </div>
+  {/if}
+{/if}

@@ -216,3 +216,23 @@ img, svg, video { max-width: 100%; }
   .news-link, .hw-links a, .road-card a, .contrib-card a { padding-block: 0.35rem; }
   .subcard:hover, .news-card:hover, .reach-card:hover, .contrib-card:hover { transform: none; }
 }
+
+/* ---- benchmark dashboard modal (all viewport rules live here) ------------- */
+@media (max-width: 860px) {
+  .bd-backdrop { padding: 0; align-items: stretch; }
+  .bd { border-radius: 0; border-left: 0; border-right: 0; min-height: 100%; }
+  .bd-head, .bd-controls, .bd-body, .bd-foot { padding-left: 1rem; padding-right: 1rem; }
+  .bd-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; max-width: 100%; }
+  .bd-controls { row-gap: 0.6rem; }
+  .gbs-tile { min-width: 6.2rem; padding: 0.5rem 0.7rem; }
+  /* SVG text scales with the 720-unit viewBox (~0.45x at phone widths) —
+     sizes here match the star chart's mobile treatment. */
+  .gc-axis { font-size: 18px; }
+  .gc-val { font-size: 20px; }
+  .gc-ref-label { font-size: 16px; }
+  .gpc-backdrop { align-items: flex-end; padding: 0; }
+  .gpc { width: 100%; max-height: 88vh; border-radius: 12px 12px 0 0; }
+}
+@media (pointer: coarse) {
+  .bd-tab, .bd-close, .gpc-close { min-height: 42px; }
+}

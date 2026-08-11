@@ -1,0 +1,57 @@
+name: GDN .so provenance pin
+
+# Pure hashing of committed files — no GPU, no toolchain, read-only.
+# Turns a silent binary-blob swap in 3rdparty_patches/gdn_aot/ into a red
+# check with a named remediation (rebuild.sh + PINS.sha256).
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "3rdparty_patches/gdn_aot/**"
+      - ".github/workflows/gdn-so-pin.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "3rdparty_patches/gdn_aot/**"
+      - ".github/workflows/gdn-so-pin.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-gdn-so-pins:
+    name: Verify committed GDN binaries match PINS.sha256
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: sha256sum -c PINS.sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd 3rdparty_patches/gdn_aot
+          if sha256sum --check --strict PINS.sha256; then
+            echo "All pinned GDN artifacts (libatlasgdn.so, gdn_holo.so, export patch) match PINS.sha256."
+            exit 0
+          fi
+          echo ""
+          echo "::error file=3rdparty_patches/gdn_aot/PINS.sha256::A pinned GDN binary or the export patch changed without updating PINS.sha256."
+          cat <<'EOF'
+          The committed GDN AOT binaries no longer match their recorded pins.
+
+          If the change is INTENTIONAL (a deliberate re-export/relink):
+            1. Rebuild reproducibly:  3rdparty_patches/gdn_aot/rebuild.sh
+               (GB10 box with the cuda-13.2 compat stack; see the script header
+               and STATUS.md "PROVENANCE" for the toolchain requirements).
+            2. Update PINS.sha256 with the new sha256sums IN THE SAME COMMIT,
+               and record in the commit message which toolchain versions
+               (nvidia-cutlass-dsl, FlashInfer rev, gcc, nvcc) produced them.
+
+          If you did NOT mean to change these binaries: someone or something
+          swapped a .so blob — do not merge; restore the pinned bytes.
+          EOF
+          exit 1

@@ -324,9 +324,23 @@ extern "C" __global__ void gated_rms_norm(
     unsigned int lane_id = tid % 32;
 
     // ── Per-group sum accumulators (shared memory) ──
-    __shared__ float group_sums[8];
+    // DETERMINISM: this used to be `atomicAdd(&group_sums[grp], warp_sq)`, which
+    // accumulates FLOATS in whatever order the warps happen to arrive. Float
+    // addition is not associative, so the RMS normaliser differed run to run and
+    // the whole model became nondeterministic at temperature 0 — measured on
+    // Puzzle-75B as 2 distinct completions in 10 runs of an IDENTICAL 34-token
+    // prompt (fixed seed, no prefix cache, batch 1, kernel-sync on, graphs off).
+    // Laguna, which does not use this override, was 12/12 identical.
+    //
+    // Fix: give every (group, warp) pair its own slot, then reduce them in a
+    // FIXED order. Same arithmetic, same cost class (one extra pass over
+    // <= 8*32 floats per block), but a reproducible result.
     __shared__ float group_rms[8];
-    if (tid < num_groups) group_sums[tid] = 0.0f;
+    __shared__ float group_warp_sums[8][32];   // [group][warp]
+    const unsigned int warp_id  = tid / 32;
+    const unsigned int num_warps = (blockDim.x + 31u) / 32u;   // <= 32
+    for (unsigned int z = tid; z < 8u * 32u; z += blockDim.x)
+        ((float*)group_warp_sums)[z] = 0.0f;
     __syncthreads();
 
     // ── Pass 1: Compute temp = input * silu(gate), accumulate per-group sum_sq ──
@@ -365,14 +379,20 @@ extern "C" __global__ void gated_rms_norm(
         float warp_sq = warp_reduce_sum(sq);
         if (lane_id == 0) {
             unsigned int grp = i / group_quads;
-            atomicAdd(&group_sums[grp], warp_sq);
+            // Only this warp's lane 0 ever touches [grp][warp_id]; repeat visits
+            // across loop iterations are sequential within the warp. No atomics,
+            // no cross-warp race, so the accumulation order is fixed.
+            group_warp_sums[grp][warp_id] += warp_sq;
         }
     }
     __syncthreads();
 
-    // Compute per-group RMS
+    // Compute per-group RMS. The per-warp partials are summed in ascending warp
+    // order — deterministic, unlike the atomicAdd arrival order it replaces.
     if (tid < num_groups) {
-        group_rms[tid] = rsqrtf(group_sums[tid] / (float)group_size + eps);
+        float s = 0.0f;
+        for (unsigned int w = 0; w < num_warps; ++w) s += group_warp_sums[tid][w];
+        group_rms[tid] = rsqrtf(s / (float)group_size + eps);
     }
     __syncthreads();
 

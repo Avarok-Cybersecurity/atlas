@@ -57,6 +57,10 @@ pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
 mod teardown;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod think_skip_tests;
 mod types;
 mod verify_dflash_step;
 mod verify_k2_step;
