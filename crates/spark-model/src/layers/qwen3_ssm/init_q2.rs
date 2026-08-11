@@ -10,8 +10,21 @@ impl Qwen3SsmLayer {
     /// transient-dequants via `Self::qkvz_q2_prefill_gemm`. `out_proj` is
     /// unaffected (stays NVFP4). Requires `sequential_qkvz` (Bonsai concats
     /// [Q|K|V|Z] at load).
-    pub fn set_packed_q2_qkvz(&mut self, qkvz: crate::weight_map::PackedQ2Weight) {
+    ///
+    /// The keep-packed MMQ kernels are resolved HERE, not in the constructor:
+    /// they ship only in GGUF-serving targets, and probing them on models
+    /// that never install packed-Q2 weights fails the fail-closed boot audit
+    /// on every other GDN target.
+    pub fn set_packed_q2_qkvz(
+        &mut self,
+        qkvz: crate::weight_map::PackedQ2Weight,
+        gpu: &dyn GpuBackend,
+    ) {
         self.qkvz_q2 = Some(qkvz);
+        self.q2_0_mmq_nc_k = super::super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc");
+        self.q2_0_mmq_wc_k = super::super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc");
+        self.q4k_quant_act_k =
+            super::super::try_kernel(gpu, "q4k_mmq", "atlas_q8_1_quantize_ds4_bf16");
     }
 
     /// Transient-dequant prefill GEMM for the packed qkvz: dequant the 2-bit

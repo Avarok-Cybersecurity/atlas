@@ -413,8 +413,12 @@ impl DenseFfnLayer {
                 "dequant_gguf_bf16",
                 "dequant_q2_0_gn_to_bf16",
             ),
-            q2_0_mmq_nc_k: super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc"),
-            q2_0_mmq_wc_k: super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc"),
+            // Resolved by `set_q2_weights`, never here: q2_0_mmq ships only
+            // in GGUF-serving targets, and an unconditional probe fails the
+            // boot audit on every dense-FFN model that never installs
+            // packed-Q2 weights.
+            q2_0_mmq_nc_k: KernelHandle(0),
+            q2_0_mmq_wc_k: KernelHandle(0),
         };
         Ok(layer)
     }
@@ -689,12 +693,18 @@ impl DenseFfnLayer {
         gate: PackedQ2Weight,
         up: PackedQ2Weight,
         down: PackedQ2Weight,
+        gpu: &dyn GpuBackend,
     ) {
         self.q2_weights = Some(DenseFfnWeightsQ2 {
             gate_proj: gate,
             up_proj: up,
             down_proj: down,
         });
+        // Resolved here, not in the constructor: these ship only in
+        // GGUF-serving targets and the boot audit fails closed on an
+        // unconditional probe everywhere else.
+        self.q2_0_mmq_nc_k = super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc");
+        self.q2_0_mmq_wc_k = super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc");
     }
 
     /// Install BF16 dense MLP weights. After this call, the forward paths

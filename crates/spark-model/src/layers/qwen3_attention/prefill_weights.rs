@@ -120,11 +120,19 @@ impl Qwen3AttentionLayer {
         k: crate::weight_map::PackedQ2Weight,
         v: crate::weight_map::PackedQ2Weight,
         o: crate::weight_map::PackedQ2Weight,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
     ) {
         self.q_weight = Some(QuantWeight::PackedQ2(q));
         self.k_weight = Some(QuantWeight::PackedQ2(k));
         self.v_weight = Some(QuantWeight::PackedQ2(v));
         self.o_weight = Some(QuantWeight::PackedQ2(o));
+        // Resolved here, not in the constructor: these ship only in
+        // GGUF-serving targets and the boot audit fails closed on an
+        // unconditional probe everywhere else.
+        self.q2_0_mmq_nc_k = crate::layers::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc");
+        self.q2_0_mmq_wc_k = crate::layers::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc");
+        self.q4k_quant_act_k =
+            crate::layers::try_kernel(gpu, "q4k_mmq", "atlas_q8_1_quantize_ds4_bf16");
     }
 
     /// Transient-dequant prefill GEMM for a keep-packed Q2_0 projection: dequant
