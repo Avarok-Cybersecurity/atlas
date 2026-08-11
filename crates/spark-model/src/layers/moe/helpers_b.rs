@@ -181,6 +181,17 @@ impl MoeLayer {
     /// decode + MTP verify (small N, warp-reduction wins) can preserve
     /// the ~35 tok/s throughput that pure unified layout regresses by 15 %.
     #[inline]
+    /// Eligible to route DECODE through the grouped read-once GEMM
+    /// (forward_prefill). Native-NVFP4 routed only: bf16/fp8-dequant gate ptrs
+    /// absent, no DeepSeek-V4 hash routing, single-GPU (no EP). Deliberately
+    /// ALLOWS the mixed BF16 shared expert (forward_prefill handles it as a
+    /// separate batched pass), unlike forward_token_major_decode which bails.
+    pub(crate) fn grouped_decode_ok(&self) -> bool {
+        self.bf16_gate_weight_ptrs.is_none()
+            && self.fp8_gate_weight_ptrs.is_none()
+            && self.tid2eid_dev.is_none()
+    }
+
     pub(crate) fn use_t_layout_for_decode(&self) -> bool {
         self.unified_layout
             && !self.hybrid_layout

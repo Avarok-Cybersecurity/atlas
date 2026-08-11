@@ -213,10 +213,18 @@ fn legacy_enable_thinking_channel() {
         ThinkingDirective::On { budget: None }
     );
 
-    // false is the serde default — indistinguishable from absent, so it
-    // must NOT count as an explicit opt-out.
+    // Explicit false now DISABLES thinking (it is Option<bool>, so it is
+    // distinguishable from absent). Previously it was silently ignored.
     let mut b = base_body();
     b["enable_thinking"] = serde_json::json!(false);
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::Off
+    );
+
+    // Field ABSENT → Unspecified, so a client that doesn't send the flag
+    // inherits the model's design intent (thinking_default).
+    let b = base_body();
     assert_eq!(
         chat_req(b).client_thinking_directive(),
         ThinkingDirective::Unspecified

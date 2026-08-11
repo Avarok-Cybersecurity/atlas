@@ -140,6 +140,12 @@ pub fn moe_topk_sqrtsoftplus_batched(
         .launch(stream)
 }
 
+const PTRTABLE_LEGACY_N_TILE: u32 = 64;
+
+fn ptrtable_legacy_grid_x(n_out: u32) -> u32 {
+    div_ceil(n_out, PTRTABLE_LEGACY_N_TILE)
+}
+
 /// Pointer-table grouped GEMM: one launch covers all experts.
 ///
 /// Grid: (ceil(n_out/64), max_m_tiles, num_experts)  Block: (128, 1, 1)
@@ -161,7 +167,7 @@ pub fn moe_w4a16_grouped_gemm_ptrtable(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n_out, 128), max_m_tiles, num_experts])
+        .grid([ptrtable_legacy_grid_x(n_out), max_m_tiles, num_experts])
         .block([128, 1, 1])
         .arg_ptr(a)
         .arg_ptr(b_packed_ptrs)
@@ -176,7 +182,7 @@ pub fn moe_w4a16_grouped_gemm_ptrtable(
         .launch(stream)
 }
 
-/// Pointer-table grouped GEMM with N_TILE=128 (transposed weights).
+/// Pointer-table grouped GEMM with N_TILE=128 (transposed or wide kernels).
 ///
 /// Grid: (ceil(n_out/128), max_m_tiles, num_experts)  Block: (128, 1, 1)
 #[allow(clippy::too_many_arguments)]
@@ -475,4 +481,18 @@ pub fn moe_silu_mul(
         .arg_ptr(output)
         .arg_u32(total_elements)
         .launch(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ptrtable_legacy_grid_x;
+
+    #[test]
+    fn legacy_ptrtable_grid_covers_every_64_column_tile() {
+        assert_eq!(ptrtable_legacy_grid_x(1), 1);
+        assert_eq!(ptrtable_legacy_grid_x(64), 1);
+        assert_eq!(ptrtable_legacy_grid_x(65), 2);
+        assert_eq!(ptrtable_legacy_grid_x(1024), 16);
+        assert_eq!(ptrtable_legacy_grid_x(3072), 48);
+    }
 }

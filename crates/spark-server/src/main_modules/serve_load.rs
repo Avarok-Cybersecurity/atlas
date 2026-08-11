@@ -976,7 +976,10 @@ pub(crate) fn load_model(
         } else {
             Some(rotation_tx)
         },
-        chat: crate::api::chat::levers::ChatLevers::resolve(ptx_set.behavior.tscg),
+        chat: crate::api::chat::levers::ChatLevers::resolve(
+            ptx_set.behavior.tscg,
+            ptx_set.behavior.disable_cwd_hint_injection,
+        ),
         vision_config: config.vision.clone(),
         vision_max_pixels,
         default_temperature,

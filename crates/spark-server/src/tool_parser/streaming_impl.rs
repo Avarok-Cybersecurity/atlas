@@ -108,7 +108,7 @@ impl StreamingToolDetector {
                         // Buffered mode OR never-streamed fallback: emit the full
                         // canonical args once (unchanged legacy behaviour).
                         // Parse the complete inner content to extract JSON arguments.
-                        if let Some(tc) = parse_one_call(inner.trim(), self.call_counter) {
+                        if let Some(tc) = parse_complete_call(&inner, self.call_counter) {
                             // Always emit when the parser produced a named call,
                             // even if arguments are `{}`. Argument-less tools
                             // (e.g. get_current_time) are legitimate. The bare-
@@ -150,7 +150,7 @@ impl StreamingToolDetector {
                                 self.emitted_tool_calls = true;
                                 outputs.push(DetectorOutput::ToolCall(tc, call_idx));
                             }
-                        } else if let Some(tc) = parse_one_call(trimmed, self.call_counter) {
+                        } else if let Some(tc) = parse_complete_call(trimmed, self.call_counter) {
                             self.call_counter += 1;
                             self.emitted_tool_calls = true;
                             outputs.push(DetectorOutput::ToolCall(tc, idx));
@@ -335,6 +335,7 @@ impl StreamingToolDetector {
         // drop the param section) before salvaging, so drifted tail garbage
         // is never swallowed into an argument string.
         if was_inside_tag
+            && !text.contains("<arg_key>")
             && let Some(tc) = parse_one_call(
                 contain_unterminated_call_tail(text.trim()),
                 self.call_counter,

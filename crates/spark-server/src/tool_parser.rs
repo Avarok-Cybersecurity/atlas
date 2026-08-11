@@ -379,6 +379,7 @@ pub enum ToolCallFormat {
     Mistral,
     MinimaxXml,
     BareJson,
+    PoolsideV1,
 }
 
 impl std::str::FromStr for ToolCallFormat {
@@ -392,8 +393,9 @@ impl std::str::FromStr for ToolCallFormat {
             "mistral" => Ok(Self::Mistral),
             "minimax_xml" => Ok(Self::MinimaxXml),
             "bare_json" => Ok(Self::BareJson),
+            "poolside_v1" => Ok(Self::PoolsideV1),
             other => Err(format!(
-                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, bare_json",
+                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, bare_json, poolside_v1",
             )),
         }
     }
@@ -410,6 +412,7 @@ impl ToolCallFormat {
             Self::Mistral => Box::new(MistralNativeParser),
             Self::MinimaxXml => Box::new(MinimaxXmlParser),
             Self::BareJson => Box::new(BareJsonParser),
+            Self::PoolsideV1 => Box::new(PoolsideV1Parser),
         }
     }
 
@@ -436,6 +439,7 @@ impl ToolCallFormat {
             Self::Mistral => "mistral",
             Self::MinimaxXml => "minimax_xml",
             Self::BareJson => "bare_json",
+            Self::PoolsideV1 => "poolside_v1",
         }
     }
 }
@@ -457,6 +461,7 @@ mod parse_single_b;
 mod parse_tools_tag;
 mod pipeline;
 mod pipeline_helpers;
+mod poolside_v1;
 mod prompt_levers;
 mod qwen3_coder;
 mod qwen3_xml;
@@ -479,6 +484,7 @@ use parse_single_b::*;
 use parse_tools_tag::*;
 pub use pipeline::*;
 use pipeline_helpers::*;
+pub use poolside_v1::*;
 pub use qwen3_coder::*;
 pub use qwen3_xml::*;
 pub use streaming::*;

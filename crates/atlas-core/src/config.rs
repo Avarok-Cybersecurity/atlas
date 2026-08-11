@@ -37,6 +37,10 @@ pub struct ModelConfig {
     // ── Full attention ──
     #[serde(default)]
     pub num_attention_heads: usize,
+    /// Per-layer Q-head counts for heterogeneous attention models. Empty means
+    /// every layer uses `num_attention_heads`.
+    #[serde(default)]
+    pub num_attention_heads_per_layer: Vec<usize>,
     /// GQA: number of K/V heads (≤ `num_attention_heads`). MQA when 1.
     #[serde(default)]
     pub num_key_value_heads: usize,
@@ -185,6 +189,9 @@ pub struct ModelConfig {
     /// Nemotron-H routed scaling factor for expert outputs.
     #[serde(default = "default_one_f64")]
     pub routed_scaling_factor: f64,
+    /// Decoder-layer indices that use a dense MLP instead of routed experts.
+    #[serde(default)]
+    pub mlp_only_layers: Vec<usize>,
     /// LatentMoE: latent projection dimension for routed experts (Super 120B).
     /// When present, routed experts operate in latent space `[moe_latent_size]`
     /// instead of full `[hidden_size]`. Absent for Nano 30B.
@@ -291,6 +298,10 @@ pub struct ModelConfig {
     /// (`yarn.original_max_position_embeddings`).
     #[serde(default)]
     pub yarn_original_max_position_embeddings: usize,
+    /// Multiplier applied to both YaRN cosine and sine values. 1.0 means no
+    /// attention-temperature scaling.
+    #[serde(default = "default_one_f32")]
+    pub yarn_attention_factor: f32,
     /// llama_4_scaling Q temperature beta (`llama_4_scaling.beta`).
     /// Q is multiplied by `1 + beta * log(1 + floor(pos / original_max_pos))`
     /// after RoPE. 0.0 = disabled. Mistral Small 4 uses 0.1.
@@ -522,6 +533,9 @@ pub(crate) fn default_one() -> usize {
 pub(crate) fn default_one_f64() -> f64 {
     1.0
 }
+pub(crate) fn default_one_f32() -> f32 {
+    1.0
+}
 pub(crate) fn default_rope_theta() -> f64 {
     10000.0
 }
@@ -548,7 +562,8 @@ pub use parsers::{
     parse_peft_adapter_config, parse_quantization_config,
 };
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_step3p7, parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_minimax_m2, parse_step3p7,
+    parse_vision_config,
 };
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
@@ -565,6 +580,16 @@ pub(crate) fn validate_config(config: &ModelConfig) -> Result<()> {
         anyhow::bail!(
             "layer_types length ({}) doesn't match num_hidden_layers ({}) in config.json",
             config.layer_types.len(),
+            config.num_hidden_layers,
+        );
+    }
+
+    if !config.num_attention_heads_per_layer.is_empty()
+        && config.num_attention_heads_per_layer.len() != config.num_hidden_layers
+    {
+        anyhow::bail!(
+            "num_attention_heads_per_layer length ({}) doesn't match num_hidden_layers ({}) in config.json",
+            config.num_attention_heads_per_layer.len(),
             config.num_hidden_layers,
         );
     }

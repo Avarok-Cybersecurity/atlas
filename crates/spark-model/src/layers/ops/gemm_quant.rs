@@ -165,6 +165,49 @@ pub fn dense_gemv_batch2(
         .launch(stream)
 }
 
+/// Dense BF16 batched GEMV (M rows): `C[t] = A[t] @ B^T` for `t` in `[0, M)`.
+///
+/// The M-row generalisation of [`dense_gemv_batch2`]. Reads the BF16 weight
+/// matrix ONCE for all M rows instead of M times, which is the whole point:
+/// at decode the BF16 projections (q/k/v/o + shared expert) are pure weight
+/// streaming, so M separate M=1 GEMVs make the step scale linearly with the
+/// number of concurrent sequences.
+///
+/// Bit-identical to M separate `dense_gemv` calls (same K-iteration order and
+/// reduction tree per row; the kernel dir builds with --fmad=false).
+///
+/// `input`: `[M, K]` BF16 contiguous. `output`: M rows at
+/// `output + t * out_stride` (BF16 elements). Caller must pass `m <= 8`
+/// (MAX_M in the kernel); larger batches should use a tiled GEMM.
+///
+/// Kernel: `dense_gemv_bf16_batchm(A, B, C, M, N, K, out_stride)`
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn dense_gemv_batchm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
 /// Dense FP8-weight GEMV (M=1): C = A @ (dequant(B_fp8) * row_scale).
 ///
 /// A: `[1, K]` BF16, B: `[N, K]` FP8 E4M3, row_scale: `[N]` f32, C: `[1, N]` BF16.

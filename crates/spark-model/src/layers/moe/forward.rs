@@ -66,7 +66,7 @@ impl MoeLayer {
 
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.moe_intermediate_size as u32;
-        let _shared_inter = ctx.config.shared_expert_intermediate_size as u32;
+        let shared_inter = ctx.config.shared_expert_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
         let profile = ctx.profile;
@@ -268,13 +268,11 @@ impl MoeLayer {
         let shared_up_scratch = ctx.buffers.ssm_qkvz();
         let shared_out = ctx.buffers.attn_output();
 
-        if let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+        if let (Some(gp), Some(up), Some(dp), Some(shared)) = (
             self.bf16_gate_weight_ptrs,
             self.bf16_up_weight_ptrs,
             self.bf16_down_weight_ptrs,
-            self.bf16_shared_gate,
-            self.bf16_shared_up,
-            self.bf16_shared_down,
+            self.bf16_shared_expert,
         ) {
             // BF16 path: FP8-dequant-on-load. Eliminates the per-layer 0.989
             // FP8 cosine ceiling by serving experts as BF16 end-to-end.
@@ -288,9 +286,9 @@ impl MoeLayer {
                     up,
                     expert_up_out,
                     indices_dev,
-                    sg,
+                    shared.gate_proj.weight,
                     shared_gate_scratch,
-                    su,
+                    shared.up_proj.weight,
                     shared_up_scratch,
                     inter,
                     h,
@@ -309,7 +307,7 @@ impl MoeLayer {
                     indices_dev,
                     shared_gate_scratch,
                     shared_up_scratch,
-                    sd,
+                    shared.down_proj.weight,
                     shared_out,
                     h,
                     inter,
@@ -477,6 +475,20 @@ impl MoeLayer {
                     stream,
                 )
             })?;
+        }
+
+        if self.has_mixed_bf16_shared_expert() {
+            self.run_bf16_shared_expert(
+                input,
+                1,
+                h,
+                shared_inter,
+                shared_gate_scratch,
+                shared_up_scratch,
+                shared_out,
+                ctx,
+                stream,
+            )?;
         }
 
         if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {

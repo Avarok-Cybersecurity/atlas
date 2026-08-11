@@ -67,10 +67,14 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub return_token_ids: bool,
     /// Enable chain-of-thought reasoning (Qwen3.5 thinking models).
-    /// false (default): appends `<think></think>` — model answers directly.
-    /// true: appends `<think>\n` — model generates its reasoning first.
+    /// `Some(true)`: model generates its reasoning first. `Some(false)`: model
+    /// answers directly. `None` (field omitted): defer to the model's design
+    /// intent (MODEL.toml `thinking_default`). Must be `Option` so an EXPLICIT
+    /// `false` disables thinking — a bare `bool` cannot tell "false" from
+    /// "absent", which silently ignored `enable_thinking: false`. Mirrors
+    /// `chat_template_kwargs.enable_thinking`.
     #[serde(default)]
-    pub enable_thinking: bool,
+    pub enable_thinking: Option<bool>,
     /// Anthropic-style thinking budget: `{"thinking": {"budget_tokens": N}}`
     /// Hard limit on thinking tokens before forcing `</think>`.
     #[serde(default)]
@@ -398,17 +402,20 @@ impl ChatCompletionRequest {
             }
         }
 
-        // 5. Atlas legacy: enable_thinking boolean in the request body.
-        // Only honored when explicitly true — a false value (including the
-        // serde default when the field is absent) falls through to
-        // Unspecified so clients that don't know about this flag inherit
-        // the model's design intent instead of silently opting out.
-        // `budget: None` so `api/chat/thinking.rs` falls back to the
-        // per-model MODEL.toml cap instead of the conservative
-        // DEFAULT_THINKING_BUDGET — opencode-style clients otherwise hit
-        // a 256-token mid-sentence cut on thinking-tier models.
-        if self.enable_thinking {
-            return ThinkingDirective::On { budget: None };
+        // 5. Atlas legacy: enable_thinking in the request body. Now Option:
+        // Some(true) -> On, Some(false) -> Off (an explicit opt-out is now
+        // honored, previously it was silently ignored), None (field absent) ->
+        // fall through to Unspecified so clients that don't know this flag
+        // inherit the model's design intent. `budget: None` so
+        // `api/chat/thinking.rs` uses the per-model MODEL.toml cap rather than
+        // the conservative DEFAULT_THINKING_BUDGET (opencode-style clients
+        // otherwise hit a 256-token mid-sentence cut on thinking-tier models).
+        if let Some(enabled) = self.enable_thinking {
+            return if enabled {
+                ThinkingDirective::On { budget: None }
+            } else {
+                ThinkingDirective::Off
+            };
         }
 
         ThinkingDirective::Unspecified

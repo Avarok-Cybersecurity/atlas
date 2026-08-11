@@ -15,6 +15,14 @@ use super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
+/// Kill-switch for the batched dense-BF16 decode projections (q/k/v here, and
+/// o_proj in `attn.rs`). Read ONCE (never per layer per step) so it cannot vary
+/// across CUDA-graph replays.
+pub(super) fn bf16_batchm_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_BF16_QKV_BATCHM").ok().as_deref() != Some("0"))
+}
+
 /// Fused [q|k|v] projection GEMM (one N=14336 launch instead of three).
 /// Kill switch: `ATLAS_NO_FUSED_QKV=1` restores the three separate GEMMs.
 fn fused_qkv_enabled() -> bool {
@@ -64,6 +72,25 @@ impl Qwen3AttentionLayer {
             // weight loop in the wide verify — one GEMM per Q/K/V reads each
             // weight ONCE for all n rows instead of n× (mirrors batch3 with M=n).
             self.ms_qkv_batchn(c)?;
+        } else if (2..=8).contains(&n)
+            && !self.gated
+            && self.dense_gemv_batchm_k.0 != 0
+            && self.qkv_is_dense_bf16()
+            && bf16_batchm_enabled()
+        {
+            // BATCHED DENSE-BF16 QKV. Models whose attention weights are plain
+            // BF16 (Laguna, native-BF16 Qwen3/Gemma-4/Mistral/...) had NO
+            // batched tier here and fell into the per-sequence loop below, so
+            // each concurrent sequence re-read the whole weight matrix. That
+            // made 54% of the decode step scale linearly with concurrency
+            // (C=1 16.1 -> C=4 21.9 tok/s aggregate, i.e. ~1/n per stream).
+            //
+            // Graph-capture safe: `n` here is the ctx n, which IS `padded_n`
+            // (decode_a2.rs pads to [2,4,8] and keys the graph cache on it), so
+            // branching on it bakes exactly the value the graph is keyed by --
+            // the same contract the n==2 / n==3 branches above already rely on.
+            // Never branch on the unpadded seqs.len() here.
+            self.ms_qkv_batchm_bf16(c)?;
         } else {
             for i in 0..n {
                 let normed_i = normed.offset(i * h * bf16);
@@ -95,6 +122,75 @@ impl Qwen3AttentionLayer {
     /// load-fixed (graph-stable) branch that makes the gated projection
     /// branches emit RAW interleaved `[Q|gate]` (deferring `deinterleave_qg`
     /// past the q LoRA fold) instead of the fused gemv+deinterleave fast path.
+    /// True when q/k/v are plain dense BF16 — no NVFP4 and no FP8 sidecar — so
+    /// the projection actually reads `self.attn.{q,k,v}_proj`. Laguna ships
+    /// attention unquantized in the checkpoint and it stays that way.
+    fn qkv_is_dense_bf16(&self) -> bool {
+        let dense = |w: &Option<crate::weight_map::QuantWeight>| {
+            w.as_ref()
+                .is_none_or(|w| w.as_nvfp4().is_none() && w.as_fp8().is_none())
+        };
+        dense(&self.q_weight) && dense(&self.k_weight) && dense(&self.v_weight)
+    }
+
+    /// Batched dense-BF16 q/k/v for multi-seq decode: ONE pass over each weight
+    /// matrix produces all `n` rows, writing straight into the interleaved
+    /// `qkv_buf` via the kernel's `out_stride` (so no scratch + scatter, and
+    /// `ms_qkv_apply_lora` / `ms_qkv_norms` see an unchanged layout).
+    ///
+    /// Bit-identical to the per-sequence loop it replaces: `dense_gemv_batchm`
+    /// keeps `dense_gemv_bf16`'s per-row K-iteration order and reduction tree,
+    /// and the kernel dir builds with --fmad=false. Verified by
+    /// examples/dense_gemv_bf16_batchm_microtest.
+    fn ms_qkv_batchm_bf16(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            h,
+            nkv,
+            hd,
+            bf16,
+            q_proj_dim,
+            q_proj_bytes,
+            per_seq_qkv,
+            normed,
+            qkv_buf,
+            ..
+        } = *c;
+
+        // Output rows are `per_seq_qkv` bytes apart; the kernel wants the stride
+        // in BF16 ELEMENTS.
+        debug_assert_eq!(per_seq_qkv % bf16, 0);
+        let out_stride = (per_seq_qkv / bf16) as u32;
+        let kv_dim = nkv * hd;
+        let kv_bytes = kv_dim as usize * bf16;
+
+        let gemv = |w, out, n_out| {
+            ops::dense_gemv_batchm(
+                fwd.gpu,
+                self.dense_gemv_batchm_k,
+                normed,
+                w,
+                out,
+                n as u32,
+                n_out,
+                h as u32,
+                out_stride,
+                stream,
+            )
+        };
+
+        gemv(&self.attn.q_proj, qkv_buf, q_proj_dim)?;
+        gemv(&self.attn.k_proj, qkv_buf.offset(q_proj_bytes), kv_dim)?;
+        gemv(
+            &self.attn.v_proj,
+            qkv_buf.offset(q_proj_bytes + kv_bytes),
+            kv_dim,
+        )?;
+        Ok(())
+    }
+
     fn q_lora_active(&self) -> bool {
         self.lora.as_ref().and_then(|lw| lw.q.as_ref()).is_some()
     }

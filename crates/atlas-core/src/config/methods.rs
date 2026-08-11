@@ -251,6 +251,9 @@ impl ModelConfig {
         if self.kv_lora_rank > 0 {
             return true;
         }
+        if self.model_type == "laguna" {
+            return true;
+        }
         if self.model_type == "gemma4" && self.num_experts == 0 {
             // Allow rollback via env for A/B testing.
             return std::env::var("ATLAS_GEMMA4_LMHEAD_NVFP4").ok().as_deref() != Some("1");

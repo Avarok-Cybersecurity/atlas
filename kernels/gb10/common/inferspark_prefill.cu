@@ -129,8 +129,15 @@ extern "C" __global__ void inferspark_prefill(
         unsigned int max_kv_block = (q_end - 1) / BC;
         num_kv_blocks = min(num_kv_blocks, max_kv_block + 1);
     }
+    // Sliding-window lower bound: queries in this Q-block attend no key below
+    // q_start - (sliding_window - 1), so KV blocks entirely below that are
+    // fully masked — skip them instead of scoring-and-masking.
+    unsigned int kv_block_lo = 0;
+    if (causal && sliding_window > 0 && q_start + 1 > sliding_window) {
+        kv_block_lo = (q_start + 1 - sliding_window) / BC;
+    }
 
-    // === Merged Q + K[0] load (single cp.async commit group) ===
+    // === Merged Q + K[kv_block_lo] load (single cp.async commit group) ===
     // Saves one commit/wait/sync vs separate Q and K loads.
     {
         const unsigned int chunks_per_row = HDIM / 8;  // 32
@@ -151,16 +158,17 @@ extern "C" __global__ void inferspark_prefill(
             }
         }
 
-        // K[0] tile (same commit group — no extra sync)
+        // K[kv_block_lo] tile (same commit group — no extra sync)
         if (num_kv_blocks > 0) {
             for (unsigned int idx = tid; idx < TILE_CHUNKS; idx += 128) {
                 unsigned int row = idx / chunks_per_row;
                 unsigned int chunk = idx % chunks_per_row;
                 unsigned int col = chunk * 8;
+                unsigned int k_row = kv_block_lo * BC + row;
                 unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[0][row][col]);
 
-                if (row < seq_len) {
-                    const void* gmem = (const void*)&K_batch[row * kv_seq_stride + kv_head * head_dim + col];
+                if (k_row < seq_len) {
+                    const void* gmem = (const void*)&K_batch[k_row * kv_seq_stride + kv_head * head_dim + col];
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
                 } else {
                     *((uint4*)&smem_K[0][row][col]) = make_uint4(0, 0, 0, 0);
@@ -173,11 +181,11 @@ extern "C" __global__ void inferspark_prefill(
     }
     __syncthreads();
 
-    for (unsigned int kv_block = 0; kv_block < num_kv_blocks; kv_block++) {
+    for (unsigned int kv_block = kv_block_lo; kv_block < num_kv_blocks; kv_block++) {
         unsigned int kv_start = kv_block * BC;
         unsigned int kv_end = min(kv_start + BC, seq_len);
         unsigned int kv_len = kv_end - kv_start;
-        unsigned int buf = kv_block & 1;
+        unsigned int buf = (kv_block - kv_block_lo) & 1;
 
         // === Start async V load into smem_V (overlaps with QK^T below) ===
         {
@@ -594,8 +602,15 @@ extern "C" __global__ void inferspark_prefill_64(
         unsigned int max_kv_block = (q_end - 1) / BC;
         num_kv_blocks = min(num_kv_blocks, max_kv_block + 1);
     }
+    // Sliding-window lower bound: queries in this Q-block attend no key below
+    // q_start - (sliding_window - 1), so KV blocks entirely below that are
+    // fully masked — skip them instead of scoring-and-masking.
+    unsigned int kv_block_lo = 0;
+    if (causal && sliding_window > 0 && q_start + 1 > sliding_window) {
+        kv_block_lo = (q_start + 1 - sliding_window) / BC;
+    }
 
-    // === Merged Q + K[0] load (single cp.async commit group) ===
+    // === Merged Q + K[kv_block_lo] load (single cp.async commit group) ===
     {
         const unsigned int chunks_per_row = HDIM / 8;
 
@@ -615,16 +630,17 @@ extern "C" __global__ void inferspark_prefill_64(
             }
         }
 
-        // K[0] tile (32 rows)
+        // K[kv_block_lo] tile (32 rows)
         if (num_kv_blocks > 0) {
             for (unsigned int idx = tid; idx < TILE_CHUNKS_KV; idx += 256) {
                 unsigned int row = idx / chunks_per_row;
                 unsigned int chunk = idx % chunks_per_row;
                 unsigned int col = chunk * 8;
+                unsigned int k_row = kv_block_lo * BC + row;
                 unsigned int smem_addr = __cvta_generic_to_shared(&smem_K64[0][row][col]);
 
-                if (row < seq_len) {
-                    const void* gmem = (const void*)&K_batch[row * kv_seq_stride + kv_head * head_dim + col];
+                if (k_row < seq_len) {
+                    const void* gmem = (const void*)&K_batch[k_row * kv_seq_stride + kv_head * head_dim + col];
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
                 } else {
                     *((uint4*)&smem_K64[0][row][col]) = make_uint4(0, 0, 0, 0);
@@ -637,11 +653,11 @@ extern "C" __global__ void inferspark_prefill_64(
     }
     __syncthreads();
 
-    for (unsigned int kv_block = 0; kv_block < num_kv_blocks; kv_block++) {
+    for (unsigned int kv_block = kv_block_lo; kv_block < num_kv_blocks; kv_block++) {
         unsigned int kv_start = kv_block * BC;
         unsigned int kv_end = min(kv_start + BC, seq_len);
         unsigned int kv_len = kv_end - kv_start;
-        unsigned int buf = kv_block & 1;
+        unsigned int buf = (kv_block - kv_block_lo) & 1;
 
         // === Async V load (overlaps with QK^T) ===
         {

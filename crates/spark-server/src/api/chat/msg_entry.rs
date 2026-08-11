@@ -274,7 +274,10 @@ pub(super) fn build_msg_entries(
 
     // Inject CWD hint into the system message (NOT tool definitions —
     // those go to the Jinja template).
-    if tools_active && let Some(ref cwd) = cwd_hint {
+    if tools_active
+        && !levers.disable_cwd_hint_injection
+        && let Some(ref cwd) = cwd_hint
+    {
         let hints = format!("\n<environment>\nworking_directory: {cwd}\n</environment>");
         if let Some(first) = messages.first_mut()
             && first.role == "system"

@@ -123,7 +123,7 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
                 rest = &rest[start + 11..];
                 match find_unescaped_tool_call_close(rest) {
                     Some(end) => {
-                        if let Some(tc) = parse_one_call(rest[..end].trim(), idx) {
+                        if let Some(tc) = parse_complete_call(&rest[..end], idx) {
                             calls.push(tc);
                             idx += 1;
                         }
@@ -148,7 +148,9 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
                         // unaffected (contained downstream by parse_one_call's
                         // balanced-JSON-prefix repair).
                         let contained = contain_unterminated_call_tail(rest);
-                        if let Some(tc) = parse_one_call(contained.trim(), idx) {
+                        if rest.contains("<arg_key>") {
+                            content_parts.push(format!("<tool_call>{rest}"));
+                        } else if let Some(tc) = parse_one_call(contained.trim(), idx) {
                             calls.push(tc);
                         } else {
                             content_parts.push(format!("<tool_call>{rest}"));

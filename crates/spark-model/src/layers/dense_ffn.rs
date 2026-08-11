@@ -612,9 +612,9 @@ impl DenseFfnLayer {
     /// Install BF16 dense MLP weights. After this call, the forward paths
     /// dispatch to the BF16 GEMV/GEMM kernels instead of w4a16. The
     /// caller must ensure the BF16 kernels are loaded (see
-    /// `dense_gemv_bf16_k` / `dense_gemm_bf16_k` checks). Spec-decode
-    /// batched paths (`forward_k2`, `forward_k3`) are NOT supported on
-    /// the BF16 path — Gemma-4 dense has no MTP so they're never called.
+    /// `dense_gemv_bf16_k` / `dense_gemm_bf16_k` checks). Small-batch
+    /// paths reuse `forward_prefill` so they cannot enter NVFP4 kernels
+    /// with the null placeholder weights used by BF16-native layers.
     pub fn set_bf16_weights(&mut self, gate: DenseWeight, up: DenseWeight, down: DenseWeight) {
         self.bf16_weights = Some(DenseFfnWeightsBf16 {
             gate_proj: gate,
@@ -1073,6 +1073,11 @@ impl DenseFfnLayer {
     /// K=2 speculative: batched GEMV for 2 tokens.
     /// 3 launches: dual batch2 (gate+up) + silu_mul + batch2 (down).
     pub fn forward_k2(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+        if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
+        {
+            return self.forward_prefill(input, 2, ctx, stream);
+        }
+
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
 
@@ -1119,6 +1124,11 @@ impl DenseFfnLayer {
     /// K=3 speculative: batched GEMV for 3 tokens.
     /// 3 launches: dual batch3 (gate+up) + silu_mul + batch3 (down).
     pub fn forward_k3(&self, input: DevicePtr, ctx: &ForwardContext, stream: u64) -> Result<()> {
+        if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
+        {
+            return self.forward_prefill(input, 3, ctx, stream);
+        }
+
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
 
@@ -1426,10 +1436,18 @@ impl DenseFfnLayer {
         // separate path, so TPOT is unaffected; BF16 MMA preserves coherence.
         if let Some(ref bf16w) = self.bf16_weights {
             let tc = self.dense_gemm_tc_k.0 != 0;
-            // helper: tensor-core GEMM when available, else scalar
+            // helper: cuBLASLt when enabled (the big win at prefill M), else the
+            // tensor-core MMA kernel, else scalar. dense_gemm_tc is ~1.4 TFLOP/s
+            // on the large dense-FFN shapes (e.g. Laguna layer-0 gate/up/down at
+            // N=12288/3072, K=3072) — nsys measured its 3 launches at ~100 ms
+            // EACH = 33% of the whole C=1 prefill. cuBLASLt runs the identical
+            // BF16×BF16→FP32 GEMM at 90+ TFLOP/s (~65× faster), the same path
+            // q/k/v/o and the head-gate already use. Gated on ATLAS_CUBLAS_GEMM.
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
-                    if tc {
+                    if ctx.dispatch.cublas_gemm {
+                        ops::cublas_bf16_proj_dense($a, $b.weight, $c, m, $n, $k, stream)?;
+                    } else if tc {
                         ops::dense_gemm_tc(
                             ctx.gpu,
                             self.dense_gemm_tc_k,
@@ -2035,5 +2053,24 @@ impl DenseFfnLayer {
         stream: u64,
     ) -> Result<()> {
         self.forward_prefill(input, num_tokens, ctx, stream)
+    }
+}
+
+/// Native BF16/FP8 layers do not own usable NVFP4 fallback weights. Their
+/// small-batch path must therefore use the format-aware prefill dispatcher.
+fn native_small_batch_uses_prefill(has_bf16: bool, has_fp8: bool) -> bool {
+    has_bf16 || has_fp8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_small_batch_uses_prefill;
+
+    #[test]
+    fn native_small_batches_never_dispatch_null_nvfp4_placeholders() {
+        assert!(native_small_batch_uses_prefill(true, false));
+        assert!(native_small_batch_uses_prefill(false, true));
+        assert!(native_small_batch_uses_prefill(true, true));
+        assert!(!native_small_batch_uses_prefill(false, false));
     }
 }

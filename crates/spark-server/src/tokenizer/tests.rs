@@ -5,6 +5,8 @@
 use super::*;
 use serde_json::json;
 
+mod laguna;
+
 fn render_minimax_openai_template(
     messages: &[serde_json::Value],
     tools: Option<&[serde_json::Value]>,

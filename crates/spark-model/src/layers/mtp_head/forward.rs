@@ -367,6 +367,7 @@ impl MtpHead {
                 1.0, // k_scale, v_scale
                 nq * hd,
                 kv_cache.cache_stride() as u64,
+                0,
                 stream,
             )?;
         }

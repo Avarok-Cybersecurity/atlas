@@ -245,4 +245,31 @@ mod build_tests {
             Err(resp) => assert_eq!(resp.status(), StatusCode::BAD_REQUEST),
         }
     }
+
+    #[test]
+    fn model_can_disable_duplicate_cwd_hint_injection() {
+        use crate::api::chat::levers::ChatLevers;
+
+        let msgs = vec![text(
+            Role::System,
+            "client prompt\nworking directory: /tmp/project",
+        )];
+
+        let enabled =
+            build_msg_entries(None, None, &msgs, true, &ChatLevers::OFF).expect("enabled");
+        assert_eq!(enabled.cwd_hint.as_deref(), Some("/tmp/project"));
+        assert!(enabled.messages[0].content.contains("<environment>"));
+
+        let disabled_levers = ChatLevers {
+            disable_cwd_hint_injection: true,
+            ..ChatLevers::OFF
+        };
+        let disabled =
+            build_msg_entries(None, None, &msgs, true, &disabled_levers).expect("disabled");
+        assert_eq!(disabled.cwd_hint.as_deref(), Some("/tmp/project"));
+        assert_eq!(
+            disabled.messages[0].content,
+            "client prompt\nworking directory: /tmp/project"
+        );
+    }
 }

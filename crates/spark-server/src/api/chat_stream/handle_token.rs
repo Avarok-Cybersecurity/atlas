@@ -394,17 +394,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
 
     // Strip residual think tags from content after thinking is done.
     if state.thinking_done {
-        for tag in &[
-            "</think>",
-            "</thinking>",
-            "<thinking>",
-            "</analysis>",
-            "<analysis>",
-        ] {
-            while let Some(pos) = delta.find(tag) {
-                delta = format!("{}{}", &delta[..pos], delta[pos + tag.len()..].trim_start());
-            }
-        }
+        // SSOT with the blocking path (api/chat_blocking.rs), which had no
+        // equivalent scrub and therefore leaked '</think>' into content.
+        delta = crate::api::strip::scrub_think_markers(&delta);
         // If model re-opens <think>, suppress content from <think> onward.
         if let Some(pos) = delta.find("<think>") {
             delta = delta[..pos].to_string();
@@ -414,6 +406,16 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
             state.content_decoded.clear();
             state.detok_prefix_offset = 0;
             state.detok_read_offset = 0;
+        }
+        // Orphan tool-call markup in content when NO tools are defined: the
+        // model emits a spurious `<tool_call>…` block after a normal answer and
+        // the tool detector (which would strip it) is not running. Cut content
+        // at the opener — SSOT with the blocking path's strip_orphan_tool_markup.
+        // When tools ARE active the detector owns tool markup, so leave it.
+        let tools_active_request =
+            !ctx.tool_defs_for_backfill.is_empty() || state.detector.is_some();
+        if !tools_active_request {
+            delta = crate::api::strip::strip_orphan_tool_markup(&delta);
         }
     }
 
