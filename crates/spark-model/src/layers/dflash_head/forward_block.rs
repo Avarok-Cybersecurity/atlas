@@ -959,6 +959,34 @@ impl BlockDiffusionDraftHead {
             .scratch
             .draft_tokens_host_pinned
             .load(std::sync::atomic::Ordering::Relaxed);
+        // `draft_tokens_host_pinned` is written exactly once, in
+        // `from_weights.rs` (`alloc_host_pinned(gamma_val * 4)`), and the same
+        // `gamma_val` is stored as `self.gamma` — but the two live in different
+        // files, so pin the equality here rather than trust it silently. A failed
+        // `alloc_host_pinned` propagates as an Err at construction, so a null here
+        // would mean the field was never initialised.
+        anyhow::ensure!(
+            !pinned_ptr.is_null(),
+            "DFlash draft-token pinned staging buffer is null (γ={})",
+            self.gamma
+        );
+        // SAFETY: `pinned_ptr` is the page-locked allocation made by
+        // `alloc_host_pinned(gamma_val * 4)` in `DFlashHead::from_weights`, and
+        // `self.gamma == gamma_val` (both set from the same local in that
+        // constructor; `gamma` is a plain `usize` field never reassigned), so
+        // `self.gamma * 4` is exactly the allocation size — not one byte past it.
+        // Non-null is checked immediately above; `cuMemAllocHost` returns
+        // 64-byte-aligned memory, which trivially satisfies `u8`'s alignment of 1.
+        //
+        // Initialisation: `GpuBackend::alloc_host_pinned` zeroes the region at
+        // allocation (its documented contract — `cuMemAllocHost_v2` itself does
+        // not, so the wrapper memsets), so every byte of the span is initialised
+        // before any reference to it exists, including on the first propose.
+        //
+        // Aliasing: the buffer is reached only through this field, only on this
+        // code path, and `host_buf` is the sole live reference to it (dropped
+        // before the next propose). `copy_d2h_on_stream` drains `stream` before
+        // returning, so no DMA is in flight against it when we read below.
         let host_buf: &mut [u8] =
             unsafe { std::slice::from_raw_parts_mut(pinned_ptr, self.gamma * 4) };
         gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;

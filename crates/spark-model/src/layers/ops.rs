@@ -115,6 +115,8 @@ mod ssm_gdn_a2;
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
 mod ssm_gdn_batched;
+#[path = "ops/ssm_gdn_snap.rs"]
+mod ssm_gdn_snap;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
@@ -168,6 +170,7 @@ pub use ssm_gdn_a::*;
 pub use ssm_gdn_a2::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
+pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;

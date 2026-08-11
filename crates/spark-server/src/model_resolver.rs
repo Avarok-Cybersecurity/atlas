@@ -7,6 +7,24 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+/// The command that fetches `id` into the HF cache this resolver reads.
+///
+/// One function rather than the same line written at each dead end, because
+/// this advice went stale: `huggingface-cli` was renamed `hf` and REMOVED in
+/// huggingface_hub 1.0, so the message every first-time user hits told them to
+/// run a binary that is not installed. Spelled once, it can only be wrong once.
+///
+/// The old name is still named — a box pinned to a huggingface_hub older than
+/// 1.0 has only `huggingface-cli`, and a reader who typed `hf` and got "command
+/// not found" needs to be told what to type instead, not left guessing.
+fn download_hint(id: &str) -> String {
+    format!(
+        "  hf download {id}\n\
+         (`hf` is the huggingface_hub CLI; before 1.0 it was `huggingface-cli`. \
+         The dashboard's Library downloads into the same cache.)"
+    )
+}
+
 /// Resolve a model specifier to a local directory path.
 ///
 /// Resolution order:
@@ -36,10 +54,10 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
     if !model_cache.is_dir() {
         bail!(
             "Model '{}' not found in HF cache at {}.\n\
-             Download it first:\n  huggingface-cli download {}",
+             Download it first:\n{}",
             model_id,
             cache_root.display(),
-            model_id,
+            download_hint(model_id),
         );
     }
 
@@ -113,13 +131,12 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
     bail!(
         "Snapshot '{}' for {} has no weight files (no model.safetensors / \
          consolidated.safetensors / *.safetensors found in {}). Sibling \
-         snapshots in {} also lack weights — refresh the cache:\n  \
-         huggingface-cli download {} --revision main",
+         snapshots in {} also lack weights — refresh the cache:\n{}",
         snapshot_hash,
         model_id,
         snapshot_dir.display(),
         model_cache.join("snapshots").display(),
-        model_id,
+        download_hint(model_id),
     );
 }
 
@@ -146,10 +163,10 @@ pub fn resolve_adapter_dir(spec: &str, cache_dir: Option<&Path>) -> Result<PathB
     if !model_cache.is_dir() {
         bail!(
             "Adapter '{}' not found in HF cache at {}.\n\
-             Download it first:\n  huggingface-cli download {}",
+             Download it first:\n{}",
             spec,
             cache_root.display(),
-            spec,
+            download_hint(spec),
         );
     }
 
@@ -350,7 +367,10 @@ mod tests {
         let result = resolve_model_dir("nonexistent/model", Some(tmp.path()));
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found in HF cache"));
-        assert!(err.contains("huggingface-cli download"));
+        assert!(err.contains("hf download"), "{err}");
+        // The old name stays NAMED, not recommended: a box on
+        // huggingface_hub < 1.0 has only `huggingface-cli`.
+        assert!(err.contains("huggingface-cli"), "{err}");
     }
 
     #[test]
@@ -417,6 +437,6 @@ mod tests {
             err.contains("no weight files") || err.contains("metadata-only"),
             "expected weight-files error, got: {err}"
         );
-        assert!(err.contains("huggingface-cli download"));
+        assert!(err.contains("hf download"), "{err}");
     }
 }

@@ -99,8 +99,39 @@ impl NemotronMoeLayer {
                 let shared_down_out = ctx.buffers.ssm_deinterleaved();
                 let max_n = (p.h as u32).max(p.latent);
                 let smem = (p.shared_inter.max(p.inter) as usize) * 4;
+                let native_down =
+                    self.weights.shared_down_fp8.as_ref().filter(|_| {
+                        self.w8a16_gemv_k.0 != 0 && self.moe_relu2_elementwise_k.0 != 0
+                    });
+                if let Some(fp8w) = native_down {
+                    // Same substitution as decode: relu^2 in place, then the
+                    // checkpoint's own FP8 bytes through `w8a16_gemv`, and let the
+                    // fused NVFP4 launch below drop its shared slot.
+                    KernelLaunch::new(ctx.gpu, self.moe_relu2_elementwise_k)
+                        .grid([div_ceil(p.shared_inter, 256), 1, 1])
+                        .block([256, 1, 1])
+                        .arg_ptr(token_shared_up)
+                        .arg_u32(p.shared_inter)
+                        .launch(stream)?;
+                    ops::w8a16_gemv(
+                        ctx.gpu,
+                        self.w8a16_gemv_k,
+                        token_shared_up,
+                        fp8w.weight,
+                        fp8w.row_scale,
+                        shared_down_out,
+                        p.h as u32,
+                        p.shared_inter,
+                        stream,
+                    )?;
+                }
+                let fused_slots = if native_down.is_some() {
+                    p.top_k
+                } else {
+                    p.top_k + 1
+                };
                 KernelLaunch::new(ctx.gpu, self.relu2_down_shared_k)
-                    .grid([div_ceil(max_n, 8), p.top_k + 1, 1])
+                    .grid([div_ceil(max_n, 8), fused_slots, 1])
                     .block([128, 1, 1])
                     .shared_mem(smem as u32)
                     .arg_ptr(expert_up_out)
@@ -188,8 +219,39 @@ impl NemotronMoeLayer {
                 let expert_down_out = ctx.buffers.expert_down_out();
                 let shared_down_out = ctx.buffers.ssm_deinterleaved();
                 let smem = (p.shared_inter.max(p.inter) as usize) * 4;
+                let native_down =
+                    self.weights.shared_down_fp8.as_ref().filter(|_| {
+                        self.w8a16_gemv_k.0 != 0 && self.moe_relu2_elementwise_k.0 != 0
+                    });
+                if let Some(fp8w) = native_down {
+                    // Same substitution as decode: relu^2 in place, then the
+                    // checkpoint's own FP8 bytes through `w8a16_gemv`, and let the
+                    // fused NVFP4 launch below drop its shared slot.
+                    KernelLaunch::new(ctx.gpu, self.moe_relu2_elementwise_k)
+                        .grid([div_ceil(p.shared_inter, 256), 1, 1])
+                        .block([256, 1, 1])
+                        .arg_ptr(token_shared_up)
+                        .arg_u32(p.shared_inter)
+                        .launch(stream)?;
+                    ops::w8a16_gemv(
+                        ctx.gpu,
+                        self.w8a16_gemv_k,
+                        token_shared_up,
+                        fp8w.weight,
+                        fp8w.row_scale,
+                        shared_down_out,
+                        p.h as u32,
+                        p.shared_inter,
+                        stream,
+                    )?;
+                }
+                let fused_slots = if native_down.is_some() {
+                    p.top_k
+                } else {
+                    p.top_k + 1
+                };
                 KernelLaunch::new(ctx.gpu, self.relu2_down_shared_k)
-                    .grid([div_ceil(p.h as u32, 8), p.top_k + 1, 1])
+                    .grid([div_ceil(p.h as u32, 8), fused_slots, 1])
                     .block([128, 1, 1])
                     .shared_mem(smem as u32)
                     .arg_ptr(expert_up_out)

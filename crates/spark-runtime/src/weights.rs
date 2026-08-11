@@ -183,6 +183,15 @@ impl WeightStore {
             .values()
             .any(|w| matches!(w.dtype, WeightDtype::FP8E4M3))
     }
+
+    /// Number of per-layer FP8 KV-cache scale tensors (`*.k_scale`) the
+    /// checkpoint ships. `>0` means the model carries calibrated KV scales, so
+    /// FP8 KV needs no online calibration; `0` means the scales default to 1.0
+    /// (which clips BF16 into E4M3 range), so online calibration or a non-FP8 KV
+    /// dtype is required. Used to log the right guidance at serve time.
+    pub fn fp8_kv_scale_count(&self) -> usize {
+        self.names().filter(|n| n.ends_with(".k_scale")).count()
+    }
 }
 
 /// SBIO IORouter trait for weight loading.
@@ -400,59 +409,4 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
 }
 
 #[cfg(test)]
-mod teardown_tests {
-    use super::*;
-    use crate::gpu::mock::MockGpuBackend;
-    use atlas_core::scope::{ModelResource, Teardown};
-    use std::collections::HashMap;
-
-    fn store_with(gpu: &dyn GpuBackend, n: usize) -> WeightStore {
-        let mut map = HashMap::new();
-        for i in 0..n {
-            map.insert(
-                format!("w{i}"),
-                WeightTensor {
-                    ptr: gpu.alloc(1024).expect("alloc"),
-                    shape: vec![16, 16],
-                    dtype: WeightDtype::BF16,
-                },
-            );
-        }
-        WeightStore::from_map(map)
-    }
-
-    #[test]
-    fn releasing_frees_every_tensor() {
-        let gpu = MockGpuBackend::new();
-        let mut store = store_with(&gpu, 8);
-        assert_eq!(gpu.alloc_count(), 8);
-        store.release(&gpu).expect("released");
-        assert_eq!(gpu.alloc_count(), 0, "every weight was freed");
-        assert_eq!(store.len(), 0, "and the map does not hold dead pointers");
-    }
-
-    /// The contract says idempotent: the host calls it, and a `Drop` backstop
-    /// may call it again. A second call must not double-free.
-    #[test]
-    fn releasing_twice_is_harmless() {
-        let gpu = MockGpuBackend::new();
-        let mut store = store_with(&gpu, 4);
-        store.release(&gpu).expect("first");
-        store.release(&gpu).expect("second");
-        assert_eq!(gpu.alloc_count(), 0);
-    }
-
-    /// Reverse order, and one failure does not abandon the rest — the whole
-    /// reason `Teardown` exists rather than `Drop`.
-    #[test]
-    fn teardown_releases_in_reverse_registration_order() {
-        let gpu = MockGpuBackend::new();
-        let mut teardown: Teardown<dyn GpuBackend> = Teardown::new();
-        teardown.push(Box::new(store_with(&gpu, 3)));
-        teardown.push(Box::new(store_with(&gpu, 5)));
-        assert_eq!(gpu.alloc_count(), 8);
-        teardown.release_all(&gpu).expect("released");
-        assert_eq!(gpu.alloc_count(), 0);
-        assert!(teardown.is_empty());
-    }
-}
+mod teardown_tests;

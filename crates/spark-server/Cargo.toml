@@ -64,6 +64,9 @@ tokio = { version = "1", features = ["full", "parking_lot"] }
 # The benchmark suite the Benchmarks section drives. GPU-free and
 # server-independent by design, so it stays unit-testable on any box.
 atlas-plugin = { path = "../atlas-plugin" }
+# Recomputes the closure hash in `tests/closure_attestation.rs` to prove the
+# build-side and gate-side source resolvers still agree.
+atlas-closure = { path = "../atlas-closure" }
 # ratatui pins its own crossterm; the version here MUST match ratatui 0.29's
 # (crossterm 0.28) or two raw-mode stacks fight over the terminal.
 ratatui = "0.29"

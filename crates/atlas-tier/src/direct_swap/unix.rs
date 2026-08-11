@@ -27,10 +27,20 @@ const DIRECT_FLAGS: i32 = 0;
 /// 16,320 × 4 KiB) already is. Records are addressed by `disk_slot` at
 /// `disk_slot * record_bytes`; the file grows sparsely as slots are allocated.
 ///
-/// Buffers passed to read/write must be page-aligned for O_DIRECT. The peer's
-/// callers pass the mmap'd arena scratch (page-aligned); the residency scratch
-/// is a plain Vec — see `read/write_record` which stage through an aligned
-/// bounce only when the caller's buffer isn't aligned.
+/// Buffers passed to read/write must be page-aligned for O_DIRECT; `read_record`
+/// / `write_record` stage through an internal aligned bounce (a full extra
+/// record memcpy) when they aren't. Both in-tree callers are aligned: the peer
+/// passes its mmap'd arena, and [`crate::Residency`]'s scratch is a
+/// `PageAlignedBuf` — it used to be a plain `Vec`, which took the bounce every
+/// single time.
+///
+/// **A 0-byte swap file is not evidence of a broken write.** Records are only
+/// written when the residency's hot arena has no free slot, so the first
+/// `num_slots` PUTs of distinct keys never touch this file; with the default
+/// 64-slot SSM arena the first `pwrite` happens on spill #65. The size then
+/// jumps to `(highest disk_slot + 1) × record_bytes` — and never shrinks, since
+/// `discard_record` is the documented no-op (freed records are reused by index,
+/// their blocks are never punched back out).
 pub struct DirectSwapFile {
     fd: OwnedFd,
     record_bytes: usize,

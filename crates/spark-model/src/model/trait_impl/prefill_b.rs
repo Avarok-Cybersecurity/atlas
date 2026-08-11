@@ -101,15 +101,33 @@ impl TransformerModel {
             let bs = self.kv_cache.lock().block_size();
             // One block below the last block boundary strictly under `total`.
             let cut = ((total.saturating_sub(1) / bs) * bs).saturating_sub(bs);
-            let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
-            if cut > chunk_start
-                && cut < total
-                && (ep_active
-                    || self
-                        .prefix_cache
-                        .peek_matched_tokens(tokens, bs, seq.adapter_id)
-                        > 0)
-            {
+            // UNCONDITIONAL. This used to additionally require
+            // `ep_active || peek_matched_tokens(..) > 0`, i.e. it split only on a
+            // WARM request (radix already populated) — which made the prompt take a
+            // DIFFERENT SHAPE cold vs warm: one N-token pass when cold, two passes
+            // [0..cut) + [cut..N) when warm. BF16 accumulation is not associative,
+            // so the two shapes produce different hidden states, and at temperature 0
+            // a near-tied argmax flips. Same prompt, same seed, different answer.
+            //
+            // MEASURED on Puzzle-75B (fresh container, temp 0, exact-hit shortcut
+            // bypassed so this split is the ONLY cold/warm difference):
+            //   34-token prompt (cut=16, split fires warm) : cold "17 barrels"
+            //                                                warm "15 barrels"  DIVERGE
+            //   16-token prompt (cut<=0, split IMPOSSIBLE) : cold == warm       MATCH
+            // The cut threshold predicts the divergence exactly.
+            //
+            // The invariant is already stated for EP>1 in the comment above —
+            // "chunk sequences must be deterministic on (tokens, config)" — it was
+            // just never enforced on a single rank. Splitting unconditionally makes
+            // cold and warm identical by construction, at the cost of one extra pass
+            // on cold prefills that cross the cut.
+            //
+            // `ATLAS_NO_TAIL_SPLIT=1` disables the split entirely (same-binary A/B).
+            // That is the OTHER way to satisfy the invariant — always one pass — and
+            // it keeps the single-pass numerics, at the cost of the warm-turn tail
+            // checkpoint this split exists to create.
+            let split_disabled = std::env::var("ATLAS_NO_TAIL_SPLIT").as_deref() == Ok("1");
+            if !split_disabled && cut > chunk_start && cut < total {
                 self.prefill_chunk_dispatch(
                     tokens,
                     seq,

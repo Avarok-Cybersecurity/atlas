@@ -58,8 +58,22 @@ pub struct NemotronMoeWeights {
     pub experts: Vec<NemotronExpertWeight>,
     /// Shared expert up_proj: [shared_inter, hidden_size] NVFP4.
     pub shared_up: QuantizedWeight,
+    /// Shared expert up_proj kept as NATIVE FP8 when the checkpoint ships it that
+    /// way (ModelOpt MIXED_PRECISION), instead of the FP8→BF16→NVFP4 requant.
+    /// `Some` only under `ATLAS_NEMOTRON_NATIVE_FP8_SSM`; decode prefers it via
+    /// `w8a16_gemv`. Measured on Puzzle-75B: with the SSM projections already
+    /// native, a 977-token story went from calling the dog "Rover"/"Rex" to
+    /// using the given name "Rufus" 8 times with no substitutions — proper-noun
+    /// retrieval is what the requant was destroying.
+    pub shared_up_fp8: Option<Fp8Weight>,
     /// Shared expert down_proj: [hidden_size, shared_inter] NVFP4.
     pub shared_down: QuantizedWeight,
+    /// Shared expert down_proj kept as NATIVE FP8, same rationale as
+    /// `shared_up_fp8`. Consumed by relu_squared_inplace + `w8a16_gemv` instead
+    /// of the fused `moe_expert_relu2_down_shared` kernel, which only speaks
+    /// NVFP4 — the fused launch simply drops its shared slot (grid.y = top_k)
+    /// when this is present.
+    pub shared_down_fp8: Option<Fp8Weight>,
     /// LatentMoE: fc1 [moe_latent_size, hidden_size] BF16 (dequant from FP8 at load).
     /// Present only for Super 120B (moe_latent_size > 0).
     pub fc1_latent_proj: Option<DenseWeight>,
@@ -226,7 +240,46 @@ pub(crate) fn load_nemotron_moe(
     let shared_up_prefix = format!("{p}.shared_experts.up_proj");
     let shared_up_has_s2 = store.contains(&format!("{shared_up_prefix}.weight_scale_2"));
     let shared_up_has_s = store.contains(&format!("{shared_up_prefix}.weight_scale"));
-    let shared_up = if shared_up_has_s2 {
+    // Native FP8 for the shared-expert up_proj: skip the FP8→BF16→NVFP4 requant
+    // and hand `w8a16_gemv` the checkpoint's own bytes. Same gate as the SSM
+    // projections — both are ModelOpt MIXED_PRECISION tensors in an otherwise
+    // NVFP4 repo, and both were being needlessly re-quantized.
+    //
+    // `shared_down` is NOT converted here: it is consumed inside the fused
+    // `relu2_down_shared` kernel, which takes NVFP4 (packed + scale + scale_2)
+    // arguments, so making it native needs CUDA work rather than a loader change.
+    let native_fp8_mode =
+        std::env::var("ATLAS_NEMOTRON_NATIVE_FP8_SSM").unwrap_or_else(|_| "1".to_string());
+    let want_native_fp8 = matches!(native_fp8_mode.as_str(), "1" | "both" | "decode");
+    let shared_up_fp8 = if want_native_fp8 && !shared_up_has_s2 && shared_up_has_s {
+        match load_fp8_block_scaled_as_fp8weight(store, &shared_up_prefix, gpu) {
+            Ok(mut w) => {
+                // OWN the bytes — the helper aliases the WeightStore pointer, which
+                // is only safe for a loader that consumes them during load. This one
+                // dereferences per-token forever. Aliasing here produced garbage
+                // weights that still ran (see ssm_layer.rs for the same fix).
+                let bytes = (w.n as usize) * (w.k as usize);
+                let owned = gpu.alloc(bytes)?;
+                gpu.copy_d2d(w.weight, owned, bytes)?;
+                w.weight = owned;
+                Some(w)
+            }
+            Err(e) => {
+                tracing::warn!("shared_up native FP8 unavailable ({e}) — using NVFP4 requant");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Under native FP8 nothing reads the NVFP4 copy, so do not spend the load
+    // time or the ~2.9 GB building it. Every consumer is gated on
+    // `shared_up_fp8`/`shared_down_fp8` — including the LatentMoE decode path,
+    // which is the live one on Puzzle (`hybrid_mamba2_latent_moe_...`) and was
+    // the site that faulted with CUDA 700 when it was missed.
+    let shared_up = if shared_up_fp8.is_some() {
+        QuantizedWeight::null()
+    } else if shared_up_has_s2 {
         quantized(store, &shared_up_prefix, gpu)?
     } else {
         // FP8 or BF16 — dequant to scratch, then quantize to NVFP4
@@ -253,7 +306,27 @@ pub(crate) fn load_nemotron_moe(
     let shared_down_prefix = format!("{p}.shared_experts.down_proj");
     let shared_down_has_s2 = store.contains(&format!("{shared_down_prefix}.weight_scale_2"));
     let shared_down_has_s = store.contains(&format!("{shared_down_prefix}.weight_scale"));
-    let shared_down = if shared_down_has_s2 {
+    let shared_down_fp8 = if want_native_fp8 && !shared_down_has_s2 && shared_down_has_s {
+        match load_fp8_block_scaled_as_fp8weight(store, &shared_down_prefix, gpu) {
+            Ok(mut w) => {
+                // Own the bytes (the helper aliases the WeightStore pointer).
+                let bytes = (w.n as usize) * (w.k as usize);
+                let owned = gpu.alloc(bytes)?;
+                gpu.copy_d2d(w.weight, owned, bytes)?;
+                w.weight = owned;
+                Some(w)
+            }
+            Err(e) => {
+                tracing::warn!("shared_down native FP8 unavailable ({e}) — using NVFP4 requant");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let shared_down = if shared_down_fp8.is_some() {
+        QuantizedWeight::null()
+    } else if shared_down_has_s2 {
         quantized(store, &shared_down_prefix, gpu)?
     } else {
         let bf16 = if shared_down_has_s {
@@ -374,6 +447,8 @@ pub(crate) fn load_nemotron_moe(
         e_score_correction_bias,
         experts,
         shared_up,
+        shared_up_fp8,
+        shared_down_fp8,
         shared_down,
         fc1_latent_proj,
         fc2_latent_proj,

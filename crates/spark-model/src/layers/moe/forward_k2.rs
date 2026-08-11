@@ -360,11 +360,7 @@ impl MoeLayer {
             )?;
         } else {
             // NVFP4 batch2 path
-            let batch2_block = if ctx.config.hidden_size >= 3072 {
-                256u32
-            } else {
-                128u32
-            };
+            let batch2_block = batch2_block_width(ctx.config.hidden_size);
             ops::moe_expert_gate_up_shared_batch2(
                 ctx.gpu,
                 self.moe_expert_gate_up_shared_batch2,
@@ -476,6 +472,16 @@ impl MoeLayer {
 
         Ok(())
     }
+}
+
+/// Block width for the NVFP4 batch2 MoE GEMVs — 128 (one warp per output pair)
+/// or 256 (two warps joined through smem, which pays off once K is large). This
+/// was inlined at the call site, where it read as a proxy for "is this model's
+/// kernel one of the three 256-wide shadows" and over-fired for every other MoE
+/// model at hidden_size ≥ 3072, launching them twice as wide as their `#define
+/// BLOCK_SIZE 128`. The kernel reads `blockDim.x` now, so this is pure tuning.
+pub(crate) fn batch2_block_width(hidden_size: usize) -> u32 {
+    if hidden_size >= 3072 { 256 } else { 128 }
 }
 
 /// K=2-verify MoE dispatch guard. E8M0 (native MXFP4, per-32 E8M0 scale) routed

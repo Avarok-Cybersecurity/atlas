@@ -254,17 +254,51 @@ async fn ask(target: &TargetEndpoint, check: &Check, timeout: Duration) -> Resul
     let body = json!({
         "model": target.model,
         "stream": true,
-        "max_tokens": 32,
+        // Thinking OFF, and a budget with room to spare even if the model
+        // ignores that. Both prompts say "reply with only the …", so on a
+        // non-thinking model 32 was already plenty -- but on a THINKING one the
+        // whole budget goes to reasoning and `text` comes back EMPTY, which
+        // this probe used to report as "answered nothing" and blame on a
+        // mis-quantized or base checkpoint. It measured the model's verbosity
+        // and called it brain damage.
+        "chat_template_kwargs": {"enable_thinking": false},
+        "max_tokens": 96,
         "temperature": 0.0,
         "messages": [{"role": "user", "content": check.prompt}],
     });
     let outcome = http::chat_stream(target, &body, timeout).await?;
-    let lowered = outcome.text.to_lowercase();
+    // Accept the fact wherever it appears. A model that reasons its way to
+    // "4" has demonstrated exactly what this probe tests -- that it is not
+    // emitting garbage -- and a server that ignores `enable_thinking` must not
+    // turn a healthy checkpoint into a warning about a broken one.
+    let (passed, answer) = judge(&outcome.text, &outcome.reasoning, check.accept);
     Ok(Answer {
         label: check.label,
-        passed: check.accept.iter().any(|a| lowered.contains(a)),
-        answer: outcome.text,
+        passed,
+        answer,
     })
+}
+
+/// Did the reply contain the expected fact, and what should be quoted back?
+///
+/// Searches BOTH halves. A model that reasons its way to "4" has demonstrated
+/// exactly what this probe tests -- that it is not emitting garbage -- and a
+/// server that ignores `enable_thinking` must not turn a healthy checkpoint
+/// into a warning about a broken one. The quoted answer prefers `text` and
+/// falls back to the reasoning, so a genuine failure stays legible instead of
+/// being reported as an empty string.
+fn judge(text: &str, reasoning: &str, accept: &[&str]) -> (bool, String) {
+    let matched = |s: &str| {
+        let lowered = s.to_lowercase();
+        accept.iter().any(|a| lowered.contains(a))
+    };
+    let passed = matched(text) || matched(reasoning);
+    let answer = if text.trim().is_empty() {
+        reasoning.to_string()
+    } else {
+        text.to_string()
+    };
+    (passed, answer)
 }
 
 fn truncate(s: &str, max: usize) -> String {

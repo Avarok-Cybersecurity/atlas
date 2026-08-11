@@ -156,7 +156,34 @@ pub struct AppState {
 
 use crate::main_modules::promotion::PromoteReject;
 
+/// Turn a timeout budget in seconds into an absolute deadline. `0` (or a
+/// non-positive value) means "no deadline" and yields `None`. Pure and
+/// `now`-injected so the 0-disables contract is testable without a clock.
+pub fn deadline_from(secs: f32, now: std::time::Instant) -> Option<std::time::Instant> {
+    if secs > 0.0 {
+        Some(now + std::time::Duration::from_secs_f32(secs))
+    } else {
+        None
+    }
+}
+
 impl AppState {
+    /// The absolute deadline for one request: the per-request `timeout`
+    /// field when supplied, else the server's `--request-timeout`.
+    ///
+    /// SSOT — every request path (`/v1/chat/completions` blocking and
+    /// streaming, `/v1/completions` blocking and streaming, the Anthropic
+    /// edge) MUST go through here. Three copies of this arithmetic used to
+    /// exist and one of them (`/v1/completions` streaming) silently passed
+    /// `None`, so that surface had no deadline at all while every other
+    /// surface had a 300 s one.
+    pub fn request_deadline(&self, override_secs: Option<f32>) -> Option<std::time::Instant> {
+        deadline_from(
+            override_secs.unwrap_or(self.request_timeout as f32),
+            std::time::Instant::now(),
+        )
+    }
+
     /// Task #27: on a resolver MISS (`resolve_adapter_slot == None`), try to make
     /// the named adapter HOT via demand-driven RDMA promotion. Returns:
     ///   * `Ok(None)`      — not stageable / promotion disabled → the caller emits
@@ -348,7 +375,23 @@ pub type ModelBehavior = atlas_kernels::ModelBehavior;
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_adapter_slot;
+    use super::{deadline_from, resolve_adapter_slot};
+
+    #[test]
+    fn zero_timeout_disables_the_deadline() {
+        let now = std::time::Instant::now();
+        // 0 is the documented "no deadline" value — it must not become an
+        // instantly-expired deadline that cuts every request at 0 tokens.
+        assert!(deadline_from(0.0, now).is_none());
+        assert!(deadline_from(-1.0, now).is_none());
+    }
+
+    #[test]
+    fn positive_timeout_yields_that_budget() {
+        let now = std::time::Instant::now();
+        let d = deadline_from(5.0, now).expect("5s budget is a deadline");
+        assert_eq!(d.saturating_duration_since(now).as_millis(), 5000);
+    }
 
     #[test]
     fn adapter_slot_resolution_rules() {

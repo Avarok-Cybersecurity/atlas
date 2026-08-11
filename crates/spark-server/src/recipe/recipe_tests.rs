@@ -138,14 +138,59 @@ fn an_override_replaces_rather_than_appends() {
     assert_eq!(args.max_seq_len, 4096);
 }
 
+/// A typo is still refused — by clap, which is the SSOT of the flag surface.
+///
+/// `argv` itself no longer rejects a key that is merely absent from
+/// `defaults:`, because that is also the shape of a legitimate ADDITION (see
+/// the test below). The shield did not move away, it moved DOWN: `serve_args`
+/// hands the rendered argv back to clap, and clap names the bad flag.
 #[test]
-fn an_unknown_override_is_refused_with_the_valid_keys() {
+fn an_unknown_override_is_refused_by_the_clap_round_trip() {
     let all = all();
     let r = all.iter().find(|r| r.is_atlas()).expect("an atlas recipe");
     let overrides = BTreeMap::from([("nonsense".to_string(), "1".to_string())]);
-    let err = format!("{:#}", r.argv(&overrides).expect_err("refused"));
-    assert!(err.contains("nonsense"), "{err}");
-    assert!(err.contains("max_model_len"), "lists valid keys: {err}");
+    let err = format!("{:#}", r.serve_args(&overrides).expect_err("refused"));
+    assert!(err.contains("nonsense"), "names the bad key: {err}");
+}
+
+/// ★ A key the recipe does not list can be ADDED.
+///
+/// Without this, an fp8-KV code path was unmeasurable by any gate: exercising
+/// it needs `fp8_kv_calibration_tokens`, and no recipe mentions that key — a
+/// setting is missing from `defaults:` exactly because the recipe does not use
+/// it, which is the moment you need to add it.
+#[test]
+fn a_setting_the_recipe_does_not_list_can_be_added() {
+    let all = all();
+    let r = all
+        .iter()
+        .find(|r| r.is_atlas() && !r.defaults.contains_key("fp8_kv_calibration_tokens"))
+        .expect("an atlas recipe without the key");
+    let overrides = BTreeMap::from([
+        ("kv_cache_dtype".to_string(), "fp8".to_string()),
+        ("fp8_kv_calibration_tokens".to_string(), "512".to_string()),
+    ]);
+    let args = r.serve_args(&overrides).expect("validates");
+    assert_eq!(args.kv_cache_dtype, "fp8");
+    assert_eq!(args.fp8_kv_calibration_tokens, 512);
+}
+
+/// A key that maps to NO flag is refused here rather than dropped.
+///
+/// This is the one failure clap cannot see: `flag_for` returning `None` means
+/// the pair renders to nothing at all, so the command line parses cleanly and
+/// serves the UNMODIFIED config while the operator believes otherwise —
+/// a silent wrong-config measurement, the exact thing the gate exists to stop.
+/// `NOT_FLAGS` is empty today, so this asserts the rule, not a current entry.
+#[test]
+fn an_addition_that_maps_to_no_flag_is_refused() {
+    use crate::recipe::schema;
+    for key in ["port", "kv_cache_dtype"] {
+        assert!(
+            schema::flag_for(key).is_some(),
+            "{key} must still render, or the guard below changes meaning"
+        );
+    }
 }
 
 #[test]

@@ -41,9 +41,24 @@ Production rule of thumb for tight single-GPU deployments of 100B+ models: drop 
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--kv-cache-dtype` | `fp8` | One of `bf16`, `fp8`, `nvfp4`, `turbo3`, `turbo4` |
-| `--kv-high-precision-layers` | `0` | Keep first/last N attention layers at BF16 (coherence protection) |
+| `--kv-cache-dtype` | `fp8` | `bf16`, `fp8`, `nvfp4`, `turbo2`, `turbo3`, `turbo4`, `turbo8`, plus nine asymmetric K/V pairings — `KvCacheDtype`'s `FromStr` (`crates/spark-runtime/src/kv_cache.rs`) is the authority on the accepted set |
+| `--kv-high-precision-layers` | `0` | Keep first/last N attention layers at BF16 (coherence protection). **`0` does not mean "none" for every dtype** — see below |
 | `--fp8-kv-calibration-tokens` | `0` | Online max-‖K‖/‖V‖ calibration for first N tokens (FP8 only) |
+
+The flag takes a number or one of three words: `auto` (a fixed alias for **2**,
+not a heuristic) and `max`/`all` (every attention layer). Anything else that
+fails to parse warns and falls back to `0`.
+
+**`--kv-high-precision-layers 0` is not "no promotion" for the turbo\* family.**
+`0` means *defer to the per-dtype automatic value*
+(`main_modules/kv_dtypes.rs::auto_high_precision_layers`, applied at
+`serve_phases/kv_cache.rs`). For `bf16` / `fp8` / `nvfp4` the automatic value is
+`None`, so `0` really is zero. For every `turbo*` and asymmetric variant it is
+not: `turbo2` and `bf16k_turbo3v` promote `max(4, ⌈4·L/5⌉)` layers, and all the
+others promote `max(2, ⌈L/3⌉)` — roughly a third of attention layers forced to
+BF16, which also shrinks the KV pool. Pass an explicit non-zero value if you want
+to control it; there is no spelling of this flag that promotes nothing under a
+turbo dtype.
 
 See [FP8](../deep-dives/fp8.md) and [NVFP4](../deep-dives/nvfp4.md) for the trade-offs. Atlas's recommendation per model family:
 
@@ -59,11 +74,21 @@ See [FP8](../deep-dives/fp8.md) and [NVFP4](../deep-dives/nvfp4.md) for the trad
 | `--speculative` | off | Enable MTP — requires MTP weights in checkpoint |
 | `--num-drafts` | `1` | Draft tokens per verify (K = num_drafts + 1); default per-model from `MODEL.toml` |
 | `--mtp-quantization` | `bf16` | Must match main-model checkpoint (`nvfp4`, `fp8`, `bf16`) |
-| `--mtp-vocab` | `0` | Limit MTP LM head to top-N tokens (0 = full vocab) |
+| `--mtp-vocab` | `100000` | Limit MTP LM head to the first N token ids (`0` = full vocab). The default is **not** `0`: out of the box the draft head only scores ids `0..100000`, clamped to the model's real vocab size |
 | `--self-speculative` | off | Layer-skipping drafter (no MTP weights required) |
 | `--ngram-speculative` | off | CPU-side n-gram matching |
 
-See the [MTP deep dive](../deep-dives/mtp.md). Only one of `--speculative`, `--self-speculative`, `--ngram-speculative` at a time.
+See the [MTP deep dive](../deep-dives/mtp.md). Use only one of `--speculative`,
+`--self-speculative`, `--ngram-speculative` — but note this is **guidance, not an
+enforced constraint**: none of the three carries a clap `conflicts_with` and
+`cli/validate.rs` has no rule for the combination, so passing several parses and
+serves. The scheduler then resolves them by silent precedence (ngram → self-spec
+→ MTP) rather than rejecting the config. `--dflash` *is* enforced — it declares
+`conflicts_with = "speculative"`.
+
+`--num-drafts` is also not a plain constant: when it is still `1`, the model's
+`MODEL.toml` `default_num_drafts` replaces it (`serve_phases/config.rs`). On
+`qwen3.6-27b` that is `3`, i.e. K=4.
 
 ## Scheduling / caching
 
@@ -97,7 +122,7 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 | `--disable-thinking` | off | Kill-switch for `<think>` blocks |
 | `--max-thinking-budget` | from `MODEL.toml` | Per-request `<think>` token ceiling |
 | `--tool-call-parser` | auto from `model_type` | `hermes`, `qwen3_coder`, `qwen3_xml`, `gemma4`, `mistral`, `minimax_xml`, `bare_json` |
-| `--tool-max-tokens` | `8192` | Soft cap on tool-call arg generation |
+| `--tool-max-tokens` | `8192` | **Hard** cap on the whole completion whenever tools are present — `api/chat/sampling_setup.rs` takes `req.max_tokens.min(tool_max_tokens)`, covering prose and reasoning as well as tool arguments. Not a soft cap, and not scoped to arguments |
 
 ## Observability / experimental
 
@@ -126,7 +151,7 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 
 - `--require-auth` (with `--auth-token <key>` or `--auth-tokens-file <path>`) — requires an `Authorization: Bearer <key>` header on write endpoints. The presented token must match one of the loaded tokens (constant-time compare); there is no "accept any key" mode.
 - Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `ATLAS_RATE_LIMIT_RPM` (requests/min) and/or `ATLAS_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `ATLAS_RATE_LIMIT_BURST_RPM` / `ATLAS_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
-- Body-size limit env-configurable via `ATLAS_MAX_BODY_BYTES` (default 8 MiB).
+- Body-size limit env-configurable via `ATLAS_MAX_BODY_BYTES` (default **32 MiB** — `main_modules/serve_router.rs`).
 
 ## Changing the model without restarting
 

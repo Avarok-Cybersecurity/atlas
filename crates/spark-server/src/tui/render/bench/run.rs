@@ -51,6 +51,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    // The three rows below are placed by hand inside a `Length(3)` slot, and a
+    // `Layout` hands back FEWER rows than it was asked for on a short terminal.
+    // A `Rect` past the bottom is not clipped by ratatui, it panics — so each
+    // row is checked against the slot it is supposed to be in.
+    let row = |y: u16| -> Option<Rect> {
+        (y < area.bottom()).then_some(Rect {
+            y,
+            height: 1,
+            ..area
+        })
+    };
     let name = app.bench.descriptor().map(|d| d.name).unwrap_or("");
     let running = app.bench.is_running();
     let spinner = if running {
@@ -70,16 +81,19 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("   {}  ", app.bench.elapsed_text()), theme::dim()),
         Span::styled(app.bench.target.base_url.clone(), theme::dim()),
     ]);
-    f.render_widget(Paragraph::new(head), Rect { height: 1, ..area });
+    if let Some(r) = row(area.y) {
+        f.render_widget(Paragraph::new(head), r);
+    }
 
     // A benchmark that cannot know its total (provisioning, scoring) reports
     // no progress; showing a full bar there would be a lie, so it stays a
     // caption.
-    let bar_area = Rect {
-        y: area.y + 1,
-        height: 1,
-        x: area.x + 1,
-        width: area.width.saturating_sub(2),
+    let Some(bar_area) = row(area.y + 1).map(|r| Rect {
+        x: r.x + 1,
+        width: r.width.saturating_sub(2),
+        ..r
+    }) else {
+        return;
     };
     match app.bench.progress {
         Some((done, total)) if total > 0 => {
@@ -105,21 +119,19 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             bar_area,
         ),
     }
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            if running {
-                " c cancel · j/k scroll table · Esc back to suite"
-            } else {
-                " Esc back to suite · j/k scroll table"
-            },
-            theme::dim(),
-        )),
-        Rect {
-            y: area.y + 2,
-            height: 1,
-            ..area
-        },
-    );
+    if let Some(r) = row(area.y + 2) {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                if running {
+                    " c cancel · j/k scroll table · Esc back to suite"
+                } else {
+                    " Esc back to suite · j/k scroll table"
+                },
+                theme::dim(),
+            )),
+            r,
+        );
+    }
 }
 
 fn draw_log(f: &mut Frame, app: &App, area: Rect) {

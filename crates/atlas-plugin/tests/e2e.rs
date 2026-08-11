@@ -130,9 +130,23 @@ async fn a_sweep_against_a_dead_endpoint_fails_at_the_probe() {
     );
 }
 
+/// Records a baseline on one endpoint, then gates a second run against it.
+///
+/// **The two legs deliberately run against endpoints of different speed.** The
+/// obvious version of this test — same endpoint twice, assert the unchanged
+/// timing passes — compares two wall-clock measurements whose difference is
+/// host scheduling jitter, and the gate's limit is a *percentage*: at a 30 ms
+/// TTFT, +3% is 0.9 ms. Under `cargo test`'s parallelism that assertion fails
+/// on a loaded machine and passes on an idle one, which is how it flaked. A
+/// gate suite cannot be the flaky thing.
+///
+/// So leg 2 is given an endpoint several times faster than the one that set the
+/// baseline. The margin is then far larger than any jitter, the PASS is a
+/// property of the comparison rather than of the clock, and the path under test
+/// is unchanged: record to disk, read back, compare, verdict.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_warm_gate_records_a_baseline_then_gates_against_it() {
-    let mock = mock_endpoint::start(4, Duration::from_millis(30), Duration::from_millis(2)).await;
+    let mock = mock_endpoint::start(4, Duration::from_millis(200), Duration::from_millis(2)).await;
     let store = temp_store("warmgate");
 
     // Leg 1: no baseline exists, so the verdict reports rather than passes,
@@ -159,9 +173,13 @@ async fn the_warm_gate_records_a_baseline_then_gates_against_it() {
     // cache actually hit — a warm leg reading 0 measured a cold path.
     assert_eq!(table.rows[0][5].text, "40");
 
-    // Leg 2: the baseline is now on disk and the endpoint has not changed, so
-    // the same latency must pass.
-    let (h2, _c2) = handle(mock.port, store.clone());
+    // Leg 2: the baseline is on disk. This endpoint is an order of magnitude
+    // faster than the one that recorded it, so the verdict must be PASS by a
+    // margin no amount of scheduling noise can close. Same host (127.0.0.1), so
+    // `same_box` still finds the baseline comparable — a different port is not
+    // a different box.
+    let fast = mock_endpoint::start(4, Duration::from_millis(20), Duration::from_millis(2)).await;
+    let (h2, _c2) = handle(fast.port, store.clone());
     let mut second = TtftGate::new(atlas_plugin::benchmarks::ttft::Mode::Warm);
     second.load(h2).await.expect("load");
     second.configure(&values).expect("configure");

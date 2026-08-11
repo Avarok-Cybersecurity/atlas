@@ -79,6 +79,26 @@ pub struct Usage {
     pub response_tokens_per_second: f64,
 }
 
+/// Wire string for a response cut short by the server-side request
+/// deadline (`--request-timeout`, or the per-request `timeout` field).
+///
+/// Deliberately NOT one of OpenAI's four spec reasons: a deadline
+/// truncation must be distinguishable from a legitimate `max_tokens`
+/// stop ("length") and from a natural end ("stop"), or the client
+/// silently loses output with no way to tell. It is carried as
+/// `FinishReason::Other` and round-trips verbatim through `as_wire`.
+///
+/// KNOWN TRADEOFF (2026-08-09): a non-standard `finish_reason` is a
+/// client-compatibility hazard — strictly typed clients hard-fail on
+/// unknown variants (Rust `async-openai` fails deserialization outright,
+/// which is what forced TGI to drop its `eos_token` value; pydantic-ai
+/// raised on OpenRouter's non-standard "error"). "timeout" is kept as a
+/// deliberate, shipped exception because silent truncation is worse; do
+/// NOT add further non-standard values — server-side guard cuts map to
+/// "stop" and carry their detail in the `guard_stop` side-channel (see
+/// `scheduler::lifecycle::guard_stop_wire_reason`).
+pub const FINISH_REASON_TIMEOUT: &str = "timeout";
+
 /// Why generation stopped. `Other` preserves unknown engine reasons
 /// losslessly (PCND: no silent default).
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -20,6 +20,16 @@ use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
+/// Multi-seq decode CUDA graphs: **ON by default**, disabled by
+/// `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+///
+/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// presence-checked flags here are ENABLED by `=0`. Read once per process.
+fn multiseq_graphs_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
+}
+
 impl TransformerModel {
     pub(super) fn decode_batch_dispatch(
         &self,
@@ -29,10 +39,16 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         let n = tokens.len();
         assert_eq!(n, seqs.len(), "tokens.len() must equal seqs.len()");
+        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // once, HERE — outside the CUDA-graph region. No-op without the flag.
+        for s in seqs.iter_mut() {
+            self.ssm_h_to_f16_dispatch(s)?;
+        }
 
-        // Single-sequence: delegate to decode() which uses CUDA graphs.
-        // decode_batch disables graphs for n≥2 (SSM state pointer staleness),
-        // but n=1 is safe and benefits from graph replay (2x throughput).
+        // Single-sequence: delegate to decode() which uses its own slot-keyed
+        // graph cache. (Stale comment removed: n>=2 is ALSO graphed — see the
+        // slot-vector-keyed `batch_decode_graphs` in decode_batch_compute_main,
+        // default-ON since 2026-07-27.)
         //
         // Broadcast the seq_id preamble + cmd here (rather than in the
         // scheduler) so the EP n>1 branch below can interleave broadcasts
@@ -141,6 +157,11 @@ impl TransformerModel {
         _stream: u64,
     ) -> Result<DevicePtr> {
         let n = tokens.len();
+        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // once, HERE — outside the CUDA-graph region. No-op without the flag.
+        for s in seqs.iter_mut() {
+            self.ssm_h_to_f16_dispatch(s)?;
+        }
         if std::env::var("ATLAS_DECODE_BATCH_LOG").ok().as_deref() == Some("1") {
             let slots: Vec<i64> = seqs
                 .iter()
@@ -201,30 +222,26 @@ impl TransformerModel {
 
         // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
         //
-        // The historical concern was that SSM h_state/conv_state pointers get
-        // baked into per-seq kernel args at capture, going stale when batch
-        // composition changes. That does NOT happen here: the scheduler holds
-        // the invariant that active sequences occupy contiguous SSM pool slots
-        // [0..n) in batch order (compact_sequence migrates survivors), verified
-        // empirically (slots always == [0,1,..,n-1]). So position i's state is
-        // ALWAYS at pool_base + i*stride — a fixed address baked correctly at
-        // capture; replay reads whatever sequence currently occupies slot i.
-        // Pad positions use the fixed dummy slot. Attention metadata, KV block
-        // tables, embed, and all scratch buffers are at fixed device addresses
-        // refreshed every step BEFORE replay. So a graph keyed by padded_n is
-        // valid across replays. This is the dominant lever for n>=2 decode
-        // (eliminates ~1500 kernel launches/step). Opt-in until soaked; flip
-        // the default once validated. Verify correctness with the needle test.
+        // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
+        // capture, so the cache is keyed by the per-row SSM slot VECTOR — see
+        // `decode_graph_key.rs` for why the former `padded_n` key was unsound.
+        // Everything else captured (metadata, block tables, embed, scratch) is
+        // a fixed address refreshed every step BEFORE replay. This is the
+        // dominant lever for n>=2 decode (eliminates ~1500 launches/step).
+        //
+        // DEFAULT-ON since 2026-07-27; disable with
+        // ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
+        // retired: `decode_graph_key.rs`.
         let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        let use_graphs = !ms_profile
-            && !lora_eager
-            && std::env::var("ATLAS_DECODE_GRAPHS_MULTISEQ")
-                .ok()
-                .as_deref()
-                == Some("1");
+        let graph_key = if !ms_profile && !lora_eager && multiseq_graphs_enabled() {
+            self.batch_decode_graph_key(&*seqs, padded_n)
+        } else {
+            None
+        };
+        let use_graphs = graph_key.is_some();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -251,9 +268,20 @@ impl TransformerModel {
             None
         };
 
-        if let Some(ref graphs) = graphs
-            && let Some(&graph) = graphs.get(&padded_n)
-        {
+        // LRU touch on hit: bump the tick so eviction always removes the
+        // least-recently-replayed slot vector.
+        let cached = match (&mut graphs, &graph_key) {
+            (Some(g), Some(key)) => {
+                g.1 += 1;
+                let tick = g.1;
+                g.0.get_mut(key).map(|e| {
+                    e.1 = tick;
+                    e.0
+                })
+            }
+            _ => None,
+        };
+        if let Some(graph) = cached {
             // Graph exists — replay (kernels use updated metadata + SSM pool addresses)
             if graph.0 != 0 {
                 self.gpu.launch_graph(graph, stream)?;
@@ -306,6 +334,10 @@ impl TransformerModel {
                             conv_state_checkpoint: None,
                             h_state_intermediates: Vec::new(),
                             conv_state_intermediates: Vec::new(),
+                            // Padding rows point at the write-only dummy slot;
+                            // tag them with the active mode so the decode mixer
+                            // does not re-convert scratch on every single step.
+                            h_is_f16: crate::layers::qwen3_ssm::ssm_h_fp16_enabled(),
                         }));
                         ssm_idx += 1;
                     } else {
@@ -415,46 +447,14 @@ impl TransformerModel {
             // ~N×254 MB/step). nvfp4/dense are batched here; FP8 single-scale
             // keeps the per-row path (no batched single-scale FP8 GEMM handle
             // on the model, and Holo's lm_head is NVFP4 anyway).
-            let logits = self.buffers.logits();
-            let v = self.config.vocab_size;
-            if let Some(ref fp8) = self.lm_head_fp8 {
-                for i in 0..padded_n {
-                    ops::dense_gemv_fp8w(
-                        self.gpu.as_ref(),
-                        self.dense_gemv_fp8w_kernel,
-                        normed.offset(i * h * bf16),
-                        fp8,
-                        logits.offset(i * v * bf16),
-                        v as u32,
-                        h as u32,
-                        stream,
-                    )?;
-                }
-            } else if let Some(ref nvfp4) = self.lm_head_nvfp4 {
-                ops::w4a16_gemm(
-                    self.gpu.as_ref(),
-                    self.w4a16_gemm_kernel,
-                    normed,
-                    nvfp4,
-                    logits,
-                    padded_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::dense_gemm(
-                    self.gpu.as_ref(),
-                    self.dense_gemm_kernel,
-                    normed,
-                    &self.lm_head_weight,
-                    logits,
-                    padded_n as u32,
-                    v as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
+            // The ladder itself lives in `lm_head_batched.rs` — the mixed
+            // co-dispatch head (`decode_b2::mixed_final_norm_lm_head`) calls
+            // the same function, so the two heads cannot pick different
+            // kernels for the same `padded_n`.
+            // The returned pointer is discarded here: this path reports its
+            // logits through `self.decode_logits_ptr()` at the end of the
+            // function, which reads the same buffer.
+            self.lm_head_project_batched(normed, padded_n, h, bf16, stream)?;
             if let Some(t0) = lmhead_t0 {
                 self.gpu.synchronize(stream).ok();
                 let head_us = t0.elapsed().as_micros();
@@ -474,9 +474,11 @@ impl TransformerModel {
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
-                    tracing::info!("Captured CUDA graph for batch size {padded_n}");
-                    if let Some(ref mut g) = graphs {
-                        g.insert(padded_n, graph);
+                    tracing::info!(
+                        "Captured CUDA graph for batch size {padded_n} (n={n}, slots={graph_key:?})"
+                    );
+                    if let (Some(g), Some(key)) = (graphs.as_mut(), graph_key.clone()) {
+                        self.insert_batch_decode_graph(g, key, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
