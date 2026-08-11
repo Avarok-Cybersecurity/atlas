@@ -109,6 +109,12 @@ impl Qwen3AttentionLayer {
         self.o_nvfp4_t = o_nvfp4_t;
     }
 
+    /// Install the fused [q|k|v] transposed twin. Separate from
+    /// `set_prefill_weights` so the fused path is opt-in per loader and the
+    /// separate twins stay available as the fallback.
+    pub fn set_fused_qkv_prefill_weight(&mut self, qkv_nvfp4_t: Option<QuantizedWeight>) {
+        self.qkv_nvfp4_t = qkv_nvfp4_t;
+    }
     /// Set native FP8 checkpoint weights for the `w8a16_gemv` decode path.
     ///
     /// The block-scaled FP8 weights stored here (weight + per-128 `row_scale`)

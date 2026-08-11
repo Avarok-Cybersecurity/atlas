@@ -12,6 +12,18 @@ use crate::layer::AttnMetadataDev;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
+/// One batched `reshape_and_cache` launch for all N sequences instead of one
+/// launch per sequence. Kill switch: `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1`.
+fn batch_cache_write_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("ATLAS_NO_ATTN_BATCH_CACHE_WRITE")
+            .ok()
+            .as_deref()
+            != Some("1")
+    })
+}
+
 impl Qwen3AttentionLayer {
     /// Phase 3: per-token RoPE (each sequence has its own position).
     pub(super) fn ms_phase_rope(&self, c: &MultiSeqCtx<'_>, meta: AttnMetadataDev) -> Result<()> {
@@ -22,11 +34,44 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
+            bf16,
             q_proj_bytes,
             per_seq_qkv,
             qkv_buf,
             ..
         } = *c;
+        // ONE launch for all n sequences when the strided kernel is present. The
+        // packed `rope` derives row addresses from num_*_heads*head_dim, but these
+        // rows sit `per_seq_qkv` apart inside the interleaved [Q|K|V|gate] block,
+        // so the per-sequence loop below was calling it n times with seq_len=1 —
+        // 258 launches/step at 4.6 us = 1.18 ms across the 16 attention layers.
+        // Bit-identical: same math and ordering, only the row address differs.
+        // Kill switch: ATLAS_NO_ROPE_STRIDED=1.
+        fn rope_strided_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_NO_ROPE_STRIDED").ok().as_deref() != Some("1"))
+        }
+        if n > 1 && self.rope_strided_k.0 != 0 && rope_strided_enabled() {
+            let stride_e = (per_seq_qkv / bf16) as u32;
+            return ops::rope_strided(
+                fwd.gpu,
+                self.rope_strided_k,
+                qkv_buf,
+                qkv_buf.offset(q_proj_bytes),
+                meta.positions,
+                n as u32,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(fwd.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(fwd.config.rope_theta as f32),
+                stride_e,
+                stride_e,
+                stream,
+            );
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
@@ -72,6 +117,34 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
         let kv_stride = nkv * hd;
+        // The reshape_and_cache kernels already take `num_tokens` plus explicit
+        // key/value row strides ("row stride may differ", reshape_and_cache.cu),
+        // and their grid is [num_tokens,1,1] — so all N sequences go in ONE
+        // launch. `slot` and `positions` are already contiguous per-sequence
+        // arrays. Each sequence's K row sits `per_seq_qkv` bytes after the last,
+        // so the row stride is that gap in ELEMENTS.
+        //
+        // `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1` restores the per-sequence loop.
+        let k_out_0 = qkv_buf.offset(q_proj_bytes);
+        let v_out_0 = k_out_0.offset((nkv * hd) as usize * bf16);
+        if n > 1 && batch_cache_write_enabled() && per_seq_qkv.is_multiple_of(bf16) {
+            let row_stride = (per_seq_qkv / bf16) as u32;
+            return self.write_kv_cache(
+                fwd.gpu,
+                k_out_0,
+                v_out_0,
+                kv_cache,
+                meta.slot,
+                n as u32,
+                nkv,
+                hd,
+                bs,
+                row_stride,
+                row_stride,
+                stream,
+                fwd.graph_capture,
+            );
+        }
         for i in 0..n {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
@@ -118,28 +191,62 @@ impl Qwen3AttentionLayer {
             qkv_buf,
             ..
         } = *c;
-        // Build contiguous Q buffer [N, nq*hd] for batched attention.
-        let q_contiguous = fwd.buffers.ssm_qkvz();
-        for i in 0..n {
-            let q_out_i = qkv_buf.offset(i * per_seq_qkv);
-            fwd.gpu.copy_d2d_async(
-                q_out_i,
-                q_contiguous.offset(i * q_dim as usize * bf16),
-                q_dim as usize * bf16,
-                stream,
-            )?;
-        }
-        let attn_out = fwd.buffers.attn_output();
-        let inv_sqrt_d = self.effective_attn_scale(hd);
-
         // TurboQuant WHT bookends (mirrors decode/attention_forward.rs).
         // The cache holds WHT(K)/WHT(V) for turbo dtypes: rotate the batched
         // Q rows before the paged decode and rotate the output back after —
         // without these the multi-seq batched decode scores raw Q against
         // rotated K and returns output in the rotated-V basis.
+        // Hoisted above the Q staging below: those rotations mutate the staged
+        // buffer IN PLACE, so they are exactly what makes the copy unskippable.
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
         let k_is_turbo = wht_k_dtype.is_wht_rotated();
         let v_is_turbo = wht_v_dtype.is_wht_rotated();
+
+        // ── Q for the batched paged decode ────────────────────────────────
+        // `run_paged_decode` already takes an explicit `q_stride` and the kernel
+        // indexes `Q + seq_idx*q_stride` (paged_decode_attn.cu:96, splitk twin
+        // :364), so when nothing rewrites Q we can point it straight at the
+        // interleaved [Q|K|V|gate] block and read in place — the rows are simply
+        // `per_seq_qkv` apart instead of packed.
+        //
+        // That removes 16 layers x 16 seqs = 256 D2D copies of 12288 B per step
+        // (0.19 ms of GPU copy plus 0.23 ms of host issue measured by nsys), and
+        // 256 nodes from the captured graph. Bit-identical: same values, same
+        // kernel, only the addressing changes.
+        //
+        // NOT skippable under TurboQuant: the innerQ/WHT bookends below rotate
+        // the staged buffer in place, and `qkv_buf` must not be mutated.
+        // Kill switch: ATLAS_NO_ATTN_Q_INPLACE=1.
+        fn q_inplace_enabled() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_NO_ATTN_Q_INPLACE").ok().as_deref() != Some("1")
+            })
+        }
+        let q_inplace =
+            !k_is_turbo && !v_is_turbo && q_inplace_enabled() && per_seq_qkv.is_multiple_of(bf16);
+        let q_contiguous = if q_inplace {
+            qkv_buf
+        } else {
+            let staged = fwd.buffers.ssm_qkvz();
+            for i in 0..n {
+                let q_out_i = qkv_buf.offset(i * per_seq_qkv);
+                fwd.gpu.copy_d2d_async(
+                    q_out_i,
+                    staged.offset(i * q_dim as usize * bf16),
+                    q_dim as usize * bf16,
+                    stream,
+                )?;
+            }
+            staged
+        };
+        let q_stride = if q_inplace {
+            (per_seq_qkv / bf16) as u32
+        } else {
+            nq * hd
+        };
+        let attn_out = fwd.buffers.attn_output();
+        let inv_sqrt_d = self.effective_attn_scale(hd);
         let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -176,7 +283,7 @@ impl Qwen3AttentionLayer {
             hd,
             bs,
             inv_sqrt_d,
-            nq * hd,
+            q_stride,
             fwd.buffers.splitk_workspace(),
             fwd.levers.max_decode_seqs,
             stream,
@@ -214,19 +321,29 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
         if self.gated {
-            for i in 0..n {
-                let gate_i = qkv_buf.offset(i * per_seq_qkv + q_dim as usize * bf16);
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                ops::sigmoid_gate_mul(
-                    fwd.gpu,
-                    self.sigmoid_gate_mul_k,
-                    attn_out_i,
-                    gate_i,
-                    attn_out_i,
-                    q_dim,
-                    stream,
-                )?;
-            }
+            // ONE launch for all n sequences. `attn_out` is contiguous [n, q_dim]
+            // and the gate lives at a fixed offset inside each sequence's slice of
+            // `qkv_buf`, i.e. strided by per_seq_qkv — which is exactly the layout
+            // `sigmoid_gate_mul_batched` takes (`gate[t * gate_stride + d]`, stride
+            // in ELEMENTS). The PREFILL path already drives this kernel on these
+            // same buffers (prefill/paged.rs); multi-seq decode was looping the
+            // single-token variant instead, n launches per layer x 16 layers.
+            debug_assert_eq!(
+                per_seq_qkv % bf16,
+                0,
+                "gate stride must be whole bf16 elements"
+            );
+            ops::sigmoid_gate_mul_batched(
+                fwd.gpu,
+                self.sigmoid_gate_mul_batched_k,
+                attn_out,
+                qkv_buf.offset(q_dim as usize * bf16),
+                attn_out,
+                q_dim,
+                (per_seq_qkv / bf16) as u32,
+                n as u32,
+                stream,
+            )?;
         }
 
         let o_out = fwd.buffers.moe_output();

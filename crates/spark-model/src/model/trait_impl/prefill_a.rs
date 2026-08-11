@@ -86,6 +86,7 @@ impl TransformerModel {
         };
         let mut kv_write_start = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = prefix_match.matched_tokens;
+        seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
         // Record the original prompt length — cache_sequence() uses it later
         // to avoid double-bumping ref_counts on the prompt portion.
         seq.prompt_len = n;
@@ -140,7 +141,10 @@ impl TransformerModel {
             self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
         let marconi_skip = if let Some(snap_id) = eff_snapshot {
             let snap_tok = eff_snapshot_tokens;
-            if snap_tok > 0
+            // Below `marconi_min_tokens()` the snapshot restore costs more in lost
+            // drafter acceptance than the skipped prefill saves — see the helper.
+            if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                && snap_tok > 0
                 && kv_write_start <= n
                 && self
                     .ssm_snapshots
@@ -241,6 +245,14 @@ impl TransformerModel {
 
         // ── 2. Embed tokens → [proc_count, H] contiguous ──
         {
+            // SAFETY: `proc_count` is not an independent count. Each of the
+            // three arms of the `(proc_tokens, proc_count, seq_len_start)`
+            // binding above pairs a subslice of `tokens` with that subslice's
+            // OWN length — `&tokens[n-1..]`/1, `&tokens[kv_write_start..]`/
+            // `n - kv_write_start`, `tokens`/`n` — so
+            // `proc_count == proc_tokens.len()` on every path and the byte
+            // length is exactly `proc_tokens.len() * size_of::<u32>()`. The
+            // bytes are initialised: `tokens` is a live `&[u32]`.
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(proc_tokens.as_ptr() as *const u8, proc_count * 4)
             };
@@ -288,54 +300,33 @@ impl TransformerModel {
                     (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                 }));
 
-            let pinned = stg.ptr;
-            let mut cursor = 0usize;
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned.add(cursor),
-                    proc_count * 4,
-                );
-            }
-            cursor = slot_offset;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.slots.as_ptr() as *const u8,
-                    pinned.add(cursor),
-                    proc_count * 8,
-                );
-            }
-            cursor += proc_count * 8;
+            // Each field is bounded BEFORE it is written — the packer refuses
+            // rather than overrunning and asserting on the wreckage afterwards.
+            // The field that can actually get too big is `seq.block_table`,
+            // whose length tracks the sequence's KV blocks, i.e. the context
+            // length.
+            //
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // positions array that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs). `slot_offset` and
+            // `proc_count*8` are both multiples of 8, so `bt_start` and
+            // `sl_start` round to their inputs and open no further gap.
+            let mut pack = stg.packer_for(self.buffers.scratch_bytes().saturating_sub(meta_offset));
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
 
             let devs = if marconi_skip {
-                let bt_start = (cursor + 3) & !3;
-                let bt_len = seq.block_table.len() * 4;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        seq.block_table.as_ptr() as *const u8,
-                        pinned.add(bt_start),
-                        bt_len,
-                    );
-                }
-                let sl_start = (bt_start + bt_len + 3) & !3;
-                let seq_len_val = n as u32;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        &seq_len_val as *const u32 as *const u8,
-                        pinned.add(sl_start),
-                        4,
-                    );
-                }
-                cursor = sl_start + 4;
+                let bt_start = (pack.high_water() + 3) & !3;
+                pack.put_at("block_table", bt_start, &seq.block_table)?;
+                let sl_start = (pack.high_water() + 3) & !3;
+                pack.put_at("seq_len", sl_start, &[n as u32])?;
                 (meta_base.offset(bt_start), meta_base.offset(sl_start))
             } else {
                 (DevicePtr::NULL, DevicePtr::NULL)
             };
 
-            assert!(cursor <= stg.bytes, "prefill metadata overflow");
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
-            self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
+            self.gpu
+                .copy_h2d_async_retained(pack.packed(), meta_base, stream)?;
             devs
         };
 
@@ -450,6 +441,12 @@ impl TransformerModel {
                 let last_offset = (proc_count - 1) * self.config.hidden_size * 4;
                 let h_sz = self.config.hidden_size;
                 let mut buf = vec![0u16; h_sz];
+                // SAFETY: `buf` is `vec![0u16; h_sz]` on the line above, so it
+                // owns exactly `h_sz * size_of::<u16>()` initialised bytes and
+                // the length matches its capacity. `bytes` is the only live
+                // reference to that allocation for its whole lifetime — it is
+                // last used on the `copy_d2h` line below, and `buf` is not read
+                // again until after that.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, h_sz * 2)
                 };
@@ -486,7 +483,7 @@ impl TransformerModel {
 
         // ATLAS_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
         // hiddens for the whole-prompt drafter prefill. No-op when disabled.
-        self.try_mtp_prefill_capture(seq_len_start, proc_count, stream)?;
+        self.try_mtp_prefill_capture(seq, seq_len_start, proc_count, stream)?;
 
         // ── 5. Final norm on LAST token only ──
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);

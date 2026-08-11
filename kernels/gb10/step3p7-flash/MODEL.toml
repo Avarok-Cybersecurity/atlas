@@ -2,7 +2,7 @@
 #
 # Step 3.7 Flash is a 196B MoE (11B active per token) with:
 #   * 45 hidden layers: 3 dense FFN (layers 0-2) + 42 MoE (layers 3-44)
-#   * Mixed attention: 12 full_attention + 36 sliding_attention (window=512)
+#   * Mixed attention: 12 full_attention + 33 sliding_attention (window=512)
 #   * 288 experts top-8, sigmoid routing + correction bias
 #   * Shared expert per MoE layer (dim=1280)
 #   * Partial RoPE (0.5) — rotary on first 64 of 128 head dims
@@ -88,3 +88,87 @@ hidden_size = 4096
 [kernel]
 # hidden_dim(4096) * sizeof(bf16) = 8192
 moe_gate_shmem_bytes = 8192
+
+# ── expected_absent ────────────────────────────────────────────────────────
+# Harvested 2026-08-04 from an EP=2 `--check-kernels` run (rank 0 dgx2 /
+# rank 1 dgx3, identical report on both ranks): 223 lookups, 35 unresolved,
+# kernel_set_hash 41a9421cde36. Weights are the per-expert split produced by
+# scripts/preprocess_step3p7_experts.py (the fused-expert checkpoint defeats
+# the EP-aware load otherwise). Every entry below names the dispatch site
+# that probes the handle and the resolved fallback it falls back to; none
+# are silenced speculatively.
+
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+layers::tgemm_kernel probes it, then falls back to w4a16_gemm_t, which
+resolves on this target's shadow. UNMEASURED — candidate, not loss."""
+w4a16_gemm_t_k64_p3 = "Same family; layers::k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves on this target's shadow)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N deep-K twin; layers::k64_n64_kernel returns 0-handle when absent, dispatch gates on handle != 0 before firing."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin of w4a16_gemm_t_m128; prefill_weights gates on handle != 0, falls back through the resolved w4a16 m128 path."
+w4a16_gemm_t_m128_bf16_v2 = "Second-generation BF16-projection twin (w4a16_v2_kernel); same handle != 0 gate, falls back to the resolved m128 arm."
+int8_gemm_faith2 = """
+Lossy W4A8 dense-FFN prefill twin shipped in qwen3.6-27b-class shadows.
+Dispatch is DOUBLE-GATED: handle != 0 AND the ATLAS_INT8_PREFILL env opt-in
+(dense_ffn.rs:1512), so the resolved NVFP4 prefill path serves by default.
+UNMEASURED."""
+int8_gemm_i32acc = "i32-accumulator variant of the same opt-in int8 family (ATLAS_INT8_PREFILL); handle != 0 gate in dense_ffn.rs."
+requant_w_nvfp4_int8 = "Weight requant helper for the opt-in int8 family — only materialized when ATLAS_INT8_PREFILL is set and the int8 GEMM handles resolve."
+requant_a_bf16_int8 = "Activation requant helper for the same opt-in int8 family; identical gating."
+
+[expected_absent.w4a4]
+w4a4_gemm = """
+Dense-FFN native-FP4 prefill arm (ATLAS_FP4_PREFILL env opt-in, lossy
+cos~0.99). Dispatch gates on handle != 0 AND the env flag
+(dense_ffn.rs:1585); shipped in qwen3.6-27b-class shadows only.
+UNMEASURED."""
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b's shadow. The attention
+W4A4 prefill path is additionally OPT-IN ONLY (ATLAS_ATTN_W4A4 env) and
+dispatch gates on handle != 0 (paged_qkv.rs:49, paged_oproj.rs:32).
+UNMEASURED."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
+Native-MXFP4 (E8M0) scale-format variant shipped only in
+deepseek-v4-flash's shadow. This NVFP4 checkpoint's scales are the
+modelopt NVFP4 format, so dispatch uses the resolved ptrtable grouped
+GEMM."""
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t variant."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t_k64 variant."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up variant."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up_k64 variant."
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FUSED-FP4 gate_up (Holo-3.1 family); forward_prefill_routed gates on gateup_fp4 && handle != 0 before firing."
+moe_w4a16_down_t_k64_fp4 = "FP4 down-projection twin; forward_prefill_routed gates on down_fp4 && handle != 0."
+
+[expected_absent.nvfp4_mmq]
+atlas_nvfp4_mmq128_nc = """
+Vendored llama Blackwell block-scale FP4 MMQ dense-FFN prefill family
+(shipped in qwen3.6-27b's shadow). finalize gates on ALL family handles
+!= 0 and only fires for ATLAS_FFN_NVFP4_MMQ opt-in SiLU models
+(dense_ffn.rs:473); the resolved t_m128 prefill path serves by default.
+UNMEASURED."""
+atlas_nvfp4_mmq128_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq16_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq16_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq32_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq32_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq64_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_mmq64_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
+atlas_nvfp4_quantize_bf16 = "MMQ activation-quantize helper — only materialized when the MMQ family resolves and is opted in."
+atlas_nvfp4_repack = "MMQ weight-repack helper — same family-wide gating."
+atlas_nvfp4_scale_bf16 = "MMQ scale helper — same family-wide gating."
+atlas_nvfp4_silu_mul_quant = "MMQ fused SiLU-mul-quant helper — same family-wide gating."
+atlas_nvfp4_silu_mul_scaled = "MMQ fused scaled-SiLU-mul helper — same family-wide gating."
+
+[expected_absent.q4k_mmq]
+atlas_q4k_mmq128_nc = """
+Q4_K FFN MMQ family (ATLAS_FFN_MMQ opt-in). finalize_q4k_load gates on
+ALL four q4k handles != 0 AND the env flag (dense_ffn.rs:382); shipped
+in qwen3.6-27b-class shadows only. The resolved NVFP4 path serves by
+default. UNMEASURED."""
+atlas_q4k_mmq128_wc = "Same Q4_K family — family-wide handle gate plus ATLAS_FFN_MMQ opt-in."
+atlas_q8_1_quantize_ds4_bf16 = "Q4_K activation-quantize helper — only materialized under the same family-wide gating."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K weight-quantize helper — same family-wide gating as the q4k_mmq arms above."

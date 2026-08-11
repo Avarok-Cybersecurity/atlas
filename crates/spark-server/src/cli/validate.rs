@@ -24,6 +24,8 @@ use super::ServeArgs;
 const LM_HEAD_DTYPES: &[&str] = &["default", "bf16", "nvfp4", "fp8"];
 const MTP_QUANTS: &[&str] = &["bf16", "fp8", "nvfp4"];
 const SCHEDULING_POLICIES: &[&str] = &["fifo", "slai"];
+const SSM_H_DTYPES: &[&str] = &["f32", "f16"];
+const MTP_GATES: &[&str] = &["auto", "force"];
 const TOOL_CALL_PARSERS: &[&str] = &[
     "hermes",
     "qwen3_coder",
@@ -65,6 +67,45 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         &args.lm_head_dtype,
         LM_HEAD_DTYPES,
     );
+    if let Some(dtype) = &args.ssm_h_dtype {
+        check_enum(&mut v, "--ssm-h-dtype", dtype, SSM_H_DTYPES);
+    }
+    // Only when it was given: absent means "let ATLAS_MTP_GATE_FORCE decide",
+    // and validating an unwritten value would reject nothing but confuse the
+    // reader of this list.
+    if let Some(gate) = &args.mtp_gate {
+        check_enum(&mut v, "--mtp-gate", gate, MTP_GATES);
+    }
+    // The FP16 h-state twins live ONLY on the fused-norm decode arm. Without
+    // it the dispatch lands on an FP32-only kernel pointed at an FP16 pool,
+    // which does not fault — it emits fluent garbage. Reject the pair here,
+    // in milliseconds, rather than at the first decode step of a benchmark.
+    // `!= Some(true)`, not `== Some(false)`: an ABSENT `--gdn-fused-norm` beside
+    // an explicit `--ssm-h-dtype f16` publishes fused_norm OFF (the three GDN
+    // flags are one cell), so absent is just as dangerous here as explicit off.
+    if args.ssm_h_dtype.as_deref() == Some("f16") && args.gdn_fused_norm != Some(true) {
+        v.push(Violation::new(
+            "--ssm-h-dtype f16 without --gdn-fused-norm",
+            "the FP16 h-state twins exist only on the fused-norm decode arm; the unfused \
+             arms (gated_delta_rule_decode, ..._decode_f32_strided) are FP32-only and \
+             would read the FP16 pool as FP32 — fluent garbage, not an error",
+            "add --gdn-fused-norm, or use --ssm-h-dtype f32",
+        ));
+    }
+    // #435: the exact-verify arm's kernels are FP32 readers, so an FP16
+    // h-state pool disables it (`GdnFlags::verify_exact_active`). Honouring
+    // `--ssm-h-dtype f16` by SILENTLY ignoring an explicit `--exact-verify`
+    // would ship the very divergence the operator just opted out of — the
+    // exact class of combination this validator exists to refuse.
+    if args.exact_verify == Some(true) && args.ssm_h_dtype.as_deref() == Some("f16") {
+        v.push(Violation::new(
+            "--exact-verify together with --ssm-h-dtype f16",
+            "the exact MTP-verify chain (issue #435) runs FP32-reader kernels and must \
+             never read the FP16 h-state pool, so with f16 the exact request would be \
+             silently dropped and spec-on output would NOT equal spec-off",
+            "drop --ssm-h-dtype f16 (f32 is the default), or drop --exact-verify",
+        ));
+    }
     check_enum(
         &mut v,
         "--mtp-quantization",
@@ -94,6 +135,17 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             ),
             "the value does not parse to any supported KV cache format.",
             "use one of: fp8, bf16, nvfp4 (or a turbo* TurboQuant-Plus variant).",
+        ));
+    }
+
+    // ── FP8 KV headroom: < 1.0 shrinks the frozen scale below the observed
+    // absmax, guaranteeing clipping on the very tokens it was measured from. ──
+    if args.fp8_kv_headroom < 1.0 {
+        v.push(Violation::new(
+            format!("--fp8-kv-headroom {} is below 1.0.", args.fp8_kv_headroom),
+            "the frozen FP8 KV scale covers headroom× the first-observe absmax; \
+             a multiplier under 1.0 clips the very values it was measured from.",
+            "use a value ≥ 1.0 (default 2.0).",
         ));
     }
 
@@ -256,138 +308,5 @@ fn format_violations(v: &[Violation]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    /// Parse a `spark serve ...` command line into `ServeArgs` for testing.
-    fn parse(extra: &[&str]) -> ServeArgs {
-        let mut argv = vec!["spark", "serve", "dummy/model", "--model-name", "dummy"];
-        argv.extend_from_slice(extra);
-        match super::super::Cli::parse_from(argv).command {
-            super::super::Command::Serve(a) => a,
-            super::super::Command::Benchmark(_) => unreachable!("this test parses a serve command"),
-        }
-    }
-
-    #[test]
-    fn defaults_are_valid() {
-        assert!(validate_serve_args(&parse(&[])).is_ok());
-    }
-
-    #[test]
-    fn fp8_calibration_requires_fp8_kv() {
-        let err = validate_serve_args(&parse(&[
-            "--kv-cache-dtype",
-            "bf16",
-            "--fp8-kv-calibration-tokens",
-            "256",
-        ]))
-        .unwrap_err();
-        assert!(err.contains("--fp8-kv-calibration-tokens"));
-        assert!(err.contains("fix:"));
-        // The same flags with an fp8 cache are fine.
-        assert!(
-            validate_serve_args(&parse(&[
-                "--kv-cache-dtype",
-                "fp8",
-                "--fp8-kv-calibration-tokens",
-                "256",
-            ]))
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn require_auth_needs_a_token() {
-        assert!(validate_serve_args(&parse(&["--require-auth"])).is_err());
-        assert!(validate_serve_args(&parse(&["--require-auth", "--auth-token", "sk-x"])).is_ok());
-    }
-
-    #[test]
-    fn num_drafts_needs_speculative() {
-        assert!(validate_serve_args(&parse(&["--num-drafts", "2"])).is_err());
-        assert!(validate_serve_args(&parse(&["--num-drafts", "2", "--speculative"])).is_ok());
-    }
-
-    #[test]
-    fn rank_must_be_below_world_size() {
-        assert!(validate_serve_args(&parse(&["--rank", "2", "--world-size", "2"])).is_err());
-        assert!(validate_serve_args(&parse(&["--rank", "1", "--world-size", "2"])).is_ok());
-    }
-
-    #[test]
-    fn ep_size_cannot_exceed_world_size() {
-        assert!(validate_serve_args(&parse(&["--ep-size", "2"])).is_err());
-        assert!(validate_serve_args(&parse(&["--ep-size", "2", "--world-size", "2"])).is_ok());
-    }
-
-    #[test]
-    fn disable_thinking_conflicts_with_budget() {
-        assert!(
-            validate_serve_args(&parse(&[
-                "--disable-thinking",
-                "--max-thinking-budget",
-                "2048"
-            ]))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn flagship_recipe_is_accepted() {
-        // The canonical 35B flagship serve recipe (PR #278) passes
-        // `--kv-cache-dtype bf16 --kv-high-precision-layers auto` together —
-        // redundant but valid. The validator must NOT reject it.
-        assert!(
-            validate_serve_args(&parse(&[
-                "--kv-cache-dtype",
-                "bf16",
-                "--lm-head-dtype",
-                "nvfp4",
-                "--kv-high-precision-layers",
-                "auto",
-                "--scheduling-policy",
-                "slai",
-                "--speculative",
-                "--num-drafts",
-                "1",
-                "--mtp-quantization",
-                "bf16",
-                "--enable-prefix-caching",
-            ]))
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn enum_typos_are_rejected() {
-        let err = validate_serve_args(&parse(&["--scheduling-policy", "fifoo"])).unwrap_err();
-        assert!(err.contains("--scheduling-policy"));
-        assert!(err.contains("fifo, slai"));
-    }
-
-    #[test]
-    fn multiple_violations_all_reported() {
-        let err = validate_serve_args(&parse(&[
-            "--require-auth",
-            "--num-drafts",
-            "3",
-            "--rank",
-            "5",
-            "--world-size",
-            "2",
-        ]))
-        .unwrap_err();
-        assert!(err.contains("[1]"));
-        assert!(err.contains("[2]"));
-        assert!(err.contains("[3]"));
-    }
-
-    #[test]
-    fn gpu_mem_util_range_enforced() {
-        assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "1.5"])).is_err());
-        assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "0.0"])).is_err());
-        assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "0.9"])).is_ok());
-    }
-}
+#[path = "validate_tests.rs"]
+mod tests;

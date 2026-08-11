@@ -90,6 +90,9 @@ impl TransformerModel {
             (seq.seq_len + 2) as u32,
             (seq.seq_len + 3) as u32,
         ];
+        // SAFETY: `positions` is the 4-element `[u32; _]` literal directly
+        // above (one entry per K=4 verify row), size 4 * 4 = 16 — exactly the
+        // byte length requested. `u32` is POD and the local outlives the copy.
         let pos_bytes = unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, 16) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
 
@@ -101,6 +104,9 @@ impl TransformerModel {
             let physical_block = seq.physical_block_for(block_idx).unwrap_or(0);
             slots[t] = (physical_block as i64) * (bs as i64) + (block_offset as i64);
         }
+        // SAFETY: `slots` is the `[0i64; 4]` declared above — zero-init at
+        // declaration and then fully overwritten by the `for t in 0..k` loop
+        // (`k == 4`). Size 4 * 8 = 32, exactly the byte length requested.
         let slot_bytes = unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, 32) };
         self.gpu
             .copy_h2d_async(slot_bytes, meta_base.offset(256), stream)?;
@@ -111,6 +117,8 @@ impl TransformerModel {
             (seq.seq_len + 3) as i32,
             (seq.seq_len + 4) as i32,
         ];
+        // SAFETY: `seq_lens` is the 4-element `[i32; _]` literal directly
+        // above, size 4 * 4 = 16 — exactly the byte length requested.
         let sl_bytes = unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, 16) };
         self.gpu
             .copy_h2d_async(sl_bytes, meta_base.offset(512), stream)?;
@@ -130,6 +138,13 @@ impl TransformerModel {
                 bt_buf[row * mb + j] = block as i32;
             }
         }
+        // SAFETY: `bt_buf.len() == needed` in BOTH arms of the `if needed <=
+        // 1024` above — the stack arm slices `bt_buf_stack[..needed]`, the
+        // heap arm is `vec![0i32; needed]` whose LEN (not just capacity) is
+        // `needed`. So `needed * 4 == size_of_val(bt_buf)`; the read never
+        // reaches a `Vec`'s uninitialised spare capacity. Both arms are
+        // zero-initialised before the `for row in 0..k` fill, so every byte
+        // is initialised even when `block_table.len() < mb`.
         let bt_bytes =
             unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu

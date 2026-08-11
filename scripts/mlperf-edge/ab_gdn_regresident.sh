@@ -22,10 +22,17 @@
 # That 18.8% (771 s) IS the warm-replay path, run over a p50 of 210 new tokens
 # through 48 GDN layers every turn.
 #
-# TRAP: ATLAS_GDN_REGRESIDENT is a PRESENCE flag (`var_os(..).is_some()`).
-# `=0` ENABLES it. The control leg must have the variable ABSENT, which is why
-# the two legs below are separate `docker run` invocations rather than one
-# parameterised env line.
+# TRAP: there is no `ATLAS_GDN_REGRESIDENT` variable. PR #369 folded this
+# lever default-ON and the only thing Rust reads is the NEGATIVE kill switch
+# (model_levers.rs: `var("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Ok("1")`).
+# Setting the positive spelling does NOTHING, so until this was fixed both legs
+# below ran the identical configuration — regresident ON — and any delta they
+# reported was noise. The legs are therefore inverted relative to the original
+# script: the DEFAULT leg is the one with the feature, and the control leg is
+# the one that has to switch it off.
+#
+# Note the kill switch is an exact `== "1"` test, not a presence test:
+# `ATLAS_NO_GDN_REGRESIDENT=0` leaves the feature ON.
 #
 # Usage: ab_gdn_regresident.sh <atlas_bin> <outdir> [reps]
 set -u
@@ -42,7 +49,7 @@ serve() { # $1 = leg name, $2 = extra -e args (may be empty)
   # shellcheck disable=SC2086
   sudo docker run -d --name atlas-rr-ab --network host --gpus all --ipc=host \
     -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
+    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
     -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $2 \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \
@@ -70,8 +77,8 @@ banners() {
 
 for leg in control regresident; do
   case $leg in
-    control)     EXTRA="" ;;                          # variable ABSENT — see TRAP above
-    regresident) EXTRA="-e ATLAS_GDN_REGRESIDENT=1" ;;
+    control)     EXTRA="-e ATLAS_NO_GDN_REGRESIDENT=1" ;;  # kill switch => WY4
+    regresident) EXTRA="" ;;                               # default => ON, see TRAP
   esac
   serve "$leg" "$EXTRA" || exit 1
   echo "=== leg=$leg serve up ==="

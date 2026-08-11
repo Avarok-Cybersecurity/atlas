@@ -21,8 +21,11 @@ function atlasGenerators() {
     apply: () => true, // build + serve
     buildStart() {
       // Structural generators: a nonzero exit is a hard, loud build failure.
+      // (gen-gates degrades its cross-branch leg internally; its committed-
+      // records leg is structural.)
       run('gen-models.mjs');
       run('gen-benchmarks.mjs');
+      run('gen-gates.mjs');
       // Best-effort: gh/network flakiness must never fail the build.
       try {
         run('gen-stars.mjs');

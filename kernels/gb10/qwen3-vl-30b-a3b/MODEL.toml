@@ -72,3 +72,38 @@ thinking_default = true
 thinking_in_tools = true
 # 2026-05-23 sweep: explicit 2048 (was unset → 256 default).
 max_thinking_budget = 2048
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels` (17 lookups).
+# Every entry is a try_kernel() probe; every fallback dispatch reaches
+# resolves on this target.
+[expected_absent.vision_encoder]
+vision_add_bias = """
+TC-pipelined ViT GEMM epilogue; gated on k_gemm_pipelined && k_add_bias
+(vit_block.rs:31), falls back to vision_gemm_bias which resolves."""
+vit_rope_deinterleave = """
+GEMM-based ViT SDPA family. Per enc_impl/init.rs this is SOFT: only the
+qwen3.6/Holo vision tree ships it; older trees (qwen3-vl-30b, gemma-4)
+leave it null and vit_block auto-falls back to k_attn (vit_block.rs:220),
+the universal warp-per-query attention that resolves here."""
+vit_softmax_rows = "Same SOFT GEMM-ViT SDPA family; auto-fallback to k_attn."
+vit_scatter_head = "Same SOFT GEMM-ViT SDPA family; auto-fallback to k_attn."
+
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = "3-deep p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves). Unmeasured for this target."
+w4a16_gemm_t_k64_p3 = "Same family; k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; 0-handle, dispatch gated on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; gated on handle != 0 in prefill_weights, falls back through the resolved w4a16 path."
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = "Shipped only in nemotron-labs-3-puzzle's shadow; dispatch falls back to w4a4_gemm (resolves). Unmeasured."
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = "Native-MXFP4 E8M0 variant, shipped only in deepseek-v4-flash. NVFP4 target uses the resolved ptrtable grouped GEMM."
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t variant."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved ptrtable_t_k64 variant."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up variant."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same E8M0 family — NVFP4 target uses the resolved fused_gate_up_k64 variant."
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FUSED-FP4 gate_up (Holo-3.1 family); dispatch checks handle != 0 before firing."
+moe_w4a16_fused_gate_up_t_k64_m128 = "M=128 Block-D variant shipped only in minimax-m2-229b; dispatch falls through to M=64."
+moe_w4a16_down_t_k64_fp4 = "FP4 down-projection twin; forward_prefill_routed gates on down_fp4 && handle != 0."

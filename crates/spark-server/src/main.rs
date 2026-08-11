@@ -83,7 +83,10 @@ async fn main() -> Result<()> {
     // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
     let no_tui = match &cli.command {
-        Command::Serve(args) => args.no_tui || args.rank > 0,
+        // `--check-kernels` is a script's entry point too: it prints a report
+        // and a JSON line on stdout and exits, so a dashboard would take the
+        // terminal, garble both, and have nothing to show afterwards.
+        Command::Serve(args) => args.no_tui || args.rank > 0 || args.check_kernels,
         // The benchmark subcommand is a script's entry point: always plain, so
         // nothing here reaches `tui::start` or takes the terminal.
         Command::Benchmark(_) => true,
@@ -152,7 +155,14 @@ async fn main() -> Result<()> {
                     tui::stop_and_join(std::time::Duration::from_secs(2));
                     tui::terminal_guard::restore();
                     tui::init::flush_tee();
-                    std::process::exit(0);
+                    // A fault can latch during startup (weight upload, warmup),
+                    // so this exit needs the same status mapping as the one
+                    // below — otherwise the escape hatch silently reports a
+                    // poisoned context as a clean stop.
+                    std::process::exit(atlas_core::fault::exit_code(
+                        true,
+                        atlas_core::fault::global().fault(),
+                    ));
                 }
             }
         }
@@ -165,5 +175,26 @@ async fn main() -> Result<()> {
     tui::stop_and_join(std::time::Duration::from_secs(2));
     tui::terminal_guard::restore();
     tui::init::flush_tee();
-    result
+
+    // A GPU fault drains and returns `Ok` by the same path as `SIGTERM`
+    // (issue #429), so without this the two are indistinguishable to a
+    // supervisor and `restart: on-failure` leaves the endpoint down. Returning
+    // `result` unchanged when healthy keeps every other exit byte-identical.
+    match atlas_core::fault::global().fault() {
+        Some(reason) => {
+            if let Err(e) = &result {
+                tracing::error!("{e:#}");
+            }
+            tracing::error!(
+                "Exiting after a fatal GPU fault ({reason}). The CUDA context is \
+                 destroyed and cannot be recovered in-process; restart the server."
+            );
+            std::process::exit(atlas_core::fault::exit_code(result.is_ok(), Some(reason)));
+        }
+        None => result,
+    }
 }
+
+#[cfg(test)]
+#[path = "main_exit_tests.rs"]
+mod main_exit_tests;

@@ -116,7 +116,11 @@ impl NemotronMoeLayer {
         // 10 runs each, verified on a cold server (not thermal). The SSM copies
         // (4.3 GB, allocated during the load itself) cost nothing measurable, so the
         // two are gated separately. Set ATLAS_SHARED_FP8_PREFILL=1 to take the trade.
-        let fp8_prefill = std::env::var("ATLAS_SHARED_FP8_PREFILL").is_ok();
+        // Under native FP8 the NVFP4 shared weights are `QuantizedWeight::null()`
+        // and every derived copy below is built FROM them, so build nothing.
+        let native_shared =
+            self.weights.shared_up_fp8.is_some() || self.weights.shared_down_fp8.is_some();
+        let fp8_prefill = !native_shared && std::env::var("ATLAS_SHARED_FP8_PREFILL").is_ok();
         if fp8_prefill
             && self.fp8_gemm_m128_k.0 != 0
             && let Ok(pdq_k) = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")
@@ -132,7 +136,8 @@ impl NemotronMoeLayer {
                 .predequant_to_fp8(gpu, pdq_k, h, shared_inter, 0)
                 .ok();
         }
-        if self.shared_up_pd_fp8.is_none() || self.shared_down_pd_fp8.is_none() {
+        if !native_shared && (self.shared_up_pd_fp8.is_none() || self.shared_down_pd_fp8.is_none())
+        {
             self.shared_up_t = self
                 .weights
                 .shared_up

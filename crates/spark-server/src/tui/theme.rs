@@ -10,11 +10,52 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+/// How much color this terminal is to be given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Depth {
+    /// The user asked for none. Every signal this palette carries in hue has
+    /// to be carried by a modifier instead, or it is simply gone.
+    None,
+    /// The pinned 256-color fallback indices.
+    Ansi256,
+    /// 24-bit.
+    True,
+}
+
+/// Resolve the depth from the two environment variables that decide it, as
+/// values rather than by reading the environment — so the precedence is
+/// testable without a process to set variables in.
+///
+/// ★ **`NO_COLOR` outranks `COLORTERM`, and it is not a boolean.** Per
+/// <https://no-color.org> the variable counts when it is present and non-empty,
+/// *whatever* it is set to — so `NO_COLOR=0` means no color, and only
+/// `NO_COLOR=` (empty) is ignored. Parsing it as a flag is the standard way to
+/// get this wrong. The precedence is the substantive half: `COLORTERM` says
+/// what the terminal CAN do and `NO_COLOR` says what the user WANTS, and a
+/// capability must never overrule a preference.
+pub fn depth_of(no_color: Option<&str>, colorterm: Option<&str>) -> Depth {
+    if no_color.is_some_and(|v| !v.is_empty()) {
+        return Depth::None;
+    }
+    match colorterm {
+        Some(v) if v.contains("truecolor") || v.contains("24bit") => Depth::True,
+        _ => Depth::Ansi256,
+    }
+}
+
+/// This process's color depth. Read live rather than cached, because the
+/// palette has always been read live and a `OnceLock` here would let whichever
+/// test ran first decide the answer for the rest of the binary.
+pub fn depth() -> Depth {
+    depth_of(
+        std::env::var("NO_COLOR").ok().as_deref(),
+        std::env::var("COLORTERM").ok().as_deref(),
+    )
+}
+
 /// Whether the terminal advertises 24-bit color.
 fn truecolor() -> bool {
-    std::env::var("COLORTERM")
-        .map(|v| v.contains("truecolor") || v.contains("24bit"))
-        .unwrap_or(false)
+    depth() == Depth::True
 }
 
 /// A themed color: truecolor value + 256-palette fallback index.
@@ -23,10 +64,13 @@ pub struct C(pub u8, pub u8, pub u8, pub u8);
 
 impl C {
     pub fn color(self) -> Color {
-        if truecolor() {
-            Color::Rgb(self.0, self.1, self.2)
-        } else {
-            Color::Indexed(self.3)
+        match depth() {
+            // `Reset` rather than a black/white guess: the terminal's own
+            // default is the only thing guaranteed to be legible against the
+            // background the user actually chose.
+            Depth::None => Color::Reset,
+            Depth::Ansi256 => Color::Indexed(self.3),
+            Depth::True => Color::Rgb(self.0, self.1, self.2),
         }
     }
 }
@@ -69,7 +113,31 @@ pub fn brand_green() -> Style {
     Style::default().fg(GREEN.color())
 }
 pub fn warn() -> Style {
-    Style::default().fg(WARN.color())
+    let s = Style::default().fg(WARN.color());
+    // `error()` is bold in every mode, so without this a warning and an info
+    // line are the same glyphs in the same weight once the hue is gone — and
+    // the level ramp is the only thing that says which is which.
+    if depth() == Depth::None {
+        s.add_modifier(Modifier::BOLD)
+    } else {
+        s
+    }
+}
+
+/// The style that says "this row is the one you are on".
+///
+/// ★ The six render modules that draw a selectable list each wrote
+/// `Style::default().bg(theme::BG_SELECTION.color())` inline. That is fine
+/// until the background is `Color::Reset` — under `NO_COLOR` the selected row
+/// becomes indistinguishable from every other row, and a list you cannot see
+/// your position in is not usable at all. Reverse video carries the same
+/// meaning with no color, and there is now one place that decides.
+pub fn selected() -> Style {
+    if depth() == Depth::None {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default().bg(BG_SELECTION.color())
+    }
 }
 pub fn error() -> Style {
     Style::default()
@@ -80,10 +148,15 @@ pub fn error() -> Style {
 /// Panel border style; `focused` flips it to brand cyan (color is the focus
 /// signal — same glyph weight everywhere).
 pub fn border(focused: bool) -> Style {
-    if focused {
-        brand_cyan()
+    if !focused {
+        return Style::default().fg(BORDER_DIM.color());
+    }
+    // Focus is a colour signal by design ("same glyph weight everywhere").
+    // With no colour there is no signal left, so it borrows weight instead.
+    if depth() == Depth::None {
+        Style::default().add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(BORDER_DIM.color())
+        brand_cyan()
     }
 }
 
@@ -111,6 +184,10 @@ pub fn level_style(level: tracing::Level) -> Style {
 /// three hard bands (the fallback indices).
 pub fn gradient_at(t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
+    // The bar still fills; it just fills in the terminal's own ink.
+    if depth() == Depth::None {
+        return Color::Reset;
+    }
     if !truecolor() {
         return if t < 0.34 {
             Color::Indexed(PURPLE.3)
@@ -152,6 +229,12 @@ pub fn pressure_color(frac: f64) -> Option<Color> {
 /// 256-color mode there is no room to interpolate, so it alternates between the
 /// cyan index and the dim border index at the same cadence.
 pub fn glow(tick: u64) -> Color {
+    // A pulse is a hue animation and nothing else, so with no colour there is
+    // nothing to pulse — a steady default beats a ring that flickers between
+    // two identical shades of nothing.
+    if depth() == Depth::None {
+        return Color::Reset;
+    }
     let phase = (tick % 16) as f64 / 16.0;
     // 0 -> 1 -> 0 over the period, never fully dark: the ring stays legible.
     let t = 0.35 + 0.65 * (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0;
@@ -186,3 +269,7 @@ pub fn cell_style(style: atlas_plugin::CellStyle) -> Style {
 
 /// Braille spinner frames (1 rev/s at the 10 Hz tick).
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+#[cfg(test)]
+#[path = "theme_tests.rs"]
+mod tests;

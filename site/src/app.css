@@ -324,6 +324,10 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem 2.5rem; backgro
 .fcol h4 { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--t3); margin-bottom: 0.75rem; }
 .fcol a { display: block; font-size: 0.83rem; color: var(--t2); text-decoration: none; margin-bottom: 0.45rem; transition: color 0.2s; }
 .fcol a:hover { color: var(--accent); }
+.footer-member { max-width: 1080px; margin: 2.5rem auto 0; }
+.footer-member a { display: inline-block; line-height: 0; }
+.footer-member img { width: 140px; height: auto; opacity: 0.55; transition: opacity 0.2s; }
+.footer-member a:hover img, .footer-member a:focus-visible img { opacity: 1; }
 .footer-legal { max-width: 1080px; margin: 2rem auto 0; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.68rem; color: var(--t3); line-height: 1.6; }
 .footer-legal .tm { margin-top: 0.6rem; }
 

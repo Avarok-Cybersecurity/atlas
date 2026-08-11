@@ -103,14 +103,17 @@ pub(super) fn load_layers(
     };
     let native_fp8 = quant_format == QuantFormat::Fp8;
     // FAST_MOE=full (transposed prefill tables + the CUTLASS grouped NVFP4 MoE)
-    // applies to any Holo-family (holo3_1_moe) NVFP4 MoE — both modelopt
-    // MIXED_PRECISION (Holo-3.1) and uniform NVFP4 (e.g. compressed-tensors,
-    // Ornith-35B). The transpose/grouped path operates on the loaded NVFP4 experts
-    // regardless of source quant format; the mixed-precision-specific handling
-    // (fp8 experts, native-modelopt SSM/attn) stays gated on
-    // `modelopt_mixed_precision` and simply doesn't fire for the uniform case.
-    let holo_nvfp4_moe = config.model_type == "holo3_1_moe" && quant_format == QuantFormat::Nvfp4;
-    let low_memory_modelopt_moe = (modelopt_mixed_precision || holo_nvfp4_moe)
+    // applies to ANY NVFP4 MoE: the transpose/grouped path operates on the loaded
+    // NVFP4 experts regardless of source quant format (modelopt MIXED_PRECISION,
+    // compressed-tensors, uniform NVFP4). Keyed on the ARCHITECTURE (MoE + NVFP4),
+    // not a model_type string — holo3_1_moe / qwen3_5_moe / qwen3_6_moe are the
+    // same arch at the weight level (factory::loader_for_config maps all three to
+    // Qwen35WeightLoader), so gating on the label silently dropped sibling and
+    // third-party NVFP4-MoE checkpoints to the slow moe_w4a16 path. The
+    // mixed-precision-specific handling (fp8 experts, native-modelopt SSM/attn)
+    // stays gated on `modelopt_mixed_precision` and simply doesn't fire otherwise.
+    let nvfp4_moe = config.num_experts > 0 && quant_format == QuantFormat::Nvfp4;
+    let low_memory_modelopt_moe = (modelopt_mixed_precision || nvfp4_moe)
         && std::env::var("ATLAS_HOLO_LOW_MEMORY_MOE").ok().as_deref() == Some("1");
     let holo_fast_moe_mode = if low_memory_modelopt_moe {
         holo_fast_moe_mode()

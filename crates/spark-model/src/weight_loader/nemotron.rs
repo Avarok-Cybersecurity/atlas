@@ -186,6 +186,7 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         gpu.free(o_old.weight_scale)?;
                         attn.o_proj = o_sharded;
                     }
+                    let mut bf16_o_dense: Option<DenseWeight> = None;
                     let (q_nv, k_nv, v_nv) = if is_nvfp4 {
                         (q_nvfp4, k_nvfp4, v_nvfp4)
                     } else {
@@ -249,44 +250,63 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                             }
                             o_dense.weight = op;
                         }
-                        let q = quantize_to_nvfp4(
-                            &attn.q_proj,
-                            num_heads * hd,
-                            h,
-                            gpu,
-                            absmax_k,
-                            quantize_k,
-                            stream,
-                        )?;
-                        let k = quantize_to_nvfp4(
-                            &attn.k_proj,
-                            kv_heads * hd,
-                            h,
-                            gpu,
-                            absmax_k,
-                            quantize_k,
-                            stream,
-                        )?;
-                        let v = quantize_to_nvfp4(
-                            &attn.v_proj,
-                            kv_heads * hd,
-                            h,
-                            gpu,
-                            absmax_k,
-                            quantize_k,
-                            stream,
-                        )?;
-                        let o = quantize_to_nvfp4(
-                            &o_dense,
-                            h,
-                            num_heads * hd,
-                            gpu,
-                            absmax_k,
-                            quantize_k,
-                            stream,
-                        )?;
-                        attn.o_proj = o;
-                        (Some(q), Some(k), Some(v))
+                        // Keep attention in BF16 when the checkpoint ships it that
+                        // way. ModelOpt left Q/K/V/O unquantized ON PURPOSE here:
+                        // Puzzle is Mamba-dominant with only 9 full-attention
+                        // layers, so those layers carry the long-range retrieval
+                        // and are the last place to spend precision — and at
+                        // ~1.2 GB BF16 they are cheap to keep. Crushing them
+                        // 16-bit -> 4-bit saved ~0.9 GB and degraded exactly what
+                        // they exist for. `ATLAS_NEMOTRON_BF16_ATTN=0` restores
+                        // the old quantize-everything behaviour for an A/B.
+                        let keep_bf16_attn =
+                            std::env::var("ATLAS_NEMOTRON_BF16_ATTN").as_deref() != Ok("0");
+                        if keep_bf16_attn {
+                            tracing::info!(
+                                "L{i} attention: keeping checkpoint BF16 Q/K/V/O (no NVFP4 requant)"
+                            );
+                            bf16_o_dense = Some(o_dense);
+                            (None, None, None)
+                        } else {
+                            let q = quantize_to_nvfp4(
+                                &attn.q_proj,
+                                num_heads * hd,
+                                h,
+                                gpu,
+                                absmax_k,
+                                quantize_k,
+                                stream,
+                            )?;
+                            let k = quantize_to_nvfp4(
+                                &attn.k_proj,
+                                kv_heads * hd,
+                                h,
+                                gpu,
+                                absmax_k,
+                                quantize_k,
+                                stream,
+                            )?;
+                            let v = quantize_to_nvfp4(
+                                &attn.v_proj,
+                                kv_heads * hd,
+                                h,
+                                gpu,
+                                absmax_k,
+                                quantize_k,
+                                stream,
+                            )?;
+                            let o = quantize_to_nvfp4(
+                                &o_dense,
+                                h,
+                                num_heads * hd,
+                                gpu,
+                                absmax_k,
+                                quantize_k,
+                                stream,
+                            )?;
+                            attn.o_proj = o;
+                            (Some(q), Some(k), Some(v))
+                        }
                     };
                     // Transposed Q/K/V/O so prefill uses `w4a16_gemm_t` (FP8 MMA,
                     // N128/K32, cp.async) instead of the base `w4a16_gemm`. Same
@@ -304,7 +324,17 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                     let vt = v_nv
                         .as_ref()
                         .and_then(|w| w.transpose_for_gemm(gpu, kv_dim, h).ok());
-                    let ot = attn.o_proj.transpose_for_gemm(gpu, h, q_dim).ok();
+                    // Keep-BF16 attention leaves `attn.o_proj` as the NULL
+                    // placeholder (`load_nemotron_attention` returns the real
+                    // weight via `o_dense`); transposing it would launch
+                    // `transpose_u8` on a NULL pointer, and the swallowed `.ok()`
+                    // error left the CUDA context poisoned (700 at the next
+                    // module load). Only transpose a real quantized o_proj.
+                    let ot = if attn.o_proj.is_null() {
+                        None
+                    } else {
+                        attn.o_proj.transpose_for_gemm(gpu, h, q_dim).ok()
+                    };
 
                     let mut attn_layer = Qwen3AttentionLayer::new_ungated(
                         norm,
@@ -322,6 +352,10 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         config.fp8_kv_calibration_tokens,
                         config,
                     )?;
+                    if let Some(od) = bf16_o_dense {
+                        // Dispatch checks `o_dense_bf16` first (see gemma4 loader).
+                        attn_layer.set_o_dense_bf16(od);
+                    }
                     attn_layer.set_prefill_weights(qt, kt, vt, ot);
                     layers.push(Box::new(attn_layer));
                     attn_idx += 1;

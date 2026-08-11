@@ -213,6 +213,7 @@ pub fn start_chunked_prefill(
             dry_sequence_breakers: Vec::new(),
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
+            pending_draft_conf: Vec::new(),
             inside_thinking: req_enable_thinking && think_end_token.is_some(),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -262,7 +263,7 @@ pub fn start_chunked_prefill(
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
         };
-        finish_sequence(model, &mut a);
+        finish_sequence(model, &mut a, sched.limits.max_seq_len);
         return Ok(StartPrefillResult::Finished);
     }
 
@@ -549,6 +550,7 @@ pub fn start_chunked_prefill(
                 dry_sequence_breakers: Vec::new(),
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
+                pending_draft_conf: Vec::new(),
                 inside_thinking: req_enable_thinking && think_end_token.is_some(),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
@@ -598,7 +600,7 @@ pub fn start_chunked_prefill(
                 timeout_at: req_timeout_at,
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
             };
-            finish_sequence(model, &mut a);
+            finish_sequence(model, &mut a, sched.limits.max_seq_len);
             Ok(StartPrefillResult::Finished)
         } else {
             Ok(StartPrefillResult::Active(ActiveSeq {
@@ -634,6 +636,7 @@ pub fn start_chunked_prefill(
                 dry_sequence_breakers: Vec::new(),
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
+                pending_draft_conf: Vec::new(),
                 inside_thinking: spontaneous_think
                     || (req_enable_thinking && think_end_token.is_some()),
                 enable_thinking: req_enable_thinking,

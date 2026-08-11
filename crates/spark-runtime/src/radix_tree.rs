@@ -151,7 +151,7 @@ impl PrefixCache for RadixTree {
         block_size: usize,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> Vec<u32> {
+    ) -> crate::prefix_cache::InsertAcquired {
         self.inner.lock().insert(
             tokens,
             block_table,
@@ -172,7 +172,7 @@ impl PrefixCache for RadixTree {
         session_hash: u64,
         matched_tokens: usize,
         adapter_id: u64,
-    ) -> (Option<usize>, Vec<u32>) {
+    ) -> (Option<usize>, crate::prefix_cache::InsertAcquired) {
         // Phase 1: insert tree nodes (lock inner, then release)
         let newly_acquired = self.inner.lock().insert(
             tokens,
@@ -260,12 +260,16 @@ impl PrefixCache for RadixTree {
         self.snapshot_index.lock().evict_lru()
     }
 
-    fn evict_snapshot_to_tier(&self) -> Option<(usize, u64)> {
-        self.snapshot_index.lock().evict_to_tier()
+    fn evict_snapshot_to_tier(&self, min_tokens: usize) -> Option<crate::prefix_cache::TierEvict> {
+        self.snapshot_index.lock().evict_to_tier(min_tokens)
     }
 
     fn promote_snapshot(&self, key: u64, new_slot: usize) -> bool {
         self.snapshot_index.lock().promote(key, new_slot)
+    }
+
+    fn forget_snapshot_tier_key(&self, key: u64) -> bool {
+        self.snapshot_index.lock().forget_tiered(key)
     }
 
     fn snapshot_count(&self) -> usize {

@@ -9,9 +9,7 @@ If you are not redirected automatically, follow this link to the [Rust API refer
 
 The API reference is generated from the crate source with `cargo doc --workspace --no-deps` on every merge to `main`. Top-level crates:
 
-- [`atlas_core`](/api/atlas_core/) — target abstractions, tensor, dtype, kernel registry
-- [`atlas_quant`](/api/atlas_quant/) — NVFP4 / FP8 quantization kernels
-- [`atlas_norm`](/api/atlas_norm/) / [`atlas_activation`](/api/atlas_activation/) / [`atlas_embed`](/api/atlas_embed/) / [`atlas_reduce`](/api/atlas_reduce/) — primitive op traits
+- [`atlas_core`](/api/atlas_core/) — target abstractions, tensor, dtype, kernel registry, host-side FP8/BF16 numerics
 - [`atlas_kernels`](/api/atlas_kernels/) — embedded PTX registry
 - [`spark_runtime`](/api/spark_runtime/) — GPU backend, KV cache, sampler
 - [`spark_comm`](/api/spark_comm/) — collective-op trait + NCCL impl

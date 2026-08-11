@@ -1,0 +1,157 @@
+name: Kernel compile
+
+# CI COMPILED NO CUDA AT ALL until this job existed.
+#
+# `ci.yml` sets `ATLAS_SKIP_BUILD: "1"` repo-wide, which makes
+# `atlas-kernels/build.rs` emit a stub `target_ptx.rs` and invoke nvcc zero
+# times. That is the right default for the Rust jobs — they need no GPU and no
+# toolchain, and a 3583-invocation kernel build would dominate every PR — but it
+# means a `.cu` change was never compiled by anything before a human ran it on a
+# DGX.
+#
+# The cost was measured, not hypothesised. Three PRs reviewed on 2026-08-08
+# (#334 GGUF, #335 LoRA, #350 Laguna) carried roughly 2,000 lines of new CUDA
+# between them. Nothing in CI compiled a single line of it. One of the three
+# also shipped a half-converted kernel — a BR=64 twin still reading `q_len`
+# where the BR=32 path had been moved to `q_len_eff`, an out-of-bounds read that
+# a compile would not have caught but that nobody was even in a position to look
+# for, because the file had never been built outside the author's box.
+#
+# This job closes the "does it compile" half. It does NOT execute kernels: that
+# needs a GB10 and stays with the benchmark gates.
+
+on:
+  pull_request:
+    paths:
+      - 'kernels/**'
+      - 'crates/atlas-kernels/**'
+      - '.github/workflows/kernel-compile.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'kernels/**'
+      - 'crates/atlas-kernels/**'
+
+# A second push supersedes the first: this job is minutes long and its only
+# output is pass/fail on the tip.
+concurrency:
+  group: kernel-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  compile:
+    name: nvcc -> PTX (all gb10 targets)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # The CUDA toolkit, not a GPU. `nvcc --ptx` is a pure cross-compile: it
+    # emits device assembly for `-arch=sm_121a` on a host with no NVIDIA
+    # hardware present, so no self-hosted runner is needed.
+    #
+    # This is much cheaper than the raw file count suggests. `build.rs`
+    # deduplicates by (source, arch, sorted flags) and byte-copies the rest, so
+    # the 22 gb10 targets collapse to **449 unique nvcc invocations out of 3583
+    # (8.0x dedup)**. Measured end-to-end on a DGX (20 workers): **29.7 s**.
+    # A 4-vCPU hosted runner should land in single-digit minutes.
+    #
+    # Tag rather than digest, deliberately inconsistent with this repo's
+    # sha-pinned actions: a floating patch of the SAME CUDA minor is what we
+    # want here, since the toolchain is what the DGX boxes track. Pin the digest
+    # if a patch bump ever breaks the build.
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    timeout-minutes: 30
+    # Container jobs default to `sh -e {0}`, NOT bash — on Ubuntu that is dash,
+    # which has no `pipefail`, so every `set -euo pipefail` below dies with
+    # "Illegal option -o pipefail" before running a line. (It did; that was this
+    # workflow's first red run.) The repo's other jobs are unaffected because
+    # they are not containerised and get bash from the runner image.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          # rustup via `run:` rather than a toolchain action: this repo pins
+          # every action by SHA and that requirement is transitive, so adding a
+          # third-party action here would widen the supply-chain surface to
+          # save three lines.
+          apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config >/dev/null
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Compile every gb10 kernel target
+        env:
+          # ★ NOT set to 1. That is the whole point of this job.
+          ATLAS_TARGET_MODEL: "*"
+          CUDARC_CUDA_VERSION: "13000"
+          PATH_CUDA: /usr/local/cuda/bin
+        run: |
+          set -euo pipefail
+          export PATH="$PATH_CUDA:$PATH"
+          nvcc --version | tail -2
+
+          # Run the REAL build script, not a hand-rolled nvcc loop in YAML.
+          # `build.rs` owns target resolution, the common/shadow merge by file
+          # stem, per-target `KERNEL.toml` flags, and the strict-warning
+          # promotion ("clippy for kernels"). Reimplementing any of that here
+          # would create a second source of truth that drifts silently — and
+          # would be a weaker check than the one it imitates.
+          cargo build -p atlas-kernels 2>&1 | tail -40
+
+      - name: Confirm kernels were actually compiled
+        run: |
+          set -euo pipefail
+          # A build that silently skipped would otherwise pass this job green,
+          # which is the failure mode this whole workflow exists to remove.
+          #
+          # Two rejected formulations, both tried against a real tree:
+          #
+          #   * `grep -c ptx_modules` — the skip stub defines `ptx_modules()`
+          #     too (returning an empty Vec), so it passes on a skipped build.
+          #   * "no stub is present" — cargo keeps one `out/` per build-script
+          #     fingerprint and never prunes the old ones, so a tree that has
+          #     ever been built with ATLAS_SKIP_BUILD=1 keeps those stubs
+          #     forever. On a DGX this failed a build that had in fact just
+          #     compiled 14,342 PTX modules.
+          #
+          # The sound assertion is existence, not absence: at least one
+          # generated `target_ptx.rs` must be a REAL one. Fail-closed — an
+          # empty `target/` fails, which is the correct reading of "nothing
+          # was compiled".
+          real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
+                   | grep -c 'do not edit' || true)
+          if [ "${real:-0}" -eq 0 ]; then
+            echo "::error::every generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
+            echo "::error::ATLAS_SKIP_BUILD must not be set for this job."
+            exit 1
+          fi
+          ptx=$(find target -name '*.ptx' | wc -l)
+          echo "compiled $ptx PTX module(s) across $real real target(s)"
+          # 22 gb10 targets produce five figures of PTX; 50 only asserts that
+          # target resolution did not collapse to a near-empty set.
+          if [ "$ptx" -lt 50 ]; then
+            echo "::error::only $ptx PTX modules — expected thousands; the build resolved too few targets"
+            exit 1
+          fi
+
+      - name: Run the PTX registry tests that have never had a runner
+        env:
+          ATLAS_TARGET_MODEL: "*"
+          CUDARC_CUDA_VERSION: "13000"
+          PATH_CUDA: /usr/local/cuda/bin
+        run: |
+          set -euo pipefail
+          export PATH="$PATH_CUDA:$PATH"
+          # `atlas-kernels`'s four `#[ignore]`d tests are marked
+          # "requires nvcc and ATLAS_SKIP_BUILD unset" — which, until this
+          # workflow, described no machine in CI. They have therefore never
+          # run anywhere but a developer's box. They assert more than the
+          # file count above: every module non-empty, every module carrying a
+          # `.version` directive, >= 31 modules per resolved target, and the
+          # default-model lookup resolving.
+          cargo test -p atlas-kernels -- --ignored

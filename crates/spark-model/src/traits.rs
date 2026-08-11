@@ -108,6 +108,16 @@ pub struct SequenceState {
     /// prefill. The model uses this to tag saved snapshots and verify ownership
     /// before restoring. 0 = no session tracking (legacy behavior).
     pub session_hash: u64,
+    /// Ownership stamp for the SINGLE-SLOT whole-prompt hidden capture
+    /// (`mtp_prefill_hidden`). Written by `try_mtp_prefill_capture` when THIS
+    /// sequence's chunk 0 (re)starts the capture, with the model's monotonic
+    /// capture generation. `ensure_drafter_context` prefills the drafter only
+    /// while the stamp still matches the model's current generation — at
+    /// C>=2 interleaved prefills restart the shared capture, and without this
+    /// check a sequence's first propose could pair ITS tokens with ANOTHER
+    /// sequence's captured hiddens (poisoned drafter KV; blind is strictly
+    /// better than poisoned). 0 = never owned a capture.
+    pub mtp_capture_gen: u64,
     /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
     /// prefix hash so two adapters that share a token prefix never reuse each
     /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so
@@ -121,6 +131,38 @@ pub struct SequenceState {
     /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
     /// 0 when prefix caching is disabled or the prompt had no cache match.
     pub cached_prefix_tokens: usize,
+    /// Number of `block_table` entries that came FROM the prefix cache on this
+    /// sequence's lookup (`matched_blocks.len()`). The cache already holds its
+    /// own "+1" KV ref on each of those blocks, and eviction returns exactly ONE
+    /// ref per radix node — so re-bumping them in `cache_sequence` would add a
+    /// ref nothing can ever release, permanently pinning the whole reused prefix
+    /// on every warm turn until the pool wedges. 0 when there was no cache hit.
+    pub cached_prefix_blocks: usize,
+    /// The matched prefix token IDs (`tokens[..cached_prefix_tokens]`) stashed
+    /// at prefix-lookup time. `free_sequence` releases the prefix cache's radix
+    /// refs over these when `tokens` is too short to cover the prefix — i.e. a
+    /// prefill that matched a prefix (bumping radix refs) then FAILED to
+    /// allocate its suffix, so `tokens` was never populated. Without this the
+    /// `release(&tokens)` on the failure path is a no-op and the matched radix
+    /// nodes stay pinned at ref≥2 forever → the pool progressively wedges. Empty
+    /// on the common path (no match / success releases over the full `tokens`).
+    pub prefix_ref_tokens: Vec<u32>,
+    /// Whether the chunk-0 prefix-cache lookup already ran for this sequence.
+    ///
+    /// The lookup is NOT idempotent: it bumps radix refs, `inc_ref`s each
+    /// matched KV block and PUSHES it onto `block_table`. It also runs BEFORE
+    /// `ensure_blocks_through_prefill`, so a chunk-0 prefill that fails to
+    /// allocate its suffix (KV exhausted) leaves all of that applied. The
+    /// preempt-and-retry in `run_standard_chunk_loop` re-enters `prefill_chunk`
+    /// for the SAME chunk, which would run the lookup a second time — appending
+    /// the matched blocks to `block_table` again (so `block_table[i]` no longer
+    /// maps to logical block `i`) and taking a second radix ref that the single
+    /// `release` in `free_sequence` can never balance. This flag makes the
+    /// re-entry a no-op that replays chunk 0's original decision.
+    pub prefix_lookup_applied: bool,
+    /// The `skip` half of the chunk-0 lookup's return value, replayed verbatim
+    /// when `prefix_lookup_applied` short-circuits a retry.
+    pub prefix_lookup_skip: bool,
     /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
     /// guaranteed fully written for THIS sequence — either reused from a valid
     /// prefix-cache match or written by a real prefill pass this turn. Updated
@@ -218,6 +260,54 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// A detached, host-only sequence state: no GPU resources, no SSM
+    /// slot, no layer states, every counter zeroed. The single source
+    /// for the "empty sequence" field defaults — construction sites
+    /// that own real resources build on top of it instead of repeating
+    /// the full literal (NLLB's `alloc_sequence`, the engine-test
+    /// mock), so a new field gets ONE default site. Also the only way
+    /// for other crates to construct a `SequenceState` at all (e.g.
+    /// the scheduler's lifecycle unit tests): `ssm_slot` is
+    /// crate-private by design.
+    pub fn host_only(slot_idx: usize) -> Self {
+        SequenceState {
+            tokens: Vec::new(),
+            block_table: Vec::new(),
+            seq_len: 0,
+            layer_states: Vec::new(),
+            proposer_state: None,
+            slot_idx,
+            ssm_slot: None,
+            marconi_skip_to: 0,
+            marconi_exact_snap: None,
+            session_hash: 0,
+            mtp_capture_gen: 0,
+            adapter_id: 0,
+            chunked_prefill_meta: None,
+            cached_prefix_tokens: 0,
+            cached_prefix_blocks: 0,
+            prefix_ref_tokens: Vec::new(),
+            prefix_lookup_applied: false,
+            prefix_lookup_skip: false,
+            kv_valid_tokens: 0,
+            last_decode_ckpt_block: 0,
+            prompt_len: 0,
+            disk_block_ids: Vec::new(),
+            disk_last_offloaded_per_layer: Vec::new(),
+            collect_prompt_logprobs: None,
+            prompt_logprobs: Vec::new(),
+            // -1 = defer to the installed active adapter (see field docs).
+            adapter_slot: -1,
+            // -1 = no LoRA slot ref held until prefill acquires (Task #25).
+            acquired_adapter_slot: -1,
+            src_lang_id: 0,
+            tgt_lang_id: 0,
+            num_beams: 1,
+            length_penalty: 1.0,
+            early_stopping: false,
+        }
+    }
+
     /// SSM-pool slot index for this sequence, if it has GDN/SSM (linear-attn)
     /// layers. Used by the scheduler to order the decode batch by slot so the
     /// batched-recurrent SSM + CUDA-graph contiguity invariant holds

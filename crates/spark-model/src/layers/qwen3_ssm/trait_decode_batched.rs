@@ -21,6 +21,45 @@ fn k4_diag_checkpoint(ctx: &ForwardContext, phase: &str, stream: u64) -> Result<
     Ok(())
 }
 
+/// Presence kill switch for the single-launch fused BA projection + GDN gates
+/// (`ATLAS_NO_BATCHED_BA_GATES` restores the per-token GEMV + `compute_gdn_gates`
+/// pair). Presence, not value — `=0` is NOT "off".
+fn batched_ba_gates_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_BATCHED_BA_GATES").is_err())
+}
+
+/// Presence kill switch for the single-launch gated RMS norm
+/// (`ATLAS_NO_BATCHED_GDN_NORM` restores the per-token loop). The batched kernel
+/// is bit-identical, so this switch exists only to isolate the change in an A/B.
+fn batched_norm_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_BATCHED_GDN_NORM").is_err())
+}
+
+/// GDN-state routing for [`Qwen3SsmLayer::decode_batched_inner`].
+///
+/// `Single`: today's path — `num_tokens` rows belong to ONE sequence, whose
+/// conv/GDN state advances through all of them (K-token MTP verify, DFlash).
+///
+/// `Multi`: batched MTP verify — `num_tokens = Σ ks` seq-major rows, RAGGED
+/// per sequence since D-Cut (`ks[i]` rows for sequence i, uniform being the
+/// special case); projections/FFN batch across all rows, while the stateful
+/// conv/GDN body runs per-sequence against `states[i]` with row-offset buffer
+/// bases (per-sequence math byte-identical to `Single` at `num_tokens =
+/// ks[i]`; only base addresses move).
+pub(super) enum GdnStates<'a, 'b> {
+    Single(&'a mut dyn LayerState),
+    Multi {
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        ks: &'a [usize],
+        /// This layer's slice of the model-staged WY pointer tables
+        /// (`crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES`; NULL → no
+        /// single-launch WY batch, per-sequence loop only).
+        wy_tables: DevicePtr,
+    },
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
@@ -28,12 +67,7 @@ impl Qwen3SsmLayer {
         hidden: DevicePtr,
         residual: DevicePtr,
         num_tokens: usize,
-        state: &mut dyn LayerState,
-        _kv_cache: &mut PagedKvCache,
-        _seq_len: usize,
-        _block_table: &mut Vec<u32>,
-        _disk_block_ids: &mut Vec<u32>,
-        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        gdn: GdnStates<'_, '_>,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -42,11 +76,6 @@ impl Qwen3SsmLayer {
         let k = num_tokens as u32;
         let bf16 = 2usize; // bytes per BF16
         let fp32 = 4usize; // bytes per FP32
-
-        let ssm_state = state
-            .as_any_mut()
-            .downcast_mut::<SsmLayerState>()
-            .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
 
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
@@ -154,6 +183,50 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
+        } else if num_tokens > 4
+            && (self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0)
+            && let Some(ref fp8) = self.qkvz_fp8w
+        {
+            // Batched MTP verify at R = Σ ks > 4 on native-FP8-GDN checkpoints
+            // (e.g. nvidia/Qwen3.6-27B-NVFP4): `qkvz_fp8w` is the ONLY live
+            // QKVZ weight — the dense, NVFP4 and single-scale-FP8 slots are
+            // all NULL/None (qwen35_dense.rs native-FP8 GDN arm) — and the
+            // fp8w arm above stops at 4 because `w8a16_gemv_batch4` is an
+            // M<=4 kernel. Without this arm the dispatch fell through to
+            // `dense_gemm` on the NULL dense slot: CUDA_ERROR_ILLEGAL_ADDRESS
+            // on the FIRST n>=2 batched verify (ks=[4,3] ⇒ R=7), a sticky
+            // context loss that 503s the whole serve. Third instance of this
+            // NULL-slot dispatch-gap class (see the 2..=4 arm's history);
+            // route through the SAME block-scaled W8A16 GEMM the SSM prefill
+            // path uses (`trait_prefill_proj.rs` — pipelined twin preferred,
+            // bit-identical to `w8a16_gemm`).
+            if self.w8a16_gemm_pipelined_k.0 != 0 {
+                ops::w8a16_gemm_pipelined(
+                    ctx.gpu,
+                    self.w8a16_gemm_pipelined_k,
+                    normed,
+                    fp8.weight,
+                    fp8.row_scale,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w8a16_gemm(
+                    ctx.gpu,
+                    self.w8a16_gemm_k,
+                    normed,
+                    fp8.weight,
+                    fp8.row_scale,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
         } else if num_tokens == 4 {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
                 ops::w4a16_gemv_batchm(
@@ -318,6 +391,20 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else {
+            // Fail fast: launching `dense_gemm` on a NULL weight is a device
+            // ILLEGAL_ADDRESS that destroys the CUDA context for every live
+            // request (sticky 700). A checkpoint whose QKVZ ships only in a
+            // form this dispatch has no arm for must error per-request, not
+            // kill the serve.
+            anyhow::ensure!(
+                !self.ssm.in_proj_qkvz.weight.is_null(),
+                "batched GDN QKVZ dispatch: no usable weight for num_tokens={num_tokens} \
+                 (dense slot NULL; fp8w={}, nvfp4={}, gemm kernels pipelined/base: {:#x}/{:#x})",
+                self.qkvz_fp8w.is_some(),
+                self.qkvz_nvfp4.is_some(),
+                self.w8a16_gemm_pipelined_k.0,
+                self.w8a16_gemm_k.0,
+            );
             ops::dense_gemm(
                 ctx.gpu,
                 self.dense_gemm_k,
@@ -358,38 +445,77 @@ impl Qwen3SsmLayer {
         let gates_buf = ctx.buffers.ssm_gates(); // [K, gate(nv) + beta(nv)] FP32
         let gate_beta_stride = nv * 2 * fp32; // bytes per token in gates buffer
         let ba_size = ctx.config.ssm_ba_size(); // 64
-        for t in 0..(num_tokens as u32) {
-            let normed_t = normed.offset(t as usize * h * bf16);
-            let ba_out = ctx.buffers.ssm_ba().offset(t as usize * ba_size * bf16);
-            // Dense GEMV for BA projection (small: 64 outputs)
-            ops::dense_gemv(
+        if batched_ba_gates_enabled() {
+            // ONE fused launch for all rows instead of `num_tokens` × (dense
+            // GEMV + compute_gdn_gates). The per-token loop re-read the whole
+            // [64, hidden] BA weight once PER ROW PER LAYER — 655 KB × 32 rows ×
+            // 48 GDN layers = ~1.0 GB/step of redundant traffic at R=32, plus
+            // 2R launches per layer (3072/step) that the verify CUDA graph then
+            // has to carry as nodes.
+            //
+            // `dense_gemm_ba_gates_prefill` is the token-parallel twin of the
+            // decode-path `dense_gemv_ba_gates` (identical uint4 K-reduction,
+            // identical warp+smem tree, identical gate/beta transforms) and is
+            // ALREADY the shipped form on both the prefill path and the
+            // multi-seq batched-recurrent decode path. It writes the same
+            // [gate(nv) | beta(nv)] interleaved row layout at `gate_stride`
+            // FP32 elements per row that `gates_buf` expects.
+            //
+            // NOT bit-identical to the loop it replaces: fusing removes the
+            // BF16 round-trip through the `ssm_ba` staging buffer, so the gate
+            // and beta transforms see the FP32 projection result directly.
+            // Kill switch below restores the split form.
+            ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
-                self.dense_gemv_k,
-                normed_t,
+                self.ba_gates_prefill_k,
+                normed,
                 &self.ssm.in_proj_ba,
-                ba_out,
-                ba_size as u32,
-                h as u32,
-                stream,
-            )?;
-            // Apply gate transforms
-            let gate_t = gates_buf.offset(t as usize * gate_beta_stride);
-            let beta_t = gates_buf.offset(t as usize * gate_beta_stride + nv * fp32);
-            ops::compute_gdn_gates(
-                ctx.gpu,
-                self.compute_gdn_gates_k,
-                ba_out,
                 self.ssm.a_log.weight,
                 self.ssm.dt_bias.weight,
-                gate_t,
-                beta_t,
-                1,
-                nv as u32,
-                nk as u32,
-                vpg as u32,
+                gates_buf,
+                num_tokens as u32,
                 ba_size as u32,
+                h as u32,
+                h as u32,
+                (nv * 2) as u32,
+                nv as u32,
+                vpg as u32,
                 stream,
             )?;
+        } else {
+            for t in 0..(num_tokens as u32) {
+                let normed_t = normed.offset(t as usize * h * bf16);
+                let ba_out = ctx.buffers.ssm_ba().offset(t as usize * ba_size * bf16);
+                // Dense GEMV for BA projection (small: 64 outputs)
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv_k,
+                    normed_t,
+                    &self.ssm.in_proj_ba,
+                    ba_out,
+                    ba_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+                // Apply gate transforms
+                let gate_t = gates_buf.offset(t as usize * gate_beta_stride);
+                let beta_t = gates_buf.offset(t as usize * gate_beta_stride + nv * fp32);
+                ops::compute_gdn_gates(
+                    ctx.gpu,
+                    self.compute_gdn_gates_k,
+                    ba_out,
+                    self.ssm.a_log.weight,
+                    self.ssm.dt_bias.weight,
+                    gate_t,
+                    beta_t,
+                    1,
+                    nv as u32,
+                    nk as u32,
+                    vpg as u32,
+                    ba_size as u32,
+                    stream,
+                )?;
+            }
         }
 
         k4_diag_checkpoint(ctx, "4:ba_proj+gates", stream)?;
@@ -401,57 +527,201 @@ impl Qwen3SsmLayer {
         let h_bytes = self.h_state_bytes;
         let conv_bytes = self.conv_state_bytes;
 
-        // Intermediates are pre-allocated from the pool (fixed GPU addresses for
-        // CUDA graph stability). Verify they exist BEFORE we index into them — a
-        // bare `debug_assert!` is a no-op in release and produces an opaque
-        // out-of-bounds panic instead of an actionable error (see #bugs
-        // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
-        // without `--speculative --mtp-quantization` to mirror the head.
-        if ssm_state.h_state_intermediates.len() < num_tokens
-            || ssm_state.conv_state_intermediates.len() < num_tokens
-        {
-            anyhow::bail!(
-                "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()={}, \
-                 conv_state_intermediates.len()={}, num_tokens={}). \
-                 If this is an EP=2 worker, the head node is sending MTP verify commands \
-                 but the worker was started without `--speculative` (and matching \
-                 `--mtp-quantization`/`--num-drafts`). Add those flags to the worker invocation.",
-                ssm_state.h_state_intermediates.len(),
-                ssm_state.conv_state_intermediates.len(),
-                num_tokens,
-            );
-        }
+        match gdn {
+            GdnStates::Single(state) => {
+                let ssm_state = state
+                    .as_any_mut()
+                    .downcast_mut::<SsmLayerState>()
+                    .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+                // Intermediates are pre-allocated from the pool (fixed GPU addresses for
+                // CUDA graph stability). Verify they exist BEFORE we index into them — a
+                // bare `debug_assert!` is a no-op in release and produces an opaque
+                // out-of-bounds panic instead of an actionable error (see #bugs
+                // m0t0chan EP=2 2026-04-05). Most-common cause: EP=2 worker started
+                // without `--speculative --mtp-quantization` to mirror the head.
+                if ssm_state.h_state_intermediates.len() < num_tokens
+                    || ssm_state.conv_state_intermediates.len() < num_tokens
+                {
+                    anyhow::bail!(
+                        "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()={}, \
+                         conv_state_intermediates.len()={}, num_tokens={}). \
+                         If this is an EP=2 worker, the head node is sending MTP verify commands \
+                         but the worker was started without `--speculative` (and matching \
+                         `--mtp-quantization`/`--num-drafts`). Add those flags to the worker invocation.",
+                        ssm_state.h_state_intermediates.len(),
+                        ssm_state.conv_state_intermediates.len(),
+                        num_tokens,
+                    );
+                }
 
-        let args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
-            num_tokens,
-            deinterleaved,
-            gates_buf,
-            conv_out_buf,
-            gdn_out_buf,
-            h_bytes,
-            conv_bytes,
-            qkvz_size,
-            conv_dim,
-            key_dim,
-            value_dim,
-            d_conv,
-            qk_ch,
-            nk,
-            nv,
-            kd,
-            vd,
-            bf16,
-            fp32,
-            stream,
-        };
-        self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
+                let args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
+                    num_tokens,
+                    deinterleaved,
+                    gates_buf,
+                    conv_out_buf,
+                    gdn_out_buf,
+                    normed_out: conv_out_buf, // row0 == 0: bases coincide
+                    h_bytes,
+                    conv_bytes,
+                    qkvz_size,
+                    conv_dim,
+                    key_dim,
+                    value_dim,
+                    d_conv,
+                    qk_ch,
+                    nk,
+                    nv,
+                    kd,
+                    vd,
+                    bf16,
+                    fp32,
+                    stream,
+                };
+                self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
+            }
+            GdnStates::Multi {
+                states,
+                ks,
+                wy_tables,
+            } => {
+                // Batched MTP verify. Fast path: cross-sequence batched
+                // conv+WY — ONE `gdn_verify_fused_conv_kn_batched` launch +
+                // ONE table-form `gdn_decode_wy4` launch for the whole batch
+                // (trait_decode_batched_conv_gdn_multi.rs; preconditions
+                // checked on the actual state pointers, kill switch
+                // ATLAS_NO_VERIFY_GDN_BATCH). Fallback: the SAME per-sequence
+                // conv+GDN body, one call per sequence with row-offset buffer
+                // bases. Strides match decode_batched_conv_gdn's consumers
+                // exactly: deinterleaved rows at qkvz_size*bf16, conv_out at
+                // conv_dim*bf16, gates at nv*2*fp32, gdn_out at value_dim*bf16
+                // per token.
+                anyhow::ensure!(
+                    !states.is_empty()
+                        && ks.len() == states.len()
+                        && num_tokens == ks.iter().sum::<usize>(),
+                    "decode_batched_inner Multi: num_tokens {} != Σ ks {:?} (n {})",
+                    num_tokens,
+                    ks,
+                    states.len(),
+                );
+                // Row offset of each sequence (ragged; `i*k` when uniform).
+                let mut off: Vec<usize> = Vec::with_capacity(states.len());
+                let mut acc = 0usize;
+                for &k in ks.iter() {
+                    off.push(acc);
+                    acc += k;
+                }
+                // Sequences are ordered deepest-first by the scheduler, so
+                // equal depths form CONTIGUOUS runs. One batched conv+WY
+                // attempt per run keeps the two-launch fast path alive under
+                // ragged depths (uniform ⇒ exactly one run = today's call).
+                let mut g0 = 0usize;
+                while g0 < states.len() {
+                    let kk = ks[g0];
+                    let mut g1 = g0 + 1;
+                    while g1 < states.len() && ks[g1] == kk {
+                        g1 += 1;
+                    }
+                    let row0 = off[g0];
+                    let run_args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
+                        num_tokens: kk,
+                        deinterleaved: deinterleaved.offset(row0 * qkvz_size * bf16),
+                        gates_buf: gates_buf.offset(row0 * nv * 2 * fp32),
+                        conv_out_buf: conv_out_buf.offset(row0 * conv_dim * bf16),
+                        gdn_out_buf: gdn_out_buf.offset(row0 * value_dim * bf16),
+                        // Normed rows stride value_dim from ROW 0 of the
+                        // phase-8/9 buffer — a conv_dim-scaled offset here
+                        // would land the exact arm's output between rows.
+                        normed_out: conv_out_buf.offset(row0 * value_dim * bf16),
+                        h_bytes,
+                        conv_bytes,
+                        qkvz_size,
+                        conv_dim,
+                        key_dim,
+                        value_dim,
+                        d_conv,
+                        qk_ch,
+                        nk,
+                        nv,
+                        kd,
+                        vd,
+                        bf16,
+                        fp32,
+                        stream,
+                    };
+                    // Table entries are per sequence in batch order, so a run
+                    // slices them by its own start index (8 B per u64 entry).
+                    let run_tables = if wy_tables.is_null() {
+                        wy_tables
+                    } else {
+                        wy_tables.offset(g0 * 8)
+                    };
+                    let batched = self.decode_batched_conv_gdn_multi(
+                        &mut states[g0..g1],
+                        run_tables,
+                        ctx,
+                        &run_args,
+                    )?;
+                    if !batched {
+                        for i in g0..g1 {
+                            let ssm_state = states[i]
+                                .as_any_mut()
+                                .downcast_mut::<SsmLayerState>()
+                                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+                            if ssm_state.h_state_intermediates.len() < kk
+                                || ssm_state.conv_state_intermediates.len() < kk
+                            {
+                                anyhow::bail!(
+                                    "SSM MTP intermediate buffers not allocated for batched \
+                                 verify (seq {i}: h={}, conv={}, k={kk})",
+                                    ssm_state.h_state_intermediates.len(),
+                                    ssm_state.conv_state_intermediates.len(),
+                                );
+                            }
+                            let r = off[i];
+                            let args_i = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
+                                num_tokens: kk,
+                                deinterleaved: deinterleaved.offset(r * qkvz_size * bf16),
+                                gates_buf: gates_buf.offset(r * nv * 2 * fp32),
+                                conv_out_buf: conv_out_buf.offset(r * conv_dim * bf16),
+                                gdn_out_buf: gdn_out_buf.offset(r * value_dim * bf16),
+                                normed_out: conv_out_buf.offset(r * value_dim * bf16),
+                                h_bytes,
+                                conv_bytes,
+                                qkvz_size,
+                                conv_dim,
+                                key_dim,
+                                value_dim,
+                                d_conv,
+                                qk_ch,
+                                nk,
+                                nv,
+                                kd,
+                                vd,
+                                bf16,
+                                fp32,
+                                stream,
+                            };
+                            self.decode_batched_conv_gdn(ssm_state, ctx, &args_i)?;
+                        }
+                    }
+                    g0 = g1;
+                }
+            }
+        }
 
         k4_diag_checkpoint(ctx, "5-7:conv1d+l2norm+gdn_wy", stream)?;
 
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
-        if num_tokens == 2 && self.fused_verify_k2_enabled() {
+        if super::verify_exact_enabled() {
+            // Issue #435 exact arm (phase 5-7 above): the norm is already
+            // applied inside the per-token chain — the SAME fused/unfused arm
+            // sequential decode uses — and the normed rows are already in
+            // `normed_out_buf` at value_dim BF16 stride. Running any norm
+            // here would re-normalize final output with stale gdn_out data.
+        } else if num_tokens == 2 && self.fused_verify_k2_enabled() {
             // STAGE 1: single-launch gated-RMS-norm for BOTH positions (cos==1.0).
             ops::gdn_verify_fused_norm_k2(
                 ctx.gpu,
@@ -466,6 +736,31 @@ impl Qwen3SsmLayer {
                 qkvz_size as u32, // deint position stride (BF16 elems)
                 z_offset as u32,  // Z offset within a position
                 value_dim as u32, // gdn/out position stride
+                stream,
+            )?;
+        } else if batched_norm_enabled() {
+            // ONE launch for all (head, row) pairs instead of `num_tokens` of
+            // them. `gated_rms_norm_prefill` is `gated_rms_norm` with the token
+            // index moved to blockIdx.y and the two row strides passed
+            // explicitly — the reduction, the register cache and the quad loop
+            // are line-for-line the same, so this is BIT-IDENTICAL, not an
+            // approximation. The fused K=2 arm above already covers
+            // `num_tokens == 2`; the batched verify (R = n*k, 8..32 rows) never
+            // reached it and was paying R launches per GDN layer, i.e. 1536
+            // launches/step at R=32 across 48 layers.
+            ops::gated_rms_norm_prefill(
+                ctx.gpu,
+                self.gated_rms_norm_prefill_k,
+                gdn_out_buf,
+                deinterleaved.offset(z_offset * bf16),
+                &self.ssm.norm,
+                normed_out_buf,
+                nv as u32,
+                vd as u32,
+                eps,
+                num_tokens as u32,
+                value_dim as u32,
+                qkvz_size as u32,
                 stream,
             )?;
         } else {
@@ -563,6 +858,75 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )?;
+        } else if num_tokens > 4
+            && (self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0)
+            && let Some(ref fp8) = self.out_proj_fp8w
+        {
+            // Batched MTP verify at R = Σ ks > 4 on native-FP8-GDN
+            // checkpoints: `out_proj_fp8w` is the ONLY live out_proj weight
+            // (dense/NVFP4 slots NULL — qwen35_dense.rs native-FP8 GDN arm)
+            // and the fp8w arm above stops at 4. Without this arm the
+            // dispatch fell through to `w4a16_gemm` on the null
+            // `ssm.out_proj` — the out_proj half of the same
+            // CUDA_ERROR_ILLEGAL_ADDRESS the QKVZ dispatch above hits first.
+            // Same block-scaled W8A16 GEMM pair as the prefill path.
+            if self.w8a16_gemm_pipelined_k.0 != 0 {
+                ops::w8a16_gemm_pipelined(
+                    ctx.gpu,
+                    self.w8a16_gemm_pipelined_k,
+                    normed_out_buf,
+                    fp8.weight,
+                    fp8.row_scale,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else {
+                ops::w8a16_gemm(
+                    ctx.gpu,
+                    self.w8a16_gemm_k,
+                    normed_out_buf,
+                    fp8.weight,
+                    fp8.row_scale,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            }
+        } else if num_tokens > 8
+            && let Some(ref nvfp4_t) = self.out_proj_nvfp4_t
+            && {
+                // Kill switch, PRESENCE check per house convention (`=0` is NOT
+                // off), cached once.
+                static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                !*OFF.get_or_init(|| std::env::var("ATLAS_NO_VERIFY_OUTPROJ_TGEMM").is_ok())
+            }
+        {
+            // M > 8 (batched K=4 verify, R = n*4 rows; DFlash wide verify):
+            // the pre-dequanted FP8 prefill arm below reads 2x the weight
+            // bytes of NVFP4 — bandwidth-bound at this M, measured 379 us
+            // vs 182 us per call at M=16 N=5120 (fp8_fp8_gemm_ldmab vs
+            // w4a16_gemm_t_k64_p3), ~9.5 ms/step across 48 GDN layers at
+            // C=4. Route to the NVFP4 transposed-twin tile GEMM — the SAME
+            // kernel+handle the multi-seq decode out_proj uses
+            // (`deep_k_gemm`). BF16 activations (vs the FP8 arm's e4m3
+            // downcast) — equal-or-better numerics, not byte-identical.
+            // Kill switch ATLAS_NO_VERIFY_OUTPROJ_TGEMM (PRESENCE check).
+            ops::w4a16_gemm_n128(
+                ctx.gpu,
+                self.deep_k_gemm(value_dim as u32),
+                normed_out_buf,
+                nvfp4_t,
+                out_proj_buf,
+                num_tokens as u32,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )?;
         } else if num_tokens == 3 {
             ops::w4a16_gemv_batch3(
                 ctx.gpu,
@@ -639,6 +1003,17 @@ impl Qwen3SsmLayer {
                 )?;
             }
         } else {
+            // Fail fast: a null out_proj here is the same sticky-700 context
+            // killer as the QKVZ dense arm above — refuse per-request instead.
+            anyhow::ensure!(
+                !self.ssm.out_proj.weight.is_null(),
+                "batched GDN out_proj dispatch: no usable weight for num_tokens={num_tokens} \
+                 (quant slot NULL; fp8w={}, dense={}, gemm kernels pipelined/base: {:#x}/{:#x})",
+                self.out_proj_fp8w.is_some(),
+                self.out_proj_dense.is_some(),
+                self.w8a16_gemm_pipelined_k.0,
+                self.w8a16_gemm_k.0,
+            );
             ops::w4a16_gemm(
                 ctx.gpu,
                 self.w4a16_gemm_k,

@@ -30,5 +30,10 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 impl Drop for TransformerModel {
     fn drop(&mut self) {
         self.drop_pinned_staging();
+        // The SSM spill tier's reusable staging blob is page-locked host memory
+        // owned by the snapshot pool, which holds no `gpu` handle of its own —
+        // same ownership shape as `drop_pinned_staging`. No-op when the tier
+        // never ran (the buffer is allocated on first spill).
+        self.ssm_snapshots.free_staging(self.gpu.as_ref());
     }
 }

@@ -47,6 +47,27 @@ impl TransformerModel {
         tokens.contains(&pad_id)
     }
 
+    /// Whether `--high-speed-swap` has slid this sequence's rolling window, so
+    /// `block_table` no longer parallels the token stream from position 0.
+    ///
+    /// Every prefix-cache insert assumes it does: the radix tree is keyed on the
+    /// token stream from position 0 and files `block_table[i]` on the node for
+    /// token chunk `i`. Once HSS slides (`hss_window_start() > 0`),
+    /// `block_table[0]` no longer holds position 0 — the front of the table holds
+    /// the most RECENT positions — so inserting files a block under a token chunk
+    /// whose KV it does not contain, and a later warm hit reuses the wrong KV as
+    /// if it were a valid prefix.
+    ///
+    /// There is no correct partial insert to fall back on: the tree indexes
+    /// prefixes from the root and what survives in a slid window is a
+    /// mid-sequence suffix, so a slid sequence has nothing cacheable. Skip.
+    ///
+    /// `cache_sequence` and `save_checkpoint`'s boundary insert already guarded
+    /// on this; the prefill-time inserts in `prefill_d`/`finalize_last` did not.
+    pub(super) fn hss_window_slid(&self, seq: &SequenceState) -> bool {
+        seq.hss_window_start() > 0
+    }
+
     /// Free pinned host memory on model destruction.
     pub(super) fn drop_pinned_staging(&self) {
         // SAFETY: Called from Drop, which runs on the owning thread.
@@ -128,6 +149,12 @@ impl TransformerModel {
 
         if comm.rank() == 0 {
             // H2D: copy token bytes to device scratch (synchronous, blocks until done)
+            // SAFETY: `byte_len = n * 4` and `n = tokens.len()` (both bound at the
+            // top of this fn), so the reinterpreted span is exactly
+            // `tokens.len() * size_of::<u32>()` bytes — the whole of `tokens` and
+            // not one byte more. `tokens: &[u32]` is a live shared borrow, so every
+            // byte is initialised and no `&mut` to it can exist. u8 has alignment 1,
+            // so the cast cannot under-align.
             let token_bytes: &[u8] =
                 unsafe { std::slice::from_raw_parts(tokens.as_ptr() as *const u8, byte_len) };
             self.gpu.copy_h2d(token_bytes, dev_buf)?;
@@ -140,6 +167,12 @@ impl TransformerModel {
             // D2H: read received tokens from device
             self.gpu.synchronize(stream)?;
             let mut result = vec![0u32; n];
+            // SAFETY: `result` was just built by `vec![0u32; n]`, so its length is
+            // exactly `n` and every element is initialised; `byte_len = n * 4 =
+            // result.len() * size_of::<u32>()`, so the span is exactly the Vec's
+            // buffer. `result_bytes` is the only reference derived from `result`
+            // while it is live (the next use of `result` is the `Ok(result)` move,
+            // after `result_bytes` is dead), so the `&mut` is unaliased.
             let result_bytes =
                 unsafe { std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, byte_len) };
             self.gpu.copy_d2h(dev_buf, result_bytes)?;

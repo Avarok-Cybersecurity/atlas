@@ -171,7 +171,7 @@ fn qwen3_coder_streaming_close_with_final_value_in_same_chunk() {
 }
 
 /// Build a tool def with the given name + parameters JSON schema.
-fn tool_def(name: &str, params: serde_json::Value) -> ToolDefinition {
+pub(super) fn tool_def(name: &str, params: serde_json::Value) -> ToolDefinition {
     ToolDefinition {
         tool_type: "function".into(),
         function: FunctionDefinition {

@@ -1,0 +1,22 @@
+# GDN AOT artifact pins — enforced by .github/workflows/gdn-so-pin.yml
+# (run: `sha256sum -c PINS.sha256` from this directory; comment lines are ignored).
+#
+# Any change to the binaries below MUST update this file in the same commit and
+# say in the commit message which toolchain produced the new bytes.
+# Rebuild recipe: ./rebuild.sh (this directory).
+#
+# Source provenance the pinned binaries are BELIEVED to correspond to
+# (see STATUS.md "PROVENANCE" for what is and is not verified):
+#   FlashInfer:        https://github.com/flashinfer-ai/flashinfer.git
+#                      @ a671c02ee2fbcdde7cc991f5a01c7cf5eb4a8972
+#                      + delta_rule_sm120_aot_export.patch (pinned below)
+#   Export toolchain:  nvidia-cutlass-dsl[cu13]==4.5.0 (CuTe DSL, export_to_c),
+#                      CUTE_DSL_ARCH=sm_121a, GB10 (sm_121a) GPU, torch cu13
+#   Link toolchain:    g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, aarch64,
+#                      nvcc CUDA 13.x (-arch=sm_121a for gdn_transpose.cu)
+#   Original build environment (from the committed RUNPATH): a venv at
+#                      /tmp/gdn-bench/lib/python3.12/site-packages/nvidia_cutlass_dsl/lib
+#
+2669982a6d9c6c5609322627348c78e793f6aeffa1b4d1ba1b12d3827bb6a9ea  libatlasgdn.so
+1b3da6dca80fe53f45d37935b056dbdba6cd93157f0a87f585215910b559e349  gdn_holo.so
+382cb0a0121f38d295280cb3baaa640174654ea4b453d18670d9982bd564361a  delta_rule_sm120_aot_export.patch

@@ -10,6 +10,7 @@
 //! Frames are serializable: the last frame of a run is persisted under
 //! `~/.atlas/runs/` and re-rendered by the History pane with the same code.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -230,6 +231,12 @@ pub struct BenchmarkResult {
     pub summary: Vec<Stat>,
     pub table: Option<ResultTable>,
     pub verdict: Option<Verdict>,
+    /// Raw headline numbers, keyed by stable metric name. The PR gate compares
+    /// these against `baseline.json` — parsing the human-formatted `summary`
+    /// strings would couple two presentation layers, so the numbers live here
+    /// once and both layers read them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metrics: BTreeMap<String, f64>,
     /// Lines appended to the run log since the previous frame (not cumulative).
     pub log: Vec<LogLine>,
     pub elapsed: Duration,
@@ -244,6 +251,7 @@ impl BenchmarkResult {
             summary: Vec::new(),
             table: None,
             verdict: None,
+            metrics: BTreeMap::new(),
             log: Vec::new(),
             elapsed,
         }
@@ -272,6 +280,10 @@ impl BenchmarkResult {
     }
     pub fn with_summary(mut self, summary: Vec<Stat>) -> Self {
         self.summary = summary;
+        self
+    }
+    pub fn with_metrics(mut self, metrics: BTreeMap<String, f64>) -> Self {
+        self.metrics = metrics;
         self
     }
     pub fn with_table(mut self, table: ResultTable) -> Self {

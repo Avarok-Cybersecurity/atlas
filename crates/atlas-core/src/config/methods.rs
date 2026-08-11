@@ -33,12 +33,19 @@ impl ModelConfig {
         }
     }
 
-    /// Number of full attention layers.
+    /// Number of attention (KV-cache-consuming) layers: full attention plus
+    /// sliding attention. Sliding-attention layers write to the paged KV cache
+    /// exactly like full-attention ones (only their attention window differs),
+    /// so every consumer sized from this count — KV pool `num_layers`,
+    /// `attn_layer_dtypes`, loader `layer_kv_dtypes` indexing — must see them
+    /// all. Step 3.7 is the only model emitting `SlidingAttention` layer types
+    /// (12 full + 33 sliding); counting full-only there undersized the dtype
+    /// vec and panicked the loader at layer 13.
     pub fn num_attention_layers(&self) -> usize {
         if !self.layer_types.is_empty() {
             self.layer_types
                 .iter()
-                .filter(|t| **t == LayerType::FullAttention)
+                .filter(|t| matches!(t, LayerType::FullAttention | LayerType::SlidingAttention))
                 .count()
         } else {
             self.num_hidden_layers
