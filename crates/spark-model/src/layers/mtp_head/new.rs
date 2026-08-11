@@ -176,6 +176,7 @@ impl MtpHead {
                         experts,
                         router_pre_norm: None,
                         correction_bias: None,
+                        packed_experts: None,
                     };
                     let moe = MoeLayer::new(
                         moe_weights,

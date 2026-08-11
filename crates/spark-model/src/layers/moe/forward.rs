@@ -31,6 +31,14 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
+        // Keep-packed GGUF experts (Laguna Q4_K_M): there is no fused NVFP4/scalar
+        // decode kernel for raw Q4_K/Q6_K blocks — route single-token decode
+        // through forward_prefill(M=1), which dispatches the native keep-packed
+        // q4k_mmq arm. Same output buffer contract as the fused decode path.
+        if self.weights.packed_experts.is_some() {
+            self.forward_prefill(input, 1, ctx, stream)?;
+            return Ok(ctx.buffers.moe_output());
+        }
         // SOLID Incr-4: a genuine single-token decode (num_seqs == 1) folds the
         // routed expert down_proj LoRA delta below (before the wsum blend). The
         // multi-seq per-token reuse of this fn (num_seqs > 1 — decode_batch's

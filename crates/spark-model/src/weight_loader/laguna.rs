@@ -3,6 +3,7 @@
 //! Poolside Laguna-S-2.1 weight loader (target model only; DFlash is separate).
 
 mod load_layers;
+mod packed;
 
 use anyhow::Result;
 use atlas_core::config::ModelConfig;

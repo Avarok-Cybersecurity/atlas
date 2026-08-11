@@ -103,6 +103,7 @@ pub(super) fn load_moe_inner(
         experts,
         router_pre_norm: None,
         correction_bias: None,
+        packed_experts: None,
     })
 }
 
@@ -170,6 +171,7 @@ pub(crate) fn load_moe_mistral(
         experts,
         router_pre_norm: None,
         correction_bias: None,
+        packed_experts: None,
     })
 }
 

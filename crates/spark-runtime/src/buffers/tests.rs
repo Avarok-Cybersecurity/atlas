@@ -70,10 +70,27 @@ fn test_buffer_arena_alloc() {
     // plus 2 added by the Holo-3.1/Ornith GB10 enablement (buffers.rs):
     //   - fp8_act + fp8_act_scale (persistent FP8 prefill-projection scratch,
     //     allocated unconditionally). 27 + 2 = 29.
-    // (wip-laguna-lora counts 30 here: its keep-packed GGUF grouped MoE adds
-    // a moe_grouped_q8 arena buffer (06c89a33) that this branch does not
-    // carry. Re-sync this count if that work is ever picked.)
-    assert_eq!(gpu.alloc_count(), 29);
+    // plus 1 added by the keep-packed GGUF grouped MoE (06c89a33):
+    //   - moe_grouped_q8 (q8_1 activation scratch in the arena so CUDA-graph
+    //     replay sees a stable address; sized > 0 for MoE configs, and this
+    //     config is MoE). 29 + 1 = 30.
+    assert_eq!(gpu.alloc_count(), 30);
+}
+
+/// The keep-packed grouped-MoE q8_1 scratch is sized only for MoE configs; a
+/// dense model must get 0 so `BufferArena::new` skips the alloc — cuMemAlloc(0)
+/// is INVALID_VALUE and failed every dense-model boot when this was
+/// unconditional (caught by the integration GPU smoke on the dense 27B).
+#[test]
+fn moe_grouped_q8_zero_for_dense_nonzero_for_moe() {
+    let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    assert!(cfg.num_experts > 0);
+    let moe_sizes = BufferSizes::from_config(&cfg, 4, 4096, 16, 32);
+    assert!(moe_sizes.moe_grouped_q8 > 0);
+
+    cfg.num_experts = 0;
+    let dense_sizes = BufferSizes::from_config(&cfg, 4, 4096, 16, 32);
+    assert_eq!(dense_sizes.moe_grouped_q8, 0);
 }
 
 #[test]

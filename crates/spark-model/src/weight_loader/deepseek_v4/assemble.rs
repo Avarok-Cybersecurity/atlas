@@ -306,6 +306,7 @@ pub fn assemble_layer(
         experts,
         router_pre_norm: None,
         correction_bias,
+        packed_experts: None,
     };
     // ── Hash-MoE routing (DeepSeek-V4 paper §2.1) ──
     // The first `num_hash_layers` MoE layers select experts via a static

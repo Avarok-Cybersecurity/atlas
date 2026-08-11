@@ -261,6 +261,7 @@ fn load_moe_ffn(
         experts,
         router_pre_norm: None,
         correction_bias,
+        packed_experts: None,
     };
 
     let mut moe_layer = MoeLayer::new(

@@ -104,6 +104,8 @@ pub struct BufferArena {
     ffn_act_q8: DevicePtr,
     ffn_act_a: DevicePtr,
     ffn_act_scale: DevicePtr,
+    /// q8_1 activation scratch for the keep-packed GGUF grouped MoE (graph-safe).
+    moe_grouped_q8: DevicePtr,
     /// Persistent FP8 block-scaled activation scratch for prefill projections.
     fp8_act: DevicePtr,
     /// Persistent per-128-block FP32 scales paired with `fp8_act`.
@@ -175,6 +177,15 @@ impl BufferArena {
         let expert_gate_out = gpu.alloc(sizes.expert_gate_out)?;
         let expert_up_out = gpu.alloc(sizes.expert_up_out)?;
         let expert_down_out = gpu.alloc(sizes.expert_down_out)?;
+        // Dense models size this 0 (sizes.rs gates it on num_experts > 0), and
+        // cuMemAlloc(0) is INVALID_VALUE — guard like the q2 buffers below.
+        // Found by the integration GPU smoke: the 27B (dense) failed model
+        // build here while every MoE checkpoint loaded fine.
+        let moe_grouped_q8 = if sizes.moe_grouped_q8 > 0 {
+            gpu.alloc(sizes.moe_grouped_q8)?
+        } else {
+            DevicePtr::NULL
+        };
         let splitk_workspace = gpu.alloc(sizes.splitk_workspace)?;
         let o_latent = gpu.alloc(sizes.o_latent)?;
         // Zero-filled "weight" for unweighted RMSNorm under the offset-from-1
@@ -290,6 +301,7 @@ impl BufferArena {
             gdn_fla_scratch,
             ssd_scratch,
             token_ids,
+            moe_grouped_q8,
             ffn_act_q8,
             ffn_act_a,
             ffn_act_scale,
@@ -365,6 +377,7 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             lora_delta,
             lora_hact,
             lora_seq_slot,
+            moe_grouped_q8,
             q2_dequant_scratch,
             q2_act_q8,
         } = self;
@@ -408,6 +421,7 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             *lora_delta,
             *lora_hact,
             *lora_seq_slot,
+            *moe_grouped_q8,
             *q2_dequant_scratch,
             *q2_act_q8,
         ];
@@ -456,6 +470,7 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
         *lora_delta = DevicePtr::NULL;
         *lora_hact = DevicePtr::NULL;
         *lora_seq_slot = DevicePtr::NULL;
+        *moe_grouped_q8 = DevicePtr::NULL;
         *q2_dequant_scratch = DevicePtr::NULL;
         *q2_act_q8 = DevicePtr::NULL;
         match first_error {

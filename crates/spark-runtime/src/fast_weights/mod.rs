@@ -27,7 +27,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
 
-mod direct_io;
+pub(crate) mod direct_io;
 mod header;
 
 use header::{parse_header, resolve_shards};
