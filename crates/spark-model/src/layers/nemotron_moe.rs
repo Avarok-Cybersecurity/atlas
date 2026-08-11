@@ -226,6 +226,33 @@ impl NemotronMoeLayer {
     }
 }
 
+/// Minimum `num_seqs` (the PADDED batch rung, `traits::padded_batch_n`) at
+/// which `decode_multi_seq` takes the batched sorted grouped-GEMM body
+/// instead of the canonical per-seq default loop; `None` = never.
+///
+/// Currently `None`, i.e. the batched body is disabled:
+/// it is a measured NET LOSS at every rung profiled on GB10 (Lightning-30B
+/// A3B NVFP4, 2026-08-11, 400-token story sweeps, aggregate tok/s,
+/// mamba2-batched arm held constant):
+///
+///   C=4  (rung 4):  ~50   batched  vs  92.3  per-seq loop   (−45%)
+///   C=8  (rung 8):  51-67 batched  vs  80-88 per-seq loop   (−20-35%)
+///   C=16 (rung 16): 90-95 batched  vs  85-95 per-seq loop   (wash)
+///
+/// At decode shapes the sorted dispatch expands n×top_k (≤ 96 at rung 16,
+/// top_k 6) rows across 128 experts — per-expert M is almost always 0 or 1,
+/// so the grouped GEMM degenerates to GEMV work plus sort/unpermute
+/// overhead, while `decode_inner`'s fused `moe_expert_gemv` already batches
+/// the top_k experts of a token in one launch. The batched body also
+/// reorders FP accumulation vs `decode_inner` (grouped-GEMM tiling +
+/// batched sigmoid routing), which flipped temp-0 answers from C=2 up
+/// (P&P 1813 → 1935/1950) — so enabling it below the C>=5 pre-existing
+/// divergence onset costs determinism too. The body and its kernels stay
+/// alive (mock-geometry-tested via `decode_multi_seq_inner`) for a future
+/// rung where a fused per-expert-M-aware dispatch measures as a win — set
+/// this to `Some(rung)` then.
+pub(crate) const MOE_BATCH_DECODE_MIN_SEQS: Option<usize> = None;
+
 mod decode_helpers;
 mod decode_multi_seq;
 mod prefill_fallback;
@@ -261,7 +288,9 @@ impl TransformerLayer for NemotronMoeLayer {
     /// batched gate GEMM + one shared-expert pass + sorted grouped-GEMM
     /// expert dispatch — over the N decode rows so every weight matrix is
     /// streamed once instead of N times. Declines to the canonical per-seq
-    /// default loop when any sorted-path kernel is missing or `num_seqs < 2`.
+    /// default loop when any sorted-path kernel is missing or `num_seqs`
+    /// is below `MOE_BATCH_DECODE_MIN_SEQS` (currently `None` = every rung
+    /// — a measured net loss at decode shapes; see the constant's docs).
     fn decode_multi_seq<'a, 'b: 'a>(
         &self,
         hidden: DevicePtr,
@@ -274,7 +303,7 @@ impl TransformerLayer for NemotronMoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        if num_seqs >= 2 && self.can_batch_decode() {
+        if MOE_BATCH_DECODE_MIN_SEQS.is_some_and(|min| num_seqs >= min) && self.can_batch_decode() {
             return self.decode_multi_seq_inner(hidden, residual, num_seqs, ctx, stream);
         }
         crate::layer::default_loops::decode_multi_seq_default(

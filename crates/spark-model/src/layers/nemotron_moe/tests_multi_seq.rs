@@ -77,6 +77,28 @@ fn run_multi_seq(
     layer: &NemotronMoeLayer,
     n: usize,
 ) -> anyhow::Result<()> {
+    run_multi_seq_impl(gpu, config, layer, n, false)
+}
+
+/// Drive the batched body DIRECTLY (`decode_multi_seq_inner`), bypassing the
+/// `MOE_BATCH_DECODE_MIN_SEQS` gate — the geometry tests keep the sorted
+/// dispatch alive while the gate keeps it out of production decode.
+fn run_multi_seq_inner(
+    gpu: &MockGpuBackend,
+    config: &ModelConfig,
+    layer: &NemotronMoeLayer,
+    n: usize,
+) -> anyhow::Result<()> {
+    run_multi_seq_impl(gpu, config, layer, n, true)
+}
+
+fn run_multi_seq_impl(
+    gpu: &MockGpuBackend,
+    config: &ModelConfig,
+    layer: &NemotronMoeLayer,
+    n: usize,
+    direct_inner: bool,
+) -> anyhow::Result<()> {
     let buffers = BufferArena::new(config, 64, 4096, 16, 32, gpu).unwrap();
     let dispatch = crate::layers::ops::GemmDispatch::defaults();
     let derived = crate::layers::ops::DerivedWeights::new();
@@ -116,6 +138,15 @@ fn run_multi_seq(
         owned.iter_mut().map(|b| &mut **b).collect();
     let seq_lens = vec![1usize; n];
     let block_tables = vec![vec![0u32]; n];
+    if direct_inner {
+        return layer.decode_multi_seq_inner(
+            buffers.hidden_states(),
+            buffers.residual(),
+            n,
+            &ctx,
+            0,
+        );
+    }
     layer.decode_multi_seq(
         buffers.hidden_states(),
         buffers.residual(),
@@ -142,16 +173,17 @@ fn grids(gpu: &MockGpuBackend) -> Vec<([u32; 3], [u32; 3])> {
         .collect()
 }
 
-/// n=4 with all sorted-path kernels present must take the batched sorted
-/// dispatch: one batched routing launch, grouped GEMMs over all experts,
-/// zero per-token expert GEMVs and zero single-token routing launches.
+/// The batched body (driven directly — production decode gates it off, see
+/// `MOE_BATCH_DECODE_MIN_SEQS`) at n=4 must take the sorted dispatch: one
+/// batched routing launch, grouped GEMMs over all experts, zero per-token
+/// expert GEMVs and zero single-token routing launches.
 #[test]
 fn moe_multi_seq_uses_sorted_path() {
     let config = lightning_config();
     let gpu = MockGpuBackend::new();
     let layer = mk_layer(&gpu, &config);
     assert!(layer.can_batch_decode());
-    run_multi_seq(&gpu, &config, &layer, 4).unwrap();
+    run_multi_seq_inner(&gpu, &config, &layer, 4).unwrap();
 
     let seen = grids(&gpu);
     // Batched sigmoid routing: grid [1, n, 1].
@@ -180,6 +212,37 @@ fn moe_multi_seq_uses_sorted_path() {
         2,
         "expected exactly gate GEMM + moe_sort at [1,1,1]x[256] (no \
          single-token routing); grids: {seen:?}"
+    );
+}
+
+/// With every sorted-path kernel PRESENT, production `decode_multi_seq` at
+/// n=4 (a reachable padded rung) must still take the per-seq default loop:
+/// the batched body is gated off by `MOE_BATCH_DECODE_MIN_SEQS` (measured
+/// net loss at every profiled rung + temp-0 answer flips from C=2 up).
+/// Fails if the gate is ever lowered without re-measuring.
+#[test]
+fn moe_multi_seq_gated_off_uses_default_loop() {
+    let config = lightning_config();
+    let gpu = MockGpuBackend::new();
+    let layer = mk_layer(&gpu, &config);
+    assert!(layer.can_batch_decode());
+    run_multi_seq(&gpu, &config, &layer, 4).unwrap();
+
+    let seen = grids(&gpu);
+    // No batched routing, no grouped GEMMs.
+    assert_eq!(count(&seen, [1, 4, 1], [256, 1, 1]), 0);
+    assert_eq!(seen.iter().filter(|(g, _)| g[2] == 128).count(), 0);
+    // 4 single-token routing launches + 4 per-token expert GEMVs — the
+    // default-loop tells.
+    assert_eq!(
+        count(&seen, [1, 1, 1], [256, 1, 1]),
+        4,
+        "expected 4 per-seq moe_topk_sigmoid launches; grids: {seen:?}"
+    );
+    assert_eq!(
+        count(&seen, [256, 6, 1], [128, 1, 1]),
+        4,
+        "expected 4 per-seq moe_expert_gemv launches; grids: {seen:?}"
     );
 }
 

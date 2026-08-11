@@ -201,8 +201,10 @@ impl TransformerLayer for NemotronMamba2Layer {
     /// (one weight-DRAM pass) and loops only the stateful conv+scan inner.
     /// See `trait_decode_multi_seq.rs` for the phase structure and hazards.
     ///
-    /// `num_seqs < 2` delegates to the canonical per-seq default loop — one
-    /// fallback loop in the codebase, not a private copy.
+    /// `num_seqs < MAMBA2_BATCH_DECODE_MIN_SEQS` delegates to the canonical
+    /// per-seq default loop — one fallback loop in the codebase, not a
+    /// private copy. The threshold (rung 8) is a measured determinism/
+    /// throughput tradeoff; see the constant's docs in `nemotron_mamba2.rs`.
     fn decode_multi_seq<'a, 'b: 'a>(
         &self,
         hidden: DevicePtr,
@@ -215,7 +217,7 @@ impl TransformerLayer for NemotronMamba2Layer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        if num_seqs < 2 {
+        if num_seqs < super::MAMBA2_BATCH_DECODE_MIN_SEQS {
             return crate::layer::default_loops::decode_multi_seq_default(
                 self,
                 hidden,
