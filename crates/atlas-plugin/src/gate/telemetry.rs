@@ -29,6 +29,11 @@ use std::path::Path;
 
 use super::{codeowners, coverage, taxon};
 
+/// The bounded renderings: recommended order, the gitGraph, next steps.
+#[path = "telemetry_order.rs"]
+pub mod order;
+pub use order::{CHART_PR_BOUND, merge_order};
+
 /// The marker pair that makes the comment rewritable in place.
 ///
 /// Without it the bot would append, and a week of appends is a comment nobody
@@ -126,21 +131,6 @@ pub fn collisions(views: &[PrView]) -> BTreeMap<String, Vec<u64>> {
     by_target
 }
 
-/// A merge order that avoids re-measuring the same target twice in a row.
-///
-/// Deliberately simple, and simple is the point: fewest targets first, ties
-/// broken by PR number. It is a SUGGESTION printed for a human, not a scheduler
-/// — a clever order that nobody can predict is worse than an obvious one, since
-/// the reader has to be able to tell at a glance when it is wrong.
-pub fn merge_order(views: &[PrView]) -> Vec<u64> {
-    let mut ranked: Vec<(usize, bool, u64)> = views
-        .iter()
-        .map(|v| (v.targets.len(), v.whole_repo, v.facts.number))
-        .collect();
-    ranked.sort();
-    ranked.into_iter().map(|(_, _, n)| n).collect()
-}
-
 fn escape(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
@@ -153,9 +143,6 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
 
     out.push_str(MARKER_START);
     out.push_str("\n## Open-PR telemetry\n\n");
-    out.push_str(
-        "Advisory. Nothing here blocks a merge — the blocking checks live on each PR.\n\n",
-    );
 
     if views.is_empty() {
         out.push_str("_No open pull requests._\n");
@@ -164,12 +151,34 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
         return out;
     }
 
+    // ── The chart, first ──
+    //
+    // The one picture the comment exists for: `main` as a line, the
+    // recommended merge order branching off it. Everything below is the
+    // evidence; the chart is the conclusion, so it leads.
+    out.push_str(&order::render_order_chart(&views));
+    out.push_str(
+        "\nAdvisory. Nothing here blocks a merge — the blocking checks live on each PR.\n",
+    );
+
+    out.push_str(&order::render_next_steps(&views));
+
     // ── PRs, grouped by the hardware they touch ──
-    out.push_str("### Pull requests\n\n");
+    //
+    // Open PRs only. A merged PR's remaining relevance is the debt it left,
+    // which has its own ledger below — repeating it here buried the open work
+    // under history and was most of why the comment grew unreadable.
+    let merged_count = views.iter().filter(|v| v.facts.merged).count();
+    out.push_str("\n### Pull requests\n\n");
+    if merged_count > 0 {
+        out.push_str(&format!(
+            "_{merged_count} merged PR(s) tracked for debt only — see the ledger below._\n\n"
+        ));
+    }
     out.push_str("| PR | category | targets re-opened | codeowners |\n");
     out.push_str("|---|---|---|---|\n");
     let mut grouped: BTreeMap<String, Vec<&PrView>> = BTreeMap::new();
-    for view in &views {
+    for view in views.iter().filter(|v| !v.facts.merged) {
         let key = if view.hardware.is_empty() {
             "host / non-kernel".to_string()
         } else {
@@ -261,29 +270,12 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
              | target | PRs |\n|---|---|\n",
         );
         for (target, prs) in &collisions {
-            let list = prs
-                .iter()
-                .map(|n| format!("#{n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push_str(&format!("| `{target}` | {list} |\n"));
+            // Cells share the chart's bound: a wall of two hundred refs is as
+            // unreadable as a two-hundred-node chart, and `cap_prs` says how
+            // many were dropped.
+            out.push_str(&format!("| `{target}` | {} |\n", order::cap_prs(prs)));
         }
     }
-
-    // ── Suggested order ──
-    out.push_str("\n### Suggested merge order\n\n```mermaid\ngraph LR\n");
-    let order = merge_order(&views);
-    for (i, number) in order.iter().enumerate() {
-        let view = views.iter().find(|v| v.facts.number == *number);
-        let count = view.map(|v| v.targets.len()).unwrap_or(0);
-        out.push_str(&format!(
-            "  pr{number}[\"#{number}<br/>{count} target(s)\"]\n"
-        ));
-        if i > 0 {
-            out.push_str(&format!("  pr{} --> pr{number}\n", order[i - 1]));
-        }
-    }
-    out.push_str("```\n\nFewest targets first — the cheapest to re-gate if the order changes.\n");
 
     // ── Every target, always ──
     out.push_str(&format!(
@@ -294,17 +286,17 @@ pub fn render(root: &Path, prs: &[PrFacts]) -> String {
     ));
     for target in &all_targets {
         let key = target.to_string();
-        let touching: Vec<String> = views
+        let touching: Vec<u64> = views
             .iter()
             .filter(|v| v.targets.contains(target))
-            .map(|v| format!("#{}", v.facts.number))
+            .map(|v| v.facts.number)
             .collect();
         out.push_str(&format!(
             "| `{key}` | {} |\n",
             if touching.is_empty() {
                 "—".to_string()
             } else {
-                touching.join(", ")
+                order::cap_prs(&touching)
             }
         ));
     }
