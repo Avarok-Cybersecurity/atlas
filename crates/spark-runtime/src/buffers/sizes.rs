@@ -142,7 +142,10 @@ impl BufferSizes {
         let q_proj_mul = if config.attn_gated { 2 } else { 1 };
         let qkv_dim = (q_heads * q_proj_mul + 2 * kv_heads) * hd;
 
-        let top_k = config.num_experts_per_tok;
+        // Max across layers: per-block top_k schedules (Puzzle) can exceed
+        // the scalar, and the scratch routing regions must clear EVERY
+        // layer's indices+weights writes.
+        let top_k = config.max_num_experts_per_tok();
 
         // Scratch layout (two users, take max):
         //

@@ -68,6 +68,9 @@ impl NemotronMoeLayer {
         // `upload_batch_metadata_fixed` is read EVERY layer of this same
         // step by the attention layers — it must not be clobbered. Worst
         // case here is 128 rows × top_k≈6 → 6 KB, but assert the invariant.
+        // The MIXED path (decode_b.rs) parks the prefill chunk's
+        // positions/slots in scratch too; its offset is sized to clear this
+        // region for every padded_n (`trait_impl/mixed_layout.rs`).
         debug_assert!(
             2 * num_seqs * self.top_k * 4 <= 32768,
             "MoE batched-decode routing scratch ({} rows × top_k {}) would \
