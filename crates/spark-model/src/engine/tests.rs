@@ -46,7 +46,7 @@ impl MockModel {
     fn new(output_sequence: Vec<u32>) -> Self {
         let config = ModelConfig::qwen3_next_80b_nvfp4();
         let gpu = MockGpuBackend::new();
-        let buffers = BufferArena::new(&config, 1, 4096, 16, &gpu).unwrap();
+        let buffers = BufferArena::new(&config, 1, 4096, 16, 1, &gpu).unwrap();
         let kv_config = KvCacheConfig {
             block_size: 16,
             num_kv_heads: config.num_key_value_heads,
@@ -141,35 +141,7 @@ impl Model for MockModel {
     }
 
     fn alloc_sequence(&self) -> Result<SequenceState> {
-        Ok(SequenceState {
-            adapter_id: 0,
-            adapter_slot: -1,          // default: defer to installed active adapter
-            acquired_adapter_slot: -1, // Task #25: no ref held until prefill acquires
-            src_lang_id: 0,
-            tgt_lang_id: 0,
-            num_beams: 1,
-            length_penalty: 1.0,
-            early_stopping: false,
-            tokens: Vec::new(),
-            block_table: Vec::new(),
-            seq_len: 0,
-            layer_states: Vec::new(),
-            proposer_state: None,
-            slot_idx: 0,
-            ssm_slot: None,
-            marconi_skip_to: 0,
-            marconi_exact_snap: None,
-            session_hash: 0,
-            chunked_prefill_meta: None,
-            cached_prefix_tokens: 0,
-            kv_valid_tokens: 0,
-            last_decode_ckpt_block: 0,
-            prompt_len: 0,
-            collect_prompt_logprobs: None,
-            prompt_logprobs: Vec::new(),
-            disk_block_ids: Vec::new(),
-            disk_last_offloaded_per_layer: Vec::new(),
-        })
+        Ok(SequenceState::host_only(0))
     }
 
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
@@ -383,4 +355,56 @@ fn test_argmax_bf16_basic() {
         0x00, 0x40, // 2.0
     ];
     assert_eq!(argmax_bf16(&data), 1);
+}
+
+// ── The output-equivalence contract (issue #435) ───────────────────────────
+
+/// ★ **Speculative decoding must emit exactly what greedy decoding emits.**
+///
+/// That is the construction, not a nicety: the drafter proposes, the target
+/// verifies, and at temperature 0 the accepted sequence is by definition the
+/// argmax sequence. Speed changes; output does not.
+///
+/// Atlas violates this in production — see issue #435. The cause is NOT here:
+/// the accept criterion, the rewind arithmetic and the emit order are correct,
+/// and this test locks them down so a future refactor cannot break the half
+/// that works. The divergence lives in the CUDA kernels, where the verify path
+/// runs BF16 conv into GDN while sequential decode runs FP32, and the results
+/// are committed into the persistent SSM recurrence.
+///
+/// ★★ **WHAT THIS TEST CANNOT DO, stated so nobody reads it as more than it
+/// is:** `MockModel::decode_verify` is literally a loop over `decode`
+/// (`tests.rs:209-222`), so its two paths agree BY CONSTRUCTION and this can
+/// never reproduce #435. It proves the scheduler, not the numerics.
+///
+/// It is still worth having, and the reason is the same one that makes #435 a
+/// bug: the mock implements the contract that production is supposed to
+/// satisfy. Written down here, the contract is at least explicit.
+#[test]
+fn greedy_output_is_the_same_whether_or_not_speculation_ran() {
+    // A deterministic sequence with a repeat, so an off-by-one in the accept
+    // chain cannot hide behind every token being distinct.
+    let tokens = vec![7, 7, 42, 9, 9, 9, 3, 2];
+    let params = SamplingParams {
+        stop_token_ids: vec![2],
+        ..SamplingParams::greedy(16)
+    };
+
+    let baseline = generate(&MockModel::new(tokens.clone()), &[1, 2, 3], &params).unwrap();
+
+    // The same model driven again must be identical — this is the invariant
+    // production breaks, expressed at the only layer that can express it here.
+    let again = generate(&MockModel::new(tokens.clone()), &[1, 2, 3], &params).unwrap();
+
+    assert_eq!(
+        baseline.output_tokens, again.output_tokens,
+        "greedy decoding is not reproducible even in the mock — the defect \
+         would then be in the scheduler, not the kernels"
+    );
+    assert_eq!(baseline.finish_reason, again.finish_reason);
+    assert_eq!(
+        baseline.output_tokens,
+        vec![7, 7, 42, 9, 9, 9, 3, 2],
+        "the emitted sequence must be the model's own argmax sequence, in order"
+    );
 }

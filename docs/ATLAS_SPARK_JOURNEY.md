@@ -95,7 +95,7 @@ Atlas Spark was a complete rewrite of the inference pipeline in pure Rust.
 ├── spark-model         Model composition, layer traits, Qwen3 attention + SSM + MoE
 ├── spark-server        HTTP server, tokenizer, integration test
 ├── spark-comm          gRPC stub for future multi-GPU
-└── 9 other support crates (atlas-py, atlas-quant, atlas-gemm, etc.)
+└── 9 other support crates (atlas-py, atlas-quant, atlas-gemm, etc.)   [historical; several no longer exist]
 ```
 
 ### Design principles

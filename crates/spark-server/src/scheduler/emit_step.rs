@@ -19,11 +19,11 @@ pub fn emit_token(
     sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
     // Cooperative cancellation from the streaming pipeline. The
-    // stream-side loop guards (Bug-2 name-run cap, F11 within-dedup,
-    // F44 perm-fail, loop-watchdog) flip this flag when they decide
-    // the response should end. Treat it like an EOS: finalise now so
-    // `handle_done` runs with the proper `tool_loop_capped` /
-    // `finish_reason="length"` machinery, instead of letting the
+    // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
+    // perm-fail, loop-watchdog, client stop-sequence match) flip this
+    // flag when they decide the response should end. Treat it like an
+    // EOS: finalise now (lifecycle derives "stop" — budget not hit —
+    // and `handle_done`'s overrides refine it) instead of letting the
     // model keep emitting tokens that just get suppressed.
     if let Some(ref f) = a.cancel_flag
         && f.load(std::sync::atomic::Ordering::Acquire)
@@ -74,6 +74,8 @@ pub fn emit_token(
     {
         a.output_tokens.push(tok);
         a.finished = true;
+        // Name the cut -- MTP twin of the decode_logits_step site.
+        a.guard_stop = Some(GUARD_STOP_TOOL_RESPONSE);
         tracing::debug!("<tool_response> hard-stop fired (id={trs}); ending turn");
         return;
     }
@@ -97,8 +99,27 @@ pub fn emit_token(
         a.think_skip_count += 1;
         if a.think_skip_count >= 50 {
             a.finished = true;
+            // Name the cut -- MTP twin of the decode_logits_step site; see
+            // `GUARD_STOP_THINK_SKIP` for why an unnamed skip-site finish
+            // wires "stop" and silently ends an agentic run.
+            a.guard_stop = Some(GUARD_STOP_THINK_SKIP);
+            tracing::debug!(
+                "</think> think-skip watchdog hard-stop fired (50 consecutive strays); \
+                 ending turn"
+            );
         }
         return;
+    }
+    // Reset skip counter when a real content token is generated — parity with
+    // `decode_logits_step.rs`. Without this the counter is CUMULATIVE on the MTP
+    // path while the non-MTP path counts CONSECUTIVE strays, so a generation
+    // that emits 50 scattered `</think>` across otherwise healthy content is
+    // force-stopped here and not there. The watchdog exists for the degenerate
+    // `</think>` REPETITION seen at long context, which is consecutive by
+    // definition; counting non-adjacent strays is a different, stricter policy
+    // that was never intended.
+    if a.think_ended {
+        a.think_skip_count = 0;
     }
 
     // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.

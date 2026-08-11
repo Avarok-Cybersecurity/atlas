@@ -37,7 +37,20 @@ impl From<MessagesRequest> for ir::ChatRequest {
     /// * unknown roles collapse to user (Anthropic wire only defines
     ///   user/assistant).
     fn from(req: MessagesRequest) -> Self {
-        let mut messages: Vec<Message> = Vec::with_capacity(req.messages.len() + 1);
+        // Capacity is a HINT, and it is clamped on purpose.
+        //
+        // `req.messages.len()` is attacker-influenced: it is whatever the
+        // request body said. Here it is also already-materialised — serde has
+        // allocated and filled that Vec before this runs — so reserving the
+        // same order again cannot cost more than the body already did. The cap
+        // is defence in depth rather than a live fix: it keeps the reservation
+        // bounded if this is ever reached from a streaming or lazily-decoded
+        // path where the count is known before the elements are, which is the
+        // shape CodeQL's uncontrolled-allocation rule is really about. The Vec
+        // still grows to whatever the request genuinely needs.
+        const PREALLOC_MESSAGES: usize = 4096;
+        let mut messages: Vec<Message> =
+            Vec::with_capacity((req.messages.len() + 1).min(PREALLOC_MESSAGES));
 
         // System message (filter x-anthropic- billing/config blocks).
         if let Some(sys) = &req.system {

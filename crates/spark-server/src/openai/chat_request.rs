@@ -79,7 +79,10 @@ pub struct ChatCompletionRequest {
     /// `max_thinking_tokens` is accepted as an alias — it's the intuitive
     /// name several clients send, and silently dropping it left the budget
     /// unenforced (reasoning ran unbounded). See community report 2026-06.
-    #[serde(default, alias = "max_thinking_tokens")]
+    /// `thinking_budget` is the DashScope/Qwen spelling that OpenAI-
+    /// compatible gateways inject top-level; dropping it left gateway-
+    /// injected reasoning caps unenforced on this surface.
+    #[serde(default, alias = "max_thinking_tokens", alias = "thinking_budget")]
     pub thinking_token_budget: Option<u32>,
     /// Per-request override for the vLLM-anchored token-loop detector
     /// (content-loop + thinking-loop). Mirrors vLLM's
@@ -202,8 +205,8 @@ pub struct ChatCompletionRequest {
     pub web_search_options: Option<serde_json::Value>,
     /// Reasoning-effort shorthand (`minimal | low | medium | high`).
     /// 2026 SDKs send this as a top-level field on gpt-5.x chat models;
-    /// Atlas maps it to the existing `reasoning.effort` knob when the
-    /// model's reasoning parser supports it.
+    /// `client_thinking_directive` maps it through the same effort→budget
+    /// ladder as the nested `reasoning.effort` object.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
 }
@@ -314,8 +317,10 @@ impl ChatCompletionRequest {
     ///
     /// Request-body priority (highest to lowest):
     /// 1. `thinking.budget_tokens` (Anthropic) — explicit budget
-    /// 2. `thinking_token_budget` (vLLM PR) — explicit budget
-    /// 3. `reasoning.effort` / `reasoning_effort` (OpenAI) — mapped to budget
+    /// 2. `thinking_token_budget` (vLLM PR; aliases `max_thinking_tokens`,
+    ///    `thinking_budget`) — explicit budget
+    /// 3. `reasoning.effort` object / top-level `reasoning_effort`
+    ///    shorthand (OpenAI) — mapped to budget
     /// 4. `chat_template_kwargs` (vLLM stable) — enable/disable + optional budget
     /// 5. `enable_thinking` (Atlas legacy) — boolean
     ///
@@ -354,7 +359,12 @@ impl ChatCompletionRequest {
             };
         }
 
-        // 3. OpenAI: nested reasoning.effort wins over the top-level shorthand.
+        // 3. OpenAI: reasoning.effort object, or the top-level
+        // `reasoning_effort` shorthand the Chat Completions wire (and the
+        // 2026 SDKs) send. Nested object wins when both are present.
+        // Dropping the shorthand silently demoted every effort-level
+        // request to the server/model default — including `"none"`,
+        // which must force thinking OFF.
         if let Some(effort) = self.requested_reasoning_effort() {
             let budget = match effort {
                 "none" => 0,

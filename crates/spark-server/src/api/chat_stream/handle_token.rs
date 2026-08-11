@@ -94,6 +94,23 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
             );
             state.loop_watchdog_triggered = true;
             state.stop_string_triggered = true;
+            // ★ Name the guard so the wire reason comes out "length".
+            // Without this the scheduler sees a bare `cancel_flag` with
+            // budget left, falls to its early-finalize rule and reports
+            // "stop" — telling the client the model finished, when in
+            // fact we truncated it mid-doom-loop.
+            //
+            // This was the THIRD such path. The scheduler guards and the
+            // simhash/token-loop watchdogs were fixed first; this one
+            // survived both and cost the agentic gate runs 0 and 7 on
+            // three consecutive shas, because the harness's
+            // `was_cut_off()` only nudges on "length".
+            //
+            // ★ Note the harness's OTHER recovery route cannot cover it:
+            // `emitted_unparsed_call` scans the text for `<tool_call>` /
+            // `<function=`, and the sanitizer has already suppressed
+            // exactly those bytes — which is why this streak fired at all.
+            state.guard_stop = Some("suppress_streak");
             state
                 .cancel_flag
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -430,6 +447,13 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
             &mut state.stop_string_emitted_len,
             &mut state.stop_string_triggered,
         );
+        // Entry was gated on `!triggered`, so a flip here is a GENUINE
+        // client stop-sequence match (the watchdog paths set the flag
+        // elsewhere): record it for the wire finish_reason ("stop", per
+        // OpenAI) and cancel generation.
+        if state.stop_string_triggered {
+            state.note_stop_string_match();
+        }
         if delta.is_empty() {
             // Either everything is sitting in the hold-back window
             // (waiting for the next chunk / stream close) or a match
@@ -439,11 +463,33 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
     }
 
     if state.stop_string_triggered {
+        // The tool guards (F11 within-response dedup, hard-validation
+        // reject, loop cap) reuse `stop_string_triggered` as a generic
+        // "end this response" flag. But the scheduler keeps generating for
+        // a few tokens after the flag is set (cancel latency), and on a
+        // tool-call *runaway* those tokens are raw markup —
+        // `<tool_call><function=…><parameter=…>…</tool_call></_call>` —
+        // re-emitted here. A raw passthrough (the old behaviour) leaked
+        // that markup into `content` because this branch returns BEFORE the
+        // detector/sanitizer fork below. Route the delta through the
+        // buffered `sanitize_content_chunk` so multi-token markers that
+        // straddle deltas (`</_call>` = `</` `_` `call` `>`) are reassembled
+        // and scrubbed. For a genuine stop string, legitimate trailing
+        // content is untouched — the sanitizer only removes tool markup.
         if !delta.is_empty() {
-            deltas.push(StreamDelta::Content {
-                text: delta,
-                token_ids: state.take_ids_if(ctx.req_return_token_ids),
-            });
+            let cleaned = sanitize_content_chunk(
+                &delta,
+                &mut state.tag_scan_buf,
+                &mut state.suppressing_param_leak,
+                &mut state.inside_envelope,
+                &ctx.leak_markers,
+            );
+            if !cleaned.is_empty() {
+                deltas.push(StreamDelta::Content {
+                    text: cleaned,
+                    token_ids: state.take_ids_if(ctx.req_return_token_ids),
+                });
+            }
         }
         return deltas;
     }

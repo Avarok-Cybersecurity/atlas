@@ -33,6 +33,30 @@ pub(super) trait ComputeTarget: Send + Sync {
         arch: &str,
         extra_flags: &[String],
     ) -> Result<(), String>;
+
+    /// Identity of the compiler that will emit the device code, for the
+    /// closure hash the benchmark gate records.
+    ///
+    /// `None` when it cannot be determined. Callers must then omit the
+    /// attestation entirely — substituting a placeholder would make two
+    /// different toolchains hash alike, which is the one failure a
+    /// build-provenance hash exists to prevent.
+    fn compiler_id(&self) -> Option<String>;
+}
+
+/// `<binary> <args>` reduced to one stable line.
+///
+/// Compilers print several lines and often a build date; the LAST non-empty
+/// line carries the release for nvcc, hipcc and metal alike. Whitespace is
+/// collapsed so incidental formatting does not move the hash.
+fn compiler_version(bin: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = Command::new(bin).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    Some(line.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Warning numbers the strict kernel-compile validation ("clippy for kernels")
@@ -48,6 +72,10 @@ struct NvidiaTarget {
 }
 
 impl ComputeTarget for NvidiaTarget {
+    fn compiler_id(&self) -> Option<String> {
+        compiler_version(&self.nvcc, &["--version"])
+    }
+
     fn source_extension(&self) -> &str {
         "cu"
     }
@@ -127,6 +155,10 @@ struct AppleTarget {
 }
 
 impl ComputeTarget for AppleTarget {
+    fn compiler_id(&self) -> Option<String> {
+        compiler_version(&self.xcrun, &["metal", "--version"])
+    }
+
     fn source_extension(&self) -> &str {
         "metal"
     }
@@ -208,6 +240,15 @@ struct ScaleTarget {
 }
 
 impl ComputeTarget for ScaleTarget {
+    /// SCALE's nvcc lives under a per-ARCH directory that this method is not
+    /// given, so there is no one binary to interrogate. Rather than report the
+    /// toolkit ROOT — a path, not a version, that would stay constant across
+    /// SCALE upgrades and let a toolchain change slip through unhashed — this
+    /// declines, and SCALE targets simply carry no attestation.
+    fn compiler_id(&self) -> Option<String> {
+        None
+    }
+
     fn source_extension(&self) -> &str {
         "cu"
     }
@@ -285,6 +326,10 @@ struct HipTarget {
 }
 
 impl ComputeTarget for HipTarget {
+    fn compiler_id(&self) -> Option<String> {
+        compiler_version(&self.hipcc, &["--version"])
+    }
+
     fn source_extension(&self) -> &str {
         "cu"
     }

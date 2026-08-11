@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "benchmark_id": "agentic-webserver",
+  "benchmark_name": "Agentic Webserver Test",
+  "git_sha": "66b2071823",
+  "recorded_at": 1786117488,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "params": {
+    "build_timeout_s": "600",
+    "command_timeout_s": "180",
+    "iterations": "10",
+    "max_tokens": "8192",
+    "max_turns": "40",
+    "request_timeout_s": "900",
+    "serve_timeout_s": "30",
+    "wall_budget_s": "1300"
+  },
+  "command": [
+    "spark",
+    "benchmark",
+    "run",
+    "agentic-webserver",
+    "--param",
+    "build_timeout_s=600",
+    "--param",
+    "command_timeout_s=180",
+    "--param",
+    "iterations=10",
+    "--param",
+    "max_tokens=8192",
+    "--param",
+    "max_turns=40",
+    "--param",
+    "request_timeout_s=900",
+    "--param",
+    "serve_timeout_s=30",
+    "--param",
+    "wall_budget_s=1300",
+    "--yes",
+    "--pull-request-gate"
+  ],
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+  "atlas_version": "1.0.0-beta-preview",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.126.09",
+    "sm_clock_mhz": 2392.0,
+    "source": "nvidia-smi"
+  },
+  "metrics": {
+    "followed_directions": 9.0,
+    "iterations": 10.0,
+    "sum_wall_s": 786.9054600100001,
+    "webserver_ok": 10.0
+  },
+  "frame_status": "Completed",
+  "verdict": "FAIL",
+  "verdict_reason": "followed_directions 9/10",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · followed_directions=9.00, iterations=10.00, sum_wall_s=786.91, webserver_ok=10.00 · Fail: followed_directions 9/10"
+}

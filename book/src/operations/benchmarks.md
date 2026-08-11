@@ -55,17 +55,12 @@ The `scripts/sweep_all_models.sh` helper boots each model in turn, runs the cano
 
 ## Running per-kernel benchmarks
 
-Per-crate:
-
 ```bash
-cargo bench -p atlas-norm           # RMSNorm, gated RMSNorm
-cargo bench -p atlas-embed          # RoPE, embedding
-cargo bench -p atlas-activation     # SiLU×Mul
-cargo bench -p atlas-reduce         # topk, moe_sum, softmax
 cargo bench -p spark-runtime        # KV cache ops, sampler micro
+cargo bench -p atlas-spark-bench    # end-to-end client benchmarks
 ```
 
-Each crate has `benches/*.rs` driven by Criterion. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
+Criterion-driven, from each crate's `benches/*.rs`. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
 
 The full kernel numbers table:
 
@@ -149,22 +144,25 @@ The benchmark suite the dashboard runs is also a subcommand, so a benchmark can
 be scripted, run in CI, or driven over SSH with no terminal attached.
 
 ```
-atlas benchmark list                      # the suite
-atlas benchmark list concurrency-sweep    # one benchmark's parameters
-atlas benchmark run  concurrency-sweep --model <served-model>
-atlas benchmark history
+spark benchmark list                      # the suite
+spark benchmark list concurrency-sweep    # one benchmark's parameters
+spark benchmark run  concurrency-sweep --model <served-model>
+spark benchmark history
 ```
 
-`run` drives an endpoint that is **already serving** — it never loads a model
-and never touches the GPU. Point it somewhere else with `--url`:
+`run` drives an endpoint that is **already serving** — it neither loads a model
+nor touches the GPU. The one exception is `--pull-request-gate`, which *does*
+start a server: it serves the benchmark's own recipe on a free port (900 s boot
+timeout, for a cold NVFP4 load) and tears it down on drop
+(`cli/bench_selfstart.rs`). Point `run` somewhere else with `--url`:
 
 ```
-atlas benchmark run concurrency-sweep \
+spark benchmark run concurrency-sweep \
   --url http://10.10.10.3:8888 --model Qwen/Qwen3.6-35B-A3B-FP8 \
   --param concurrencies=1,2,4 --param isls=128 --param osl=64
 ```
 
-`--param` takes any key from `atlas benchmark list <id>`; anything you leave out
+`--param` takes any key from `spark benchmark list <id>`; anything you leave out
 takes the schema default. An unknown key is an error listing the valid ones,
 because a silently-ignored override produces a run measuring something other
 than what you asked for.
@@ -189,12 +187,12 @@ just the ones you overrode), the target, the source, and the Atlas version. So
 a stored run says what it measured and can be reproduced.
 
 ```
-atlas benchmark history --id concurrency-sweep --limit 5
-atlas benchmark history --run run-1785000000123456789 --format json | jq .params
+spark benchmark history --id concurrency-sweep --limit 5
+spark benchmark history --run run-1785000000123456789 --format json | jq .params
 ```
 
 One store, both directions: a CLI run appears in the dashboard's Benchmarks →
-History pane, and a dashboard run appears in `atlas benchmark history` marked
+History pane, and a dashboard run appears in `spark benchmark history` marked
 `tui`.
 
 Machine-readable output goes to **stdout**, progress to **stderr**, so

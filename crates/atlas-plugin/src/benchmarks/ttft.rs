@@ -29,50 +29,10 @@ use crate::http;
 use crate::metadata::PluginMetadata;
 use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
-use crate::result::{
-    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
-};
+use crate::result::{BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus};
 
-const WARM_SUMMARY: &str = "Cached-prefix TTFT vs the stored same-box baseline";
-const COLD_SUMMARY: &str = "Uncached prefill TTFT vs the stored same-box baseline";
-pub const WARM_METADATA: PluginMetadata = PluginMetadata::atlas(WARM_SUMMARY);
-pub const COLD_METADATA: PluginMetadata = PluginMetadata::atlas(COLD_SUMMARY);
-
-pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "ttft-warm-gate",
-    name: "Warm TTFT Regression Gate",
-    summary: WARM_SUMMARY,
-    detail: "Measures time-to-first-token on the WARM path: each sample repeats a bit-identical \
-             prompt so the prefix cache hits. Gates at median ≤3% and p90 ≤5% against a baseline \
-             recorded on this box — the guard that catches an optimization silently falling back \
-             to a slow path while the correctness gates stay green.",
-    duration_hint: "~3–6 min",
-    updated: "2026-07-31",
-    needs_confirmation: false,
-    // A TTFT gate compares against a baseline recorded on the SAME box and
-    // model, which it stores itself — so it is meaningful for any checkpoint
-    // and constrains none.
-    intended_for: None,
-    ctor: || Box::new(TtftGate::new(Mode::Warm)),
-};
-
-pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "ttft-cold-gate",
-    name: "Cold TTFT Regression Gate",
-    summary: COLD_SUMMARY,
-    detail: "Measures time-to-first-token with the prefix cache guaranteed to MISS: every sample \
-             carries a unique prefix_tag, so each request pays a full prefill. This is the prefill path \
-             on its own, with the cache's contribution removed — the warm gate cannot see a \
-             prefill regression that caching is hiding.",
-    duration_hint: "~3–6 min",
-    updated: "2026-07-31",
-    needs_confirmation: false,
-    // A TTFT gate compares against a baseline recorded on the SAME box and
-    // model, which it stores itself — so it is meaningful for any checkpoint
-    // and constrains none.
-    intended_for: None,
-    ctor: || Box::new(TtftGate::new(Mode::Cold)),
-};
+mod descriptors;
+pub use descriptors::{COLD_DESCRIPTOR, COLD_METADATA, WARM_DESCRIPTOR, WARM_METADATA};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -123,6 +83,15 @@ pub struct TtftGate {
 }
 
 impl TtftGate {
+    /// Smallest absolute TTFT change this gate will call a regression.
+    ///
+    /// Paired with the percentage limits, never used alone. Host scheduling
+    /// jitter on a loopback endpoint is comfortably over a millisecond, so a
+    /// delta under this floor is not a measurement — it is the clock. Chosen
+    /// to sit above that jitter and far below any TTFT a served model produces
+    /// (GB10 27B warm median is ~1.5 s, where the 3% limit binds at ~43 ms).
+    const NOISE_FLOOR_MS: f64 = 2.0;
+
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
@@ -249,77 +218,6 @@ impl TtftGate {
         }
         t
     }
-
-    /// Compare against the stored baseline and decide. `None` baseline is
-    /// `Info`, never a green PASS — a gate with nothing to compare against has
-    /// not passed anything.
-    fn verdict(&self, median: Option<f64>, p90: Option<f64>) -> (Verdict, Vec<Stat>) {
-        let store = match self.handle() {
-            Ok(h) => h.artifacts().clone(),
-            Err(_) => return (Verdict::info("no handle"), Vec::new()),
-        };
-        let id = self.mode.descriptor().id;
-        let stored = baseline::load(&store, id);
-        let mut summary = vec![
-            Stat::new("Median TTFT", stats::fmt_ms(median), "ms").with_style(CellStyle::Accent),
-            Stat::new("p90 TTFT", stats::fmt_ms(p90), "ms"),
-        ];
-        let Some(base) = stored else {
-            summary.push(Stat::new("Baseline", "none", "").with_style(CellStyle::Dim));
-            return (
-                Verdict::info("no baseline on this box yet — this run is recorded as the baseline"),
-                summary,
-            );
-        };
-        let target_now = self
-            .handle()
-            .map(|h| h.target().base_url.clone())
-            .unwrap_or_default();
-        let model_now = self
-            .handle()
-            .map(|h| h.target().model.clone())
-            .unwrap_or_default();
-        if base.target != target_now || base.model != model_now {
-            summary.push(Stat::new("Baseline", "other target", "").with_style(CellStyle::Warn));
-            return (
-                Verdict::info(format!(
-                    "baseline was recorded against {} / {} — not comparable, reporting only",
-                    base.target, base.model
-                )),
-                summary,
-            );
-        }
-        let dm = stats::pct_delta(median, base.get("median_ms"));
-        let dp = stats::pct_delta(p90, base.get("p90_ms"));
-        summary.push(
-            Stat::new(
-                "vs baseline",
-                dm.map(|d| format!("{d:+.1}")).unwrap_or_else(|| "—".into()),
-                format!("% median · {}", base.age_text()),
-            )
-            .with_style(match dm {
-                Some(d) if d > self.median_limit_pct => CellStyle::Bad,
-                Some(d) if d < 0.0 => CellStyle::Good,
-                _ => CellStyle::Neutral,
-            }),
-        );
-        let median_bad = dm.is_some_and(|d| d > self.median_limit_pct);
-        let p90_bad = dp.is_some_and(|d| d > self.p90_limit_pct);
-        let detail = format!(
-            "median {} (limit +{:.1}%) · p90 {} (limit +{:.1}%)",
-            dm.map(|d| format!("{d:+.1}%"))
-                .unwrap_or_else(|| "—".into()),
-            self.median_limit_pct,
-            dp.map(|d| format!("{d:+.1}%"))
-                .unwrap_or_else(|| "—".into()),
-            self.p90_limit_pct,
-        );
-        if median_bad || p90_bad {
-            (Verdict::fail(format!("REGRESSED — {detail}")), summary)
-        } else {
-            (Verdict::pass(detail), summary)
-        }
-    }
 }
 
 impl Plugin for TtftGate {
@@ -444,21 +342,27 @@ impl Benchmark for TtftGate {
             }
             let p = stats::Percentiles::of(&samples);
             let (verdict, summary) = self.verdict(p.p50, p.p90);
-            if self.update_baseline {
-                let mut metrics = BTreeMap::new();
-                if let Some(v) = p.p50 {
-                    metrics.insert("median_ms".to_string(), v);
-                }
-                if let Some(v) = p.p90 {
-                    metrics.insert("p90_ms".to_string(), v);
-                }
+            let mut metrics = BTreeMap::new();
+            // ★ How many measurements are behind that median — else a record
+            // cannot be told from one drawn at a third of the lengths or
+            // repeats, then scored against ceilings measured at 3 × 12.
+            // Recorded, not yet pinned: the committed records predate it. Pin
+            // `{"min": n, "max": n}` when these gates are next re-recorded.
+            metrics.insert("samples".to_string(), samples.len() as f64);
+            if let Some(v) = p.p50 {
+                metrics.insert("median_ms".to_string(), v);
+            }
+            if let Some(v) = p.p90 {
+                metrics.insert("p90_ms".to_string(), v);
+            }
+            if self.should_store(&verdict) {
                 let target = handle.target();
                 baseline::save(
                     handle.artifacts(),
                     self.mode.descriptor().id,
                     &target.base_url,
                     &target.model,
-                    metrics,
+                    metrics.clone(),
                 )
                 .context("recording baseline")?;
             }
@@ -469,6 +373,7 @@ impl Benchmark for TtftGate {
             .with_progress(total, total)
             .with_summary(summary)
             .with_table(self.table())
+            .with_metrics(metrics)
             .with_verdict(verdict));
         }
 
@@ -494,6 +399,12 @@ impl Benchmark for TtftGate {
         .log_line(line))
     }
 }
+
+#[path = "ttft_target.rs"]
+mod ttft_target;
+
+#[path = "ttft_verdict.rs"]
+mod ttft_verdict;
 
 #[cfg(test)]
 #[path = "ttft_tests.rs"]

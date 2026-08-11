@@ -99,8 +99,10 @@ pub(super) struct SsmSnapshotIndex {
     pub(super) stats: SnapshotStats,
 }
 
-/// Tail-lease kill switch. Default ON; `ATLAS_SSM_TAIL_PROTECT=0` (or `off`)
-/// disables. Backward compatible with the old opt-in scripts that set `=1`.
+/// Tail-lease kill switch. Default ON; opt out with
+/// `ATLAS_DISABLE_SSM_TAIL_PROTECT=1` (or `on`/`true`). Renamed 2026-08-05
+/// from the opt-in `ATLAS_SSM_TAIL_PROTECT` (=0/off disabled): the lease is
+/// default-on, so the variable now expresses the exception, not the rule.
 ///
 /// **INERT IN THE SHIPPING (MLPerf-edge) CONFIG — it protects nothing there.**
 /// The lease only ever shields an entry with `is_tail == true`, and the sole
@@ -108,14 +110,15 @@ pub(super) struct SsmSnapshotIndex {
 /// `finalize_midchunk_capture`, which is unreachable when
 /// `ATLAS_SSM_TAIL_MIDCHUNK=0` — which the frozen MLPerf-edge config sets.
 /// Verified 2026-07-21 by call-graph audit (the 2026-07-20 eviction rig
-/// likewise measured 0 lease hits). Do not read a `ATLAS_SSM_TAIL_PROTECT=1`
-/// in a launch script as evidence that tail protection is doing work; check
-/// `ATLAS_SSM_TAIL_MIDCHUNK` first. Behaviour here is deliberately unchanged —
+/// likewise measured 0 lease hits). A launch script setting neither this
+/// variable nor `ATLAS_SSM_TAIL_MIDCHUNK` is still running with the lease
+/// armed; check `ATLAS_SSM_TAIL_MIDCHUNK` first when asking whether tail
+/// protection is doing work. Behaviour here is deliberately unchanged —
 /// this note is a warning to the next reader, not a defect report.
 fn tail_lease_enabled() -> bool {
     !matches!(
-        std::env::var("ATLAS_SSM_TAIL_PROTECT").as_deref(),
-        Ok("0") | Ok("off")
+        std::env::var("ATLAS_DISABLE_SSM_TAIL_PROTECT").as_deref(),
+        Ok("1") | Ok("on") | Ok("true")
     )
 }
 
@@ -276,7 +279,7 @@ impl SsmSnapshotIndex {
         tracing::info!(
             "ssm-snap-stats: lookups={} hits={} hit_rate={:.2} saves={} evictions(drops)={} \
              mean_anchor={:.0}tok mean_recompute_on_hit={:.0}tok recompute_on_miss={}tok \
-             resident={} tiered={} tier_spills={} tier_hits={} tier_fault_ins={}",
+             resident={} tiered={} tier_spills={} tier_hits={} tier_fault_ins={} tier_reaps={}",
             s.lookups,
             s.hits,
             hit_rate,
@@ -290,6 +293,7 @@ impl SsmSnapshotIndex {
             s.tier_spills,
             s.tier_hits,
             s.tier_fault_ins,
+            s.tier_reaps,
         );
     }
 

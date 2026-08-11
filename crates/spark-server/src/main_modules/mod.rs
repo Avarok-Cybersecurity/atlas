@@ -11,6 +11,7 @@ pub(crate) mod model_host;
 pub(crate) mod model_swap;
 pub(crate) mod promotion;
 pub(crate) mod serve;
+pub(crate) mod serve_flags;
 pub(crate) mod serve_load;
 pub(crate) mod serve_phases;
 mod serve_router;

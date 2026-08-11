@@ -4,7 +4,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -149,7 +149,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(entry.model.clone(), name_style),
         ]);
         if selected {
-            head = head.style(Style::default().bg(theme::BG_SELECTION.color()));
+            head = head.style(theme::selected());
         }
         lines.push(head);
 
@@ -362,7 +362,7 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
     // window size.
     if width >= 70 && job.rate_bps > 0.0 {
         spans.push(Span::styled(
-            format!("  {:.0} MB/s", job.rate_bps / 1e6),
+            format!("  {}", crate::tui::format::rate(job.rate_bps)),
             theme::dim(),
         ));
     }
@@ -374,12 +374,11 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
     Some(Line::from(spans))
 }
 
+/// ★ This used to divide by 10⁹ while the Library card that replaces this row
+/// on completion divided by 1024³ — so a checkpoint downloaded as "20.0 GB"
+/// became "18.6 GB" the moment it finished, for no reason the user could see.
 fn gb(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
-        format!("{:.1} GB", bytes as f64 / 1e9)
-    } else {
-        format!("{:.0} MB", bytes as f64 / 1e6)
-    }
+    crate::tui::format::bytes(bytes)
 }
 
 /// What the keys will do for THIS row, said on the row itself.

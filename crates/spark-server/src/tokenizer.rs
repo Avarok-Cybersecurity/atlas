@@ -64,6 +64,11 @@ fn normalize_tool_call_arguments(messages: &[serde_json::Value]) -> Vec<serde_js
 mod chat_impl;
 mod deepseek_v4;
 mod jinja_helpers;
+mod message_preprocess;
+
+pub(crate) use message_preprocess::{
+    autoclose_assistant_think, remap_developer_role, resolve_think_control,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatEncoding {

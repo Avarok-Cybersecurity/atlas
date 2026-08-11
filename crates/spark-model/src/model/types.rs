@@ -60,6 +60,19 @@ pub struct TransformerModel {
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
+    /// TRANSPOSED `[K/2, ldb]` twin of `lm_head_nvfp4` + its PADDED row stride.
+    ///
+    /// The pad is load-bearing: the tile GEMM reads B with 16-byte `cp.async`,
+    /// which needs a 16-byte-aligned source, and row r sits at `r * stride`.
+    /// This checkpoint's vocab is 248077 — ODD — so an unpadded stride misaligns
+    /// 15 of every 16 k-rows and faults with CUDA 716. Padded to 248192.
+    ///
+    /// ADDITIVE: never replaces or aliases `lm_head_nvfp4`, so every existing
+    /// holder (including the `draft_lm_head_nvfp4` copy at `impl_a1.rs:157`)
+    /// keeps a valid row-major pointer. Built once, immutable, never freed —
+    /// so each per-`padded_n` CUDA graph binds one (kernel, tensor) pair.
+    /// `None` under `ATLAS_NO_LMHEAD_TGEMM=1`.
+    pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
     /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive
     /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
@@ -98,6 +111,15 @@ pub struct TransformerModel {
     pub(super) dense_gemv_fp32out_kernel: KernelHandle,
     pub(super) w4a16_gemv_kernel: KernelHandle,
     pub(super) w4a16_gemv_logits_kernel: KernelHandle, // FP32 output for LM head
+    /// Tile GEMM over the TRANSPOSED lm_head twin. 0 when absent.
+    pub(super) w4a16_gemm_t_kernel: KernelHandle,
+    /// LOSSLESS BF16-MMA tile GEMM over the same twin. Preferred for lm_head:
+    /// `w4a16_gemm_t` downcasts activations BF16->FP8 E4M3, and lm_head is the
+    /// layer where a near-tie argmax flip changes the emitted token. Memory
+    /// records exactly that failure mode (stop/end-of-turn mis-ranking on DEEP
+    /// agentic trajectories) for sub-bf16 lm_heads. Costs ~1% of step.
+    /// 0 when absent. Kill switch: ATLAS_NO_LMHEAD_LOSSLESS=1.
+    pub(super) w4a16_gemm_t_bf16_kernel: KernelHandle,
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
     /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
@@ -108,6 +130,7 @@ pub struct TransformerModel {
     /// M<=8 batched GEMV for the K=5..8 chain-verify lm_head (batch8 —
     /// removes the M>4 tile-GEMM cliff). 0-handle when absent.
     pub(super) w4a16_gemv_batch8_kernel: KernelHandle,
+    pub(super) w4a16_gemv_batch16_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
     /// dispatch in `lm_head` / batched-decode / verify can reference it.
@@ -118,6 +141,8 @@ pub struct TransformerModel {
     pub(super) dense_gemv_fp8w_batch2_kernel: KernelHandle,
     pub(super) dense_gemm_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
+    /// Batched argmax (one block per row). 0 when the kernel set lacks it.
+    pub(super) argmax_batch_kernel: KernelHandle,
     pub(super) argmax_logits_kernel: KernelHandle, // FP32 argmax for logits
     pub(super) batched_embed_kernel: KernelHandle,
     pub(super) fill_slots_kernel: KernelHandle,
@@ -130,8 +155,16 @@ pub struct TransformerModel {
     /// alternate between slots in n=1 decode (e.g. via the per-seq fresh-decode
     /// fix in scheduler::step_decode_only), so we keep one graph per slot.
     pub(super) decode_graph: Mutex<std::collections::HashMap<usize, GraphHandle>>,
-    /// Cached CUDA graphs for batched decode, keyed by padded batch size.
-    pub(super) batch_decode_graphs: Mutex<HashMap<usize, GraphHandle>>,
+    /// Cached CUDA graphs for batched decode, keyed by the per-row SSM pool
+    /// slot VECTOR (`trait_impl/decode_graph_key.rs`) — the only per-sequence
+    /// addresses a capture bakes. The old `padded_n` key was sound only while
+    /// the batch was exactly slots `[0..n)` with `n == padded_n`; the MTP
+    /// Phase-A bootstrap passes a slot SUBSET of the active set and would
+    /// replay another subset's baked GDN pointers.
+    /// Value = `(graph, last_use_tick)`; the `u64` alongside the map is the
+    /// monotonically increasing tick. At `BATCH_DECODE_GRAPH_CAP` entries the
+    /// least-recently-used graph is destroyed and replaced.
+    pub(super) batch_decode_graphs: Mutex<(HashMap<Vec<u32>, (GraphHandle, u64)>, u64)>,
     /// Pre-allocated SSM state pool for stable GPU addresses across graph replays.
     /// `Arc` so each `SequenceState` can hold a `SlotGuard` that releases its
     /// claimed slot on drop — guaranteeing the slot returns to the free list on
@@ -168,6 +201,14 @@ pub struct TransformerModel {
     /// Size: hidden_size * 4 bytes (one FP32 vector). MTP overwrites shared
     /// buffers (norm_output etc.), so the target hidden must be saved here first.
     pub(super) mtp_hidden_save: DevicePtr,
+    /// Batched-verify hidden stash: `[8, hidden_size]` BF16 — one RAW-hidden
+    /// row per batched-verify sequence (n ≤ 8 envelope). Every drafter
+    /// `forward_one` writes its hidden into `buffers.hidden_states()`
+    /// (mtp_multi.rs), so seq 0's propose clobbers seq 1..n's verify hidden
+    /// rows; the batched verdict path copies each sequence's accepted-row
+    /// hidden here FIRST (`stash_verify_hidden_rows`), then feeds the drafter
+    /// from the stash (`save_hidden_for_mtp_from_stash`). NULL without MTP.
+    pub(super) verify_hidden_stash: DevicePtr,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the
@@ -191,6 +232,17 @@ pub struct TransformerModel {
     /// restore) leaves it stale-short, which safely disables drafter-prefill
     /// for that sequence (coverage check at the propose site).
     pub(super) mtp_prefill_capture_len: std::sync::atomic::AtomicUsize,
+    /// Monotonic generation of the single-slot capture above. Bumped every
+    /// time a chunk-0 prefill (re)starts the capture; the restarting
+    /// sequence is stamped with the new value (`SequenceState::
+    /// mtp_capture_gen`). Appends and the drafter-prefill consume require
+    /// `stamp == current generation`, so at C>=2 a sequence whose capture
+    /// was overwritten by ANOTHER sequence's prefill skips the drafter
+    /// prefill instead of pairing its tokens with foreign hiddens. The
+    /// current value IS the latest capture's generation (single atomic,
+    /// SSOT). 0 = no capture ever started (matches the fresh-seq stamp 0,
+    /// which is harmless: `captured >= prompt_len >= 2` fails at len 0).
+    pub(super) mtp_prefill_capture_gen: std::sync::atomic::AtomicU64,
     /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single
@@ -230,6 +282,29 @@ pub struct TransformerModel {
     pub(super) verify3_graph: Mutex<std::collections::HashMap<usize, GraphHandle>>,
     /// Cached CUDA graphs for K=4 verification, keyed by `seq.slot_idx`.
     pub(super) verify4_graph: Mutex<std::collections::HashMap<usize, GraphHandle>>,
+    /// Cached CUDA graphs for the BATCHED K-row verify (verify_e), keyed by
+    /// the batch's ssm-pool slot VECTOR (+ the per-seq row count K + a
+    /// wy-tables-present sentinel). Slot-vector keying is what a per-slot
+    /// key cannot give at n>1: the captured graph bakes every sequence's
+    /// h_state/conv_state/intermediate pointers, so it may only replay for
+    /// the exact same slot assignment in the same batch order (K is in the
+    /// key because a graph also bakes the R = n*K launch dimensions).
+    /// Attention metadata/block tables/embeds live at fixed scratch
+    /// addresses refreshed pre-replay (decode_a2 pattern).
+    /// Value = `(graph, last_use_tick)`; the `u64` alongside the map is the
+    /// monotonically increasing tick. At `VERIFY_BATCHED_GRAPH_CAP` entries
+    /// the least-recently-used graph is destroyed and replaced (slot vectors
+    /// churn with request turnover — the old insert-only map went
+    /// permanently eager after 32 distinct vectors on long serves).
+    pub(super) verify_batched_graphs:
+        Mutex<(std::collections::HashMap<Vec<u32>, (GraphHandle, u64)>, u64)>,
+    /// Batched-verify WY pointer-table staging: `num_ssm_layers` slices of
+    /// `crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES` ([h|Hi0|Hi1|Hi2] × 4
+    /// u64 entries each) at a FIXED device address, refreshed pre-graph every
+    /// batched verify step (`upload_verify_wy_tables`). Enables the
+    /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
+    /// NULL without an MTP proposer (path self-gates).
+    pub(super) verify_wy_tables: DevicePtr,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
@@ -308,8 +383,19 @@ pub struct TransformerModel {
     /// Kernel handle for fused SSM state normalization (prevents state explosion
     /// during long chunked prefill — the SSM forgetting bug).
     pub(super) ssm_state_norm_kernel: KernelHandle,
+    /// FP16 h-state twin of the above (`ATLAS_SSM_H_FP16`). Selected from the
+    /// sequence's own `SsmLayerState::h_is_f16`, so the dispatch reads the
+    /// invariant rather than assuming it.
+    pub(super) ssm_state_norm_f16_kernel: KernelHandle,
     /// GPU buffer for ssm_state_clamp_norm_fused's pointer table `[num_ssm_layers]`.
     pub(super) ssm_norm_ptrs_buf: DevicePtr,
+    /// One-shot FP32 -> FP16 h-state converter (`ATLAS_SSM_H_FP16`).
+    pub(super) ssm_h_f32_to_f16_kernel: KernelHandle,
+    /// Staging buffer for it, one layer wide (`h_bytes / 2`). The conversion is
+    /// a narrowing compaction and CANNOT be done in place: thread `2i`'s write
+    /// lands inside thread `i`'s read with nothing ordering them. Allocated
+    /// lazily on first use, so a serve without the flag pays nothing.
+    pub(super) ssm_h_f16_scratch: std::sync::OnceLock<DevicePtr>,
 
     // ── Two-phase SSM prefill buffers ──
     // These hold GDN inputs/outputs for the full sequence, allowing the GDN
@@ -362,6 +448,42 @@ pub(crate) struct PinnedMetaStaging {
     pub(super) positions_w: Vec<u32>,
     /// Reusable `Vec<i64>` for slot mappings (avoids per-chunk heap allocation).
     pub(super) slots: Vec<i64>,
+}
+
+impl PinnedMetaStaging {
+    /// The ONLY way to write this buffer: a bounds-checked cursor. See
+    /// [`crate::model::pinned_pack`] for why the rule lives there and not in
+    /// each of the five call sites that pack it.
+    ///
+    /// `dest_bytes` is how much room the DEVICE destination has, and it is
+    /// required rather than defaulted because it is the bound that was missing.
+    /// `bytes` here equals `sizes.scratch` exactly (`impl_a1.rs` allocates
+    /// `scratch.max(64 KiB)` and `sizes.rs` already floors scratch at 64 KiB),
+    /// but every one of these packs is uploaded to `scratch().offset(k)` for
+    /// some non-zero `k`. So a pack that fits the HOST staging buffer can still
+    /// run `k` bytes off the end of the DEVICE allocation, and checking only
+    /// `cursor <= stg.bytes` — which is all the old code did — never sees it.
+    /// The packer's capacity is the smaller of the two ends.
+    ///
+    /// Takes `&self` rather than `&mut self` on purpose — the bytes it writes
+    /// are the separate `cuMemAllocHost` region `ptr` refers to, not this
+    /// struct, so a shared borrow is enough and callers can still read the
+    /// reusable source `Vec`s alongside it.
+    pub(crate) fn packer_for(
+        &self,
+        dest_bytes: usize,
+    ) -> crate::model::pinned_pack::PinnedPacker<'_> {
+        // SAFETY: `ptr`/`bytes` are the `alloc_host_pinned` region installed in
+        // `impl_a1.rs` and released in `drop.rs`; it is live for the model's
+        // lifetime, zeroed at allocation (the trait's contract), and only ever
+        // touched from the single scheduler thread — the same invariant that
+        // `unsafe impl Sync for TransformerModel` above rests on. The capacity
+        // handed over is `min(host room, device room)`, never more than the
+        // allocation.
+        unsafe {
+            crate::model::pinned_pack::PinnedPacker::new(self.ptr, self.bytes.min(dest_bytes))
+        }
+    }
 }
 
 // SAFETY: TransformerModel is constructed on the main thread, then moved to

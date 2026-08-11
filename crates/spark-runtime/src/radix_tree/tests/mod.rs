@@ -6,3 +6,4 @@
 mod adapter;
 mod basic;
 mod snapshot;
+mod snapshot_reap;

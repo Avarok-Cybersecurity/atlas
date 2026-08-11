@@ -6,6 +6,13 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+/// Default for `--request-timeout`, in seconds. Named rather than inlined
+/// in the clap attribute because it is a production behavior with a
+/// user-visible consequence (a cut response), not an anonymous literal:
+/// PCND requires the default be documented and overridable, and this is
+/// the single place it is defined.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 300;
+
 /// Arguments for the `serve` subcommand.
 #[derive(Parser, Debug, Clone, PartialEq)]
 pub struct ServeArgs {
@@ -47,6 +54,51 @@ pub struct ServeArgs {
     #[arg(long)]
     pub no_auto_swap: bool,
 
+    /// Serve even when kernel lookups this model's dispatch issued did not
+    /// resolve.
+    ///
+    /// A lookup that returns handle 0 does not error — the caller takes a
+    /// slower (or disabled) dispatch path and nothing says so. That is how the
+    /// 27B ran with concurrent decode pinned to its per-sequence fallback while
+    /// every gate stayed green, so the default is to REFUSE to start and print
+    /// the full list with each dispatch site.
+    ///
+    /// Passing this does not suppress the report: the same enumerated list is
+    /// logged at `warn!` on every boot. A flag that muted the warning would
+    /// recreate the bug it exists to catch.
+    ///
+    /// This replaces `ATLAS_ALLOW_SHADOWED_KERNELS`, which covered only the
+    /// shadow-dropped subset — one switch, and a CLI flag rather than an
+    /// environment variable so it is visible in the command that started the
+    /// process.
+    #[arg(long, default_value_t = false)]
+    pub dangerously_allow_unresolved_kernel_lookups: bool,
+
+    /// Resolve all kernels for the model and exit, reporting any that did not
+    /// resolve. Does not start the server. The EXIT CODE IS THE NUMBER of
+    /// unresolved kernels — 0 means every lookup resolved.
+    ///
+    /// A dry run that stops immediately after the kernel audit: config, GPU
+    /// init, weight load and model construction all run (every lookup lives in
+    /// a layer constructor, so a check that skipped them would resolve a
+    /// DIFFERENT set than a real serve), then the report is printed and the
+    /// process exits. The scheduler is never started and no port is bound.
+    ///
+    /// A POSIX status is 8 bits, so the code is CLAMPED at 255 — 256 would be
+    /// reported as 0, i.e. a broken model reading as a pass. Whenever the clamp
+    /// bites, the true count is printed alongside it and carried in the JSON.
+    ///
+    /// The exit code IGNORES
+    /// `--dangerously-allow-unresolved-kernel-lookups`: a check whose answer
+    /// another flag can silence is worth nothing. Passing both still prints the
+    /// full list and still exits with the count.
+    ///
+    /// A one-line JSON object (`{"atlas_kernel_check": …}`) is printed on
+    /// stdout after the human report, so a sweep over every target can
+    /// aggregate without parsing prose.
+    #[arg(long, default_value_t = false)]
+    pub check_kernels: bool,
+
     /// Load model directly from this filesystem path (skips HF cache resolution).
     #[arg(long, value_name = "PATH")]
     pub model_from_path: Option<PathBuf>,
@@ -80,11 +132,141 @@ pub struct ServeArgs {
     /// KV cache dtype (fp8, bf16, or nvfp4).
     /// Default: fp8. NVFP4 uses less memory but may lose coherence at long context
     /// without --kv-high-precision-layers. FP8 is the safe default.
+    ///
+    /// The `turbo2`/`turbo3`/`turbo4`/`turbo8` variants (and the asymmetric
+    /// `*k_*v` pairs built from them) are EXPERIMENTAL: they are not built for
+    /// every kernel target, and a target that lacks them fails the kv-cache
+    /// kernel preflight at startup rather than serving on a fallback.
     #[arg(long, default_value = "fp8")]
     pub kv_cache_dtype: String,
 
-    /// LM-head precision: `default` (model-config-driven), `bf16` (final vocab projection
-    /// in BF16 — the SAFE DEFAULT, matches vLLM checkpoint precision), `nvfp4` (force the
+    // ── GDN / SSM decode path ──
+    //
+    // These four were `ATLAS_*` environment variables. They are CONFIGURATION,
+    // not diagnostics: the enterprise-concurrency campaign's best recipe needs
+    // three of them, and a recipe that has to carry a ten-line env block is a
+    // recipe nobody can read or audit. A CLI flag satisfies PCND exactly as an
+    // env var does — the value is explicit, never implicit — while also being
+    // discoverable in `--help` and visible in `ps`. The environment variables
+    // remain honoured as a fallback so existing scripts keep working; the flag
+    // WINS when both are given.
+    /// Storage dtype for the GDN decode h-state: `f32` (default) or `f16`.
+    ///
+    /// The decode scan is pure state traffic — it runs at ~90% of GB10's
+    /// row-strided ceiling — so halving the state footprint halves its time:
+    /// +13.25% at C=16, +19.67% at C=32, and 1.286x WALL at C=64.
+    ///
+    /// f32 stays the default deliberately. `f16` changes the h-state numerics,
+    /// which shifts drafter accept patterns and therefore the emitted
+    /// trajectory: a +3.17% token tax was measured in the speculation-ON
+    /// regime (C=1/8/32, p=0.030) and 0.23% with speculation off. The tax
+    /// vanishes at C=64. Choose it per workload — which is precisely why it is
+    /// a flag and not a default.
+    ///
+    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 when NONE of the three
+    /// GDN flags is given. `GdnFlags` is published as one cell, so any of them
+    /// takes the whole decision away from the environment; `warn_shadowed_env`
+    /// says so when that happens rather than leaving it to be discovered in a
+    /// benchmark number.
+    #[arg(long)]
+    pub ssm_h_dtype: Option<String>,
+
+    /// Fused GDN output-norm kernel on the decode path (default: off).
+    ///
+    /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
+    /// fused-norm arm, and the unfused arm is FP32-only. Left opt-in because
+    /// its bitwise gate could not certify output-equivalence — the CONTROL leg
+    /// (two identical serves) itself differed on 7 of 42 completions at C=4/16,
+    /// so the flag legs' 5-6 differences are not separable from run-to-run
+    /// nondeterminism. Under PCND an unproven numerics change is explicit
+    /// configuration, not a default.
+    ///
+    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
+    ///
+    /// `Option` so that ABSENT is distinguishable from `false`: publishing the
+    /// clap default sealed the flags cell on every boot, which made the legacy
+    /// variable inert while `--help` still documented it. Bare
+    /// `--gdn-fused-norm` still means on; `--gdn-fused-norm false` is the
+    /// explicit off.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub gdn_fused_norm: Option<bool>,
+
+    /// Batched multi-sequence GDN recurrent decode kernel (default: off).
+    ///
+    /// One strided launch across the batch instead of one per sequence.
+    /// Same bitwise-certification gap as `--gdn-fused-norm`; see that flag.
+    ///
+    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`, on the same terms as
+    /// `--gdn-fused-norm`, and `Option` for the same reason.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub ssm_batched_recurrent: Option<bool>,
+
+    /// Bitwise-exact MTP verify — OPT-IN (default: off). By default,
+    /// speculative (spec-on) output is NOT bitwise-equal to non-speculative
+    /// output at temp 0; this flag is what makes it equal (issue #435).
+    ///
+    /// The default verify pass runs the WY-chunkwise / fused BF16-conv arms:
+    /// fast, but their BF16-output conv (h-state relL2 ~8.6e-4 per K=4
+    /// window, committed into persistent SSM state) plus a ~3.4e-8 chunkwise
+    /// reordering term diverge from the sequential-decode reference — an
+    /// argmax flip only needs a per-logit error above a thin top-2 margin.
+    /// With `--exact-verify` the verify pass instead runs, per token, exactly
+    /// the kernel chain sequential decode runs (measured h relL2 = 0.0), at a
+    /// measured decode-step cost of ~+35% at the n=8/K=4 verify rung, ~+22%
+    /// at n=16/K=2 and ~+36% at n=32/K=2 (GDN phase +116%/+63%/+69%).
+    ///
+    /// Opt-in follows every surveyed production engine — vLLM
+    /// (`VLLM_BATCH_INVARIANT=1`), SGLang (`--enable-deterministic-inference`,
+    /// ~34% avg slowdown), TensorRT-LLM and TGI (no exact mode at all) — none
+    /// pays for exactness by default.
+    ///
+    /// Rejected beside `--ssm-h-dtype f16`: the exact arm's kernels are FP32
+    /// readers and must never read the FP16 h-state pool.
+    ///
+    /// Replaces `--verify-wy` (removed, never in a release), which was the
+    /// opt-OUT back when exact was briefly the default.
+    ///
+    /// No legacy environment variable — new configuration is CLI-only.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub exact_verify: Option<bool>,
+
+    /// Mid-chunk SSM tail capture on the prefill path (default: on).
+    ///
+    /// Captures GDN recurrent + conv state in-pass at the block-floored
+    /// matched-prefix boundary, removing the ~868 ms extra forward pass the
+    /// clamp-based tail-checkpoint path costs on a warm turn. Off is
+    /// byte-identical to the pre-2026-07-19 baseline.
+    ///
+    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
+    ///
+    /// Absent is not the same as `--ssm-tail-midchunk true`, which is why there
+    /// is no clap default here: publishing a default sealed the runtime's cell
+    /// on every boot and made that documented opt-out a silent no-op. Give the
+    /// flag to decide, omit it to let the environment decide, and with neither
+    /// it is on.
+    #[arg(long, action = clap::ArgAction::Set)]
+    pub ssm_tail_midchunk: Option<bool>,
+
+    /// MTP throughput gate: `auto` (default) or `force`.
+    ///
+    /// `auto` arms the arbiter, which measures whether speculative verify is
+    /// net-positive in the current regime and stops paying for it when it is
+    /// not. `force` DISARMS the arbiter so verify steps keep flowing even
+    /// where it would measure them net-negative — a diagnostic, needed to
+    /// collect verify samples for attribution, and never a production setting:
+    /// if forcing wins, the GATE is miscalibrated and that is the fix, not
+    /// this flag. To run without speculation at all, omit `--speculative`.
+    ///
+    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force` when this flag is
+    /// ABSENT. As with `--ssm-tail-midchunk`, there is no clap default: a
+    /// published default would seal the scheduler's cell to `auto` on every
+    /// boot and silently ignore the variable it documents.
+    #[arg(long)]
+    pub mtp_gate: Option<String>,
+
+    /// LM-head precision: `default` (the clap default — no override, the model config
+    /// decides), `bf16` (final vocab projection in BF16 — the SAFE CHOICE, and what to pass
+    /// when the config picks something lower; matches vLLM checkpoint precision), `nvfp4` (force the
     /// model's NVFP4-packed lm_head), or `fp8` (runtime-quantize the lm_head to FP8 E4M3
     /// per-row, w8a16_gemv decode). The big vocab projection (~1.78 GB/token BF16 at a
     /// 248K vocab) is the single largest per-token weight read; `fp8` halves it and `nvfp4`
@@ -157,6 +339,16 @@ pub struct ServeArgs {
     /// Example: `--default-chat-template-kwargs '{"enable_thinking":true}'`
     #[arg(long, value_name = "JSON")]
     pub default_chat_template_kwargs: Option<String>,
+
+    /// Ignore the `jinja-templates/` override directory and render every
+    /// model off its OWN chat template (`chat_template.jinja` /
+    /// `tokenizer_config.json`), relying on the Rust message-preprocessing
+    /// (`tokenizer/message_preprocess.rs`) for Atlas's cross-cutting chat
+    /// behaviors. Default off: an override file's presence is the opt-in
+    /// signal that a model needs a template fix Rust preprocessing can't
+    /// express (see `jinja-templates/README.md`).
+    #[arg(long, default_value_t = false)]
+    pub disable_template_overrides: bool,
 
     /// Enable MTP speculative decoding. The scheduler then MEASURES the
     /// verify-step cost over the first decode steps of serving and auto-disables
@@ -449,8 +641,13 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 64)]
     pub high_speed_swap_cache_blocks_per_seq: u32,
 
-    /// Default request timeout in seconds. 0 = no timeout.
-    #[arg(long, default_value_t = 300)]
+    /// Server-side deadline for a single request, in seconds. A request
+    /// that exceeds it is CUT and the response is reported with
+    /// `finish_reason="timeout"` (never "length") plus a WARN log naming
+    /// the slot, elapsed time and tokens emitted — a truncation must never
+    /// look like a normal completion. `0` disables the deadline entirely.
+    /// Overridable per request via the OpenAI `timeout` field.
+    #[arg(long, default_value_t = DEFAULT_REQUEST_TIMEOUT_SECS)]
     pub request_timeout: u32,
 
     /// Enable per-kernel profiling: sync + time each operation within layers.
@@ -466,6 +663,16 @@ pub struct ServeArgs {
     /// Only applies when --kv-cache-dtype is fp8.
     #[arg(long, default_value_t = 0)]
     pub fp8_kv_calibration_tokens: usize,
+
+    /// Headroom multiplier applied to the first-observe absmax when the online
+    /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
+    /// write scale always equals the read scale). The first observe sees only
+    /// the first prefill chunk, so the frozen scale covers headroom× its
+    /// observed max — later tokens whose magnitude grows don't clip, at a cost
+    /// of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
+    /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
+    #[arg(long, default_value_t = 2.0)]
+    pub fp8_kv_headroom: f32,
 
     /// Path to a warmup prompt file (JSON messages or plain text).
     /// At startup, the server tokenizes and prefills this prompt, inserting the

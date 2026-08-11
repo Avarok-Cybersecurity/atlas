@@ -117,6 +117,15 @@
             "command": "sparkrun run @atlas/qwen3.6-27b-fp8-mtp --hosts localhost"
           },
           {
+            "displayName": "Qwen3.6 27B NVFP4",
+            "hfId": "nvidia/Qwen3.6-27B-NVFP4",
+            "params": "27B",
+            "quant": "nvfp4",
+            "topology": "single",
+            "recipeStem": "qwen3.6-27b-nvfp4",
+            "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4 --hosts localhost"
+          },
+          {
             "displayName": "Qwen3.6 27B NVFP4 Prefill Record",
             "hfId": "nvidia/Qwen3.6-27B-NVFP4",
             "params": "27B",
@@ -124,6 +133,24 @@
             "topology": "single",
             "recipeStem": "qwen3.6-27b-nvfp4-prefill-record",
             "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4-prefill-record --hosts localhost"
+          },
+          {
+            "displayName": "Qwen3.6 27B NVFP4 Unsloth",
+            "hfId": "unsloth/Qwen3.6-27B-NVFP4",
+            "params": "27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers)",
+            "quant": "NVFP4 (mixed precision above layer 55)",
+            "topology": "single",
+            "recipeStem": "qwen3.6-27b-nvfp4-unsloth",
+            "command": "sparkrun run @atlas/qwen3.6-27b-nvfp4-unsloth --hosts localhost"
+          },
+          {
+            "displayName": "Qwen3.6 27B W55 Sweep Dev",
+            "hfId": "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf",
+            "params": "27B",
+            "quant": "w4a4",
+            "topology": "single",
+            "recipeStem": "qwen3.6-27b-w55-sweep-dev",
+            "command": "sparkrun run @atlas/qwen3.6-27b-w55-sweep-dev --hosts localhost"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 Bf16head",

@@ -91,18 +91,20 @@ pub fn detect_nvfp4_variant(
 
     // Check for FP8 block-scaled weights (e.g. Qwen/Qwen3.5-35B-A3B-FP8):
     // FP8 models have `weight_scale_inv` alongside FP8E4M3 weights.
-    // Try both the configured prefix AND `model.language_model` prefix since the
-    // weight prefix hasn't been resolved yet at detection time.
-    let prefixes_to_check = [
-        lp.clone(),
-        format!(
-            "model.language_model.layers.{}",
-            config
-                .local_expert_range()
-                .0
-                .min(config.num_hidden_layers.saturating_sub(1))
-        ),
-    ];
+    //
+    // Two SPELLINGS of the same layer, not two layers. The second entry used to
+    // be indexed by `local_expert_range().0` — an EXPERT index used as a LAYER
+    // index. `local_expert_range` returns global expert ids (see its sibling
+    // `is_local_expert`), so on a single node or EP rank 0 it is 0 and layer 0
+    // is probed by accident; on rank >= 1 it is `ep_rank * num_experts /
+    // ep_world_size` and each rank probes a DIFFERENT layer. With 256 experts
+    // over 2 ranks, rank 1 probed layer 39 — a full-attention layer whose FP8
+    // `q_proj` trips the attention sniff below — so two ranks loading one
+    // checkpoint could disagree about its quantisation variant.
+    //
+    // Detection must not depend on EP rank: every rank sees the same file.
+    const ALT_LAYER0_PREFIX: &str = "model.language_model.layers.0";
+    let prefixes_to_check = [lp.clone(), ALT_LAYER0_PREFIX.to_string()];
     for pfx in &prefixes_to_check {
         let fp8_key = format!("{pfx}.mlp.experts.{local_expert}.gate_proj.weight_scale_inv");
         if store.contains(&fp8_key) {
@@ -375,4 +377,87 @@ pub(crate) fn load_quantized_proj_qwen35(
     gpu: &dyn GpuBackend,
 ) -> Result<QuantizedWeight> {
     quantized_v2(store, prefix, gpu)
+}
+
+#[cfg(test)]
+mod ep_detection_tests {
+    use super::*;
+    use atlas_core::config::ModelConfig;
+    use spark_runtime::weights::WeightStore;
+
+    /// A store holding only the FP8 attention marker at a given layer, which is
+    /// what the detector sniffs for. Names are all the detector reads.
+    fn store_with(names: &[String]) -> WeightStore {
+        use std::collections::HashMap;
+        let map: HashMap<String, spark_runtime::weights::WeightTensor> = names
+            .iter()
+            .map(|n| {
+                (
+                    n.clone(),
+                    spark_runtime::weights::WeightTensor {
+                        ptr: spark_runtime::gpu::DevicePtr::NULL,
+                        shape: vec![1],
+                        dtype: spark_runtime::weights::WeightDtype::FP8E4M3,
+                    },
+                )
+            })
+            .collect();
+        WeightStore::from_map(map)
+    }
+
+    /// Detection must not depend on which EP rank is asking.
+    ///
+    /// ★ CHARACTERISATION, not a regression test — it passes with the bug too,
+    /// and that is worth stating rather than hiding. The old expression indexed
+    /// the second FP8 prefix by `local_expert_range().0`, a global EXPERT index
+    /// used as a LAYER index, so rank 1 of 2 probed layer 47 where rank 0
+    /// probed layer 0. That is genuinely wrong, but UNREACHABLE: the global
+    /// `.weight_scale_inv` fallback below the per-prefix probes catches the
+    /// marker wherever it sits, so both ranks answer the same either way.
+    ///
+    /// This pins the property we want to keep — rank-independence — so that if
+    /// someone tightens or removes that fallback, the latent bug surfaces here
+    /// instead of in a two-rank EP deployment.
+    #[test]
+    fn variant_detection_is_identical_across_ep_ranks() {
+        // Only a deep-layer FP8 attention marker: present at the layer rank 1
+        // used to probe, absent at layer 0. Under the bug the ranks disagree.
+        let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
+        // Reach the tensor-name sniffing path: a present `quantization_config`
+        // short-circuits detection before any prefix is built, so leaving it
+        // set makes this test assert the early return, not the bug.
+        cfg.quantization_config = None;
+        let deep = cfg.num_hidden_layers.saturating_sub(1);
+        let store = store_with(&[format!(
+            "model.language_model.layers.{deep}.self_attn.q_proj.weight_scale_inv"
+        )]);
+
+        cfg.ep_world_size = 2;
+        cfg.ep_rank = 0;
+        let rank0 = detect_nvfp4_variant(&store, &cfg);
+        cfg.ep_rank = 1;
+        let rank1 = detect_nvfp4_variant(&store, &cfg);
+
+        assert_eq!(
+            rank0, rank1,
+            "EP rank changed the detected variant for one checkpoint: \
+             rank0={rank0:?} rank1={rank1:?}. Detection reads a file every rank \
+             sees identically, so it must not depend on the expert split."
+        );
+    }
+
+    /// The layer-0 spelling still detects FP8 — the fix must not break the
+    /// case the buggy expression happened to get right.
+    #[test]
+    fn the_alternate_layer0_spelling_still_detects_fp8() {
+        let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
+        cfg.quantization_config = None;
+        let store = store_with(&[
+            "model.language_model.layers.0.self_attn.q_proj.weight_scale_inv".to_string(),
+        ]);
+        assert_eq!(
+            detect_nvfp4_variant(&store, &cfg),
+            Nvfp4Variant::Fp8Dequanted
+        );
+    }
 }
