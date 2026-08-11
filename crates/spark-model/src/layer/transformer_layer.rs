@@ -9,7 +9,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 
 use super::{BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState};
 
-mod default_loops;
+pub(crate) mod default_loops;
 
 /// Batched-verify WY pointer-table layout (SSOT — writer:
 /// `TransformerModel::upload_verify_wy_tables`, reader: the qwen3_ssm

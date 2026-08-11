@@ -84,8 +84,12 @@ pub(super) fn decode_batched_default(
     Ok(())
 }
 
+/// `pub(crate)` (not `pub(super)`) so layer implementations that override
+/// `decode_multi_seq` can delegate to the ONE canonical per-seq fallback
+/// loop instead of growing private copies (Nemotron Mamba-2 / MoE use it
+/// for `num_seqs < 2` and missing-kernel declines).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_multi_seq_default<'a, 'b: 'a>(
+pub(crate) fn decode_multi_seq_default<'a, 'b: 'a>(
     layer: &(impl TransformerLayer + ?Sized),
     hidden: DevicePtr,
     residual: DevicePtr,
