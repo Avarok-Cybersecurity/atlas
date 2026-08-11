@@ -41,13 +41,13 @@ impl Qwen3SsmLayer {
                 "dequant_gguf_bf16",
                 "dequant_q2_0_gn_to_bf16",
             ),
-            q2_0_mmq_nc_k: super::super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc"),
-            q2_0_mmq_wc_k: super::super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc"),
-            q4k_quant_act_k: super::super::try_kernel(
-                gpu,
-                "q4k_mmq",
-                "atlas_q8_1_quantize_ds4_bf16",
-            ),
+            // The keep-packed MMQ family ships only in targets that serve
+            // GGUF Q2 checkpoints; probing here would fail the boot audit on
+            // every other GDN target. `set_packed_q2_qkvz` resolves them —
+            // the only path that installs weights their dispatch sites check.
+            q2_0_mmq_nc_k: KernelHandle(0),
+            q2_0_mmq_wc_k: KernelHandle(0),
+            q4k_quant_act_k: KernelHandle(0),
             sequential_qkvz: false,
             // Resolved ONCE here from the driver, then carried on the layer:
             // the projection dispatch asks "does this grid still fill the

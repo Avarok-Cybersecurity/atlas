@@ -354,6 +354,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     packed_q2_from_store(store, &format!("{lp}.mlp.gate_proj"))?,
                     packed_q2_from_store(store, &format!("{lp}.mlp.up_proj"))?,
                     packed_q2_from_store(store, &format!("{lp}.mlp.down_proj"))?,
+                    gpu,
                 );
             }
             if ffn_fp8 {
@@ -447,6 +448,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             packed_q2_from_store(store, &format!("{p}.k_proj"))?,
                             packed_q2_from_store(store, &format!("{p}.v_proj"))?,
                             packed_q2_from_store(store, &format!("{p}.o_proj"))?,
+                            gpu,
                         );
                         tracing::info!(
                             "ATTN[{lp}] native keep-packed Q2_0: q/k/v/o 2-bit \
@@ -872,7 +874,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             config,
                             gpu,
                         )?;
-                        layer.set_packed_q2_qkvz(qkvz_q2);
+                        layer.set_packed_q2_qkvz(qkvz_q2, gpu);
                         layer.predequant_for_prefill(gpu, config, stream)?;
                         tracing::info!(
                             "SSM[{lp}] native keep-packed Q2_0 GDN: qkvz 2-bit \
