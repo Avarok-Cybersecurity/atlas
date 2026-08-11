@@ -443,6 +443,23 @@ impl Qwen3AttentionLayer {
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block (to rope portions only).
             // Skip the shared RoPE to avoid double-rotation.
+        } else if !self.yarn_inv_freq.is_null() {
+            ops::rope_yarn_scaled(
+                ctx.gpu,
+                self.rope_yarn_scaled_k,
+                q_out,
+                k_out,
+                meta.positions,
+                1,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                self.yarn_inv_freq,
+                self.yarn_attention_factor,
+                stream,
+            )?;
         } else if self.rope_proportional && self.rope_proportional_k.0 != 0 {
             // Gemma-4 full-attention: proportional RoPE with rotation pairs
             // (i, i + head_dim/2) for i < rope_angles. rotary_dim_override
@@ -669,28 +686,64 @@ impl Qwen3AttentionLayer {
         if let Some(ref g_proj) = self.head_gate_weight {
             // For decode, n=1 (single token). Reuse q_out scratch for gate [1, nq].
             let gate_buf = q_out;
-            ops::dense_gemm_tc(
-                ctx.gpu,
-                self.dense_gemm_tc_k,
-                normed,
-                g_proj,
-                gate_buf,
-                1, // decode: single token
-                nq,
-                h,
-                stream,
-            )?;
-            ops::sigmoid_gate_mul_head_broadcast(
-                ctx.gpu,
-                self.sigmoid_gate_head_broadcast_k,
-                attn_out,
-                gate_buf,
-                attn_out,
-                nq,
-                hd,
-                1, // decode: single token
-                stream,
-            )?;
+            // N = nq = 72, so dense_gemm_tc's grid (ceil(N/64) x ceil(M/16)) is
+            // TWO CTAs on a 48-SM part, latency-bound over a K=3072 loop. The
+            // batched GEMV grids at ceil(N/4) with coalesced uint4 loads and is
+            // bit-identical to dense_gemv_bf16 at M=1.
+            if self.dense_gemv_batchm_k.0 != 0 {
+                ops::dense_gemv_batchm(
+                    ctx.gpu,
+                    self.dense_gemv_batchm_k,
+                    normed,
+                    g_proj,
+                    gate_buf,
+                    1, // decode: single token
+                    nq,
+                    h,
+                    nq, // one row, stride unused
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemm_tc(
+                    ctx.gpu,
+                    self.dense_gemm_tc_k,
+                    normed,
+                    g_proj,
+                    gate_buf,
+                    1, // decode: single token
+                    nq,
+                    h,
+                    stream,
+                )?;
+            }
+            match self.head_gate_activation {
+                super::super::types::HeadGateActivation::Sigmoid => {
+                    ops::sigmoid_gate_mul_head_broadcast(
+                        ctx.gpu,
+                        self.sigmoid_gate_head_broadcast_k,
+                        attn_out,
+                        gate_buf,
+                        attn_out,
+                        nq,
+                        hd,
+                        1,
+                        stream,
+                    )?;
+                }
+                super::super::types::HeadGateActivation::Softplus => {
+                    ops::softplus_gate_mul_head_broadcast(
+                        ctx.gpu,
+                        self.softplus_gate_head_broadcast_k,
+                        attn_out,
+                        gate_buf,
+                        attn_out,
+                        nq,
+                        hd,
+                        1,
+                        stream,
+                    )?;
+                }
+            }
         }
 
         // O projection ── (extracted to attention_forward_oproj.rs)

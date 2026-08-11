@@ -381,7 +381,7 @@ pub(crate) fn load_model(
     // batch-size-dependent MoE-kernel rounding (a known FP8 quality-floor
     // property present for fresh non-cached sequences too), not a Marconi
     // state-management defect — so no warning is emitted here.
-    let prefix_cache = serve_phases::build_prefix_cache(&args);
+    let prefix_cache = serve_phases::build_prefix_cache(&args, &config);
     let comm = serve_phases::init_nccl_comm(
         &args,
         gpu.as_ref(),
@@ -976,7 +976,10 @@ pub(crate) fn load_model(
         } else {
             Some(rotation_tx)
         },
-        chat: crate::api::chat::levers::ChatLevers::resolve(ptx_set.behavior.tscg),
+        chat: crate::api::chat::levers::ChatLevers::resolve(
+            ptx_set.behavior.tscg,
+            ptx_set.behavior.disable_cwd_hint_injection,
+        ),
         vision_config: config.vision.clone(),
         vision_max_pixels,
         default_temperature,

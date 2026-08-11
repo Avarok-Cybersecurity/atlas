@@ -11,6 +11,7 @@ mod minimax;
 mod misc;
 mod parallel_calls;
 mod param_key_constraint;
+mod poolside;
 mod qwen3_coder_required;
 mod sanitize;
 mod tools_basic;

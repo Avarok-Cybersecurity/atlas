@@ -26,9 +26,19 @@ extra_nvcc_flags = ["--fmad=false", "-DTQ_PLUS_SIGNS"]
 #       and their `_e8m0` twins), which every model shadow implements. The only
 #       remaining reference is `atlas-spark-bench/benches/moe.rs`, a benchmark —
 #       no production dispatch path resolves it.
+#
+#   norm::{rms_norm_residual_vanilla, residual_add_rms_norm_vanilla}
+#       HF-vanilla RMSNorm counterparts (weight, not 1 + weight), added to
+#       common/rms_norm.cu for Laguna-S 2.1. They are resolved ONLY behind
+#       `ships_vanilla_norm_weights(config)` (see qwen3_attention/init.rs),
+#       which no model that shadows rms_norm.cu satisfies — Laguna itself does
+#       not shadow rms_norm.cu, so it always gets the common/ copies. If a
+#       vanilla-norm model ever forks rms_norm.cu, the startup audit still
+#       hard-errors on the missing kernels.
 [shadow_exempt]
 w4a16 = ["w4a16_dequant"]
 moe_w4a16 = ["moe_w4a16_grouped_gemm"]
+norm = ["rms_norm_residual_vanilla", "residual_add_rms_norm_vanilla"]
 
 # File stem → module name overrides.
 # Any .cu file not listed here uses its file stem as the module name.

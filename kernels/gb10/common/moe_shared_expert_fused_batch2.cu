@@ -336,10 +336,35 @@ extern "C" __global__ void moe_expert_gate_up_shared_batch2(
     __nv_bfloat16* C;
 
     if (is_shared) {
+        // NULL shared-expert weights = "no in-kernel shared expert": zero the
+        // output rows and exit, exactly as the _t variant does
+        // (moe_shared_expert_fused_batch2_t.cu:85-100). A model whose shared
+        // expert is a DIFFERENT precision from its routed experts (Laguna:
+        // NVFP4 routed + BF16 shared) passes NULL here and computes the shared
+        // half separately; without this guard that dereferences NULL and the
+        // kernel faults the moment a 2-sequence batch forms.
         if (proj == 0) {
+            if (sh_gate_packed == 0) {
+                const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
+                __nv_bfloat16* z = sh_gate_out + (unsigned long long)token * N;
+                for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N;
+                     i += blockDim.x) {
+                    z[n_base + i] = __float2bfloat16(0.0f);
+                }
+                return;
+            }
             B_packed = sh_gate_packed; B_scale = sh_gate_scale;
             s2 = sh_gate_s2; C = sh_gate_out + (unsigned long long)token * N;
         } else {
+            if (sh_up_packed == 0) {
+                const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
+                __nv_bfloat16* z = sh_up_out + (unsigned long long)token * N;
+                for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N;
+                     i += blockDim.x) {
+                    z[n_base + i] = __float2bfloat16(0.0f);
+                }
+                return;
+            }
             B_packed = sh_up_packed; B_scale = sh_up_scale;
             s2 = sh_up_s2; C = sh_up_out + (unsigned long long)token * N;
         }
@@ -416,6 +441,19 @@ extern "C" __global__ void moe_expert_silu_down_shared_batch2(
     const __nv_bfloat16* u_ptr;
 
     if (is_shared) {
+        // NULL shared-expert down weight = no in-kernel shared expert (see the
+        // gate_up kernel above). Zero this token's shared output rows and exit
+        // rather than dereferencing NULL; the caller supplies the shared half
+        // separately. Mirrors moe_shared_expert_fused_batch2_t.cu:188.
+        if (sh_down_packed == 0) {
+            const unsigned int n_base = blockIdx.x * (N_PER_BLOCK * 2);
+            __nv_bfloat16* z = sh_down_out + (unsigned long long)token * N;
+            for (unsigned int i = threadIdx.x; i < N_PER_BLOCK * 2 && n_base + i < N;
+                 i += blockDim.x) {
+                z[n_base + i] = __float2bfloat16(0.0f);
+            }
+            return;
+        }
         B_packed = sh_down_packed; B_scale = sh_down_scale; s2 = sh_down_s2;
         g_ptr = sh_gate_in + (unsigned long long)token * K;
         u_ptr = sh_up_in + (unsigned long long)token * K;
@@ -480,8 +518,16 @@ extern "C" __global__ void moe_weighted_sum_blend_batch2(
     __nv_bfloat16* my_output = output + (unsigned long long)token * hidden;
 
     // ── Phase 1: Compute gate scalar (dot product + sigmoid) ──
+    // NULL gate_weight = no gate modulation → sigmoid=1.0 (shared expert always
+    // on). Matches the per-token moe_weighted_sum_blend; models with an
+    // ungated shared expert (Laguna, Mistral) pass a NULL pointer here.
     __shared__ float s_warp_sums[8];
     __shared__ float sigmoid_val;
+
+    if (gate_weight == 0) {
+        if (tid == 0) sigmoid_val = 1.0f;
+        __syncthreads();
+    } else {
 
     float dot_acc = 0.0f;
     unsigned int K8 = K / 8;
@@ -522,6 +568,8 @@ extern "C" __global__ void moe_weighted_sum_blend_batch2(
         sigmoid_val = 1.0f / (1.0f + __expf(-gate_scalar));
     }
     __syncthreads();
+
+    }  // end else (gate_weight != 0)
 
     // ── Phase 2: Weighted sum + blend ──
     unsigned int j = blockIdx.x * blockDim.x + tid;

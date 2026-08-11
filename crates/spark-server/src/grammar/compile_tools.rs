@@ -703,6 +703,89 @@ impl GrammarEngine {
         }
     }
 
+    /// Compile Laguna's native Poolside v1 tool-call grammar.
+    ///
+    /// Format: `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`.
+    /// The shared short trigger locks decoding as soon as the model commits to
+    /// `<tool_call>`, preventing malformed or repeated tag fragments while
+    /// preserving ordinary free text in automatic tool-choice mode.
+    pub fn compile_poolside_v1_tool_grammar(
+        &mut self,
+        tools: &[ToolDefinition],
+        use_triggers: bool,
+        value_close: &str,
+    ) -> Result<CompiledGrammar, GrammarError> {
+        if tools.is_empty() {
+            return Err(GrammarError::NoTools);
+        }
+
+        let mut tag_entries = Vec::with_capacity(tools.len());
+        for tool in tools {
+            let name = &tool.function.name;
+            let raw_schema = tool
+                .function
+                .parameters
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
+            let has_no_parameters = raw_schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(serde_json::Map::is_empty)
+                && raw_schema
+                    .get("additionalProperties")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true);
+            let Some(schema) = sanitize_schema_for_grammar(&raw_schema) else {
+                tracing::warn!("Skipping tool '{name}' in grammar — schema unsanitizable");
+                continue;
+            };
+
+            let param_names = schema_param_names(&schema);
+            let paramname_rule = match param_names.as_ref() {
+                Some(names) if !names.is_empty() => {
+                    let alternatives = names
+                        .iter()
+                        .map(|param| serde_json::to_string(param).unwrap_or_else(|_| "\"\"".into()))
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    format!("paramname ::= {alternatives}")
+                }
+                _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
+            };
+            let value_ladder = ebnf_until_close_ladder(value_close);
+            let content = if has_no_parameters {
+                serde_json::json!({"type": "const_string", "value": ""})
+            } else {
+                let body_ebnf = format!(
+                    "root ::= pair pair*\n\
+                     pair ::= \"<arg_key>\" paramname \"</arg_key><arg_value>\" value \"{value_close}\"\n\
+                     {paramname_rule}\n\
+                     value ::= value_part*\n\
+                     value_part ::= {value_ladder}"
+                );
+                serde_json::json!({"type": "grammar", "grammar": body_ebnf})
+            };
+            tag_entries.push(serde_json::json!({
+                "type": "tag",
+                "begin": format!("<tool_call>{name}"),
+                "content": content,
+                "end": "</tool_call>",
+            }));
+        }
+
+        if tag_entries.is_empty() {
+            return Err(GrammarError::NoTools);
+        }
+
+        self.compile_structural_tag_raw(
+            &["<tool_call>".to_string()],
+            &tag_entries,
+            !use_triggers,
+            !use_triggers,
+        )
+    }
+
     /// Compile a grammar for Gemma-4 native tool calls.
     ///
     /// Gemma-4's native format uses special sentinel tokens:

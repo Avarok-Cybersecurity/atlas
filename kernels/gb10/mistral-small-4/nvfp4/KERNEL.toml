@@ -8,14 +8,16 @@ extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]
 # these stay in `shadowed_dropped`, so if Mistral's dispatch ever does resolve
 # one the startup audit still hard-errors rather than running a wrong kernel.
 #
-#   rope::rope_forward_{proportional,strided,yarn_interleaved,yarn_interleaved_inv}
+#   rope::rope_forward_{proportional,strided,yarn_scaled,yarn_interleaved,yarn_interleaved_inv}
 #       common/rope.cu is built around the rotate_half convention: it pairs
 #       element i with i + rotary_dim/2. Mistral sets `rope_interleave=True`,
 #       so its weights are stored as adjacent pairs and this target's
 #       `rope_forward` pairs 2i with 2i+1 instead — and takes a precomputed
-#       `inv_freq` argument common's does not have. The four variants above are
+#       `inv_freq` argument common's does not have. The variants above are
 #       therefore not "missing" here; they are the OTHER convention, and
 #       copying them in would silently rotate every query/key the wrong way.
+#       (`rope_forward_yarn_scaled` is the Laguna-S 2.1 rotate_half YaRN
+#       variant, resolved via `try_kernel` — same convention mismatch.)
 #       Porting them properly means reimplementing each against the interleaved
 #       layout, which is a Mistral kernel change, not a shadow-sync.
 [shadow_exempt]
@@ -24,6 +26,7 @@ rope = [
     "rope_forward_strided",
     "rope_forward_yarn_interleaved",
     "rope_forward_yarn_interleaved_inv",
+    "rope_forward_yarn_scaled",
 ]
 
 # Module name overrides — matching Qwen3.5 35B (both use HDIM=128 attention kernels).

@@ -26,8 +26,9 @@ use super::*;
 /// genuine FP32 device buffer here, once*, so it is applied in full FP32 in the
 /// W8A8/W8A16 GEMM epilogues — matching vLLM / DeepGEMM / HF block-FP8 (which
 /// also accumulate the scale in FP32). The checkpoint may store the scale as
-/// BF16 (lossless widen) or FP32 (straight copy); either way `row_scale` ends
-/// up an FP32 `[N/BS, K/BS]` buffer. Every FP8 block-scale kernel reads
+/// BF16 (lossless widen), FP32 (straight copy), or F8_E8M0 (exact power-of-two
+/// widen); in every case `row_scale` ends up an FP32 `[N/BS, K/BS]` buffer.
+/// Every FP8 block-scale kernel reads
 /// `const float*` — see `kernels/gb10/common/w8a16_gemv.cu` et al.
 pub fn load_fp8_block_scaled_as_fp8weight(
     store: &WeightStore,
@@ -52,12 +53,14 @@ pub fn load_fp8_block_scaled_as_fp8weight(
     // Load block scale [N/BS, K/BS] — already on GPU from safetensors. The
     // tensor name varies by producer: DeepSeek/Qwen-native FP8 ships
     // `weight_scale_inv` (2D); compressed-tensors `float-quantized` (e.g.
-    // Hcompany/Holo-3.1-*-FP8) ships a 2D `weight_scale`; ModelOpt
+    // Hcompany/Holo-3.1-*-FP8) ships a 2D `weight_scale`; DeepSeek-V4 ships
+    // a 2D F8_E8M0 `.scale`; ModelOpt
     // MIXED_PRECISION ships a *scalar* `weight_scale` (expanded to the block
     // matrix shape below). All three are the per-block FP8 dequant multiplier
     // the W8A16 kernels apply in FP32. Prefer whichever 2D block scale exists.
     let scale_inv_key = format!("{prefix}.weight_scale_inv");
     let plain_scale_key = format!("{prefix}.weight_scale");
+    let e8m0_scale_key = format!("{prefix}.scale");
     let block_scale_key = if store.contains(&scale_inv_key) {
         Some(scale_inv_key.clone())
     } else if store
@@ -66,6 +69,12 @@ pub fn load_fp8_block_scaled_as_fp8weight(
         .unwrap_or(false)
     {
         Some(plain_scale_key.clone())
+    } else if store
+        .get(&e8m0_scale_key)
+        .map(|s| s.shape.len() == 2 && s.dtype == WeightDtype::FP8E8M0)
+        .unwrap_or(false)
+    {
+        Some(e8m0_scale_key.clone())
     } else {
         None
     };
@@ -77,8 +86,11 @@ pub fn load_fp8_block_scaled_as_fp8weight(
             s.shape,
         );
         ensure!(
-            s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
-            "Expected BF16 or FP32 for {scale_key}, got {:?}",
+            matches!(
+                s.dtype,
+                WeightDtype::BF16 | WeightDtype::FP32 | WeightDtype::FP8E8M0
+            ),
+            "Expected BF16, FP32, or F8_E8M0 for {scale_key}, got {:?}",
             s.dtype,
         );
 
@@ -97,13 +109,19 @@ pub fn load_fp8_block_scaled_as_fp8weight(
         let row_scale = gpu.alloc(scale_total * 4)?;
         let kernel = gpu.kernel("widen_block_scale_f32", "widen_block_scale_f32")?;
         let stream = gpu.default_stream();
+        let input_dtype = match s.dtype {
+            WeightDtype::BF16 => 0,
+            WeightDtype::FP32 => 1,
+            WeightDtype::FP8E8M0 => 2,
+            _ => unreachable!("validated block-scale dtype"),
+        };
         crate::layers::ops::widen_block_scale_f32(
             gpu,
             kernel,
             s.ptr,
             row_scale,
             scale_total as u32,
-            s.dtype == WeightDtype::FP32,
+            input_dtype,
             stream,
         )?;
         gpu.synchronize(stream)?;
