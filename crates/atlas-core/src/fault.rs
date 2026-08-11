@@ -125,6 +125,39 @@ pub fn global() -> &'static FaultLatch {
     &GLOBAL
 }
 
+/// Exit status for a process that died because its CUDA context was lost.
+///
+/// `70` is sysexits.h `EX_SOFTWARE`. The exact value matters far less than
+/// "not zero": supervisors gate restarts on it, and a distinct code lets an
+/// operator tell a poisoned-context death from an ordinary startup failure
+/// without reading logs.
+pub const EXIT_GPU_FAULT: i32 = 70;
+
+/// The process exit status for a run that is ending.
+///
+/// # Why this is not just `result`
+///
+/// A latched fault drains and shuts the server down **cleanly** — the accept
+/// loop returns `Ok(())` by exactly the same path it takes for `SIGTERM`. To a
+/// supervisor the two are then indistinguishable, so a server that lost its
+/// context exits `0`, `Restart=on-failure` (systemd) and `restart: on-failure`
+/// (Docker/Compose) both decline to restart it, and the endpoint stays down
+/// until a human notices. Every other part of the #429 response — the latch,
+/// the 503s, the drain — works and is undone by that one status code.
+///
+/// This is a known trap, not a hypothetical: vLLM shipped the same bug and
+/// fixed it in <https://github.com/vllm-project/vllm/issues/48966>, where
+/// exiting 0 made systemd log "successful deactivation" and stand down.
+pub fn exit_code(run_succeeded: bool, fault: Option<&str>) -> i32 {
+    match (run_succeeded, fault) {
+        // A fault outranks the run's own status: it is both the more specific
+        // cause and the reason the run ended at all.
+        (_, Some(_)) => EXIT_GPU_FAULT,
+        (true, None) => 0,
+        (false, None) => 1,
+    }
+}
+
 #[cfg(test)]
 #[path = "fault_tests.rs"]
 mod tests;

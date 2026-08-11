@@ -55,6 +55,10 @@ pub use model_stats::ModelStats;
 mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
+#[path = "ops/gemv_q2.rs"]
+mod gemv_q2;
+#[path = "ops/gemv_q2_vec.rs"]
+mod gemv_q2_vec;
 #[path = "ops/hyper_connection.rs"]
 mod hyper_connection;
 #[path = "ops/kv_cache.rs"]
@@ -83,6 +87,8 @@ mod moe_grouped_a2;
 mod moe_grouped_b;
 #[path = "ops/moe_grouped_fp4.rs"]
 mod moe_grouped_fp4;
+#[path = "ops/moe_lora_grouped.rs"]
+pub mod moe_lora_grouped;
 #[path = "ops/moe_prefill.rs"]
 mod moe_prefill;
 #[path = "ops/norm.rs"]
@@ -102,6 +108,7 @@ mod prefill_attn_main_a;
 mod prefill_attn_main_b;
 #[path = "ops/prefill_attn_turbok.rs"]
 mod prefill_attn_turbok;
+mod q2_0_mmq;
 mod q4k_mmq;
 #[path = "ops/quant_dispatch.rs"]
 mod quant_dispatch;
@@ -123,6 +130,7 @@ mod ssm_mamba;
 mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
+pub mod token_overlay;
 
 pub use activations::*;
 pub use derived_weights::{Derivation, DerivedWeights};
@@ -139,6 +147,8 @@ pub use gemm_dense_int8::*;
 pub use gemm_fp4::*;
 pub use gemm_fp8_prefill::*;
 pub use gemm_quant::*;
+pub use gemv_q2::*;
+pub use gemv_q2_vec::*;
 pub use hyper_connection::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
@@ -153,6 +163,7 @@ pub use moe_grouped_a2::*;
 #[allow(unused_imports)]
 pub(crate) use moe_grouped_b::*;
 pub use moe_grouped_fp4::*;
+pub use moe_lora_grouped::*;
 pub use moe_prefill::*;
 pub use norm::*;
 pub use nvfp4_mmq::*;
@@ -163,6 +174,7 @@ pub use prefill_attn_fp8k::*;
 pub use prefill_attn_main_a::*;
 pub use prefill_attn_main_b::*;
 pub use prefill_attn_turbok::*;
+pub use q2_0_mmq::*;
 pub use q4k_mmq::*;
 pub use quant_dispatch::*;
 pub use sampling::*;

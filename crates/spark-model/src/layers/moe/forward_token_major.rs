@@ -23,6 +23,20 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // SOLID Incr-4: the token-major fast path has no fold hooks. When a
+        // MoE adapter is RESIDENT, delegate to the per-row batched fallback,
+        // which folds router + gate/up/down route-agnostically (base rows
+        // no-op device-side via the `moe_row_adapter` map; a homogeneous
+        // batch without the map uses the request-granularity
+        // `moe_route_gate`). PRESENCE-gated exactly like forward_k2/k3 —
+        // install-time-fixed, so graph-safe (decode graphs drain on adapter
+        // rotate/swap); gating on the per-step ROUTE here would bake a host
+        // branch into a captured `padded_n` graph. A `Refuse` batch was
+        // already bailed host-side before the ladder
+        // (`ensure_decode_route_servable` in `decode_batch_compute_main`).
+        if self.lora.is_some() {
+            return self.forward_batched(input, num_tokens, ctx, stream);
+        }
         let has_shared = self.weights.shared_expert.gate_proj.weight.0 != 0
             && self.weights.shared_expert.up_proj.weight.0 != 0
             && self.weights.shared_expert.down_proj.weight.0 != 0;

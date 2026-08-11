@@ -45,6 +45,12 @@ pub fn quant_gemv(
             stream,
         ),
         QuantWeight::Dense(w) => dense_gemv(gpu, gemv_dense, input, w, output, n, k, stream),
+        // PackedQ2 has no companion kernel handle here (its GEMV is
+        // `q2_0_gemv_vec`, dispatched at the layer's own sites, not via this
+        // generic 3-kernel helper). Bail rather than misdispatch.
+        QuantWeight::PackedQ2(_) => anyhow::bail!(
+            "quant_gemv: PackedQ2 not routed through the generic dispatcher; use q2_0_gemv_vec"
+        ),
     }
 }
 
@@ -81,6 +87,10 @@ pub fn quant_gemm(
             stream,
         ),
         QuantWeight::Dense(w) => dense_gemm(gpu, gemm_dense, input, w, output, m, n, k, stream),
+        QuantWeight::PackedQ2(_) => anyhow::bail!(
+            "quant_gemm: PackedQ2 not routed through the generic dispatcher; \
+             use the layer's transient-dequant prefill path"
+        ),
     }
 }
 

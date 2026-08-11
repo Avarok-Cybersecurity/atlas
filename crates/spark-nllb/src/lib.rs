@@ -11,6 +11,7 @@
 //! validated end-to-end without the CUDA/Metal stack.
 
 pub mod config;
+pub mod gguf;
 pub mod lora;
 pub mod model;
 pub mod ops;

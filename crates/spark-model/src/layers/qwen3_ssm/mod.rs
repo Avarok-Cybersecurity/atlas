@@ -45,6 +45,20 @@ pub struct Qwen3SsmLayer {
     // FP8 E4M3 checkpoint weights for native FP8 serving (w8a16_gemv LUT kernel)
     qkvz_fp8w: Option<Fp8Weight>,
     out_proj_fp8w: Option<Fp8Weight>,
+    /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`ATLAS_GGUF_NATIVE_Q2`).
+    /// [Q|K|V|Z] rows byte-concatenated from packed `in_proj_qkv` (V-region
+    /// row-permuted) + `in_proj_z` (row-permuted) at load, so the 2-bit weight is
+    /// HF-correct. `out_proj` stays NVFP4 (column reorder not packed-permutable here).
+    qkvz_q2: Option<crate::weight_map::PackedQ2Weight>,
+    /// Q2_0 kernels for the packed qkvz: `gemv` = `q2_0_gemv_vec` decode; `dequant`
+    /// = load-time packed→BF16 for the transient-dequant prefill fallback;
+    /// `mmq_{nc,wc}` = Tier-2 keep-packed tensor-core MMQ prefill (`KernelHandle(0)`
+    /// → fallback); `q4k_quant_act` = shared q8_1 activation quantizer.
+    q2_0_gemv_k: KernelHandle,
+    dequant_q2_0_gn_k: KernelHandle,
+    q2_0_mmq_nc_k: KernelHandle,
+    q2_0_mmq_wc_k: KernelHandle,
+    q4k_quant_act_k: KernelHandle,
     /// When true, QKVZ projection output is already sequential [Q|K|V|Z].
     /// Skips the deinterleave kernel (used by Qwen3.5 where QKV+Z are
     /// concatenated at load time rather than interleaved per-group).
@@ -413,6 +427,9 @@ fn ssm_m128_min_m() -> Option<u32> {
 mod debug;
 pub mod gdn_flags;
 mod init;
+mod init_fp8;
+mod init_q2;
+mod lora;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;

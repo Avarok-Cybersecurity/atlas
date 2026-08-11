@@ -32,6 +32,26 @@ pub(crate) fn merge_sidecar_quant_config(model_dir: &Path, config: &mut ModelCon
 pub(crate) fn load_model_config(model_dir: &Path) -> Result<(ModelConfig, String)> {
     let config_path = model_dir.join("config.json");
     let params_path = model_dir.join("params.json");
+
+    // Bare-GGUF directory (no config.json/params.json): synthesize the config
+    // from the GGUF metadata block. Weight loading already routes to GgufLoader.
+    if !config_path.exists()
+        && !params_path.exists()
+        && spark_runtime::weights::find_gguf(model_dir).is_some()
+    {
+        let config = spark_runtime::weights::config_from_gguf_dir(model_dir)
+            .context("Failed to build ModelConfig from GGUF metadata")?;
+        tracing::info!(
+            "Built ModelConfig from GGUF metadata (model_type={}, layers={}, hidden={})",
+            config.model_type,
+            config.num_hidden_layers,
+            config.hidden_size,
+        );
+        // No config.json string exists; the only downstream consumer
+        // (resolve_model_name) falls back to the directory name.
+        return Ok((config, String::new()));
+    }
+
     let config_json = if config_path.exists() {
         std::fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read {}", config_path.display()))?
@@ -40,7 +60,7 @@ pub(crate) fn load_model_config(model_dir: &Path) -> Result<(ModelConfig, String
             .with_context(|| format!("Failed to read {}", params_path.display()))?
     } else {
         anyhow::bail!(
-            "No config.json or params.json found in {}",
+            "No config.json, params.json, or .gguf found in {}",
             model_dir.display()
         );
     };

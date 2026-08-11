@@ -43,6 +43,28 @@ impl MoeLayer {
         // FP8 grouped path is HIP-ready (kernel ported); do not force-batch it.
         let hip_force_batched_fp8 = false;
 
+        // Feature-1 MoE LoRA: the router/expert fold is wired into ALL THREE
+        // grouped prefill bodies (nvfp4 below, bf16 in forward_prefill_bf16, fp8 in
+        // forward_prefill_fp8) — they write the same sorted BF16 `expert_down_out`,
+        // so one device kernel (`moe_lora_grouped_down`) folds every base. The
+        // SHORT-prefill / missing-grouped-kernel / HIP-forced fallback to
+        // `forward_batched` is NO LONGER uncovered (SOLID Incr-4): it folds the
+        // routed-expert gate/up + down delta PER TOKEN via
+        // `apply_expert_lora_decode_{gateup,down}`. A prefill `ForwardContext`
+        // always carries `moe_row_adapter == NULL` (only batched DECODE uploads a
+        // per-row map), so those hooks take the single-active fallback — the
+        // request-granularity `moe_route_gate` folds all `top_k` slots of every
+        // token, which is exactly `num_tokens` independent replays of the C=1
+        // decode fold (GPU-validated bit-clean). Hence NO refuse here: a
+        // single-active short prefill folds correctly, a base/non-active request
+        // (`Skip`) folds nothing and stays byte-identical, and the requests that
+        // still cannot be served refuse downstream in `forward_batched` at the
+        // correct granularity — the router (`mlp.gate`) delta now folds on the
+        // batched path via `apply_router_lora_batched` (SOLID Incr-4), and
+        // mixed/packed or non-active adapters refuse via `moe_route_gate` `Refuse`.
+        // (The device per-row prefill map for a MIXED short-prefill batch is the
+        // Incr-3 follow-up: `build_moe_row_adapter_host`, still refused for now.)
+
         // BF16 experts (FP8-dequant-on-load path): same dispatch shape as
         // FP8 — grouped GEMM for long prefills, fused per-token for short.
         if self.bf16_gate_weight_ptrs.is_some() {
@@ -208,6 +230,11 @@ impl MoeLayer {
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");
 
+        // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
+        // logits BEFORE top-k (reproduces PEFT `mlp.gate`). No-op unless a router
+        // delta is installed (ATLAS_LORA_EXPERTS=1).
+        self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
+
         // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
         //    + correction bias (detected via `correction_bias_dev`);
         //    every other model takes the softmax path (no behavior
@@ -356,6 +383,20 @@ impl MoeLayer {
             stream,
         )?;
         let expert_down_out = ctx.buffers.expert_down_out();
+
+        // Feature-1: fold the routed-expert down_proj LoRA deltas onto the sorted
+        // `expert_down_out` BEFORE the unpermute + weighted reduce, so the router
+        // weight multiplies base+delta (PEFT semantics). x = the post-SiLU sorted
+        // activations. No-op unless routed-expert deltas are installed.
+        self.apply_expert_lora_prefill_down(
+            ctx.buffers.expert_gate_out(),
+            expert_down_out,
+            expert_offsets,
+            sorted_token_ids,
+            total_expanded,
+            ctx,
+            stream,
+        )?;
 
         // 7. Unpermute + weighted reduce: scatter sorted outputs to token order
         let output = ctx.buffers.moe_output();

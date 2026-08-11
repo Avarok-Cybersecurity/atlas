@@ -15,6 +15,13 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Feature-1: a resident MoE adapter forces the per-row batched fallback
+        // (folds gate/up/down route-agnostically; base rows no-op; same
+        // moe_output[3,H]), skipping any no-fold fast path. Install-time gate →
+        // graph-safe (graphs drain on rotate/swap). Router adapter refused inside.
+        if self.lora.is_some() {
+            return self.forward_batched(input, 3, ctx, stream);
+        }
         // BF16 (FP8-dequant-on-load) experts have no fused batch3 kernel.
         // The FP8 batch3 branch below would read expert weights that were
         // FREED at dequant-load → garbage MTP-verify logits → degenerate

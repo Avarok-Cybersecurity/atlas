@@ -346,6 +346,14 @@ pub trait GpuBackend: Send + Sync {
         Ok(())
     }
 
+    /// Best-effort: if `stream` is mid graph-capture, end that capture so the
+    /// stream returns to normal mode (discarding any partial graph). Call this
+    /// on an error path that unwound out of a `begin_capture`/`end_capture`
+    /// region (e.g. a fold refuse bailed mid-capture) — otherwise the stream is
+    /// left recording and every subsequent op fails with
+    /// STREAM_CAPTURE_UNSUPPORTED, bricking the server. No-op if not capturing.
+    fn abort_capture_if_active(&self, _stream: u64) {}
+
     /// Set device memory to a byte value (synchronous — waits for completion).
     fn memset(&self, ptr: DevicePtr, value: u8, bytes: usize) -> Result<()>;
 

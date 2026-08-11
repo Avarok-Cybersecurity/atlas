@@ -268,6 +268,11 @@ impl MoeLayer {
 
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
 
+        // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
+        // logits BEFORE top-k (device-clean, no capture guard). No-op unless a
+        // router delta is installed.
+        self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
+
         // 2. Batched topK dispatch (sigmoid+bias for MiniMax/DeepSeek-V3,
         //    softmax for everyone else — selection by `correction_bias_dev`).
         let scratch = ctx.buffers.scratch();
@@ -499,6 +504,24 @@ impl MoeLayer {
             ctx.gpu.free(tt_gu)?;
         }
 
+        // Feature-1: fold gate/up_proj deltas onto the sorted BF16
+        // `expert_gate_out`/`expert_up_out` BEFORE either silu_mul below. ONE point
+        // covers both the W8A8 and worklist fp8 branches (both left sorted BF16
+        // gate/up). x = BF16 `input` (NOT `input_fp8` — mirror the down-fold
+        // precedent of folding BF16 deltas onto the BF16 intermediates).
+        if max_m_tiles > 0 {
+            self.apply_expert_lora_prefill_gateup(
+                expert_gate_out,
+                expert_up_out,
+                input,
+                expert_offsets,
+                sorted_token_ids,
+                total_expanded,
+                ctx,
+                stream,
+            )?;
+        }
+
         // 6. Activation+mul + down GEMM
         let expert_down_out = ctx.buffers.expert_down_out();
         if force_w8a8 && max_m_tiles > 0 {
@@ -598,6 +621,20 @@ impl MoeLayer {
             ctx.gpu.free(wl_dn)?;
             ctx.gpu.free(tt_dn)?;
         }
+
+        // Feature-1: fold the routed-expert down_proj LoRA deltas onto the sorted
+        // BF16 `expert_down_out` BEFORE the unpermute. Covers BOTH the W8A8 and
+        // worklist fp8 branches (both leave sorted-BF16 `expert_down_out` +
+        // post-SiLU BF16 `expert_gate_out`). Same device kernel as nvfp4/bf16.
+        self.apply_expert_lora_prefill_down(
+            expert_gate_out,
+            expert_down_out,
+            expert_offsets,
+            sorted_token_ids,
+            total_expanded,
+            ctx,
+            stream,
+        )?;
 
         // 7. Unpermute + weighted reduce + shared blend
         let output = ctx.buffers.moe_output();

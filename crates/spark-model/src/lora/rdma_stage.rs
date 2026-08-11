@@ -17,8 +17,8 @@ use spark_storage::weight_peer::WeightManifest;
 use spark_storage::{LoraAbKind, LoraLandTarget};
 
 use super::{
-    AdapterAb, LoraLayerWeights, LoraModule, classify_key, module_slot_offsets, pool_slot_bytes,
-    slot_base_offset,
+    AdapterAb, LoraLayerWeights, LoraModule, LoraTarget, classify_key, module_slot_offsets,
+    pool_slot_bytes, slot_base_offset,
 };
 use crate::layers::ops::lora_delta::LoraPair;
 use crate::weight_map::DenseWeight;
@@ -39,7 +39,18 @@ pub fn build_land_targets(
     let base = pool.0 + slot_base_offset(slot, cfg, max_rank) as u64;
     let mut targets = Vec::with_capacity(manifest.tensors.len());
     for rec in &manifest.tensors {
-        let (layer, module, ab) = classify_key(&rec.name, cfg)?;
+        let (layer, target, ab) = classify_key(&rec.name, cfg)?;
+        // RDMA slot-swap stages ONLY the equal-size attention/dense pool. Router
+        // and routed-expert LoRA (Feature-1) live in a separate expert pool with
+        // its own offset math and are not RDMA-swappable in P1 — reject by name.
+        let module = match target {
+            LoraTarget::Attn(m) => m,
+            LoraTarget::Router | LoraTarget::Expert { .. } => bail!(
+                "lora rdma: '{}' is a router/expert delta (Feature-1); RDMA \
+                 slot-swap stages the attention pool only",
+                rec.name
+            ),
+        };
         let (a_off, b_off) = module_slot_offsets(cfg, max_rank, layer, module)
             .ok_or_else(|| anyhow!("lora rdma: layer {layer} not a full-attention slot layer"))?;
         let (out_dim, in_dim) = module.dims(cfg);
@@ -104,16 +115,7 @@ pub fn rebuild_slot_layers(
     // Simpler: walk the pool layout and, for each (layer, module), find whether a
     // target lands there (by matching dst).
     for rec_layer in super::full_attention_layers(cfg) {
-        let mut lw = LoraLayerWeights {
-            layer_idx: rec_layer,
-            q_proj: None,
-            k_proj: None,
-            v_proj: None,
-            o_proj: None,
-            gate_proj: None,
-            up_proj: None,
-            down_proj: None,
-        };
+        let mut lw = LoraLayerWeights::empty(rec_layer);
         let mut any = false;
         for module in LoraModule::ALL {
             let (a_off, b_off) =

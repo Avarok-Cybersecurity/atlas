@@ -110,6 +110,7 @@ impl Qwen3AttentionLayer {
                 max_blocks_per_seq: meta.max_blocks_per_seq,
                 num_seqs: 1,
                 seq_slot: spark_runtime::gpu::DevicePtr(0),
+                moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
             };
             let o_out_i = o_out.offset(i * c.h * bf16);
 

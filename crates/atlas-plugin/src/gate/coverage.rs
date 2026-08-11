@@ -231,6 +231,37 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
 /// OTHER benchmark drivers, exactly as a required gate would. Its own driver
 /// directory is deliberately NOT here — a change to the detector re-opens the
 /// detector.
+/// The concurrency curve is a LATENCY/THROUGHPUT measurement of the serving
+/// path, so almost nothing is excusable: scheduler, kernels, batching, KV and
+/// sampling all move it. Only the other benchmark DRIVERS are — a driver is
+/// client-side request-issuing code that cannot change how fast the server
+/// answers someone else's requests.
+///
+/// Deliberately NOT excluded, though the TTFT gates exclude them: nothing in
+/// the engine. A change that costs 10% at C=32 while leaving C=1 flat is
+/// exactly the regression this curve exists to catch, and the TTFT gates
+/// measure a single request — they cannot see it.
+const CONCURRENCY_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change the server's latency/throughput curve",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change the server's latency/throughput curve",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change the server's latency/throughput curve",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver issues single requests client-side; it cannot change how fast the \
+         server answers a batch of 32",
+    ),
+];
+
 const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
     GATE_MACHINERY,
     other_driver(
@@ -299,10 +330,34 @@ pub const REQUIRED: [GateCoverage; 5] = [
 /// candidate naming an unregistered id would be a debt row nobody can ever
 /// discharge, which is worse than no row.
 /// `every_promotion_candidate_is_a_registered_benchmark` pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
-    id: "cross-contamination",
-    excludes: CONTAMINATION_EXCLUDES,
-}];
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
+    GateCoverage {
+        id: "cross-contamination",
+        excludes: CONTAMINATION_EXCLUDES,
+    },
+    // Promoted out of NOT_REQUIRED 2026-08-11. It was excused as "an
+    // exploratory table with no baseline thresholds" — true when written, and
+    // the reason it cannot go straight to REQUIRED: `check_record` refuses to
+    // let a thresholds-less entry read as PASS ("there is nothing here for
+    // this run to have passed"), so requiring it today would produce a gate no
+    // PR could ever clear.
+    //
+    // Candidate rather than excused, because the concurrency curve is not
+    // exploratory any more: the C=1..32 ladder is the artifact the GB10
+    // campaign is argued from, and C=32 is where time-to-answer INVERTS in
+    // Atlas's favour (-4.47% vs vLLM). A change that quietly costs 10% at
+    // C=32 currently merges with nothing measured and nothing said — the
+    // "listing only what was gated silently converts ungated into unaffected"
+    // shape this list exists to prevent.
+    //
+    // Promotion to REQUIRED needs thresholds, and thresholds need a measured
+    // run on main. This lands the debt row first so the gap is visible while
+    // that run is collected.
+    GateCoverage {
+        id: "concurrency-sweep",
+        excludes: CONCURRENCY_EXCLUDES,
+    },
+];
 
 pub const NOT_REQUIRED: [(&str, &str); 4] = [
     (
@@ -312,7 +367,10 @@ pub const NOT_REQUIRED: [(&str, &str); 4] = [
     ),
     (
         "concurrency-sweep",
-        "an exploratory table, not a pass/fail measurement — it has no baseline thresholds",
+        "not required YET: a promotion candidate (see PROMOTION_CANDIDATES). It cannot be \
+         REQUIRED until it has measured thresholds — check_record refuses to let a \
+         thresholds-less entry read as PASS, so requiring it today would be a gate no PR \
+         could clear",
     ),
     (
         "serve-matrix",

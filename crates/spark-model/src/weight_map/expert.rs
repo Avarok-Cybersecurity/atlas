@@ -122,6 +122,11 @@ pub enum QuantWeight {
 
     /// BF16 dense (unquantized). Kernel: dense_gemv / dense_gemm
     Dense(DenseWeight),
+
+    /// Keep-packed ternary Q2_0 (`ATLAS_GGUF_NATIVE_Q2`): raw `block_q2_0` bytes,
+    /// 2-bit resident. Decode dispatches `q2_0_gemv_vec`; prefill transient-
+    /// dequants to BF16 then runs `dense_gemm`. Tier-1c attention path.
+    PackedQ2(PackedQ2Weight),
 }
 
 impl QuantWeight {
@@ -136,6 +141,15 @@ impl QuantWeight {
             Self::Nvfp4(w) => w.is_null(),
             Self::Fp8(w) => w.weight.is_null(),
             Self::Dense(w) => w.weight.is_null(),
+            Self::PackedQ2(w) => w.is_null(),
+        }
+    }
+
+    /// Extract as keep-packed Q2_0, if this weight is that variant.
+    pub fn as_packed_q2(&self) -> Option<&PackedQ2Weight> {
+        match self {
+            Self::PackedQ2(w) => Some(w),
+            _ => None,
         }
     }
 
@@ -179,6 +193,12 @@ impl From<Fp8Weight> for QuantWeight {
 impl From<DenseWeight> for QuantWeight {
     fn from(w: DenseWeight) -> Self {
         Self::Dense(w)
+    }
+}
+
+impl From<PackedQ2Weight> for QuantWeight {
+    fn from(w: PackedQ2Weight) -> Self {
+        Self::PackedQ2(w)
     }
 }
 

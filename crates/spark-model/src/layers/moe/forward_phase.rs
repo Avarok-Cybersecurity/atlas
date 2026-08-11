@@ -28,6 +28,7 @@ impl MoeLayer {
         h: u32,
         inter: u32,
         top_k: u32,
+        single_seq_decode: bool,
         stream: u64,
     ) -> Result<()> {
         // Phase 8a unified-layout decode path: transposed weight tables
@@ -80,6 +81,23 @@ impl MoeLayer {
             top_k,
             stream,
         )?;
+        // Feature-1: fold routed-expert gate/up_proj deltas onto the slot-major
+        // `expert_gate_out`/`expert_up_out` BEFORE the fused silu+down consumes
+        // them (x = `expert_input`, no recompute). No-op unless gate/up deltas are
+        // installed; multi-seq reuse already bailed at the forward.rs entry.
+        if single_seq_decode {
+            self.apply_expert_lora_decode_gateup(
+                expert_gate_out,
+                expert_up_out,
+                expert_input,
+                indices_dev,
+                top_k,
+                top_k,
+                DevicePtr::NULL,
+                ctx,
+                stream,
+            )?;
+        }
         ops::moe_expert_silu_down_shared_t(
             ctx.gpu,
             self.e8m0_or(

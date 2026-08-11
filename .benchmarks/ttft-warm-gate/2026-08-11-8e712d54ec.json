@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "benchmark_id": "ttft-warm-gate",
+  "benchmark_name": "Warm TTFT Regression Gate",
+  "git_sha": "8e712d54ec",
+  "recorded_at": 1786418956,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "params": {
+    "median_limit_pct": "3",
+    "p90_limit_pct": "5",
+    "prompt_lengths": "256, 1024, 4096",
+    "repeats": "12",
+    "request_timeout_s": "300",
+    "update_baseline": "true"
+  },
+  "command": [
+    "spark",
+    "benchmark",
+    "run",
+    "ttft-warm-gate",
+    "--param",
+    "median_limit_pct=3",
+    "--param",
+    "p90_limit_pct=5",
+    "--param",
+    "prompt_lengths=256, 1024, 4096",
+    "--param",
+    "repeats=12",
+    "--param",
+    "request_timeout_s=300",
+    "--param",
+    "update_baseline=true",
+    "--pull-request-gate"
+  ],
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+  "atlas_version": "1.0.0-beta-preview",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.173.02",
+    "sm_clock_mhz": 2281.0,
+    "source": "nvidia-smi"
+  },
+  "metrics": {
+    "median_ms": 1660.9724130000002,
+    "p90_ms": 4750.407161,
+    "samples": 36.0
+  },
+  "frame_status": "Completed",
+  "verdict": "info",
+  "verdict_reason": "no baseline on this box yet — this run is recorded as the baseline",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=1660.97, p90_ms=4750.41, samples=36.00 · Info: no baseline on this box yet — this run is recorded as the baseline",
+  "closure": {
+    "gb10/deepseek-v4-flash/nvfp4": {
+      "hash": "775b81ac5aaedb7fcc3c58505fa3253f49377732b42ead395ea49c55776e4599",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/gemma-4-26b-a4b/nvfp4": {
+      "hash": "8d4444b2b002693a72866811b726a7a9fda324e7264c7549f7c7037ba583efcf",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/gemma-4-31b/nvfp4": {
+      "hash": "589712a99b11afcd3058445e3497287f7e7d0808806d241e13d7e9daad58662e",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/holo-3.1-0.8b/nvfp4": {
+      "hash": "407d8c8618428dba1eb6432a33c52bd885dd2bec59060f14d2929b19f49751ba",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/holo-3.1-35b-a3b/nvfp4": {
+      "hash": "04a8551ca2db25e386f6a1f97ea047e4064731fc60a3926c4392001fb37f01bf",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/holo-3.1-4b/nvfp4": {
+      "hash": "0f46774673702958b77ce7df91622b3ed49e5db0b93c692f84211f37a517e0c7",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/minimax-m2-229b/nvfp4": {
+      "hash": "cb2aaaee29b523e66eac203959f966a4354d4bc6b37a4ce1b14d806e407da8d4",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/mistral-small-4/nvfp4": {
+      "hash": "d4cfdad6040289a5aa97a91465d6f5fc11565bb298f8fb155c8cdc5f6241d809",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nemotron-3-nano-30b-a3b/nvfp4": {
+      "hash": "0cd9b2a80b2d175453d72c2590888c90310626130f9a7334aa651ae07893809a",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4": {
+      "hash": "0a0cb31edd6442a2c6a1a5e5a199ca954b7c0a2411683e4e987052af0bc1a755",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nemotron-super-120b-a12b/nvfp4": {
+      "hash": "0f6b97ead587b9fc5a1d5662d6a774de81de113b150da58b95d2afe2418d78f7",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nllb-200-3.3b/bf16": {
+      "hash": "b8879c07e208647ef8c88bd82edb74d5fc9e58a8dfb1e8ce531f727cdad461df",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/ornith-1.0-9b/nvfp4": {
+      "hash": "b3d1e5fc0d53a5daf5a89cccc10a9dc2a360ccb88a01fc6e969ed6be64f5e429",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3-next-80b-a3b/nvfp4": {
+      "hash": "ca04c4659d32d583cc66040586337df6225bd9d0bd23bce8f13573ae40d8ac96",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3-vl-30b-a3b/nvfp4": {
+      "hash": "97d85edaa54d2a35acfde6154bb4dc7239e4e2db68e82ad31530d92ea25f8078",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/qwen3.5-122b-a10b/nvfp4": {
+      "hash": "6984b15f0a08c531495b5eab38ac1a0fc3a25ef48bb1256d2c6ed6b64fd353f7",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.5-27b/nvfp4": {
+      "hash": "d1de1ac5b840f2181efc24cf9e3b5dd11df0e7aab0750d6675a7cbbc9b9af091",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.5-35b-a3b/nvfp4": {
+      "hash": "9dd2796ea7bf4d95b918386299d51314b2571ad688ce10ed99cf274a8bd288ac",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.5-397b-a17b/nvfp4": {
+      "hash": "5e4eb5bc0cec3371a128da692b8bb7d2c210b7c44ed0b264325bbba2e853eaf7",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.6-27b/nvfp4": {
+      "hash": "7b6fe86b492d744901f1972cfcafbd0e5683b7d4301078f1beebd38f68b9b839",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.6-35b-a3b/nvfp4": {
+      "hash": "1c479f2d09538d5cb64dd27009ec40e183fd03b62809d7aeef7d4a93ae675105",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/step3p7-flash/nvfp4": {
+      "hash": "e07ba6733be595b5630161e14abdf68016cb1bf061b779b2dae62254bae53cc9",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    }
+  }
+}
