@@ -12,7 +12,7 @@ impl MoeLayer {
     ///
     /// Pipeline: gate → topK → sort → grouped gate/up GEMM → SiLU → grouped down GEMM
     ///           → unpermute + weighted reduce → shared expert blend.
-    /// Shared expert uses standard w4a16_gemm (single-expert, M=N_tokens).
+    /// Shared expert uses checkpoint-native BF16 when installed, otherwise W4A16.
     #[allow(unused_assignments)]
     pub fn forward_prefill(
         &self,
@@ -203,10 +203,21 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
+        } else if ctx.dispatch.cublas_gemm && n > 1 {
+            ops::cublas_bf16_proj_dense(
+                router_in,
+                self.weights.gate.weight,
+                gate_logits,
+                n,
+                num_experts,
+                h,
+                stream,
+            )?;
         } else {
-            ops::dense_gemm(
+            ops::dense_gemm_prefill(
                 ctx.gpu,
                 self.dense_gemm,
+                self.dense_gemm_pipelined,
                 router_in,
                 &self.weights.gate,
                 gate_logits,

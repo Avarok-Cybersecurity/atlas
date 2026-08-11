@@ -210,6 +210,28 @@ pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
 // an atomic inside the run's levers, which serve hands to the scheduler and
 // the dashboard as an `Arc`.
 
+static ENABLE_THINK_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Set once at startup from `ModelBehavior.enable_think_loop_watchdog`.
+pub fn set_enable_think_loop_watchdog(enabled: bool) {
+    let _ = ENABLE_THINK_LOOP_WATCHDOG.set(enabled);
+}
+
+/// Per-model gate for the THINKING-phase token-loop watchdog. Defaults to
+/// `true` (the behaviour before the flag existed), so every model that does not
+/// opt out is unaffected.
+///
+/// Why a model would opt out: the watchdog force-injects `</think>` on a
+/// period-4..20 repeat in the reasoning tail. When it misfires, the model is
+/// yanked out of a reasoning block it did not choose to end, has no natural
+/// continuation, and the post-close CONTENT degenerates into token spam.
+/// Observed on Laguna-S-2.1: watchdog on -> `finish=length` with content
+/// '####...' / backtick spam; same prompt with watchdogs off -> coherent
+/// reasoning and no spam.
+pub fn enable_think_loop_watchdog() -> bool {
+    *ENABLE_THINK_LOOP_WATCHDOG.get().unwrap_or(&true)
+}
+
 // ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
 
 // Resolved once into `SchedLevers::forced_token_fastpath` and read off

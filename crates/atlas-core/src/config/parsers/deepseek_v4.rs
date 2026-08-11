@@ -176,6 +176,8 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
         config.mtp_num_hidden_layers = n as usize;
     }
 
+    validate_dspark_contract(&config, &raw)?;
+
     // Parse quantization_config if present
     if config.quantization_config.is_none() {
         config.quantization_config = parse_quantization_config(&raw);
@@ -187,6 +189,17 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
             .iter()
             .filter_map(|v| v.as_u64().map(|x| x as usize))
             .collect();
+    }
+    if config.compress_ratios.contains(&4) {
+        if config.index_n_heads == 0 {
+            config.index_n_heads = 64;
+        }
+        if config.index_head_dim == 0 {
+            config.index_head_dim = 128;
+        }
+        if config.index_topk == 0 {
+            config.index_topk = 512;
+        }
     }
 
     // Parse num_hash_layers from raw JSON
@@ -267,6 +280,59 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
 
     finalize_config(&mut config, &raw)?;
     Ok(config)
+}
+
+fn validate_dspark_contract(config: &ModelConfig, raw: &serde_json::Value) -> Result<()> {
+    const DSPARK_FIELDS: [&str; 4] = [
+        "dspark_block_size",
+        "dspark_noise_token_id",
+        "dspark_target_layer_ids",
+        "dspark_markov_rank",
+    ];
+    if DSPARK_FIELDS.iter().all(|field| raw.get(field).is_none()) {
+        return Ok(());
+    }
+
+    for field in DSPARK_FIELDS {
+        anyhow::ensure!(
+            raw.get(field).is_some(),
+            "DSpark config is missing `{field}`"
+        );
+    }
+    anyhow::ensure!(
+        config.dspark_block_size > 0,
+        "`dspark_block_size` must be > 0"
+    );
+    anyhow::ensure!(
+        config.dspark_noise_token_id < config.vocab_size as u32,
+        "`dspark_noise_token_id` ({}) is outside vocab_size ({})",
+        config.dspark_noise_token_id,
+        config.vocab_size
+    );
+    anyhow::ensure!(
+        !config.dspark_target_layer_ids.is_empty(),
+        "`dspark_target_layer_ids` must not be empty"
+    );
+    anyhow::ensure!(
+        config
+            .dspark_target_layer_ids
+            .iter()
+            .all(|&layer| layer < config.num_hidden_layers),
+        "`dspark_target_layer_ids` must reference target layers in 0..{}",
+        config.num_hidden_layers
+    );
+    anyhow::ensure!(
+        config
+            .dspark_target_layer_ids
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
+        "`dspark_target_layer_ids` must be strictly increasing"
+    );
+    anyhow::ensure!(
+        config.dspark_markov_rank > 0,
+        "`dspark_markov_rank` must be > 0"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -371,6 +437,32 @@ mod mscale_contract_tests {
         assert_eq!(
             qwen.yarn_mscale, 1.0,
             "shared factory default must remain 1.0 for non-DS4F models"
+        );
+    }
+
+    #[test]
+    fn incomplete_dspark_contract_is_rejected() {
+        let incomplete = DS4F_CONFIG.replace(
+            "\"compress_rope_theta\": 160000,",
+            "\"compress_rope_theta\": 160000, \"dspark_block_size\": 5,",
+        );
+        let err = parse_deepseek_v4(&incomplete).expect_err("incomplete DSpark config");
+        assert!(
+            err.to_string().contains("dspark_noise_token_id"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn dspark_fields_without_block_size_are_rejected() {
+        let incomplete = DS4F_CONFIG.replace(
+            "\"compress_rope_theta\": 160000,",
+            "\"compress_rope_theta\": 160000, \"dspark_markov_rank\": 256,",
+        );
+        let err = parse_deepseek_v4(&incomplete).expect_err("incomplete DSpark config");
+        assert!(
+            err.to_string().contains("dspark_block_size"),
+            "unexpected error: {err:#}"
         );
     }
 }

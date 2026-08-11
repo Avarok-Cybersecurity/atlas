@@ -85,7 +85,8 @@ extern "C" __global__ void paged_decode_attn_fp8(
     const float k_scale,
     const float v_scale,
     const unsigned int q_stride,              // query.stride(0) in elements
-    const unsigned long long cache_stride     // k_cache.stride(0) in elements (block-level stride)
+    const unsigned long long cache_stride,    // k_cache.stride(0) in elements (block-level stride)
+    const unsigned int sliding_window         // 0 = full attention; >0 = trailing window size
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int seq_idx = blockIdx.y;
@@ -97,6 +98,8 @@ extern "C" __global__ void paged_decode_attn_fp8(
 
     const unsigned int seq_len = (unsigned int)seq_lens[seq_idx];
     if (seq_len == 0) return;
+    const unsigned int window_start =
+        (sliding_window > 0 && seq_len > sliding_window) ? (seq_len - sliding_window) : 0u;
 
     const unsigned int gqa_ratio = num_q_heads / num_kv_heads;
     const unsigned int kv_head = q_head / gqa_ratio;
@@ -116,8 +119,9 @@ extern "C" __global__ void paged_decode_attn_fp8(
         unpack2_bf16(q32[i], q_reg[2*i], q_reg[2*i+1]);
     }
 
-    unsigned int chunk_size = (seq_len + NUM_WARPS - 1) / NUM_WARPS;
-    unsigned int my_start = warp_id * chunk_size;
+    const unsigned int attended = seq_len - window_start;
+    unsigned int chunk_size = (attended + NUM_WARPS - 1) / NUM_WARPS;
+    unsigned int my_start = window_start + warp_id * chunk_size;
     unsigned int my_end = my_start + chunk_size;
     if (my_end > seq_len) my_end = seq_len;
     if (my_start > seq_len) my_start = seq_len;
@@ -356,7 +360,8 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
     const float k_scale,
     const float v_scale,
     const unsigned int q_stride,              // query.stride(0) in elements
-    const unsigned long long cache_stride     // k_cache.stride(0) in elements (block-level stride)
+    const unsigned long long cache_stride,    // k_cache.stride(0) in elements (block-level stride)
+    const unsigned int sliding_window         // 0 = full attention; >0 = trailing window size
 ) {
     const unsigned int q_head = blockIdx.x;
     const unsigned int split_id = blockIdx.y;
@@ -369,9 +374,12 @@ extern "C" __global__ void paged_decode_attn_splitk_fp8(
 
     const unsigned int seq_len = (unsigned int)seq_lens[seq_idx];
     if (seq_len == 0) return;
+    const unsigned int window_start =
+        (sliding_window > 0 && seq_len > sliding_window) ? (seq_len - sliding_window) : 0u;
 
-    unsigned int split_size = (seq_len + num_splits - 1) / num_splits;
-    unsigned int kv_start = split_id * split_size;
+    const unsigned int attended = seq_len - window_start;
+    unsigned int split_size = (attended + num_splits - 1) / num_splits;
+    unsigned int kv_start = window_start + split_id * split_size;
     unsigned int kv_end = kv_start + split_size;
     if (kv_end > seq_len) kv_end = seq_len;
     if (kv_start >= seq_len) kv_start = kv_end;

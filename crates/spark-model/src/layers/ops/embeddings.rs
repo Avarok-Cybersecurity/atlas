@@ -273,3 +273,40 @@ pub fn rope_yarn(
         .arg_f32(theta)
         .launch(stream)
 }
+
+/// YaRN RoPE for standard attention with explicit cosine/sine amplitude.
+#[allow(clippy::too_many_arguments)]
+pub fn rope_yarn_scaled(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k: DevicePtr,
+    positions: DevicePtr,
+    seq_len: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    inv_freq: DevicePtr,
+    attention_factor: f32,
+    stream: u64,
+) -> Result<()> {
+    assert!(rotary_dim > 0, "rope_yarn_scaled: rotary_dim=0");
+    let half_rot = (rotary_dim / 2).max(1);
+    let pos_per_block = (128 / half_rot).max(1);
+    let seq_blocks = div_ceil(seq_len, pos_per_block);
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads + num_kv_heads, seq_blocks, 1])
+        .block([128, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k)
+        .arg_ptr(positions)
+        .arg_u32(seq_len)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_ptr(inv_freq)
+        .arg_f32(attention_factor)
+        .launch(stream)
+}

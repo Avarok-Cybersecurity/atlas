@@ -31,6 +31,11 @@ pub struct ChatLevers {
     /// for the handler and the prepare stage. Diagnostic; default-off, so the
     /// production path is unchanged.
     pub phase_timing: bool,
+    /// MODEL.toml `[behavior] disable_cwd_hint_injection` — suppress the
+    /// `<environment>working_directory: …</environment>` hint appended to the
+    /// system message when tools are active. Model-scoped: some checkpoints
+    /// treat the injected block as conversation content and degrade.
+    pub disable_cwd_hint_injection: bool,
 }
 
 impl ChatLevers {
@@ -40,15 +45,17 @@ impl ChatLevers {
         prompt: PromptLevers::OFF,
         bash_wander: false,
         phase_timing: false,
+        disable_cwd_hint_injection: false,
     };
 
     /// Resolve from the environment plus this model's `[behavior]` table.
     /// Called once, when the server's `AppState` is built.
-    pub fn resolve(tscg: bool) -> Self {
+    pub fn resolve(tscg: bool, disable_cwd_hint_injection: bool) -> Self {
         Self {
             prompt: PromptLevers::new(tscg),
             bash_wander: std::env::var("ATLAS_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"),
             phase_timing: std::env::var("ATLAS_CHAT_PHASE_TIMING").as_deref() == Ok("1"),
+            disable_cwd_hint_injection,
         }
     }
 }
@@ -67,7 +74,8 @@ mod tests {
         // `resolve` reads the env for the two diagnostics but takes `tscg`
         // from the caller, because it is MODEL.toml state and not a
         // process-wide setting.
-        assert!(ChatLevers::resolve(true).prompt.tscg);
-        assert!(!ChatLevers::resolve(false).prompt.tscg);
+        assert!(ChatLevers::resolve(true, false).prompt.tscg);
+        assert!(!ChatLevers::resolve(false, false).prompt.tscg);
+        assert!(ChatLevers::resolve(false, true).disable_cwd_hint_injection);
     }
 }

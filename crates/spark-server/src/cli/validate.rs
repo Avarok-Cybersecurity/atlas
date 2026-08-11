@@ -34,6 +34,7 @@ const TOOL_CALL_PARSERS: &[&str] = &[
     "mistral",
     "minimax_xml",
     "bare_json",
+    "poolside_v1",
 ];
 
 /// One validation failure: what is wrong, why it is wrong, and how to fix it.
