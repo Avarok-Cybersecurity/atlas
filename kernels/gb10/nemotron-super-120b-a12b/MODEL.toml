@@ -56,6 +56,10 @@ repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free — 
 dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; targeted dry on tools only if loop reappears
 
 [behavior]
+# Decode graphs crash the Nemotron-H family (CUDA 700 on Puzzle at exactly
+# 64 prompt tokens, CUDA 716 on Nano/Lightning) and are a measured no-op on
+# GB10 — serve eager. Replaces the retired ATLAS_NO_DECODE_GRAPHS env var.
+no_decode_graphs = true
 # 2026-06-06: ENABLE the content-loop watchdog. After removing the rep_pen=1.1/dry=0.5 band-aid
 # (vendor ships penalty-free), single-GPU coherence showed a temp=0 "READY\nREADY\n..." repetition
 # loop. The watchdog (period-N detect + rollback to a clean boundary) is the PROPER loop mechanism

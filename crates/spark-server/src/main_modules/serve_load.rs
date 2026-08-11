@@ -285,6 +285,10 @@ pub(crate) fn load_model(
     } else {
         ptx_set.behavior.fp8_kv_calibration_tokens
     };
+    config.no_decode_graphs = ptx_set.behavior.no_decode_graphs;
+    if config.no_decode_graphs {
+        tracing::info!("Decode graphs disabled by MODEL.toml [behavior].no_decode_graphs");
+    }
     // Unconditional: the serde(skip) default is 0.0, and the CLI default (2.0)
     // is the real one. Validated ≥ 1.0 in `validate_serve_args`.
     config.fp8_kv_headroom = args.fp8_kv_headroom;

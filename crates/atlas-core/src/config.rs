@@ -354,6 +354,13 @@ pub struct ModelConfig {
     /// 0 = disabled (use static scales from checkpoint or uncalibrated 1.0).
     #[serde(skip)]
     pub fp8_kv_calibration_tokens: usize,
+    /// Suppress CUDA decode-graph capture (MODEL.toml
+    /// `[behavior].no_decode_graphs`, threaded through serve_load).
+    /// Nemotron-H models crash under graph replay (CUDA 700/716 at
+    /// specific prompt lengths); decode graphs are a measured no-op on
+    /// GB10, so the family serves eager. Not read from config.json.
+    #[serde(skip)]
+    pub no_decode_graphs: bool,
     /// Headroom multiplier on the first-observe absmax when freezing the online
     /// FP8 KV scale (`--fp8-kv-headroom`, default 2.0). The first observe sees
     /// only the first prefill chunk, so the frozen scale covers headroom× its
