@@ -535,8 +535,30 @@ jobs:
   dry-run-summary:
     name: dry-run summary
     needs: [validate, build]
+    # This job is the stable aggregation point for the release matrix and a
+    # required check (the per-leg `build <id>` check names are dynamic and
+    # cannot be required individually). A required check that is SKIPPED when
+    # a build fails is never reported at all — in the merge queue the entry
+    # would then hang for the full check_response_timeout instead of being
+    # ejected. So run always, and let the first step convert any upstream
+    # failure into an explicit red. (`needs` still blocks downstream release
+    # jobs exactly as before — a failed dependency blocks as a skip would.)
+    if: always()
     runs-on: ubuntu-24.04
     steps:
+      - name: Fail explicitly if anything upstream failed
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          bad=""
+          [ "$VALIDATE_RESULT" = success ] || bad="validate ($VALIDATE_RESULT)"
+          [ "$BUILD_RESULT" = success ] || bad="${bad:+$bad, }build ($BUILD_RESULT)"
+          if [ -n "$bad" ]; then
+            echo "::error::release matrix upstream failed: $bad"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}

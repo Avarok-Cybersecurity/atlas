@@ -8,15 +8,20 @@ permissions:
 
 on:
   workflow_dispatch:
+  # No path filter on pull_request: this check joins the required set, and a
+  # path-filtered required check never reports on PRs outside its paths,
+  # leaving them permanently "expected" and unmergeable. The job is one
+  # sha256sum -c — running it on every PR costs seconds.
   pull_request:
-    paths:
-      - "3rdparty_patches/gdn_aot/**"
-      - ".github/workflows/gdn-so-pin.yml"
   push:
     branches: [main, master]
     paths:
       - "3rdparty_patches/gdn_aot/**"
       - ".github/workflows/gdn-so-pin.yml"
+  # Merge queue: queue commits fire none of the events above, and this check
+  # is required — without this trigger the entry hangs until timeout.
+  # Unfiltered for the same reason as pull_request.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

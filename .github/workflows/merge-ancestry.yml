@@ -38,6 +38,13 @@ on:
   # dispatch run exercises the self-test job; the guard itself needs a PR
   # context and re-runs from the PR's checks tab or on push.
   workflow_dispatch:
+  # Merge queue: only the self-test runs here. The guard job stays PR-only
+  # by its own `if` — a queue merge-commit BY CONSTRUCTION shares history
+  # with its base (it is base-tip + the PR), so the ancestry question the
+  # guard asks cannot fail and cannot even be resolved (there is no
+  # pull_request payload to name the base). The self-test keeps the guard
+  # script honest on every queue commit, same as on every PR.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

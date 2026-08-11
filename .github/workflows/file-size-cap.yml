@@ -14,6 +14,11 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  # Merge queue: entries are validated on a temporary gh-readonly-queue/**
+  # merge-commit that fires none of the events above, and this job is in the
+  # required set the queue waits on — without this trigger it is never
+  # reported and every entry times out.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
