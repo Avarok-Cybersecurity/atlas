@@ -57,6 +57,12 @@ impl TransformerModel {
         let n = ks.len();
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
             && ks.iter().all(|k| (2..=4).contains(k))
+            // GDN-only: the batched body calls `decode_verify_multi`, which
+            // only the qwen3_ssm GDN layer implements — a Mamba-2 layer
+            // (Nemotron-H) would hard-error MID-FORWARD after state has
+            // partially advanced. Mamba-2 models fall back to the per-seq
+            // verify loop (which routes through their `decode_batched`).
+            && self.config.mamba_num_heads == 0
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
             && self.comm.is_none()
             && self.lora.is_none()

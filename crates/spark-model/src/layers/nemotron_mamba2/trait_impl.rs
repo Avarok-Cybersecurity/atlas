@@ -210,6 +210,78 @@ impl TransformerLayer for NemotronMamba2Layer {
         self.prefill_ssm(hidden, residual, num_tokens, state, ctx, stream)
     }
 
+    /// K-token verify body for MTP speculative decoding.
+    ///
+    /// Numerically identical to the default sequential loop (per-token
+    /// `decode`), PLUS the per-token state snapshots the verify rollback
+    /// contract requires: after processing verify token `t`, copy the live
+    /// `h_state`/`conv_state` into `*_intermediates[t]` so a partial accept
+    /// can rewind to "state after token `num_accepted`"
+    /// (`rollback_ssm_states` / `commit_accepted_prefix` read
+    /// `intermediates[num_accepted - 1]`). The GDN layers write these
+    /// snapshots inside their fused conv+WY kernels; Mamba-2 has no fused
+    /// K-token kernel, so plain D2D copies on the compute stream do the job
+    /// (~2 copies × ~MBs per SSM layer per verify step).
+    ///
+    /// The intermediates vectors are empty unless the model was built with
+    /// MTP verify pools (`has_mtp`) — snapshots are skipped then, matching
+    /// the old default-loop behavior exactly.
+    fn decode_batched(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size;
+        for t in 0..num_tokens {
+            let offset = t * h * 2; // BF16 rows
+            self.decode(
+                hidden.offset(offset),
+                residual.offset(offset),
+                state,
+                kv_cache,
+                seq_len + t,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+            )?;
+
+            let ssm = state
+                .as_any_mut()
+                .downcast_mut::<SsmLayerState>()
+                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+            if t < ssm.h_state_intermediates.len() {
+                // Full FP32-sized region: correct for both the FP32 h-state
+                // and the FP16-packed variant (which lives in its first half).
+                ctx.gpu.copy_d2d_async(
+                    ssm.h_state,
+                    ssm.h_state_intermediates[t],
+                    self.h_state_bytes,
+                    stream,
+                )?;
+            }
+            if t < ssm.conv_state_intermediates.len() {
+                ctx.gpu.copy_d2d_async(
+                    ssm.conv_state,
+                    ssm.conv_state_intermediates[t],
+                    self.conv_state_bytes,
+                    stream,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         let h_state = gpu.alloc(self.h_state_bytes)?;
         gpu.memset(h_state, 0, self.h_state_bytes)?;

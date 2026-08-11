@@ -111,6 +111,43 @@ fn test_parse_nemotron_h_layers_block_type_list() {
     assert_eq!(cfg.layer_type(5), LayerType::FullAttention);
 }
 
+/// Nemotron-3.5 Lightning declares its DeepSeek-style 1-step MTP head as
+/// `num_nextn_predict_layers`. Fails without the nemotron_h dispatch arm
+/// mapping it onto `mtp_num_hidden_layers`: the field stays 0, the
+/// capability `has_mtp` never derives, and `--speculative` cannot build
+/// the Nemotron MTP proposer.
+#[test]
+fn test_parse_nemotron_h_num_nextn_predict_layers() {
+    let json = r#"{
+        "model_type": "nemotron_h",
+        "hidden_size": 2688,
+        "num_hidden_layers": 52,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "intermediate_size": 1856,
+        "n_routed_experts": 128,
+        "num_experts_per_tok": 6,
+        "moe_intermediate_size": 1856,
+        "moe_shared_expert_intermediate_size": 3712,
+        "vocab_size": 131072,
+        "hybrid_override_pattern": "MEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEMEM*EMEMEMEME",
+        "mamba_num_heads": 64,
+        "mamba_head_dim": 64,
+        "ssm_state_size": 128,
+        "n_groups": 8,
+        "expand": 2,
+        "conv_kernel": 4,
+        "norm_eps": 1e-5,
+        "rope_theta": 10000,
+        "num_nextn_predict_layers": 1,
+        "mtp_layers_block_type": ["attention", "moe"],
+        "norm_topk_prob": true
+    }"#;
+    let cfg = parse_config(json).unwrap();
+    assert_eq!(cfg.mtp_num_hidden_layers, 1);
+}
+
 #[test]
 fn test_expert_parallelism_range() {
     let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
