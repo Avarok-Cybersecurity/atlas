@@ -303,7 +303,7 @@ impl Qwen3SsmLayer {
                 // The launch-overhead fix at small N remains CUDA graphs for
                 // n>=2, not MoE batching (graphs capture these per-token
                 // launches for free).
-                if std::env::var("ATLAS_MOE_GROUPED_DECODE").ok().as_deref() == Some("1") {
+                if crate::layers::moe_grouped_decode_for(n) {
                     // Grouped-GEMM MoE over all N tokens (each expert read once).
                     // Only sensible under CUDA graphs, where the sort/permute
                     // launch overhead that made this a loss is captured for free.

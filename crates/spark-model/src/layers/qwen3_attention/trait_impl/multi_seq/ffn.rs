@@ -133,8 +133,7 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else if !force_seq_ffn
-            && (self.ffn.is_dense()
-                || std::env::var("ATLAS_MOE_GROUPED_DECODE").ok().as_deref() == Some("1"))
+            && (self.ffn.is_dense() || crate::layers::moe_grouped_decode_for(n))
         {
             // TASK-167 (gx10): mirror the SSM-side ATLAS_MOE_GROUPED_DECODE arm
             // for the attention layers' MoE — at large n the per-token loop
