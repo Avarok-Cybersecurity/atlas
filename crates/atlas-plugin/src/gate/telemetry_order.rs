@@ -66,9 +66,9 @@ fn orderable(views: &[PrView]) -> Vec<&PrView> {
 ///
 /// The rule, in tie-break order — deliberately simple enough that a reader
 /// can tell at a glance when it is wrong:
-/// 1. fewest conflict partners first (see [`contend`]) — landing uncontended
-///    work first invalidates nobody's baseline and defers the contended
-///    cluster to be decided together;
+/// 1. fewest conflict partners first (see the private `contend` helper) —
+///    landing uncontended work first invalidates nobody's baseline and defers
+///    the contended cluster to be decided together;
 /// 2. fewest targets re-opened (whole-repo counts as all of them) — the
 ///    cheapest to re-gate if the order changes underneath it;
 /// 3. smallest diff by changed-path count — a size proxy;
