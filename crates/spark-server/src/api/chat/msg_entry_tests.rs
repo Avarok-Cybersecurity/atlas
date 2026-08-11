@@ -122,6 +122,7 @@ mod build_tests {
             msgs,
             tools_active,
             &crate::api::chat::levers::ChatLevers::OFF,
+            false,
         ) {
             Ok(_) => panic!("expected 400, got Ok"),
             Err(resp) => assert_eq!(resp.status(), StatusCode::BAD_REQUEST),
@@ -166,6 +167,7 @@ mod build_tests {
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
+            false,
         )
         .expect("text-only ok");
         assert_eq!(out.messages.len(), 1);
@@ -198,6 +200,7 @@ mod build_tests {
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
+            false,
         )
         .expect("ok");
         assert_eq!(out.messages[0].role, "system");
@@ -211,9 +214,32 @@ mod build_tests {
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
+            false,
         )
         .expect("ok");
         assert_eq!(out.messages[0].role, "critic");
+    }
+
+    #[test]
+    fn deepseek_v4_preserves_developer_and_tool_result_identity() {
+        let mut tool = text(Role::Tool, "result");
+        tool.tool_call_id = Some("call_7".into());
+        let messages = vec![
+            text(Role::Other("developer".into()), "native developer"),
+            tool,
+        ];
+        let out = build_msg_entries(
+            None,
+            None,
+            &messages,
+            true,
+            &crate::api::chat::levers::ChatLevers::OFF,
+            true,
+        )
+        .expect("DeepSeek-V4 message lowering");
+        assert_eq!(out.messages[0].role, "developer");
+        assert_eq!(out.messages[1].role, "tool");
+        assert_eq!(out.messages[1].tool_call_id.as_deref(), Some("call_7"));
     }
 
     #[test]
@@ -240,6 +266,7 @@ mod build_tests {
             &[url_msg],
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
+            false,
         ) {
             Ok(_) => panic!("expected 400, got Ok"),
             Err(resp) => assert_eq!(resp.status(), StatusCode::BAD_REQUEST),

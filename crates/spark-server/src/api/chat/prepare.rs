@@ -95,6 +95,7 @@ pub(crate) fn prepare_chat_prompt(
         &req.messages,
         tools_active,
         &state.chat,
+        state.tokenizer.uses_deepseek_v4_encoding(),
     )?;
     let us_msg_entry = _t_phase.elapsed().as_micros();
 
@@ -127,6 +128,7 @@ pub(crate) fn prepare_chat_prompt(
         &image_pad_counts,
         enable_thinking,
         thinking_budget,
+        req.reasoning_effort,
         tools_active,
     )?;
     if state.chat.phase_timing {
