@@ -20,7 +20,11 @@ use crate::weight_map::{DenseWeight, Fp8Weight, NemotronSsmWeights, QuantizedWei
 
 mod prefill;
 mod prefill_proj;
+mod trait_decode_multi_seq;
 mod trait_impl;
+
+#[cfg(test)]
+mod tests_multi_seq;
 
 #[allow(dead_code)]
 pub struct NemotronMamba2Layer {
@@ -60,6 +64,14 @@ pub struct NemotronMamba2Layer {
     mamba2_ssm_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     residual_add_k: KernelHandle,
+    // Kernel handles — multi-sequence batched decode (one weight-DRAM pass
+    // serves all N rows; see trait_decode_multi_seq.rs). All optional
+    // (`try_kernel`): the ladder falls back to tile GEMM / per-row GEMV.
+    w4a16_gemv_batch4_k: KernelHandle,
+    w4a16_gemv_batch8_k: KernelHandle,
+    w4a16_gemv_batch16_k: KernelHandle,
+    w8a16_gemv_batch4_k: KernelHandle,
+    w8a16_gemv_batch16_k: KernelHandle,
     // Kernel handles — prefill (GEMM + batched kernels)
     w4a16_gemm_k: KernelHandle,
     // Native FP8 block-scaled prefill GEMM (paired with in_proj_fp8/out_proj_fp8).
@@ -133,6 +145,13 @@ impl NemotronMamba2Layer {
             mamba2_ssm_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_decode")?,
             gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
+            // NVFP4 batched decode GEMV (all three live in the w4a16_gemv
+            // module); FP8 siblings both live in w8a16_gemv_batch4.cu.
+            w4a16_gemv_batch4_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
+            w4a16_gemv_batch8_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            w4a16_gemv_batch16_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
+            w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
+            w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::try_kernel(

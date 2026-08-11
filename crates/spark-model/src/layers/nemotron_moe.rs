@@ -227,11 +227,15 @@ impl NemotronMoeLayer {
 }
 
 mod decode_helpers;
+mod decode_multi_seq;
 mod prefill_fallback;
 mod prefill_shared_up;
 mod prefill_sorted;
 mod prefill_weights;
 mod ptr_tables;
+
+#[cfg(test)]
+mod tests_multi_seq;
 
 use prefill_sorted::SortedPrefillCtx;
 use ptr_tables::{build_ptr_table, build_ptr_table_from_weights};
@@ -251,6 +255,40 @@ impl TransformerLayer for NemotronMoeLayer {
         stream: u64,
     ) -> Result<()> {
         self.decode_inner(hidden, residual, ctx, stream)
+    }
+
+    /// Multi-sequence batched decode (Milestone A): run the prefill body —
+    /// batched gate GEMM + one shared-expert pass + sorted grouped-GEMM
+    /// expert dispatch — over the N decode rows so every weight matrix is
+    /// streamed once instead of N times. Declines to the canonical per-seq
+    /// default loop when any sorted-path kernel is missing or `num_seqs < 2`.
+    fn decode_multi_seq<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_seqs: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if num_seqs >= 2 && self.can_batch_decode() {
+            return self.decode_multi_seq_inner(hidden, residual, num_seqs, ctx, stream);
+        }
+        crate::layer::default_loops::decode_multi_seq_default(
+            self,
+            hidden,
+            residual,
+            num_seqs,
+            states,
+            kv_cache,
+            seq_lens,
+            block_tables,
+            ctx,
+            stream,
+        )
     }
 
     /// Batched MoE prefill: uses GEMM for gate/fc1/fc2/shared, per-token for routing + experts.

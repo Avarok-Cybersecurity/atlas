@@ -196,6 +196,42 @@ impl TransformerLayer for NemotronMamba2Layer {
         Ok(())
     }
 
+    /// Multi-sequence batched decode (Milestone A): batches the norm /
+    /// in_proj / gated-norm / out_proj / residual phases across all N rows
+    /// (one weight-DRAM pass) and loops only the stateful conv+scan inner.
+    /// See `trait_decode_multi_seq.rs` for the phase structure and hazards.
+    ///
+    /// `num_seqs < 2` delegates to the canonical per-seq default loop — one
+    /// fallback loop in the codebase, not a private copy.
+    fn decode_multi_seq<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_seqs: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if num_seqs < 2 {
+            return crate::layer::default_loops::decode_multi_seq_default(
+                self,
+                hidden,
+                residual,
+                num_seqs,
+                states,
+                kv_cache,
+                seq_lens,
+                block_tables,
+                ctx,
+                stream,
+            );
+        }
+        self.decode_multi_seq_inner(hidden, residual, num_seqs, states, ctx, stream)
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,
