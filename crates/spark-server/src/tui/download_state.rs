@@ -119,6 +119,23 @@ impl DownloadState {
         let mut settled = None;
         if let Some(job) = self.job.as_mut() {
             let msgs: Vec<DownloadMsg> = job.handle.rx.try_iter().collect();
+            // A worker that died without a terminal message — a panic, since
+            // `run`'s Err path sends `Failed` — must still settle the job.
+            // Left tracked, `is_downloading` stays true forever and every
+            // later `d` is refused with "already downloading", which reads as
+            // downloads being broken outright.
+            if msgs.is_empty()
+                && matches!(
+                    job.handle.rx.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)
+                )
+            {
+                settled = Some(Settled::Stopped(job.repo.clone()));
+                self.last_message = Some((
+                    format!("{} download stopped unexpectedly — press d to resume", job.repo),
+                    true,
+                ));
+            }
             for msg in msgs {
                 match msg {
                     DownloadMsg::Planned {

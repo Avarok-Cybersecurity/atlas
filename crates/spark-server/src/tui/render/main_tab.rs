@@ -273,8 +273,19 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let want = inner.height as usize + app.log_scroll.unwrap_or(0);
-    let mut lines: Vec<Line> = log_ring::tail(want.max(64))
+    // Headroom past the current offset, so the ceiling published below always
+    // sits ahead of the scroll. The fetch used to stop at exactly
+    // `height + offset` (floored at 64), so the ceiling could never exceed
+    // what one frame happened to hold — scrolling up jammed ~64 lines in
+    // while the ring held thousands. The offset only moves a few lines
+    // between frames and each frame re-fetches from the new offset, so a
+    // margin of one ring-page keeps the ceiling ahead of the fastest scroll
+    // without cloning and wrapping the whole 10k-line ring at 10 Hz — and
+    // while FOLLOWING, the margin stays small: it exists only so the first
+    // wheel-up has a nonzero ceiling to move into.
+    let headroom = if app.log_scroll.is_some() { 512 } else { 64 };
+    let want = inner.height as usize + app.log_scroll.unwrap_or(0) + headroom;
+    let mut lines: Vec<Line> = log_ring::tail(want)
         .into_iter()
         .filter(|l| {
             app.log_filter.is_empty()
