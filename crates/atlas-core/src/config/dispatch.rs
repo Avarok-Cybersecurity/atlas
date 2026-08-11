@@ -203,6 +203,21 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                     })
                     .collect();
             }
+            // transformers-5.x Nemotron-H (3.5 Lightning) drops the pattern
+            // string and ships the schedule as a `layers_block_type` list.
+            if config.layer_types.is_empty()
+                && let Some(blocks) = raw_mut.get("layers_block_type").and_then(|v| v.as_array())
+            {
+                config.layer_types = blocks
+                    .iter()
+                    .map(|b| match b.as_str() {
+                        Some("mamba") => Ok(LayerType::LinearAttention),
+                        Some("moe") => Ok(LayerType::Moe),
+                        Some("attention") => Ok(LayerType::FullAttention),
+                        other => anyhow::bail!("Unknown layers_block_type entry: {other:?}"),
+                    })
+                    .collect::<Result<_>>()?;
+            }
             // Puzzle: layers_block_type + block_configs → layer_types + per-layer MoE dims
             if top_model_type == "nemotron_h_puzzle" {
                 apply_nemotron_puzzle_config(&mut config, &raw_mut)?;

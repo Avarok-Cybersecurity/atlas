@@ -11,6 +11,11 @@ model_type = "nemotron_h"
 # 2026-06-06: pin hidden_size so this stays an EXACT match. Without it this is a "nemotron_h"
 # wildcard; since nemotron-super pins hidden_size=4096, any future nemotron_h whose hidden_size
 # isn't 4096 would silently route to THIS (nano's) kernels. Pinning 2688 removes the catch-all.
+# 2026-08-11: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 matches here INTENTIONALLY —
+# it is dimensionally identical to Nano (nemotron_h, hidden 2688, same 52-layer M/E/A hybrid,
+# same 128-expert MoE) and uses the same kernel set; its FP8 mamba in/out_proj load through the
+# native-FP8 SSM path. The (model_type, hidden_size) matcher cannot split the two; give
+# Lightning its own target only if its kernel needs ever diverge.
 hidden_size = 2688
 
 # Nemotron-H uses ChatML format. No official sampling recommendations.

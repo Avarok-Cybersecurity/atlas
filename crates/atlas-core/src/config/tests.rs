@@ -6,6 +6,11 @@
 
 use super::*;
 
+// Was split out for the same budget but never declared — the file was dead
+// code until 2026-08-11 (its tests, including a test_parse_nemotron_h_config
+// twin, silently didn't run).
+mod tests_b;
+
 #[test]
 fn test_qwen3_default_config() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();

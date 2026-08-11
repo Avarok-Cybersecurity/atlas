@@ -8,6 +8,12 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
     Option::<u32>::deserialize(d).map(|v| v.unwrap_or(0))
 }
 
+/// Deserialize a usize that may be JSON null (treat null as 0).
+/// Nemotron-3.5 Lightning ships `"moe_latent_size": null` for "absent".
+fn nullable_usize<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<usize, D::Error> {
+    Option::<usize>::deserialize(d).map(|v| v.unwrap_or(0))
+}
+
 /// Layer type in a hybrid transformer model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -172,8 +178,9 @@ pub struct ModelConfig {
     pub routed_scaling_factor: f64,
     /// LatentMoE: latent projection dimension for routed experts (Super 120B).
     /// When present, routed experts operate in latent space `[moe_latent_size]`
-    /// instead of full `[hidden_size]`. Absent for Nano 30B.
-    #[serde(default)]
+    /// instead of full `[hidden_size]`. Absent for Nano 30B; JSON null
+    /// (= absent) for Lightning 30B.
+    #[serde(default, deserialize_with = "nullable_usize")]
     pub moe_latent_size: usize,
     /// Per-layer MoE intermediate sizes (Nemotron-H Puzzle heterogeneous channel
     /// pruning). Length == `num_hidden_layers`; 0 for non-MoE layers. Empty =
