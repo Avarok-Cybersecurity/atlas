@@ -132,7 +132,14 @@ impl Qwen3AttentionLayer {
                 (n * h) as u32,
                 stream,
             )?;
-        } else if !force_seq_ffn && self.ffn.is_dense() {
+        } else if !force_seq_ffn
+            && (self.ffn.is_dense()
+                || std::env::var("ATLAS_MOE_GROUPED_DECODE").ok().as_deref() == Some("1"))
+        {
+            // TASK-167 (gx10): mirror the SSM-side ATLAS_MOE_GROUPED_DECODE arm
+            // for the attention layers' MoE — at large n the per-token loop
+            // below re-reads each routed expert per token; forward_prefill
+            // reads each distinct expert once (same body as the dense branch).
             // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, n=17). The dense FFN
             // (Qwen3.6-27B is dense) batches over all n rows via
             // `forward_prefill`, reading gate/up/down ONCE instead of the

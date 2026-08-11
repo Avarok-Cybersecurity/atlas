@@ -80,8 +80,12 @@
         aria-haspopup="dialog"
         aria-label="Open the benchmark dashboard"
       >
+        <span class="receipt-chip" aria-hidden="true">⤢ expand</span>
         <Receipt compact={true} />
-        <span class="receipt-open-hint">benchmark dashboard →</span>
+        <span class="receipt-open-hint">
+          <span class="rh-glyph" aria-hidden="true">⤢</span>
+          view the benchmark dashboard
+        </span>
       </button>
     </div>
   </div>

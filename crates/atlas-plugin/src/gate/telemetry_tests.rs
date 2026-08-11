@@ -211,15 +211,15 @@ fn a_draft_is_marked_as_one() {
     assert!(render(&root, &[facts]).contains("#5 (draft)"));
 }
 
-/// The mermaid block must be well-formed even for a single PR, where there is
-/// no edge to draw.
+/// The mermaid block must be well-formed even for a single PR: a mainline,
+/// exactly one branch, merged back once.
 #[test]
 fn the_mermaid_graph_is_valid_with_one_pr() {
     let root = repo_root();
     let body = render(&root, &[pr(1, &[FLAGSHIP])]);
-    assert!(body.contains("```mermaid\ngraph LR\n"));
-    assert!(body.contains("pr1["));
-    assert!(!body.contains("--> pr1"), "no edge into the only node");
+    assert!(body.contains("```mermaid\ngitGraph\n  commit id: \"main\"\n"));
+    assert_eq!(body.matches("branch pr-1\n").count(), 1);
+    assert_eq!(body.matches("merge pr-1\n").count(), 1);
 }
 
 /// ★ The debt section is rendered even when nothing is owed — that is the
