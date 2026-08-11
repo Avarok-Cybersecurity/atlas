@@ -46,11 +46,55 @@ dry_multiplier = 0.0
 
 [behavior]
 enable_loop_watchdog = true
+# The model natively emits qwen3_coder XML tool calls
+# (<tool_call><function=NAME><parameter=KEY>…) — its own chat template renders
+# the tool list + call format. Proven vs vLLM (qwen3_xml parser, auto mode): a
+# clean parsed call. `bare_json` forced the wrong JSON shape off-distribution.
 thinking_in_tools = true
 disable_tool_steering = true
-tool_call_parser = "bare_json"
+tool_call_parser = "qwen3_coder"
+# vLLM auto mode is unconstrained; grammar-constraining this XML-native model
+# fights its distribution (garbled args / length). Post-hoc parse recovers it.
+disable_tool_grammar = true
+# fp8 KV corrupts this thinking model's long reasoning context (hallucinated
+# tool schemas / non-sequiturs); bf16 KV keeps it coherent. Matches vLLM.
+default_kv_dtype = "bf16"
+# This checkpoint's generation_config.json carries temperature=1.0 — an
+# evaluation default, not an agentic one. WITHOUT this opt-in core sampling
+# falls through to that 1.0 and the presets above (0.6 tools/thinking, 0.7
+# non-thinking) are silently ignored, so agentic runs decode far hotter than
+# intended. Measured on the Holo sibling: opting in took tool-call pass rate
+# from 4/8 to 7/8 at C=8 and aggregate 53.5 -> 67.9 tok/s, because temperature
+# 1.0 drives repeated empty-argument tool calls. Clients can still override
+# per request; explicit request values always win.
+use_sampling_presets_for_core = true
 max_thinking_budget = 2048
-thinking_default = true
+# `max_thinking_budget` is the SOLE thinking cap — drop Atlas's second,
+# 90%-of-max_tokens clamp, which vLLM has no equivalent of. Measured here: a
+# request with max_tokens=30 logged "Thinking enabled, budget=Some(27)", and
+# when that budget is hit Atlas force-closes `</think>`, leaving the model with
+# no natural continuation. The result is the degeneration this model was
+# reported for — prompt content elided ("My dog is named ...?") and
+# `The user asks: "The user asks: ...` repeat loops. Same fix, same reasoning as
+# the Laguna siblings (see laguna-xs-2.1 MODEL.toml).
+cap_thinking_at_max_tokens = false
+# Thinking OFF by default: this model's thinking mode is broken as invoked, and
+# leaving it on makes the model unusable through any client that does not pass
+# `enable_thinking:false` (opencode does not). Measured 2026-07-28, identical
+# request, only this kwarg differing:
+#   "hello what model are you?"
+#     thinking ON  -> finish=length, EMPTY content (2048 thinking tokens, no answer)
+#     thinking OFF -> "I am Nemotron 3 Super, a language model trained by ... NVIDIA."
+#   "My dog is named Rufus. What is my dog called?"
+#     thinking ON  -> 0/6 correct; emits unrelated reasoning-corpus text
+#                     ("SAMPLE INPUT", "sort a list of people")
+#     thinking OFF -> 6/6 correct
+# Not a budget or watchdog artefact: reproduced at temperature 0 through
+# /v1/completions with no template and no Atlas thinking logic, purely by
+# appending `<think>\n` to the prompt (which the model's OWN template does).
+# `<think>` tokenizes correctly as the single special token id 12, and
+# ATLAS_DISABLE_WATCHDOGS=1 does not help. Clients can still opt in per request.
+thinking_default = false
 
 # ── Kernel lookups this model may legitimately fail to resolve ──
 # Harvested 2026-08-03 from `spark serve --check-kernels` against this

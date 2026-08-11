@@ -1,0 +1,232 @@
+/* =============================================================================
+   Benchmark dashboard modal — same warm-workshop dialect as app.css.
+   Copper stays the 35B flagship's series color; steel #1f6a9e is the dense
+   27B's (pair validated for CVD + contrast on the paper surfaces). Verdict
+   colors are STATUS colors (green/red) and never used for a series.
+   Viewport rules for these components live in mobile.css (its stated SSOT).
+   ========================================================================== */
+
+/* ---- hero trigger ---------------------------------------------------------
+   The receipt opens the dashboard, so it must READ as a control at rest —
+   hover-only affordance was invisible to anyone who never hovered it. Three
+   at-rest cues: a corner chip, a standing copper ring, and a real button pill.
+   -------------------------------------------------------------------------- */
+/* The button must track the receipt's own width (app.css `.receipt`, and the
+   per-breakpoint overrides in mobile.css) — otherwise the corner chip anchors
+   to empty grid track beside the receipt instead of to its corner. */
+.receipt-hit {
+  display: block; width: 100%; max-width: 460px;
+  background: none; border: 0; padding: 0;
+  cursor: pointer; text-align: inherit; font: inherit; color: inherit;
+  position: relative;
+}
+/* Ring is present at REST (1px), not only on hover. */
+.receipt-hit .receipt {
+  box-shadow: var(--shadow-lg), 0 0 0 1.5px rgba(181, 98, 47, 0.38);
+  transition: box-shadow 0.16s ease, transform 0.16s ease;
+}
+.receipt-hit:hover .receipt,
+.receipt-hit:focus-visible .receipt {
+  box-shadow: var(--shadow-lg), 0 0 0 2.5px var(--accent); transform: translateY(-2px);
+}
+.receipt-hit:focus-visible { outline: none; }
+
+/* Corner chip — sits on the receipt's top-right corner, outside its clip. */
+.receipt-chip {
+  position: absolute; top: -0.55rem; right: -0.4rem; z-index: 2;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.24rem 0.55rem; border-radius: 999px;
+  background: var(--accent); color: #fff;
+  font-family: var(--font-mono); font-size: 0.62rem; font-weight: 800;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  box-shadow: var(--shadow-sm); transition: background 0.16s ease;
+}
+.receipt-hit:hover .receipt-chip,
+.receipt-hit:focus-visible .receipt-chip { background: var(--accent-deep); }
+
+/* Hint reads as a button, not a caption. */
+.receipt-open-hint {
+  display: inline-flex; align-items: center; gap: 0.4rem; margin-top: 0.85rem;
+  padding: 0.42rem 0.85rem; border: 1.5px solid var(--accent);
+  border-radius: 8px; background: var(--accent-soft);
+  font-family: var(--font-mono); font-size: 0.74rem; font-weight: 700;
+  letter-spacing: 0.06em; color: var(--accent-deep);
+  transition: background 0.16s ease, color 0.16s ease;
+}
+.receipt-open-hint .rh-glyph { font-size: 0.85rem; line-height: 1; }
+.receipt-hit:hover .receipt-open-hint,
+.receipt-hit:focus-visible .receipt-open-hint { background: var(--accent); color: #fff; }
+
+/* One-shot attention cue after the receipt finishes "printing". Motion only —
+   every cue above is legible with animation disabled. */
+@media (prefers-reduced-motion: no-preference) {
+  .receipt-chip { animation: chip-cue 1.1s ease-out 0.9s 2 both; }
+}
+@keyframes chip-cue {
+  0%, 100% { transform: scale(1); }
+  35% { transform: scale(1.09); }
+}
+
+/* ---- modal shell ---------------------------------------------------------- */
+.bd-backdrop {
+  position: fixed; inset: 0; z-index: 110; background: rgba(38, 30, 18, 0.45);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 3.5rem 1.25rem 2rem; overflow-y: auto;
+}
+.bd {
+  width: min(1060px, 100%); background: var(--bg); border: 1px solid var(--border-strong);
+  border-radius: 12px; box-shadow: var(--shadow-lg); outline: none;
+}
+.bd-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 1.5rem 1.75rem 0.75rem;
+}
+.bd-label { margin-bottom: 0.35rem; }
+.bd-title { font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em; }
+.bd-close {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  width: 2.1rem; height: 2.1rem; font-size: 0.95rem; color: var(--t2); cursor: pointer;
+}
+.bd-close:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---- controls: tabs + model switcher -------------------------------------- */
+.bd-controls {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.25rem 1.75rem 0.9rem; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.bd-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.bd-tab {
+  font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+  padding: 0.45rem 0.95rem; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--t2);
+}
+.bd-tab:hover { border-color: var(--accent); color: var(--t1); }
+.bd-tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.bd-model { display: inline-flex; align-items: center; gap: 0.5rem; }
+.bd-model-label {
+  font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--t3);
+}
+.bd-model select {
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--t1);
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+}
+
+/* ---- body ----------------------------------------------------------------- */
+.bd-body { padding: 1.4rem 1.75rem; display: grid; gap: 1.75rem; }
+.bd-empty, .bd-filtered-note, .bd-footnote { font-size: 0.85rem; color: var(--t2); }
+.bd-filtered-note { display: flex; align-items: center; gap: 0.5rem; }
+.bd-footnote {
+  font-size: 0.78rem; color: var(--t3); border-left: 3px solid var(--border-strong);
+  padding-left: 0.8rem;
+}
+.bd-foot {
+  display: flex; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.85rem 1.75rem 1.1rem; border-top: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3);
+}
+.bd-unpublished { color: var(--amber); }
+
+/* ---- per-benchmark section ------------------------------------------------ */
+.gbs { display: grid; gap: 1rem; }
+.gbs-head { display: grid; gap: 0.8rem; }
+.gbs-title-row { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.gbs-name { font-size: 1.02rem; font-weight: 750; }
+.gbs-model {
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  border: 1.5px solid; border-radius: 999px; padding: 0.15rem 0.65rem;
+}
+.gbs-tiles { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+.gbs-tile {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.6rem 0.95rem; display: grid; gap: 0.15rem; min-width: 7.5rem;
+}
+.gbs-tile-val { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 750; color: var(--t1); }
+.gbs-tile-label { font-size: 0.7rem; color: var(--t3); font-family: var(--font-mono); }
+.gbs-verdict[data-verdict='PASS'] { color: var(--green); }
+.gbs-verdict:not([data-verdict='PASS']) { color: #a03123; }
+
+/* ---- chart panel ---------------------------------------------------------- */
+.gate-panel {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 1rem 1.1rem 0.6rem; box-shadow: var(--shadow-sm); margin: 0;
+}
+.gate-panel svg { width: 100%; height: auto; display: block; }
+.gate-panel-head {
+  display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.gate-panel-title { font-size: 0.82rem; font-weight: 750; color: var(--t1); }
+.gate-panel-unit { font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3); }
+.gate-legend { display: inline-flex; gap: 0.9rem; margin-left: auto; }
+.gate-legend-item {
+  display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--t2);
+}
+.gc-grid { stroke: var(--border); stroke-width: 1; }
+.gc-axis { fill: var(--t3); font-family: var(--font-mono); font-size: 11px; }
+.gc-ref { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.gc-ref-label { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
+.gc-val { font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+.gc-pt { cursor: pointer; outline-offset: 2px; }
+.gc-hit { fill: transparent; }
+.gc-pt:hover .gc-mark, .gc-pt:focus-visible .gc-mark { r: 5.5; }
+
+/* ---- point metadata card (a receipt) -------------------------------------- */
+.gpc-backdrop {
+  position: fixed; inset: 0; z-index: 115; background: rgba(38, 30, 18, 0.35);
+  display: flex; align-items: center; justify-content: center; padding: 1.25rem;
+}
+.gpc { max-height: min(85vh, 46rem); overflow-y: auto; width: min(430px, 100%); }
+.gpc-verdict { font-size: 0.78rem; font-weight: 800; font-family: var(--font-mono); }
+.gpc-verdict[data-verdict='PASS'] { color: var(--green); }
+.gpc-verdict:not([data-verdict='PASS']) { color: #a03123; }
+.gpc-model-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+.gpc-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.gpc-model { font-size: 0.8rem; font-weight: 700; color: var(--t1); overflow-wrap: anywhere; }
+.gpc-rows {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 1rem; row-gap: 0.15rem;
+  font-size: 0.76rem;
+}
+.gpc-rows dt { color: var(--t3); }
+.gpc-rows dd { color: var(--t1); text-align: right; overflow-wrap: anywhere; }
+.gpc-rows a { color: var(--accent); text-decoration: none; font-weight: 700; }
+.gpc-branch { color: var(--amber); }
+.gpc-fine { color: var(--t3); }
+.gpc-section {
+  margin: 0.8rem 0 0.3rem; padding-top: 0.55rem; border-top: 1.5px dashed var(--border-strong);
+  font-size: 0.66rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--t2);
+}
+.gpc-reason { font-size: 0.78rem; color: var(--t1); line-height: 1.55; }
+.gpc-close {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
+  font-weight: 700; cursor: pointer;
+}
+.gpc-close:hover { color: var(--accent-deep); text-decoration: underline; }
+
+/* ---- loading skeleton ------------------------------------------------------ */
+/* Shown between clicking the receipt and the lazily-imported dashboard chunk
+   arriving. Shares .bd-backdrop/.bd with the real dialog (SSOT for geometry),
+   so the swap-in causes no layout shift. */
+.bd-skeleton { position: relative; min-height: 60vh; padding: 1.5rem 1.75rem; }
+.bd-skeleton-bar, .bd-skeleton-chart {
+  border-radius: 8px; margin-bottom: 0.9rem;
+  background: linear-gradient(100deg, var(--card) 40%, var(--border) 50%, var(--card) 60%);
+  background-size: 200% 100%;
+  animation: bd-shimmer 1.4s ease-in-out infinite;
+}
+.bd-skeleton-bar { height: 1.35rem; }
+.bd-skeleton-chart { height: 200px; }
+.bd-skeleton-close { position: absolute; top: 1.5rem; right: 1.75rem; }
+.bd-skeleton-error { font-size: 0.85rem; color: var(--t2); padding-right: 3rem; }
+@keyframes bd-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bd-skeleton-bar, .bd-skeleton-chart { animation: none; }
+}

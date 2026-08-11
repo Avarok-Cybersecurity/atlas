@@ -1,5 +1,40 @@
 # GDN FlashInfer AOT integration — artifacts + status (2026-06-30)
 
+## PROVENANCE (2026-08-10)
+
+**What is pinned** — `PINS.sha256` records sha256 of the two committed binaries
+(`libatlasgdn.so`, `gdn_holo.so`) and of `delta_rule_sm120_aot_export.patch`, plus the
+source provenance they are believed to correspond to: FlashInfer
+`a671c02ee2fbcdde7cc991f5a01c7cf5eb4a8972` + that patch, exported with
+`nvidia-cutlass-dsl[cu13]==4.5.0` (`CUTE_DSL_ARCH=sm_121a`, GB10), linked with
+g++ 13.3.0 (Ubuntu 24.04 aarch64) + nvcc 13.x. The committed `libatlasgdn.so`'s
+RUNPATH shows the original build env was a venv at `/tmp/gdn-bench/…/nvidia_cutlass_dsl/lib`.
+
+**How to rebuild** — `./rebuild.sh` (header documents every knob). It clones/uses the
+pinned FlashInfer rev, applies the patch, runs `gdn_export.py` (GPU + CuTe-DSL step),
+links both .so exactly per this file + `docker/gb10/Dockerfile.builder`, and ends by
+printing sha256 of everything it produced vs the pins. `GDN_HOLO_O=<gdn_holo_0.o>`
+skips the export for link-only rebuilds (the AOT .o is gitignored, not committed).
+
+**What CI enforces** — `.github/workflows/gdn-so-pin.yml` runs `sha256sum -c PINS.sha256`
+on every PR/push touching this dir (pure hashing, no GPU). A silent blob swap is a red
+check pointing at `rebuild.sh`; a deliberate re-pin must update `PINS.sha256` in the same
+commit and name the producing toolchain in the commit message.
+
+**What is NOT verified** — that the pinned bytes actually correspond to the pinned
+source. Only a bit-identical rebuild on a GPU box proves that, and it has not been
+achieved: the export needs a GB10 with the cuda-13.2 compat stack (gx10-9959 or the
+`Dockerfile.builder` builder image). On dgx-00 (driver 580.173.02, no compat) the
+CuTe-DSL 4.5.0 engine fails (`JIT session error: Symbols not found: [cuKernelGetAttribute,
+cudaLaunchKernelEx, …]` → `export_to_c` "Failed to dump object file with PIC relocation")
+— verified 2026-08-10. A link-only rebuild there (g++ 13.3.0/nvcc 13.0, the Jul-3 local
+`gdn_holo_0.o` sha `ea1c5632…`, venv rpath) produced DIFFERENT bytes from the pins:
+`gdn_holo.so` `72b85c43…` vs pinned `1b3da6dc…` (126 KB of 335 KB differ → the local .o is
+NOT the .o that produced the committed binaries), `libatlasgdn.so` `d4f8b2bf…` vs pinned
+`26699826…`. The pins therefore certify "these exact bytes were validated e2e" (see the
+sections below), not "these bytes are reproducible from source"; closing that gap requires
+rerunning `rebuild.sh` on gx10-9959 and comparing.
+
 Route A (integrate FlashInfer GDN into Atlas). The 11-13× scan is proven; this dir holds the AOT bridge.
 
 ## Done
@@ -86,3 +121,26 @@ RESULT (holo35b, same binary, A/B via ATLAS_GDN_FLASHINFER 1 vs 0):
   reads S[k][v]). THE one remaining fix for full generation coherence.
 NEXT: add k<->v transpose of h_state after the FI call (small per-head 128x128 transpose) -> decode
 coherent -> needle/quality test; then larger-context prefill speedup; then perf-tune.
+
+## PROVENANCE UPDATE — 2026-08-10, full pipeline VERIFIED on gx10-9959
+
+`rebuild.sh` executed end-to-end (clone @ pin → patch → export → both links)
+on gx10-9959 (compat stack + preloaded `libcute_dsl_runtime.so` — BOTH are
+required; compat alone reproduces dgx-00's Symbols-not-found failure).
+
+**Determinism, measured (two identical-env runs):**
+- `gdn_holo_0.o`  → `35671a38…` both runs — the CuTe-DSL export IS
+  deterministic within a fixed environment.
+- `gdn_holo.so`   → `c4f0fe76…` both runs — deterministic.
+- `libatlasgdn.so`→ differed run-to-run only via linker build-id; fixed by
+  `-Wl,--build-id=none` (now in rebuild.sh).
+
+**So the historical three-way drift is ENVIRONMENT drift, not JIT randomness:**
+- original pinned blobs ← deleted `/tmp/gdn-bench` venv (unrecoverable env)
+- `ea1c5632…` .o ← dgx-00 July env (the .o the vendored-link branch commits)
+- `35671a38…` .o ← the now-DOCUMENTED gx10 env (this file + rebuild.sh)
+
+Implication: pin the environment (this venv recipe) and the artifact class is
+fully reproducible going forward. The committed-blob pins in PINS.sha256
+remain validated-bytes attestations for the historical artifacts; any future
+re-export should come from the documented env so its bytes are regenerable.

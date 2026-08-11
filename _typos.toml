@@ -30,6 +30,10 @@ extend-ignore-identifiers-re = [
 # reads it as a misspelling of `RETURNED`, which it is not.
 RETUNED = "RETUNED"
 retuned = "retuned"
+# `unauthenticate` — used as a verb ("would silently unauthenticate the
+# endpoint") in the model-swap test commentary (#385). Intentional coinage,
+# not a typo of "unauthenticated".
+unauthenticate = "unauthenticate"
 # `nd` — the num-drafts speculative-decode notation (`nd=2`, `nd=3`) used
 # throughout the MTP verify code and docs. Not a typo of "and".
 nd = "nd"

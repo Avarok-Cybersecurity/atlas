@@ -51,7 +51,19 @@ impl TransformerLayer for NemotronMamba2Layer {
         //    Layout: [z(d_inner) | xBC(d_xbc) | dt(num_heads)]
         let proj = ctx.buffers.ssm_qkvz();
         // Use FP8 GEMV if available (skips double-quantization lossy path)
-        if let Some(ref fp8w) = self.in_proj_fp8 {
+        if let Some(ref w) = self.in_proj_bf16 {
+            // Native BF16: `ssm.in_proj` is NULL here (never quantized).
+            ops::dense_gemv(
+                ctx.gpu,
+                self.dense_gemv_bf16_k,
+                normed,
+                w,
+                proj,
+                self.in_proj_size as u32,
+                h as u32,
+                stream,
+            )?;
+        } else if let Some(ref fp8w) = self.in_proj_fp8 {
             ops::w8a16_gemv(
                 ctx.gpu,
                 self.w8a16_gemv_k,
@@ -138,7 +150,18 @@ impl TransformerLayer for NemotronMamba2Layer {
         // by gated_rms_norm above. Writing out_proj to the same buffer creates a
         // write-after-read race that corrupts the gate signal → all-zero output.
         let out = ctx.buffers.qkv_output();
-        if let Some(ref fp8w) = self.out_proj_fp8 {
+        if let Some(ref w) = self.out_proj_bf16 {
+            ops::dense_gemv(
+                ctx.gpu,
+                self.dense_gemv_bf16_k,
+                gated_out,
+                w,
+                out,
+                h as u32,
+                self.d_inner as u32,
+                stream,
+            )?;
+        } else if let Some(ref fp8w) = self.out_proj_fp8 {
             ops::w8a16_gemv(
                 ctx.gpu,
                 self.w8a16_gemv_k,

@@ -99,8 +99,27 @@ pub fn emit_token(
         a.think_skip_count += 1;
         if a.think_skip_count >= 50 {
             a.finished = true;
+            // Name the cut -- MTP twin of the decode_logits_step site; see
+            // `GUARD_STOP_THINK_SKIP` for why an unnamed skip-site finish
+            // wires "stop" and silently ends an agentic run.
+            a.guard_stop = Some(GUARD_STOP_THINK_SKIP);
+            tracing::debug!(
+                "</think> think-skip watchdog hard-stop fired (50 consecutive strays); \
+                 ending turn"
+            );
         }
         return;
+    }
+    // Reset skip counter when a real content token is generated — parity with
+    // `decode_logits_step.rs`. Without this the counter is CUMULATIVE on the MTP
+    // path while the non-MTP path counts CONSECUTIVE strays, so a generation
+    // that emits 50 scattered `</think>` across otherwise healthy content is
+    // force-stopped here and not there. The watchdog exists for the degenerate
+    // `</think>` REPETITION seen at long context, which is consecutive by
+    // definition; counting non-adjacent strays is a different, stricter policy
+    // that was never intended.
+    if a.think_ended {
+        a.think_skip_count = 0;
     }
 
     // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.

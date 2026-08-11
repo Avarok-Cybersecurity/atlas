@@ -150,6 +150,127 @@ fn the_scan_flags_a_bare_stop_and_clears_a_named_one() {
     assert!(flagged.is_empty(), "a named hard stop must not be flagged");
 }
 
+/// Channel 2 — the finish-site DECISION LEDGER.
+///
+/// Channel 1 (`scan` above) anchors on the `hard-stop fired` LOG LINE:
+/// detection by confession. A cut site that never logs is invisible to it —
+/// and that is exactly how the think-skip watchdog (50 consecutive stray
+/// `</think>` → `finished = true`, no log, no guard) shipped bare: a
+/// control-token hard stop squarely inside this file's declared family,
+/// mute, therefore never scanned, wiring `"stop"` for a server cut and
+/// silently ending agentic runs.
+///
+/// This channel anchors on the STATE MUTATION instead: every code-line
+/// `finished = true` is a site, and the ledger pins, per file, how many
+/// exist and how many name a guard within ±`WINDOW` lines. It deliberately
+/// does NOT classify the unnamed remainder (the keyword-classifying draft
+/// documented above was noisy and remains a non-goal); it forces the
+/// DECISION — adding or unnaming a site moves a count, and the failure
+/// message demands either a `GUARD_STOP_*` at the site or an updated pin
+/// with the natural-stop rationale. Same idiom as
+/// `w4a16_gemm_t_ldb_drift_is_exactly_the_known_set`.
+fn scan_finish_ledger(src: &str) -> (usize, usize) {
+    // Comment lines are neither sites nor evidence of naming — emit_step.rs
+    // SAYS "a.finished = true" in prose, and prose is not a cut.
+    let lines: Vec<&str> = src
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("//") {
+                ""
+            } else {
+                l
+            }
+        })
+        .collect();
+    let mut total = 0usize;
+    let mut named = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.contains("finished = true") {
+            continue;
+        }
+        total += 1;
+        let from = i.saturating_sub(WINDOW);
+        let to = (i + WINDOW).min(lines.len() - 1);
+        if lines[from..=to].join("\n").contains(NAMED) {
+            named += 1;
+        }
+    }
+    (total, named)
+}
+
+#[test]
+fn every_finish_site_is_a_recorded_decision() {
+    // (file, source, total `finished = true` sites, sites naming a guard).
+    //
+    // Named — decode_logits_step: `<tool_response>`, think-skip watchdog,
+    // fuzzy_repetition. emit_step: `<tool_response>`, think-skip watchdog,
+    // inter_tool_prose_budget, tool_envelope_stuck.
+    // Unnamed remainder (deliberate): natural stops — the model sampled EOS,
+    // the token budget / context ceiling hit, the cooperative cancel flag,
+    // and `<|im_start|>` (eos-registered; see INTENTIONAL_STOP above for
+    // why naming it would reintroduce the opposite mislabel).
+    const LEDGER: &[(&str, &str, usize, usize)] = &[
+        (
+            "decode_logits_step.rs",
+            include_str!("decode_logits_step.rs"),
+            11,
+            3,
+        ),
+        ("emit_step.rs", include_str!("emit_step.rs"), 11, 4),
+    ];
+    for (name, src, want_total, want_named) in LEDGER {
+        let (total, named) = scan_finish_ledger(src);
+        assert_eq!(
+            (total, named),
+            (*want_total, *want_named),
+            "{name}: finish-site ledger drift — found {total} sites / {named} named, \
+             pinned {want_total} / {want_named}. If you ADDED a site: a cut the \
+             SERVER decides (watchdog, control token, degeneration) must set \
+             `a.guard_stop = Some(GUARD_STOP_*)` at the site — unnamed it wires \
+             finish_reason \"stop\" and agentic clients treat the truncation as a \
+             finished turn. A NATURAL stop (model EOS / budget / client cancel) \
+             updates this pin AND the rationale comment above it. If a count \
+             DROPPED, a site or its guard name was removed — verify that was the \
+             intent."
+        );
+    }
+}
+
+#[test]
+fn the_ledger_counts_sites_credits_naming_and_ignores_prose() {
+    // Detector proof for channel 2, mirroring channel 1's fixture test: a
+    // bare site counts unnamed, a named site is credited, and comment prose
+    // is invisible — the exact false-positive class that killed the earlier
+    // keyword-classifying draft.
+    let bare = "\
+        if a.think_skip_count >= 50 {\n\
+        \x20   a.finished = true;\n\
+        }\n";
+    assert_eq!(
+        scan_finish_ledger(bare),
+        (1, 0),
+        "a bare finish site is 1 site, 0 named"
+    );
+
+    let named = "\
+        if a.think_skip_count >= 50 {\n\
+        \x20   a.finished = true;\n\
+        \x20   a.guard_stop = Some(GUARD_STOP_THINK_SKIP);\n\
+        }\n";
+    assert_eq!(
+        scan_finish_ledger(named),
+        (1, 1),
+        "a guard named in the window must be credited"
+    );
+
+    let prose = "// Previously we set `a.finished = true` here -- a\n";
+    assert_eq!(
+        scan_finish_ledger(prose),
+        (0, 0),
+        "prose mentioning the mutation is not a cut site"
+    );
+}
+
 #[test]
 fn the_intentional_stop_exemption_is_load_bearing_and_narrow() {
     // `<|im_start|>` must be exempt (it is eos-registered, so "stop" is right)...

@@ -412,6 +412,17 @@ pub fn process_decode_logits(
             a.think_skip_count += 1;
             if a.think_skip_count >= 50 {
                 a.finished = true;
+                // Name the cut — same class as the `<tool_response>` stop
+                // above. `</think>` is NOT eos-registered (see
+                // `GUARD_STOP_THINK_SKIP`), and this site SKIPS the token,
+                // so `last_tok` stays a plain content token: unnamed, the
+                // ladder wires "stop" and the agentic harness (which
+                // recovers only on "length") ends the run silently.
+                a.guard_stop = Some(GUARD_STOP_THINK_SKIP);
+                tracing::debug!(
+                    "</think> think-skip watchdog hard-stop fired (50 consecutive strays); \
+                     ending turn"
+                );
             }
             continue;
         }
