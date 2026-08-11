@@ -24,6 +24,27 @@ fn decode_tier_defaults_to_host_ram_non_dropping() {
 }
 
 #[test]
+fn disk_cap_defaults_to_unbounded() {
+    // Default-OFF guard for ATLAS_SSM_TIER_DISK_GB: unset ⇒ 0 ⇒ the Marconi
+    // arms construct exactly the pre-cap unbounded store. Guarded on the var
+    // being unset (same idiom as the other selector tests).
+    if std::env::var_os("ATLAS_SSM_TIER_DISK_GB").is_none()
+        && std::env::var_os("ATLAS_SSM_RDMA_TIER").is_none()
+    {
+        assert_eq!(
+            ssm_tier_disk_slots(4).unwrap(),
+            0,
+            "unset budget must resolve to the unbounded sentinel"
+        );
+        let s = build_tier_store(fp(), 4).unwrap();
+        for k in 0..1000u64 {
+            assert!(s.put(k, &[0; 4]).unwrap());
+        }
+        assert_eq!(s.len(), 1000, "nothing dropped without an explicit budget");
+    }
+}
+
+#[test]
 fn build_tier_store_defaults_to_host_ram_unbounded() {
     // With ATLAS_SSM_RDMA_TIER absent (the byte-identical default), the
     // selector yields the unbounded host-RAM store. Guarded on the var being

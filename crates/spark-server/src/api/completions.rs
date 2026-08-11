@@ -344,7 +344,9 @@ pub(super) async fn completions_stream(
         top_logprobs: logprobs_k,
         prompt_logprobs: if echo { logprobs_k } else { None },
         echo,
-        timeout_at: None,
+        // Was hard-coded `None`: streaming /v1/completions was the one
+        // surface with NO deadline while every other surface had 300 s.
+        timeout_at: state.request_deadline(None),
         token_tx,
         // /v1/completions has no guard pipeline yet — the flag is
         // created so the scheduler's emit_step type-checks cleanly,

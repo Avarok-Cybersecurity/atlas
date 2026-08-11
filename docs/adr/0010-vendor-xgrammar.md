@@ -1,6 +1,14 @@
 # ADR-0010: Vendoring xgrammar-rs
 
-**Status:** Accepted
+**Status:** Accepted 2026-04-17 — **superseded in implementation.** The decision
+below (vendor the C++-cored `xgrammar-rs` under `vendor/xgrammar-rs/`) was later
+replaced by a from-scratch **pure-Rust port** living in-tree at
+`crates/xgrammar` (workspace member, no `build.rs`, no `cxx` bridge, no C++
+toolchain). `vendor/xgrammar-rs/` no longer exists; `vendor/` holds only
+`cudarc`. The *Context* below still explains why a fork was unavoidable — the
+ByteLevel-BPE `VocabType` bug is what forced Atlas off upstream — but every
+"Decision" and "Consequences" claim about a vendored fork is historical. See
+`crates/xgrammar/DESIGN.md` and `crates/xgrammar/PORT_PLAN.md` for what shipped.
 **Date:** 2026-04-17
 
 ## Context

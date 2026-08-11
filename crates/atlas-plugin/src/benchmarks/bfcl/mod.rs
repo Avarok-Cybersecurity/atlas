@@ -42,61 +42,16 @@ use draw::DrawSpec;
 
 pub use report::{MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL};
 
-const SUBSET_SUMMARY: &str = "The golden n=995 MLPerf-edge draw, AST-scored";
-const FULL_SUMMARY: &str = "Every single-turn sample in the three scored categories";
-pub const SUBSET_METADATA: PluginMetadata = PluginMetadata::atlas(SUBSET_SUMMARY);
-pub const FULL_METADATA: PluginMetadata = PluginMetadata::atlas(FULL_SUMMARY);
-
-pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "bfcl-subset",
-    name: "BFCL (subset)",
-    summary: SUBSET_SUMMARY,
-    detail: "Berkeley Function Calling Leaderboard v4, single-turn, on the golden MLPerf-edge \
-             draw: categories non_live/live/hallucination at 62/10/10 with a 25-sample floor, \
-             which is exactly 995 samples. Reports overall_accuracy and \
-             normalized_single_turn_score against the MLPerf-edge floor (83.64 / 85.32). \
-             Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
-    duration_hint: "~3.5 h",
-    updated: "2026-07-31",
-    needs_confirmation: false,
-    // Gates B and D. B runs on whichever model the PR targets, D on the dense
-    // 27B MLPerf checkpoint — so both families are legitimate here, and only a
-    // third one is worth mentioning.
-    intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-27b", "qwen3.6-35b-a3b"],
-        note: "The BFCL gates are defined on Qwen3.6-27B (dense, gate D — the MLPerf-edge \
-               floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
-               checkpoint have no recorded baseline to beat.",
-    }),
-    ctor: || Box::new(Bfcl::new(Variant::Subset)),
+mod descriptors;
+pub use descriptors::{
+    ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
+    SUBSET_METADATA,
 };
 
-pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
-    id: "bfcl-full",
-    name: "BFCL (full)",
-    summary: FULL_SUMMARY,
-    detail: "The same benchmark with no sampling: every single-turn sample in the three scored \
-             categories (~3625). Same composition as the subset draw, so the normalized score \
-             stays comparable — it just removes the sampling noise, at roughly 3.6× the wall \
-             time.",
-    duration_hint: "~12 h",
-    updated: "2026-07-31",
-    needs_confirmation: false,
-    // Gates B and D. B runs on whichever model the PR targets, D on the dense
-    // 27B MLPerf checkpoint — so both families are legitimate here, and only a
-    // third one is worth mentioning.
-    intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-27b", "qwen3.6-35b-a3b"],
-        note: "The BFCL gates are defined on Qwen3.6-27B (dense, gate D — the MLPerf-edge \
-               floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
-               checkpoint have no recorded baseline to beat.",
-    }),
-    ctor: || Box::new(Bfcl::new(Variant::Full)),
-};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     Subset,
+    SubsetEcholp,
     Full,
 }
 
@@ -104,12 +59,14 @@ impl Variant {
     fn descriptor(self) -> &'static BenchmarkDescriptor {
         match self {
             Variant::Subset => &SUBSET_DESCRIPTOR,
+            Variant::SubsetEcholp => &SUBSET_ECHOLP_DESCRIPTOR,
             Variant::Full => &FULL_DESCRIPTOR,
         }
     }
     fn metadata(self) -> &'static PluginMetadata {
         match self {
             Variant::Subset => &SUBSET_METADATA,
+            Variant::SubsetEcholp => &ECHOLP_METADATA,
             Variant::Full => &FULL_METADATA,
         }
     }
@@ -118,6 +75,47 @@ impl Variant {
             (Variant::Full, _) => 100.0,
             (Variant::Subset, "non_live") => 62.0,
             (Variant::Subset, _) => 10.0,
+            (Variant::SubsetEcholp, "non_live") => 46.0,
+            (Variant::SubsetEcholp, "live") => 23.0,
+            (Variant::SubsetEcholp, _) => 12.0,
+        }
+    }
+    /// The subset floor this variant's draw is DEFINED with.
+    ///
+    /// ★ Read from the variant's own `DrawSpec`, never written out again here.
+    /// `configure` rebuilds the whole spec from parameter defaults, so a floor
+    /// spelled out a second time in this file is a second source of truth that
+    /// silently wins. It already went wrong exactly that way: the echolp
+    /// variant was added without extending an `if v == Variant::Subset { 25 }
+    /// else { 0 }`, so its floor defaulted to 0. That takes `live_parallel`
+    /// (16 rows) and `live_parallel_multiple` (24) by percentage instead of
+    /// whole, and the draw silently became n=972 rather than the pinned 1004 --
+    /// a plausible-looking score measured against a baseline for a different
+    /// draw.
+    fn default_floor(self) -> usize {
+        self.spec().subset_floor.unwrap_or(0)
+    }
+
+    /// The draw this variant is defined by. Single source of truth for both
+    /// the constructor and the parameter defaults.
+    fn spec(self) -> DrawSpec {
+        match self {
+            Variant::Subset => DrawSpec::golden(),
+            Variant::SubsetEcholp => DrawSpec::echolp(),
+            Variant::Full => DrawSpec::full(),
+        }
+    }
+
+    /// The sample count this draw must produce, if it is a pinned draw.
+    ///
+    /// A draw that silently drifts off its pinned n produces a score that looks
+    /// fine and compares against nothing — the same failure mode as scoring one
+    /// draw against another's threshold.
+    fn expected_samples(self) -> Option<usize> {
+        match self {
+            Variant::Subset => Some(995),
+            Variant::SubsetEcholp => Some(1004),
+            Variant::Full => None,
         }
     }
 }
@@ -172,10 +170,7 @@ impl Bfcl {
             responses: Vec::new(),
             responses_path: None,
             scores: None,
-            spec: match variant {
-                Variant::Subset => DrawSpec::golden(),
-                Variant::Full => DrawSpec::full(),
-            },
+            spec: variant.spec(),
             max_new_tokens: 1024,
             temperature: 0.0,
             request_timeout: Duration::from_secs(600),
@@ -330,7 +325,7 @@ impl Benchmark for Bfcl {
                     min: 0,
                     max: 10_000,
                 },
-                ParamValue::Int(if v == Variant::Subset { 25 } else { 0 }),
+                ParamValue::Int(v.default_floor() as i64),
             ),
             ParamSpec::new(
                 "max_new_tokens",
@@ -416,9 +411,12 @@ impl Benchmark for Bfcl {
                     )));
                 // The single most useful thing to say up front: whether this
                 // is the MLPerf-comparable draw or something else.
-                if self.variant == Variant::Subset && n != 995 {
+                if let Some(want) = self.variant.expected_samples()
+                    && n != want
+                {
                     frame = frame.log_line(LogLine::warn(format!(
-                        "n={n}, not the golden 995 — this run is NOT MLPerf-comparable"
+                        "n={n}, not the pinned {want} — this run is NOT comparable to this \
+                         draw's baseline"
                     )));
                 }
                 Ok(frame)
@@ -462,6 +460,7 @@ impl Benchmark for Bfcl {
                 }
                 .with_progress(total, total)
                 .with_summary(self.summary())
+                .with_metrics(self.metrics())
                 .with_verdict(self.verdict());
                 if let Some(t) = self.table() {
                     frame = frame.with_table(t);

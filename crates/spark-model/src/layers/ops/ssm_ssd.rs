@@ -85,6 +85,35 @@ pub fn mamba2_ssd_bmm(
         .launch(stream)
 }
 
+/// Largest dynamic shared-memory block a kernel may opt into on the GB10 target.
+/// Measured on the device (sm_121):
+/// `CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN = 101376`
+/// (static default is only 49152; per-SM total is 102400).
+pub const MAX_DYNAMIC_SMEM: u32 = 101_376;
+
+/// Dynamic shared memory [`mamba2_ssd_scan`] requests for a given SSM state size.
+/// Grows ~linearly in `state_size`, so a checkpoint with a large SSM state can
+/// exceed [`MAX_DYNAMIC_SMEM`]. Kept next to the launch so the two cannot drift.
+pub fn ssd_scan_smem(state_size: u32) -> u32 {
+    SSD_PT * (state_size + 1) * 4
+        + 2 * SSD_L * state_size * 2
+        + 2 * SSD_L * state_size * 2
+        + 2 * SSD_L * SSD_PT * 2
+        + 2 * SSD_L * 4
+        + 2 * SSD_L * 4
+}
+
+/// Whether the SSD chunked scan physically fits for this `state_size`.
+///
+/// Callers MUST check this before selecting the SSD path: exceeding the limit
+/// makes `cuFuncSetAttribute(MAX_DYNAMIC_SHARED)` fail with
+/// `CUDA_ERROR_INVALID_VALUE`, which aborts the layer instead of degrading.
+/// Measured: Puzzle-75B `state_size=96` -> 91392 (fits); Nemotron Nano-30B
+/// `state_size=128` -> 115968 (does NOT fit, and made the model unservable).
+pub fn ssd_scan_fits(state_size: u32) -> bool {
+    ssd_scan_smem(state_size) <= MAX_DYNAMIC_SMEM
+}
+
 /// K3: fused chunk_state + state_passing + chunk_scan (h0 stays in shared memory,
 /// so the per-chunk `states` tensor vLLM round-trips through DRAM never exists).
 #[allow(clippy::too_many_arguments)]
@@ -115,12 +144,7 @@ pub fn mamba2_ssd_scan(
     // sH[PT][N+1] f32 | double-buffered streaming tiles: sB[2][L][N] |
     // sCM[2][L][N] | sX[2][L][PT] bf16 | sdA[2][L] + sdt[2][L] f32.
     // (sHb and sXt were dropped -- derived on the fly; see the kernel.)
-    let smem = SSD_PT * (state_size + 1) * 4
-        + 2 * SSD_L * state_size * 2
-        + 2 * SSD_L * state_size * 2
-        + 2 * SSD_L * SSD_PT * 2
-        + 2 * SSD_L * 4
-        + 2 * SSD_L * 4;
+    let smem = ssd_scan_smem(state_size);
     KernelLaunch::new(gpu, kernel)
         .grid([num_heads, head_dim / SSD_PT, batch_size])
         .block([512, 1, 1]) // 16 warps, 2 warp-tasks each (see kernel)

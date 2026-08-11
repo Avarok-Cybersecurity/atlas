@@ -4,7 +4,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -28,8 +28,21 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // ★ Scroll offset, in ENTRIES rather than lines: each benchmark occupies
+    // ROWS_PER_ENTRY rows, so an 80x24 terminal shows about four of them.
+    // Without this the list always rendered from index 0 and `j` past the
+    // fourth moved a cursor nobody could see -- the detail pane changing was
+    // the only clue. Both sibling lists (bench/history.rs, library/list.rs)
+    // already compute one.
+    const ROWS_PER_ENTRY: usize = 4;
+    let visible = (inner.height as usize / ROWS_PER_ENTRY).max(1);
+    let offset = app.bench.selected.saturating_sub(visible.saturating_sub(1));
     let mut lines: Vec<Line> = Vec::new();
-    for (i, descriptor) in atlas_plugin::registry::all().iter().enumerate() {
+    for (i, descriptor) in atlas_plugin::registry::all()
+        .iter()
+        .enumerate()
+        .skip(offset)
+    {
         let selected = i == app.bench.selected;
         let running = app.bench.running_id == Some(descriptor.id) && app.bench.is_running();
         let marker = if running {
@@ -52,7 +65,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!(" {}", descriptor.name), name_style),
         ]);
         if selected {
-            line = line.style(Style::default().bg(theme::BG_SELECTION.color()));
+            line = line.style(theme::selected());
         }
         lines.push(line);
         lines.push(Line::from(vec![

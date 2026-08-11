@@ -238,6 +238,7 @@ fn a_run_persisted_by_the_dashboard_is_readable_by_the_cli() {
         summary: Vec::new(),
         table: None,
         verdict: Some(atlas_plugin::Verdict::pass("fine")),
+        metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
         elapsed: std::time::Duration::from_secs(3),
     };
@@ -290,6 +291,7 @@ fn a_run_is_recorded_once_even_if_the_terminal_frame_repeats() {
         summary: Vec::new(),
         table: None,
         verdict: None,
+        metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
         elapsed: std::time::Duration::from_secs(1),
     };

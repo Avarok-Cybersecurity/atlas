@@ -61,7 +61,13 @@ pub(super) fn install_high_speed_swap(
 }
 
 /// Co-dispatch admission window: `Some(duration)` when `ATLAS_PREFILL_CODISPATCH=1`,
-/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` (default 5).
+/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS`
+/// (default 100). A burst of concurrent requests arrives over tens of ms
+/// (HTTP accept + tokenize spread); the old 10 ms default admitted only the
+/// first 1-2 arrivals, so the "co"-dispatch cohort was mostly singletons and
+/// the batched path never saw the burst it exists for. 100 ms is one decode
+/// step's worth of TTFT — negligible against the multi-second serialized
+/// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
     let on = std::env::var("ATLAS_PREFILL_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -72,7 +78,7 @@ fn codispatch_window() -> Option<std::time::Duration> {
     let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(10);
+        .unwrap_or(100);
     Some(std::time::Duration::from_millis(ms))
 }
 
@@ -180,6 +186,59 @@ pub(super) fn drain_pending_requests(
     result
 }
 
+/// Enforce the server-side per-request deadline on every active sequence.
+///
+/// Runs once per scheduler iteration, immediately before retirement, so it
+/// is INDEPENDENT of which decode path produced the step. The check used to
+/// live inside `decode_logits_step::process_decode_logits`, which the MTP /
+/// speculative path never calls — so with `--speculative` (the config of
+/// record) the deadline was simply not enforced at all, and it only ever
+/// fired at the high concurrencies where the spec path is off. Measured on
+/// dgx2 2026-08-01: a `--request-timeout 5` serve ran a single request for
+/// 145 s to a full 4000 tokens without the deadline firing once.
+///
+/// A deadline cut is an ABNORMAL stop: it sets `guard_stop` so
+/// `finish_sequence` reports `finish_reason="timeout"` instead of deriving
+/// "length" from the last token, which is indistinguishable from a
+/// legitimate max_tokens stop. Retirement is unchanged — the sequence goes
+/// through the same `finish_sequence` → `free_sequence` path as any other
+/// stop, so KV blocks and the SSM `SlotGuard` are released identically.
+pub(super) fn enforce_request_deadlines(active: &mut [ActiveSeq]) {
+    // No clock read and no per-sequence work when nothing is deadlined
+    // (`--request-timeout 0`), so the decode loop pays nothing for this.
+    if !active.iter().any(|a| !a.finished && a.timeout_at.is_some()) {
+        return;
+    }
+    let now = Instant::now();
+    for a in active.iter_mut() {
+        if a.finished {
+            continue;
+        }
+        let Some(deadline) = a.timeout_at else {
+            continue;
+        };
+        if now < deadline {
+            continue;
+        }
+        let emitted = a.output_tokens.len();
+        tracing::warn!(
+            slot = a.seq.slot_idx,
+            session_hash = a.session_hash,
+            elapsed_s = a.request_start.elapsed().as_secs_f64(),
+            budget_s = deadline
+                .saturating_duration_since(a.request_start)
+                .as_secs_f64(),
+            emitted_tokens = emitted,
+            requested_tokens = emitted + a.remaining,
+            "Request TIMEOUT: response TRUNCATED by the server deadline \
+             (--request-timeout / per-request `timeout`); \
+             reporting finish_reason=\"timeout\", not \"length\""
+        );
+        a.guard_stop = Some(GUARD_STOP_REQUEST_TIMEOUT);
+        a.finished = true;
+    }
+}
+
 /// Retire finished sequences. After swap_remove, the last element moves to
 /// position i. Compact its SSM states to match its new slot index so CUDA
 /// graph addresses remain valid (active sequences must occupy contiguous
@@ -199,7 +258,11 @@ pub(super) fn drain_pending_requests(
 /// non-contiguous w.r.t. `slot_idx` — pre-allocated slots stay valid
 /// in place across the swap_remove, and the per-slot CUDA graph cache
 /// stays warm because the seq never moved.
-pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<ActiveSeq>) {
+pub(super) fn retire_finished_sequences(
+    model: &dyn Model,
+    active: &mut Vec<ActiveSeq>,
+    max_seq_len: usize,
+) {
     if model.ep_protocol_v2() {
         // v2 EP: slots are pre-allocated and kept in place (see doc above);
         // just drop finished seqs, no compaction.
@@ -207,7 +270,7 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
         while i < active.len() {
             if active[i].finished {
                 let mut a = active.swap_remove(i);
-                finish_sequence(model, &mut a);
+                finish_sequence(model, &mut a, max_seq_len);
             } else {
                 i += 1;
             }
@@ -232,7 +295,7 @@ pub(super) fn retire_finished_sequences(model: &dyn Model, active: &mut Vec<Acti
     let mut survivors: Vec<ActiveSeq> = Vec::with_capacity(active.len());
     for mut a in active.drain(..) {
         if a.finished {
-            finish_sequence(model, &mut a); // RAII guard releases a's own slot
+            finish_sequence(model, &mut a, max_seq_len); // RAII guard releases a's own slot
         } else {
             survivors.push(a);
         }
@@ -333,7 +396,15 @@ pub(super) fn bounded_stream_send(
     let mut event = match tx.try_send(event) {
         Ok(()) => return true,
         Err(TrySendError::Closed(_)) => {
-            tracing::debug!("stream receiver dropped ({what})");
+            // INFO, not debug. This is the client hanging up mid-stream, and it
+            // is the single most common reason a generation "just stops" — but
+            // at debug it is invisible at the default level, so the server log
+            // shows a `Request:` line, then nothing: no completion, no error.
+            // That is indistinguishable from a hung server, and on 2026-08-07
+            // it cost a real debugging session chasing a stall that had not
+            // happened. One line per abandoned request is the right price for
+            // being able to tell "they left" from "we wedged".
+            tracing::info!("stream receiver dropped — client went away ({what})");
             return false;
         }
         Err(TrySendError::Full(ev)) => ev,
@@ -344,7 +415,11 @@ pub(super) fn bounded_stream_send(
         match tx.try_send(event) {
             Ok(()) => return true,
             Err(TrySendError::Closed(_)) => {
-                tracing::debug!("stream receiver dropped during backpressure ({what})");
+                // Same event, later: they hung up while we were waiting on a
+                // full channel. Same reasoning, same level.
+                tracing::info!(
+                    "stream receiver dropped during backpressure — client went away ({what})"
+                );
                 return false;
             }
             Err(TrySendError::Full(ev)) => {

@@ -58,6 +58,32 @@ impl App {
         self.toast(text, error);
     }
 
+    /// First entry into the Library: point it at the recipe store and start the
+    /// one GitHub fetch it is allowed.
+    ///
+    /// Lives here rather than in the tick because it needs `App::library` — the
+    /// locally-scanned weights the recipe index is joined against.
+    ///
+    /// The failure path is a DEAD END, and says so by setting
+    /// `recipes_unavailable`. `discover()` reads `ATLAS_HOME`/`HOME` and
+    /// nothing else, so a second call in the same process answers the same way;
+    /// the tick used to retry it at 10 Hz on `!attached()` alone, warning into
+    /// the log ring every 100 ms. The local scan still renders — that is what
+    /// the `rebuild` is for.
+    pub(super) fn attach_recipes(&mut self) {
+        match atlas_plugin::ArtifactStore::discover() {
+            Ok(store) => {
+                self.lib.attach(store.root().to_path_buf(), &self.library);
+                self.lib.refresh();
+            }
+            Err(e) => {
+                tracing::warn!("recipes unavailable: {e:#}");
+                self.lib.recipes_unavailable = true;
+                self.lib.rebuild(&self.library);
+            }
+        }
+    }
+
     /// Start the configured recipe and follow it to Main.
     ///
     /// The jump is the point: a load is what the operator wants to watch, and
@@ -83,3 +109,7 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app_library_tests.rs"]
+mod tests;

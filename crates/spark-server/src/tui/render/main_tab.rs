@@ -381,28 +381,30 @@ pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     };
+    // Only the ACTIONABLE class alarms; expected-absent is declared with a reason.
+    let missing = &model.missing_required;
     let mut constraints = vec![Constraint::Min(6)];
-    if !model.missing.is_empty() {
-        constraints.insert(0, Constraint::Length(model.missing.len().min(6) as u16 + 2));
+    if !missing.is_empty() {
+        constraints.insert(0, Constraint::Length(missing.len().min(6) as u16 + 2));
     }
     let rows_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
     let mut idx = 0;
-    if !model.missing.is_empty() {
-        let block = panel(
-            format!("⚠ {} UNRESOLVED KERNEL LOOKUP(S) ─", model.missing.len()),
-            false,
-        )
-        .border_style(theme::warn());
-        let lines: Vec<Line> = model
-            .missing
+    if !missing.is_empty() {
+        let n = missing.len();
+        let title = format!(
+            "⚠ {n} UNRESOLVED ─ {} EXPECTED-ABSENT ─",
+            model.missing_expected.len()
+        );
+        let block = panel(title, false).border_style(theme::warn());
+        let lines: Vec<Line> = missing
             .iter()
             .take(6)
             .map(|m| {
                 Line::from(Span::styled(
-                    format!("  {}::{}", m.module, m.func),
+                    format!("  {}::{}  at {}", m.module, m.func, m.site),
                     theme::warn(),
                 ))
             })
@@ -495,4 +497,4 @@ impl Wrapped for Paragraph<'_> {
 
 #[cfg(test)]
 #[path = "main_tab_tests.rs"]
-mod wrap_tests;
+mod tests;

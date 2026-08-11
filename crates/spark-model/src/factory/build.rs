@@ -124,30 +124,20 @@ pub fn build_model(
     // capture-layer indices from the drafter's `dflash_config.target_layer_ids`
     // so `TransformerModel::new` allocates the 5×hidden_size capture buffer.
     //
-    // HF `output_hidden_states[i]` semantics: index 0 = post-embedding,
-    // index k>=1 = post-layer-(k-1). The drafter's `target_layer_ids`
-    // are interpreted as HF `output_hidden_states` indices (so layer_id=1
-    // means post-layer-0). Atlas captures AFTER `layer.decode()` for the
-    // listed `dflash_capture_layers` index — to match HF semantics we
-    // subtract 1 from each id (clamped at 0). Set
-    // ATLAS_DFLASH_CAPTURE_LAYER_OFFSET=0 to disable this adjustment for
-    // a back-to-back A/B test.
+    // The drafter's `target_layer_ids` are used DIRECTLY as Atlas capture
+    // indices. An earlier implementation subtracted 1 from each id on HF
+    // `output_hidden_states` reasoning; measurement on the z-lab drafters
+    // shows that adjustment feeds the drafter hidden states one layer early
+    // on every capture layer and costs ~1 full accepted row per step (27B
+    // dense MinHeap: mean accept 6.61 direct vs 5.56 shifted; the 2026-07-19
+    // 35B accept hunt found the same).
     if let Some(ref args) = dflash_args
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
-        let offset: i64 = std::env::var("ATLAS_DFLASH_CAPTURE_LAYER_OFFSET")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(-1);
-        config.dflash_capture_layers = sub
-            .target_layer_ids
-            .iter()
-            .map(|&id| (id as i64 + offset).max(0) as usize)
-            .collect();
+        config.dflash_capture_layers = sub.target_layer_ids.clone();
         tracing::info!(
-            "DFlash: target layer capture indices = {:?} (offset={offset} from raw {:?})",
+            "DFlash: target layer capture indices = {:?} (drafter target_layer_ids, used directly)",
             config.dflash_capture_layers,
-            sub.target_layer_ids,
         );
     }
 
@@ -282,6 +272,7 @@ pub fn build_model(
         max_batch_tokens,
         max_seq_len,
         kv_block_size,
+        max_batch_size,
         gpu.as_ref(),
     )?;
 
@@ -495,13 +486,16 @@ pub fn build_model(
         // --max-seq-len. With paged KV (blocks allocated on demand) that almost
         // never holds for real agent traffic (mixed/shorter sequences), so a high
         // --max-seq-len (e.g. 64K for long agent contexts) needlessly caps
-        // --max-batch-size. ATLAS_KV_OVERCOMMIT=1 downgrades the hard error to a
+        // --max-batch-size. Overcommit (DEFAULT ON since wave 10: config of
+        // record for the native bs=32 rung) downgrades the hard error to a
         // warning: the scheduler admits up to max_batch_size and the pool fills on
         // demand (a genuinely over-long burst gets back-pressured by the block
-        // allocator, not a boot-time refusal).
-        let overcommit = matches!(
+        // allocator, not a boot-time refusal). Kill switch: ATLAS_KV_OVERCOMMIT=0
+        // (or =false) restores the boot-time hard refusal. Value is parsed, not
+        // presence-checked.
+        let overcommit = !matches!(
             std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("0") | Ok("false")
         );
         if overcommit {
             tracing::warn!(
@@ -521,7 +515,7 @@ pub fn build_model(
                  but --max-batch-size={} was requested. \
                  KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
                  Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
-                 or set ATLAS_KV_OVERCOMMIT=1 to allow on-demand paged allocation.",
+                 or unset ATLAS_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
                 max_concurrent,
                 max_seq_len,
                 max_batch_size,

@@ -51,39 +51,68 @@ pub(crate) struct SamplingDefaults {
     pub(crate) min_p: f32,
 }
 
-pub(crate) fn load_sampling_defaults(model_dir: &Path, args: &cli::ServeArgs) -> SamplingDefaults {
+pub(crate) fn load_sampling_defaults(
+    model_dir: &Path,
+    args: &cli::ServeArgs,
+    preset: &atlas_kernels::SamplingCategory,
+) -> SamplingDefaults {
     let gen_config_path = model_dir.join("generation_config.json");
     let gen_cfg = std::fs::read_to_string(&gen_config_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    if gen_cfg.is_none() {
+        tracing::warn!(
+            "generation_config.json absent or unparseable at {}; sampling defaults fall back to \
+             the MODEL.toml [sampling.non_thinking] preset",
+            gen_config_path.display()
+        );
+    }
+    let d = resolve_sampling_defaults(gen_cfg.as_ref(), args, preset);
+    tracing::info!(
+        "Default sampling: temperature={}, top_k={}, top_p={}, top_n_sigma={}, min_p={}",
+        d.temperature,
+        d.top_k,
+        d.top_p,
+        d.top_n_sigma,
+        d.min_p,
+    );
+    d
+}
+
+/// Pure per-field resolution: a field present in `generation_config.json` is
+/// honored verbatim (a config that legitimately asks for `temperature=0` gets
+/// it); an ABSENT field backfills from the model's curated MODEL.toml
+/// `[sampling.non_thinking]` preset (temperature/top_k/top_p) or the CLI
+/// defaults (top_n_sigma/min_p, which the preset does not carry). No
+/// hard-coded constants: the old `0.6 / 20 / 0.95` literals duplicated — and
+/// could drift from — the preset that already drives the penalties, and a
+/// missing config must not silently mean "someone's idea of typical" when the
+/// model ships its own numbers.
+pub(crate) fn resolve_sampling_defaults(
+    gen_cfg: Option<&serde_json::Value>,
+    args: &cli::ServeArgs,
+    preset: &atlas_kernels::SamplingCategory,
+) -> SamplingDefaults {
     let temperature = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("temperature")?.as_f64())
         .map(|t| t as f32)
-        .unwrap_or(0.6);
+        .unwrap_or(preset.temperature);
     let top_k = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("top_k")?.as_u64())
         .map(|k| k as u32)
-        .unwrap_or(20);
+        .unwrap_or(preset.top_k);
     let top_p = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("top_p")?.as_f64())
         .map(|p| p as f32)
-        .unwrap_or(0.95);
+        .unwrap_or(preset.top_p);
     let top_n_sigma = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("top_n_sigma")?.as_f64())
         .map(|s| s as f32)
         .unwrap_or(args.default_top_n_sigma);
     let min_p = gen_cfg
-        .as_ref()
         .and_then(|v| v.get("min_p")?.as_f64())
         .map(|p| p as f32)
         .unwrap_or(args.default_min_p);
-    tracing::info!(
-        "Default sampling: temperature={temperature}, top_k={top_k}, top_p={top_p}, top_n_sigma={top_n_sigma}, min_p={min_p}"
-    );
     SamplingDefaults {
         temperature,
         top_k,
@@ -320,4 +349,79 @@ pub(crate) fn resolve_tool_call_parser(
         }
     }
     Ok(tool_call_format.map(|f| std::sync::Arc::from(f.into_parser())))
+}
+
+#[cfg(test)]
+mod sampling_defaults_tests {
+    use clap::Parser;
+
+    use super::resolve_sampling_defaults;
+    use crate::cli;
+
+    /// A preset with values distinct from both the old hard-coded constants
+    /// (0.6 / 20 / 0.95) and the CLI defaults, so a wrong fallback source is
+    /// unmistakable in every assertion below.
+    fn preset() -> atlas_kernels::SamplingCategory {
+        atlas_kernels::SamplingCategory {
+            temperature: 0.7,
+            top_p: 0.8,
+            top_k: 40,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            repetition_penalty: 1.0,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            lz_penalty: 0.0,
+        }
+    }
+
+    fn args() -> cli::ServeArgs {
+        cli::ServeArgs::parse_from(["spark", "org/model"])
+    }
+
+    #[test]
+    fn missing_config_falls_back_to_preset_not_constants() {
+        let d = resolve_sampling_defaults(None, &args(), &preset());
+        assert_eq!(d.temperature, 0.7, "preset, not the old 0.6 literal");
+        assert_eq!(d.top_k, 40, "preset, not the old 20 literal");
+        assert_eq!(d.top_p, 0.8, "preset, not the old 0.95 literal");
+        assert!(d.temperature > 0.0, "absent config must never mean greedy");
+    }
+
+    #[test]
+    fn present_config_overrides_preset() {
+        let cfg = serde_json::json!({"temperature": 1.1, "top_k": 64, "top_p": 0.9});
+        let d = resolve_sampling_defaults(Some(&cfg), &args(), &preset());
+        assert_eq!(d.temperature, 1.1);
+        assert_eq!(d.top_k, 64);
+        assert_eq!(d.top_p, 0.9);
+    }
+
+    #[test]
+    fn partial_config_backfills_per_field() {
+        let cfg = serde_json::json!({"top_k": 64});
+        let d = resolve_sampling_defaults(Some(&cfg), &args(), &preset());
+        assert_eq!(d.top_k, 64, "present field honored");
+        assert_eq!(d.temperature, 0.7, "absent field from preset");
+        assert_eq!(d.top_p, 0.8, "absent field from preset");
+    }
+
+    #[test]
+    fn explicit_temperature_zero_is_honored() {
+        // A config that is PRESENT and asks for greedy gets greedy — the
+        // preset guard only backfills absent fields, it never overrides.
+        let cfg = serde_json::json!({"temperature": 0.0});
+        let d = resolve_sampling_defaults(Some(&cfg), &args(), &preset());
+        assert_eq!(d.temperature, 0.0);
+    }
+
+    #[test]
+    fn sigma_and_min_p_fall_back_to_cli_args() {
+        // These two are CLI-owned (#388): the preset does not carry them.
+        let a = args();
+        let d = resolve_sampling_defaults(None, &a, &preset());
+        assert_eq!(d.top_n_sigma, a.default_top_n_sigma);
+        assert_eq!(d.min_p, a.default_min_p);
+    }
 }

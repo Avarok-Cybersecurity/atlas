@@ -85,9 +85,9 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(
             format!(
-                "  ↓{}/s ↑{}/s",
-                human_bytes(s.bytes_in_rate),
-                human_bytes(s.bytes_out_rate)
+                "  ↓{} ↑{}",
+                crate::tui::format::rate(s.bytes_in_rate),
+                crate::tui::format::rate(s.bytes_out_rate)
             ),
             theme::dim(),
         ),
@@ -112,13 +112,18 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("  p90 {}", fmt_ms(s.ttft_p90_ms)), theme::text2()),
     ]);
     tile(f, tiles[2], "TTFT", ttft, None);
-    let gpu = Line::from(vec![
-        Span::styled(
-            format!(" atlas {:.1} GB", s.atlas_used_gb),
-            theme::text().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  free {:.1}", s.gpu_free_gb), theme::text2()),
-    ]);
+    // `—`, not 0.0, when the device never answered.
+    let gpu = if s.gpu_known {
+        Line::from(vec![
+            Span::styled(
+                format!(" atlas {:.1} GB", s.atlas_used_gb),
+                theme::text().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  free {:.1}", s.gpu_free_gb), theme::text2()),
+        ])
+    } else {
+        Line::from(Span::styled(" —", theme::dim()))
+    };
     tile(f, tiles[3], "GPU", gpu, None);
 }
 
@@ -239,86 +244,91 @@ fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
             )
         })
         .unwrap_or_default();
-    let mut y = inner.y;
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            format!(" active {active} · prefill {prefill} · swapped {swapped} · queue {queue} "),
-            theme::text(),
-        )])),
-        Rect {
+    // Every row below is placed by hand rather than by a `Layout`, so every
+    // row has to be checked against the pane it is meant to be inside: a
+    // `Rect` one line past the bottom is not clipped by ratatui, it panics —
+    // and this pane is six rows tall on a terminal that is only eight, so the
+    // dashboard (and with it the server's foreground) went down on a resize.
+    let row = |y: u16| -> Option<Rect> {
+        (y < inner.bottom()).then_some(Rect {
             y,
             height: 1,
             ..inner
-        },
-    );
+        })
+    };
+    let mut y = inner.y;
+    if let Some(r) = row(y) {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                format!(
+                    " active {active} · prefill {prefill} · swapped {swapped} · queue {queue} "
+                ),
+                theme::text(),
+            )])),
+            r,
+        );
+    }
     y += 1;
     let qh = s.queue_history.as_u64();
-    if !qh.is_empty() {
+    if !qh.is_empty()
+        && let Some(r) = row(y)
+    {
         f.render_widget(
             Sparkline::default().data(&qh).style(theme::brand_cyan()),
             Rect {
-                y,
-                height: 1,
                 x: inner.x + 1,
                 width: inner.width.saturating_sub(2),
+                ..r
             },
         );
     }
     y += 2;
     if let Some(x) = s.sched {
         let used = (x.kv_blocks_total - x.kv_blocks_free) as f64;
-        line_gauge(
-            f,
-            Rect {
-                y,
-                height: 1,
-                ..inner
-            },
-            " KV",
-            used,
-            x.kv_blocks_total as f64,
-            true,
-        );
+        if let Some(r) = row(y) {
+            line_gauge(f, r, " KV", used, x.kv_blocks_total as f64, true);
+        }
         y += 1;
-        line_gauge(
-            f,
-            Rect {
-                y,
-                height: 1,
-                ..inner
-            },
-            " SSM",
-            x.ssm_slots_used as f64,
-            x.ssm_slots_total as f64,
-            false,
-        );
+        if let Some(r) = row(y) {
+            line_gauge(
+                f,
+                r,
+                " SSM",
+                x.ssm_slots_used as f64,
+                x.ssm_slots_total as f64,
+                false,
+            );
+        }
         y += 1;
     }
-    line_gauge(
-        f,
-        Rect {
-            y,
-            height: 1,
-            ..inner
-        },
-        " GPU",
-        s.atlas_used_gb,
-        s.gpu_total_gb.max(0.001),
-        true,
-    );
-    y += 1;
-    line_gauge(
-        f,
-        Rect {
-            y,
-            height: 1,
-            ..inner
-        },
-        " RAM",
-        (s.host_total_gb - s.host_avail_gb).max(0.0),
-        s.host_total_gb.max(0.001),
-        false,
-    );
+    if let Some(r) = row(y) {
+        if s.gpu_known {
+            line_gauge(
+                f,
+                r,
+                " GPU",
+                s.atlas_used_gb,
+                s.gpu_total_gb.max(0.001),
+                true,
+            );
+        } else {
+            // A 0 % bar reads as "empty", which is a claim. Say nothing instead.
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(Span::styled(" GPU  —", theme::dim())),
+                r,
+            );
+        }
+    }
+    if let Some(r) = row(y + 1) {
+        line_gauge(
+            f,
+            r,
+            " RAM",
+            (s.host_total_gb - s.host_avail_gb).max(0.0),
+            s.host_total_gb.max(0.001),
+            false,
+        );
+    }
 }
 
 fn draw_spec_cache(f: &mut Frame, app: &App, area: Rect) {
@@ -329,7 +339,13 @@ fn draw_spec_cache(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     if let Some(x) = s.sched {
         lines.push(Line::from(vec![
-            Span::styled(format!(" MTP gate {:?}", x.mtp_mode), theme::text()),
+            Span::styled(
+                format!(
+                    " MTP gate {}",
+                    crate::tui::format::mtp_mode_label(x.mtp_mode)
+                ),
+                theme::text(),
+            ),
             Span::styled(
                 format!(" · delivered {:.0} tok/s", x.delivered_tps),
                 theme::text2(),
@@ -389,12 +405,10 @@ fn fmt_ms(v: Option<f64>) -> String {
     }
 }
 
-fn human_bytes(rate: f64) -> String {
-    if rate >= 1_048_576.0 {
-        format!("{:.1}M", rate / 1_048_576.0)
-    } else if rate >= 1024.0 {
-        format!("{:.0}K", rate / 1024.0)
-    } else {
-        format!("{rate:.0}B")
-    }
-}
+// `human_bytes` was here: a private `K`/`M`/`B` ladder that named a magnitude
+// and no unit. It is `crate::tui::format::rate` now, with the download row —
+// see that function for why one formatter and why 1024.
+
+#[cfg(test)]
+#[path = "stats_tab_tests.rs"]
+mod tests;

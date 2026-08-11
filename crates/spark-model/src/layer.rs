@@ -14,7 +14,10 @@ use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 mod transformer_layer;
-pub use transformer_layer::TransformerLayer;
+pub use transformer_layer::{
+    TransformerLayer, VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS,
+    VERIFY_WY_TABLE_STRIDE_BYTES, VERIFY_WY_TABLES_PER_LAYER,
+};
 
 /// Per-layer persistent state tracked across decode steps.
 ///
@@ -57,6 +60,16 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// Storage dtype of `h_state`: `false` = FP32 (the only format prefill
+    /// ever writes), `true` = FP16 packed into the first half of the same
+    /// FP32-sized pool region (`ATLAS_SSM_H_FP16`).
+    ///
+    /// This is the single source of truth for the h-state format. The decode
+    /// mixer flips it exactly once per sequence, on the first decode step
+    /// after any FP32 writer touched the slot, so no caller has to know where
+    /// the prefill->decode edge is. It rides through swap-out/swap-in because
+    /// `state_io` mutates these states in place rather than rebuilding them.
+    pub h_is_f16: bool,
 }
 
 impl LayerState for SsmLayerState {

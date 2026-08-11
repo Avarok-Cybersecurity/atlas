@@ -108,6 +108,33 @@ pub(super) struct PrefillInProgress {
     pub timeout_at: Option<Instant>,
 }
 
+/// `ActiveSeq::guard_stop` marker for the server-side request deadline
+/// (`--request-timeout`). `finish_sequence` keys off this exact value to
+/// emit `finish_reason="timeout"` instead of deriving "length" from the
+/// last token — see `derive_finish_reason`.
+pub(super) const GUARD_STOP_REQUEST_TIMEOUT: &str = "request_timeout";
+
+/// The `<tool_response>` hard stop fired: the model emitted a control token
+/// it must never generate (post-tool-call runaway). Ending the turn is
+/// correct; naming it is what makes the wire reason `"length"` instead of
+/// `"stop"`, so the client knows the server cut the response short.
+pub(super) const GUARD_STOP_TOOL_RESPONSE: &str = "tool_response_hard_stop";
+
+/// The stray-`</think>` watchdog fired: 50 CONSECUTIVE `</think>` outside a
+/// thinking span (the documented long-context degeneration) forced the turn
+/// closed. Same class as `GUARD_STOP_TOOL_RESPONSE` above: `</think>` is NOT
+/// eos-registered for any served model (measured 2026-08-10 across the HF
+/// cache: Qwen3.6 family eos = {248046 `<|im_end|>`, 248044}, `</think>` =
+/// 248069; Nemotron eos = {2, 11}, `</think>` = 13; Qwen3-VL/Coder eos =
+/// {151645, 151643}, `</think>` = 151668), and the site skips the token
+/// rather than pushing it, so without a name this SERVER cut fell through
+/// every rung of `derive_finish_reason` and wired `"stop"`. The agentic
+/// harness's `was_cut_off()` grants a recovery turn only on `"length"`, so
+/// the mislabel silently ended the whole run. Contrast `<|im_start|>`,
+/// which IS eos-registered (pushed in `tokenizer_runtime.rs::im_start_id`)
+/// — naming a guard THERE would reintroduce the opposite mislabel.
+pub(super) const GUARD_STOP_THINK_SKIP: &str = "think_skip_watchdog";
+
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
     pub seq: SequenceState,
@@ -326,6 +353,13 @@ pub(super) struct ActiveSeq {
     pub grammar_state: Option<GrammarState>,
     /// MTP draft tokens awaiting verification.
     pub pending_drafts: Vec<u32>,
+    /// Top-1 LOG-probability the drafter reported for each entry of
+    /// [`Self::pending_drafts`], in the same order (D-Cut's ranking key —
+    /// `mtp_dcut`). EMPTY whenever the drafts came from a path that cannot
+    /// measure confidence (per-sequence propose, N-gram/DFlash drafters), in
+    /// which case D-Cut leaves the sequence at full depth. Truncated in
+    /// lock-step with `pending_drafts` so index `j` always describes draft `j`.
+    pub pending_draft_conf: Vec<f32>,
     /// Timestamp of the last token emission (for TBT deadline tracking).
     pub last_token_time: Instant,
     /// Timestamp when the request entered prefill (for TTFT).

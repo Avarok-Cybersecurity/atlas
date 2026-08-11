@@ -24,6 +24,7 @@ use super::{SamplingCat, Target};
 pub(super) fn generate_target_ptx_rs(
     targets: &[Target],
     all_modules: &[Vec<(String, String)>],
+    all_drops: &[Vec<(String, String)>],
     output_ext: &str,
     cuda_api: bool,
 ) -> String {
@@ -180,6 +181,8 @@ pub(super) fn generate_target_ptx_rs(
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
+             \x20           shadowed_dropped: &[{}],\n\
+             \x20           expected_absent: &[{}],\n\
              \x20       }},\n",
             target.model, target.quant,
             fmt_cat(&target.sampling_thinking_text),
@@ -224,6 +227,21 @@ pub(super) fn generate_target_ptx_rs(
                     d.target_layer_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "),
                 ),
             },
+            all_drops
+                .get(idx)
+                .map(|d| {
+                    d.iter()
+                        .map(|(m, f)| format!("(\"{m}\", \"{f}\")"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default(),
+            target
+                .expected_absent
+                .iter()
+                .map(|(m, f)| format!("(\"{m}\", \"{f}\")"))
+                .collect::<Vec<_>>()
+                .join(", "),
         ));
     }
     g.push_str("    ]\n}\n");

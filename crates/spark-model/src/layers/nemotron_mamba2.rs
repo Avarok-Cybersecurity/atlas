@@ -19,6 +19,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use crate::weight_map::{DenseWeight, Fp8Weight, NemotronSsmWeights, QuantizedWeight};
 
 mod prefill;
+mod prefill_proj;
 mod trait_impl;
 
 #[allow(dead_code)]
@@ -28,6 +29,12 @@ pub struct NemotronMamba2Layer {
     // FP8 native weights (skip double-quantization FP8→BF16→NVFP4)
     in_proj_fp8: Option<Fp8Weight>,
     out_proj_fp8: Option<Fp8Weight>,
+    // Whether PREFILL may use the native FP8 weights above. False in the
+    // `ATLAS_NEMOTRON_NATIVE_FP8_SSM=decode` bisect mode, where the native
+    // weights are installed for decode only and the legacy NVFP4 copies are
+    // still built and used by prefill. Prefill must key off this flag, not off
+    // `in_proj_fp8.is_some()`.
+    native_fp8_prefill: bool,
     // Transposed NVFP4 weights for fast prefill GEMM (FP8 MMA, N128, cp.async)
     in_proj_t: Option<QuantizedWeight>,
     out_proj_t: Option<QuantizedWeight>,
@@ -35,6 +42,14 @@ pub struct NemotronMamba2Layer {
     // Consumed by `fp8_gemm_t`, which has NO dequant phase at all.
     in_proj_pd_fp8: Option<DevicePtr>,
     out_proj_pd_fp8: Option<DevicePtr>,
+    // NATIVE BF16 projections. A mixed-precision checkpoint can leave some
+    // Mamba layers unquantized (Nano-30B: 6 of 23 in_proj/out_proj are BF16
+    // while 17 are NVFP4). Requantizing those to NVFP4 under ONE global scale
+    // is what the FP8 arm above already documents as destroying context
+    // retrieval; keeping them BF16 avoids inventing a quantization the
+    // checkpoint never asked for.
+    in_proj_bf16: Option<DenseWeight>,
+    out_proj_bf16: Option<DenseWeight>,
     // Kernel handles — decode
     rms_norm_residual_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
@@ -45,10 +60,16 @@ pub struct NemotronMamba2Layer {
     residual_add_k: KernelHandle,
     // Kernel handles — prefill (GEMM + batched kernels)
     w4a16_gemm_k: KernelHandle,
+    // Native FP8 block-scaled prefill GEMM (paired with in_proj_fp8/out_proj_fp8).
+    w8a16_gemm_k: KernelHandle,
+    w8a16_gemm_pipelined_k: KernelHandle,
     w4a16_gemm_t_k: KernelHandle,
     w4a16_gemm_t_m128_k: KernelHandle,
     fp8_gemm_t_k: KernelHandle,
     fp8_fp8_gemm_t_k: KernelHandle,
+    // Native-BF16 projection kernels (paired with in_proj_bf16/out_proj_bf16).
+    dense_gemm_bf16_k: KernelHandle,
+    dense_gemv_bf16_k: KernelHandle,
     bf16_to_fp8_k: KernelHandle,
     w4a4_gemm_k: KernelHandle,
     quantize_nvfp4_k: KernelHandle,
@@ -95,10 +116,13 @@ impl NemotronMamba2Layer {
             ssm,
             in_proj_fp8: None,
             out_proj_fp8: None,
+            native_fp8_prefill: false,
             in_proj_t: None,
             out_proj_t: None,
             in_proj_pd_fp8: None,
             out_proj_pd_fp8: None,
+            in_proj_bf16: None,
+            out_proj_bf16: None,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
@@ -107,10 +131,18 @@ impl NemotronMamba2Layer {
             gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
+            w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
+            w8a16_gemm_pipelined_k: super::try_kernel(
+                gpu,
+                "w8a16_gemm_pipelined",
+                "w8a16_gemm_pipelined",
+            ),
             w4a16_gemm_t_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t"),
             w4a16_gemm_t_m128_k: super::try_kernel(gpu, "w4a16", "w4a16_gemm_t_m128"),
             fp8_gemm_t_k: super::try_kernel(gpu, "w4a16", "fp8_gemm_t_m128_mfast"),
             fp8_fp8_gemm_t_k: super::try_kernel(gpu, "w4a16", "fp8_fp8_gemm_t_m128_mfast"),
+            dense_gemm_bf16_k: super::try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined"),
+            dense_gemv_bf16_k: super::try_kernel(gpu, "gemv", "dense_gemv_bf16"),
             bf16_to_fp8_k: super::try_kernel(gpu, "w4a16", "bf16_to_fp8"),
             w4a4_gemm_k: super::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
             quantize_nvfp4_k: super::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4"),
@@ -139,10 +171,52 @@ impl NemotronMamba2Layer {
     }
 
     /// Set native FP8 weights to skip double-quantization (FP8→BF16→NVFP4).
-    /// When set, decode uses w8a16_gemv (FP8 LUT kernel) instead of w4a16_gemv.
-    pub fn set_fp8_weights(&mut self, in_proj: Option<Fp8Weight>, out_proj: Option<Fp8Weight>) {
+    /// When set, decode uses `w8a16_gemv` and prefill uses `w8a16_gemm` /
+    /// `w8a16_gemm_pipelined` instead of the NVFP4/W4A4 arms.
+    ///
+    /// Inputs MUST be tagged `WeightQuantFormat::Fp8BlockScaled`: every w8a16
+    /// kernel indexes `block_scale[n/128 * k_blocks + k/128]`, so a per-row `[N]`
+    /// scale — or the checkpoint's raw 4-byte scalar `weight_scale` — reads far
+    /// past the end of its allocation (illegal address, not wrong numbers). The
+    /// kernel-handle checks are the same contract: once the FP8 weights are
+    /// installed the NVFP4 fallbacks are NULL, so a missing kernel must fail
+    /// here at load, not deref NULL on the first token.
+    ///
+    /// `prefill` selects whether the prefill GEMMs may use these weights. When
+    /// false (`ATLAS_NEMOTRON_NATIVE_FP8_SSM=decode`) only `w8a16_gemv` reads
+    /// them and prefill stays on the legacy NVFP4 / pre-dequantized copies,
+    /// which the loader still builds in that mode.
+    pub fn set_fp8_weights(
+        &mut self,
+        in_proj: Option<Fp8Weight>,
+        out_proj: Option<Fp8Weight>,
+        prefill: bool,
+    ) -> Result<()> {
+        use crate::weight_map::WeightQuantFormat;
+        if let Some(ref w) = in_proj {
+            w.scale_format.expect(
+                WeightQuantFormat::Fp8BlockScaled,
+                "nemotron mamba2 in_proj (w8a16 expects [ceil(N/128),ceil(K/128)] FP32 block scales)",
+            );
+        }
+        if let Some(ref w) = out_proj {
+            w.scale_format.expect(
+                WeightQuantFormat::Fp8BlockScaled,
+                "nemotron mamba2 out_proj (w8a16 expects [ceil(N/128),ceil(K/128)] FP32 block scales)",
+            );
+        }
+        anyhow::ensure!(
+            self.w8a16_gemv_k.0 != 0,
+            "native FP8 SSM requires the w8a16_gemv kernel (decode)"
+        );
+        anyhow::ensure!(
+            !prefill || self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0,
+            "native FP8 SSM requires w8a16_gemm[_pipelined] (prefill)"
+        );
         self.in_proj_fp8 = in_proj;
         self.out_proj_fp8 = out_proj;
+        self.native_fp8_prefill = prefill;
+        Ok(())
     }
 
     /// Access SSM weights (needed by weight loader for transpose).
@@ -170,6 +244,23 @@ impl NemotronMamba2Layer {
     /// Measured on Puzzle: ablating just that dequant ALU cut a 1k prefill from
     /// 557 ms to 424 ms. Converting the weights once at load time removes it
     /// entirely and lets prefill use `fp8_gemm_t`, which has no dequant phase.
+    /// Install the checkpoint's own BF16 projections, bypassing the NVFP4
+    /// requant entirely. Only valid when BOTH projections are BF16 in the
+    /// checkpoint and the dense kernels resolved; the caller checks that.
+    pub fn set_bf16_weights(&mut self, in_proj: DenseWeight, out_proj: DenseWeight) {
+        self.in_proj_bf16 = Some(in_proj);
+        self.out_proj_bf16 = Some(out_proj);
+    }
+
+    /// Whether this layer can run natively BF16 (weights installed AND both
+    /// dense kernels present).
+    pub fn bf16_native_ready(&self) -> bool {
+        self.in_proj_bf16.is_some()
+            && self.out_proj_bf16.is_some()
+            && self.dense_gemm_bf16_k.0 != 0
+            && self.dense_gemv_bf16_k.0 != 0
+    }
+
     pub fn set_fp8_prefill_weights(&mut self, in_proj: DevicePtr, out_proj: DevicePtr) {
         self.in_proj_pd_fp8 = Some(in_proj);
         self.out_proj_pd_fp8 = Some(out_proj);

@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "Single source of truth for the models the repo's own tooling calls.",
+    "Never hardcode an id in a workflow: free-tier ids are rotated and",
+    "deprecated without notice, so a pinned id eventually 404s. A 404 must",
+    "land in the same bucket as a timeout -- the caller abstains and uses its",
+    "fallback -- because 'the model we named no longer exists' must never read",
+    "as 'nothing is required'.",
+    "",
+    "These three are on DIFFERENT endpoint families. Only `categorize` speaks",
+    "/chat/completions; `embed` uses /embeddings and `rerank` uses /rerank, and",
+    "neither appears in GET /api/v1/models, which lists chat models only.",
+    "",
+    "`rerank` has a 10,240-token context -- 13x smaller than the embedder and",
+    "~100x smaller than the categorizer. Chunk rerank inputs; do not assume one",
+    "uniform budget.",
+    "",
+    "Reference implementation: Avarok-Cybersecurity/lattice-db,",
+    "examples/rag-example/src/openrouter.ts."
+  ],
+  "endpoint_base": "https://openrouter.ai/api/v1",
+  "models": {
+    "categorize": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "embed": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+    "rerank": "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
+  }
+}

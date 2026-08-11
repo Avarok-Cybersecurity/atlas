@@ -72,10 +72,23 @@ pub struct BeamReq {
 /// (2026-07-25): previously any n ≥ 9 fell through to `padded_n = n`, so at
 /// C=16 every distinct batch composition minted its OWN CUDA graph (n=9, 10,
 /// ... 16 each a separate capture) and the buffer-fit guards were computed on
-/// exact n. Above 16 the fall-through behaviour is unchanged.
+/// exact n.
+///
+/// `24` and `32` were added for native bs=32 (2026-07-30): n=17..32 now pads
+/// to two stable graph shapes instead of minting one graph per exact n.
+///
+/// `48`, `64`, `96` and `128` were added for native bs=64+ (2026-07-31,
+/// wave-14a): the decode-metadata layout is now DERIVED from the serve
+/// `max_batch_size` (`spark_runtime::buffers::DecodeMetaLayout`, rows =
+/// max(32, bs), ceiling `DECODE_META_MAX_ROWS`), and
+/// `upload_batch_metadata_fixed` ensures `padded_n <= rows`. Rungs above the
+/// boot's `max_batch_size` are unreachable (the scheduler admits at most
+/// `max_batch_size` active sequences), so every bs<=32 boot never pads past
+/// 32 — byte-identical by construction. Rungs <=32 unchanged.
+/// Above 128 the fall-through behaviour is unchanged (guarded downstream).
 #[inline]
 pub fn padded_batch_n(n: usize) -> usize {
-    [2usize, 4, 8, 12, 16]
+    [2usize, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]
         .iter()
         .copied()
         .find(|&s| s >= n)
@@ -226,6 +239,40 @@ pub trait Model: Send + Sync {
         Ok(out)
     }
 
+    /// Like `prefill_batch_chunk`, but each finishing stream's first-token
+    /// logits land in row `row_base + stream_idx` of the shared logits arena
+    /// instead of row `stream_idx`.
+    ///
+    /// CROSS-REQUEST CORRUPTION (the reason this exists). `decode_batch`
+    /// writes lane `i`'s logits to row `i` of `buffers.logits()`, and a
+    /// finishing prefill stream writes row `stream_idx` of the SAME arena —
+    /// byte-identical addresses. In a mixed step decode runs first and the
+    /// caller samples the decode rows AFTER the prefill sub-pass, so every
+    /// active decode lane whose index collides with a finishing prefill
+    /// stream samples THAT REQUEST'S first-token distribution instead of its
+    /// own. Symptoms are exactly what a foreign distribution looks like: a
+    /// stray `<tool_call>` opener at the head of a reply (the foreign stream
+    /// was tool-enabled), or a reply that veers onto another user's topic.
+    /// It cannot happen sequentially — a mixed step needs >=2 prefills and
+    /// >=1 active decode in the same tick.
+    ///
+    /// Giving prefill a disjoint row window is enough to fix it. The arena
+    /// holds `min(max_batch_tokens, 32)` rows against `n_decode + n_prefill
+    /// <= max_num_seqs`, so the shifted window fits with room to spare;
+    /// implementations MUST bounds-check and fall back to `row_base = 0`
+    /// rather than write past the arena.
+    ///
+    /// Default ignores `row_base` (models with no batched prefill of their
+    /// own can't alias, since the serial path returns one row).
+    fn prefill_batch_chunk_rows(
+        &self,
+        streams: &mut [PrefillSlice<'_>],
+        stream: u64,
+        _row_base: usize,
+    ) -> Result<Vec<DevicePtr>> {
+        self.prefill_batch_chunk(streams, stream)
+    }
+
     /// Generalised mixed forward: M decode tokens + N concurrent prefill
     /// chunks fused into one forward pass. Default: delegates to
     /// `decode_batch` + `prefill_batch_chunk` serially. Models that
@@ -257,7 +304,12 @@ pub trait Model: Send + Sync {
         } else {
             spark_runtime::gpu::DevicePtr::NULL
         };
-        let prefill_logits = self.prefill_batch_chunk(prefill_streams, stream)?;
+        // Prefill rows start ABOVE the decode lanes: decode owns rows
+        // 0..decode_tokens.len(), so a finishing prefill stream can no longer
+        // overwrite a lane whose logits the caller has not sampled yet. See
+        // `prefill_batch_chunk_rows`.
+        let prefill_logits =
+            self.prefill_batch_chunk_rows(prefill_streams, stream, decode_tokens.len())?;
         Ok(MixedBatchResult {
             decode_logits,
             prefill_logits,
@@ -554,6 +606,100 @@ pub trait Model: Send + Sync {
         seq: &mut SequenceState,
         stream: u64,
     ) -> Result<[u32; 4]>;
+
+    /// Whether [`Self::decode_verify_batched`] can run for `ks.len()`
+    /// sequences at `ks[i]` verify rows each (one more than that sequence's
+    /// draft count; the K-vs-batch ladder passes 2..=4, and D-Cut makes the
+    /// vector RAGGED — uniform is just the special case).
+    ///
+    /// Default `false`: the scheduler MUST fall back to the per-sequence
+    /// `decode_verify_graphed_k{2,3,4}` loop. There is deliberately NO
+    /// default loop impl of the batched form — a loop over the per-seq
+    /// verify would leave the shared logits buffer holding only the LAST
+    /// sequence's rows and silently poison row-based pipeline picks.
+    fn can_batch_verify(&self, _ks: &[usize]) -> bool {
+        false
+    }
+
+    /// Batched K-row verify: `ks.len()` sequences × `ks[i]` rows in ONE eager
+    /// forward (flat seq-major rows, `tokens.len() == Σ ks`). Weight matrices
+    /// are read once for all `Σ ks` rows. Sequence i occupies rows
+    /// `[off_i, off_i + ks[i])` where `off_i = Σ_{t<i} ks[t]`, holding
+    /// `[last_verified, d0, .., d_{ks[i]-2}]`. Returns the `Σ ks` argmax IDs
+    /// in the same flat order. On success each sequence's `tokens`/`seq_len`
+    /// advance by its own `ks[i]` (rewind is the caller's verdict arithmetic,
+    /// same as the per-seq path). On Err NO sequence state has been advanced.
+    ///
+    /// Callers must gate on [`Self::can_batch_verify`].
+    fn decode_verify_batched(
+        &self,
+        tokens: &[u32],
+        ks: &[usize],
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        let _ = (tokens, ks, seqs, stream);
+        bail!("decode_verify_batched: unsupported by this model")
+    }
+
+    /// Copy raw-hidden rows `rows[i]` of the just-run batched verify forward
+    /// into stash slot `i` (`verify_hidden_stash`), BEFORE any propose
+    /// clobbers the shared `hidden_states` buffer. Companion of
+    /// [`Self::decode_verify_batched`].
+    fn stash_verify_hidden_rows(&self, rows: &[usize], stream: u64) -> Result<()> {
+        let _ = (rows, stream);
+        bail!("stash_verify_hidden_rows: unsupported by this model")
+    }
+
+    /// Stashed-row variant of [`Self::save_hidden_for_mtp`]: copy stash slot
+    /// `idx` (written by [`Self::stash_verify_hidden_rows`]) into the MTP
+    /// input buffer. Used by the batched-verify verdict path, whose propose
+    /// calls have already overwritten the live verify rows.
+    fn save_hidden_for_mtp_from_stash(&self, idx: usize, stream: u64) -> Result<()> {
+        let _ = (idx, stream);
+        bail!("save_hidden_for_mtp_from_stash: unsupported by this model")
+    }
+
+    /// Batched cross-sequence MTP propose for the batched K=4 verify path:
+    /// `num_drafts` drafts for each of `tokens.len()` sequences, reading
+    /// every drafter weight once per draft position instead of once per
+    /// sequence. `stash_idx[i]` names the verify-stash slot holding sequence
+    /// i's accepted-position hidden (written by
+    /// [`Self::stash_verify_hidden_rows`]); `positions[i]` is the propose
+    /// position (post-rewind `seq_len`), matching the per-seq
+    /// [`Self::run_mtp_propose_multi`] contract. Grammarless sequences only.
+    ///
+    /// `out_conf`, when `Some`, receives each draft's top-1 LOG-probability
+    /// (`ln p`, same shape as the returned drafts) — the D-Cut ranking key.
+    /// It is filled with zeros (certainty) when the drafter cannot measure
+    /// confidence, so a caller ranking by prefix product never prunes on a
+    /// value nobody produced.
+    ///
+    /// `Ok(None)` = unsupported (caller falls back to the per-seq propose
+    /// loop, re-saving each stash slot first). Default: unsupported.
+    #[allow(clippy::too_many_arguments)]
+    fn run_mtp_propose_batched(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+        out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let _ = (
+            tokens, positions, stash_idx, num_drafts, seqs, stream, out_conf,
+        );
+        Ok(None)
+    }
+
+    /// Widest batch [`Self::run_mtp_propose_batched`] can carry in ONE
+    /// drafter forward per draft position. `1` = per-sequence only.
+    /// Schedulers chunk their propose groups by this — never by a constant.
+    fn mtp_propose_batch_max(&self) -> usize {
+        1
+    }
 
     /// DFlash K=γ graphed verify (γ+1 tokens). Specialization of the K=2/3/4
     /// pattern for arbitrary K. Default impl falls back to eager
@@ -942,6 +1088,21 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// Reclaim up to `num_blocks` blocks from the prefix cache, returning how
+    /// many actually became free.
+    ///
+    /// The prefill/decode allocators reclaim implicitly (`try_alloc` → evict →
+    /// retry), but swap-in cannot: it gates on `num_free_blocks()` BEFORE
+    /// attempting a restore, so cached-but-evictable capacity is invisible to
+    /// it and a swapped-out sequence waits for blocks that are never
+    /// volunteered. Cached blocks are legitimately held (the cache owns one ref
+    /// per radix node), so nothing frees them on its own — the swap-in path has
+    /// to ask. Returns 0 when nothing is evictable, which the caller must treat
+    /// as "no progress possible" rather than retrying forever.
+    fn reclaim_prefix_blocks(&self, _num_blocks: usize) -> usize {
+        0
+    }
+
     /// Return the default CUDA stream handle.
     fn default_stream(&self) -> u64 {
         0
@@ -973,5 +1134,47 @@ pub trait Model: Send + Sync {
     /// buffers on another stream (#110). Default no-op for non-CUDA mocks.
     fn synchronize(&self, _stream: u64) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod padded_batch_n_tests {
+    use super::padded_batch_n;
+
+    /// Rungs <= 32 must be UNCHANGED by the wave-14a widening (byte-identity
+    /// for every bs <= 32 boot), and the new rungs must cover n=33..128.
+    #[test]
+    fn ladder_rungs() {
+        // Legacy rungs (aacd29cb and earlier) — must not move.
+        for (n, want) in [
+            (1usize, 2usize),
+            (2, 2),
+            (3, 4),
+            (5, 8),
+            (9, 12),
+            (13, 16),
+            (16, 16),
+            (17, 24),
+            (25, 32),
+            (32, 32),
+        ] {
+            assert_eq!(padded_batch_n(n), want, "n={n}");
+        }
+        // Wave-14a rungs (only reachable when the boot's max_batch_size
+        // admits that many active sequences).
+        for (n, want) in [
+            (33usize, 48usize),
+            (48, 48),
+            (49, 64),
+            (64, 64),
+            (65, 96),
+            (96, 96),
+            (97, 128),
+            (128, 128),
+        ] {
+            assert_eq!(padded_batch_n(n), want, "n={n}");
+        }
+        // Above the ladder: fall-through unchanged.
+        assert_eq!(padded_batch_n(129), 129);
     }
 }

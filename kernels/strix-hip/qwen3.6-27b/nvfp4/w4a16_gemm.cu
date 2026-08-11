@@ -175,14 +175,26 @@ extern "C" __global__ void w4a16_gemm(
 // B_packed[K/2, N], B_scale[K/GROUP_SIZE, N]. Dequant NVFP4→BF16.
 // 8 WMMA n-sub-tiles (128 N / 16). K_STEP_T=32 → 2 WMMA K=16 ops per step.
 // ═══════════════════════════════════════════════════════════════════
+// `ldb` = ROW STRIDE of the transposed B, which may EXCEED N. MUST MATCH THE
+// CUDA COPY at kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu — the Rust caller
+// (`w4a16_gemm_n128_ldb`) passes this argument on EVERY platform.
+//
+// Without the parameter this kernel silently strided the lm_head transposed twin
+// by N while the twin is built with a PADDED stride (vocab 248077 -> 248192),
+// shearing every row past the first and producing garbage logits at padded_n>=5
+// — with NO fault, because RDNA tolerates the unaligned access that traps on
+// CUDA as 716. `kernels/strix/` is a symlink to the GB10 file and inherited the
+// fix; this HIP copy is a real file and had to be updated in lockstep.
 extern "C" __global__ void w4a16_gemm_t(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,
     const unsigned char* __restrict__ B_scale,
     const float scale2,
     __nv_bfloat16* __restrict__ C,
-    unsigned int M, unsigned int N, unsigned int K
+    unsigned int M, unsigned int N, unsigned int K,
+    unsigned int ldb
 ) {
+    const unsigned int LDB = ldb;
     const unsigned int cta_n = blockIdx.x * N_TILE_LG;
     const unsigned int cta_m = blockIdx.y * M_TILE;
     const unsigned int warp_id = threadIdx.x / 32;
@@ -221,13 +233,13 @@ extern "C" __global__ void w4a16_gemm_t(
             unsigned int gke = (kb) + (kp << 1); \
             unsigned int gns = cta_n + ns; \
             sync_copy_16(&smem_Bp[(buf)][kp][ns], \
-                &B_packed[(unsigned long long)(gke >> 1) * N + gns], \
-                (gke + 1 <= K) && (gns + 15 < N)); \
+                &B_packed[(unsigned long long)(gke >> 1) * LDB + gns], \
+                (gke + 1 <= K) && (gns + 15 < LDB)); \
             if (kp < K_STEP_T / GROUP_SIZE) { \
                 unsigned int sg = (kb) / GROUP_SIZE + kp; \
                 sync_copy_16(&smem_Bs[(buf)][kp][ns], \
-                    &B_scale[(unsigned long long)sg * N + gns], \
-                    (gns + 15 < N)); \
+                    &B_scale[(unsigned long long)sg * LDB + gns], \
+                    (gns + 15 < LDB)); \
             } \
         } \
     } while(0)

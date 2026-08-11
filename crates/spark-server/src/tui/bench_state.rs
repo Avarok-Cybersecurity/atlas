@@ -359,7 +359,7 @@ impl BenchState {
                     } else {
                         self.status = frame.phase.clone();
                     }
-                    self.frame = Some(frame);
+                    self.frame = Some(*frame);
                 }
             }
         }
@@ -446,3 +446,7 @@ const FALLBACK_METADATA: atlas_plugin::PluginMetadata =
 #[cfg(test)]
 #[path = "bench_state_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_state_more_tests.rs"]
+mod more_tests;

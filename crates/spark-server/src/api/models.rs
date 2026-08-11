@@ -38,12 +38,7 @@ pub async fn list_models(
     // The resident adapters ARE served models — advertise them first (slot
     // order; data[0] is the default route) so clients can pick a fine-tune.
     for adapter in state.adapter_names.iter().take(MAX_ADVERTISED_MODELS) {
-        data.push(ModelInfo {
-            id: adapter.clone(),
-            object: "model".to_string(),
-            created: crate::ids::unix_timestamp(),
-            owned_by: "atlas-spark".to_string(),
-        });
+        data.push(ModelInfo::advertise(adapter.clone(), state.max_seq_len));
     }
     // Cold STAGEABLE names (peer- and disk-backed) are selectable via `model`
     // and fault in on first use — advertise them too (before the base model),
@@ -55,19 +50,12 @@ pub async fn list_models(
         .chain(state.lora_disk_stageable.keys())
         .take(MAX_ADVERTISED_MODELS.saturating_sub(data.len()))
     {
-        data.push(ModelInfo {
-            id: name.clone(),
-            object: "model".to_string(),
-            created: crate::ids::unix_timestamp(),
-            owned_by: "atlas-spark".to_string(),
-        });
+        data.push(ModelInfo::advertise(name.clone(), state.max_seq_len));
     }
-    data.push(ModelInfo {
-        id: state.model_name.clone(),
-        object: "model".to_string(),
-        created: crate::ids::unix_timestamp(),
-        owned_by: "atlas-spark".to_string(),
-    });
+    data.push(ModelInfo::advertise(
+        state.model_name.clone(),
+        state.max_seq_len,
+    ));
     Json(ModelListResponse {
         object: "list".to_string(),
         data,
@@ -108,6 +96,7 @@ pub async fn get_model(
             "object": "model",
             "created": crate::ids::unix_timestamp(),
             "owned_by": "atlas-spark",
+            "max_model_len": state.max_seq_len,
         }))
         .into_response()
     } else {

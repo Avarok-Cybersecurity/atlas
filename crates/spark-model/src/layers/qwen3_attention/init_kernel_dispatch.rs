@@ -25,6 +25,14 @@ use spark_runtime::kv_cache::KvCacheDtype;
 /// Module + function name 4-tuple consumed by `Qwen3AttentionLayer::new_with_gating`:
 /// `(reshape_mod, reshape_fn, decode_mod, decode_fn)`. The reshape pair feeds
 /// `self.reshape_cache_k`; the decode pair feeds `self.paged_decode_k`.
+///
+/// EXPERIMENTAL: the `turbo2`/`turbo3`/`turbo4`/`turbo8` arms below (and the
+/// asymmetric `*k_*v` pairs built from them) are not supported on every kernel
+/// target. The module names here are the post-`[modules]`-rename names, and a
+/// target whose KERNEL.toml does not carry the matching rename never registers
+/// the module under that name, so the pair cannot resolve. That is caught by
+/// `kernel_requirements::validate_required_kernels` at startup, before weight
+/// load; it is not a fallback path.
 pub(super) fn kernel_modules_for_dtype(
     kv_dtype: KvCacheDtype,
     head_dim: usize,

@@ -112,6 +112,7 @@ pub fn step_self_spec(
         &verified_argmax,
         a,
         verify_ctx,
+        0,
     );
 
     // 6. Compare draft vs verified, count acceptances
@@ -186,6 +187,7 @@ pub fn step_ngram(
     if !a.pending_drafts.is_empty() {
         // ── Phase B: Verify pending draft ──
         let drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+        a.pending_draft_conf.clear();
         step_ngram_verify(model, a, sched, &drafts, proposer, verify_ctx);
     } else {
         // ── Phase A: Bootstrap decode + N-gram propose ──
@@ -289,6 +291,7 @@ pub fn step_ngram_verify(
         &[v0_argmax, v1_argmax],
         a,
         verify_ctx,
+        0,
     );
     let v0 = processed.first().copied().unwrap_or(v0_argmax);
     let v1 = processed.get(1).copied().unwrap_or(v1_argmax);

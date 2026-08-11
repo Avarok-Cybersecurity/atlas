@@ -110,6 +110,9 @@ impl TransformerModel {
 
         // ── 1. Embed ALL tokens → [total_len, H] contiguous ──
         {
+            // SAFETY: `total_len` is `tokens.len()` (bound at fn entry and never
+            // reassigned), so the byte length is exactly
+            // `tokens.len() * size_of::<u32>()` over a live `&[u32]`.
             let token_ids_bytes: &[u8] =
                 unsafe { std::slice::from_raw_parts(tokens.as_ptr() as *const u8, total_len * 4) };
             let token_ids_dev = self.buffers.scratch();
@@ -164,6 +167,7 @@ impl TransformerModel {
         };
         let matched = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = matched;
+        seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
         // Record the original prompt length for cache_sequence bookkeeping.
         seq.prompt_len = tokens.len();
         for &block_idx in &prefix_match.matched_blocks {
@@ -261,6 +265,13 @@ impl TransformerModel {
         // Re-embed only the uncached portion at hidden[0..proc_count].
         if proc_start > 0 {
             let uncached_tokens = &tokens[proc_start..];
+            // SAFETY: this arm runs only when `proc_start > 0`, which the
+            // `(proc_start, proc_count)` binding above reaches only via
+            // `(kv_write_start, total_len - kv_write_start)` — so
+            // `proc_count == total_len - proc_start == uncached_tokens.len()`
+            // and the byte length is `uncached_tokens.len() * size_of::<u32>()`
+            // over a live `&[u32]`. (A `kv_write_start > total_len` would panic
+            // in the slice index on the line above, before this runs.)
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(uncached_tokens.as_ptr() as *const u8, proc_count * 4)
             };
@@ -298,17 +309,6 @@ impl TransformerModel {
             stg.positions
                 .extend(proc_start as u32..(proc_start + proc_count) as u32);
 
-            let pinned = stg.ptr;
-            let mut cursor = proc_count * 4;
-
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    stg.positions.as_ptr() as *const u8,
-                    pinned,
-                    proc_count * 4,
-                );
-            }
-
             if !needs_paged {
                 stg.slots.clear();
                 stg.slots
@@ -318,24 +318,18 @@ impl TransformerModel {
                             .unwrap_or(self.dummy_kv_block);
                         (block_idx as i64) * (bs as i64) + ((i % bs) as i64)
                     }));
-                cursor = slot_offset;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        stg.slots.as_ptr() as *const u8,
-                        pinned.add(cursor),
-                        proc_count * 8,
-                    );
-                }
-                cursor += proc_count * 8;
             }
 
-            assert!(
-                cursor <= stg.bytes,
-                "prefill_twophase metadata overflow: {cursor} > {}",
-                stg.bytes
-            );
-            let pinned_slice = unsafe { std::slice::from_raw_parts(pinned, cursor) };
-            self.gpu.copy_h2d_async(pinned_slice, meta_base, stream)?;
+            // Rounding `slot_offset` up to 8 leaves up to 4 pad bytes after the
+            // positions array that no copy writes; they are still initialised
+            // (see the `pinned_pack` module docs).
+            let mut pack = stg.packer_for(self.buffers.scratch_bytes().saturating_sub(meta_offset));
+            pack.put_prefix_at("positions", 0, &stg.positions, proc_count)?;
+            if !needs_paged {
+                pack.put_prefix_at("slots", slot_offset, &stg.slots, proc_count)?;
+            }
+            self.gpu
+                .copy_h2d_async_retained(pack.packed(), meta_base, stream)?;
         }
 
         if needs_paged {
@@ -349,6 +343,9 @@ impl TransformerModel {
             // reads this metadata, so skip the upload entirely in HSS mode.
             if upload_start < current_blocks && seq.hss_window_start() == 0 {
                 let new_blocks = &seq.block_table[upload_start..];
+                // SAFETY: the length is `size_of_val(new_blocks)` — derived from
+                // the slice itself, so it can never exceed it — over a live
+                // `&[u32]` sub-slice of `seq.block_table`.
                 let bt_bytes = unsafe {
                     std::slice::from_raw_parts(
                         new_blocks.as_ptr() as *const u8,
@@ -365,6 +362,8 @@ impl TransformerModel {
             }
 
             let seq_len_val = (proc_start + proc_count) as u32;
+            // SAFETY: exactly `size_of::<u32>()` bytes over the live, fully
+            // initialised `seq_len_val` local on the line above.
             let seq_len_bytes = unsafe {
                 std::slice::from_raw_parts(
                     &seq_len_val as *const u32 as *const u8,

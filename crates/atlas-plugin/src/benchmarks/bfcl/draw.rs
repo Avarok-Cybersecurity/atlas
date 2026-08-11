@@ -105,6 +105,29 @@ impl DrawSpec {
         }
     }
 
+    /// The `echolp` draw: the three categories at 46/23/12 with a floor of 25.
+    /// On the full v4 single-turn table this is exactly **1004**.
+    ///
+    /// This is a DIFFERENT COMPOSITION from `golden`, and that is the point —
+    /// it weights `live` more than twice as heavily (23 % vs 10 %). The two
+    /// draws land `overall_accuracy` in the same place (~87.44 vs 87.45) while
+    /// `normalized_single_turn_score` differs by ~1.8 points purely from the
+    /// category mix. A score from one draw is therefore NOT comparable to a
+    /// threshold from the other; each has its own baseline.
+    pub fn echolp() -> Self {
+        Self {
+            categories: Self::categories_or_all(&CATEGORIES),
+            category_pct: [
+                ("non_live".to_string(), 46.0),
+                ("live".to_string(), 23.0),
+                ("hallucination".to_string(), 12.0),
+            ]
+            .into_iter()
+            .collect(),
+            subset_floor: Some(25),
+        }
+    }
+
     /// Is this subset in the selection?
     pub fn includes(&self, subset: &str) -> bool {
         if self.categories.is_empty() {

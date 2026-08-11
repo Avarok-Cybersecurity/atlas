@@ -127,7 +127,7 @@ fn draw_cards(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]);
         if selected {
-            head = head.style(Style::default().bg(theme::BG_SELECTION.color()));
+            head = head.style(theme::selected());
         }
         lines.push(head);
 
