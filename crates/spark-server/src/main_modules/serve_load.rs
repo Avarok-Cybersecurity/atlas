@@ -381,7 +381,7 @@ pub(crate) fn load_model(
     // batch-size-dependent MoE-kernel rounding (a known FP8 quality-floor
     // property present for fresh non-cached sequences too), not a Marconi
     // state-management defect — so no warning is emitted here.
-    let prefix_cache = serve_phases::build_prefix_cache(&args);
+    let prefix_cache = serve_phases::build_prefix_cache(&args, &config);
     let comm = serve_phases::init_nccl_comm(
         &args,
         gpu.as_ref(),
