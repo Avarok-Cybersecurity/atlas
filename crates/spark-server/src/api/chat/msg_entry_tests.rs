@@ -283,7 +283,7 @@ mod build_tests {
         )];
 
         let enabled =
-            build_msg_entries(None, None, &msgs, true, &ChatLevers::OFF).expect("enabled");
+            build_msg_entries(None, None, &msgs, true, &ChatLevers::OFF, false).expect("enabled");
         assert_eq!(enabled.cwd_hint.as_deref(), Some("/tmp/project"));
         assert!(enabled.messages[0].content.contains("<environment>"));
 
@@ -292,7 +292,7 @@ mod build_tests {
             ..ChatLevers::OFF
         };
         let disabled =
-            build_msg_entries(None, None, &msgs, true, &disabled_levers).expect("disabled");
+            build_msg_entries(None, None, &msgs, true, &disabled_levers, false).expect("disabled");
         assert_eq!(disabled.cwd_hint.as_deref(), Some("/tmp/project"));
         assert_eq!(
             disabled.messages[0].content,
