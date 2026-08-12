@@ -328,7 +328,7 @@ impl App {
             return;
         }
         if self.help_open {
-            self.on_help_key(key);
+            self.on_help_overlay_key(key);
             return;
         }
         if self.in_input() {

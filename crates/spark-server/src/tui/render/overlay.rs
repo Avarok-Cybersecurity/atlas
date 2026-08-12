@@ -200,7 +200,7 @@ pub(super) fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     };
     f.render_widget(Clear, modal);
     let visible = (h.saturating_sub(2) as usize).max(1);
-    // The ceiling, published for `App::on_help_key` — the same renderer-owned
+    // The ceiling, published for `App::on_help_overlay_key` — the same renderer-owned
     // contract as every scroll ceiling in `app_scroll`.
     let max = KEYS.len().saturating_sub(visible);
     app.help_scroll_max.set(max);

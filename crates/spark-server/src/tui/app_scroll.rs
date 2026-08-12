@@ -87,7 +87,7 @@ impl App {
     /// scroll keys are consumed rather than passed through, for the same
     /// reason the quit prompt consumes everything — a key that dismisses AND
     /// acts navigates somewhere the user did not ask for.
-    pub(super) fn on_help_key(&mut self, key: KeyEvent) {
+    pub(super) fn on_help_overlay_key(&mut self, key: KeyEvent) {
         let max = self.help_scroll_max.get();
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {

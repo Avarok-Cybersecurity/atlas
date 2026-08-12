@@ -46,7 +46,7 @@ impl App {
             return;
         }
         if self.section == Section::Help {
-            self.on_help_key(key);
+            self.on_help_overlay_key(key);
             return;
         }
         // Terminal input.
