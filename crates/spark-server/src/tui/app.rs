@@ -210,9 +210,10 @@ impl App {
     pub fn on_tick(&mut self) {
         self.tick += 1;
         self.progress.ease_tick();
-        // Info toasts auto-dismiss after 5s; errors persist.
+        // Info toasts auto-dismiss at 5s, errors at 12s — never forever: under
+        // the 3-toast render cap a permanent error crowds out what follows.
         self.toasts
-            .retain(|t| t.error || t.at.elapsed().as_secs() < 5);
+            .retain(|t| t.at.elapsed().as_secs() < if t.error { 12 } else { 5 });
         // A launch that failed after its thread started must not leave the
         // dashboard showing a load. The checklist was reset and the pill set
         // to LOADING the moment the thread spawned; if the swap then refused

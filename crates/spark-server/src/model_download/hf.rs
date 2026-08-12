@@ -116,6 +116,30 @@ fn get(
     }
 }
 
+/// [`get`], retrying anonymously when the token is refused.
+///
+/// A stale or revoked token makes the Hub answer 401 for PUBLIC repos too, so
+/// one bad line in `~/.cache/huggingface/token` turned every download into an
+/// instant "requires credentials" failure. Public models need no credentials
+/// at all; the retry costs one request and only ever runs on a 401/403 that
+/// was about to be fatal anyway. A genuinely gated repo fails the anonymous
+/// retry with the same class of status, and the ORIGINAL error is reported —
+/// `had_token: true` is what routes the reader to the licence hint rather
+/// than the "set HF_TOKEN" one.
+fn get_or_anon(
+    url: &str,
+    token: Option<&str>,
+    range_from: Option<u64>,
+) -> Result<ureq::http::Response<ureq::Body>, (u16, anyhow::Error)> {
+    match get(url, token, range_from) {
+        Err((s @ (401 | 403), e)) if token.is_some() => match get(url, None, range_from) {
+            Ok(r) => Ok(r),
+            Err(_) => Err((s, e)),
+        },
+        other => other,
+    }
+}
+
 /// The repo's current `main` revision sha, and every file in it.
 pub fn repo_info(
     repo: &str,
@@ -123,7 +147,7 @@ pub fn repo_info(
 ) -> Result<(String, Vec<RemoteFile>), DownloadError> {
     let had = tok.is_some();
     let url = format!("{HOST}/api/models/{repo}");
-    let body = match get(&url, tok, None) {
+    let body = match get_or_anon(&url, tok, None) {
         Ok(r) => r
             .into_body()
             .read_to_string()
@@ -161,7 +185,7 @@ pub fn repo_info(
 /// a percentage, which is degraded but never blocking.
 pub fn sizes(repo: &str, revision: &str, tok: Option<&str>) -> Vec<(String, u64)> {
     let url = format!("{HOST}/api/models/{repo}/tree/{revision}?recursive=1");
-    let Ok(r) = get(&url, tok, None) else {
+    let Ok(r) = get_or_anon(&url, tok, None) else {
         return Vec::new();
     };
     let Ok(body) = r.into_body().read_to_string() else {
@@ -217,7 +241,7 @@ pub fn fetch_file(
     let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
     let url = format!("{HOST}/{repo}/resolve/{revision}/{name}");
-    let resp = match get(&url, tok, (have > 0).then_some(have)) {
+    let resp = match get_or_anon(&url, tok, (have > 0).then_some(have)) {
         Ok(r) => r,
         Err((0, e)) => return Err(DownloadError::Offline(e.to_string())),
         Err((s, _)) => return Err(classify(repo, s, had)),

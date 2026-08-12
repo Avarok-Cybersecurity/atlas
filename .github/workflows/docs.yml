@@ -20,6 +20,10 @@ on:
   # (kernel-only diffs), leaving them permanently "expected" and unmergeable.
   pull_request:
     branches: [main, master]
+  # Merge queue: same reasoning — this job is required, queue commits fire
+  # none of the events above, so report on every entry unfiltered. The deploy
+  # job stays push-only by its own `if`.
+  merge_group:
 
 concurrency:
   group: docs-${{ github.ref }}

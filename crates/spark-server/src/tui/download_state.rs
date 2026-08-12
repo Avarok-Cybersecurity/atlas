@@ -118,7 +118,24 @@ impl DownloadState {
     pub fn pump(&mut self) -> Option<Settled> {
         let mut settled = None;
         if let Some(job) = self.job.as_mut() {
-            let msgs: Vec<DownloadMsg> = job.handle.rx.try_iter().collect();
+            // Drained one message at a time, so a disconnect can only be seen
+            // AFTER everything the worker managed to send. The first version
+            // used `try_iter` plus a second `try_recv` as a liveness probe —
+            // and a terminal message sent between the two was consumed by the
+            // probe and dropped, reporting a finished download as "stopped
+            // unexpectedly".
+            let mut msgs = Vec::new();
+            let mut disconnected = false;
+            loop {
+                match job.handle.rx.try_recv() {
+                    Ok(m) => msgs.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
             for msg in msgs {
                 match msg {
                     DownloadMsg::Planned {
@@ -161,6 +178,21 @@ impl DownloadState {
                         self.last_message = Some((describe(&job.repo, &e), true));
                     }
                 }
+            }
+            // A worker that died WITHOUT a terminal message — a panic, since
+            // `run`'s Err path sends `Failed` — must still settle the job.
+            // Left tracked, `is_downloading` stays true forever and every
+            // later `d` is refused with "already downloading", which reads as
+            // downloads being broken outright.
+            if settled.is_none() && disconnected {
+                settled = Some(Settled::Stopped(job.repo.clone()));
+                self.last_message = Some((
+                    format!(
+                        "{} download stopped unexpectedly — press d to resume",
+                        job.repo
+                    ),
+                    true,
+                ));
             }
         }
         if settled.is_some() {
