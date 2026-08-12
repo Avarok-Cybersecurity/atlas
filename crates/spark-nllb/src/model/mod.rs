@@ -42,6 +42,15 @@ impl NllbModel {
         Ok(Self { cfg, w, lora: None })
     }
 
+    /// Load the model with weights from a GGUF file, reading `config.json` from
+    /// `cfg_dir` (the safetensors sidecar — the GGUF carries no HF config or
+    /// tokenizer). The tokenizer is still loaded from `cfg_dir` by the caller.
+    pub fn load_gguf(cfg_dir: &Path, gguf: &Path) -> Result<Self> {
+        let cfg = NllbConfig::from_json(&std::fs::read_to_string(cfg_dir.join("config.json"))?)?;
+        let w = WeightStore::load_gguf(gguf)?;
+        Ok(Self { cfg, w, lora: None })
+    }
+
     /// Load the base checkpoint and attach a PEFT LoRA adapter from `lora_dir`.
     pub fn load_dir_with_lora(dir: &Path, lora_dir: &Path) -> Result<Self> {
         let mut m = Self::load_dir(dir)?;

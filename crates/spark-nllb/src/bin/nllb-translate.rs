@@ -5,15 +5,18 @@
 //! Usage:
 //!
 //! ```text
-//! nllb-translate --model <dir> [--lora <adapter_dir>] \
+//! nllb-translate --model <dir> [--gguf <file.gguf>] [--lora <adapter_dir>] \
 //!     --src eng_Latn --tgt fra_Latn "Hello, world."
 //! ```
 //!
 //! `<dir>` is a safetensors NLLB checkpoint (e.g. a local clone of
-//! `MonumentalSystems/nllb-200-3.3B`). `--lora <adapter_dir>` optionally applies
-//! a HuggingFace PEFT LoRA adapter (`adapter_config.json` +
-//! `adapter_model.safetensors`) as a runtime delta. Prints the translation to
-//! stdout.
+//! `MonumentalSystems/nllb-200-3.3B`); it always supplies `config.json` +
+//! `tokenizer.json`. Without `--gguf`, weights load from that directory's
+//! safetensors. With `--gguf <file.gguf>` the weights instead come from an NLLB
+//! GGUF (arch `nllb`, F16/F32) while config/tokenizer still come from `--model`.
+//! `--lora <adapter_dir>` optionally applies a HuggingFace PEFT LoRA adapter
+//! (`adapter_config.json` + `adapter_model.safetensors`) as a runtime delta
+//! (safetensors weights only). Prints the translation to stdout.
 
 use std::path::PathBuf;
 
@@ -23,6 +26,7 @@ use tokenizers::Tokenizer;
 
 struct Args {
     model: PathBuf,
+    gguf: Option<PathBuf>,
     lora: Option<PathBuf>,
     src: String,
     tgt: String,
@@ -33,6 +37,7 @@ struct Args {
 
 fn parse_args() -> Result<Args> {
     let mut model = None;
+    let mut gguf = None;
     let mut lora = None;
     let mut src = "eng_Latn".to_string();
     let mut tgt = "fra_Latn".to_string();
@@ -45,6 +50,7 @@ fn parse_args() -> Result<Args> {
             "--model" | "-m" => {
                 model = Some(PathBuf::from(it.next().context("--model needs a value")?))
             }
+            "--gguf" => gguf = Some(PathBuf::from(it.next().context("--gguf needs a value")?)),
             "--lora" => lora = Some(PathBuf::from(it.next().context("--lora needs a value")?)),
             "--src" => src = it.next().context("--src needs a value")?,
             "--tgt" => tgt = it.next().context("--tgt needs a value")?,
@@ -59,6 +65,7 @@ fn parse_args() -> Result<Args> {
     }
     Ok(Args {
         model,
+        gguf,
         lora,
         src,
         tgt,
@@ -73,9 +80,13 @@ fn main() -> Result<()> {
 
     eprintln!("[nllb] loading {} ...", args.model.display());
     let t0 = std::time::Instant::now();
-    let model = match &args.lora {
-        Some(lora_dir) => NllbModel::load_dir_with_lora(&args.model, lora_dir)?,
-        None => NllbModel::load_dir(&args.model)?,
+    let model = match (&args.gguf, &args.lora) {
+        (Some(gguf), None) => NllbModel::load_gguf(&args.model, gguf)?,
+        (Some(_), Some(_)) => {
+            bail!("--gguf and --lora cannot be combined (LoRA path is safetensors-only)")
+        }
+        (None, Some(lora_dir)) => NllbModel::load_dir_with_lora(&args.model, lora_dir)?,
+        (None, None) => NllbModel::load_dir(&args.model)?,
     };
     eprintln!(
         "[nllb] loaded in {:.1}s (d_model={}, enc={}, dec={}, lora_modules={})",

@@ -145,6 +145,24 @@ jobs:
             # the launch-day allow-list pending a free-function
             # `ops/{alloc,copy,launch,events}.rs` extraction.
             "crates/spark-runtime/src/metal_backend.rs"
+            # 519 LoC — BufferArena: the single pre-allocated GPU intermediate-
+            # buffer set. One `impl BufferArena` (per-field alloc + a getter per
+            # buffer); the file sat at 499 LoC and the native keep-packed Q2_0
+            # prefill fix added one persistent dequant-scratch buffer (field +
+            # alloc + two getters) to kill a per-matmul cuMemAlloc/sync/free.
+            # Adding a buffer is inherently spread across the struct, the ctor,
+            # and the getter block, so it cannot land without nudging over the
+            # cap. Clean split (getters → `arena/getters.rs`) tracked as
+            # follow-up.
+            "crates/spark-runtime/src/buffers.rs"
+            # 524 LoC — BufferSizes: the single per-buffer sizing table (field
+            # per buffer + one ctor + the total() sum). Same change, same
+            # inherent spread as `buffers.rs` above: the file sat at 499 LoC and
+            # the two Q2_0 scratch buffers add a field, a ctor line, and a sum
+            # line each (the sizing MATH itself was already split out to
+            # `sizes_q2.rs`). Clean split (total() → `sizes/total.rs`) tracked
+            # as the same follow-up as the buffers.rs getter split.
+            "crates/spark-runtime/src/buffers/sizes.rs"
             # ── PR #90 (fix/in-think-tool-call-leak) carry-overs ──
             # The overnight coherence-debugging work grew these past 500 LoC
             # (19 newly over-cap + impl_a2/compile_tools inherited from main).

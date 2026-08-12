@@ -45,6 +45,36 @@ pub fn lora_peer_env() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Feature-1 (MoE expert + router LoRA) master switch. `ATLAS_LORA_EXPERTS=1`
+/// (or `true`) opts INTO loading + applying routed-expert / router deltas.
+/// DEFAULT OFF: an adapter that targets `mlp.experts.*` / `mlp.gate` is a NAMED
+/// reject at load unless this is set, so the base path stays byte-identical and
+/// the (correctness-first, host-synced, non-graphable) expert side-path is never
+/// silently on. Read once.
+pub fn lora_experts_env() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_LORA_EXPERTS")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
+
+/// Feature-1 padded expert/router LoRA rank cap (`ATLAS_LORA_EXPERT_RANK`,
+/// default 16). Separate from `--max-lora-rank` (the attention pool) because the
+/// per-(layer,expert,proj) pool grows ~`num_experts × num_layers` faster, so a
+/// low cap bounds the expert-pool VRAM blow-up. An adapter with `r` above this
+/// is a named reject.
+pub fn max_lora_expert_rank() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_LORA_EXPERT_RANK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&r: &usize| r > 0)
+            .unwrap_or(16)
+    })
+}
+
 pub fn full_attention_layers(cfg: &ModelConfig) -> Vec<usize> {
     (0..cfg.num_hidden_layers)
         .filter(|&i| cfg.layer_type(i) == LayerType::FullAttention)
@@ -64,10 +94,14 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
     }
     for t in &peft.target_modules {
         let last = t.rsplit('.').next().unwrap_or(t);
-        if !LoraModule::ALL.iter().any(|m| m.peft_name() == last) {
+        // `gate` is the MoE router (Feature-1), distinct from `gate_proj`. Expert
+        // projections reuse the dense leaves (gate_proj/up_proj/down_proj), so
+        // the LoraModule allow-list already covers them.
+        let ok = last == "gate" || LoraModule::ALL.iter().any(|m| m.peft_name() == last);
+        if !ok {
             bail!(
                 "REJECT[unsupported-target]: target_modules entry '{t}' \
-                 (allowed: q_proj k_proj v_proj o_proj gate_proj up_proj down_proj)"
+                 (allowed: q_proj k_proj v_proj o_proj gate_proj up_proj down_proj gate)"
             );
         }
     }

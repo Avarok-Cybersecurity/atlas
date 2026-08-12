@@ -347,7 +347,14 @@ impl Qwen3AttentionLayer {
         }
 
         let o_out = fwd.buffers.moe_output();
-        if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
+        if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+            // Keep-packed Q2_0 (Tier-1c): per-token 2-bit o_proj GEMV.
+            for i in 0..n {
+                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
+                let o_out_i = o_out.offset(i * h * bf16);
+                ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, attn_out_i, q2, o_out_i, stream)?;
+            }
+        } else if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
             // ATLAS_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
             // attn_out is contiguous [n, q_dim] and o_out is [n, h], so a single
             // batched GEMM reads the BF16 o_proj weight ONCE for all n sequences

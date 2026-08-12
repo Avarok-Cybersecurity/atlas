@@ -77,6 +77,7 @@ impl TransformerModel {
             max_blocks_per_seq: seq.block_table.len() as u32,
             num_seqs: 1,
             seq_slot,
+            moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
         // Consume the one-shot ATLAS_PROFILE_FIRST flag (additive).
@@ -122,6 +123,7 @@ impl TransformerModel {
             // #30: request slot pairs (None unless routing to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
             midchunk_capture,
+            moe_lora_route: self.moe_lora_route(seq.adapter_slot),
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path

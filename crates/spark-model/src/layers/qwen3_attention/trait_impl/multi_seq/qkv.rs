@@ -792,7 +792,19 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<()> {
         if self.gated {
-            if let Some(fp8) = self.q_weight.as_ref().and_then(|w| w.as_fp8()) {
+            if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+                ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, normed_i, q2, q_out_i, stream)?;
+                ops::deinterleave_qg(
+                    fwd.gpu,
+                    self.deinterleave_qg_k,
+                    q_out_i,
+                    1,
+                    nq,
+                    hd,
+                    q_proj_dim,
+                    stream,
+                )?;
+            } else if let Some(fp8) = self.q_weight.as_ref().and_then(|w| w.as_fp8()) {
                 ops::w8a16_gemv(
                     fwd.gpu,
                     self.w8a16_gemv_k,
@@ -870,6 +882,8 @@ impl Qwen3AttentionLayer {
                     )?;
                 }
             }
+        } else if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+            ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, normed_i, q2, q_out_i, stream)?;
         } else if let Some(fp8) = self.q_weight.as_ref().and_then(|w| w.as_fp8()) {
             ops::w8a16_gemv(
                 fwd.gpu,
@@ -921,7 +935,13 @@ impl Qwen3AttentionLayer {
         h: usize,
         stream: u64,
     ) -> Result<()> {
-        if let (Some(k_fp8), Some(v_fp8)) = (
+        if let (Some(k_q2), Some(v_q2)) = (
+            self.k_weight.as_ref().and_then(|w| w.as_packed_q2()),
+            self.v_weight.as_ref().and_then(|w| w.as_packed_q2()),
+        ) {
+            ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, normed_i, k_q2, k_out_i, stream)?;
+            ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, normed_i, v_q2, v_out_i, stream)?;
+        } else if let (Some(k_fp8), Some(v_fp8)) = (
             self.k_weight.as_ref().and_then(|w| w.as_fp8()),
             self.v_weight.as_ref().and_then(|w| w.as_fp8()),
         ) {

@@ -98,6 +98,9 @@ fn scale_table_values_per_slot_and_padded() {
             target_modules: vec!["k_proj".into()],
             use_rslora: rslora,
             layers_to_transform: None,
+            trainable_token_indices: Vec::new(),
+            modules_to_save: Vec::new(),
+            lora_embedding: false,
         },
     };
     let adapters = [mk(16.0, 8, false), mk(16.0, 4, true)];
@@ -192,6 +195,57 @@ fn seq_slot_meta_offset_gaps_do_not_collide() {
     );
 }
 
+#[test]
+#[allow(clippy::assertions_on_constants)] // deliberate compile-time layout documentation
+fn moe_row_adapter_relocated_decode_cap_is_32() {
+    // SOLID Incr-4: after moe_row_adapter is relocated to its OWN dedicated
+    // buffer (out of the old +160 metadata gap), the batched-decode concurrent-
+    // LoRA cap is set purely by the shared AttnMetadataDev layout that the two
+    // batched builders (upload_batch_metadata_fixed / _at in impl_b1.rs) write.
+    // Byte offsets mirror that construction: positions@+0 (u32), seq_slot@+128
+    // (i32), slot@+256 (i64), seq_len@+512 (i32), block_table@+768.
+    const POSITIONS_OFF: usize = 0;
+    const SEQ_SLOT_OFF: usize = 128;
+    const SLOT_OFF: usize = 256;
+    const SEQ_LEN_OFF: usize = 512;
+    const BLOCK_TABLE_OFF: usize = 768;
+
+    // The three binding constraints all resolve to padded_n <= 32:
+    //   positions@+0 (4B/row) must not reach seq_slot@+128
+    //   seq_slot@+128 (4B/row) must not reach slot@+256
+    //   slot@+256   (8B/row) must not reach seq_len@+512
+    // seq_len@+512 (4B/row) vs block_table@+768 is looser (<= 64), non-binding.
+    for n in [8usize, 16, 32] {
+        assert!(
+            POSITIONS_OFF + n * 4 <= SEQ_SLOT_OFF,
+            "n={n}: positions ends before seq_slot@+128"
+        );
+        assert!(
+            SEQ_SLOT_OFF + n * 4 <= SLOT_OFF,
+            "n={n}: seq_slot ends before slot@+256"
+        );
+        assert!(
+            SLOT_OFF + n * 8 <= SEQ_LEN_OFF,
+            "n={n}: slot ends before seq_len@+512"
+        );
+        assert!(
+            SEQ_LEN_OFF + n * 4 <= BLOCK_TABLE_OFF,
+            "n={n}: seq_len ends before block_table@+768"
+        );
+    }
+
+    // padded_n = 33 overruns ALL THREE binding regions simultaneously — this is
+    // exactly the boundary the impl_b1.rs `ensure!(padded_n <= 32)` guard fires
+    // on. (Before the relocation, moe_row_adapter@+160 squatted seq_slot's range
+    // and forced the cap down to 8; that squat is now gone.)
+    assert!(
+        POSITIONS_OFF + 33 * 4 > SEQ_SLOT_OFF,
+        "n=33: positions overruns"
+    );
+    assert!(SEQ_SLOT_OFF + 33 * 4 > SLOT_OFF, "n=33: seq_slot overruns");
+    assert!(SLOT_OFF + 33 * 8 > SEQ_LEN_OFF, "n=33: slot overruns");
+}
+
 // ── Task #27: pure victim-selection policy ──
 
 #[test]
@@ -282,14 +336,10 @@ fn select_routed_pair_by_global_index_and_module() {
     let v = dummy_pair(200, 1024, 512);
     let o = dummy_pair(300, 2048, 1024);
     layers[3] = Some(LoraLayerWeights {
-        layer_idx: 3,
-        q_proj: None,
         k_proj: Some(k),
         v_proj: Some(v),
         o_proj: Some(o),
-        gate_proj: None,
-        up_proj: None,
-        down_proj: None,
+        ..LoraLayerWeights::empty(3)
     });
 
     // Right pair for the adapted (layer, module) triples.

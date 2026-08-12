@@ -21,6 +21,7 @@ mod async_chkpt;
 mod decode_a;
 mod decode_a2;
 mod decode_a3;
+mod decode_a_diag;
 mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
@@ -82,6 +83,7 @@ impl Model for TransformerModel {
     // and every sequence but the last-prefilled drafts blind. See
     // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
+        self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;
         self.try_eager_drafter_prefill(seq, true, stream);
         Ok(logits)
@@ -95,6 +97,7 @@ impl Model for TransformerModel {
         is_last_chunk: bool,
         stream: u64,
     ) -> Result<DevicePtr> {
+        self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_chunk_dispatch(
             tokens,
             seq,
@@ -113,11 +116,14 @@ impl Model for TransformerModel {
         chunk_size: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
+        self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)?;
         self.try_eager_drafter_prefill(seq, true, stream);
         Ok(logits)
     }
     fn decode(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
+        self.stamp_overlay_route(seq.adapter_slot);
+        self.stamp_decode_moe_single(seq.adapter_slot);
         self.decode_dispatch(token, seq, _stream)
     }
     fn decode_batch(
@@ -126,7 +132,19 @@ impl Model for TransformerModel {
         seqs: &mut [&mut SequenceState],
         stream: u64,
     ) -> Result<DevicePtr> {
-        self.decode_batch_dispatch(tokens, seqs, stream)
+        self.stamp_overlay_route_batch(seqs);
+        self.stamp_decode_moe_batch(seqs);
+        let r = self.decode_batch_dispatch(tokens, seqs, stream);
+        if r.is_err() {
+            // A mid-capture refuse (MoE LoRA router/mixed/non-active) in the
+            // batched-decode compute leaves the capture stream recording; release
+            // it so the caller's sequence cleanup doesn't hit
+            // STREAM_CAPTURE_UNSUPPORTED and poison every later op (a single
+            // refused concurrent request would otherwise brick the server). The
+            // batched path captures on the default stream (decode_a2).
+            self.gpu.abort_capture_if_active(self.gpu.default_stream());
+        }
+        r
     }
     fn mixed_forward(
         &self,
@@ -139,7 +157,13 @@ impl Model for TransformerModel {
         prefill_is_last: bool,
         stream: u64,
     ) -> Result<crate::traits::MixedForwardResult> {
-        let out = self.mixed_forward_dispatch(
+        // Mixed decode+prefill batch spans multiple adapters ⇒ mark mixed so the
+        // overlay hooks skip (per-token seq_slot routing is SOLID Incr-4).
+        self.overlay_route_slot
+            .store(i32::MIN, std::sync::atomic::Ordering::Relaxed);
+        // Decode portion: Skip only if every decode seq is base, else refuse.
+        self.stamp_decode_moe_batch(decode_seqs);
+        let r = self.mixed_forward_dispatch(
             decode_tokens,
             decode_seqs,
             prefill_tokens,
@@ -148,7 +172,13 @@ impl Model for TransformerModel {
             prefill_chunk_len,
             prefill_is_last,
             stream,
-        )?;
+        );
+        if r.is_err() {
+            // Same brick guard as decode_batch: a refuse in the captured decode
+            // portion must not leave the default stream recording.
+            self.gpu.abort_capture_if_active(self.gpu.default_stream());
+        }
+        let out = r?;
         self.try_eager_drafter_prefill(prefill_seq, prefill_is_last, stream);
         Ok(out)
     }
@@ -315,7 +345,14 @@ impl Model for TransformerModel {
         seq: &mut SequenceState,
         stream: u64,
     ) -> Result<Vec<u32>> {
-        self.decode_verify_dispatch(tokens, seq, stream)
+        let r = self.decode_verify_dispatch(tokens, seq, stream);
+        if r.is_err() {
+            // Same brick guard as decode_batch: a refuse mid-verify-capture
+            // (MTP/spec) must not leave the default stream recording. No-op when
+            // not capturing. Verify captures on default_stream (verify_a/b/…).
+            self.gpu.abort_capture_if_active(self.gpu.default_stream());
+        }
+        r
     }
     fn checkpoint_ssm_states(&self, seq: &mut SequenceState) -> Result<()> {
         self.checkpoint_ssm_states_dispatch(seq)

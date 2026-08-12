@@ -12,6 +12,12 @@ use super::Qwen3SsmLayer;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer};
 
 impl TransformerLayer for Qwen3SsmLayer {
+    /// Downcast hook so the LoRA install walk can reach this layer's MoE FFN
+    /// (Feature-1: routed-expert/router deltas exist on GDN layers too).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn decode(
         &self,
         hidden: DevicePtr,

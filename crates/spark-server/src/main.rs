@@ -155,7 +155,14 @@ async fn main() -> Result<()> {
                     tui::stop_and_join(std::time::Duration::from_secs(2));
                     tui::terminal_guard::restore();
                     tui::init::flush_tee();
-                    std::process::exit(0);
+                    // A fault can latch during startup (weight upload, warmup),
+                    // so this exit needs the same status mapping as the one
+                    // below — otherwise the escape hatch silently reports a
+                    // poisoned context as a clean stop.
+                    std::process::exit(atlas_core::fault::exit_code(
+                        true,
+                        atlas_core::fault::global().fault(),
+                    ));
                 }
             }
         }
@@ -168,5 +175,26 @@ async fn main() -> Result<()> {
     tui::stop_and_join(std::time::Duration::from_secs(2));
     tui::terminal_guard::restore();
     tui::init::flush_tee();
-    result
+
+    // A GPU fault drains and returns `Ok` by the same path as `SIGTERM`
+    // (issue #429), so without this the two are indistinguishable to a
+    // supervisor and `restart: on-failure` leaves the endpoint down. Returning
+    // `result` unchanged when healthy keeps every other exit byte-identical.
+    match atlas_core::fault::global().fault() {
+        Some(reason) => {
+            if let Err(e) = &result {
+                tracing::error!("{e:#}");
+            }
+            tracing::error!(
+                "Exiting after a fatal GPU fault ({reason}). The CUDA context is \
+                 destroyed and cannot be recovered in-process; restart the server."
+            );
+            std::process::exit(atlas_core::fault::exit_code(result.is_ok(), Some(reason)));
+        }
+        None => result,
+    }
 }
+
+#[cfg(test)]
+#[path = "main_exit_tests.rs"]
+mod main_exit_tests;

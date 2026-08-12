@@ -152,6 +152,11 @@ fn run_batched_verify(
         token_ids: None,
         routed_lora_layers: None,
         midchunk_capture: None,
+        // Merge-interaction (#334/#335 stack): this main-side helper postdates
+        // #335's base. `Fold` is the documented default and inert on verify
+        // paths (they bail via `reject_decode_lora` before the fold) — same
+        // convention as `layer/tests.rs`.
+        moe_lora_route: crate::layer::MoeLoraRoute::Fold,
     };
     let kv_config = spark_runtime::kv_cache::KvCacheConfig {
         block_size: 16,

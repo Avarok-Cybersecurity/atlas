@@ -122,6 +122,11 @@ impl MoeLayer {
 
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
 
+        // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
+        // logits BEFORE top-k (device-clean, no capture guard). No-op unless a
+        // router delta is installed.
+        self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
+
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
@@ -217,6 +222,19 @@ impl MoeLayer {
                 max_m_tiles,
                 stream,
             )?;
+            // Feature-1: fold gate/up_proj deltas onto the sorted BF16
+            // `expert_gate_out`/`expert_up_out` BEFORE `silu_mul` (x = token-major
+            // `input`). Same device kernel + sorted layout as the nvfp4 path.
+            self.apply_expert_lora_prefill_gateup(
+                expert_gate_out,
+                expert_up_out,
+                input,
+                expert_offsets,
+                sorted_token_ids,
+                total_expanded,
+                ctx,
+                stream,
+            )?;
             ops::silu_mul(
                 ctx.gpu,
                 self.moe_act_mul,
@@ -241,6 +259,20 @@ impl MoeLayer {
                 stream,
             )?;
         }
+
+        // Feature-1: fold the routed-expert down_proj LoRA deltas onto the sorted
+        // BF16 `expert_down_out` BEFORE the unpermute + weighted reduce (same
+        // device kernel + sorted layout as the nvfp4 path). No-op unless deltas
+        // are installed.
+        self.apply_expert_lora_prefill_down(
+            expert_gate_out,
+            expert_down_out,
+            expert_offsets,
+            sorted_token_ids,
+            total_expanded,
+            ctx,
+            stream,
+        )?;
 
         let output = ctx.buffers.moe_output();
         ops::moe_unpermute_reduce_indexed(

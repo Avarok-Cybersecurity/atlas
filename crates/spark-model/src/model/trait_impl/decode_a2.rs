@@ -157,6 +157,19 @@ impl TransformerModel {
         _stream: u64,
     ) -> Result<DevicePtr> {
         let n = tokens.len();
+        // SOLID Incr-4 pre-lookup guard (the bail `forward_batched.rs` and
+        // `build_moe_row_adapter_decode` document): a batch with a row routed
+        // to a NON-active adapter cannot be served by the single-active fold —
+        // the per-row map defensively writes such rows as base, so proceeding
+        // would SILENTLY serve base weights for an adapter-routed request.
+        // Bail before ANY per-step work (embed / metadata / row-map upload /
+        // graph lookup), keeping the captured padded_n graphs route-agnostic.
+        // The route is stamped per batch at the `Model` entry
+        // (`stamp_decode_moe_batch`).
+        crate::lora::ensure_decode_route_servable(
+            self.decode_moe_route(),
+            "decode_batch_compute_main",
+        )?;
         // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         for s in seqs.iter_mut() {
@@ -252,6 +265,14 @@ impl TransformerModel {
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
+            // SOLID Incr-4: batched decode FOLDS. `Refuse` was bailed by the
+            // pre-lookup guard above; the metadata carries the per-row
+            // `moe_row_adapter` map (`upload_batch_metadata_fixed`), and the
+            // MoE decode ladder's token-major arm delegates to
+            // `forward_batched`'s per-row router/gate-up/down folds whenever
+            // an adapter is resident (presence gate, like forward_k2/k3).
+            // Base (Skip) batches still pay nothing.
+            moe_lora_route: self.decode_moe_route(),
             derived: &self.derived,
             levers: &self.levers,
             stats: &self.stats,

@@ -57,6 +57,11 @@ pub enum WeightQuantFormat {
     /// reads the scale as FP8-E4M3 per-16 and applies a global) = silent
     /// garbage — assert with `WeightQuantFormat::expect` at the dispatch site.
     Mxfp4E8m0,
+    /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw `block_q2_0` blocks
+    /// (fp16 inline scale + 2-bit codes per group), dequantized in-kernel by the
+    /// native `q2_0_gemv` decode GEMV. Consumed only by that kernel — feeding
+    /// these bytes through any other GEMV/GEMM is silent garbage.
+    PackedQ2_0,
 }
 
 impl WeightQuantFormat {
@@ -73,6 +78,33 @@ impl WeightQuantFormat {
                  that would produce wrong outputs without this assertion."
             );
         }
+    }
+}
+
+/// Keep-packed ternary Q2_0 weight: a single contiguous buffer of raw PrismML
+/// `block_q2_0` blocks ([fp16 d][group/4 bytes of 2-bit codes], `value =
+/// (code-1)*d`), row-major over `[n, k]`. The scale is INLINE (one fp16 per
+/// group of `group` elements) — there is no companion scale tensor, unlike
+/// NVFP4/FP8. Consumed by the native `q2_0_gemv` decode kernel, which reads the
+/// scale from each block. Built from a `WeightDtype::PackedQ2_0` store tensor
+/// under `ATLAS_GGUF_NATIVE_Q2=1`; the buffer is owned by the `WeightStore`, so
+/// this struct only borrows the pointer (no free on drop).
+#[derive(Debug, Clone, Copy)]
+pub struct PackedQ2Weight {
+    /// Raw packed `block_q2_0` bytes, `n * (k/group) * (2 + group/4)` long.
+    pub weight: DevicePtr,
+    /// Output rows (weight is `[n, k]`).
+    pub n: u32,
+    /// Input columns (contraction dim).
+    pub k: u32,
+    /// Group size (128 or 64) — elements per block / per inline scale.
+    pub group: u16,
+}
+
+impl PackedQ2Weight {
+    /// True if the backing buffer is NULL (unset placeholder).
+    pub fn is_null(&self) -> bool {
+        self.weight == DevicePtr::NULL
     }
 }
 

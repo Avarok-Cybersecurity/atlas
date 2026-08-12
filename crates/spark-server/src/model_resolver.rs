@@ -32,7 +32,12 @@ fn download_hint(id: &str) -> String {
 /// 2. Otherwise, treat it as a HuggingFace model ID and look up the local cache.
 pub fn resolve_model_dir(model: &str, cache_dir: Option<&Path>) -> Result<PathBuf> {
     let as_path = Path::new(model);
-    if as_path.is_dir() && as_path.join("config.json").exists() {
+    // Accept a local dir that has a config.json OR a bare .gguf (served via the
+    // GGUF loader + config-from-metadata path).
+    if as_path.is_dir()
+        && (as_path.join("config.json").exists()
+            || spark_runtime::weights::find_gguf(as_path).is_some())
+    {
         tracing::info!("Model path: {} (local directory)", as_path.display());
         return Ok(as_path.to_path_buf());
     }
@@ -246,7 +251,7 @@ pub(crate) fn snapshot_has_weights(dir: &Path) -> bool {
     read.filter_map(|e| e.ok()).any(|e| {
         e.file_name()
             .to_str()
-            .is_some_and(|n| n.ends_with(".safetensors"))
+            .is_some_and(|n| n.ends_with(".safetensors") || n.ends_with(".gguf"))
     })
 }
 

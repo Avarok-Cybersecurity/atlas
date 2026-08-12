@@ -92,6 +92,18 @@ impl TransformerModel {
                     &v[..5]
                 );
             }
+            // Feature-2: overlay overridden vocab rows AFTER the gather, BEFORE
+            // the embed scale (the override row is a raw embed row that must
+            // also be scaled). `token_ids()` holds this chunk's ids (staged
+            // above); uniform-active route (seq_slot NULL). No-op when no
+            // overlay is installed.
+            self.apply_embed_overlay(
+                self.buffers.token_ids(),
+                spark_runtime::gpu::DevicePtr(0),
+                hidden_dst,
+                chunk_len as u32,
+                stream,
+            )?;
             self.scale_embeddings(hidden_dst, chunk_len, stream)?;
             if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
                 self.gpu.synchronize(stream)?;
