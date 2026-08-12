@@ -17,6 +17,9 @@
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
 //!   events_rules    the loop's decisions as pure functions, so they are testable
+//!   report          GitHub issue reporting, the pure protocol half
+//!   report_http     GitHub issue reporting, the transport + worker threads
+//!   redact          best-effort log scrubbing + size budget for reports
 //!   section         Section — the sidebar/nav SSOT
 //!   app             App state + reducer (section, focus, per-tab state)
 //!   app_quit        what `q` costs, and when it costs a second press
@@ -61,7 +64,8 @@
 //!
 //! The threads, all named so a stack dump during an incident is attributable:
 //! `atlas-tui` (this render loop) · `atlas-recipes` · `atlas-recipe-date` ·
-//! `atlas-libscan` · `atlas-download` · `atlas-freshness` · `atlas-swap`.
+//! `atlas-libscan` · `atlas-download` · `atlas-freshness` · `atlas-swap` ·
+//! `atlas-report` (GitHub device flow + issue submit).
 //!
 //! The first five one-shot workers go through [`worker::spawn`], which owns the
 //! part that is easy to forget: answering anyway when the thread will not
@@ -105,6 +109,9 @@ pub mod lib_start;
 pub mod lib_state;
 pub mod logo;
 pub mod progress;
+pub mod redact;
+pub mod report;
+pub mod report_http;
 pub mod section;
 pub mod theme;
 pub mod worker;
