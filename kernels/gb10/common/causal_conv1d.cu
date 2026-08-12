@@ -555,3 +555,79 @@ extern "C" __global__ void causal_conv1d_update_l2norm_f32_strided(
         output[b * output_stride + ch] = silu;  // FP32 — no truncation!
     }
 }
+
+// ============================================================
+// DECODE (multi-sequence): conv1d + BIAS + SiLU, BF16 out,
+// with INDEPENDENT input/output row strides.
+// ============================================================
+// Identical math to `causal_conv1d_update` — this variant only decouples the
+// input and output row strides from `dim`.
+//
+// Why a NEW entry and not the `_l2norm_f32_strided` twin above: that one
+// hardcodes `bias = NULL`, applies a per-head L2-norm block, and writes FP32.
+// Nemotron-H Mamba-2 needs the other combination — a REAL conv1d bias, NO
+// L2-norm, and BF16 output. No existing variant carries it.
+//
+// Why strides: the Nemotron-H concurrent-decode path feeds the conv straight
+// out of the batched `in_proj` result, whose rows are `in_proj_size` apart
+// (10304 on Lightning-30B), while the conv's own output is `d_xbc`-strided
+// (6144). The non-strided kernel hardcodes BOTH as `dim` (= d_xbc), so a
+// batch=n launch reads sequence b>=1 from `b*d_xbc` instead of
+// `b*in_proj_size` — landing inside the PREVIOUS sequence's dt/z region and
+// feeding garbage into the SSM scan. Correct at n=1, silently corrupt at
+// n>=2, which is why the multi-seq path ran this conv as an n-launch loop
+// with pre-offset pointers. With explicit strides the whole batch goes in ONE
+// launch.
+//
+// `conv_state` keeps the `(b * dim + ch) * d_conv` layout: pool slots are
+// contiguous per sequence, and the multi-seq caller verifies that (dense
+// prefix check) before taking this path. Deliberately NOT parameterised.
+//
+// BIT-PARITY: only base addresses change. The bias initial value, the
+// d_conv-term FMA chain, and the SiLU are untouched, and the sliding window is
+// still shifted in GLOBAL memory (3 loads + 3 stores) exactly as in
+// `causal_conv1d_update` — so one launch at batch=n is byte-identical to n
+// launches at batch=1 with pre-offset pointers, under the same --fmad=false.
+// Proven by `conv1d_biased_strided_microtest`.
+//
+// Grid: (ceil(dim/256), batch, 1)   Block: (256, 1, 1)   Shared: none
+extern "C" __global__ void causal_conv1d_update_strided(
+    float* __restrict__ conv_state,              // [batch, dim, d_conv] FP32 (in/out)
+    const __nv_bfloat16* __restrict__ new_input, // row b at new_input + b*input_stride
+    const __nv_bfloat16* __restrict__ weight,    // [dim, d_conv] BF16 (shared)
+    const float* __restrict__ bias,              // [dim] or nullptr (shared)
+    __nv_bfloat16* __restrict__ output,          // row b at output + b*output_stride
+    unsigned int batch,
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int input_stride,   // BF16 elements between consecutive sequences in new_input
+    unsigned int output_stride   // BF16 elements between consecutive sequences in output
+) {
+    const unsigned int ch = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (ch >= dim || b >= batch) return;
+
+    // Pointer to this channel's conv state: [d_conv] elements
+    float* state = conv_state + (b * dim + ch) * d_conv;
+
+    // 1. Shift state left by 1
+    for (unsigned int i = 0; i < d_conv - 1; i++) {
+        state[i] = state[i + 1];
+    }
+
+    // 2. Insert new token
+    state[d_conv - 1] = (float)new_input[(unsigned long long)b * input_stride + ch];
+
+    // 3. Depthwise convolution (BF16 weights converted to FP32 in-register)
+    const __nv_bfloat16* w = weight + ch * d_conv;
+    float acc = (bias != nullptr) ? bias[ch] : 0.0f;
+    for (unsigned int k = 0; k < d_conv; k++) {
+        acc += state[k] * (float)w[k];
+    }
+
+    // 4. SiLU activation
+    float sigmoid_acc = 1.0f / (1.0f + __expf(-acc));
+    float silu = acc * sigmoid_acc;
+
+    output[(unsigned long long)b * output_stride + ch] = __float2bfloat16(silu);
+}
