@@ -397,7 +397,7 @@ impl std::str::FromStr for ToolCallFormat {
             "bare_json" => Ok(Self::BareJson),
             "poolside_v1" => Ok(Self::PoolsideV1),
             other => Err(format!(
-"Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, deepseek_v4, bare_json, poolside_v1",
+                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, deepseek_v4, bare_json, poolside_v1",
             )),
         }
     }
