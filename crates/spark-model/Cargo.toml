@@ -110,6 +110,11 @@ name = "moe_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "moe_grouped_ntile_microtest"
+path = "examples/moe_grouped_ntile_microtest/main.rs"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "dense_gemm_microtest"
 required-features = ["cuda", "gpu-examples"]
 
