@@ -70,6 +70,9 @@ impl App {
                 }
                 TermSub::Chat => self.chat_scroll(-rows),
             },
+            // The report preview is the one scrollable surface in Help; the
+            // rest of the section is short static prose.
+            Section::Help => self.help.scroll_preview(rows),
             // Nothing scrollable: these panes are gauges, not documents.
             Section::Stats | Section::Network => {}
         }

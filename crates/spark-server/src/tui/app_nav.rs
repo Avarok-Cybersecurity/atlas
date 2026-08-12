@@ -9,6 +9,7 @@
 //! `render::draw_sidebar` draws and what `events::sidebar_row` hit-tests.
 
 use super::app::{App, BenchSub, Focus, MainSub, TermSub};
+use super::help_state::HelpSub;
 use super::section::Section;
 
 impl App {
@@ -18,6 +19,7 @@ impl App {
             Section::Main => (self.main_sub == MainSub::Kernels) as usize,
             Section::Benchmarks => (self.bench_sub == BenchSub::History) as usize,
             Section::Terminal => (self.term_sub == TermSub::Chat) as usize,
+            Section::Help => (self.help.sub == HelpSub::Report) as usize,
             _ => 0,
         }
     }
@@ -39,6 +41,13 @@ impl App {
                 }
             }
             Section::Terminal => self.term_sub = if i == 0 { TermSub::Ops } else { TermSub::Chat },
+            Section::Help => {
+                self.help.sub = if i == 0 {
+                    HelpSub::Guide
+                } else {
+                    HelpSub::Report
+                }
+            }
             _ => {}
         }
     }

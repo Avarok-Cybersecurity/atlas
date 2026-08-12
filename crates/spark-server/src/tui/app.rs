@@ -118,6 +118,8 @@ pub struct App {
     pub ops: OpsState,
     pub chat: ChatState,
     pub bench: BenchState,
+    /// The Help section: the guide pane and the issue-report pipeline.
+    pub help: crate::tui::help_state::HelpState,
     /// The running scheduler's levers, published by `serve` once the run
     /// starts. `None` until then — the ops commands that toggle a lever say
     /// so rather than silently doing nothing.
@@ -202,6 +204,7 @@ impl App {
             ops: OpsState::default(),
             chat: ChatState::default(),
             bench: BenchState::default(),
+            help: Default::default(),
             toasts: Vec::new(),
             help_open: false,
             help_scroll: 0,
@@ -293,6 +296,7 @@ impl App {
         self.log_filter_editing
             || (self.section == Section::Library && self.lib.is_editing())
             || (self.section == Section::Benchmarks && self.bench.is_editing())
+            || (self.section == Section::Help && self.help.is_editing())
             || (self.section == Section::Terminal && self.focus == Focus::Input)
     }
 
@@ -340,6 +344,7 @@ impl App {
             KeyCode::Char('4') => self.jump(Section::Library),
             KeyCode::Char('5') => self.jump(Section::Benchmarks),
             KeyCode::Char('6') => self.jump(Section::Terminal),
+            KeyCode::Char('7') => self.jump(Section::Help),
             KeyCode::Tab => self.cycle_section(1),
             KeyCode::BackTab => self.cycle_section(-1),
             KeyCode::Char('f') if self.section == Section::Main => {
@@ -355,6 +360,9 @@ impl App {
             // step" and not "drop focus".
             _ if self.section == Section::Benchmarks => self.on_section_key(key),
             _ if self.section == Section::Library => self.on_library_key(key),
+            // Help owns its keys for the same reason the Library does: Esc
+            // there means "back one step in the report pipeline".
+            _ if self.section == Section::Help => self.on_help_key(key),
             KeyCode::Esc => {
                 self.focus = Focus::Content;
                 self.log_scroll = None;
@@ -420,7 +428,7 @@ impl App {
             // empty arm below while the Terminal footer said "↑/↓ scroll".
             Section::Terminal => self.on_ops_content_key(key),
             Section::Benchmarks => self.on_bench_key(key),
-            Section::Stats => {}
+            Section::Stats | Section::Help => {}
         }
     }
 

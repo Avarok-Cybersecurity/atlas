@@ -107,6 +107,10 @@ pub fn run(
         }
         app.chat.pump();
         app.bench.pump();
+        app.help.pump();
+        if let Some((text, error)) = app.help.take_message() {
+            app.toast(text, error);
+        }
         // Downloads are pumped UNCONDITIONALLY, not only in the Library: one
         // started there must still finish, and report, if the user navigates
         // away to watch the logs — the same argument as `poll_preflight`.

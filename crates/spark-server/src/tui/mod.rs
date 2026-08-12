@@ -17,6 +17,8 @@
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
 //!   events_rules    the loop's decisions as pure functions, so they are testable
+//!   help_state      Help section state + the issue-report phase machine
+//!   help_keys       Help section key handling, one function per phase
 //!   report          GitHub issue reporting, the pure protocol half
 //!   report_http     GitHub issue reporting, the transport + worker threads
 //!   redact          best-effort log scrubbing + size budget for reports
@@ -98,6 +100,8 @@ pub mod download_state;
 pub mod events;
 pub mod events_rules;
 pub mod format;
+pub mod help_keys;
+pub mod help_state;
 pub mod lib_borrow;
 pub mod lib_config;
 pub mod lib_dates;

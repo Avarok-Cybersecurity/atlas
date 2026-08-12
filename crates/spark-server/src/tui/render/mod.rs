@@ -6,6 +6,7 @@
 mod bench;
 mod chat_lines;
 mod header;
+mod help_tab;
 mod hints;
 mod library;
 mod main_tab;
@@ -120,6 +121,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Section::Library => library::draw(f, app, content),
         Section::Benchmarks => bench::draw(f, app, content),
         Section::Terminal => terminal_tab::draw(f, app, content),
+        Section::Help => help_tab::draw(f, app, content),
     }
 
     draw_footer(f, app, rows[2]);
@@ -284,11 +286,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (" NORMAL ", theme::BORDER_DIM)
     };
     let hints = match app.section {
-        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-6 jump · ? help · q quit",
-        Section::Stats => "⇥ cycle · 1-6 jump · ? help · q quit",
+        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-7 jump · ? help · q quit",
+        Section::Stats => "⇥ cycle · 1-7 jump · ? help · q quit",
         // No "⏎ detail" here: Enter used to toggle a bool nothing rendered —
         // an advertised key with zero effect. The detail pane is always drawn.
-        Section::Network => "←/→ node · ⇥ cycle · 1-6 jump · ? help",
+        Section::Network => "←/→ node · ⇥ cycle · 1-7 jump · ? help",
         Section::Library => hints::library_hints(app),
         Section::Benchmarks => hints::bench_hints(app),
         // `/detach` named here and nowhere else on screen: it is the only way
@@ -298,6 +300,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Section::Terminal => {
             "⏎ input · Esc back · ↑/↓ scroll · ⇥ Ops↔Chat · /detach leave · ? help"
         }
+        Section::Help => hints::help_hints(app),
     };
     let line = Line::from(vec![
         Span::styled(

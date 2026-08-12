@@ -126,8 +126,8 @@ pub(super) fn truncate_toast(text: &str, width: usize) -> String {
 }
 
 /// The key map, and the SSOT for how tall its modal has to be.
-pub(super) const KEYS: [(&str, &str); 22] = [
-    ("1-6", "jump to section (repeat cycles its subsections)"),
+pub(super) const KEYS: [(&str, &str); 23] = [
+    ("1-7", "jump to section (repeat cycles its subsections)"),
     (
         "Tab / Shift+Tab",
         "walk every sidebar row, subsections included",
@@ -178,6 +178,7 @@ pub(super) const KEYS: [(&str, &str); 22] = [
         "/detach",
         "Terminal: leave the TUI, keep serving with plain logs",
     ),
+    ("7", "Help: guide + report an issue to GitHub"),
     ("?", "this help"),
 ];
 

@@ -77,6 +77,8 @@ fn tab_walks_every_sidebar_row_in_order_and_wraps_home() {
             "Benchmarks/History",
             "Terminal/Ops",
             "Terminal/Chat",
+            "Help/Guide",
+            "Help/Report Issue",
         ]
     );
     tap(&mut a, KeyCode::Tab);
@@ -87,13 +89,22 @@ fn tab_walks_every_sidebar_row_in_order_and_wraps_home() {
 fn shift_tab_walks_the_same_rows_backwards() {
     let mut a = app();
     tap(&mut a, KeyCode::BackTab);
-    assert_eq!(at(&a), "Terminal/Chat", "the first row wraps to the last");
-    for expected in ["Terminal/Ops", "Benchmarks/History", "Benchmarks/Suite"] {
+    assert_eq!(
+        at(&a),
+        "Help/Report Issue",
+        "the first row wraps to the last"
+    );
+    for expected in [
+        "Help/Guide",
+        "Terminal/Chat",
+        "Terminal/Ops",
+        "Benchmarks/History",
+    ] {
         tap(&mut a, KeyCode::BackTab);
         assert_eq!(at(&a), expected);
     }
     tap(&mut a, KeyCode::Tab);
-    assert_eq!(at(&a), "Benchmarks/History", "and ⇥ undoes ⇧⇥");
+    assert_eq!(at(&a), "Terminal/Ops", "and ⇥ undoes ⇧⇥");
 }
 
 #[test]

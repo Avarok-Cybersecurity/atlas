@@ -69,6 +69,28 @@ pub(super) fn library_hints(app: &App) -> &'static str {
     }
 }
 
+/// The Help footer answers for the report pipeline's current screen — five
+/// phases with disjoint key sets, so one generic hint would be wrong on four
+/// of them.
+pub(super) fn help_hints(app: &App) -> &'static str {
+    use crate::tui::help_state::{HelpSub, ReportPhase};
+    if app.help.sub == HelpSub::Guide {
+        return "⇥ cycle · 7 Report Issue · 1-7 jump · ? help · q quit";
+    }
+    if app.help.is_editing() {
+        return "type · Esc done editing";
+    }
+    match app.help.phase {
+        ReportPhase::Compose => "j/k field · ⏎ edit/toggle · s review & submit · 1-7 jump",
+        ReportPhase::Preview => "j/k scroll · y send · a toggle logs · Esc back",
+        ReportPhase::RequestingCode => "Esc cancel",
+        ReportPhase::WaitingAuth { .. } => "c copy code · Esc cancel",
+        ReportPhase::Submitting => "posting…",
+        ReportPhase::Done { .. } => "c copy link · Esc compose another",
+        ReportPhase::Failed { .. } => "s retry · Esc back",
+    }
+}
+
 /// The Benchmarks footer changes with the step you are on — the form and the
 /// live run answer to different keys, and a single generic hint would be wrong
 /// in both.
@@ -84,7 +106,7 @@ pub(super) fn bench_hints(app: &App) -> &'static str {
         (View::List, _) if app.bench.frame.is_some() => {
             "j/k select · ⏎ configure · v last run · ⇥ Suite↔History · ? help"
         }
-        (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-6 jump · ? help",
+        (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-7 jump · ? help",
         (View::Params, true) => "⏎ commit · Esc cancel",
         (View::Params, false) => "j/k move · ⏎ edit · d defaults · p probe · s START · Esc back",
         (View::Run, _) => "c cancel · j/k scroll · Esc back to suite",

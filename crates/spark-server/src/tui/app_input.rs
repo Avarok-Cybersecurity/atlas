@@ -45,6 +45,10 @@ impl App {
             self.on_bench_key(key);
             return;
         }
+        if self.section == Section::Help {
+            self.on_help_key(key);
+            return;
+        }
         // Terminal input.
         match self.term_sub {
             TermSub::Ops => match key.code {

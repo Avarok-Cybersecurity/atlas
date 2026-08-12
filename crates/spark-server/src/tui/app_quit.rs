@@ -53,6 +53,15 @@ impl App {
         {
             return Some("a model is still loading");
         }
+        // The report keeps its draft through every failure, but not through
+        // the process ending — and a submit that is mid-POST may have already
+        // cost the user a browser authorization.
+        if self.help.report_in_flight() {
+            return Some("an issue report is being submitted");
+        }
+        if self.help.has_draft() {
+            return Some("an unsubmitted issue report has text in it");
+        }
         None
     }
 
