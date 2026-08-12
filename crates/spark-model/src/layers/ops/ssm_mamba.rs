@@ -516,3 +516,10 @@ pub fn mamba2_ssm_prefill_persistent(
 // Replaces the token-sequential recurrence with the chunked (state-space duality)
 // formulation: the scan becomes tensor-core matmuls with only ceil(T/64) sequential
 // links instead of T. See kernels/gb10/common/mamba2_ssd_chunk.cu.
+
+// ── Strided multi-sequence decode twins ───────────────────────────────────────
+//
+// Split into a sibling file: this one is already at the repo's 500-LoC cap.
+#[path = "ssm_mamba_strided.rs"]
+mod ssm_mamba_strided;
+pub use ssm_mamba_strided::*;
