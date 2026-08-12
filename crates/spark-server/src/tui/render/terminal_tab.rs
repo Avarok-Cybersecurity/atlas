@@ -102,10 +102,11 @@ fn draw_ops(f: &mut Frame, app: &App, area: Rect) {
 fn chat_hints(focused: bool, wide: bool) -> String {
     match (focused, wide) {
         (true, true) => {
-            "─ ⏎ send · \\+⏎ newline · Ctrl+T thinking · Alt+T reasoning · Esc cancel ─".into()
+            "─ ⏎ send · \\+⏎ newline · Ctrl+T thinking · Alt+T reasoning · Ctrl+N new · Esc cancel ─"
+                .into()
         }
         (true, false) => "─ ⏎ send · Esc cancel ─".into(),
-        (false, true) => "─ ⏎ focus · t thinking · T reasoning ─".into(),
+        (false, true) => "─ ⏎ focus · t thinking · T reasoning · Ctrl+N new chat ─".into(),
         (false, false) => "─ ⏎ focus ─".into(),
     }
 }

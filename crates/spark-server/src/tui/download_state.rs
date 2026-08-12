@@ -32,6 +32,16 @@ pub struct Job {
     /// (when, bytes) of the last rate sample.
     last: (Instant, u64),
     pub rate_bps: f64,
+    /// Bytes already on disk when the plan landed.
+    ///
+    /// ★ This is what tells "we fetched an 18 GB model" apart from "every file
+    /// was already here and we fetched nothing". Both used to end on the same
+    /// `{repo} downloaded` toast, and for an already-complete model the whole
+    /// job — list, stat, publish — finishes inside one frame, so the user saw
+    /// a toast flash with no bar and read it as a broken download. Reported
+    /// exactly that way: "When i pressed d, a toast flashed, but no progress
+    /// bar."
+    pub already_have: u64,
 }
 
 impl Job {
@@ -68,7 +78,69 @@ pub enum Settled {
     Stopped(String),
 }
 
+/// What a finished job says, as ONE function.
+///
+/// "Nothing needed fetching" and "we moved 18 GB" are different outcomes and
+/// must read differently: saying "downloaded" for the first describes work that
+/// did not happen, and for an already-complete model the whole job finishes
+/// inside a single frame, so that toast was the ONLY thing the user saw — no
+/// bar, because no bytes moved. Reported as "a toast flashed, but no progress
+/// bar". `u` is named in the already-complete case because it invites the
+/// obvious next question (is it the LATEST?), which is a different command.
+///
+/// Shared with the test seam deliberately: a second copy of this in the tests
+/// would assert the copy rather than the code.
+fn done_message(job: &Job) -> (String, bool) {
+    if job.total > 0 && job.already_have >= job.total {
+        return (
+            format!(
+                "{} is already complete — {} on disk, nothing to download (u checks for updates)",
+                job.repo,
+                crate::tui::format::bytes(job.total)
+            ),
+            false,
+        );
+    }
+    // The receipt: what moved and how long it took. A bare "downloaded" leaves
+    // out the one number that proves the transfer was real.
+    let moved = job.total.saturating_sub(job.already_have);
+    (
+        format!(
+            "{} downloaded — {} in {}",
+            job.repo,
+            crate::tui::format::bytes(moved),
+            fmt_elapsed(job.started.elapsed().as_secs())
+        ),
+        false,
+    )
+}
+
+/// `58s`, `12m 40s`, `1h 03m` — a transfer duration for a receipt.
+///
+/// Not in `format` because this is its only caller; move it there the moment a
+/// second one appears rather than guessing now.
+fn fmt_elapsed(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3_600 => format!("{}m {:02}s", s / 60, s % 60),
+        s => format!("{}h {:02}m", s / 3_600, s / 60 % 60),
+    }
+}
+
 impl DownloadState {
+    /// Run exactly `pump`'s `Done` bookkeeping, for tests.
+    ///
+    /// A test cannot hand the worker a `Done` without a live thread, and
+    /// re-implementing the message in the test would assert the copy rather
+    /// than the code. This shares the one path.
+    #[cfg(test)]
+    pub(crate) fn settle_done_for_test(&mut self) {
+        if let Some(job) = self.job.as_ref() {
+            self.last_message = Some(done_message(job));
+        }
+        self.job = None;
+    }
+
     /// Is anything running for this model?
     pub fn is_downloading(&self, repo: &str) -> bool {
         self.job.as_ref().is_some_and(|j| j.repo == repo)
@@ -93,6 +165,7 @@ impl DownloadState {
             started: Instant::now(),
             last: (Instant::now(), 0),
             rate_bps: 0.0,
+            already_have: 0,
         });
         (format!("resolving {repo}…"), false)
     }
@@ -145,6 +218,7 @@ impl DownloadState {
                     } => {
                         job.total = total_bytes;
                         job.done = already_have;
+                        job.already_have = already_have;
                     }
                     DownloadMsg::File { index, of, name } => job.file = Some((index, of, name)),
                     DownloadMsg::Progress { done, total } => {
@@ -161,7 +235,7 @@ impl DownloadState {
                     }
                     DownloadMsg::Done { .. } => {
                         settled = Some(Settled::Finished(job.repo.clone()));
-                        self.last_message = Some((format!("{} downloaded", job.repo), false));
+                        self.last_message = Some(done_message(job));
                     }
                     DownloadMsg::Cancelled { completed, of } => {
                         settled = Some(Settled::Stopped(job.repo.clone()));

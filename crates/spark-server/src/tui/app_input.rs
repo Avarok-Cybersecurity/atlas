@@ -6,7 +6,7 @@
 //! one concern — deciding which of the several text buffers owns a keystroke —
 //! so it moves as a unit, unchanged.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, Focus, Section, TermSub};
 
@@ -108,6 +108,13 @@ impl App {
                     Some(said) => self.toast(said, false),
                     None => self.chat.input.push('t'),
                 },
+                // Same trap as Ctrl+T above: unguarded, the catch-all types an
+                // `n` for it. Works with the input focused because starting
+                // over is most wanted mid-conversation, which is where the
+                // cursor lives.
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.request_chat_clear();
+                }
                 KeyCode::Char(c) => self.chat.input.push(c),
                 _ => {}
             },
@@ -117,9 +124,46 @@ impl App {
     /// Chat keys when the transcript, not the input box, has focus. Bare
     /// letters are free here, so the toggles get their unchorded forms too.
     pub(super) fn on_chat_content_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.request_chat_clear();
+            return;
+        }
         if let Some(said) = self.chat.on_content_key(key) {
             self.toast(said, false);
         }
+    }
+
+    /// `Ctrl+N`: start a new chat session — after a confirmation whenever
+    /// there is a conversation to lose.
+    ///
+    /// The gate is conditional for the same reason `on_quit_key`'s is: a
+    /// prompt over an empty transcript protects nothing, and a prompt that is
+    /// usually pointless trains the reflex that dismisses the one that
+    /// matters.
+    pub(super) fn request_chat_clear(&mut self) {
+        if self.chat.transcript.is_empty() && !self.chat.streaming {
+            self.toast("chat is already empty", false);
+        } else {
+            self.confirm_chat_clear = true;
+        }
+    }
+
+    /// Answer the clear-chat prompt. Always consumes the key, like
+    /// `answer_quit_prompt`, and for the same reason: a prompt that lets keys
+    /// through makes dismissing it navigate somewhere as a side effect.
+    ///
+    /// Only an affirmative clears — `y`, or `Ctrl+N` again, the same
+    /// double-press grammar the quit prompt taught with `q`. A bare `n` is
+    /// NOT the trigger key here: it reads as "no" and must cancel.
+    pub(super) fn answer_chat_clear(&mut self, key: KeyEvent) -> bool {
+        self.confirm_chat_clear = false;
+        let again = key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL);
+        if again || matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            let turns = self.chat.transcript.len();
+            self.chat.reset();
+            self.toast(format!("chat cleared — {turns} turns discarded"), false);
+        }
+        true
     }
 }
 
