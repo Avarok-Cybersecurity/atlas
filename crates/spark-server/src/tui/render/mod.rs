@@ -8,6 +8,7 @@ mod chat_lines;
 mod header;
 mod library;
 mod main_tab;
+mod main_tab_kernels;
 mod network_tab;
 mod overlay;
 mod stats_tab;
@@ -108,7 +109,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.section {
         Section::Main => match app.main_sub {
             MainSub::Overview => main_tab::draw(f, app, content),
-            MainSub::Kernels => main_tab::draw_kernels(f, app, content),
+            MainSub::Kernels => main_tab_kernels::draw(f, app, content),
         },
         Section::Stats => stats_tab::draw(f, app, content),
         Section::Network => network_tab::draw(f, app, content),

@@ -82,13 +82,26 @@ fn downloading(done: u64, total: u64) -> App {
     a
 }
 
+/// The rows cut down to the LIST pane's columns.
+///
+/// The detail pane now carries the download's full story at every width, so an
+/// assertion about what the ROW sheds has to stop looking at the columns to
+/// its right or the detail pane satisfies it.
+fn list_pane(rows: &[String], screen_w: u16) -> Vec<String> {
+    let chrome = crate::tui::render::Chrome::of(ratatui::layout::Size::new(screen_w, 40));
+    // Sidebar, then the 1-cell glow ring, then 46% of the content is the list.
+    let content_w = screen_w - chrome.sidebar_w - 2;
+    let end = (chrome.sidebar_w + 1 + content_w * 46 / 100) as usize;
+    rows.iter().map(|r| r.chars().take(end).collect()).collect()
+}
+
 #[test]
 fn the_progress_line_sheds_fields_from_the_right_as_the_pane_narrows() {
     // The bar and the percentage answer "is this still moving", so they are
     // the last things to go; the rate and the file counter are the first.
     let a = downloading(4_000_000_000, 34_900_000_000);
 
-    let cramped = screen(&a, 120, 40);
+    let cramped = list_pane(&screen(&a, 120, 40), 120);
     assert!(
         has(&cramped, " 11%"),
         "the percentage survives:\n{cramped:#?}"
@@ -108,8 +121,46 @@ fn the_progress_line_sheds_fields_from_the_right_as_the_pane_narrows() {
     // the 28.8 GB still to go by the rate got a time 7% short.
     assert!(has(&roomy, "92 MB/s"), "{roomy:#?}");
 
-    let wide = screen(&a, 280, 40);
+    let wide = list_pane(&screen(&a, 280, 40), 280);
     assert!(has(&wide, "file 3/85"), "{wide:#?}");
+}
+
+/// The screen row holding this model's LIST entry — the one place the inline
+/// dot may appear. The header's status pill also draws a "●", so a whole-
+/// screen scan cannot tell the two apart.
+fn model_row(rows: &[String], id: &str) -> String {
+    rows.iter()
+        .find(|r| r.contains(id))
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_running_download_owns_the_detail_pane_and_marks_its_row_with_a_dot() {
+    let a = downloading(4_000_000_000, 34_900_000_000);
+    let rows = screen(&a, 120, 40);
+    // The detail pane's bar section, present even at widths where the row
+    // line has shed everything but the bar.
+    assert!(has(&rows, "DOWNLOADING"), "{rows:#?}");
+    assert!(has(&rows, "3.7 GB / 32.5 GB"), "{rows:#?}");
+    assert!(has(&rows, "92 MB/s"), "{rows:#?}");
+    assert!(has(&rows, "file 3/85"), "{rows:#?}");
+    // The inline dot after the model name on the row itself.
+    let row = model_row(&rows, "atlas-render-tests/no-such-model");
+    assert!(
+        row.contains("●"),
+        "the row glows while its download runs: {row:?}"
+    );
+}
+
+#[test]
+fn a_model_not_downloading_draws_no_dot_and_no_download_section() {
+    let a = flagship();
+    let rows = screen(&a, 200, 40);
+    assert!(!has(&rows, "DOWNLOADING"), "{rows:#?}");
+    let id = a.lib.visible()[0].model.clone();
+    let row = model_row(&rows, &id);
+    assert!(!row.contains("●"), "{row:?}");
 }
 
 #[test]

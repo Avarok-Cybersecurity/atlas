@@ -136,3 +136,36 @@ fn a_gated_repo_is_reported_as_gated_and_not_as_a_network_fault() {
     );
     assert!(!dest.exists(), "nothing should have been written");
 }
+
+/// A stale token must not lock the user out of PUBLIC models. HF answers 401
+/// to an invalid `Authorization` header even on repos that need none, so
+/// before the anonymous retry existed, one bad line in
+/// `~/.cache/huggingface/token` made every download fail on arrival with
+/// "requires credentials".
+#[test]
+#[ignore = "network"]
+fn a_stale_token_still_resolves_and_fetches_a_public_repo() {
+    let repo = "hf-internal-testing/tiny-random-gpt2";
+    let bad = Some("hf_thistokenisdefinitelynotvalid");
+
+    let (revision, files) =
+        hf::repo_info(repo, bad).expect("public metadata must survive a bad token");
+    assert!(!revision.is_empty());
+    assert!(!files.is_empty());
+
+    let c = Cache::new("staletoken");
+    let dest = c.0.join("config.json");
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let done = hf::fetch_file(
+        repo,
+        &revision,
+        "config.json",
+        &dest,
+        bad,
+        &cancel,
+        &mut |_| {},
+    )
+    .expect("public files must survive a bad token");
+    assert!(done);
+    assert!(dest.exists());
+}
