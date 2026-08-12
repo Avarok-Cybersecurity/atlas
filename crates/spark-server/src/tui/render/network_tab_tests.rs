@@ -22,17 +22,28 @@ fn net(world: usize, tp: usize, ep: usize) -> App {
 #[test]
 fn a_single_node_deployment_gets_a_centrepiece_rather_than_an_empty_screen() {
     let mut a = net(1, 1, 1);
-    a.stats.atlas_used_gb = 57.0;
-    a.stats.gpu_total_gb = 119.7;
+    // The card reports SYSTEM memory (used/total), from /proc/meminfo: the
+    // GPU accessors are 0.0 until a model loads, and this card must not read
+    // "0/0 GB" on an idle boot.
+    a.stats.host_total_gb = 119.7;
+    a.stats.host_avail_gb = 62.7;
     let rows = screen(&a, 160, 48);
     assert!(has(&rows, "rank 0 · HEAD"), "{rows:#?}");
     assert!(has(&rows, "NVIDIA GB10 · local"));
     assert!(
         has(&rows, "57/120 GB"),
-        "the memory bar is labelled:\n{rows:#?}"
+        "the memory bar is used/total-system:\n{rows:#?}"
     );
     assert!(has(&rows, "tp 1 · ep 1 · world 1 — all local"));
     assert!(has(&rows, "❯❯❯"), "the stage chevrons flank the card");
+}
+
+#[test]
+fn an_unreadable_meminfo_draws_a_dash_rather_than_a_zero() {
+    // 0/0 was the bug this line replaced; the honest fallback is no number.
+    let rows = screen(&net(1, 1, 1), 160, 48);
+    assert!(has(&rows, "mem —"), "{rows:#?}");
+    assert!(!has(&rows, "0/0 GB"), "{rows:#?}");
 }
 
 #[test]

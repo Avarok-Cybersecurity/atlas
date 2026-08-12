@@ -65,7 +65,19 @@ impl Qwen3AttentionLayer {
             // See the decode-path note: N = nq = 72 gives dense_gemm_tc only
             // ceil(72/64) = 2 CTAs. Use the batched GEMV (ceil(N/4) CTAs), which
             // also keeps this consistent with the single-sequence decode path.
-            if self.dense_gemv_batchm_k.0 != 0 && super::super::qkv::bf16_batchm_enabled() {
+            // ★ n MUST be in 2..=8: dense_gemv_bf16_batchm caps rows at a
+            // compile-time MAX_M 8 and CLAMPS silently (`m = M > MAX_M ? MAX_M
+            // : M`), so a larger n leaves gate rows 8..n unwritten and the
+            // broadcast below multiplies attn_out by whatever stale bytes sit
+            // in `qkv_buf` — silently wrong hidden states on every head-gated
+            // model (Laguna-S-2.1, Step3.7) at decode concurrency >= 9.
+            // `padded_batch_n`'s ladder is [2,4,8,12,16,24,32,48,64,96,128],
+            // so n > 8 is routine, not hypothetical. dense_gemm_tc below
+            // handles any M, so the fallback is correct, just slower.
+            if (2..=8).contains(&n)
+                && self.dense_gemv_batchm_k.0 != 0
+                && super::super::qkv::bf16_batchm_enabled()
+            {
                 ops::dense_gemv_batchm(
                     fwd.gpu,
                     self.dense_gemv_batchm_k,

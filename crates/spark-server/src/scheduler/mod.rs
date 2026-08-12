@@ -80,7 +80,6 @@ use decode_step::*;
 use emit_step::*;
 pub use helpers::WatchdogParams;
 pub(crate) use helpers::parse_disable_watchdogs;
-pub use helpers::set_enable_think_loop_watchdog;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
 use lifecycle::*;

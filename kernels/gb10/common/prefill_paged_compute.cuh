@@ -770,7 +770,13 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
         const unsigned int cpr = HDIM / 8;
         for (unsigned int idx = tid; idx < TILE_CHUNKS_Q64; idx += 256) {
             unsigned int row = idx / cpr, col = (idx % cpr) * 8;
-            if (q_start + row < q_len) {
+            // q_len_eff, NOT q_len: under VARLEN `q_len` is the batch MAXIMUM,
+            // so bounding by it makes a short stream cp.async-load the NEXT
+            // stream's rows -- and for the LAST stream, read past the end of
+            // the packed Q buffer. The BR=32 variant above was converted; this
+            // one was missed. Stores are masked by q_tile_len so the numerics
+            // survived, but the OOB read is real.
+            if (q_start + row < q_len_eff) {
 #ifdef PREFILL_BATCHED
                 const void* gm = (const void*)&Q[q_batch_off + (q_start+row)*q_seq_stride + q_head*head_dim + col];
 #else

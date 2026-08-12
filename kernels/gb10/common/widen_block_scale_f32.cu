@@ -31,7 +31,13 @@ extern "C" __global__ void widen_block_scale_f32(
         dst[i] = ((const float*)src)[i];
     } else if (input_dtype == 2) {
         unsigned int exp = ((const unsigned char*)src)[i];
-        dst[i] = (exp == 0u || exp == 255u) ? 0.0f : __uint_as_float(exp << 23);
+        // OCP MX E8M0 has NO zero encoding: exp==0 is the smallest scale,
+        // 2^-127 (fp32 subnormal 0x00400000), and only exp==255 is NaN.
+        // Mapping 0 -> 0.0f silently zeroed a legitimate block scale.
+        dst[i] = (exp == 255u)
+                     ? 0.0f
+                     : (exp == 0u ? __uint_as_float(0x00400000u)
+                                  : __uint_as_float(exp << 23));
     } else {
         unsigned short raw = ((const unsigned short*)src)[i];
         dst[i] = __bfloat162float(*(const __nv_bfloat16*)&raw);

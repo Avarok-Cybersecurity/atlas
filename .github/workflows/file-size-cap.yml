@@ -14,6 +14,11 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  # Merge queue: entries are validated on a temporary gh-readonly-queue/**
+  # merge-commit that fires none of the events above, and this job is in the
+  # required set the queue waits on — without this trigger it is never
+  # reported and every entry times out.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -390,6 +395,35 @@ jobs:
             "crates/spark-server/src/scheduler/mtp_step.rs"
             # 502 LoC — /v1/completions handler.
             "crates/spark-server/src/api/completions.rs"
+            # -- PR #469 (SSM State Poisoning Gate) --
+            # 522 LoC — gate coverage table. Crossed the cap when the sixth
+            # mandatory gate (ssm-state-poisoning-gate) added SSM_POISON_EXCLUDES
+            # plus its own exclusion entries in the four sibling EXCLUDES
+            # arrays. Splitting it here is NOT free: coverage.rs is a
+            # BOUNDARY_FILE, so any edit to it (including a pure split)
+            # invalidates every standing gate record and forces a full GPU
+            # re-cycle — which is exactly why the entry goes here instead of
+            # a split commit in this PR. A clean split (per-gate EXCLUDES
+            # arrays -> sibling module) is tracked as follow-up; this entry
+            # lands with the PR that tipped it.
+            "crates/atlas-plugin/src/gate/coverage.rs"
+            # -- PR #464 (batch4 stack: #400/#401/#402/#350/#403) --
+            # Three files the restack tipped marginally over, each of which sat
+            # JUST under the cap on main (498/489/499 -> 509/501/501). The
+            # overage is a mechanical consequence of merging five upstream
+            # branches, not new monolith growth, and the content belongs to the
+            # upstream PRs rather than to this restack -- same footing as the
+            # #90/#229/#300 carry-over entries above. Clean splits tracked as
+            # follow-up with the upstream authors.
+            # 509 LoC (was 498) -- routed-expert prefill; grew with p400's
+            # native MXFP4/E8M0 routed-expert loading (#293 content).
+            "crates/spark-model/src/layers/moe/forward_prefill_routed.rs"
+            # 501 LoC (was 489) -- tool-call parser entry point; grew with
+            # p350 (Laguna-S-2.1) adding its parser arm.
+            "crates/spark-server/src/tool_parser.rs"
+            # 501 LoC (was 499) -- paged QKV prefill; +2 lines from the
+            # Nemotron-H-Puzzle/Mamba work (#281 content) carried in the stack.
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged_qkv.rs"
           )
 
           violations=0

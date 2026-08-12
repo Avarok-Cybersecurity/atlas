@@ -41,16 +41,29 @@ fn card_lines(app: &App, rank: usize) -> Vec<Line<'static>> {
             "NVIDIA GB10 · local".to_string(),
             theme::text2(),
         )));
-        let used = s.atlas_used_gb;
-        let total = s.gpu_total_gb.max(0.001);
-        let w = 18usize;
-        let filled = ((used / total).clamp(0.0, 1.0) * w as f64) as usize;
-        let bar: String = "█".repeat(filled) + &"░".repeat(w - filled);
-        lines.push(Line::from(vec![
-            Span::styled("mem ", theme::dim()),
-            Span::styled(bar, theme::brand_cyan()),
-            Span::styled(format!(" {used:.0}/{total:.0} GB"), theme::text2()),
-        ]));
+        // System memory, not the GPU accessors: those stay 0.0 until a model
+        // has loaded and NVML answers, which drew "0/0 GB" on every idle boot.
+        // On unified-memory hardware /proc/meminfo is the whole truth anyway,
+        // and it answers whether or not a model is up. The format is
+        // used/total-of-the-system; "—" when the read is unavailable, because
+        // this pane never fakes a measurement.
+        let total = s.host_total_gb;
+        if total > 0.0 {
+            let used = (total - s.host_avail_gb).max(0.0);
+            let w = 18usize;
+            let filled = ((used / total).clamp(0.0, 1.0) * w as f64) as usize;
+            let bar: String = "█".repeat(filled) + &"░".repeat(w - filled);
+            lines.push(Line::from(vec![
+                Span::styled("mem ", theme::dim()),
+                Span::styled(bar, theme::brand_cyan()),
+                Span::styled(format!(" {used:.0}/{total:.0} GB"), theme::text2()),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("mem ", theme::dim()),
+                Span::styled("—", theme::dim()),
+            ]));
+        }
         lines.push(Line::from(Span::styled(
             format!("{}:{}", app.args.bind, app.args.port),
             theme::text2(),

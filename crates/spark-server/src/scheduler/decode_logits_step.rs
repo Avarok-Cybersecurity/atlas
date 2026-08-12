@@ -495,7 +495,7 @@ pub fn process_decode_logits(
                 // cycling) within ~24-60 tokens of the loop starting,
                 // instead of waiting for the 256-token thinking budget.
                 if !sched.levers.disable_watchdogs
-                    && crate::scheduler::helpers::enable_think_loop_watchdog()
+                    && sched.watchdog.enable_think_loop_watchdog
                     && !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
@@ -798,7 +798,14 @@ pub fn process_decode_logits(
                 && !legacy_suppresses_eos
                 && !post_think_suppresses_eos
                 && !min_tokens_suppresses;
-            if thinking_is_sole_suppressor {
+            // Gated per model: honoring a mid-think EOS closes the block, and
+            // from there only POST_THINK_MIN_CONTENT holds the turn open, so a
+            // model that would have recovered instead emits ~16 tokens of
+            // narration and stops WITHOUT its tool call. Laguna-S-2.1 needs
+            // the close; Qwen3.6-35B-A3B measurably regresses on it (8/10 vs
+            // 10/10 agentic, three consecutive tiers). Default false.
+            let honor_eos_in_think = sched.watchdog.honor_eos_inside_thinking;
+            if thinking_is_sole_suppressor && honor_eos_in_think {
                 a.inside_thinking = false;
                 a.think_force_closed = true;
                 a.force_end_thinking = false;
@@ -811,7 +818,9 @@ pub fn process_decode_logits(
             tracing::debug!(
                 target: "atlas::eos",
                 tok,
-                implicit_think_close = thinking_is_sole_suppressor,
+                implicit_think_close = thinking_is_sole_suppressor && honor_eos_in_think,
+                thinking_sole_suppressor = thinking_is_sole_suppressor,
+                honor_eos_inside_thinking = honor_eos_in_think,
                 inside_thinking = a.inside_thinking,
                 think_ended = a.think_ended,
                 thinking_tokens = a.thinking_tokens,

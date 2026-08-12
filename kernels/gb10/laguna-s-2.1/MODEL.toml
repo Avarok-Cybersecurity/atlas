@@ -75,6 +75,19 @@ dry_multiplier = 0.0
 # with no natural continuation. Other models keep the watchdog (flag defaults
 # to true); this opts Laguna out.
 enable_think_loop_watchdog = false
+# ── Honor EOS inside thinking ──────────────────────────────────────────────
+# This model stalls when a mid-`<think>` EOS is discarded: it has sampled its
+# stop and forcing it to keep reasoning produces the same spam tail described
+# above. Closing the block on that EOS is the fix p350 was written for, so
+# Laguna opts IN.
+#
+# The flag exists because the behaviour is NOT safe globally. On
+# Qwen3.6-35B-A3B-FP8 (thinking on by default, tools armed every turn) the
+# implicit close leaves only POST_THINK_MIN_CONTENT=16 holding the turn open:
+# the model emits one announcement sentence and stops WITHOUT its tool call.
+# Measured 8/10 webserver_ok on three consecutive N=10 tiers with the close
+# unconditional, 10/10 without it. Hence per-model, default false.
+honor_eos_inside_thinking = true
 # The rest of the thinking-watchdog family misfires the same way on this model:
 # they all trip on the temperature-0 greedy repeat-plateau the model falls into
 # (it is designed for 0.7/0.95, not greedy), then force-close </think> or

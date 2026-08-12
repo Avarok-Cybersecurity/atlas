@@ -21,16 +21,22 @@ name: Kernel compile
 # needs a GB10 and stays with the benchmark gates.
 
 on:
+  # No path filter on pull_request: this check joins the required set, and a
+  # path-filtered required check never reports on PRs outside its paths
+  # (non-kernel diffs), leaving them permanently "expected" and unmergeable.
+  # The job is a pure nvcc cross-compile to PTX (no GPU, ~minutes on a hosted
+  # runner), so running it on every PR is the cost of it being a verdict.
   pull_request:
-    paths:
-      - 'kernels/**'
-      - 'crates/atlas-kernels/**'
-      - '.github/workflows/kernel-compile.yml'
   push:
     branches: [main]
     paths:
       - 'kernels/**'
       - 'crates/atlas-kernels/**'
+  # Merge queue: queue commits (temporary gh-readonly-queue/** merge-commits)
+  # fire none of the events above, and this check is required — without this
+  # trigger it is never reported and the entry hangs until the queue's
+  # check timeout ejects it. Unfiltered for the same reason as pull_request.
+  merge_group:
 
 # A second push supersedes the first: this job is minutes long and its only
 # output is pass/fail on the tip.

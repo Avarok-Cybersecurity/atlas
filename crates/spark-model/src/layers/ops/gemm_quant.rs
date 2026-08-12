@@ -4,7 +4,7 @@
 
 #![allow(unused_imports)]
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -183,6 +183,10 @@ pub fn dense_gemv_batch2(
 /// Kernel: `dense_gemv_bf16_batchm(A, B, C, M, N, K, out_stride)`
 /// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
 #[allow(clippy::too_many_arguments)]
+/// Mirror of `MAX_M` in `kernels/gb10/common/dense_gemv_bf16_batchm.cu`.
+/// The kernel clamps silently above this, so the Rust side must refuse.
+pub const DENSE_GEMV_BATCHM_MAX_M: u32 = 8;
+
 pub fn dense_gemv_batchm(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
@@ -195,6 +199,16 @@ pub fn dense_gemv_batchm(
     out_stride: u32,
     stream: u64,
 ) -> Result<()> {
+    // The kernel caps rows at a compile-time MAX_M 8 and CLAMPS rather than
+    // erroring, so an over-large m used to mean "rows 8..m are silently never
+    // written". Refuse instead: a caller that wants more rows must use a
+    // kernel that can do them (dense_gemm_tc), not get 8 rows of truth and
+    // stale memory for the rest.
+    ensure!(
+        (1..=DENSE_GEMV_BATCHM_MAX_M).contains(&m),
+        "dense_gemv_batchm: m={m} outside 1..={DENSE_GEMV_BATCHM_MAX_M} \
+         (kernel MAX_M clamps silently; use dense_gemm_tc for wider batches)"
+    );
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 1])
         .block([256, 1, 1])
