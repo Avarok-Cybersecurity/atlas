@@ -290,6 +290,23 @@ pub struct ChatTemplateKwargs {
 const DEFAULT_THINKING_BUDGET: u32 = 256;
 
 impl ChatCompletionRequest {
+    fn requested_reasoning_effort(&self) -> Option<&str> {
+        self.reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort.as_deref())
+            .or(self.reasoning_effort.as_deref())
+    }
+
+    pub fn client_reasoning_effort(&self) -> Option<crate::ir::ReasoningEffort> {
+        match self.requested_reasoning_effort()? {
+            "none" => None,
+            "minimal" | "low" | "medium" => Some(crate::ir::ReasoningEffort::Low),
+            "high" => Some(crate::ir::ReasoningEffort::High),
+            "xhigh" | "max" => Some(crate::ir::ReasoningEffort::Max),
+            _ => None,
+        }
+    }
+
     /// Resolve the client's thinking intent from all supported
     /// request-body formats into the neutral [`ThinkingDirective`].
     /// This is the OpenAI-edge half of thinking resolution; the model
@@ -348,13 +365,8 @@ impl ChatCompletionRequest {
         // Dropping the shorthand silently demoted every effort-level
         // request to the server/model default — including `"none"`,
         // which must force thinking OFF.
-        let effort = self
-            .reasoning
-            .as_ref()
-            .and_then(|rc| rc.effort.clone())
-            .or_else(|| self.reasoning_effort.clone());
-        if let Some(ref effort) = effort {
-            let budget = match effort.as_str() {
+        if let Some(effort) = self.requested_reasoning_effort() {
+            let budget = match effort {
                 "none" => 0,
                 "minimal" => 64,
                 "low" => 128,

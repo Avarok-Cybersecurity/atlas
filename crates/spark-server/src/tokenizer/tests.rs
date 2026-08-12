@@ -3,6 +3,8 @@
 //! Extracted piecewise from `tokenizer.rs` (500-LoC cap).
 
 use super::*;
+
+mod deepseek_v4;
 use serde_json::json;
 
 fn render_minimax_openai_template(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #![allow(unused_imports, dead_code)]
 
+mod deepseek_v4_dsml;
 mod group_a;
 mod group_a_formats;
 mod group_b;
