@@ -2,7 +2,7 @@
 
 //! Nemotron-H MTP (Multi-Token-Prediction) draft proposer.
 //!
-//! Implements [`DraftProposer`] over the [`NemotronMtpModule`] loaded by
+//! Implements [`DraftProposer`] over the `NemotronMtpModule` loaded by
 //! `weight_loader::nemotron::load_nemotron_mtp_module` (Nemotron-3.5
 //! Lightning's DeepSeek-style 1-step head under `mtp.layers.*`). The Qwen
 //! [`crate::layers::MtpHead`] cannot serve this family — its forward is
@@ -254,6 +254,9 @@ impl NemotronMtpHead {
             max_blocks_per_seq: max_blocks,
             num_seqs: 1,
             seq_slot: DevicePtr(0),
+            // MTP is a non-batched path: null => the MoE fold hooks fall back
+            // to the request-granularity `moe_route_gate`.
+            moe_row_adapter: DevicePtr(0),
         };
 
         // Derive a ForwardContext carrying the MTP metadata. Graph capture is
@@ -275,6 +278,10 @@ impl NemotronMtpHead {
             token_ids: ctx.token_ids,
             routed_lora_layers: None,
             midchunk_capture: None,
+            // Inherit the owning request's MoE-LoRA fold decision; the
+            // drafter's own MoE layer carries no adapter, so the fold hooks
+            // short-circuit either way.
+            moe_lora_route: ctx.moe_lora_route,
         };
 
         // ── 4. Attention block: norm + ungated GQA (NoPE) + residual ──
