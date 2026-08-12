@@ -147,6 +147,84 @@ fn exact_verify_snap_lookups_resolve_or_are_declared_on_every_gdn_target() {
     );
 }
 
+/// Milestone B (Nemotron-H concurrent decode) added two kernel ENTRIES to
+/// existing `common/` modules and two `try_kernel` probes in
+/// `NemotronMamba2Layer::new`. The fail-closed boot audit refuses any
+/// unresolved lookup that is not declared `[expected_absent]`, and a probe
+/// issued unconditionally from a constructor has killed unrelated models
+/// before — so assert directly that every target which builds a Mamba-2
+/// layer can actually resolve both entries.
+///
+/// Module presence is not enough here: both entries were APPENDED to files
+/// every target already ships, so the module resolves while the symbol might
+/// not (a target could shadow the `.cu`). The check therefore looks for the
+/// entry symbol inside the emitted PTX.
+///
+/// Issuer proxy: a target constructs `NemotronMamba2Layer` iff its
+/// `mamba2_ssm` module carries `mamba2_ssm_decode`, which the constructor
+/// resolves with a hard `gpu.kernel(...)?` — a Mamba-2 target without it
+/// could not boot at all.
+#[test]
+#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
+fn mamba2_strided_lookups_resolve_or_are_declared_on_every_mamba2_target() {
+    const PAIRS: [(&str, &str); 2] = [
+        ("causal_conv1d", "causal_conv1d_update_strided"),
+        ("mamba2_ssm", "mamba2_ssm_decode_strided"),
+    ];
+    let has_entry = |t: &TargetPtxSet, module: &str, func: &str| {
+        t.modules.iter().any(|(name, blob)| {
+            *name == module
+                && std::str::from_utf8(blob)
+                    .unwrap_or("")
+                    .contains(&format!(".entry {func}("))
+        })
+    };
+    let declares = |t: &TargetPtxSet, m: &str, f: &str| {
+        t.expected_absent
+            .iter()
+            .any(|(em, ef)| *em == m && *ef == f)
+    };
+
+    let mut mamba_targets = 0usize;
+    let mut resolved = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    for t in available_targets() {
+        if !has_entry(&t, "mamba2_ssm", "mamba2_ssm_decode") {
+            continue;
+        }
+        mamba_targets += 1;
+        for (m, f) in PAIRS {
+            if has_entry(&t, m, f) {
+                resolved += 1;
+            } else if !declares(&t, m, f) {
+                violations.push(format!(
+                    "{} builds a Mamba-2 layer but resolves neither {m}::{f} nor an \
+                     [expected_absent] declaration for it — its boot audit will refuse it",
+                    t.target
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "Mamba-2 targets with undeclared unresolvable strided lookups:\n{}",
+        violations.join("\n")
+    );
+    // Non-vacuity: at least Lightning and Super-120B build Mamba-2 layers,
+    // and the whole point of putting both entries in `common/` was that they
+    // resolve by PRESENCE everywhere rather than by declaration.
+    assert!(
+        mamba_targets >= 2,
+        "expected at least two Mamba-2 targets, saw {mamba_targets}"
+    );
+    assert_eq!(
+        resolved,
+        mamba_targets * PAIRS.len(),
+        "both strided entries live in kernels/gb10/common/, which no target shadows, so \
+         every Mamba-2 target must resolve BOTH by presence"
+    );
+}
+
 #[test]
 #[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
 fn ptx_for_model_lookup() {

@@ -18,6 +18,8 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
 use crate::weight_map::{DenseWeight, Fp8Weight, NemotronSsmWeights, QuantizedWeight};
 
+mod decode_conv_scan;
+mod decode_mtp_k;
 mod prefill;
 mod prefill_proj;
 mod trait_decode_multi_seq;
@@ -30,28 +32,84 @@ mod tests_multi_seq;
 /// which `decode_multi_seq` takes the batched body instead of the canonical
 /// per-seq default loop.
 ///
-/// Why 8 and not 2 (measured on GB10, Lightning-30B-A3B NVFP4, 2026-08-11,
-/// 400-token story sweeps, batched-Mamba2 arm isolated — MoE batched off):
+/// **Milestone B lowered this from 8 to 2.** The body is now split into two
+/// independently gated halves, and only one of them can move numerics:
 ///
-///   C=4 aggregate 92.3 tok/s batched vs 72.9 parent per-seq loop (+27%)
-///   C=8 aggregate 80-88 tok/s batched vs ~75 parent          (+9-17%)
+///   * norms / residual add — batch natively (one block per row), so a
+///     batch=n launch is bit-identical to n batch=1 launches;
+///   * conv1d + SSM scan — `decode_conv_scan.rs` issues the strided twins
+///     over the dense slot prefix. Both are proven byte-identical to the
+///     per-row loop (only base addresses change), so this half is a pure
+///     launch-count win and needs no numeric gate at all;
+///   * the two projections — the ONLY phase that reorders FP accumulation.
+///     That is gated separately and per quantization arm by
+///     [`NemotronMamba2Layer::proj_batch_min`], where the milestone-A
+///     determinism rationale now lives.
 ///
-/// so the batched body is profitable from n=4 up. It is nevertheless gated
-/// at 8 because it is NOT bit-identical to the per-seq loop: the
-/// `w4a16_gemv_batchm` tiers map K-chunks to lanes differently from
-/// `w4a16_gemv` (k16 = lane, stride 64, scale pre-multiplied into the
-/// weights vs k16 = lane*2 paired chunks, two accumulators, scale factored
-/// out per 16-FMA block — the "per-row accumulation order is IDENTICAL"
-/// comment in w4a16_gemv.cu is wrong), an inherent FP-reordering that moved
-/// the temp-0 concurrent divergence onset from the family's pre-existing
-/// C>=5 down to C>=2. Rung 8 is the first rung reached only at
-/// n_decode >= 5 — where the parent build already diverges — so batching
-/// there wins throughput without costing any determinism the family had.
-/// Batching rung 4 (the +27%) is available the day a bit-exact batched
-/// GEMV twin exists — rung-4 batching was probed and REJECTED: 2 of 6
-/// C=3/C=4 temp-0 fact probes flipped the P&P answer 1813→1995 (the exact
-/// defect symptom this gate exists to prevent).
-pub(crate) const MAMBA2_BATCH_DECODE_MIN_SEQS: usize = 8;
+/// So this constant is now just "is there more than one row to batch".
+pub(crate) const MAMBA2_BATCH_DECODE_MIN_SEQS: usize = 2;
+
+/// Projection-batching threshold on the NVFP4 (`w4a16`) arm.
+///
+/// Stays at the milestone-A rung 8, and the reason is numeric, not
+/// throughput: the `w4a16_gemv_batchm` tiers map K-chunks to lanes
+/// differently from `w4a16_gemv` (k16 = lane, stride 64, scale
+/// pre-multiplied into the weights, vs k16 = lane*2 paired chunks, two
+/// accumulators, scale factored out per 16-FMA block — the "per-row
+/// accumulation order is IDENTICAL" comment in `w4a16_gemv.cu` is wrong).
+/// That reordering moved the temp-0 concurrent divergence onset from the
+/// family's pre-existing C>=5 down to C>=2. Rung 8 is the first rung reached
+/// only at `n_decode >= 5`, where the parent build already diverges, so
+/// batching there costs no determinism the family had. Rung-4 batching was
+/// probed and REJECTED at milestone A: 2 of 6 C=3/C=4 temp-0 fact probes
+/// flipped the P&P answer 1813 -> 1995.
+const MAMBA2_PROJ_MIN_NVFP4: usize = 8;
+
+/// Projection-batching threshold on the native-BF16 arm. Also 8: whether
+/// `dense_gemm_bf16_pipelined` is bit-identical to m x `dense_gemv_bf16` has
+/// never been proven, and it is a different tiling, so it inherits the
+/// conservative rung rather than an assumption.
+const MAMBA2_PROJ_MIN_BF16: usize = 8;
+
+/// Projection-batching threshold on the native block-scaled FP8 arm — the
+/// arm Lightning-30B actually takes (`ATLAS_NEMOTRON_NATIVE_FP8_SSM`
+/// defaults on and the checkpoint quantizes `mixer.in_proj`/`mixer.out_proj`
+/// to FP8 block scales).
+///
+/// **2, and unlike the other two arms that is PROVEN, not assumed.**
+///
+/// `w8a16_gemv_batch4.cu` claimed bit-identity with `w8a16_gemv` and the
+/// claim was false: its inner loop accumulated `acc += lo*w0 + hi*w1` where
+/// the M=1 kernel computes `acc += lo*w0; acc += hi*w1;`, and those associate
+/// differently in FP32. A byte compare at the real Lightning projection
+/// shapes ([10304 x 2688] in_proj, [2688 x 4096] out_proj, seeds 1/99/12345)
+/// found 1-9 differing BF16 elements per launch, up to 4.0 apart, at every
+/// M in {2,3,4,8,12,16} — i.e. the same class of silent FP reordering that
+/// the NVFP4 arm below is gated for. The small-shape cosine microtest that
+/// was supposed to catch this passed, because cos>=0.99999 cannot see a
+/// handful of flipped elements in 10304.
+///
+/// Milestone B fixed the kernel (split the fused add) rather than working
+/// around it, so all 36 legs now report `byte-identical=true` and the
+/// batched tier is a pure weight-DRAM saving with no numeric consequence
+/// whatsoever. `examples/w8a16_batch_bitparity_microtest.rs` is the standing
+/// gate and fails without that fix.
+///
+/// Rungs 2/4/8/12/16 therefore all batch bit-exactly. Above 16 the ladder
+/// leaves the GEMV tiers for the tile GEMM, which is NOT bit-identical — but
+/// rung 24 is only reached at `n_decode >= 17`, far above the family's
+/// pre-existing C>=5 divergence onset.
+///
+/// Measured on GB10 (dgx-00, idle), Lightning NVFP4, 400-token story sweeps,
+/// sum-of-stream tok/s, best of 2 reps, milestone-B tip vs the same tip with
+/// only the gates at their milestone-A values:
+///
+///   C=1   69.2 ->  69.2  (+0.0%)   n=1 never enters the batched body
+///   C=2   69.7 ->  85.2  (+22.2%)
+///   C=4   75.1 -> 103.8  (+38.2%)
+///   C=8  109.1 -> 114.1  (+4.6%)   rung 8 already batched projections;
+///                                  this delta is the strided conv/scan alone
+const MAMBA2_PROJ_MIN_FP8: usize = 2;
 
 #[allow(dead_code)]
 pub struct NemotronMamba2Layer {
@@ -87,6 +145,12 @@ pub struct NemotronMamba2Layer {
     w8a16_gemv_k: KernelHandle,
     conv1d_update_k: KernelHandle,
     mamba2_ssm_k: KernelHandle,
+    // Milestone-B strided twins: ONE launch covers a dense prefix of N
+    // concurrent sequences instead of one launch per row. Optional
+    // (`try_kernel`) — kernel sets that predate them report handle 0 and
+    // `decode_conv_scan` keeps the per-row loop.
+    conv1d_update_strided_k: KernelHandle,
+    mamba2_ssm_strided_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     residual_add_k: KernelHandle,
     // Kernel handles — multi-sequence batched decode (one weight-DRAM pass
@@ -167,6 +231,18 @@ impl NemotronMamba2Layer {
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             conv1d_update_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
             mamba2_ssm_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_decode")?,
+            // Both live in `kernels/gb10/common/`, which no target shadows,
+            // so every gb10 target resolves them and no `[expected_absent]`
+            // declaration is needed. Probed with `try_kernel` regardless: the
+            // fail-closed boot audit refuses handle-0 lookups, and this
+            // constructor only runs for `nemotron_h`, so an older kernel set
+            // must degrade to the per-row loop, not fail boot.
+            conv1d_update_strided_k: super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_strided",
+            ),
+            mamba2_ssm_strided_k: super::try_kernel(gpu, "mamba2_ssm", "mamba2_ssm_decode_strided"),
             gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             // NVFP4 batched decode GEMV (all three live in the w4a16_gemv
@@ -263,6 +339,24 @@ impl NemotronMamba2Layer {
         self.out_proj_fp8 = out_proj;
         self.native_fp8_prefill = prefill;
         Ok(())
+    }
+
+    /// Minimum row count at which the two PROJECTIONS may use a batched
+    /// kernel instead of a per-row GEMV loop, keyed by the quantization arm
+    /// this layer actually took.
+    ///
+    /// This is the only phase of the batched decode body that reorders FP
+    /// accumulation, so it is the only phase that carries a numeric gate;
+    /// see the three `MAMBA2_PROJ_MIN_*` constants for the per-arm evidence.
+    /// Arm ORDER must mirror `batched_in_proj`/`decode()` exactly.
+    pub(crate) fn proj_batch_min(&self) -> usize {
+        if self.in_proj_bf16.is_some() {
+            MAMBA2_PROJ_MIN_BF16
+        } else if self.in_proj_fp8.is_some() {
+            MAMBA2_PROJ_MIN_FP8
+        } else {
+            MAMBA2_PROJ_MIN_NVFP4
+        }
     }
 
     /// Access SSM weights (needed by weight loader for transpose).

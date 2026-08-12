@@ -14,11 +14,16 @@
 //!   per-row in_proj GEMV   ([ceil(10304/4)=2576, 1, 1], [256,1,1]) — the
 //!                          default-loop tell; must be ABSENT when batching.
 //!
+//! Milestone B adds the strided conv/scan geometries, which differ from the
+//! per-row ones only in `grid.y`:
+//!   strided conv1d         ([24, p, 1], [256,1,1])   — ONE launch for p rows
+//!   strided mamba2_ssm     ([64, p, 1], [128,1,1])
+//!
 //! These fail without the `decode_multi_seq` override: the default loop
 //! yields n GEMV-geometry launches and n single-token norm grids of (1,·).
 
 use super::*;
-use crate::layer::{EmptyLayerState, ForwardContext, LayerState, TransformerLayer};
+use crate::layer::{EmptyLayerState, ForwardContext, LayerState, SsmLayerState, TransformerLayer};
 use atlas_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::MockGpuBackend;
@@ -124,6 +129,34 @@ fn run_multi_seq(
     )
 }
 
+/// Pool-style SSM states: one contiguous `h_state` block and one contiguous
+/// `conv_state` block, slot `i` at `base + i * slot_bytes` — the layout
+/// `SsmStatePool` hands the decode path, and the precondition the strided
+/// conv/scan arm checks. `alloc_state()` per row does NOT produce this (it
+/// interleaves the two allocations), which is why these tests build the
+/// states by hand.
+fn pool_states(
+    gpu: &MockGpuBackend,
+    layer: &NemotronMamba2Layer,
+    n: usize,
+) -> Vec<Box<dyn LayerState>> {
+    let h_pool = gpu.alloc(n * layer.h_state_bytes).unwrap();
+    let conv_pool = gpu.alloc(n * layer.conv_state_bytes).unwrap();
+    (0..n)
+        .map(|i| {
+            Box::new(SsmLayerState {
+                h_state: h_pool.offset(i * layer.h_state_bytes),
+                conv_state: conv_pool.offset(i * layer.conv_state_bytes),
+                h_state_checkpoint: None,
+                conv_state_checkpoint: None,
+                h_state_intermediates: Vec::new(),
+                conv_state_intermediates: Vec::new(),
+                h_is_f16: false,
+            }) as Box<dyn LayerState>
+        })
+        .collect()
+}
+
 fn count(seen: &[([u32; 3], [u32; 3])], grid: [u32; 3], block: [u32; 3]) -> usize {
     seen.iter()
         .filter(|&&(g, b)| g == grid && b == block)
@@ -137,9 +170,10 @@ fn grids(gpu: &MockGpuBackend) -> Vec<([u32; 3], [u32; 3])> {
         .collect()
 }
 
-/// n=8 (= MAMBA2_BATCH_DECODE_MIN_SEQS) on the native-BF16 arm: projections
-/// batch into ONE GEMM each, the norms batch to grid.x==8, and the
-/// conv/scan inner stays an 8-row loop.
+/// n=8 on the native-BF16 arm: projections batch into ONE GEMM each (rung 8
+/// is that arm's projection threshold), the norms batch to grid.x==8, and —
+/// milestone B — the conv/scan inner is ONE strided launch pair over the
+/// dense slot prefix instead of eight per-row pairs.
 #[test]
 fn mamba2_multi_seq_batches_projections() {
     let config = lightning_config();
@@ -153,9 +187,8 @@ fn mamba2_multi_seq_batches_projections() {
         dw(config.hidden_size * config.mamba2_d_inner() * 2),
     );
 
-    let n = super::MAMBA2_BATCH_DECODE_MIN_SEQS;
-    let mut owned: Vec<Box<dyn LayerState>> =
-        (0..n).map(|_| layer.alloc_state(&gpu).unwrap()).collect();
+    let n = 8usize;
+    let mut owned = pool_states(&gpu, &layer, n);
     let mut states: Vec<&mut (dyn LayerState + 'static)> =
         owned.iter_mut().map(|b| &mut **b).collect();
     run_multi_seq(&gpu, &config, &layer, &mut states).unwrap();
@@ -178,11 +211,22 @@ fn mamba2_multi_seq_batches_projections() {
         2,
         "expected batched rms_norm_residual + gated_rms_norm at grid.x=8; grids: {seen:?}"
     );
-    // Per-row conv + scan: exactly 8 of each, batch=1 geometry.
-    assert_eq!(count(&seen, [24, 1, 1], [256, 1, 1]), 8, "conv1d per-row");
+    // Milestone B: ONE strided conv + ONE strided scan over all 8 rows, and
+    // ZERO per-row launches. This is the 16 -> 2 launch collapse.
+    assert_eq!(
+        count(&seen, [24, 8, 1], [256, 1, 1]),
+        1,
+        "expected ONE strided conv1d over 8 rows; grids: {seen:?}"
+    );
+    assert_eq!(
+        count(&seen, [64, 8, 1], [128, 1, 1]),
+        1,
+        "expected ONE strided mamba2_ssm over 8 rows; grids: {seen:?}"
+    );
+    assert_eq!(count(&seen, [24, 1, 1], [256, 1, 1]), 0, "conv1d per-row");
     assert_eq!(
         count(&seen, [64, 1, 1], [128, 1, 1]),
-        8,
+        0,
         "ssm_decode per-row"
     );
     // The default-loop tell (per-row in_proj GEMV) must be absent.
@@ -190,45 +234,6 @@ fn mamba2_multi_seq_batches_projections() {
         count(&seen, [2576, 1, 1], [256, 1, 1]),
         0,
         "per-row in_proj GEMV launched — batched override not engaged"
-    );
-}
-
-/// Below MAMBA2_BATCH_DECODE_MIN_SEQS (n=4, a reachable padded rung) the
-/// canonical per-seq default loop must run — 4 per-row projections, no
-/// batched GEMM. This gate is a MEASURED determinism threshold (temp-0
-/// concurrent answers flipped when rungs 2/4 batched; see the constant's
-/// docs) — fails if the gate is ever lowered without re-measuring.
-#[test]
-fn mamba2_multi_seq_below_threshold_uses_default_loop() {
-    let config = lightning_config();
-    let gpu = MockGpuBackend::new();
-    let mut layer = mk_layer(&gpu, &config);
-    let dw = |bytes: usize| DenseWeight {
-        weight: gpu.alloc(bytes).unwrap(),
-    };
-    layer.set_bf16_weights(
-        dw(config.mamba2_in_proj_size() * config.hidden_size * 2),
-        dw(config.hidden_size * config.mamba2_d_inner() * 2),
-    );
-
-    let mut owned: Vec<Box<dyn LayerState>> =
-        (0..4).map(|_| layer.alloc_state(&gpu).unwrap()).collect();
-    let mut states: Vec<&mut (dyn LayerState + 'static)> =
-        owned.iter_mut().map(|b| &mut **b).collect();
-    run_multi_seq(&gpu, &config, &layer, &mut states).unwrap();
-
-    let seen = grids(&gpu);
-    // No batched in_proj/out_proj GEMM.
-    assert_eq!(
-        count(&seen, [81, 1, 1], [256, 1, 1]),
-        0,
-        "batched in_proj GEMM launched below the batch threshold; grids: {seen:?}"
-    );
-    // Per-seq norms: 4 input norms + 4 gated norms at grid.x == 1.
-    assert_eq!(
-        count(&seen, [1, 1, 1], [1024, 1, 1]),
-        8,
-        "expected 8 per-seq norm launches (grid.x=1); grids: {seen:?}"
     );
 }
 
@@ -294,3 +299,6 @@ fn mamba2_multi_seq_bad_state_errors() {
         "wrong error: {err:#}"
     );
 }
+
+#[path = "tests_multi_seq_b.rs"]
+mod milestone_b;

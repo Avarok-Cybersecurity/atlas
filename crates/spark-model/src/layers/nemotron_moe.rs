@@ -227,16 +227,24 @@ impl NemotronMoeLayer {
 /// which `decode_multi_seq` takes the batched sorted grouped-GEMM body
 /// instead of the canonical per-seq default loop; `None` = never.
 ///
-/// Currently `None`, i.e. the batched body is disabled:
-/// it is a measured NET LOSS at every rung profiled on GB10 (Lightning-30B
-/// A3B NVFP4, 2026-08-11, 400-token story sweeps, aggregate tok/s,
-/// mamba2-batched arm held constant):
+/// Currently `None`, i.e. the batched body is disabled: it is a measured NET
+/// LOSS at every rung profiled.
 ///
-///   C=4  (rung 4):  ~50   batched  vs  92.3  per-seq loop   (−45%)
-///   C=8  (rung 8):  51-67 batched  vs  80-88 per-seq loop   (−20-35%)
-///   C=16 (rung 16): 90-95 batched  vs  85-95 per-seq loop   (wash)
+/// **Re-measured 2026-08-12 on the milestone-B tip.** The previous table here
+/// was taken against a grouped GEMM that wrote only half its output columns
+/// (`N_TILE 64` under a `ceil(n_out/128)` launch — see
+/// `kernels/gb10/common/moe_w4a16_grouped_gemm.cu`), so it compared a correct
+/// per-seq loop against a batched arm doing half the work at full CTA cost.
+/// Those numbers were invalid in the direction that FLATTERED the batched
+/// arm, and the corrected kernel is worse, not better. GB10, Lightning-30B
+/// A3B NVFP4, 400-token story sweeps, sum-of-stream tok/s, best of 2 reps,
+/// mamba2 arm held at the milestone-B configuration:
 ///
-/// At decode shapes the sorted dispatch expands n×top_k (≤ 96 at rung 16,
+///   rung 2  (C=2):  35.9 batched  vs   85.2 per-seq loop   (−58%)
+///   rung 4  (C=4):  49.7 batched  vs  103.8 per-seq loop   (−52%)
+///   rung 8  (C=8):  68.3 batched  vs  114.1 per-seq loop   (−40%)
+///
+/// At decode shapes the sorted dispatch expands n×top_k (≤ 48 at rung 8,
 /// top_k 6) rows across 128 experts — per-expert M is almost always 0 or 1,
 /// so the grouped GEMM degenerates to GEMV work plus sort/unpermute
 /// overhead, while `decode_inner`'s fused `moe_expert_gemv` already batches
@@ -248,6 +256,13 @@ impl NemotronMoeLayer {
 /// alive (mock-geometry-tested via `decode_multi_seq_inner`) for a future
 /// rung where a fused per-expert-M-aware dispatch measures as a win — set
 /// this to `Some(rung)` then.
+///
+/// No stride argument fixes this, which is why milestone B did not try: at
+/// rung 8, 48 expanded rows over 128 experts gives per-expert M in {0,1,2,3}
+/// against a hardcoded `M_TILE 64`, so most CTAs early-exit and the rest run
+/// at ~2% MMA utilisation. The lever is a different datapath — a GEMV-shaped
+/// kernel that holds the M activation rows in registers and reads each expert
+/// weight once — not a wider tile or a rung change.
 pub(crate) const MOE_BATCH_DECODE_MIN_SEQS: Option<usize> = None;
 
 mod decode_helpers;

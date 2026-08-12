@@ -36,7 +36,7 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
 
 use super::NemotronMamba2Layer;
-use crate::layer::{ForwardContext, LayerState, SsmLayerState};
+use crate::layer::{ForwardContext, LayerState};
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8Weight, QuantizedWeight};
 
@@ -57,8 +57,10 @@ impl NemotronMamba2Layer {
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = num_seqs;
-        let bf16 = 2usize;
-        let gs = self.n_groups * self.state_size;
+        // Projections are the ONE phase that can reorder FP accumulation, so
+        // they carry their own arm-aware rung; every other phase here is
+        // bit-identical to the per-seq default loop at any n.
+        let batch_proj = n >= self.proj_batch_min();
 
         // 1. Batched input norm + residual save (kernel batches natively,
         //    input/output row stride = h).
@@ -79,42 +81,15 @@ impl NemotronMamba2Layer {
         // 2. Batched in_proj: normed[N,h] → proj[N,in_proj_size]
         //    Row layout per seq: [z(d_inner) | xBC(d_xbc) | dt(num_heads)].
         let proj = ctx.buffers.ssm_qkvz();
-        self.batched_in_proj(normed, proj, n as u32, h as u32, ctx, stream)?;
+        self.batched_in_proj(normed, proj, n as u32, h as u32, batch_proj, ctx, stream)?;
 
-        // 3. Per-seq conv + SSM scan: 2 launches per row, per-row pointers.
+        // 3. Conv + SSM scan. Milestone B: ONE strided launch pair over the
+        //    dense slot prefix, per-row loop for the rest (pads always land
+        //    in the tail). Conv output rows are packed at d_xbc so step 4/5
+        //    inputs are contiguous [N, d_inner]-prefixed rows.
         let xbc_base = ctx.buffers.ssm_deinterleaved();
         let y_base = ctx.buffers.attn_output();
-        for (i, state) in states.iter_mut().take(n).enumerate() {
-            let st = state
-                .as_any_mut()
-                .downcast_mut::<SsmLayerState>()
-                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState for seq {i}"))?;
-            let proj_i = proj.offset(i * self.in_proj_size * bf16);
-            // Conv output rows are packed at d_xbc so step 4/5 inputs are
-            // contiguous [N, d_inner]-prefixed rows.
-            let xbc_out_i = xbc_base.offset(i * self.d_xbc * bf16);
-            self.conv1d_update_biased(
-                ctx.gpu,
-                st.conv_state,
-                proj_i.offset(self.d_inner * bf16), // xBC within this row
-                xbc_out_i,
-                self.d_xbc as u32,
-                self.d_conv as u32,
-                1,
-                stream,
-            )?;
-            self.ssm_decode(
-                ctx.gpu,
-                st.h_state,
-                xbc_out_i,                                         // x
-                xbc_out_i.offset(self.d_inner * bf16),             // B
-                xbc_out_i.offset((self.d_inner + gs) * bf16),      // C
-                proj_i.offset((self.d_inner + self.d_xbc) * bf16), // dt
-                y_base.offset(i * self.d_inner * bf16),            // y row i
-                1,
-                stream,
-            )?;
-        }
+        self.decode_ms_conv_scan(proj, xbc_base, y_base, n, states, ctx, stream)?;
 
         // 4. Batched gated RMS norm: y rows are contiguous at d_inner (step 3
         //    wrote them that way); gate rows live at in_proj_size stride in
@@ -141,7 +116,7 @@ impl NemotronMamba2Layer {
         //    still holds the z gate read by step 4 (documented WAR hazard,
         //    trait_impl.rs step 7).
         let out = ctx.buffers.qkv_output();
-        self.batched_out_proj(gated, out, n as u32, h as u32, ctx, stream)?;
+        self.batched_out_proj(gated, out, n as u32, h as u32, batch_proj, ctx, stream)?;
 
         // 6. Batched residual add: hidden[N,h] += out[N,h] (both contiguous).
         ops::residual_add(
@@ -156,42 +131,70 @@ impl NemotronMamba2Layer {
     }
 
     /// Batched in_proj: `[m, h] → [m, in_proj_size]`, arm order = `decode()`.
-    fn batched_in_proj(
+    ///
+    /// `batched == false` runs the per-row GEMV loop, which is byte-identical
+    /// to the canonical default loop's projection — that is what lets the
+    /// rest of the body batch at rungs below `proj_batch_min()`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn batched_in_proj(
         &self,
         input: DevicePtr,
         output: DevicePtr,
         m: u32,
         k: u32,
+        batched: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
         let n_dim = self.in_proj_size as u32;
         if let Some(ref w) = self.in_proj_bf16 {
-            self.batched_dense_proj(input, w, output, m, n_dim, k, ctx, stream)
+            self.batched_dense_proj(input, w, output, m, n_dim, k, batched, ctx, stream)
         } else if let Some(ref fp8w) = self.in_proj_fp8 {
-            self.batched_fp8_proj(input, fp8w, output, m, n_dim, k, ctx, stream)
+            self.batched_fp8_proj(input, fp8w, output, m, n_dim, k, batched, ctx, stream)
         } else {
-            self.batched_nvfp4_proj(input, &self.ssm.in_proj, output, m, n_dim, k, ctx, stream)
+            self.batched_nvfp4_proj(
+                input,
+                &self.ssm.in_proj,
+                output,
+                m,
+                n_dim,
+                k,
+                batched,
+                ctx,
+                stream,
+            )
         }
     }
 
     /// Batched out_proj: `[m, d_inner] → [m, h]`, arm order = `decode()`.
-    fn batched_out_proj(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn batched_out_proj(
         &self,
         input: DevicePtr,
         output: DevicePtr,
         m: u32,
         h: u32,
+        batched: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
         let k = self.d_inner as u32;
         if let Some(ref w) = self.out_proj_bf16 {
-            self.batched_dense_proj(input, w, output, m, h, k, ctx, stream)
+            self.batched_dense_proj(input, w, output, m, h, k, batched, ctx, stream)
         } else if let Some(ref fp8w) = self.out_proj_fp8 {
-            self.batched_fp8_proj(input, fp8w, output, m, h, k, ctx, stream)
+            self.batched_fp8_proj(input, fp8w, output, m, h, k, batched, ctx, stream)
         } else {
-            self.batched_nvfp4_proj(input, &self.ssm.out_proj, output, m, h, k, ctx, stream)
+            self.batched_nvfp4_proj(
+                input,
+                &self.ssm.out_proj,
+                output,
+                m,
+                h,
+                k,
+                batched,
+                ctx,
+                stream,
+            )
         }
     }
 
@@ -207,10 +210,11 @@ impl NemotronMamba2Layer {
         m: u32,
         n: u32,
         k: u32,
+        batched: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        if self.dense_gemm_bf16_k.0 != 0 {
+        if batched && self.dense_gemm_bf16_k.0 != 0 {
             ops::dense_gemm_bf16_pipelined(
                 ctx.gpu,
                 self.dense_gemm_bf16_k,
@@ -256,9 +260,26 @@ impl NemotronMamba2Layer {
         m: u32,
         n: u32,
         k: u32,
+        batched: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        if !batched {
+            for i in 0..m as usize {
+                ops::w8a16_gemv(
+                    ctx.gpu,
+                    self.w8a16_gemv_k,
+                    input.offset(i * k as usize * 2),
+                    w.weight,
+                    w.row_scale,
+                    output.offset(i * n as usize * 2),
+                    n,
+                    k,
+                    stream,
+                )?;
+            }
+            return Ok(());
+        }
         if m <= 4 && self.w8a16_gemv_batch4_k.0 != 0 {
             ops::w8a16_gemv_batch4(
                 ctx.gpu,
@@ -345,9 +366,29 @@ impl NemotronMamba2Layer {
         m: u32,
         n: u32,
         k: u32,
+        batched: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        if !batched {
+            // Byte-identical to the default loop: the SAME single-row GEMV,
+            // once per row. This is the arm whose batched tiers moved the
+            // temp-0 divergence onset, so below the rung we pay the m× weight
+            // read rather than the reordering.
+            for i in 0..m as usize {
+                ops::w4a16_gemv(
+                    ctx.gpu,
+                    self.w4a16_gemv_k,
+                    input.offset(i * k as usize * 2),
+                    w,
+                    output.offset(i * n as usize * 2),
+                    n,
+                    k,
+                    stream,
+                )?;
+            }
+            return Ok(());
+        }
         let rung: Option<KernelHandle> = [
             (4u32, self.w4a16_gemv_batch4_k),
             (8, self.w4a16_gemv_batch8_k),

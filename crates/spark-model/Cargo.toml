@@ -241,3 +241,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "mamba2_strided_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "w8a16_batch_bitparity_microtest"
+required-features = ["cuda", "gpu-examples"]

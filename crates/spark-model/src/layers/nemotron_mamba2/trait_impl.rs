@@ -197,10 +197,14 @@ impl TransformerLayer for NemotronMamba2Layer {
     /// (one weight-DRAM pass) and loops only the stateful conv+scan inner.
     /// See `trait_decode_multi_seq.rs` for the phase structure and hazards.
     ///
-    /// `num_seqs < MAMBA2_BATCH_DECODE_MIN_SEQS` delegates to the canonical
-    /// per-seq default loop — one fallback loop in the codebase, not a
-    /// private copy. The threshold (rung 8) is a measured determinism/
-    /// throughput tradeoff; see the constant's docs in `nemotron_mamba2.rs`.
+    /// Milestone B additionally batches the conv+scan inner via the strided
+    /// kernel twins (`decode_conv_scan.rs`) and splits the numeric gate off
+    /// into `proj_batch_min()`, so rungs 2 and 4 now take this body with
+    /// per-row projections instead of delegating wholesale.
+    ///
+    /// `num_seqs < MAMBA2_BATCH_DECODE_MIN_SEQS` (i.e. n < 2, nothing to
+    /// batch) still delegates to the canonical per-seq default loop — one
+    /// fallback loop in the codebase, not a private copy.
     fn decode_multi_seq<'a, 'b: 'a>(
         &self,
         hidden: DevicePtr,
@@ -278,6 +282,14 @@ impl TransformerLayer for NemotronMamba2Layer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Milestone B: at K >= the projection rung, run the same phases with
+        // the row-independent ones batched over all K tokens — one weight
+        // sweep instead of K. Byte-identical to the loop below (see
+        // `decode_mtp_k.rs`), so acceptance is unchanged and only the verify
+        // cost moves.
+        if self.mtp_k_batching_ok(num_tokens) {
+            return self.decode_batched_k(hidden, residual, num_tokens, state, ctx, stream);
+        }
         let h = ctx.config.hidden_size;
         for t in 0..num_tokens {
             let offset = t * h * 2; // BF16 rows
