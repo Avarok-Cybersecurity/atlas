@@ -84,6 +84,7 @@ pub mod app_library;
 mod app_nav;
 pub mod app_quit;
 pub mod app_scroll;
+mod app_types;
 pub mod bench_host;
 pub mod bench_keys;
 pub mod bench_preflight;

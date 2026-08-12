@@ -174,19 +174,20 @@ fn the_chat_wheel_respects_the_ceiling_the_keys_do_not_see() {
 }
 
 #[test]
-fn the_ops_pane_and_the_main_log_share_one_scrollback() {
-    // They draw the same ring buffer, so a separate offset for each would let
-    // the two panes disagree about where the reader is.
+fn the_ops_wheel_moves_ops_output_and_never_the_main_log() {
+    // The previous version of this test asserted the OPPOSITE, on the claim
+    // that Ops "draws the same ring buffer" — it does not: Ops renders
+    // `ops.output`, so routing its wheel to `log_scroll` moved an offset
+    // this section does not even draw. Wheel in Ops: nothing visibly
+    // happened, and Main was later found scrolled.
     let mut a = app();
     a.section = Section::Terminal;
     a.term_sub = TermSub::Ops;
     a.log_scroll_max.set(20);
+    a.ops.scroll_max.set(20);
     a.scroll(-3);
-    assert_eq!(a.log_scroll, Some(3));
-    a.section = Section::Main;
-    a.main_sub = MainSub::Overview;
-    a.scroll(3);
-    assert_eq!(a.log_scroll, None);
+    assert_eq!(a.ops.scroll_up, 3, "the pane under the wheel moved");
+    assert_eq!(a.log_scroll, None, "the Main log did not");
 }
 
 #[test]

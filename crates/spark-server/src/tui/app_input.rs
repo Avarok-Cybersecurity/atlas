@@ -57,6 +57,15 @@ impl App {
                         super::commands::execute(&line, self);
                     }
                 }
+                // The one completion affordance on screen — the "⇥ accept"
+                // hint beside the ghost text — pressed. It used to fall into
+                // `_ => {}` here while the global Tab handler sat unreachable
+                // behind `in_input()`: the advertised key did nothing.
+                KeyCode::Tab => {
+                    if let Some(ghost) = super::commands::complete(&self.ops.input) {
+                        self.ops.input = ghost.to_string();
+                    }
+                }
                 KeyCode::Up => {
                     let h = &self.ops.history;
                     if !h.is_empty() {
@@ -68,6 +77,25 @@ impl App {
                         self.ops.input = h[pos].clone();
                     }
                 }
+                // Up's missing other half: history could be walked back and
+                // never forward again. Past the newest entry the line
+                // returns to empty — the readline contract fingers expect.
+                KeyCode::Down => {
+                    if let Some(p) = self.ops.history_pos {
+                        if p + 1 < self.ops.history.len() {
+                            self.ops.history_pos = Some(p + 1);
+                            self.ops.input = self.ops.history[p + 1].clone();
+                        } else {
+                            self.ops.history_pos = None;
+                            self.ops.input.clear();
+                        }
+                    }
+                }
+                // Scrollback stays reachable while typing; Up/Down are spent
+                // on history here, so the page pair does the moving (Chat
+                // makes the same trade the other way round).
+                KeyCode::PageUp => self.scroll(-10),
+                KeyCode::PageDown => self.scroll(10),
                 KeyCode::Backspace => {
                     self.ops.input.pop();
                 }

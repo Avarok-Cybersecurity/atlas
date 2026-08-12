@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub use super::app_types::{OpsState, Toast};
 pub use super::section::Section;
 
 use super::bench_state::BenchState;
@@ -39,22 +40,6 @@ pub enum Focus {
     Sidebar,
     Content,
     Input,
-}
-
-pub struct Toast {
-    pub text: String,
-    pub error: bool,
-    pub at: Instant,
-}
-
-/// Ops REPL state.
-#[derive(Default)]
-pub struct OpsState {
-    pub input: String,
-    pub history: Vec<String>,
-    pub history_pos: Option<usize>,
-    pub output: Vec<String>,
-    pub scroll_up: usize,
 }
 
 pub struct App {
@@ -431,8 +416,11 @@ impl App {
             // Chat owns its own keys in `app_input`, where the input-focused
             // half of the same map already lives.
             Section::Terminal if self.term_sub == TermSub::Chat => self.on_chat_content_key(key),
+            // Ops scrolls its own output. It used to fall through to the
+            // empty arm below while the Terminal footer said "↑/↓ scroll".
+            Section::Terminal => self.on_ops_content_key(key),
             Section::Benchmarks => self.on_bench_key(key),
-            Section::Terminal | Section::Stats => {}
+            Section::Stats => {}
         }
     }
 

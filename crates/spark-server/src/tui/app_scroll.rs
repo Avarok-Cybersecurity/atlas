@@ -59,7 +59,15 @@ impl App {
                 }
             }
             Section::Terminal => match self.term_sub {
-                TermSub::Ops => self.scroll_log(rows),
+                // The Ops pane's OWN offset. This used to route to
+                // `scroll_log` — the MAIN tab's log offset, which Ops does
+                // not render: the wheel visibly did nothing, and Main was
+                // later found scrolled.
+                TermSub::Ops => {
+                    let max = self.ops.scroll_max.get() as i32;
+                    self.ops.scroll_up =
+                        (self.ops.scroll_up as i32 - rows).clamp(0, max.max(0)) as usize;
+                }
                 TermSub::Chat => {
                     self.chat.scroll_by(-rows);
                     // Same ceiling argument as the log pane.
@@ -100,6 +108,25 @@ impl App {
                 // reopen onto a random middle of the list.
                 self.help_scroll = 0;
             }
+        }
+    }
+
+    /// Ops keys when the output pane, not the input line, has focus.
+    ///
+    /// Routed through [`App::scroll`], the same entry point the wheel uses —
+    /// the log pane's lesson about second copies of "what scrolling means
+    /// here" applies unchanged.
+    pub(super) fn on_ops_content_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.scroll(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll(1),
+            KeyCode::PageUp => self.scroll(-10),
+            KeyCode::PageDown => self.scroll(10),
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.ops.scroll_up = self.ops.scroll_max.get();
+            }
+            KeyCode::Char('G') | KeyCode::End => self.ops.scroll_up = 0,
+            _ => {}
         }
     }
 

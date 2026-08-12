@@ -148,3 +148,129 @@ fn quit_asks_for_a_clean_shutdown() {
     assert!(a.should_quit);
     assert!(!a.detach);
 }
+
+fn focused_ops(a: &mut App) {
+    a.on_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('6'),
+    ));
+    a.on_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('i'),
+    ));
+}
+
+fn tap(a: &mut App, code: crossterm::event::KeyCode) {
+    a.on_key(crossterm::event::KeyEvent::from(code));
+}
+
+fn type_line(a: &mut App, s: &str) {
+    for c in s.chars() {
+        tap(a, crossterm::event::KeyCode::Char(c));
+    }
+}
+
+/// The "⇥ accept" hint drawn beside the ghost text was a dead key: Tab fell
+/// into the input reducer's catch-all while the global Tab handler sat
+/// unreachable behind `in_input()`.
+#[test]
+fn tab_accepts_the_ghost_completion_and_never_leaves_the_section() {
+    let mut a = app();
+    focused_ops(&mut a);
+    type_line(&mut a, "/de");
+    tap(&mut a, crossterm::event::KeyCode::Tab);
+    assert_eq!(a.ops.input, "/detach", "the ghost became the line");
+    assert_eq!(a.section, crate::tui::app::Section::Terminal);
+
+    // No ghost to accept: Tab must be inert — in particular it must NOT
+    // reach `cycle_section` and throw the user out of the pane mid-word.
+    type_line(&mut a, "zzz");
+    let before = a.ops.input.clone();
+    tap(&mut a, crossterm::event::KeyCode::Tab);
+    assert_eq!(a.ops.input, before, "nothing to complete, nothing changed");
+    assert_eq!(a.section, crate::tui::app::Section::Terminal, "still here");
+    assert!(a.term_sub == crate::tui::app::TermSub::Ops);
+}
+
+/// Up walked history back with no way forward again — the asymmetry the
+/// chat pane never had. Down is the way back, and past the newest entry the
+/// line returns to empty.
+#[test]
+fn history_walks_both_ways_and_falls_off_the_newest_end_empty() {
+    let mut a = app();
+    focused_ops(&mut a);
+    type_line(&mut a, "/help");
+    tap(&mut a, crossterm::event::KeyCode::Enter);
+    type_line(&mut a, "/status");
+    tap(&mut a, crossterm::event::KeyCode::Enter);
+
+    tap(&mut a, crossterm::event::KeyCode::Up);
+    assert_eq!(a.ops.input, "/status");
+    tap(&mut a, crossterm::event::KeyCode::Up);
+    assert_eq!(a.ops.input, "/help");
+    tap(&mut a, crossterm::event::KeyCode::Down);
+    assert_eq!(a.ops.input, "/status");
+    tap(&mut a, crossterm::event::KeyCode::Down);
+    assert_eq!(a.ops.input, "", "past the newest entry is a fresh line");
+    assert!(a.ops.history_pos.is_none());
+    tap(&mut a, crossterm::event::KeyCode::Down);
+    assert_eq!(a.ops.input, "", "and Down there stays put");
+}
+
+/// The Terminal footer has said "↑/↓ scroll" since the pane existed; until
+/// now the arrows did nothing in Ops and the WHEEL silently moved the Main
+/// tab's log offset — a pane this section does not even render.
+#[test]
+fn ops_output_scrolls_with_keys_and_wheel_against_the_published_ceiling() {
+    let mut a = app();
+    a.on_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('6'),
+    ));
+    a.ops.output = (0..100).map(|i| format!("line {i}")).collect();
+    a.ops.scroll_max.set(50); // what the renderer would publish
+
+    tap(&mut a, crossterm::event::KeyCode::Up);
+    assert_eq!(a.ops.scroll_up, 1, "content-focus arrows move the output");
+    a.scroll(-3); // wheel up
+    assert_eq!(a.ops.scroll_up, 4);
+    assert_eq!(
+        a.log_scroll, None,
+        "Main's log no longer moves as a side effect"
+    );
+
+    tap(&mut a, crossterm::event::KeyCode::Home);
+    assert_eq!(a.ops.scroll_up, 50, "g/Home parks at the oldest");
+    tap(&mut a, crossterm::event::KeyCode::Up);
+    assert_eq!(a.ops.scroll_up, 50, "clamped at the ceiling, never banked");
+    tap(&mut a, crossterm::event::KeyCode::End);
+    assert_eq!(a.ops.scroll_up, 0, "G/End resumes following");
+
+    // PageUp keeps working while the input line owns the keyboard.
+    tap(&mut a, crossterm::event::KeyCode::Char('i'));
+    tap(&mut a, crossterm::event::KeyCode::PageUp);
+    assert_eq!(a.ops.scroll_up, 10);
+}
+
+#[test]
+fn running_a_command_snaps_the_scrollback_to_its_output() {
+    let mut a = app();
+    a.ops.scroll_up = 30;
+    execute("/help", &mut a);
+    assert_eq!(a.ops.scroll_up, 0, "Enter means: show me the result");
+}
+
+/// The one buffer in the tree with no cap (log ring 10_000, bench log 500):
+/// /metrics adds 40+ lines per call, and a dashboard serves for days.
+#[test]
+fn the_output_buffer_is_capped_oldest_first() {
+    let mut a = app();
+    a.ops.output = (0..1_500).map(|i| format!("old {i}")).collect();
+    execute("/help", &mut a);
+    assert_eq!(a.ops.output.len(), 1_000, "trimmed to the cap");
+    assert!(
+        a.ops.output.last().unwrap().contains("/quit"),
+        "the newest output — the command just run — is what is kept"
+    );
+    assert!(
+        !a.ops.output.iter().any(|l| l == "old 0"),
+        "the oldest lines are what went"
+    );
+}
