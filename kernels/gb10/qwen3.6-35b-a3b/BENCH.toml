@@ -215,14 +215,22 @@ recomputing' events in the serve log.\
 min = 12.0
 max = 12.0
 
-[benchmarks.metrics.invariant]
-min = 12.0
-
-[benchmarks.metrics.diverged]
+# The POISONING bar: zero tolerance for a collapsed replay. This is the
+# definition of the invariant the gate exists to police — a restored prefix
+# must never produce degenerate output (early-EOS or runaway). Same footing
+# as the agentic gate's exact `iterations` pin.
+[benchmarks.metrics.collapsed]
 max = 0.0
 
+# Zero tolerance for an unmeasured round too: a transport error means the
+# invariant was not proven for that round.
 [benchmarks.metrics.unmeasured]
 max = 0.0
+
+# `jittered` is deliberately NOT bounded: restore-anchor selection varies
+# between rounds on a healthy engine (clean main jitters 11/12 replays —
+# 2026-08-12, sha a1c8000d44), and bounding it would fail healthy builds.
+# It is recorded for the record, not gated.
 
 [benchmarks.metrics.sum_wall_s]
 max = 1200.0

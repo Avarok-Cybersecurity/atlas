@@ -48,20 +48,54 @@ fn rounds_below_three_are_rejected_at_configure() {
 }
 
 #[test]
-fn scored_fails_on_divergence_via_the_driver_seam() {
+fn scored_fails_on_collapse_via_the_driver_seam() {
     // Exercise scored() through the driver's own replays field: build a
-    // poisoned shape and confirm the verdict path surfaces it.
+    // poisoned shape (early-EOS collapse) and confirm the verdict fails.
     let mut b = configured();
     b.replays = vec![
         (1, super::compare::RoundVerdict::Invariant),
         (
             2,
-            super::compare::RoundVerdict::Diverged { turns: vec![3, 4] },
+            super::compare::RoundVerdict::Collapsed {
+                turns: vec![super::compare::TurnDelta {
+                    turn: 2,
+                    ref_tokens: 200,
+                    replay_tokens: 3,
+                    ref_finish: Some("stop".into()),
+                    replay_finish: Some("stop".into()),
+                }],
+            },
         ),
     ];
-    b.rounds = 2; // match the number collected so only the divergence fails
+    b.rounds = 2; // match the number collected so only the collapse fails
     let (s, v) = b.scored();
     assert_eq!(v.kind, VerdictKind::Fail);
     assert!(v.reason.contains("round 2"));
-    assert_eq!(s.diverged, 1);
+    assert_eq!(s.collapsed, 1);
+}
+
+#[test]
+fn scored_passes_on_jitter_via_the_driver_seam() {
+    // Jitter (healthy restore-anchor variance) must not fail the gate.
+    let mut b = configured();
+    b.replays = vec![
+        (1, super::compare::RoundVerdict::Invariant),
+        (
+            2,
+            super::compare::RoundVerdict::Jittered {
+                turns: vec![super::compare::TurnDelta {
+                    turn: 2,
+                    ref_tokens: 200,
+                    replay_tokens: 206,
+                    ref_finish: Some("stop".into()),
+                    replay_finish: Some("stop".into()),
+                }],
+            },
+        ),
+    ];
+    b.rounds = 2;
+    let (s, v) = b.scored();
+    assert_eq!(v.kind, VerdictKind::Pass);
+    assert_eq!(s.jittered, 1);
+    assert_eq!(s.collapsed, 0);
 }

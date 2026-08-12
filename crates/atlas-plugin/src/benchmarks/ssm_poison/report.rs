@@ -6,8 +6,22 @@
 
 use std::collections::BTreeMap;
 
+use super::compare::TurnDelta;
 use super::score::Score;
 use crate::result::{Cell, CellStyle, Column, ResultTable, Stat};
+
+fn delta_detail(turns: &[TurnDelta]) -> String {
+    turns
+        .iter()
+        .map(|t| {
+            format!(
+                "t{}: {}->{}tok fin {:?}->{:?}",
+                t.turn, t.ref_tokens, t.replay_tokens, t.ref_finish, t.replay_finish
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// One row per replay round, in round order.
 pub(super) fn table(s: &Score) -> ResultTable {
@@ -15,23 +29,20 @@ pub(super) fn table(s: &Score) -> ResultTable {
         "REPLAY ROUNDS",
         vec![
             Column::left("Round", 6),
-            Column::left("Result", 20),
-            Column::left("Detail", 44),
+            Column::left("Result", 14),
+            Column::left("Detail", 56),
         ],
     );
-    let diverged_map: BTreeMap<usize, &Vec<usize>> = s
-        .diverged_rounds
-        .iter()
-        .map(|(n, turns)| (*n, turns))
-        .collect();
+    let jitter_map: BTreeMap<usize, &Vec<TurnDelta>> =
+        s.jittered_rounds.iter().map(|(n, d)| (*n, d)).collect();
+    let collapse_map: BTreeMap<usize, &Vec<TurnDelta>> =
+        s.collapsed_rounds.iter().map(|(n, d)| (*n, d)).collect();
     let mut unmeasured_seen = 0usize;
     for round in 1..=s.rounds {
-        let (what, style, detail) = if let Some(turns) = diverged_map.get(&round) {
-            (
-                format!("DIVERGED (turns {:?})", turns),
-                CellStyle::Bad,
-                "output differed from the reference for this round".into(),
-            )
+        let (what, style, detail) = if let Some(turns) = collapse_map.get(&round) {
+            ("COLLAPSED".to_string(), CellStyle::Bad, delta_detail(turns))
+        } else if let Some(turns) = jitter_map.get(&round) {
+            ("jittered".to_string(), CellStyle::Warn, delta_detail(turns))
         } else if unmeasured_seen < s.unmeasured {
             unmeasured_seen += 1;
             (
@@ -51,17 +62,24 @@ pub(super) fn table(s: &Score) -> ResultTable {
     t
 }
 
-/// The headline tiles. `Invariant x/y` is Good only when every replay held.
+/// The headline tiles. `Collapsed` is the gate's real bar — Good only at 0.
+/// `Jittered` is informational (Warn only when present): restore jitter is a
+/// healthy engine property, and painting it red would make the tile lie.
 pub(super) fn summary(s: &Score) -> Vec<Stat> {
     vec![
         Stat::new("Invariant", format!("{}/{}", s.invariant, s.rounds), "").with_style(
             if s.rounds > 0 && s.invariant == s.rounds {
                 CellStyle::Good
             } else {
-                CellStyle::Bad
+                CellStyle::Neutral
             },
         ),
-        Stat::new("Diverged", s.diverged.to_string(), "").with_style(if s.diverged == 0 {
+        Stat::new("Jittered", s.jittered.to_string(), "").with_style(if s.jittered == 0 {
+            CellStyle::Good
+        } else {
+            CellStyle::Warn
+        }),
+        Stat::new("Collapsed", s.collapsed.to_string(), "").with_style(if s.collapsed == 0 {
             CellStyle::Good
         } else {
             CellStyle::Bad
@@ -81,7 +99,8 @@ pub(super) fn metrics(s: &Score) -> BTreeMap<String, f64> {
     [
         ("rounds", s.rounds),
         ("invariant", s.invariant),
-        ("diverged", s.diverged),
+        ("jittered", s.jittered),
+        ("collapsed", s.collapsed),
         ("unmeasured", s.unmeasured),
     ]
     .into_iter()
