@@ -132,7 +132,10 @@ impl DownloadState {
             {
                 settled = Some(Settled::Stopped(job.repo.clone()));
                 self.last_message = Some((
-                    format!("{} download stopped unexpectedly — press d to resume", job.repo),
+                    format!(
+                        "{} download stopped unexpectedly — press d to resume",
+                        job.repo
+                    ),
                     true,
                 ));
             }

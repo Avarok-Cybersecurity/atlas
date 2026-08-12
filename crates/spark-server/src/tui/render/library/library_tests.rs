@@ -88,8 +88,7 @@ fn downloading(done: u64, total: u64) -> App {
 /// assertion about what the ROW sheds has to stop looking at the columns to
 /// its right or the detail pane satisfies it.
 fn list_pane(rows: &[String], screen_w: u16) -> Vec<String> {
-    let chrome =
-        crate::tui::render::Chrome::of(ratatui::layout::Size::new(screen_w, 40));
+    let chrome = crate::tui::render::Chrome::of(ratatui::layout::Size::new(screen_w, 40));
     // Sidebar, then the 1-cell glow ring, then 46% of the content is the list.
     let content_w = screen_w - chrome.sidebar_w - 2;
     let end = (chrome.sidebar_w + 1 + content_w * 46 / 100) as usize;

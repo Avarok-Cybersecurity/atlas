@@ -156,8 +156,16 @@ fn a_stale_token_still_resolves_and_fetches_a_public_repo() {
     let c = Cache::new("staletoken");
     let dest = c.0.join("config.json");
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    let done = hf::fetch_file(repo, &revision, "config.json", &dest, bad, &cancel, &mut |_| {})
-        .expect("public files must survive a bad token");
+    let done = hf::fetch_file(
+        repo,
+        &revision,
+        "config.json",
+        &dest,
+        bad,
+        &cancel,
+        &mut |_| {},
+    )
+    .expect("public files must survive a bad token");
     assert!(done);
     assert!(dest.exists());
 }
