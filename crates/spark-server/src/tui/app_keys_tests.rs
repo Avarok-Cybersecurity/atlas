@@ -302,10 +302,13 @@ fn the_network_pane_walks_its_ranks_and_stops_at_both_ends() {
     tap(&mut a, KeyCode::Left);
     assert_eq!(a.network_selected, 0);
 
+    // Enter used to toggle `network_detail`, a bool no renderer read — an
+    // advertised key with zero effect. The detail pane is always drawn, so
+    // the honest binding is none at all.
+    let before = snapshot(&a);
     tap(&mut a, KeyCode::Enter);
-    assert!(a.network_detail);
-    tap(&mut a, KeyCode::Enter);
-    assert!(!a.network_detail, "Enter is a toggle");
+    assert_eq!(snapshot(&a), before, "Enter is unbound on Network");
+    assert_eq!(a.network_selected, 0);
 }
 
 #[test]

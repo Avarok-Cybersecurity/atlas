@@ -125,7 +125,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_footer(f, app, rows[2]);
     overlay::draw_toasts(f, app, content);
     if app.help_open {
-        overlay::draw_help(f, area);
+        overlay::draw_help(f, app, area);
     }
     // After the help modal: a question the user must answer outranks a
     // reference they were browsing.
@@ -286,7 +286,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let hints = match app.section {
         Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-6 jump · ? help · q quit",
         Section::Stats => "⇥ cycle · 1-6 jump · ? help · q quit",
-        Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-6 jump · ? help",
+        // No "⏎ detail" here: Enter used to toggle a bool nothing rendered —
+        // an advertised key with zero effect. The detail pane is always drawn.
+        Section::Network => "←/→ node · ⇥ cycle · 1-6 jump · ? help",
         Section::Library => hints::library_hints(app),
         Section::Benchmarks => hints::bench_hints(app),
         // `/detach` named here and nowhere else on screen: it is the only way

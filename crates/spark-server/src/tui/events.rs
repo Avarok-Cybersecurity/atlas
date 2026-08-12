@@ -228,7 +228,14 @@ pub fn run(
         }
         if let Some((res, was_empty)) = copy_result.take() {
             match res {
-                Ok(n) => app.toast(format!("Copied {n} characters to clipboard"), false),
+                // "sent", not "copied": OSC 52 has no acknowledgement — Ok
+                // means the escape sequence went out, not that the terminal
+                // honoured it (see `clipboard.rs`). On a terminal with OSC 52
+                // disabled, "copied" would be a false success claim.
+                Ok(n) => app.toast(
+                    format!("sent {n} characters to the terminal clipboard (OSC 52)"),
+                    false,
+                ),
                 // A stray drag across blank space is a non-event, not an error
                 // worth interrupting anyone about.
                 Err(e) if was_empty => tracing::debug!("copy skipped: {e}"),

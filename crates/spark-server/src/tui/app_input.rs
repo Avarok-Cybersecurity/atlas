@@ -100,6 +100,9 @@ impl App {
                 KeyCode::PageUp => self.chat.scroll_by(10),
                 KeyCode::PageDown => self.chat.scroll_by(-10),
                 KeyCode::End => self.chat.follow(),
+                // Home is not text, so the input keeps it even while focused —
+                // the other half of the End pair above.
+                KeyCode::Home => self.chat_jump_top(),
                 // The two thinking toggles, in their chorded forms. They come
                 // BEFORE the catch-all: a bare `t` is text, and `Ctrl+T`
                 // arrives as `Char('t')` with a modifier, so an unguarded
@@ -126,6 +129,12 @@ impl App {
     pub(super) fn on_chat_content_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.request_chat_clear();
+            return;
+        }
+        // `g`/Home need the renderer-published ceiling, which `ChatState`
+        // cannot see; the rest of the pair (`G`/End) is handled inside it.
+        if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
+            self.chat_jump_top();
             return;
         }
         if let Some(said) = self.chat.on_content_key(key) {

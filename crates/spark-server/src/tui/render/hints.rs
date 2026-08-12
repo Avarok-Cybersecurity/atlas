@@ -57,10 +57,15 @@ pub(super) fn library_hints(app: &App) -> &'static str {
         // WAS running: "I don't see ANY indication of downloading except an
         // 'x to cancel'-like tag at the bottom". A key that cannot act is not
         // a hint, it is a false claim about state.
+        // `u` taught here as well as on the Cards footer: it works in both
+        // places, and a key that works but is named on only one screen reads
+        // as absent on the other.
         (View::List, _) if app.download.job.is_some() => {
-            "j/k move · ⏎ configure · d download · x stop · / search · r refresh · ? help"
+            "j/k move · ⏎ configure · d download · x stop · u updates · / search · r refresh"
         }
-        (View::List, _) => "j/k move · ⏎ configure · d download · / search · r refresh · ? help",
+        (View::List, _) => {
+            "j/k move · ⏎ configure · d download · u updates · / search · r refresh · ? help"
+        }
     }
 }
 

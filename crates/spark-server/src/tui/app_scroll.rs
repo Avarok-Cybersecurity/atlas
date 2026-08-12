@@ -21,6 +21,8 @@
 //! and keyboard can never disagree about position; and a section with nothing
 //! to scroll does nothing rather than guessing.
 
+use crossterm::event::{KeyCode, KeyEvent};
+
 use super::app::{App, MainSub, TermSub};
 use super::section::Section;
 
@@ -70,6 +72,44 @@ impl App {
             // Nothing scrollable: these panes are gauges, not documents.
             Section::Stats | Section::Network => {}
         }
+    }
+
+    /// Keys while the help modal is open.
+    ///
+    /// j/k and friends move the key list — at the 80x24 floor the table is
+    /// taller than the modal, and a list that cannot move is a list whose
+    /// tail cannot be read (see `render/overlay.rs::draw_help`). Anything
+    /// else closes the modal, which is the contract `?` already taught; the
+    /// scroll keys are consumed rather than passed through, for the same
+    /// reason the quit prompt consumes everything — a key that dismisses AND
+    /// acts navigates somewhere the user did not ask for.
+    pub(super) fn on_help_key(&mut self, key: KeyEvent) {
+        let max = self.help_scroll_max.get();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.help_scroll = (self.help_scroll + 1).min(max);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('g') | KeyCode::Home => self.help_scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => self.help_scroll = max,
+            _ => {
+                self.help_open = false;
+                // The next open starts at the top: a remembered offset would
+                // reopen onto a random middle of the list.
+                self.help_scroll = 0;
+            }
+        }
+    }
+
+    /// Jump the chat transcript to its oldest row — the `g` half of the
+    /// advertised "g / G" pair (`G`/End, the follow half, lives in
+    /// `ChatState`). Here because it needs the renderer-published ceiling,
+    /// which `ChatState` cannot see.
+    pub(super) fn chat_jump_top(&mut self) {
+        let max = self.chat_scroll_max.get();
+        self.chat.scroll = (max > 0).then_some(max);
     }
 
     /// The log pane, which both Main/Overview and Terminal/Ops share.

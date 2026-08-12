@@ -181,12 +181,15 @@ pub(super) const KEYS: [(&str, &str); 22] = [
     ("?", "this help"),
 ];
 
-pub(super) fn draw_help(f: &mut Frame, area: Rect) {
+pub(super) fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let w = 64.min(area.width.saturating_sub(4));
-    // Sized to the LIST, not to a number someone typed once: the table has
-    // grown three times since 18 was chosen, and every entry past the
-    // sixteenth was silently below the modal's bottom border — a key nobody
-    // could read is a key nobody has.
+    // Sized to the LIST when the terminal is tall enough — and SCROLLED, not
+    // clipped, when it is not. Sizing to the list (the previous fix) held
+    // only while the terminal was taller than the table: at the 80x24 floor
+    // the modal gets 22 rows, the table wants KEYS.len()+2, and the last two
+    // entries — `q` and `?` — sat silently below the bottom border. Third
+    // recurrence of this clip; scrolling is the version that survives the
+    // table growing again.
     let h = ((KEYS.len() + 2) as u16).min(area.height.saturating_sub(2));
     let modal = Rect {
         x: area.x + (area.width - w) / 2,
@@ -195,18 +198,37 @@ pub(super) fn draw_help(f: &mut Frame, area: Rect) {
         height: h,
     };
     f.render_widget(Clear, modal);
-    let mut lines = Vec::with_capacity(KEYS.len());
-    for (k, d) in KEYS {
+    let visible = (h.saturating_sub(2) as usize).max(1);
+    // The ceiling, published for `App::on_help_key` — the same renderer-owned
+    // contract as every scroll ceiling in `app_scroll`.
+    let max = KEYS.len().saturating_sub(visible);
+    app.help_scroll_max.set(max);
+    let off = app.help_scroll.min(max);
+    let mut lines = Vec::with_capacity(visible);
+    for (k, d) in KEYS.iter().skip(off).take(visible) {
         lines.push(Line::from(vec![
             Span::styled(format!("  {k:<16}"), theme::brand_cyan()),
             Span::styled(d.to_string(), theme::text2()),
         ]));
     }
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(theme::border(false))
         .title(Span::styled("─ KEYS ─", theme::text2()))
         .style(Style::default().bg(theme::BG_PANEL.color()));
+    // Position in the bottom border, only when the list is clipped — the
+    // `library/modal.rs` idiom. Words and glyphs, so NO_COLOR changes nothing.
+    if max > 0 {
+        block = block.title_bottom(Span::styled(
+            format!(
+                "─ j/k scroll · {}-{} of {} ─",
+                off + 1,
+                (off + visible).min(KEYS.len()),
+                KEYS.len()
+            ),
+            theme::text2(),
+        ));
+    }
     f.render_widget(Paragraph::new(lines).block(block), modal);
 }
 

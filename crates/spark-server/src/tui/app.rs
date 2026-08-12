@@ -130,7 +130,6 @@ pub struct App {
     /// survive the ticks between button-down and button-up.
     pub selection: Option<crate::tui::selection::Selection>,
     pub network_selected: usize,
-    pub network_detail: bool,
     pub ops: OpsState,
     pub chat: ChatState,
     pub bench: BenchState,
@@ -140,6 +139,10 @@ pub struct App {
     pub run: Option<crate::tui::RunHandles>,
     pub toasts: Vec<Toast>,
     pub help_open: bool,
+    /// Help-modal scroll offset: at the 80x24 floor the key table is taller
+    /// than the modal, and a fixed view left its last rows unreadable.
+    pub help_scroll: usize,
+    pub help_scroll_max: std::cell::Cell<usize>,
     /// A `q` that would have destroyed work in flight, waiting to be answered.
     /// Set only when [`App::work_in_flight`] named something; an idle
     /// dashboard still quits on the first press.
@@ -211,12 +214,13 @@ impl App {
             chat_scroll_max: std::cell::Cell::new(0),
             lib: Default::default(),
             network_selected: 0,
-            network_detail: false,
             ops: OpsState::default(),
             chat: ChatState::default(),
             bench: BenchState::default(),
             toasts: Vec::new(),
             help_open: false,
+            help_scroll: 0,
+            help_scroll_max: std::cell::Cell::new(0),
             confirm_quit: false,
             confirm_chat_clear: false,
             download_switch: None,
@@ -327,7 +331,7 @@ impl App {
             return;
         }
         if self.help_open {
-            self.help_open = false;
+            self.on_help_key(key);
             return;
         }
         if self.in_input() {
@@ -376,6 +380,9 @@ impl App {
             // past the oldest line blanked the pane, and coming back cost as
             // many presses as had been spent going up.
             Section::Main => match self.main_sub {
+                // The help overlay advertises "g / G — top / bottom" globally,
+                // and each pane used to implement exactly half the pair. The
+                // missing half was a bound, advertised key that did nothing.
                 MainSub::Overview => {
                     if up {
                         self.scroll(-1);
@@ -383,6 +390,11 @@ impl App {
                         self.scroll(1);
                     } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
                         self.log_scroll = None;
+                    } else if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
+                        // Oldest line the pane can show; ceiling published by
+                        // the renderer, same contract as the wheel's.
+                        let max = self.log_scroll_max.get();
+                        self.log_scroll = (max > 0).then_some(max);
                     }
                 }
                 MainSub::Kernels => {
@@ -390,8 +402,10 @@ impl App {
                         self.scroll(1);
                     } else if up {
                         self.scroll(-1);
-                    } else if matches!(key.code, KeyCode::Char('g')) {
+                    } else if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
                         self.kernel_scroll = 0;
+                    } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
+                        self.kernel_scroll = self.kernel_scroll_max.get();
                     }
                 }
             },
@@ -404,8 +418,6 @@ impl App {
                     self.network_selected = (self.network_selected + 1).min(n - 1);
                 } else if matches!(key.code, KeyCode::Left | KeyCode::Char('h')) {
                     self.network_selected = self.network_selected.saturating_sub(1);
-                } else if key.code == KeyCode::Enter {
-                    self.network_detail = !self.network_detail;
                 }
             }
             // Chat owns its own keys in `app_input`, where the input-focused
