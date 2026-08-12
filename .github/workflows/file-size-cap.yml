@@ -390,6 +390,18 @@ jobs:
             "crates/spark-server/src/scheduler/mtp_step.rs"
             # 502 LoC — /v1/completions handler.
             "crates/spark-server/src/api/completions.rs"
+            # -- PR #469 (SSM State Poisoning Gate) --
+            # 522 LoC — gate coverage table. Crossed the cap when the sixth
+            # mandatory gate (ssm-state-poisoning-gate) added SSM_POISON_EXCLUDES
+            # plus its own exclusion entries in the four sibling EXCLUDES
+            # arrays. Splitting it here is NOT free: coverage.rs is a
+            # BOUNDARY_FILE, so any edit to it (including a pure split)
+            # invalidates every standing gate record and forces a full GPU
+            # re-cycle — which is exactly why the entry goes here instead of
+            # a split commit in this PR. A clean split (per-gate EXCLUDES
+            # arrays -> sibling module) is tracked as follow-up; this entry
+            # lands with the PR that tipped it.
+            "crates/atlas-plugin/src/gate/coverage.rs"
           )
 
           violations=0
