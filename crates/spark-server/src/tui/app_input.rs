@@ -207,6 +207,90 @@ impl App {
     }
 }
 
+/// A paste flattened for a single-line buffer: line breaks and tabs become
+/// spaces, other control characters are dropped — a paste is data, never
+/// key chords.
+fn paste_single_line(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
+/// A paste with its line structure kept for the one multi-line buffer:
+/// CRLF and lone CR normalise to `\n`, tabs widen to spaces (the input box
+/// renders through `Paragraph`, which does not expand them), and every
+/// other control character is dropped.
+fn paste_multiline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('\n');
+            }
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+impl App {
+    /// Route a bracketed paste into whichever buffer owns the keyboard —
+    /// the same order [`Self::on_input_key`] asks in, so a paste can never
+    /// land somewhere a keystroke would not have.
+    ///
+    /// Chat keeps newlines (it is the one multi-line buffer; `\`+Enter
+    /// exists precisely because multi-line input matters there); every
+    /// single-line field gets them flattened to spaces. With nothing
+    /// focused the paste is dropped outright: replaying it through the key
+    /// bindings would execute it one letter at a time.
+    pub(super) fn on_paste(&mut self, text: String) {
+        if self.log_filter_editing {
+            self.log_filter.push_str(&paste_single_line(&text));
+            return;
+        }
+        if self.section == Section::Library {
+            if self.lib.filter_editing {
+                self.lib.filter.push_str(&paste_single_line(&text));
+            } else if self.lib.editing && self.lib.modal.is_none() {
+                self.lib.edit_buffer.push_str(&paste_single_line(&text));
+            }
+            // A picker modal navigates; there is nothing to paste into.
+            return;
+        }
+        if self.section == Section::Benchmarks {
+            if self.bench.is_editing() {
+                let row = self.bench.row;
+                if let Some(buf) = self.bench.edit.get_mut(row) {
+                    buf.push_str(&paste_single_line(&text));
+                }
+            }
+            return;
+        }
+        if self.section == Section::Terminal && self.focus == Focus::Input {
+            match self.term_sub {
+                // Flattened, NOT executed: an Ops line runs on Enter only.
+                TermSub::Ops => self.ops.input.push_str(&paste_single_line(&text)),
+                TermSub::Chat => self.chat.input.push_str(&paste_multiline(&text)),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "app_input_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "app_paste_tests.rs"]
+mod paste_tests;

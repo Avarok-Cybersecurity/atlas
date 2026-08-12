@@ -91,6 +91,9 @@ pub fn run(
                 Ok(Event::Resize(..)) => {
                     let _ = terminal.clear();
                 }
+                // Bracketed paste (enabled by the guard): the whole paste in
+                // one event, instead of a newline masquerading as Enter.
+                Ok(Event::Paste(text)) => app.on_paste(text),
                 _ => {}
             }
         }
