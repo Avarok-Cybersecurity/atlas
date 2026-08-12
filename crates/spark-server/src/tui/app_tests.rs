@@ -323,3 +323,26 @@ fn scrolling_stops_at_the_limits_instead_of_running_away() {
     }
     assert_eq!(a.chat.scroll, Some(4), "clamped at the oldest message");
 }
+
+/// Errors linger longer than info — they carry the hint the reader has to act
+/// on — but they must still leave. "Errors persist" was the old rule, and a
+/// download that failed once parked its toast over the corner forever; with
+/// the 3-toast cap, three of them silenced every message that followed.
+#[test]
+fn error_toasts_outlive_info_toasts_but_still_leave() {
+    use clap::Parser;
+    let mut a = App::new(crate::cli::ServeArgs::parse_from(["spark", "some/model"]));
+    a.toast("plain note", false);
+    a.toast("something failed", true);
+    let aged = Instant::now() - std::time::Duration::from_secs(6);
+    for t in &mut a.toasts {
+        t.at = aged;
+    }
+    a.on_tick();
+    assert_eq!(a.toasts.len(), 1, "at 6s the info toast is gone");
+    assert!(a.toasts[0].error);
+
+    a.toasts[0].at = Instant::now() - std::time::Duration::from_secs(13);
+    a.on_tick();
+    assert!(a.toasts.is_empty(), "at 13s the error leaves too");
+}

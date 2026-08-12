@@ -8,7 +8,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::super::{panel, wrap};
+use super::super::{gradient_bar, panel, wrap};
 use crate::tui::app::App;
 use crate::tui::data::catalogue::Entry;
 use crate::tui::theme;
@@ -143,11 +143,21 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         } else {
             theme::text()
         };
-        let mut head = Line::from(vec![
-            bar,
-            mark,
-            Span::styled(entry.model.clone(), name_style),
-        ]);
+        let mut head_spans = vec![bar, mark, Span::styled(entry.model.clone(), name_style)];
+        // A live download marks its row inline, right after the name: the row
+        // is what the eye tracks in a list, and the glyph column alone is easy
+        // to miss. It glows — bold and dim alternating on the tick — because a
+        // static dot next to a stalled job and one next to a moving job would
+        // look identical.
+        if app.download.is_downloading(&entry.model) {
+            let glow = if (app.tick / 4).is_multiple_of(2) {
+                theme::warn().add_modifier(Modifier::BOLD)
+            } else {
+                theme::warn().add_modifier(Modifier::DIM)
+            };
+            head_spans.push(Span::styled(" ●", glow));
+        }
+        let mut head = Line::from(head_spans);
         if selected {
             head = head.style(theme::selected());
         }
@@ -275,6 +285,61 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
             " weights are not in the local cache",
             theme::warn(),
         )));
+    }
+
+    // The download this model is in the middle of, as a real bar. The list
+    // row's one-line progress survives narrow panes; this pane has the width
+    // to answer "how far along, how fast, which file" in full.
+    if let Some(job) = app.download.job.as_ref().filter(|j| j.repo == entry.model) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(" DOWNLOADING", theme::dim())));
+        let bar_w = inner.width.saturating_sub(12).clamp(8, 36);
+        let mut bar = vec![Span::raw("  ")];
+        match job.fraction() {
+            Some(frac) => {
+                bar.extend(gradient_bar(frac, bar_w).spans);
+                bar.push(Span::styled(
+                    format!(" {:>3.0}%", frac * 100.0),
+                    theme::text().add_modifier(Modifier::BOLD),
+                ));
+            }
+            // No sizes from the Hub: motion instead of a bar stuck at zero,
+            // same rule as the list row.
+            None => {
+                let phase = (app.tick as usize / 2) % theme::SPINNER.len();
+                bar.push(Span::styled(theme::SPINNER[phase], theme::brand_cyan()));
+                bar.push(Span::styled(" resolving…", theme::text2()));
+            }
+        }
+        lines.push(Line::from(bar));
+        if job.total > 0 {
+            let mut detail = vec![Span::styled(
+                format!(
+                    "  {} / {}",
+                    crate::tui::format::bytes(job.done),
+                    crate::tui::format::bytes(job.total)
+                ),
+                theme::text2(),
+            )];
+            // No rate while stopping: it is the one field that implies the
+            // bytes are still moving, and the user just asked them not to.
+            if job.rate_bps > 0.0 && !job.cancelling {
+                detail.push(Span::styled(
+                    format!("  {}", crate::tui::format::rate(job.rate_bps)),
+                    theme::dim(),
+                ));
+            }
+            lines.push(Line::from(detail));
+        }
+        if let Some((i, of, name)) = &job.file {
+            lines.push(Line::from(Span::styled(
+                format!("  file {i}/{of}  {name}"),
+                theme::dim(),
+            )));
+        }
+        if job.cancelling {
+            lines.push(Line::from(Span::styled("  stopping…", theme::warn())));
+        }
     }
 
     lines.push(Line::from(""));

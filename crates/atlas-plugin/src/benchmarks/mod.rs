@@ -13,7 +13,9 @@ pub mod bfcl;
 pub mod concurrency;
 pub mod contamination;
 pub mod serve_matrix;
+pub mod ssm_poison;
 pub mod stats;
+pub mod transcript;
 pub mod ttft;
 
 /// Collapse a message onto one line and bound its length.
