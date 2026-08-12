@@ -123,10 +123,10 @@ impl App {
                 // Transcript scrollback stays live while the input holds focus —
                 // that is where you are while a reply streams, and Up/Down are
                 // otherwise unused here (unlike Ops, which spends them on history).
-                KeyCode::Up => self.chat.scroll_by(1),
-                KeyCode::Down => self.chat.scroll_by(-1),
-                KeyCode::PageUp => self.chat.scroll_by(10),
-                KeyCode::PageDown => self.chat.scroll_by(-10),
+                KeyCode::Up => self.chat_scroll(1),
+                KeyCode::Down => self.chat_scroll(-1),
+                KeyCode::PageUp => self.chat_scroll(10),
+                KeyCode::PageDown => self.chat_scroll(-10),
                 KeyCode::End => self.chat.follow(),
                 // Home is not text, so the input keeps it even while focused —
                 // the other half of the End pair above.
@@ -168,6 +168,9 @@ impl App {
         if let Some(said) = self.chat.on_content_key(key) {
             self.toast(said, false);
         }
+        // `on_content_key` moves the offset inside `ChatState`, which cannot
+        // see the renderer-published ceiling; the clamp lives here.
+        self.clamp_chat_scroll();
     }
 
     /// `Ctrl+N`: start a new chat session — after a confirmation whenever

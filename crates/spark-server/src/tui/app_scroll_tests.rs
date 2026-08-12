@@ -144,6 +144,7 @@ fn typing_while_scrolled_back_does_not_yank_the_chat_transcript() {
     press(&mut a, '6');
     press(&mut a, '6');
     press(&mut a, 'i');
+    a.chat_scroll_max.set(10); // the keys clamp now, like the wheel
     tap(&mut a, KeyCode::PageUp);
     assert_eq!(a.chat.scroll, Some(10));
     for c in "still reading".chars() {
@@ -156,10 +157,10 @@ fn typing_while_scrolled_back_does_not_yank_the_chat_transcript() {
 }
 
 #[test]
-fn the_chat_wheel_respects_the_ceiling_the_keys_do_not_see() {
-    // The keys move the transcript blind — the ceiling is a render result — so
-    // the wheel is where it is enforced, including the collapse back to follow
-    // when there is nothing above the fold at all.
+fn the_chat_wheel_respects_the_ceiling_and_collapses_to_follow() {
+    // Including the collapse back to follow when there is nothing above the
+    // fold at all. (The keyboard paths share this clamp now — see the test
+    // below — so wheel and keys can no longer disagree about position.)
     let mut a = app();
     a.section = Section::Terminal;
     a.term_sub = TermSub::Chat;
@@ -321,4 +322,31 @@ fn help_scroll_keys_move_the_key_list_and_anything_else_closes_it() {
     assert!(!a.help_open, "a non-scroll key closes it");
     assert_eq!(a.section, section, "and is swallowed, not acted on");
     assert_eq!(a.help_scroll, 0, "the next open starts at the top");
+}
+
+/// Both chat keyboard paths — the input-focus arrows and the content-focus
+/// letters — used to call `scroll_by` bare, banking presses past the oldest
+/// row that were paid back one dead key at a time. The tree's own doctrine
+/// (`app_scroll`, `lib_modal`) names exactly this defect.
+#[test]
+fn the_chat_keys_clamp_against_the_same_ceiling_as_the_wheel() {
+    let mut a = app();
+    press(&mut a, '6');
+    press(&mut a, '6');
+    press(&mut a, 'i');
+    a.chat_scroll_max.set(3);
+    tap(&mut a, KeyCode::PageUp);
+    assert_eq!(
+        a.chat.scroll,
+        Some(3),
+        "PageUp lands on the ceiling, not 10"
+    );
+
+    tap(&mut a, KeyCode::Esc); // back to content focus
+    for _ in 0..5 {
+        press(&mut a, 'k');
+    }
+    assert_eq!(a.chat.scroll, Some(3), "content-focus k cannot bank either");
+    press(&mut a, 'j');
+    assert_eq!(a.chat.scroll, Some(2), "one press back means one row back");
 }

@@ -196,6 +196,7 @@ fn the_chat_line_scrolls_the_transcript_without_losing_focus() {
     // Up/Down are free here (unlike Ops, which spends them on history), and
     // scrollback has to stay live while a reply streams — that is where you are.
     let mut a = chat_input();
+    a.chat_scroll_max.set(11); // the keys clamp like the wheel now
     tap(&mut a, KeyCode::Up);
     assert_eq!(a.chat.scroll, Some(1));
     tap(&mut a, KeyCode::PageUp);

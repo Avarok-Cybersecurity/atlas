@@ -37,8 +37,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
     let width = inner.width.saturating_sub(4) as usize;
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
+    // Head, body, tail — windowed separately. The head (identity and
+    // provenance) stays pinned: it is the last honest moment to say the
+    // values below are copied, not measured. The COMMAND preview stays at
+    // the bottom: it is the form's output. Only the row region scrolls.
+    let mut head: Vec<Line> = Vec::new();
+    head.push(Line::from(vec![
         Span::styled("  model  ", theme::dim()),
         Span::styled(recipe.model.clone(), theme::text()),
     ]));
@@ -47,7 +51,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // say the values below are copied, not measured. `warn()` is BOLD under
     // NO_COLOR, and the sentence itself is the colour-free signal.
     if let Some(provenance) = &recipe.starting_point {
-        lines.push(Line::from(Span::styled(
+        head.push(Line::from(Span::styled(
             format!("  starting point — {provenance}; unverified on this model"),
             theme::warn(),
         )));
@@ -58,13 +62,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // the first. Same NO_COLOR contract — `warn()` is BOLD, the words carry
     // the meaning.
     if let Some(borrowed) = &app.lib.borrowed {
-        lines.push(Line::from(Span::styled(
+        head.push(Line::from(Span::styled(
             format!("  borrowed — values from {borrowed}; not a measurement for this model"),
             theme::warn(),
         )));
     }
-    lines.push(Line::from(""));
+    head.push(Line::from(""));
 
+    // The row region, with the line index just past the selected row (and
+    // its attached error) recorded as the scroll anchor.
+    let mut body: Vec<Line> = Vec::new();
+    let mut anchor_end = 0usize;
     for (i, row) in app.lib.config_rows().into_iter().enumerate() {
         let selected = i == app.lib.row;
         let editing = selected && app.lib.editing && app.lib.pending_add.is_none();
@@ -118,18 +126,21 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         if selected {
             line = line.style(theme::selected());
         }
-        lines.push(line);
+        body.push(line);
 
         // The error attaches to the row that caused it, like the benchmark form.
         if let Some(err) = app.lib.error.as_ref().filter(|_| selected && !editing) {
-            lines.extend(wrap(&format!("  {err}"), width, theme::error()));
+            body.extend(wrap(&format!("  {err}"), width, theme::error()));
+        }
+        if selected {
+            anchor_end = body.len();
         }
     }
     // A setting being ADDED that has no default yet: a synthetic row at the
     // bottom, gone without trace on Esc. It renders like any edited row so
     // the flow feels like editing, not like a second kind of form.
     if let (Some(key), true) = (&app.lib.pending_add, app.lib.editing) {
-        lines.push(
+        body.push(
             Line::from(vec![
                 Span::styled("▌", theme::brand_purple()),
                 Span::styled("+", theme::brand_green()),
@@ -141,22 +152,37 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             ])
             .style(theme::selected()),
         );
+        // The synthetic row is where the cursor effectively is.
+        anchor_end = body.len();
     }
 
-    lines.push(Line::from(""));
+    let mut tail: Vec<Line> = vec![Line::from("")];
     match app.lib.preview_argv() {
         Some(argv) => {
-            lines.push(Line::from(Span::styled(" COMMAND", theme::dim())));
+            tail.push(Line::from(Span::styled(" COMMAND", theme::dim())));
             // Show what would actually run. A form that hides its output makes
             // the user guess whether an edit took effect.
             let rendered = argv.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
-            lines.extend(wrap(&format!("spark {rendered}"), width, theme::text2()));
+            tail.extend(wrap(&format!("spark {rendered}"), width, theme::text2()));
         }
-        None => lines.push(Line::from(Span::styled(
+        None => tail.push(Line::from(Span::styled(
             " this recipe cannot be launched from here",
             theme::warn(),
         ))),
     }
 
+    // Cursor-follows-scroll on the row region — the same
+    // `selected.saturating_sub(visible - 1)` idiom the list and cards use.
+    // Without it, a recipe with ~16 defaults on a 24-row terminal clipped
+    // its tail, and `select_row` after an add deliberately lands the cursor
+    // at the END of the form — exactly where the clipping was: `j` kept
+    // moving onto rows that were not on screen.
+    let body_h = (inner.height as usize)
+        .saturating_sub(head.len() + tail.len())
+        .max(1);
+    let off = anchor_end.saturating_sub(body_h);
+    let mut lines = head;
+    lines.extend(body.into_iter().skip(off).take(body_h));
+    lines.extend(tail);
     f.render_widget(Paragraph::new(lines), inner);
 }

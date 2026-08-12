@@ -452,3 +452,38 @@ fn a_mixed_list_shows_each_rows_own_state() {
     assert!(rows[here_row + 1].contains(" on disk "), "{rows:#?}");
     assert!(rows[gone_row + 1].contains(" not downloaded "), "{rows:#?}");
 }
+
+/// The form built one line per row for ALL rows with no windowing — unlike
+/// the list, the cards and every modal — so on a short terminal `j` walked
+/// the cursor below the fold, and `select_row` after an add landed it at the
+/// end of the form: exactly where the clipping was.
+#[test]
+fn the_settings_form_scrolls_to_keep_the_selected_row_on_screen() {
+    let mut a = flagship();
+    a.lib.open_cards().expect("opens");
+    a.lib.open_config().expect("opens");
+    let rows_in_form = a.lib.config_rows();
+    let first_key = rows_in_form.first().expect("has rows").key.clone();
+    let last_key = rows_in_form.last().expect("has rows").key.clone();
+    a.lib.row = rows_in_form.len() - 1;
+
+    // Short enough that head + every row + preview cannot all fit.
+    let rows = screen(&a, 100, 16);
+    assert!(
+        has(&rows, &last_key),
+        "the selected (last) row is on screen:\n{rows:#?}"
+    );
+    assert!(
+        !has(&rows, &first_key),
+        "the top scrolled away to make room:\n{rows:#?}"
+    );
+    assert!(
+        has(&rows, "COMMAND") || has(&rows, "spark "),
+        "the preview stays pinned at the bottom:\n{rows:#?}"
+    );
+
+    // Back at the top, the first row is the one on screen again.
+    a.lib.row = 0;
+    let rows = screen(&a, 100, 16);
+    assert!(has(&rows, &first_key), "{rows:#?}");
+}

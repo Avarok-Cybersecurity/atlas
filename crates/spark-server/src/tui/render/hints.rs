@@ -76,7 +76,9 @@ pub(super) fn bench_hints(app: &App) -> &'static str {
     use crate::tui::app::BenchSub;
     use crate::tui::bench_state::View;
     if app.bench_sub == BenchSub::History {
-        return "j/k run · ⇥ Suite↔History · 1-6 jump · ? help";
+        // PgUp/PgDn named or it does not exist: it is the one binding here a
+        // user cannot guess from the run list.
+        return "j/k run · PgUp/PgDn table · ⇥ Suite↔History · ? help";
     }
     match (app.bench.view, app.bench.editing) {
         (View::List, _) if app.bench.frame.is_some() => {

@@ -68,14 +68,7 @@ impl App {
                     self.ops.scroll_up =
                         (self.ops.scroll_up as i32 - rows).clamp(0, max.max(0)) as usize;
                 }
-                TermSub::Chat => {
-                    self.chat.scroll_by(-rows);
-                    // Same ceiling argument as the log pane.
-                    let max = self.chat_scroll_max.get();
-                    if self.chat.scroll.is_some_and(|n| n > max) {
-                        self.chat.scroll = if max == 0 { None } else { Some(max) };
-                    }
-                }
+                TermSub::Chat => self.chat_scroll(-rows),
             },
             // Nothing scrollable: these panes are gauges, not documents.
             Section::Stats | Section::Network => {}
@@ -127,6 +120,26 @@ impl App {
             }
             KeyCode::Char('G') | KeyCode::End => self.ops.scroll_up = 0,
             _ => {}
+        }
+    }
+
+    /// Chat transcript scroll with the ceiling applied — the one entry point
+    /// the wheel and BOTH keyboard paths share (positive rows = back toward
+    /// older turns). The keyboard used to call `scroll_by` bare, which banked
+    /// presses past the oldest row that a reader then paid back one dead key
+    /// at a time — the exact defect the ceilings were introduced to end.
+    pub(super) fn chat_scroll(&mut self, rows: i32) {
+        self.chat.scroll_by(rows);
+        self.clamp_chat_scroll();
+    }
+
+    /// Pull a banked offset back inside the renderer-published ceiling.
+    /// Separate from [`Self::chat_scroll`] because `ChatState::on_content_key`
+    /// moves the offset itself and only the `App` can see the ceiling.
+    pub(super) fn clamp_chat_scroll(&mut self) {
+        let max = self.chat_scroll_max.get();
+        if self.chat.scroll.is_some_and(|n| n > max) {
+            self.chat.scroll = if max == 0 { None } else { Some(max) };
         }
     }
 
