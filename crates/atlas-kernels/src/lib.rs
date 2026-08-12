@@ -205,6 +205,9 @@ pub struct ModelBehavior {
     pub enable_loop_watchdog: bool,
     /// See build_parse.rs: gate for the THINKING-phase loop watchdog.
     pub enable_think_loop_watchdog: bool,
+    /// See build_parse_behavior.rs: honor a mid-`<think>` EOS by implicitly
+    /// closing the block. Defaults FALSE (pre-p350 behaviour).
+    pub honor_eos_inside_thinking: bool,
     /// Cap the thinking budget at 90% of the request's `max_tokens` (true), or
     /// let `max_thinking_budget` be the sole cap (false = vLLM single-budget:
     /// reasoning may use the full generation budget). See thinking.rs::resolve.
@@ -330,6 +333,7 @@ impl Default for ModelBehavior {
             tool_call_parser: "",
             enable_loop_watchdog: false,
             enable_think_loop_watchdog: true,
+            honor_eos_inside_thinking: false,
             cap_thinking_at_max_tokens: true,
             min_p_floor: 0.0,
             temperature_max: 0.0,

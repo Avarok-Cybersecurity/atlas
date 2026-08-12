@@ -208,7 +208,6 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     }
     // The content-loop watchdog value reaches the scheduler as
     // `SchedLevers::loop_watchdog`, armed in `serve`; this phase only audits it.
-    crate::scheduler::set_enable_think_loop_watchdog(ptx_set.behavior.enable_think_loop_watchdog);
     if !ptx_set.behavior.enable_think_loop_watchdog {
         tracing::info!(
             "Model behavior: THINKING-loop watchdog DISABLED (per MODEL.toml \

@@ -170,7 +170,18 @@ pub(super) fn drop_thinking_messages(messages: &[Value]) -> Vec<Value> {
         if index >= last_user
             || matches!(
                 role(message),
-                Some("user" | "system" | "tool" | "latest_reminder" | "direct_search_results")
+                // `developer` is load-bearing here: msg_entry lowers it
+                // deliberately for this encoder (preserve_developer_role), so
+                // omitting it from the keep-list silently DELETED developer
+                // instructions from the prompt, with no error.
+                Some(
+                    "user"
+                        | "system"
+                        | "developer"
+                        | "tool"
+                        | "latest_reminder"
+                        | "direct_search_results"
+                )
             )
         {
             out.push(message.clone());

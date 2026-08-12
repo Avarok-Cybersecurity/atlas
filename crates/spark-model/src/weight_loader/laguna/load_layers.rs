@@ -171,6 +171,19 @@ fn load_moe_ffn(
     // transposed [K/16,N] under the unified layout, else the checkpoint's own
     // [N,K/16] via the src_n_major packer path.
     if cutlass_grouped_moe_enabled() {
+        // ★ These two levers are mutually exclusive, and combining them was
+        // silent memory corruption. `transpose_for_prefill_unified` FREES the
+        // original [N,K/2] expert weights, but the grouped-CUTLASS prefill
+        // branch (forward_prefill_routed.rs) reads `gate_ptrs.packed_ptrs` /
+        // `down_ptrs.packed_ptrs` — those same freed buffers. Every prefill
+        // grouped GEMM then dereferenced freed device memory: garbage numerics
+        // or a CUDA fault, with nothing in the logs to say why.
+        anyhow::ensure!(
+            !unified_moe_layout,
+            "ATLAS_UNIFIED_MOE_LAYOUT and ATLAS_HOLO_MOE_GROUPED_CUTLASS cannot \
+             both be set: the unified transpose frees the original expert \
+             weights that the grouped-CUTLASS prefill path reads. Pick one."
+        );
         layer.build_cutlass_grouped_sfb(gpu, config, gpu.default_stream())?;
     }
     Ok(FfnComponent::Moe(layer))
