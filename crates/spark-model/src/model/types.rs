@@ -397,6 +397,16 @@ pub struct TransformerModel {
     /// lazily on first use, so a serve without the flag pays nothing.
     pub(super) ssm_h_f16_scratch: std::sync::OnceLock<DevicePtr>,
 
+    /// SOLID Incr-4: dedicated persistent GPU buffer for the batched-decode MoE
+    /// per-row fold map `[max_batch_size]` i32 (`< 0` = base skip, `>= 0` = fold
+    /// the active adapter). Allocated ONCE at init (fixed device address),
+    /// refreshed per decode step via copy_h2d_async — graph-capture-safe exactly
+    /// like the GDN buffers, and now DISTINCT from the old +160 metadata gap so
+    /// seq_slot@+128 reclaims its full +128..+256 range (concurrent-LoRA decode
+    /// cap 8 → 32). Always allocated (cheap, max_batch_size·4 B); never touched
+    /// when self.lora is None (upload_moe_row_adapter returns DevicePtr(0)).
+    pub(super) moe_row_adapter_buf: DevicePtr,
+
     // ── Two-phase SSM prefill buffers ──
     // These hold GDN inputs/outputs for the full sequence, allowing the GDN
     // recurrence to run in a single kernel launch while GEMM projections are
@@ -434,6 +444,30 @@ pub struct TransformerModel {
     /// Embedding scale kernel: embeddings *= sqrt(hidden_size).
     /// KernelHandle(0) = disabled (no scaling for this model).
     pub(super) embed_scale_kernel: KernelHandle,
+    /// Feature-2 token overlay: per-adapter-slot embed/lm_head row-override
+    /// tables. `None` ⇒ feature OFF ⇒ every overlay forward hook early-returns
+    /// (byte-identical to a no-overlay build). Built in `set_lora_weights`
+    /// (Stage 2) from the resident pool's Stage-1 raw uploads.
+    pub(super) overlays: Option<crate::lora::TokenOverlaySet>,
+    /// Feature-2 token overlay kernels, resolved once at construction via
+    /// `try_kernel` (null-on-miss ⇒ overlay silently unused on an older image).
+    pub(super) overlay_kernels: crate::layers::ops::token_overlay::OverlayKernels,
+    /// Feature-2 per-forward overlay route: the current request's `adapter_slot`,
+    /// stamped at each `Model::{prefill,decode,...}` entry (the scheduler drives
+    /// the model serially on one thread, so a plain atomic is sufficient). The
+    /// overlay hooks resolve it through `routed_prefill_slot` so a request that
+    /// selects a NON-active pool adapter gets THAT adapter's overlay, not the
+    /// pool's active one. `i32::MIN` marks a mixed-adapter decode batch (per-token
+    /// `seq_slot` routing deferred to SOLID Incr-4) ⇒ the hooks skip.
+    pub(super) overlay_route_slot: std::sync::atomic::AtomicI32,
+    /// Feature-1 per-decode MoE route, stamped from the decode batch's adapter
+    /// slots at each `Model::{decode,decode_batch,mixed_forward}` entry (the
+    /// decode/verify `ForwardContext`s read it instead of a hardcoded `Fold`).
+    /// A pure-base decode batch resolves to `Skip` so base requests decode
+    /// normally even while an adapter is resident; any adapter-using row makes
+    /// the batch `Fold`/`Refuse`, which `reject_decode_lora` turns into a loud
+    /// bail (the decode-fold is SOLID Incr-4). Encoded 0=Skip 1=Fold 2=Refuse.
+    pub(super) decode_moe_route: std::sync::atomic::AtomicI32,
 }
 
 /// Pinned host memory staging buffer with reusable metadata Vecs.

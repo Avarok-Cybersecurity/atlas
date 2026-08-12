@@ -71,6 +71,7 @@ fn test_forward_context_lifetime() {
         token_ids: None,
         routed_lora_layers: None,
         midchunk_capture: None,
+        moe_lora_route: crate::layer::MoeLoraRoute::Fold,
     };
 
     assert_eq!(ctx.config.hidden_size, 2048);

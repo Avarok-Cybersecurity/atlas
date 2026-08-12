@@ -168,3 +168,57 @@ fn global_starts_healthy() {
     assert!(!global().is_faulted());
     assert_eq!(global().fault(), None);
 }
+
+// ---------------------------------------------------------------------------
+// exit status — the last mile of #429
+// ---------------------------------------------------------------------------
+//
+// The latch, the 503s and the drain all worked, and the server STILL stayed
+// down: a faulted shutdown is a *clean* one, so `main` returned `Ok` and the
+// process exited 0. `restart: on-failure` does not restart an exit-0 process,
+// so the endpoint never came back. Symmetric to the latch itself — exiting 0
+// on a fault leaves a dead endpoint, and exiting nonzero on a clean stop puts
+// a healthy server into a restart loop — so both halves are tested.
+
+/// POSITIVE: a clean drain that followed a fault must NOT look like success.
+///
+/// PROVEN BY: returning `0` for the `Some` arm turns this red on the first
+/// assert (`assertion `left != right` failed: 0 != 0`).
+#[test]
+fn a_faulted_shutdown_exits_nonzero() {
+    assert_ne!(exit_code(true, Some("context destroyed")), 0);
+    assert_eq!(exit_code(true, Some("context destroyed")), EXIT_GPU_FAULT);
+}
+
+/// POSITIVE: the fault outranks the run's own status, so the operator is told
+/// the cause rather than the symptom.
+///
+/// PROVEN BY: ordering the match so `(false, _)` wins turns this red.
+#[test]
+fn a_fault_outranks_a_failed_run() {
+    assert_eq!(exit_code(false, Some("context destroyed")), EXIT_GPU_FAULT);
+}
+
+/// NEGATIVE: an ordinary `docker stop` still exits 0.
+///
+/// Without this, "make it nonzero" could be satisfied by making EVERY exit
+/// nonzero — which would restart-loop every healthy server that was asked to
+/// stop. That is a worse outage than the one being fixed.
+///
+/// PROVEN BY: returning `EXIT_GPU_FAULT` unconditionally turns this red.
+#[test]
+fn a_clean_shutdown_without_a_fault_still_exits_zero() {
+    assert_eq!(exit_code(true, None), 0);
+}
+
+/// NEGATIVE: an ordinary failure keeps the generic status and is not
+/// mislabelled as a GPU fault — otherwise the distinct code stops meaning
+/// anything and an operator cannot trust it.
+///
+/// PROVEN BY: returning `EXIT_GPU_FAULT` for any `!run_succeeded` turns this
+/// red on the second assert.
+#[test]
+fn an_ordinary_failure_is_not_reported_as_a_gpu_fault() {
+    assert_eq!(exit_code(false, None), 1);
+    assert_ne!(exit_code(false, None), EXIT_GPU_FAULT);
+}

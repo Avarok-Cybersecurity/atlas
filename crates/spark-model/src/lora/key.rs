@@ -50,7 +50,7 @@ pub fn adapter_id_hash(name: &str, generation: u64) -> u64 {
 /// (weight_prefix auto-detected server-side), but a PEFT trainer wrapping
 /// the text trunk emits `model.layers.{i}.*`; both carry the layer index
 /// right after ".layers.".
-pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraModule, AdapterAb)> {
+pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraTarget, AdapterAb)> {
     let stripped = key.strip_prefix("base_model.model.").ok_or_else(|| {
         anyhow!("REJECT[not-peft-key]: '{key}' lacks the 'base_model.model.' PEFT prefix")
     })?;
@@ -84,14 +84,22 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraModule, 
             cfg.num_hidden_layers
         );
     }
-    let module = match tail {
-        "self_attn.q_proj" => LoraModule::QProj,
-        "self_attn.k_proj" => LoraModule::KProj,
-        "self_attn.v_proj" => LoraModule::VProj,
-        "self_attn.o_proj" => LoraModule::OProj,
-        "mlp.gate_proj" => LoraModule::GateProj,
-        "mlp.up_proj" => LoraModule::UpProj,
-        "mlp.down_proj" => LoraModule::DownProj,
+    let target = match tail {
+        "self_attn.q_proj" => LoraTarget::Attn(LoraModule::QProj),
+        "self_attn.k_proj" => LoraTarget::Attn(LoraModule::KProj),
+        "self_attn.v_proj" => LoraTarget::Attn(LoraModule::VProj),
+        "self_attn.o_proj" => LoraTarget::Attn(LoraModule::OProj),
+        "mlp.gate_proj" => LoraTarget::Attn(LoraModule::GateProj),
+        "mlp.up_proj" => LoraTarget::Attn(LoraModule::UpProj),
+        "mlp.down_proj" => LoraTarget::Attn(LoraModule::DownProj),
+        // Feature-1: the MoE router (`mlp.gate`, DISTINCT from the dense
+        // `mlp.gate_proj` above — do not confuse the two).
+        "mlp.gate" => LoraTarget::Router,
+        // Feature-1: a routed expert projection `mlp.experts.{N}.{proj}`.
+        // Every unsupported spelling is a NAMED reject (never a silent skip).
+        t if t.starts_with("mlp.experts.") => {
+            classify_expert_tail(key, &t["mlp.experts.".len()..], cfg)?
+        }
         t if t.starts_with("linear_attn.") => bail!(
             "REJECT[gdn-target]: '{key}' — GDN/linear-attention projections \
              (in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / out_proj) are \
@@ -99,17 +107,71 @@ pub fn classify_key(key: &str, cfg: &ModelConfig) -> Result<(usize, LoraModule, 
         ),
         other => bail!("REJECT[unsupported-module]: '{key}' targets '{other}'"),
     };
-    match cfg.layer_type(layer_idx) {
-        LayerType::FullAttention => {}
-        lt => bail!(
-            "REJECT[non-full-attention-layer]: '{key}' targets layer {layer_idx} \
-             ({lt:?}); v0 applies LoRA only on the full-attention layers \
-             {:?}. NOTE: dense mlp.* exists on the GDN layers too — train with \
-             layers_to_transform=[3,7,11,15,19,23] to produce a loadable adapter",
-            full_attention_layers(cfg)
-        ),
+    // The full-attention gate applies ONLY to attention + dense-mlp targets:
+    // those projections exist per-attention-layer and the v0 delta path is wired
+    // only on full-attention layers. MoE router (`mlp.gate`) and routed experts
+    // (`mlp.experts.N.*`) live on EVERY MoE layer — including the GDN /
+    // linear-attention layers — so a real Qwen3.6/Holo MoE adapter targets them
+    // there too; gating those to full-attention would wrongly reject the majority
+    // of a MoE adapter's layers. The fold runs in `MoeLayer::forward_*`, which is
+    // present on all MoE layers, so no layer-type restriction applies to them.
+    match target {
+        LoraTarget::Attn(_) => match cfg.layer_type(layer_idx) {
+            LayerType::FullAttention => {}
+            lt => bail!(
+                "REJECT[non-full-attention-layer]: '{key}' targets layer {layer_idx} \
+                 ({lt:?}); v0 applies attention/dense-mlp LoRA only on the full-attention \
+                 layers {:?}. NOTE: dense mlp.* exists on the GDN layers too — train with \
+                 layers_to_transform={:?} to produce a loadable adapter",
+                full_attention_layers(cfg),
+                full_attention_layers(cfg)
+            ),
+        },
+        LoraTarget::Router | LoraTarget::Expert { .. } => {}
     }
-    Ok((layer_idx, module, ab))
+    Ok((layer_idx, target, ab))
+}
+
+/// Parse the `{N}.{proj}` remainder of a `mlp.experts.` tail into a routed-expert
+/// [`LoraTarget`]. `rest` is e.g. `"7.gate_proj"`. Named rejects for the fused /
+/// unindexed layout (`target_parameters` on a real Holo/Qwen3.6 export — Feature-1
+/// phase 3), a dense (`num_experts == 0`) model, an out-of-range expert, and any
+/// unknown projection.
+fn classify_expert_tail(key: &str, rest: &str, cfg: &ModelConfig) -> Result<LoraTarget> {
+    if cfg.num_experts == 0 {
+        bail!(
+            "REJECT[expert-lora-on-dense-model]: '{key}' targets a routed expert but \
+             the model has num_experts=0 (dense) — use mlp.{{gate,up,down}}_proj instead"
+        );
+    }
+    let (n_str, proj_str) = rest.split_once('.').ok_or_else(|| {
+        anyhow!(
+            "REJECT[fused-expert-lora]: '{key}' — fused/unindexed expert layout \
+             (e.g. experts.gate_up_proj via target_parameters) is deferred to \
+             Feature-1 phase 3; export per-expert mlp.experts.{{N}}.{{proj}} tensors"
+        )
+    })?;
+    let n: usize = n_str.parse().map_err(|_| {
+        anyhow!("REJECT[malformed-expert-index]: '{key}' — '{n_str}' is not an index")
+    })?;
+    if n >= cfg.num_experts {
+        bail!(
+            "REJECT[expert-out-of-range]: '{key}' targets expert {n} \
+             (model has {} experts)",
+            cfg.num_experts
+        );
+    }
+    let proj = match proj_str {
+        "gate_proj" => ExpertProj::Gate,
+        "up_proj" => ExpertProj::Up,
+        "down_proj" => ExpertProj::Down,
+        "gate_up_proj" => bail!(
+            "REJECT[fused-expert-lora]: '{key}' — fused gate_up_proj is deferred to \
+             Feature-1 phase 3 (needs a per-expert decomposer)"
+        ),
+        other => bail!("REJECT[unsupported-expert-proj]: '{key}' proj '{other}'"),
+    };
+    Ok(LoraTarget::Expert { n: n as u16, proj })
 }
 
 #[cfg(test)]

@@ -96,6 +96,9 @@ typedef sycl::half2 ggml_half2;
 #define QI1_0 (QK1_0 / 32)
 #define QR1_0 1
 
+#define QI2_0 (QK2_0 / 32)
+#define QR2_0 1
+
 
 #define QI4_0 (QK4_0 / (4 * QR4_0))
 #define QR4_0 2
@@ -180,6 +183,17 @@ typedef struct {
     uint8_t qs[QK1_0 / 8]; // bits / quants
 } block_q1_0;
 static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
+
+// PrismML Ternary-Bonsai Q2_0: fp16 block scale d @front, then 128 2-bit codes
+// (4 per byte, low-bits-first). Dequant value = (code - 1) * d. 34 bytes / block.
+// Byte-identical to Atlas's on-disk `WeightDtype::PackedQ2_0{group:128}` — the
+// native decode GEMV (q2_0_gemv_vec.cu) reads the same layout, so no repack.
+#define QK2_0 128
+typedef struct {
+    ggml_half d;            // delta (block scale)
+    uint8_t qs[QK2_0 / 4];  // 128 codes, 4 per byte
+} block_q2_0;
+static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
 
 #define QK4_0 32
 typedef struct {

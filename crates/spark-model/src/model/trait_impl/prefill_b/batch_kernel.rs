@@ -516,6 +516,11 @@ impl TransformerModel {
             // reaches paged_qkv's routed path anyway. Must stay None.
             routed_lora_layers: None,
             midchunk_capture: None,
+            // Codispatch packs multiple requests into one forward: per-row MoE
+            // adapter identity needs the device-side fold (follow-up), so a MoE
+            // adapter here REFUSES loudly rather than fold one adapter onto every
+            // packed row. Inert when no MoE adapter is installed (hook no-ops).
+            moe_lora_route: crate::layer::MoeLoraRoute::Refuse,
         };
 
         // h_state_ptrs scratch slot offset (used JIT per SSM layer).

@@ -59,6 +59,21 @@ pub struct PeftAdapterConfig {
     /// The weight loader's per-`LayerType` gate is the real authority on
     /// which layers receive deltas; this is kept only for the startup log.
     pub layers_to_transform: Option<Vec<usize>>,
+    /// Vocab-extension / trainable-token ids for the token overlay
+    /// (Feature 2). Flattened + deduped union of the config's
+    /// `trainable_token_indices` (list form, or `{"embed_tokens":[…],
+    /// "lm_head":[…]}` dict form). Empty ⇒ no `trainable_tokens` overlay.
+    pub trainable_token_indices: Vec<u32>,
+    /// Accepted `modules_to_save` leaves — the subset Atlas can apply as a
+    /// token overlay (`embed_tokens` / `lm_head` full-row replacement).
+    /// Anything else is still a hard `REJECT(modules_to_save)`. Empty ⇒
+    /// no full-module overlay.
+    pub modules_to_save: Vec<String>,
+    /// Classic low-rank embedding LoRA (`lora_embedding_A/B`) present.
+    /// Tier-2: parse-accepted here so the adapter is not silently dropped,
+    /// but the loader rejects it until the embedding-LoRA kernel lands.
+    /// Reserved — always `false` today (detection is at the tensor level).
+    pub lora_embedding: bool,
 }
 
 impl PeftAdapterConfig {
@@ -90,6 +105,8 @@ struct RawPeftAdapterConfig {
     lora_alpha: f64,
     /// Array of strings, or the string "all-linear" (rejected — Atlas
     /// cannot enumerate "all linear" against fused/quantized layouts).
+    /// Absent/null is tolerated for pure token-overlay adapters.
+    #[serde(default)]
     target_modules: serde_json::Value,
     /// Hard-required: scaling inputs are never defaulted. `None` (field
     /// absent) is a REJECT, not a `false` default.
@@ -104,7 +121,9 @@ struct RawPeftAdapterConfig {
     rank_pattern: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
     alpha_pattern: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Full (non-low-rank) modules saved alongside the adapter — rejected.
+    /// Full (non-low-rank) modules saved alongside the adapter. The
+    /// `{embed_tokens, lm_head}` subset is now accepted as a token overlay
+    /// (Feature 2); any other leaf stays a hard reject.
     #[serde(default)]
     modules_to_save: Option<Vec<String>>,
     /// Layer-subset restriction. ACCEPTED (array form) and kept for logging;
@@ -112,6 +131,18 @@ struct RawPeftAdapterConfig {
     /// non-array form is rejected as malformed.
     #[serde(default)]
     layers_to_transform: Option<serde_json::Value>,
+    /// PEFT `trainable_token_indices` — vocab ids whose embed/lm_head rows the
+    /// adapter fully replaces. Emitted as a bare list `[id, …]` OR a per-module
+    /// dict `{"embed_tokens":[…], "lm_head":[…]}`. Parsed by
+    /// [`parse_trainable_tokens`] into a deduped `Vec<u32>`.
+    #[serde(default)]
+    trainable_token_indices: Option<serde_json::Value>,
+    /// PEFT `target_parameters` — LoRA attached to fused `nn.Parameter`
+    /// tensors (routed MoE experts on Holo/Qwen3.6). Deferred to Feature 1
+    /// phase 3; a non-empty value is a NAMED reject (never silently dropped,
+    /// which the lack of `deny_unknown_fields` would otherwise do).
+    #[serde(default)]
+    target_parameters: Option<Vec<String>>,
 }
 
 /// Parse a PEFT `adapter_config.json` payload.
@@ -147,10 +178,22 @@ pub fn parse_peft_adapter_config(json: &str) -> Result<PeftAdapterConfig> {
             "REJECT(alpha_pattern): per-module alpha overrides are unsupported in v0 (uniform lora_alpha only)"
         );
     }
-    if raw.modules_to_save.as_ref().is_some_and(|v| !v.is_empty()) {
+    // `modules_to_save`: partition by leaf. `{embed_tokens, lm_head}` are a
+    // token overlay (Feature 2) and accepted; everything else stays a hard
+    // reject (full-weight replacement of arbitrary modules is unsupported).
+    let modules_to_save = partition_modules_to_save(raw.modules_to_save.as_deref())?;
+
+    // `target_parameters` (fused expert LoRA) is deferred — never silently
+    // dropped (no `deny_unknown_fields` would otherwise swallow it).
+    if raw
+        .target_parameters
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
+    {
         bail!(
-            "REJECT(modules_to_save): adapter saves full modules {:?}; full-weight replacement is unsupported",
-            raw.modules_to_save.as_deref().unwrap_or_default()
+            "REJECT(target_parameters): fused-parameter LoRA {:?} (routed MoE experts) \
+             is deferred to Feature 1 phase 3",
+            raw.target_parameters.as_deref().unwrap_or_default()
         );
     }
 
@@ -176,9 +219,19 @@ pub fn parse_peft_adapter_config(json: &str) -> Result<PeftAdapterConfig> {
         );
     }
 
+    let trainable_token_indices = parse_trainable_tokens(&raw.trainable_token_indices)?;
+
     let target_modules = parse_target_modules(&raw.target_modules)?;
     for entry in &target_modules {
         validate_target_module(entry)?;
+    }
+
+    // A pure-overlay adapter (only `trainable_tokens` / `modules_to_save`)
+    // legitimately targets no LoRA module. Otherwise an empty `target_modules`
+    // means the adapter applies nothing at all.
+    let has_overlay = !trainable_token_indices.is_empty() || !modules_to_save.is_empty();
+    if target_modules.is_empty() && !has_overlay {
+        bail!("REJECT(target_modules): empty list — adapter targets nothing");
     }
 
     Ok(PeftAdapterConfig {
@@ -187,7 +240,80 @@ pub fn parse_peft_adapter_config(json: &str) -> Result<PeftAdapterConfig> {
         target_modules,
         use_rslora,
         layers_to_transform,
+        trainable_token_indices,
+        modules_to_save,
+        lora_embedding: false,
     })
+}
+
+/// Partition `modules_to_save` into the accepted token-overlay subset
+/// (`embed_tokens` / `lm_head`, matched on the leaf `.`-segment) and reject
+/// anything else by name — full-weight replacement of arbitrary modules is
+/// unsupported. Returns the accepted leaves.
+fn partition_modules_to_save(mods: Option<&[String]>) -> Result<Vec<String>> {
+    let Some(mods) = mods else {
+        return Ok(Vec::new());
+    };
+    let mut accepted = Vec::new();
+    for m in mods {
+        let leaf = m.rsplit('.').next().unwrap_or(m);
+        match leaf {
+            "embed_tokens" | "lm_head" => accepted.push(leaf.to_string()),
+            other => bail!(
+                "REJECT(modules_to_save): adapter saves full module '{other}'; only the \
+                 token-overlay subset {{embed_tokens, lm_head}} is supported"
+            ),
+        }
+    }
+    accepted.sort();
+    accepted.dedup();
+    Ok(accepted)
+}
+
+/// Parse PEFT `trainable_token_indices` into a deduped ascending `Vec<u32>`.
+///
+/// Accepts three on-disk forms: absent/null ⇒ empty; a bare list `[id, …]`;
+/// or a per-module dict `{"embed_tokens":[…], "lm_head":[…]}` whose value
+/// lists are unioned. Negative / non-integer entries are a named reject.
+fn parse_trainable_tokens(v: &Option<serde_json::Value>) -> Result<Vec<u32>> {
+    let mut ids: Vec<u32> = Vec::new();
+    let mut push_arr = |arr: &[serde_json::Value]| -> Result<()> {
+        for e in arr {
+            let n = e.as_u64().context(
+                "REJECT(trainable_token_indices): entries must be non-negative integers",
+            )?;
+            if n > u32::MAX as u64 {
+                bail!("REJECT(trainable_token_indices): id {n} exceeds u32 range");
+            }
+            ids.push(n as u32);
+        }
+        Ok(())
+    };
+    match v {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(arr)) => push_arr(arr)?,
+        Some(serde_json::Value::Object(map)) => {
+            for (_module, val) in map {
+                match val {
+                    serde_json::Value::Array(arr) => push_arr(arr)?,
+                    serde_json::Value::Null => {}
+                    other => bail!(
+                        "REJECT(trainable_token_indices): dict value must be an array, got {other}"
+                    ),
+                }
+            }
+        }
+        Some(other) => bail!(
+            "REJECT(trainable_token_indices): expected null, an array, or a per-module \
+             object, got {other}"
+        ),
+    }
+    // Dedup while PRESERVING first-occurrence order: the `trainable_tokens_delta`
+    // tensor's rows align positionally to this id list, so a sort would break the
+    // id→delta-row mapping the overlay builder relies on.
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(*id));
+    Ok(ids)
 }
 
 fn parse_layers_to_transform(v: &Option<serde_json::Value>) -> Result<Option<Vec<usize>>> {
@@ -225,11 +351,15 @@ fn parse_target_modules(v: &serde_json::Value) -> Result<Vec<String>> {
                         .context("REJECT(target_modules): entries must be strings")
                 })
                 .collect::<Result<_>>()?;
-            if mods.is_empty() {
-                bail!("REJECT(target_modules): empty list — adapter targets nothing");
-            }
+            // Emptiness is judged by the caller: a pure token-overlay adapter
+            // (only `trainable_tokens` / `modules_to_save`) legitimately lists
+            // no LoRA target module.
             Ok(mods)
         }
+        // Absent / null `target_modules` is legal for a pure token-overlay
+        // adapter; the caller enforces "targets nothing" against overlay
+        // presence.
+        serde_json::Value::Null => Ok(Vec::new()),
         other => bail!("REJECT(target_modules): expected an array of module names, got {other}"),
     }
 }
@@ -253,6 +383,12 @@ fn validate_target_module(entry: &str) -> Result<()> {
         "embed_tokens" | "lm_head" => {
             bail!("REJECT(embedding): target module '{leaf}' is unsupported in v0")
         }
+        // Feature-1: the MoE router (`mlp.gate`, leaf `gate` — DISTINCT from the
+        // dense `gate_proj`). Expert projections (`mlp.experts.N.gate_proj`) share
+        // the dense leaves already in the allow-list. The runtime key gate
+        // (`classify_key`) + `ATLAS_LORA_EXPERTS` are the authority on whether the
+        // routed-expert / router path is actually loaded.
+        "gate" => Ok(()),
         m if PEFT_SUPPORTED_TARGET_MODULES.contains(&m) => Ok(()),
         other => bail!(
             "REJECT(unknown_module): target module '{other}' is not in the v0 allow-list \

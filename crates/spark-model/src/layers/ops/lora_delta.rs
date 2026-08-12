@@ -23,6 +23,19 @@ pub struct LoraKernels {
     /// Module "lora_bgmv" (stem == module — no KERNEL.toml override).
     pub bgmv_shrink_k: KernelHandle,
     pub bgmv_expand_fold_k: KernelHandle,
+    /// Feature-1 device-side MoE expert down_proj fold: shrink then expand+fold,
+    /// keyed on expert via device `expert_offsets`. Module "moe_lora_grouped_down"
+    /// (stem == module). `KernelHandle(0)` on miss (e.g. non-CUDA builds) — the
+    /// launcher bails loudly rather than dispatching a null handle.
+    pub moe_down_shrink_k: KernelHandle,
+    pub moe_down_expand_fold_k: KernelHandle,
+    /// SOLID Incr-4 DECODE-path MoE expert down_proj fold: shrink then
+    /// expand+fold, keyed on expert via the per-slot `indices` array (the
+    /// unsorted slot-major analogue of `moe_down_*_k`). Module
+    /// "moe_lora_gather_bgmv" (stem == module). `KernelHandle(0)` on miss (e.g.
+    /// non-CUDA builds) — the launcher bails loudly rather than dispatching null.
+    pub moe_gather_shrink_k: KernelHandle,
+    pub moe_gather_expand_fold_k: KernelHandle,
 }
 
 impl LoraKernels {
@@ -34,6 +47,26 @@ impl LoraKernels {
             scaled_add_k: gpu.kernel("residual_add", "bf16_scaled_add")?,
             bgmv_shrink_k: gpu.kernel("lora_bgmv", "lora_bgmv_shrink")?,
             bgmv_expand_fold_k: gpu.kernel("lora_bgmv", "lora_bgmv_expand_fold")?,
+            moe_down_shrink_k: crate::layers::try_kernel(
+                gpu,
+                "moe_lora_grouped_down",
+                "moe_lora_grouped_down_shrink",
+            ),
+            moe_down_expand_fold_k: crate::layers::try_kernel(
+                gpu,
+                "moe_lora_grouped_down",
+                "moe_lora_grouped_down_expand_fold",
+            ),
+            moe_gather_shrink_k: crate::layers::try_kernel(
+                gpu,
+                "moe_lora_gather_bgmv",
+                "moe_lora_gather_bgmv_shrink",
+            ),
+            moe_gather_expand_fold_k: crate::layers::try_kernel(
+                gpu,
+                "moe_lora_gather_bgmv",
+                "moe_lora_gather_bgmv_expand_fold",
+            ),
         })
     }
 }

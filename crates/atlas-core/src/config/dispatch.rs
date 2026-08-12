@@ -214,6 +214,20 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                     })
                     .collect();
             }
+            // MTP: transformers-5.x Nemotron-H (3.5 Lightning) ships a
+            // DeepSeek-style 1-step draft head under `mtp.layers.*`
+            // (enorm/hnorm/eh_proj combiner + attention block + relu² MoE
+            // block), declared as `num_nextn_predict_layers`. Map it onto the
+            // Atlas-canonical `mtp_num_hidden_layers` so `--speculative` can
+            // build the Nemotron MTP proposer (factory/build.rs) and the SSM
+            // pool sizes its verify checkpoint/intermediate slots.
+            if config.mtp_num_hidden_layers == 0
+                && let Some(n) = raw_mut
+                    .get("num_nextn_predict_layers")
+                    .and_then(serde_json::Value::as_u64)
+            {
+                config.mtp_num_hidden_layers = n as usize;
+            }
             // transformers-5.x Nemotron-H (3.5 Lightning) drops the pattern
             // string and ships the schedule as a `layers_block_type` list.
             if config.layer_types.is_empty()

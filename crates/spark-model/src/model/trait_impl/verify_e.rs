@@ -57,6 +57,12 @@ impl TransformerModel {
         let n = ks.len();
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
             && ks.iter().all(|k| (2..=4).contains(k))
+            // GDN-only: the batched body calls `decode_verify_multi`, which
+            // only the qwen3_ssm GDN layer implements — a Mamba-2 layer
+            // (Nemotron-H) would hard-error MID-FORWARD after state has
+            // partially advanced. Mamba-2 models fall back to the per-seq
+            // verify loop (which routes through their `decode_batched`).
+            && self.config.mamba_num_heads == 0
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
             && self.comm.is_none()
             && self.lora.is_none()
@@ -254,6 +260,7 @@ impl TransformerModel {
             max_blocks_per_seq: max_blocks,
             num_seqs: r_total as u32,
             seq_slot,
+            moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
         // Pre-graph: stage the per-GDN-layer WY pointer tables into the
@@ -320,6 +327,10 @@ impl TransformerModel {
                 gpu: self.gpu.as_ref(),
                 config: &self.config,
                 dispatch: &self.dispatch,
+                // Route-aware v0: base (Skip) proceeds free; an active adapter is
+                // rejected before the fold on these multi-seq/speculative paths
+                // (reject_decode_lora), so Fold is inert here.
+                moe_lora_route: self.decode_moe_route(),
                 derived: &self.derived,
                 levers: &self.levers,
                 stats: &self.stats,

@@ -24,7 +24,7 @@ use crate::result::{
     BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
 };
 
-const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 16";
+const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 32";
 pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
 
 pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
@@ -34,9 +34,10 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     detail: "Fires N concurrent streaming requests per (input-length × concurrency) cell and \
              reports client TTFT, TPOT and end-to-end latency as p50/p90/p99, plus the batch's \
              aggregate output throughput. This is the curve the GB10 concurrency campaign is \
-             measured on — C=1 is where Atlas leads, C=16 is the bar.",
-    duration_hint: "~10–30 min",
-    updated: "2026-07-31",
+             measured on — C=1 is where Atlas leads, C=16 is the bar, and C=32 is where \
+             time-to-answer starts inverting in Atlas's favour.",
+    duration_hint: "~15–45 min",
+    updated: "2026-08-11",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.
@@ -256,7 +257,13 @@ impl Benchmark for ConcurrencySweep {
                 "Concurrency levels",
                 "How many requests are in flight at once, one sweep column each.",
                 ParamKind::IntList { min: 1, max: 256 },
-                ParamValue::IntList(vec![1, 2, 4, 8, 16]),
+                // 32 is the top rung on purpose: it is where the campaign
+                // measured time-to-answer INVERTING in Atlas's favour (C=32
+                // -4.47% vs vLLM, C=128 -10.84%), so a sweep that stops at 16
+                // reports the regime where Atlas trails and omits the one
+                // where it wins. C=64/128 are deliberately NOT default — they
+                // need bs=64 preflight headroom that not every recipe has.
+                ParamValue::IntList(vec![1, 2, 4, 8, 16, 32]),
             ),
             ParamSpec::new(
                 "isls",
@@ -427,8 +434,27 @@ mod tests {
     fn defaults_are_the_campaign_sweep() {
         let b = ConcurrencySweep::default();
         let v = ParamValues::defaults(&b.parameters());
-        assert_eq!(v.int_list("concurrencies").unwrap(), &[1, 2, 4, 8, 16]);
+        // The PARAM DEFAULTS are what actually runs — `configure()` rebuilds
+        // from these, so a descriptor blurb saying "1 → 32" proves nothing on
+        // its own. This assertion is the only thing that pins the sweep.
+        assert_eq!(v.int_list("concurrencies").unwrap(), &[1, 2, 4, 8, 16, 32]);
         assert_eq!(v.usize("osl").unwrap(), 128);
+    }
+
+    /// The top rung must be 32: below it the sweep only covers the regime
+    /// where Atlas trails vLLM, and omits the C=32 inversion that is the
+    /// point of running the curve at all.
+    #[test]
+    fn the_sweep_reaches_the_inversion_rung() {
+        let b = ConcurrencySweep::default();
+        let v = ParamValues::defaults(&b.parameters());
+        let cs = v.int_list("concurrencies").unwrap();
+        assert!(
+            cs.contains(&32),
+            "C=32 missing from the default sweep ({cs:?}) — that is the rung where \
+             time-to-answer inverts (-4.47% vs vLLM); a curve that stops at 16 \
+             reports only the losing regime"
+        );
     }
 
     #[test]

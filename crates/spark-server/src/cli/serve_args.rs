@@ -201,9 +201,28 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
 
-    /// Bitwise-exact MTP verify — OPT-IN (default: off). By default,
-    /// speculative (spec-on) output is NOT bitwise-equal to non-speculative
-    /// output at temp 0; this flag is what makes it equal (issue #435).
+    /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
+    ///
+    /// SCOPE, and it is narrower than this flag once claimed: it makes the
+    /// GDN/SSM verify chain exact. It does NOT make speculative output
+    /// bitwise-equal to non-speculative output end to end, and setting it
+    /// will not give you a reproducible spec-on serve.
+    ///
+    /// Why not (measured on GB10, issue #459): every FFN and attention
+    /// projection is computed by a kernel selected on ROW COUNT. A token
+    /// through K=4 verify takes `w4a16_gemv_batch4`; the same token through
+    /// sequential decode takes `w4a16_gemv`. Those are separate
+    /// implementations and they round differently — ~5e-5 of output lanes
+    /// differ by exactly 1 ULP in BF16, on every projection shape measured
+    /// (qkv/o, ffn gate/up, ffn down). Across 64 layers that is ample to flip
+    /// a thin top-2 argmax, and it is entirely outside the chain this flag
+    /// makes exact, so no amount of SSM exactness closes it.
+    ///
+    /// FUTURE WORK: route every verify token through the same single-row
+    /// kernels sequential decode uses — FFN gate/up/down, attention QKV and
+    /// out_proj — which is what the exact arm already does for the GDN chain,
+    /// extended to the rest of the forward. That, not this flag alone, is
+    /// what end-to-end spec-on == spec-off would require.
     ///
     /// The default verify pass runs the WY-chunkwise / fused BF16-conv arms:
     /// fast, but their BF16-output conv (h-state relL2 ~8.6e-4 per K=4
@@ -211,9 +230,11 @@ pub struct ServeArgs {
     /// reordering term diverge from the sequential-decode reference — an
     /// argmax flip only needs a per-logit error above a thin top-2 margin.
     /// With `--exact-verify` the verify pass instead runs, per token, exactly
-    /// the kernel chain sequential decode runs (measured h relL2 = 0.0), at a
-    /// measured decode-step cost of ~+35% at the n=8/K=4 verify rung, ~+22%
-    /// at n=16/K=2 and ~+36% at n=32/K=2 (GDN phase +116%/+63%/+69%).
+    /// the GDN/SSM kernel chain sequential decode runs (measured h relL2 =
+    /// 0.0), at a measured decode-step cost of ~+35% at the n=8/K=4 verify
+    /// rung, ~+22% at n=16/K=2 and ~+36% at n=32/K=2 (GDN phase
+    /// +116%/+63%/+69%). Those two divergence terms are what this closes —
+    /// the projection-kernel term described above is not among them.
     ///
     /// Opt-in follows every surveyed production engine — vLLM
     /// (`VLLM_BATCH_INVARIANT=1`), SGLang (`--enable-deterministic-inference`,

@@ -301,6 +301,7 @@ impl DeepseekV4MtpHead {
             max_blocks_per_seq: max_blocks,
             num_seqs: 1,
             seq_slot: spark_runtime::gpu::DevicePtr(0),
+            moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
         // The body's hash-MoE (if any) reads the decode token id from
@@ -337,6 +338,7 @@ impl DeepseekV4MtpHead {
             token_ids: ctx.token_ids,
             routed_lora_layers: None, // #30: MTP draft body; no prefill LoRA route.
             midchunk_capture: None,
+            moe_lora_route: crate::layer::MoeLoraRoute::Skip, // MTP draft body: no lora installed here; Skip = no fold (safe/inert)
         };
 
         // `decode_inner_hc` reads the persistent multi-stream state from
@@ -438,7 +440,8 @@ impl DeepseekV4MtpHead {
 /// logit vector, mask off (→ -inf) tokens the grammar rejects, argmax on CPU.
 /// Returns `0` (pad) when the matcher's allowed set is empty so the draft is
 /// rejected at verify rather than emitting a possibly-special token.
-fn argmax_grammar_masked(
+/// Shared with the Nemotron MTP proposer (`nemotron_mtp.rs`).
+pub(crate) fn argmax_grammar_masked(
     gpu: &dyn GpuBackend,
     logits: DevicePtr,
     vocab: usize,

@@ -196,10 +196,27 @@ pub fn build_model(
             None
         };
 
+    // Nemotron-H (3.5 Lightning) ships a DeepSeek-style MTP module under
+    // `mtp.layers.*` — an ungated-GQA + relu²-MoE pair the Qwen-shaped
+    // `MtpWeights` cannot represent. Load it via the Nemotron-specific path;
+    // the `NemotronMtpHead` proposer is built after the model is constructed
+    // (it needs the resolved NVFP4 LM head + the model's owned GPU backend)
+    // and installed via `set_dflash_proposer`, mirroring DeepSeek-V4 above.
+    let nemotron_mtp_module = super::nemotron_mtp_setup::maybe_load_nemotron_mtp(
+        &store,
+        &config,
+        gpu.as_ref(),
+        use_speculative,
+    );
+
     // Capability warning: user asked for `--speculative` but the model has no
     // MTP head bundled, so speculative decoding will silently no-op. Surface
     // this loudly so the user knows the flag was inert.
-    if use_speculative && mtp_weights.is_empty() {
+    if use_speculative
+        && mtp_weights.is_empty()
+        && v4_mtp_module.is_none()
+        && nemotron_mtp_module.is_none()
+    {
         tracing::warn!(
             "`--speculative` was requested but no MTP weights were loaded for this \
              model — speculative decoding will be disabled. Either drop `--speculative` \
@@ -256,6 +273,9 @@ pub fn build_model(
     // same BF16 head via dense_gemv (drafts are re-verified by the target, so the
     // draft head only affects acceptance). DenseWeight is Copy.
     let v4_mtp_lm_head = lm_head;
+    // Nemotron MTP drafts with the shared NVFP4 head (the Lightning
+    // checkpoint ships it prepacked; a dedicated draft head wins if built).
+    let nemotron_mtp_lm_head = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
 
     // ── Step 3b: Post-load MoE prefill transpose (MiniMax EP=2 TTFT fix) ──
     //
@@ -593,6 +613,19 @@ pub fn build_model(
             ),
         }
     }
+
+    // ── Step 6c: Nemotron MTP proposer (optional, post-construction) ──
+    //
+    // Same install pattern as DeepSeek-V4 above: built here because it needs
+    // the model's owned GPU backend and the resolved NVFP4 draft head.
+    super::nemotron_mtp_setup::maybe_install_nemotron_mtp(
+        &mut model,
+        nemotron_mtp_module,
+        v4_mtp_embed,
+        nemotron_mtp_lm_head,
+        mtp_vocab_size,
+        max_seq_len,
+    );
 
     // ── Step 7: DFlash drafter (optional, post-construction) ──
     //

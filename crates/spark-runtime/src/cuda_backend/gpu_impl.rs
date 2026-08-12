@@ -356,6 +356,11 @@ impl GpuBackend for AtlasCudaBackend {
     fn end_capture(&self, stream: u64) -> Result<GraphHandle> {
         self.end_capture_cu(stream)
     }
+
+    fn abort_capture_if_active(&self, stream: u64) {
+        self.abort_capture_if_active_cu(stream)
+    }
+
     fn launch_graph(&self, graph: GraphHandle, stream: u64) -> Result<()> {
         self.launch_graph_cu(graph, stream)
     }

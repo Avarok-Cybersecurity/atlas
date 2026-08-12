@@ -39,9 +39,22 @@ pub enum WeightDtype {
     FP8E8M0,
     UInt8,
     Int64,
+    /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
+    /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
+    /// dequantized in-kernel by the native `q2_0_gemv` decode path. Only
+    /// produced by the GGUF loader under `ATLAS_GGUF_NATIVE_Q2=1`. Its byte
+    /// footprint is NOT a per-element size (2-bit codes + an inline scale per
+    /// group), so [`WeightDtype::byte_size`] returns 0 for this variant and the
+    /// real size is computed in [`WeightTensor::byte_size`] (shape + group).
+    PackedQ2_0 {
+        group: u16,
+    },
 }
 
 impl WeightDtype {
+    /// Bytes per element for the fixed-width dtypes. Returns 0 for the
+    /// block-based [`WeightDtype::PackedQ2_0`] — [`WeightTensor::byte_size`]
+    /// handles that variant directly, and no caller multiplies its numel by this.
     pub fn byte_size(self) -> usize {
         match self {
             Self::BF16 => 2,
@@ -50,6 +63,7 @@ impl WeightDtype {
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
             Self::Int64 => 8,
+            Self::PackedQ2_0 { .. } => 0,
         }
     }
 
@@ -121,7 +135,30 @@ impl WeightTensor {
     }
 
     pub fn byte_size(&self) -> usize {
-        self.num_elements() * self.dtype.byte_size()
+        match self.dtype {
+            // Packed Q2_0: `n_blocks = numel / group` blocks of
+            // `2 + group/4` bytes (34 @ g128, 18 @ g64) — the on-disk footprint.
+            WeightDtype::PackedQ2_0 { group } => {
+                let g = group as usize;
+                debug_assert!(g == 128 || g == 64, "unexpected Q2_0 group {g}");
+                let n_blocks = self.num_elements() / g.max(1);
+                n_blocks * (2 + g / 4)
+            }
+            d => self.num_elements() * d.byte_size(),
+        }
+    }
+
+    /// The Q2_0 group size if this tensor is keep-packed ternary, else `None`.
+    pub fn q2_group(&self) -> Option<u16> {
+        match self.dtype {
+            WeightDtype::PackedQ2_0 { group } => Some(group),
+            _ => None,
+        }
+    }
+
+    /// True if this tensor holds keep-packed ternary Q2_0 blocks (id 42).
+    pub fn is_packed_q2(&self) -> bool {
+        matches!(self.dtype, WeightDtype::PackedQ2_0 { .. })
     }
 }
 
@@ -284,12 +321,18 @@ pub fn parse_expert_index(name: &str) -> Option<usize> {
 }
 
 pub mod adapter;
+mod gguf;
 mod loader;
 pub mod mlx_int8;
+pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
 pub(crate) use loader::estimate_load_bytes;
+// Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path
+// AND by the GGUF loader, which builds everywhere. Gating this on `unix` broke
+// the Windows CUDA build the moment `gguf.rs` started using it.
+pub(crate) use loader::check_oom_guard;
 // Consumed by the unix-only fast-weights (O_DIRECT) loader path.
 #[cfg(unix)]
-pub(crate) use loader::{check_oom_guard, estimate_has_fp8};
+pub(crate) use loader::estimate_has_fp8;
 
 #[cfg(test)]
 mod from_str_tests {
@@ -342,40 +385,10 @@ mod from_str_tests {
     }
 }
 
-/// Resolve the weight-key prefix a nested (multimodal) checkpoint uses.
-///
-/// Lives here rather than in the server because it depends only on the store
-/// and the config, and BOTH the serve path and the integration harness need it:
-/// a nested checkpoint stores `model.language_model.layers.0.…`, and a caller
-/// that skips this step fails with "Weight 'model.layers.0.input_layernorm.
-/// weight' not found in store" after a full weight load. Keeping one copy is
-/// what stops the test from accepting a different set of checkpoints than
-/// production does.
-pub fn auto_detect_weight_prefix(
-    store: &WeightStore,
-    config: &mut atlas_core::config::ModelConfig,
-) {
-    if config.weight_prefix.is_empty() && config.nested_config {
-        config.weight_prefix = if store.contains("language_model.model.embed_tokens.weight") {
-            "language_model.model".to_string()
-        } else if store.contains("model.language_model.embed_tokens.weight") {
-            "model.language_model".to_string()
-        } else {
-            let scanned = store
-                .names()
-                .find(|k| k.contains(".layers.0."))
-                .and_then(|k| k.split(".layers.0.").next())
-                .map(|s| s.to_string());
-            if let Some(ref prefix) = scanned {
-                tracing::info!("Auto-detected weight prefix: '{prefix}'");
-            }
-            scanned.unwrap_or_else(|| "model".to_string())
-        };
-    }
-    if !config.weight_prefix.is_empty() {
-        tracing::info!("Weight prefix: {}", config.weight_prefix);
-    }
-}
+#[cfg(test)]
+mod packed_q2_tests;
+mod prefix_detect;
+pub use prefix_detect::auto_detect_weight_prefix;
 
 /// Release every weight tensor.
 ///
