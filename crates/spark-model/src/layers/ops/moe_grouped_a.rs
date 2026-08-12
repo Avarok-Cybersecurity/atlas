@@ -142,7 +142,15 @@ pub fn moe_topk_sqrtsoftplus_batched(
 
 /// Pointer-table grouped GEMM: one launch covers all experts.
 ///
-/// Grid: (ceil(n_out/64), max_m_tiles, num_experts)  Block: (128, 1, 1)
+/// Grid: (ceil(n_out/128), max_m_tiles, num_experts)  Block: (128, 1, 1)
+///
+/// This comment said `ceil(n_out/64)` until 2026-08-12 while the body below
+/// already divided by 128, and the kernel's `N_TILE` was 64 — so every CTA
+/// owned 64 columns and half the output columns were never written on the two
+/// Nemotron targets that resolve `common/moe_w4a16_grouped_gemm.cu`. The
+/// divisor and the tile width live in different languages, so nothing could
+/// see them diverge; `tests/moe_grouped_ntile_geometry.rs` now pins them
+/// against each other. Keep this line and `N_TILE_PT` in step.
 #[allow(clippy::too_many_arguments)]
 pub fn moe_w4a16_grouped_gemm_ptrtable(
     gpu: &dyn GpuBackend,

@@ -25,6 +25,39 @@
 
 #define M_TILE 64
 #define N_TILE 64
+// Wider N tile used ONLY by the two pointer-table entries below.
+//
+// CORRECTNESS, not tuning: every caller of `moe_w4a16_grouped_gemm_ptrtable`
+// and `..._ptrtable_t` launches them through
+// `ops::moe_w4a16_grouped_gemm_ptrtable_n128` (and the mis-named
+// `ops::moe_w4a16_grouped_gemm_ptrtable`, which also divides by 128), i.e.
+// `grid.x = ceil(N_out / 128)`. At `N_TILE 64` each CTA owned only 64 columns,
+// so the top half of the N range was never written and stayed at the caller's
+// memset zero. On Nemotron-H Lightning-30B that silently halved the routed
+// expert contribution in prefill: grouped UP `N_out=1856` wrote 15*64 = 960 of
+// 1856 columns, grouped DOWN `N_out=2688` wrote 21*64 = 1344 of 2688 (exactly
+// 50%). Every peer shadow of this file already uses a 128-wide tile for these
+// two entries (qwen3.6-35b-a3b `N_TILE_LG`, Puzzle-75B `N_TILE_PT`); only the
+// two non-shadowed Nemotron MoE targets (nemotron-3-nano-30b-a3b,
+// nemotron-super-120b-a12b) resolve to this common file, and both want 128.
+//
+// Widening the tile does NOT change the accumulation order of any single
+// output element (same `k_base` loop, same per-element `mma.m16n8k16`
+// sequence) — it only changes which CTA owns which columns — so the retuned
+// kernel at `grid.x = ceil(N/128)` is byte-identical to the 64-wide kernel at
+// the (correct) `grid.x = ceil(N/64)`. Proven by
+// `examples/moe_grouped_ntile_microtest.rs`.
+//
+// Cost: `acc[16][4]` = 64 accumulator registers and smem 2304 + 4160 = 6464 B.
+// The legacy `moe_w4a16_grouped_gemm` above stays at `N_TILE 64`: its only
+// caller (`atlas-spark-bench/benches/moe.rs`) is a zeroed-data perf bench that
+// launches it with the matching 64-wide grid.
+//
+// KNOWN SIBLING, deliberately NOT fixed here: the Puzzle-75B shadow's
+// `_ptrtable_t` carries the identical 64/128 mismatch, but it is unreachable
+// (Puzzle is latent MoE, so `up_ptrs_t`/`down_ptrs_t` are `None`). Fixing it
+// is a separate change with its own gate.
+#define N_TILE_PT 128
 #define K_STEP 16
 #define PAD 2
 #define GROUP_SIZE 16
@@ -83,9 +116,11 @@ extern "C" __global__ void moe_w4a16_grouped_gemm(
     __shared__ __nv_bfloat16 smem_B[K_STEP][N_TILE + PAD];
 
     // Accumulators
-    float acc[8][4];
+    // 8 columns per mma.m16n8k16 n-fragment → N_SUB fragments cover the tile.
+    constexpr int N_SUB = N_TILE / 8;
+    float acc[N_SUB][4];
     #pragma unroll
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < N_SUB; i++) {
         acc[i][0] = 0.0f; acc[i][1] = 0.0f;
         acc[i][2] = 0.0f; acc[i][3] = 0.0f;
     }
@@ -170,7 +205,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm(
                           (unsigned int)sA[frag_r1 * a_stride + frag_c1];
 
         #pragma unroll
-        for (int n_tile = 0; n_tile < 8; n_tile++) {
+        for (int n_tile = 0; n_tile < N_SUB; n_tile++) {
             unsigned int n_col = n_tile * 8 + group_id;
             unsigned int k0 = tid * 2;
             unsigned int k1 = tid * 2 + 8;
@@ -200,7 +235,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm(
 
     // === Store results ===
     #pragma unroll
-    for (int n_tile = 0; n_tile < 8; n_tile++) {
+    for (int n_tile = 0; n_tile < N_SUB; n_tile++) {
         unsigned int base_n = cta_n + n_tile * 8;
         unsigned int col0 = base_n + (tid * 2);
         unsigned int col1 = col0 + 1;
@@ -225,7 +260,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm(
 // 2. Gathers from original input via sorted_token_ids (no permute buffer)
 // 3. Per-expert scale2 from device array (not uniform scalar)
 //
-// Grid: (ceil(N_out/N_TILE), max_m_tiles, num_experts)
+// Grid: (ceil(N_out/N_TILE_PT), max_m_tiles, num_experts)   [N_TILE_PT = 128]
 // Block: (128, 1, 1)
 // ═══════════════════════════════════════════════════════════════════
 extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
@@ -252,7 +287,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
     if (cta_m_local >= M_expert) return;
 
     const unsigned int cta_m = m_start + cta_m_local;
-    const unsigned int cta_n = blockIdx.x * N_TILE;
+    const unsigned int cta_n = blockIdx.x * N_TILE_PT;
 
     // Per-expert weight pointers from device tables
     const unsigned char* B_expert = (const unsigned char*)B_packed_ptrs[expert_id];
@@ -269,17 +304,19 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
     const unsigned int tid = lane_id & 3;
 
     __shared__ __nv_bfloat16 smem_A[M_TILE][K_STEP + PAD];
-    __shared__ __nv_bfloat16 smem_B[K_STEP][N_TILE + PAD];
+    __shared__ __nv_bfloat16 smem_B[K_STEP][N_TILE_PT + PAD];
 
-    float acc[8][4];
+    // 8 columns per mma.m16n8k16 n-fragment → N_SUB fragments cover the tile.
+    constexpr int N_SUB = N_TILE_PT / 8;
+    float acc[N_SUB][4];
     #pragma unroll
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < N_SUB; i++) {
         acc[i][0] = 0.0f; acc[i][1] = 0.0f;
         acc[i][2] = 0.0f; acc[i][3] = 0.0f;
     }
 
     const unsigned int a_stride = K_STEP + PAD;
-    const unsigned int b_stride = N_TILE + PAD;
+    const unsigned int b_stride = N_TILE_PT + PAD;
     const unsigned int M_eff = (unsigned int)M_expert;
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
@@ -308,14 +345,14 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
 
         // === Load B tile: dequant FP4 → BF16 (N-major layout) ===
         {
-            const unsigned int elems_per_thread = (K_STEP * N_TILE) / 128;
+            const unsigned int elems_per_thread = (K_STEP * N_TILE_PT) / 128;
             unsigned int scale_group = k_base / GROUP_SIZE;
 
             #pragma unroll
             for (unsigned int i = 0; i < elems_per_thread; i++) {
                 unsigned int idx = threadIdx.x * elems_per_thread + i;
-                unsigned int k = idx / N_TILE;
-                unsigned int n = idx % N_TILE;
+                unsigned int k = idx / N_TILE_PT;
+                unsigned int n = idx % N_TILE_PT;
                 unsigned int gk = k_base + k;
                 unsigned int gn = cta_n + n;
 
@@ -363,7 +400,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
                           (unsigned int)sA[frag_r1 * a_stride + frag_c1];
 
         #pragma unroll
-        for (int n_tile = 0; n_tile < 8; n_tile++) {
+        for (int n_tile = 0; n_tile < N_SUB; n_tile++) {
             unsigned int n_col = n_tile * 8 + group_id;
             unsigned int k0 = tid * 2;
             unsigned int k1 = tid * 2 + 8;
@@ -393,7 +430,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
 
     // === Store results ===
     #pragma unroll
-    for (int n_tile = 0; n_tile < 8; n_tile++) {
+    for (int n_tile = 0; n_tile < N_SUB; n_tile++) {
         unsigned int base_n = cta_n + n_tile * 8;
         unsigned int col0 = base_n + (tid * 2);
         unsigned int col1 = col0 + 1;
@@ -415,6 +452,9 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable(
 // Same as moe_w4a16_grouped_gemm_ptrtable but B_packed is [K/2, N]
 // and B_scale is [K/GROUP_SIZE, N]. Adjacent threads read consecutive
 // N addresses → coalesced 128-byte cache lines on LPDDR5X.
+//
+// Grid: (ceil(N_out/N_TILE_PT), max_m_tiles, num_experts)   [N_TILE_PT = 128]
+// Block: (128, 1, 1)
 // ═══════════════════════════════════════════════════════════════════
 extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const __nv_bfloat16* __restrict__ A,
@@ -440,7 +480,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     if (cta_m_local >= M_expert) return;
 
     const unsigned int cta_m = m_start + cta_m_local;
-    const unsigned int cta_n = blockIdx.x * N_TILE;
+    const unsigned int cta_n = blockIdx.x * N_TILE_PT;
 
     const unsigned char* B_expert = (const unsigned char*)B_packed_ptrs[expert_id];
     const unsigned char* S_expert = (const unsigned char*)B_scale_ptrs[expert_id];
@@ -455,17 +495,19 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     const unsigned int tid = lane_id & 3;
 
     __shared__ __nv_bfloat16 smem_A[M_TILE][K_STEP + PAD];
-    __shared__ __nv_bfloat16 smem_B[K_STEP][N_TILE + PAD];
+    __shared__ __nv_bfloat16 smem_B[K_STEP][N_TILE_PT + PAD];
 
-    float acc[8][4];
+    // 8 columns per mma.m16n8k16 n-fragment → N_SUB fragments cover the tile.
+    constexpr int N_SUB = N_TILE_PT / 8;
+    float acc[N_SUB][4];
     #pragma unroll
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < N_SUB; i++) {
         acc[i][0] = 0.0f; acc[i][1] = 0.0f;
         acc[i][2] = 0.0f; acc[i][3] = 0.0f;
     }
 
     const unsigned int a_stride = K_STEP + PAD;
-    const unsigned int b_stride = N_TILE + PAD;
+    const unsigned int b_stride = N_TILE_PT + PAD;
     const unsigned int M_eff = (unsigned int)M_expert;
 
     for (unsigned int k_base = 0; k_base < K; k_base += K_STEP) {
@@ -491,14 +533,14 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
 
         // Load B tile: transposed [K/2, N] layout — coalesced on N
         {
-            const unsigned int elems_per_thread = (K_STEP * N_TILE) / 128;
+            const unsigned int elems_per_thread = (K_STEP * N_TILE_PT) / 128;
             unsigned int scale_group = k_base / GROUP_SIZE;
 
             #pragma unroll
             for (unsigned int i = 0; i < elems_per_thread; i++) {
                 unsigned int idx = threadIdx.x * elems_per_thread + i;
-                unsigned int k = idx / N_TILE;
-                unsigned int n = idx % N_TILE;
+                unsigned int k = idx / N_TILE_PT;
+                unsigned int n = idx % N_TILE_PT;
                 unsigned int gk = k_base + k;
                 unsigned int gn = cta_n + n;
 
@@ -543,7 +585,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
                           (unsigned int)sA[frag_r1 * a_stride + frag_c1];
 
         #pragma unroll
-        for (int n_tile = 0; n_tile < 8; n_tile++) {
+        for (int n_tile = 0; n_tile < N_SUB; n_tile++) {
             unsigned int n_col = n_tile * 8 + group_id;
             unsigned int k0 = tid * 2;
             unsigned int k1 = tid * 2 + 8;
@@ -572,7 +614,7 @@ extern "C" __global__ void moe_w4a16_grouped_gemm_ptrtable_t(
     }
 
     #pragma unroll
-    for (int n_tile = 0; n_tile < 8; n_tile++) {
+    for (int n_tile = 0; n_tile < N_SUB; n_tile++) {
         unsigned int base_n = cta_n + n_tile * 8;
         unsigned int col0 = base_n + (tid * 2);
         unsigned int col1 = col0 + 1;
