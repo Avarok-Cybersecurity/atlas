@@ -96,6 +96,7 @@ fn run_multi_seq(
         token_ids: None,
         routed_lora_layers: None,
         midchunk_capture: None,
+        moe_lora_route: crate::layer::MoeLoraRoute::Fold,
     };
     let kv_config = spark_runtime::kv_cache::KvCacheConfig {
         block_size: 16,
