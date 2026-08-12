@@ -416,3 +416,21 @@ fn a_launch_that_succeeds_reports_nothing() {
     drop(tx);
     assert!(s.poll_launch().is_none(), "silence means it worked");
 }
+
+/// The quit guard reads this: a launch is "in flight" from spawn until its
+/// result channel settles — including the silent success, where the loader
+/// thread just drops the sender.
+#[test]
+fn launch_in_flight_tracks_the_result_channel() {
+    let mut s = LibState::default();
+    assert!(!s.launch_in_flight(), "nothing launched yet");
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    s.launch_result = Some(rx);
+    assert!(s.launch_in_flight(), "loader thread is out");
+
+    drop(tx); // thread finished successfully without a message
+    assert!(s.launch_in_flight(), "still in flight until polled");
+    assert!(s.poll_launch().is_none(), "silence means it worked");
+    assert!(!s.launch_in_flight(), "and the guard lets go");
+}

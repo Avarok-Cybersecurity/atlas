@@ -173,6 +173,7 @@ fn ctrl_c_quits_even_while_a_text_field_owns_the_keyboard() {
 #[test]
 fn q_quits_only_when_no_text_field_owns_the_keyboard() {
     let mut a = app();
+    a.progress.ready = true; // the boot load finished; nothing is in flight
     press(&mut a, 'q');
     assert!(a.should_quit);
 
@@ -404,6 +405,7 @@ fn a_keystroke_ends_a_mouse_selection() {
 #[test]
 fn q_still_quits_immediately_when_there_is_nothing_to_lose() {
     let mut a = app();
+    a.progress.ready = true; // the boot load finished; nothing is in flight
     assert!(a.work_in_flight().is_none());
     press(&mut a, 'q');
     assert!(a.should_quit);

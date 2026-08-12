@@ -352,6 +352,9 @@ fn the_quit_prompt_covers_the_help_overlay_and_fits_any_frame() {
 #[test]
 fn the_quit_prompt_declines_when_the_dashboard_is_idle() {
     let mut a = app();
+    // Idle means SERVING, not mid-boot: a fresh App is still loading the
+    // model its argv names, and the guard (correctly) has something to say.
+    a.progress.ready = true;
     a.confirm_quit = true;
     assert!(a.work_in_flight().is_none());
     assert!(!has(&screen(&a, 160, 48), "STOP THE SERVER?"));

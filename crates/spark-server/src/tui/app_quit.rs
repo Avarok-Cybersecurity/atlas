@@ -40,6 +40,19 @@ impl App {
         if self.chat.streaming {
             return Some("a chat reply is still streaming");
         }
+        // A model load: minutes of shard reading (a swap or the boot load)
+        // that `q` used to tear down with no confirmation. The boot arm
+        // checks the HOST is empty rather than `!progress.ready` alone — a
+        // swap that failed while an old model kept serving leaves `ready`
+        // false with nothing actually loading, and a guard that cries wolf
+        // there trains the reflex that dismisses the one that matters.
+        if self.lib.launch_in_flight()
+            || (!self.progress.ready
+                && !self.awaiting_model
+                && self.host.as_ref().and_then(|h| h.live_model()).is_none())
+        {
+            return Some("a model is still loading");
+        }
         None
     }
 
@@ -70,3 +83,7 @@ impl App {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "app_quit_tests.rs"]
+mod tests;

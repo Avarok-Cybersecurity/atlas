@@ -406,6 +406,13 @@ impl LibState {
         Ok(())
     }
 
+    /// A launch's loader thread is still out — its result channel has not
+    /// settled. What the quit guard asks about: minutes of shard reading the
+    /// user cannot resume.
+    pub fn launch_in_flight(&self) -> bool {
+        self.launch_result.is_some()
+    }
+
     /// Are the selected model's weights actually on disk and complete?
     ///
     /// `has_weights` means "the resolver would load this" — a real shard AND a

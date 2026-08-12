@@ -278,12 +278,26 @@ impl DownloadState {
                 Ok((id, f)) => {
                     self.pending_check = None;
                     self.checking = None;
+                    // The answer says something in EVERY case, not only the
+                    // stale one. The badge renders only for a confirmed
+                    // mismatch, so for a current model — or an unreachable
+                    // Hub — the skeleton simply vanished and nothing else
+                    // changed: indistinguishable from the feature being
+                    // broken. Same shape as the completed download that
+                    // looked like a failed one; same fix (`done_message`).
+                    self.last_message = Some(checked_message(&id, &f));
                     self.freshness.insert(id, f);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.pending_check = None;
                     self.checking = None;
+                    // A worker that died without answering must still settle
+                    // out loud — the download pump learned this first.
+                    self.last_message = Some((
+                        "the freshness check ended unexpectedly — u retries".into(),
+                        true,
+                    ));
                 }
             }
         }
@@ -320,6 +334,34 @@ impl DownloadState {
 /// A failure, worded so the reader can act on it.
 fn describe(repo: &str, e: &DownloadError) -> String {
     format!("{repo}: {}", e.hint())
+}
+
+/// What a finished freshness check says, as ONE function — the same rule as
+/// [`done_message`], and for the same reason: a second copy in the tests
+/// would assert the copy rather than the code. Words carry the outcome
+/// (toasts are already glyph-marked), so NO_COLOR changes nothing.
+fn checked_message(id: &str, f: &Freshness) -> (String, bool) {
+    match f {
+        Freshness::Current => (format!("{id} is up to date with the Hub"), false),
+        Freshness::Stale { local, remote } => (
+            format!(
+                "{id} has an update — local {} vs Hub {}; d downloads it",
+                crate::model_download::stale::short(local),
+                crate::model_download::stale::short(remote)
+            ),
+            false,
+        ),
+        Freshness::Missing => (
+            format!("{id} has nothing on disk to compare — d downloads it"),
+            false,
+        ),
+        // Error tone: the question was not answered. Never a "stale" claim
+        // the network could not support — the badge rule, said out loud.
+        Freshness::Unknown => (
+            format!("could not reach the Hub — {id} freshness unknown"),
+            true,
+        ),
+    }
 }
 
 #[cfg(test)]

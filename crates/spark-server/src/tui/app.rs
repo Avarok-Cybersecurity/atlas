@@ -232,8 +232,16 @@ impl App {
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
+        let text = text.into();
+        // An error toast expires in 12 s and was written nowhere else, so one
+        // that fired while the operator watched another window was simply
+        // gone — launch refusals and download failures reached the user only
+        // as toasts. WARN puts it in the log ring and the tee for free.
+        if error {
+            tracing::warn!("{text}");
+        }
         self.toasts.push(Toast {
-            text: text.into(),
+            text,
             error,
             at: Instant::now(),
         });
