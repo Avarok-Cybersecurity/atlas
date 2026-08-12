@@ -74,9 +74,13 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              accumulated engine-state corruption — the class of bug that poisoned the batch4 \
              stack's Marconi SSM-snapshot restore (2026-08-11: agentic runs 8/9 restored a \
              corrupted recurrent state and degenerated to early-EOS). Zero tolerance: one \
-             diverged replay fails the gate. ~8-10 min including serve boot.",
+             diverged replay fails the gate. Serves with --serve-override ssm_cache_slots=256: \
+             the bf16head recipe leaves the snapshot pool at its default 16, which evicts under \
+             this load and makes replays restore from DRIFTING anchors (different replay \
+             geometry, different output) — eviction churn, not the restore corruption this gate \
+             polices. Pinning the pool tests restore CONTENT without masking it. ~8-10 min.",
     duration_hint: "~8–10 min",
-    updated: "2026-08-11",
+    updated: "2026-08-12",
     needs_confirmation: false,
     // The invariant is a property of the ENGINE (deterministic replay must
     // hold for any served model), but the thresholds and recipe binding are

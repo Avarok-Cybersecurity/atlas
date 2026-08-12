@@ -195,7 +195,20 @@ so the gate carries margin past that.
 
 `sum_wall_s` is the only genuinely measured-style number — a BLOWUP DETECTOR, \
 not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
-the first recorded run; ratchet after measurement, never to the best.\
+the first recorded run; ratchet after measurement, never to the best.
+
+Serves with `--serve-override ssm_cache_slots=256` (the flagship recipe's \
+pinned value; recorded in the gate record's serve_overrides). The bf16head \
+recipe leaves the Marconi snapshot pool at its default 16, which evicts \
+under this multi-turn load — replays then restore from DRIFTING anchors \
+(different replay geometry, legitimately different output), which is \
+pool-churn noise, not the poisoned-restore-content class this gate polices. \
+Pinning the pool tests restore CONTENT without the noise. Same footing as \
+the agentic gate's norm.rs: normalize known bookkeeping variance so the \
+measurement is repeatable, never hide signal. The first unpinned run on \
+main (2026-08-12, sha 7dd4cc33bc) proved the churn: replays 2-12 diverged \
+with restore anchors drifting 992→1040→1088→1152 and 33 'no SSM snapshot — \
+recomputing' events in the serve log.\
 """
 
 [benchmarks.metrics.rounds]
