@@ -164,18 +164,64 @@ pub(crate) async fn build_and_serve(
              --auth-tokens-file for non-trusted networks."
         );
     }
-    // BIND FIRST, then say so. Announcing the address and marking the phase
-    // before the bind meant a port conflict — the most common startup failure,
-    // and likelier now that a previous server may still hold the socket —
-    // printed "Listening on 127.0.0.1:8888" immediately above "Address already
-    // in use", with the dashboard's checklist showing that phase complete.
+    let listener = bind_and_announce(&host, bind, port).await?;
+    serve_with_header_timeout(listener, app).await
+}
+
+/// Bind the listener, then — and only then — say the server is up.
+///
+/// BIND FIRST. Announcing the address and marking the phase before the bind
+/// meant a port conflict — the most common startup failure, and likelier now
+/// that a previous server may still hold the socket — printed "Listening on
+/// 127.0.0.1:8888" immediately above "Address already in use", with the
+/// dashboard's checklist showing that phase complete. A step of its own so the
+/// ordering is testable without entering the accept loop, which disarms the
+/// process-wide startup escape and cannot be un-disarmed by a test.
+async fn bind_and_announce(
+    host: &crate::main_modules::model_host::ModelHost,
+    bind: &str,
+    port: u16,
+) -> Result<tokio::net::TcpListener> {
+    let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
-    tracing::info!("Listening on {addr}");
+    // One readiness line, not a "Listening on" beside a "ready" — two
+    // near-duplicates would make a reader wonder which one is the promise.
+    // This is the last line of a successful boot, so it carries everything a
+    // user needs to act on it: a pasteable address and the model it serves.
+    tracing::info!("{}", ready_line(bind, port, host.live_model().as_deref()));
     spark_runtime::progress::phase(11, "listening");
     spark_runtime::progress::ready(port);
-    serve_with_header_timeout(listener, app).await
+    Ok(listener)
+}
+
+/// The line that closes a successful startup or swap. Emitted only AFTER the
+/// listener is bound (boot) or the new model is published onto a listener that
+/// is already serving (swap) — printed any earlier it is a promise a curl can
+/// catch being false.
+///
+/// The address is rendered as something a user can paste into a client:
+/// `0.0.0.0`/`::` accept on every interface but are not destinations, so they
+/// are shown as `127.0.0.1` — the one address guaranteed to reach this process
+/// from this machine (the wildcard-bind exposure warning above already covers
+/// the LAN story). An IPv6 literal is bracketed, because `::1:8888` parses as
+/// an address, not an address and a port.
+pub(crate) fn ready_line(bind: &str, port: u16, model: Option<&str>) -> String {
+    let host = match bind {
+        "0.0.0.0" | "::" => "127.0.0.1".to_string(),
+        v6 if v6.contains(':') => format!("[{v6}]"),
+        other => other.to_string(),
+    };
+    match model {
+        Some(model) => format!("Server live and ready at {host}:{port} running {model}"),
+        // The modelless boot: live is true, "ready to serve a model" is not,
+        // and the line must not claim it.
+        None => format!(
+            "Server live at {host}:{port} — no model loaded yet, requests get 503 until one \
+             is started from the Library"
+        ),
+    }
 }
 
 /// Serve `app` with a hyper connection-layer **header-read timeout** so a
@@ -269,3 +315,7 @@ async fn serve_with_header_timeout(
         });
     }
 }
+
+#[cfg(test)]
+#[path = "serve_router_tests.rs"]
+mod tests;
