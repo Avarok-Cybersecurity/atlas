@@ -237,7 +237,7 @@ fn every_exclusion_is_actually_on_the_boundary() {
 #[test]
 fn benchmark_drivers_do_not_import_each_other() {
     let root = repo_root();
-    let drivers = ["ttft", "bfcl", "agentic", "contamination"];
+    let drivers = ["ttft", "bfcl", "agentic", "contamination", "ssm_poison"];
     for driver in drivers {
         let dir = root.join("crates/atlas-plugin/src/benchmarks").join(driver);
         let Ok(entries) = std::fs::read_dir(&dir) else {

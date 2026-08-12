@@ -168,3 +168,48 @@ concurrency.
 NO [benchmarks.metrics] TABLE ON PURPOSE — see the dense entry. Unmeasured \
 means unmeasured; thresholds follow the first run on main.\
 """
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "ssm-state-poisoning-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "measured"
+note = """\
+SSM State Poisoning Gate — mandatory since 2026-08-11. Replays a fixed 4-turn \
+script 12 times against one prefix-cached server at temperature 0 and demands \
+byte-identical transcripts every round. Atlas is bitwise-deterministic at batch \
+1, so ANY divergence is accumulated engine-state corruption — the exact class \
+the batch4 stack shipped (Marconi SSM-snapshot restore poisoned runs 8/9 of the \
+agentic gate into early-EOS). It is REQUIRED, not a promotion candidate, \
+because the bug it exists to catch already landed once.
+
+The zero-tolerance thresholds are DEFINITIONS of the invariant, not measured \
+performance: `diverged` and `unmeasured` must be 0 and `invariant` must equal \
+`rounds` — same footing as the agentic gate's exact `iterations` pin. They are \
+belt-and-suspenders with the run verdict (which itself fails on any divergence), \
+enforcing the invariant at the record level too. `rounds` is pinned at exactly \
+12, the N the invariant was written for: the incident poisoned rounds 8-9 of 10, \
+so the gate carries margin past that.
+
+`sum_wall_s` is the only genuinely measured-style number — a BLOWUP DETECTOR, \
+not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
+the first recorded run; ratchet after measurement, never to the best.\
+"""
+
+[benchmarks.metrics.rounds]
+min = 12.0
+max = 12.0
+
+[benchmarks.metrics.invariant]
+min = 12.0
+
+[benchmarks.metrics.diverged]
+max = 0.0
+
+[benchmarks.metrics.unmeasured]
+max = 0.0
+
+[benchmarks.metrics.sum_wall_s]
+max = 1200.0

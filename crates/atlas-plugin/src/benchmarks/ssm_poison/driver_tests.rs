@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The driver's non-network surface: descriptor wiring and parameter
+//! validation. The decision logic itself is covered by `score_tests`; here we
+//! pin the registration contract and the configure-time guards.
+
+use super::{DEFAULT_ROUNDS, DESCRIPTOR, SsmPoison};
+use crate::benchmark::Benchmark;
+use crate::params::{ParamValue, ParamValues};
+use crate::result::VerdictKind;
+
+fn configured() -> SsmPoison {
+    let mut b = SsmPoison::default();
+    let v = ParamValues::defaults(&b.parameters());
+    b.configure(&v).unwrap();
+    b
+}
+
+#[test]
+fn descriptor_id_is_stable_and_filename_safe() {
+    assert_eq!(DESCRIPTOR.id, "ssm-state-poisoning-gate");
+    assert!(
+        DESCRIPTOR
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    );
+    assert!(!DESCRIPTOR.detail.is_empty());
+    assert!(!DESCRIPTOR.summary.is_empty());
+}
+
+#[test]
+fn defaults_validate_and_pin_twelve_rounds() {
+    let b = configured();
+    assert_eq!(b.rounds, 12);
+    assert_eq!(DEFAULT_ROUNDS, 12);
+    assert!(b.max_tokens > 0);
+}
+
+#[test]
+fn rounds_below_three_are_rejected_at_configure() {
+    let mut b = SsmPoison::default();
+    let specs = b.parameters();
+    let mut v = ParamValues::defaults(&specs);
+    v.0.insert("rounds".to_string(), ParamValue::Int(2));
+    // rounds min is 3, so validate_against rejects before configure body runs.
+    assert!(b.configure(&v).is_err());
+}
+
+#[test]
+fn scored_fails_on_divergence_via_the_driver_seam() {
+    // Exercise scored() through the driver's own replays field: build a
+    // poisoned shape and confirm the verdict path surfaces it.
+    let mut b = configured();
+    b.replays = vec![
+        (1, super::compare::RoundVerdict::Invariant),
+        (
+            2,
+            super::compare::RoundVerdict::Diverged { turns: vec![3, 4] },
+        ),
+    ];
+    b.rounds = 2; // match the number collected so only the divergence fails
+    let (s, v) = b.scored();
+    assert_eq!(v.kind, VerdictKind::Fail);
+    assert!(v.reason.contains("round 2"));
+    assert_eq!(s.diverged, 1);
+}
