@@ -144,6 +144,7 @@ fn typing_while_scrolled_back_does_not_yank_the_chat_transcript() {
     press(&mut a, '6');
     press(&mut a, '6');
     press(&mut a, 'i');
+    a.chat_scroll_max.set(10); // the keys clamp now, like the wheel
     tap(&mut a, KeyCode::PageUp);
     assert_eq!(a.chat.scroll, Some(10));
     for c in "still reading".chars() {
@@ -156,10 +157,10 @@ fn typing_while_scrolled_back_does_not_yank_the_chat_transcript() {
 }
 
 #[test]
-fn the_chat_wheel_respects_the_ceiling_the_keys_do_not_see() {
-    // The keys move the transcript blind — the ceiling is a render result — so
-    // the wheel is where it is enforced, including the collapse back to follow
-    // when there is nothing above the fold at all.
+fn the_chat_wheel_respects_the_ceiling_and_collapses_to_follow() {
+    // Including the collapse back to follow when there is nothing above the
+    // fold at all. (The keyboard paths share this clamp now — see the test
+    // below — so wheel and keys can no longer disagree about position.)
     let mut a = app();
     a.section = Section::Terminal;
     a.term_sub = TermSub::Chat;
@@ -174,19 +175,20 @@ fn the_chat_wheel_respects_the_ceiling_the_keys_do_not_see() {
 }
 
 #[test]
-fn the_ops_pane_and_the_main_log_share_one_scrollback() {
-    // They draw the same ring buffer, so a separate offset for each would let
-    // the two panes disagree about where the reader is.
+fn the_ops_wheel_moves_ops_output_and_never_the_main_log() {
+    // The previous version of this test asserted the OPPOSITE, on the claim
+    // that Ops "draws the same ring buffer" — it does not: Ops renders
+    // `ops.output`, so routing its wheel to `log_scroll` moved an offset
+    // this section does not even draw. Wheel in Ops: nothing visibly
+    // happened, and Main was later found scrolled.
     let mut a = app();
     a.section = Section::Terminal;
     a.term_sub = TermSub::Ops;
     a.log_scroll_max.set(20);
+    a.ops.scroll_max.set(20);
     a.scroll(-3);
-    assert_eq!(a.log_scroll, Some(3));
-    a.section = Section::Main;
-    a.main_sub = MainSub::Overview;
-    a.scroll(3);
-    assert_eq!(a.log_scroll, None);
+    assert_eq!(a.ops.scroll_up, 3, "the pane under the wheel moved");
+    assert_eq!(a.log_scroll, None, "the Main log did not");
 }
 
 #[test]
@@ -234,4 +236,117 @@ fn scrolling_does_not_disturb_focus_or_the_section() {
     a.scroll(-3);
     assert!(a.focus == Focus::Input);
     assert_eq!(a.section, Section::Terminal);
+}
+
+#[test]
+fn lowercase_g_and_home_jump_the_log_to_its_oldest_line() {
+    // The help overlay advertises "g / G — top / bottom" globally; the log
+    // pane implemented only the G half.
+    for jump_key in [KeyCode::Char('g'), KeyCode::Home] {
+        let mut a = log_pane(200);
+        tap(&mut a, jump_key);
+        assert_eq!(a.log_scroll, Some(200), "{jump_key:?} parks at the oldest");
+    }
+    // A log that fits has no "top" to jump to; following is the honest state.
+    let mut a = log_pane(0);
+    press(&mut a, 'g');
+    assert_eq!(a.log_scroll, None);
+}
+
+#[test]
+fn capital_g_and_end_jump_the_kernel_table_to_its_last_row() {
+    let mut a = app();
+    a.section = Section::Main;
+    a.main_sub = MainSub::Kernels;
+    a.kernel_scroll_max.set(7);
+    for jump_key in [KeyCode::Char('G'), KeyCode::End] {
+        a.kernel_scroll = 0;
+        tap(&mut a, jump_key);
+        assert_eq!(a.kernel_scroll, 7, "{jump_key:?} parks at the bottom");
+    }
+    tap(&mut a, KeyCode::Home);
+    assert_eq!(a.kernel_scroll, 0, "Home is the same way back as `g`");
+}
+
+#[test]
+fn chat_g_and_home_jump_to_the_oldest_row_in_both_focus_states() {
+    let mut a = app();
+    press(&mut a, '6');
+    press(&mut a, '6'); // Terminal ▸ Chat, content focus
+    a.chat_scroll_max.set(40);
+    press(&mut a, 'g');
+    assert_eq!(a.chat.scroll, Some(40), "content-focus g parks at the top");
+    tap(&mut a, KeyCode::End);
+    assert_eq!(a.chat.scroll, None);
+
+    press(&mut a, 'i'); // input focus: `g` is text, Home is the jump
+    tap(&mut a, KeyCode::Home);
+    assert_eq!(a.chat.scroll, Some(40));
+    press(&mut a, 'g');
+    assert_eq!(a.chat.input, "g", "a bare g while typing stays a letter");
+    assert_eq!(a.chat.scroll, Some(40), "and moves nothing");
+}
+
+#[test]
+fn an_empty_chat_ignores_the_jump_rather_than_banking_it() {
+    let mut a = app();
+    press(&mut a, '6');
+    press(&mut a, '6');
+    press(&mut a, 'g');
+    assert_eq!(a.chat.scroll, None, "nothing above the fold to park at");
+}
+
+#[test]
+fn help_scroll_keys_move_the_key_list_and_anything_else_closes_it() {
+    // At the 80x24 floor the key table is taller than the modal; j/k must
+    // page it rather than dismiss it, or the tail entries stay unreadable.
+    let mut a = app();
+    press(&mut a, '?');
+    assert!(a.help_open);
+    a.help_scroll_max.set(2); // what the renderer would publish at 80x24
+    press(&mut a, 'j');
+    press(&mut a, 'j');
+    press(&mut a, 'j');
+    assert!(a.help_open, "scroll keys do not dismiss");
+    assert_eq!(a.help_scroll, 2, "and clamp at the ceiling");
+    press(&mut a, 'k');
+    assert_eq!(a.help_scroll, 1);
+    press(&mut a, 'G');
+    assert_eq!(a.help_scroll, 2);
+    press(&mut a, 'g');
+    assert_eq!(a.help_scroll, 0);
+
+    press(&mut a, 'G');
+    let section = a.section;
+    press(&mut a, '4');
+    assert!(!a.help_open, "a non-scroll key closes it");
+    assert_eq!(a.section, section, "and is swallowed, not acted on");
+    assert_eq!(a.help_scroll, 0, "the next open starts at the top");
+}
+
+/// Both chat keyboard paths — the input-focus arrows and the content-focus
+/// letters — used to call `scroll_by` bare, banking presses past the oldest
+/// row that were paid back one dead key at a time. The tree's own doctrine
+/// (`app_scroll`, `lib_modal`) names exactly this defect.
+#[test]
+fn the_chat_keys_clamp_against_the_same_ceiling_as_the_wheel() {
+    let mut a = app();
+    press(&mut a, '6');
+    press(&mut a, '6');
+    press(&mut a, 'i');
+    a.chat_scroll_max.set(3);
+    tap(&mut a, KeyCode::PageUp);
+    assert_eq!(
+        a.chat.scroll,
+        Some(3),
+        "PageUp lands on the ceiling, not 10"
+    );
+
+    tap(&mut a, KeyCode::Esc); // back to content focus
+    for _ in 0..5 {
+        press(&mut a, 'k');
+    }
+    assert_eq!(a.chat.scroll, Some(3), "content-focus k cannot bank either");
+    press(&mut a, 'j');
+    assert_eq!(a.chat.scroll, Some(2), "one press back means one row back");
 }

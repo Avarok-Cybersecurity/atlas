@@ -75,24 +75,9 @@ pub enum KvCacheDtype {
 
 impl std::fmt::Display for KvCacheDtype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            KvCacheDtype::Bf16 => write!(f, "bf16"),
-            KvCacheDtype::Fp8 => write!(f, "fp8"),
-            KvCacheDtype::Nvfp4 => write!(f, "nvfp4"),
-            KvCacheDtype::Turbo4 => write!(f, "turbo4"),
-            KvCacheDtype::Turbo3 => write!(f, "turbo3"),
-            KvCacheDtype::Turbo2 => write!(f, "turbo2"),
-            KvCacheDtype::Turbo8 => write!(f, "turbo8"),
-            KvCacheDtype::Turbo4KTurbo3V => write!(f, "turbo4k_turbo3v"),
-            KvCacheDtype::Turbo4KTurbo8V => write!(f, "turbo4k_turbo8v"),
-            KvCacheDtype::Turbo3KTurbo8V => write!(f, "turbo3k_turbo8v"),
-            KvCacheDtype::Bf16KTurbo4V => write!(f, "bf16k_turbo4v"),
-            KvCacheDtype::Bf16KTurbo3V => write!(f, "bf16k_turbo3v"),
-            KvCacheDtype::Fp8KTurbo4V => write!(f, "fp8k_turbo4v"),
-            KvCacheDtype::Fp8KTurbo3V => write!(f, "fp8k_turbo3v"),
-            KvCacheDtype::Bf16KTurbo2V => write!(f, "bf16k_turbo2v"),
-            KvCacheDtype::Fp8KTurbo2V => write!(f, "fp8k_turbo2v"),
-        }
+        // Delegates to the catalogue so the canonical spelling exists in ONE
+        // match — see `catalog::name` for why that match must stay exhaustive.
+        f.write_str(self.name())
     }
 }
 
@@ -442,6 +427,7 @@ pub struct PagedKvCache {
 }
 
 mod block_trace;
+mod catalog;
 mod paged_impl;
 /// Release both pools of every layer.
 ///

@@ -235,3 +235,45 @@ fn transcript_keys_still_scroll_and_unknown_keys_fall_through() {
     assert_eq!(s.scroll, None, "End follows the tip again");
     assert!(s.on_content_key(key('z')).is_none());
 }
+
+#[test]
+fn reset_clears_the_whole_session_including_a_stream_in_flight() {
+    let (mut s, tx) = streaming_state();
+    s.transcript
+        .insert(0, ChatMessage::new(Role::User, "earlier turn".into()));
+    s.observed_thinking = Some(true);
+    s.scroll = Some(12);
+    s.input = "a typed draft".into();
+
+    s.reset();
+
+    assert!(s.transcript.is_empty());
+    assert!(!s.streaming);
+    assert!(s.rx.is_none());
+    assert_eq!(
+        s.observed_thinking, None,
+        "it described a reply that is gone"
+    );
+    assert_eq!(s.scroll, None);
+    // The draft was never sent, so it is not conversation state.
+    assert_eq!(s.input, "a typed draft");
+
+    // The half-reset this guards against: a delta already in flight from the
+    // OLD conversation must not be pumped into the new one.
+    let _ = tx.send(ChatDelta::Token("stale token".into()));
+    s.pump();
+    assert!(s.transcript.is_empty(), "the stale token found no channel");
+}
+
+#[test]
+fn reset_keeps_the_thinking_preferences() {
+    // Both are documented as session PREFERENCES: emptying the transcript
+    // does not change what the user prefers.
+    let mut s = ChatState::default();
+    let req = s.cycle_request();
+    let view = s.cycle_view();
+    s.transcript.push(ChatMessage::new(Role::User, "hi".into()));
+    s.reset();
+    assert_eq!(s.think_req, req);
+    assert_eq!(s.think_view, view);
+}

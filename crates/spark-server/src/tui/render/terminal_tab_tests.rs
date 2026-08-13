@@ -156,3 +156,40 @@ fn both_terminal_panes_survive_narrow_and_short_terminals() {
         }
     }
 }
+
+/// `/metrics` prints 40+ lines and everything above the fold used to be
+/// produced and then unreachable: the pane always rendered the tail.
+#[test]
+fn the_ops_pane_renders_scrollback_and_names_the_way_back_down() {
+    let mut a = term(TermSub::Ops);
+    a.ops.output = (0..100).map(|i| format!("line-{i:03}")).collect();
+
+    // Following: the newest line is on screen, the oldest is not.
+    let rows = screen(&a, 80, 24);
+    assert!(has(&rows, "line-099"), "{rows:#?}");
+    assert!(!has(&rows, "line-000"));
+    assert!(
+        a.ops.scroll_max.get() > 0,
+        "the ceiling was published for the reducer"
+    );
+
+    // Parked at the top: the oldest line is on screen and the title says
+    // how far up the reader is and how to get back — the chat pane's words.
+    a.ops.scroll_up = a.ops.scroll_max.get();
+    let up = a.ops.scroll_up;
+    let rows = screen(&a, 80, 24);
+    assert!(has(&rows, "line-000"), "{rows:#?}");
+    assert!(!has(&rows, "line-099"));
+    assert!(has(&rows, &format!("↑{up} ─ End follows")), "{rows:#?}");
+}
+
+/// An over-large offset renders clamped rather than blanking the pane: the
+/// buffer may have been trimmed underneath a parked reader.
+#[test]
+fn a_stale_ops_offset_clamps_to_the_oldest_line() {
+    let mut a = term(TermSub::Ops);
+    a.ops.output = (0..30).map(|i| format!("line-{i:02}")).collect();
+    a.ops.scroll_up = usize::MAX;
+    let rows = screen(&a, 80, 24);
+    assert!(has(&rows, "line-00"), "{rows:#?}");
+}

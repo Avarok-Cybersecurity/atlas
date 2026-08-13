@@ -43,7 +43,9 @@ fn bench_app() -> App {
 #[test]
 fn the_results_table_scrolls_its_rows_and_keeps_its_header_in_place() {
     let t = table(60);
-    let rows = draw_into(80, 20, |f, area| draw_table(f, &t, 30, area));
+    let rows = draw_into(80, 20, |f, area| {
+        draw_table(f, &t, 30, area);
+    });
     assert!(has(&rows, "CONCURRENCY ─ 60 rows"), "{rows:#?}");
     assert!(has(&rows, "conc"), "the header does not scroll:\n{rows:#?}");
     assert!(has(&rows, "c30"), "{rows:#?}");
@@ -55,14 +57,18 @@ fn a_scroll_past_the_last_row_still_shows_the_last_page() {
     // The wheel is clamped by the app, but a stored scroll from a longer table
     // must not leave the pane blank.
     let t = table(60);
-    let rows = draw_into(80, 20, |f, area| draw_table(f, &t, 10_000, area));
+    let rows = draw_into(80, 20, |f, area| {
+        draw_table(f, &t, 10_000, area);
+    });
     assert!(has(&rows, "c59"), "{rows:#?}");
 }
 
 #[test]
 fn a_table_with_no_rows_still_draws_its_frame_and_says_zero() {
     let t = table(0);
-    let rows = draw_into(80, 20, |f, area| draw_table(f, &t, 0, area));
+    let rows = draw_into(80, 20, |f, area| {
+        draw_table(f, &t, 0, area);
+    });
     assert!(has(&rows, "CONCURRENCY ─ 0 rows"), "{rows:#?}");
     assert!(has(&rows, "tok/s"), "the columns are still named");
 }
@@ -351,4 +357,30 @@ fn the_suite_list_scrolls_the_selection_into_view() {
         has(&rows, all[0].name),
         "selecting the first entry must scroll back to it:\n{rows:#?}"
     );
+}
+
+/// The params form had the same missing windowing as the Library config
+/// form (its structural twin): the cursor could walk below the fold.
+#[test]
+fn the_params_form_scrolls_to_keep_the_selected_row_on_screen() {
+    let mut a = crate::tui::render::tests::app();
+    a.section = Section::Benchmarks;
+    a.bench.view = View::Params;
+    let last = a.bench.row_count() - 1; // the Model target row
+    a.bench.row = last;
+
+    let rows = screen(&a, 100, 12);
+    assert!(
+        has(&rows, "Model"),
+        "the selected (last) row is on screen:\n{rows:#?}"
+    );
+    assert!(
+        has(&rows, "endpoint check"),
+        "the probe status stays pinned — or `p` is a secret:\n{rows:#?}"
+    );
+
+    a.bench.row = 0;
+    let first_label: String = a.bench.row_meta(0).0.to_string();
+    let rows = screen(&a, 100, 12);
+    assert!(has(&rows, &first_label), "{rows:#?}");
 }

@@ -50,18 +50,34 @@ fn draw_ops(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(3)])
         .split(area);
-    // Output stream.
-    let out_block = panel(format!("OPS ─ {} lines ─", app.ops.output.len()), false);
+    // Output stream. `/metrics` and `/kernels` print 40+ lines; everything
+    // above the fold used to be produced and then unreachable — no scroll,
+    // while the footer claimed one. The offset counts up from the newest
+    // line and the ceiling goes out through the usual renderer-published
+    // cell; the title says where the reader is parked, in the words the
+    // chat pane already taught.
+    let total = app.ops.output.len();
+    let visible = rows[0].height.saturating_sub(2) as usize;
+    let max = total.saturating_sub(visible);
+    app.ops.scroll_max.set(max);
+    let up = app.ops.scroll_up.min(max);
+    let out_block = panel(
+        if up > 0 {
+            format!("OPS ─ {total} lines ─ ↑{up} ─ End follows ─")
+        } else {
+            format!("OPS ─ {total} lines ─")
+        },
+        false,
+    );
     let inner = out_block.inner(rows[0]);
     f.render_widget(out_block, rows[0]);
-    let visible = inner.height as usize;
+    let end = total - up;
     let lines: Vec<Line> = app
         .ops
         .output
         .iter()
-        .rev()
-        .take(visible)
-        .rev()
+        .take(end)
+        .skip(end.saturating_sub(visible))
         .map(|l| {
             if let Some(cmd) = l.strip_prefix("❯ ") {
                 Line::from(vec![
@@ -102,10 +118,11 @@ fn draw_ops(f: &mut Frame, app: &App, area: Rect) {
 fn chat_hints(focused: bool, wide: bool) -> String {
     match (focused, wide) {
         (true, true) => {
-            "─ ⏎ send · \\+⏎ newline · Ctrl+T thinking · Alt+T reasoning · Esc cancel ─".into()
+            "─ ⏎ send · \\+⏎ newline · Ctrl+T thinking · Alt+T reasoning · Ctrl+N new · Esc cancel ─"
+                .into()
         }
         (true, false) => "─ ⏎ send · Esc cancel ─".into(),
-        (false, true) => "─ ⏎ focus · t thinking · T reasoning ─".into(),
+        (false, true) => "─ ⏎ focus · t thinking · T reasoning · Ctrl+N new chat ─".into(),
         (false, false) => "─ ⏎ focus ─".into(),
     }
 }

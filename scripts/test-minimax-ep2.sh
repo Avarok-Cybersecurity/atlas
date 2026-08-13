@@ -4,7 +4,7 @@
 # 1. Assumes image `atlas-gb10:minimax-ep2` exists on head.
 # 2. Distributes image to worker via docker save | ssh | docker load.
 # 3. Starts EP=2 via start-minimax-ep2.sh.
-# 4. Waits up to STARTUP_TIMEOUT (default 900s) for rank 0 "Listening on".
+# 4. Waits up to STARTUP_TIMEOUT (default 900s) for rank 0 readiness ("Server live", or "Listening on" from pre-Aug-2026 images).
 # 5. Runs tests/single_gpu_suite.py against http://localhost:8888/v1.
 # 6. On failure, dumps last 100 log lines from both ranks.
 # 7. Stops containers on both nodes at the end.
@@ -70,13 +70,13 @@ RANK0_READY=0
 RANK1_READY=0
 while [[ $(date +%s) -lt $DEADLINE ]]; do
   if [[ $RANK0_READY -eq 0 ]]; then
-    if sudo docker logs atlas-minimax-ep0 2>&1 | grep -q 'Listening on'; then
+    if sudo docker logs atlas-minimax-ep0 2>&1 | grep -qE 'Listening on|Server live'; then
       RANK0_READY=1
       echo "  [rank0] listening"
     fi
   fi
   if [[ $RANK1_READY -eq 0 ]]; then
-    if ssh "$WORKER_IP" "sudo docker logs atlas-minimax-ep1 2>&1 | grep -qE 'EP worker ready|Listening on|worker ready'"; then
+    if ssh "$WORKER_IP" "sudo docker logs atlas-minimax-ep1 2>&1 | grep -qE 'EP worker ready|Listening on|Server live|worker ready'"; then
       RANK1_READY=1
       echo "  [rank1] worker ready"
     fi
