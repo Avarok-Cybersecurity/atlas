@@ -1164,9 +1164,6 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 #[path = "build_parse.rs"]
 mod build_parse;
 
-#[path = "build_behavior.rs"]
-mod build_behavior;
-
 // Entry-point resolution for `shadowed_dropped_pairs`. Lives in its own file so
 // `tests/kernel_shadow_detector.rs` can compile the SAME code a build script
 // would otherwise keep untestable — a build script's `#[cfg(test)]` modules are
@@ -1174,9 +1171,8 @@ mod build_behavior;
 // with no test that could have noticed.
 #[path = "build_shadow.rs"]
 mod build_shadow;
-use build_behavior::parse_behavior;
 use build_parse::{
-    parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
+    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
     parse_sampling_presets, parse_shadow_exempt,
 };
 use build_shadow::shadowed_missing_symbols;
