@@ -13,6 +13,8 @@
 
 use serde_json::{Value, json};
 
+use crate::benchmarks::transcript::Transcript;
+
 /// Fixed long prefix (~1.5K tokens) for turn 1. Sized so that, with the
 /// flagship recipe's `enable_prefix_caching: true`, every later round's
 /// prefill lands as a Marconi prefix-cache restore from round 0's state —
@@ -125,11 +127,16 @@ pub const TURNS: [&str; 4] = [
 /// the transcript equality the gate asserts only holds when the sampler
 /// cannot introduce variation of its own. `stream` is true because the
 /// shared transport is a stream parser; the comparison consumes the
-/// aggregated text, not the framing.
+/// aggregated text, not the framing. `stream_options.include_usage` is the
+/// OpenAI contract for usage on a stream: without it, correct
+/// `completion_tokens` and the `cached_tokens` attestation the vacuity
+/// check reads are an Atlas-specific courtesy, and running the gate against
+/// a contract-faithful server would silently zero both.
 pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -> Value {
     json!({
         "model": model,
         "stream": true,
+        "stream_options": {"include_usage": true},
         "temperature": 0.0,
         "seed": 0,
         "max_tokens": max_tokens,
@@ -140,6 +147,99 @@ pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -
 /// The full user message of turn 1.
 pub(super) fn first_turn() -> String {
     format!("{LONG_PREFIX}\n\n{}", TURNS[0])
+}
+
+/// The number of sections in [`LONG_PREFIX`]. Turn 1 asks for this count, so
+/// the anchor below must track the document; deriving it from the frozen text
+/// keeps the two from drifting apart silently.
+fn section_count() -> usize {
+    (1..)
+        .take_while(|n| LONG_PREFIX.contains(&format!("Section {n},")))
+        .count()
+}
+
+/// Semantic anchors on the REFERENCE round. Every violation found, or empty.
+///
+/// The comparison in `compare.rs` is purely relative: replays are held to
+/// round 0, but nothing held round 0 to anything. Poisoning that is
+/// deterministic from the first round — a corrupt prefill that produces the
+/// same wrong bytes every time — therefore passed as Invariant. These anchors
+/// pin the reference to the pinned script itself: turn 1 must acknowledge the
+/// document and its section count, turn 2 must be the three numbered
+/// invariants the prompt demands. They check the SCRIPT's contract, not any
+/// model's phrasing, so the gate stays model-agnostic: a serving-grade model
+/// that cannot follow "reply with exactly one line" or "numbered 1 to 3, one
+/// per line" at temperature 0 cannot anchor this gate, and saying so loudly
+/// beats certifying replays against garbage.
+///
+/// A turn that ran into the token budget (`finish_reason == "length"`) is a
+/// violation for a second reason: a truncated reference caps every length
+/// ratio at 1.0-ish and makes the runaway ceiling unreachable, so the budget
+/// must be sized to let the reference finish on its own terms.
+pub(super) fn validate_reference(reference: &[Transcript]) -> Vec<String> {
+    let mut violations = Vec::new();
+    if reference.len() != TURNS.len() {
+        violations.push(format!(
+            "reference has {} turn(s), script has {}",
+            reference.len(),
+            TURNS.len()
+        ));
+        return violations;
+    }
+    for (i, t) in reference.iter().enumerate() {
+        if t.finish_reason.as_deref() == Some("length") {
+            violations.push(format!(
+                "turn {}: reference hit the token budget (finish_reason=length) — a \
+                 truncated reference cannot anchor the collapse ratios",
+                i + 1
+            ));
+        }
+    }
+    let t1 = &reference[0].text;
+    if !t1.contains("ACK 7741-C") {
+        violations.push("turn 1: missing the demanded 'ACK 7741-C' acknowledgement".into());
+    }
+    // The section count must appear OUTSIDE the document id — "7741-C"
+    // contains a 7 of its own, which would make the check vacuous. A model
+    // may spell the number out; both forms anchor equally well.
+    let sections = section_count();
+    let words = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ];
+    let stripped = t1.replace("7741-C", "");
+    let has_digit = stripped.contains(&sections.to_string());
+    let has_word = words
+        .get(sections)
+        .is_some_and(|w| stripped.to_lowercase().contains(w));
+    if !has_digit && !has_word {
+        violations.push(format!(
+            "turn 1: does not state the document's section count ({sections})"
+        ));
+    }
+    let lines: Vec<&str> = reference[1]
+        .text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() != 3 {
+        violations.push(format!(
+            "turn 2: expected exactly 3 numbered lines, got {}",
+            lines.len()
+        ));
+    } else {
+        for (i, line) in lines.iter().enumerate() {
+            let number = (i + 1).to_string();
+            if !line.starts_with(&number) {
+                violations.push(format!(
+                    "turn 2: line {} does not start with its number: {:?}",
+                    i + 1,
+                    line
+                ));
+            }
+        }
+    }
+    violations
 }
 
 #[cfg(test)]
