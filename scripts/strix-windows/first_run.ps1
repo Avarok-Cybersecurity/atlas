@@ -73,6 +73,15 @@ $BindHost = if ($env:ATLAS_BIND) { $env:ATLAS_BIND } else { '127.0.0.1' }
 # nothing to build, so the binary's own directory takes the place of target/ and
 # the toolchain checks are skipped -- a tester needs the driver and weights only.
 $Prebuilt = [bool]$env:ATLAS_BIN
+
+# Which toolchain pieces this invocation actually needs. Only compiling requires
+# MSVC / hipcc / Rust; serving an existing binary requires none of them, and
+# demanding them anyway is how a "just run it" path turns into a yak shave.
+# 'check' counts as needing them: with ATLAS_BIN unset it means "can this box
+# build and run Atlas?", which is the question someone auditing before they start
+# is actually asking. '-Phase serve' on an existing binary does not.
+$NeedsBuild = (-not $Prebuilt) -and ($Phase -in @('all', 'build', 'check'))
+
 if ($Prebuilt) {
     if (-not (Test-Path $env:ATLAS_BIN)) { throw "ATLAS_BIN does not exist: $env:ATLAS_BIN" }
     $ReleaseDir = Split-Path (Resolve-Path $env:ATLAS_BIN).Path -Parent
@@ -114,13 +123,15 @@ function Phase-Check {
     # VCToolsInstallDir is not only for cl.exe: atlas-kernels/build.rs uses it to
     # locate dumpbin.exe, which generates the HIP shim's export .def. Without
     # dumpbin the shim builds but exports nothing, and cudarc finds no symbols.
-    $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vsw) {
-        $script:VsPath = & $vsw -products * -latest -format value -property installationPath
-        if ($script:VsPath -and (Test-Path (Join-Path $script:VsPath 'VC\Auxiliary\Build\vcvars64.bat'))) {
-            Ok "MSVC: $script:VsPath"
-        } else { Bad "vswhere found no VC toolset. Install the 'Desktop development with C++' workload." }
-    } else { Bad 'MSVC Build Tools not installed (no vswhere.exe).' }
+    if ($NeedsBuild) {
+        $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path $vsw) {
+            $script:VsPath = & $vsw -products * -latest -format value -property installationPath
+            if ($script:VsPath -and (Test-Path (Join-Path $script:VsPath 'VC\Auxiliary\Build\vcvars64.bat'))) {
+                Ok "MSVC: $script:VsPath"
+            } else { Bad "vswhere found no VC toolset. Install the 'Desktop development with C++' workload." }
+        } else { Bad 'MSVC Build Tools not installed (no vswhere.exe).' }
+    }
 
     if (-not $env:HIP_PATH) {
         $rocm = Get-ChildItem 'C:\Program Files\AMD\ROCm' -Directory -ErrorAction SilentlyContinue |
@@ -131,21 +142,53 @@ function Phase-Check {
         $h = Join-Path $env:HIP_PATH 'bin\hipcc.bin.exe'
         if (-not (Test-Path $h)) { $h = Join-Path $env:HIP_PATH 'bin\hipcc.exe' }
         if (Test-Path $h) { $script:Hipcc = $h; Ok "HIP SDK: $env:HIP_PATH" }
-        else { Bad "hipcc not found under $env:HIP_PATH\bin" }
-    } else { Bad 'Windows HIP SDK not found under C:\Program Files\AMD\ROCm' }
-
-    # `cargo` is normally a rustup shim: it resolves on PATH and then refuses to
-    # run when no default toolchain is set. Make it produce a real version.
-    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+        elseif ($NeedsBuild) { Bad "hipcc not found under $env:HIP_PATH\bin" }
+    } elseif ($NeedsBuild) {
+        Bad 'Windows HIP SDK not found under C:\Program Files\AMD\ROCm'
     }
-    if (Get-Command cargo -ErrorAction SilentlyContinue) {
-        $ErrorActionPreference = 'Continue'
-        $v = (cargo --version 2>$null | Select-Object -First 1); $rc = $LASTEXITCODE
-        $ErrorActionPreference = 'Stop'
-        if ($rc -eq 0 -and $v) { Ok "rust: $v" }
-        else { Bad 'cargo is on PATH but will not run. Fix with: rustup default stable' }
-    } else { Bad 'Rust not installed (https://rustup.rs).' }
+    # Serving needs no SDK at all -- the runtime DLLs sit beside the exe.
+
+    # Rust is only needed to COMPILE. Serving an already-built spark.exe must not
+    # require a working toolchain -- gating it on one turns "run the server" into
+    # "fix your rustup first" for no reason.
+    if ($NeedsBuild) {
+        # `cargo` is normally a rustup shim: it resolves on PATH and then refuses
+        # to run when no default toolchain is set, so check it actually runs.
+        if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+        }
+        if (Get-Command cargo -ErrorAction SilentlyContinue) {
+            # Probe from INSIDE the repo. rust-toolchain.toml pins the channel
+            # (1.93.1) and there is deliberately no global rustup default, so
+            # `cargo --version` run from anywhere else fails with "could not
+            # choose a version of cargo" and rustup helpfully suggests
+            # `rustup default stable` -- which is the wrong fix here, and
+            # installs a toolchain the build will not use.
+            #
+            # Push-Location alone is NOT enough: it moves PowerShell's own
+            # location but leaves [Environment]::CurrentDirectory where the shell
+            # started, and that is the working directory a spawned rustup
+            # inherits and searches upward from for rust-toolchain.toml. Without
+            # the explicit sync this check fails for anyone who launches the
+            # script from outside the repo -- i.e. exactly the copy-paste case.
+            $ErrorActionPreference = 'Continue'
+            $prevCwd = [Environment]::CurrentDirectory
+            Push-Location $RepoRoot
+            [Environment]::CurrentDirectory = (Get-Location).Path
+            # Let the command run to completion and read $LASTEXITCODE before
+            # touching the output. Piping straight into `Select-Object -First 1`
+            # stops the pipeline as soon as one object arrives, which terminates
+            # the native process early and leaves a bogus exit code behind.
+            $out = cargo --version 2>$null
+            $rc = $LASTEXITCODE
+            $v = ($out | Select-Object -First 1)
+            Pop-Location
+            [Environment]::CurrentDirectory = $prevCwd
+            $ErrorActionPreference = 'Stop'
+            if ($rc -eq 0 -and $v) { Ok "rust: $v" }
+            else { Bad "cargo will not run in $RepoRoot -- is rust-toolchain.toml's channel installed? Try: rustup toolchain install" }
+        } else { Bad 'Rust not installed (https://rustup.rs).' }
+    }
 
     Check-Gpu
 
