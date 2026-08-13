@@ -149,10 +149,10 @@ pub(super) fn extract_streaming_name(buffer: &str) -> Option<String> {
 /// Returns byte offset into buffer where argument content begins.
 pub(super) fn find_args_start(buffer: &str) -> usize {
     // Gemma-4: after call:NAME{
-    if let Some(pos) = buffer.find("call:") {
-        if let Some(brace) = buffer[pos..].find('{') {
-            return pos + brace + 1;
-        }
+    if let Some(pos) = buffer.find("call:")
+        && let Some(brace) = buffer[pos..].find('{')
+    {
+        return pos + brace + 1;
     }
     // Qwen3-Coder: after <function=NAME>\n
     if let Some(pos) = buffer.find("<function=")

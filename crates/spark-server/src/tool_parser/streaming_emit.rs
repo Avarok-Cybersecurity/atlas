@@ -199,7 +199,7 @@ impl StreamingToolDetector {
             let accumulated_raw = &body[..settled];
             let converted_json = gemma4_to_json(&format!("gemma4{{{}}}", accumulated_raw));
             if converted_json.len() > 2 {
-                let json_args_body = &converted_json[1..converted_json.len()-1];
+                let json_args_body = &converted_json[1..converted_json.len() - 1];
                 let already = self.current_tc_emitted;
                 if json_args_body.len() > already {
                     let new_frag = &json_args_body[already..];

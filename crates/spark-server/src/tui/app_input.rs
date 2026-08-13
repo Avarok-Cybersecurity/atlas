@@ -301,5 +301,9 @@ impl App {
 mod tests;
 
 #[cfg(test)]
+#[path = "app_input_help_tests.rs"]
+mod help_tests;
+
+#[cfg(test)]
 #[path = "app_paste_tests.rs"]
 mod paste_tests;
