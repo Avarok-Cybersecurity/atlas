@@ -43,6 +43,54 @@ __device__ __constant__ float E2M1_LUT_FUSED_W4[16] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
+// One orig-lane's pipelined K16 partial. Shared by `w4a16_gemv_dual` and
+// `w4a16_gemv_dual_sw` so the SW path cannot drift off the 2-chunk association.
+__device__ __forceinline__ float w4a16_dual_partial(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    unsigned int n, unsigned int half_K, unsigned int num_groups,
+    unsigned int K16, unsigned int orig_lane)
+{
+    float acc0 = 0.0f, acc1 = 0.0f;
+    const unsigned int stride2 = 128u;
+    for (unsigned int k16 = orig_lane * 2u; k16 < K16 + 1u; k16 += stride2) {
+        #pragma unroll
+        for (int c = 0; c < 2; c++) {
+            const unsigned int kk = k16 + (unsigned int)c;
+            if (kk >= K16) break;
+
+            uint4 a_lo4 = ((const uint4*)A)[kk * 2];
+            uint4 a_hi4 = ((const uint4*)A)[kk * 2 + 1];
+            const unsigned int a_raw[8] = {a_lo4.x, a_lo4.y, a_lo4.z, a_lo4.w,
+                                            a_hi4.x, a_hi4.y, a_hi4.z, a_hi4.w};
+            unsigned long long packed8 = *(const unsigned long long*)(
+                B_packed + (unsigned long long)n * half_K + kk * 8);
+            unsigned char scale_byte = B_scale[
+                (unsigned long long)n * num_groups + kk];
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            float scale = scl_fp8(scale_byte) * scale2;
+#else
+            float scale = (float)fp8 * scale2;
+#endif
+            float part = 0.0f;
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
+                part = fmaf(af.x, E2M1_LUT_FUSED_W4[byte_val & 0xF], part);
+                part = fmaf(af.y, E2M1_LUT_FUSED_W4[byte_val >> 4], part);
+            }
+            if (c == 0) acc0 = fmaf(scale, part, acc0);
+            else        acc1 = fmaf(scale, part, acc1);
+        }
+    }
+    return acc0 + acc1;
+}
+
 // ── W4A16 GEMV Dual Projection ──
 //
 // blockIdx.z = 0: first projection (gate), blockIdx.z = 1: second (up).
@@ -72,61 +120,17 @@ extern "C" __global__ void w4a16_gemv_dual(
     const unsigned int lane = threadIdx.x % threads_per_out;
 
     const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
-    if (n >= N) return;
-
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
     const unsigned int K16 = K / 16;
 
-    __shared__ float s_lut[16];
     __shared__ float smem[N_PER_BLOCK * 2];
-    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT_FUSED_W4[threadIdx.x];
-    __syncthreads();
 
-    float acc0 = 0.0f, acc1 = 0.0f;
-
-    // 16 K-values per chunk (uint64 weight load), TWO chunks in flight per
-    // iteration with independent accumulators — hides DRAM latency (ncu: 72% of
-    // warp stalls are long-scoreboard on GB10). Scale factored out of the inner
-    // block (exact regroup). Requires K % 16 == 0 (was K % 8).
-    const unsigned int stride2 = threads_per_out * 2u;
-    for (unsigned int k16 = lane * 2u; k16 < K16 + 1u; k16 += stride2) {
-        #pragma unroll
-        for (int c = 0; c < 2; c++) {
-            const unsigned int kk = k16 + (unsigned int)c;
-            if (kk >= K16) break;
-
-            uint4 a_lo4 = ((const uint4*)A)[kk * 2];
-            uint4 a_hi4 = ((const uint4*)A)[kk * 2 + 1];
-            const unsigned int a_raw[8] = {a_lo4.x, a_lo4.y, a_lo4.z, a_lo4.w,
-                                            a_hi4.x, a_hi4.y, a_hi4.z, a_hi4.w};
-
-            unsigned long long packed8 = *(const unsigned long long*)(
-                B_packed + (unsigned long long)n * half_K + kk * 8);
-
-            unsigned char scale_byte = B_scale[
-                (unsigned long long)n * num_groups + kk];
-            __nv_fp8_e4m3 fp8;
-            *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-            float scale = scl_fp8(scale_byte) * scale2;
-#else
-            float scale = (float)fp8 * scale2;
-#endif
-
-            float part = 0.0f;
-            #pragma unroll
-            for (int b = 0; b < 8; b++) {
-                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
-                part = fmaf(af.x, s_lut[byte_val & 0xF], part);
-                part = fmaf(af.y, s_lut[byte_val >> 4], part);
-            }
-            if (c == 0) acc0 = fmaf(scale, part, acc0);
-            else        acc1 = fmaf(scale, part, acc1);
-        }
+    // Do not return early: N%4!=0 tail warps must still hit the smem barrier.
+    float acc = 0.0f;
+    if (n < N) {
+        acc = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane);
     }
-    float acc = acc0 + acc1;
 
     const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
 
@@ -141,7 +145,7 @@ extern "C" __global__ void w4a16_gemv_dual(
     }
     __syncthreads();
 
-    if (lane == 0) {
+    if (lane == 0 && n < N) {
         float result = smem[local_out * 2] + smem[local_out * 2 + 1];
         C[n] = __float2bfloat16(result);
     }
@@ -249,56 +253,14 @@ extern "C" __global__ void w4a16_gemv_silu_input(
 }
 
 // ════════════════════════════════════════════════════════════════════
-// SINGLE-WARP-PER-OUTPUT variants (lossless, opt-in via ATLAS_DECODE_OPT).
+// SINGLE-WARP-PER-OUTPUT variants (lossless; default ON, kill ATLAS_NO_GEMV_SW=1).
 //
-// Bit-identical to the 64-thread kernels above. Each of 32 lanes holds TWO
-// accumulators reproducing orig warp-A (lanes 0..31) and warp-B (lanes 32..63):
-//   acc_a[lane] == orig acc[lane]    (chunks lane, lane+64, ...)
-//   acc_b[lane] == orig acc[lane+32] (chunks lane+32, lane+32+64, ...)
-// Warp-shuffle-reduce each, then `acc_a + acc_b` == smem[0]+smem[1]. No smem,
-// no __syncthreads. 8 outputs / 256-thread block. Grid: (ceil(N/8),1,z).
+// Dual SW shares `w4a16_dual_partial` with the 64-thread dual kernel.
+// SiLU SW still matches the K8 sequential silu_input kernel (that base is
+// not yet pipelined). Grid: (ceil(N/8),1,z).
 // ════════════════════════════════════════════════════════════════════
 
 #define N_PER_BLOCK_SW 8
-
-// One K8-strided partial (start chunk + stride 64) for the dual kernel.
-__device__ __forceinline__ float w4a16_dual_partial(
-    const __nv_bfloat16* __restrict__ A,
-    const unsigned char* __restrict__ B_packed,
-    const unsigned char* __restrict__ B_scale,
-    const float scale2,
-    unsigned int n, unsigned int half_K, unsigned int num_groups,
-    unsigned int K8, unsigned int start_chunk)
-{
-    float acc = 0.0f;
-    for (unsigned int k8 = start_chunk; k8 < K8; k8 += 64u) {
-        const unsigned int base_k = k8 * 8;
-        uint4 a_data = ((const uint4*)A)[k8];
-        const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
-        unsigned int packed4 = *(const unsigned int*)(B_packed + (unsigned long long)n * half_K + k8 * 4);
-        unsigned int scale_group = base_k / GROUP_SIZE;
-        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
-#else
-        float scale = (float)fp8 * scale2;
-#endif
-        #pragma unroll
-        for (int b = 0; b < 4; b++) {
-            unsigned char byte_val = (packed4 >> (b * 8)) & 0xFF;
-            float w_lo = E2M1_LUT_FUSED_W4[byte_val & 0xF] * scale;
-            float w_hi = E2M1_LUT_FUSED_W4[byte_val >> 4] * scale;
-            __nv_bfloat16 a_lo, a_hi;
-            *(unsigned short*)&a_lo = (unsigned short)(a_raw[b] & 0xFFFF);
-            *(unsigned short*)&a_hi = (unsigned short)(a_raw[b] >> 16);
-            acc += __bfloat162float(a_lo) * w_lo;
-            acc += __bfloat162float(a_hi) * w_hi;
-        }
-    }
-    return acc;
-}
 
 extern "C" __global__ void w4a16_gemv_dual_sw(
     const __nv_bfloat16* __restrict__ A,
@@ -326,10 +288,10 @@ extern "C" __global__ void w4a16_gemv_dual_sw(
 
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
-    const unsigned int K8 = K / 8;
+    const unsigned int K16 = K / 16;
 
-    float acc_a = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane);
-    float acc_b = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane + 32u);
+    float acc_a = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane);
+    float acc_b = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane + 32u);
 
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {

@@ -12,6 +12,45 @@ use super::*;
 // definition of "a rendered App" rather than two that can drift.
 use super::tests::{app, render};
 
+/// Blanks the STARTUP pane's elapsed clock (`0.0s`) before comparing renders.
+///
+/// The two renders below are taken microseconds apart, but the clock is read
+/// from a real `Instant` each frame, so a tick that lands between them makes
+/// `0.0s` become `0.1s` and fails an assertion about highlighting. The clock
+/// is not what these tests are about -- they assert that a style change leaves
+/// the SYMBOLS alone -- so the digits are normalised out rather than the
+/// assertion being loosened to something that would stop catching real text
+/// drift. (Observed as a merge-queue flake on 2026-08-12; the same job had
+/// passed on the PR head minutes earlier.)
+fn without_the_clock(frame: &str) -> String {
+    let mut out = String::with_capacity(frame.len());
+    let b: Vec<char> = frame.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        // A run of `<digits>.<digits>s` is the elapsed field; nothing else in
+        // these frames has that shape.
+        let start = i;
+        let mut j = i;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > i && j < b.len() && b[j] == '.' {
+            let mut k = j + 1;
+            while k < b.len() && b[k].is_ascii_digit() {
+                k += 1;
+            }
+            if k > j + 1 && k < b.len() && b[k] == 's' {
+                out.push_str("T.Ts");
+                i = k + 1;
+                continue;
+            }
+        }
+        out.push(b[start]);
+        i = start + 1;
+    }
+    out
+}
+
 #[test]
 fn a_drag_highlights_what_it_covers_and_a_click_highlights_nothing() {
     use crate::tui::selection::Selection;
@@ -30,7 +69,8 @@ fn a_drag_highlights_what_it_covers_and_a_click_highlights_nothing() {
     });
     let dragged = render(&a, 120, 40);
     assert_eq!(
-        clean, dragged,
+        without_the_clock(&clean),
+        without_the_clock(&dragged),
         "the highlight is a style change; it must not alter the text"
     );
 }

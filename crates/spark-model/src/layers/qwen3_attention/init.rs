@@ -230,6 +230,7 @@ impl Qwen3AttentionLayer {
                 .kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")
                 .unwrap_or(KernelHandle(0)),
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
@@ -650,13 +651,8 @@ impl Qwen3AttentionLayer {
                 "quantize_bf16_to_nvfp4",
             ),
             fp8_calibration: if fp8_calibration_tokens > 0
-                && !matches!(
-                    kv_dtype,
-                    KvCacheDtype::Nvfp4
-                        | KvCacheDtype::Turbo4
-                        | KvCacheDtype::Turbo3
-                        | KvCacheDtype::Turbo8
-                ) {
+                && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
+            {
                 Some(Fp8KvCalibration::new(
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,

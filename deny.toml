@@ -20,11 +20,6 @@ ignore = [
     # but its maintainer stepped away; replacements (e.g. `pastey`)
     # exist but the deps that use it haven't migrated yet.
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; proc-macro is feature-complete and pulled in by transitive deps we don't control" },
-    # NOTE: RUSTSEC-2024-0375 (`atty`) and RUSTSEC-2024-0370
-    # (`proc-macro-error` 1.x) were removed once those crates dropped out
-    # of the tree — keeping them produced cargo-deny `advisory-not-detected`
-    # warnings ("no crate matched advisory criteria"). Re-add only if a dep
-    # pulls them back in.
 ]
 
 [licenses]

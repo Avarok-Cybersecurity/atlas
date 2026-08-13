@@ -31,15 +31,15 @@ impl TransformerModel {
     /// Whether the online FP8-KV calibration has frozen its scale, model-wide.
     ///
     /// Every calibrating attention layer freezes on ITS first observe within
-    /// the same first forward pass, so the first layer that reports a state
-    /// speaks for all of them. `true` when NO layer runs online calibration —
-    /// there is nothing to wait for, and the graph-suppression gate below is
-    /// additionally guarded by `fp8_kv_calibration_tokens > 0`.
+    /// the same first forward pass. `true` when NO layer runs online
+    /// calibration — there is nothing to wait for, and the graph-suppression
+    /// gate below is additionally guarded by `fp8_kv_calibration_tokens > 0`.
+    /// Aggregation is all-frozen, not `find_map`: a BF16 boundary layer that
+    /// never observes must not shadow later FP8 layers that already froze.
     pub(in crate::model) fn fp8_calibration_frozen(&self) -> bool {
-        self.layers
-            .iter()
-            .find_map(|l| l.fp8_calibration_frozen())
-            .unwrap_or(true)
+        crate::layers::fp8_calibration::graphs_ready_after_fp8_kv_cal(
+            self.layers.iter().map(|l| l.fp8_calibration_frozen()),
+        )
     }
 
     pub(super) fn decode_dispatch(

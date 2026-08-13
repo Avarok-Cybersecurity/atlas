@@ -76,9 +76,11 @@ impl TransformerLayer for NemotronMamba2Layer {
                 stream,
             )?;
         } else {
-            ops::w4a16_gemv(
+            ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                ctx.levers.gemv_sw,
                 normed,
                 &self.ssm.in_proj,
                 proj,
@@ -174,9 +176,11 @@ impl TransformerLayer for NemotronMamba2Layer {
                 stream,
             )?;
         } else {
-            ops::w4a16_gemv(
+            ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                ctx.levers.gemv_sw,
                 gated_out,
                 &self.ssm.out_proj,
                 out,

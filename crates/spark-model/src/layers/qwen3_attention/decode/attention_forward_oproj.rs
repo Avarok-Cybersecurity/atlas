@@ -28,9 +28,9 @@ impl Qwen3AttentionLayer {
         let o_out = ctx.buffers.norm_output();
         if let Some(ref mla) = self.mla {
             if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv_k,
+                    ctx.levers.gemv_sw,
                     attn_out,
                     wo_nvfp4,
                     o_out,
@@ -77,9 +77,9 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
-            ops::w4a16_gemv(
+            self.nvfp4_decode_gemv(
                 ctx.gpu,
-                self.w4a16_gemv_k,
+                ctx.levers.gemv_sw,
                 attn_out,
                 &self.attn.o_proj,
                 o_out,

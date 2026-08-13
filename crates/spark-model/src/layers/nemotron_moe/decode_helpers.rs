@@ -160,9 +160,11 @@ impl NemotronMoeLayer {
                 h,
                 stream,
             )?,
-            None => ops::w4a16_gemv(
+            None => ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                ctx.levers.gemv_sw,
                 normed,
                 &self.weights.shared_up,
                 shared_up_out,
@@ -331,9 +333,11 @@ impl NemotronMoeLayer {
                 h,
                 stream,
             )?,
-            None => ops::w4a16_gemv(
+            None => ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                ctx.levers.gemv_sw,
                 normed,
                 &self.weights.shared_up,
                 shared_up_out,

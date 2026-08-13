@@ -930,9 +930,9 @@ impl Qwen3AttentionLayer {
                 if self.q_lora_active() {
                     // Split the FUSED gemv+deinterleave into a raw interleaved
                     // gemv; the deinterleave is deferred past the q LoRA fold.
-                    ops::w4a16_gemv(
+                    self.nvfp4_decode_gemv(
                         fwd.gpu,
-                        self.w4a16_gemv_k,
+                        fwd.levers.gemv_sw,
                         normed_i,
                         nvfp4,
                         q_out_i,
@@ -993,9 +993,9 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else if let Some(nvfp4) = self.q_weight.as_ref().and_then(|w| w.as_nvfp4()) {
-            ops::w4a16_gemv(
+            self.nvfp4_decode_gemv(
                 fwd.gpu,
-                self.w4a16_gemv_k,
+                fwd.levers.gemv_sw,
                 normed_i,
                 nvfp4,
                 q_out_i,
@@ -1081,9 +1081,9 @@ impl Qwen3AttentionLayer {
             )?;
         } else {
             if let Some(nvfp4) = self.k_weight.as_ref().and_then(|w| w.as_nvfp4()) {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     fwd.gpu,
-                    self.w4a16_gemv_k,
+                    fwd.levers.gemv_sw,
                     normed_i,
                     nvfp4,
                     k_out_i,
@@ -1104,9 +1104,9 @@ impl Qwen3AttentionLayer {
                 )?;
             }
             if let Some(nvfp4) = self.v_weight.as_ref().and_then(|w| w.as_nvfp4()) {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     fwd.gpu,
-                    self.w4a16_gemv_k,
+                    fwd.levers.gemv_sw,
                     normed_i,
                     nvfp4,
                     v_out_i,

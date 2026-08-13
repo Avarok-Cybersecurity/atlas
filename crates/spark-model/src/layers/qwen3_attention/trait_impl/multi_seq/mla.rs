@@ -243,9 +243,9 @@ impl Qwen3AttentionLayer {
         // ── Step 1: Q latent → norm → expand ──
         let q_latent = buffers.ssm_ba();
         if let Some(ref wqa_nvfp4) = mla.wq_a_nvfp4 {
-            ops::w4a16_gemv(
+            self.nvfp4_decode_gemv(
                 gpu,
-                self.w4a16_gemv_k,
+                c.fwd.levers.gemv_sw,
                 normed,
                 wqa_nvfp4,
                 q_latent,
@@ -278,9 +278,9 @@ impl Qwen3AttentionLayer {
         )?;
         let q_full = buffers.ssm_deinterleaved();
         if let Some(ref wqb_nvfp4) = mla.wq_b_nvfp4 {
-            ops::w4a16_gemv(
+            self.nvfp4_decode_gemv(
                 gpu,
-                self.w4a16_gemv_k,
+                c.fwd.levers.gemv_sw,
                 q_latent,
                 wqb_nvfp4,
                 q_full,
@@ -344,9 +344,9 @@ impl Qwen3AttentionLayer {
         // ── Step 3: KV latent → norm ──
         let kv_latent = buffers.expert_gate_out();
         if let Some(ref wkva_nvfp4) = mla.wkv_a_nvfp4 {
-            ops::w4a16_gemv(
+            self.nvfp4_decode_gemv(
                 gpu,
-                self.w4a16_gemv_k,
+                c.fwd.levers.gemv_sw,
                 normed,
                 wkva_nvfp4,
                 kv_latent,
@@ -512,9 +512,9 @@ impl Qwen3AttentionLayer {
             // DeepSeek-V4-Flash: low-rank O projection (wo_a → wo_b)
             let o_latent = buffers.attn_output();
             if let Some(ref woa_nvfp4) = mla.wo_a_nvfp4 {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     gpu,
-                    self.w4a16_gemv_k,
+                    c.fwd.levers.gemv_sw,
                     v_extracted,
                     woa_nvfp4,
                     o_latent,
@@ -535,9 +535,9 @@ impl Qwen3AttentionLayer {
                 )?;
             }
             if let Some(ref wob_nvfp4) = mla.wo_b_nvfp4 {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     gpu,
-                    self.w4a16_gemv_k,
+                    c.fwd.levers.gemv_sw,
                     o_latent,
                     wob_nvfp4,
                     o_out,
@@ -558,9 +558,9 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         } else if let Some(ref wo_nvfp4) = mla.wo_nvfp4 {
-            ops::w4a16_gemv(
+            self.nvfp4_decode_gemv(
                 gpu,
-                self.w4a16_gemv_k,
+                c.fwd.levers.gemv_sw,
                 v_extracted,
                 wo_nvfp4,
                 o_out,

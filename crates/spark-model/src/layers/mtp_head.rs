@@ -190,6 +190,11 @@ pub struct MtpHead {
     rms_norm_k: KernelHandle,
     rms_norm_residual_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
+    /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
+    w4a16_gemv_sw_k: KernelHandle,
+    /// Cached `ModelLevers::gemv_sw` (resolved at construction). MTP `gemv`
+    /// has no `ForwardContext` on every arm.
+    gemv_sw: bool,
     w4a16_gemv_qg_k: KernelHandle,
     w4a16_gemv_dual_k: KernelHandle,
     rope_k: KernelHandle,
@@ -299,9 +304,18 @@ impl MtpHead {
         stream: u64,
     ) -> Result<()> {
         match proj {
-            ProjectionWeight::Nvfp4(w) => {
-                ops::w4a16_gemv(gpu, self.w4a16_gemv_k, input, w, output, n, k, stream)
-            }
+            ProjectionWeight::Nvfp4(w) => ops::w4a16_decode_gemv(
+                gpu,
+                self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                self.gemv_sw,
+                input,
+                w,
+                output,
+                n,
+                k,
+                stream,
+            ),
             ProjectionWeight::Fp8(w) => ops::dense_gemv_fp8w(
                 gpu,
                 self.dense_gemv_fp8w_k.unwrap(),

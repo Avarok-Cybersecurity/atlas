@@ -32,9 +32,11 @@ impl MoeLayer {
         // Step 1: Gate projection (same as forward())
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(ref nvfp4) = self.gate_nvfp4 {
-            ops::w4a16_gemv(
+            ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv,
+                self.w4a16_gemv_sw,
+                ctx.levers.gemv_sw,
                 router_in,
                 nvfp4,
                 gate_logits,
