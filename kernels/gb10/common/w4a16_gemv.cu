@@ -619,11 +619,20 @@ __device__ __forceinline__ void gemv_b2_issue_packed(
         ? B_packed + (unsigned long long)n * half_K + (unsigned long long)kk * 8u
         : B_packed;
     unsigned long long* dst = &smem_pk[buf][local_out][lane];
+    // cp.async 16-byte needs 16-byte-aligned gmem. K/2 % 16 == 8 (K=2032)
+    // puts odd `n` rows at +8; a wide load there is undefined and showed up
+    // as ~50% bit_id on the K-tail oracle. Fall back to 8-byte + odd self-issue.
+    const bool src16 = (((unsigned long long)src) & 15ull) == 0ull;
+    const bool pair_live = live && ((kk ^ 1u) < K16);
     if ((lane & 1u) == 0u) {
-        bool wide = live && (kk + 1u < K16);
+        bool wide = pair_live && src16;
         gemv_cp_async_n(dst, src, wide ? 16u : 8u, live);
-    } else if (live && ((kk ^ 1u) >= K16)) {
-        gemv_cp_async_n(dst, src, 8u, true);
+    } else {
+        const bool covered = pair_live &&
+            (((((unsigned long long)src) - 8ull) & 15ull) == 0ull);
+        if (live && !covered) {
+            gemv_cp_async_n(dst, src, 8u, true);
+        }
     }
 }
 
@@ -670,7 +679,14 @@ extern "C" __global__ void w4a16_gemv_batch2_cpasync(
         gemv_cp_commit();
 
         gemv_cp_wait_one();
+        // Even/odd 16-byte pairing is same-warp; a block barrier here was
+        // serializing 4 output groups and showed up as a 11–20% cold-DRAM
+        // regression vs template batch2.
+#if defined(__HIP_PLATFORM_AMD__)
         __syncthreads();
+#else
+        __syncwarp();
+#endif
         if (n < N && kk0 < K16) {
             unsigned char sb = B_scale[(unsigned long long)n * num_groups + kk0];
             w4a16_gemv_batchm_fma_chunk<2>(
@@ -679,7 +695,11 @@ extern "C" __global__ void w4a16_gemv_batch2_cpasync(
         }
 
         gemv_cp_wait_all();
+#if defined(__HIP_PLATFORM_AMD__)
         __syncthreads();
+#else
+        __syncwarp();
+#endif
         if (n < N && kk1 < K16) {
             unsigned char sb = B_scale[(unsigned long long)n * num_groups + kk1];
             w4a16_gemv_batchm_fma_chunk<2>(

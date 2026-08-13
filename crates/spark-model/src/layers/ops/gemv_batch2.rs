@@ -90,6 +90,11 @@ mod tests {
             "{}: keep current batch2 as fallback template inst",
             p.display()
         );
+        assert!(
+            src.contains("src16") && src.contains("pair_live"),
+            "{}: 16-byte cp.async must gate on gmem alignment (K-tail)",
+            p.display()
+        );
     }
 
     /// NEGATIVE: production init must go through the resolver so the kill
