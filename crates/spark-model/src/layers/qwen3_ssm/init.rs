@@ -297,7 +297,7 @@ impl Qwen3SsmLayer {
             // STAGE 1 fused K=2 verify epilogue. Only present in the gb10
             // common PTX module set; NULL on targets lacking the .cu, in which
             // case the num_tokens==2 arm keeps the per-token path even when
-            // ATLAS_GDN_FUSED_VERIFY is set.
+            // the default-ON fused path would otherwise dispatch.
             gdn_verify_fused_conv_k2_k: super::super::try_kernel(
                 gpu,
                 "gdn_verify_fused_k2",

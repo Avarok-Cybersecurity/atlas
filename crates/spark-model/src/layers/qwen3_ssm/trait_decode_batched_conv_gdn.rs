@@ -91,17 +91,17 @@ impl Qwen3SsmLayer {
     /// STAGE 1: whether the fused K=2 MTP-verify epilogue (single-launch
     /// conv1d+L2norm and gated-RMS-norm for both draft positions) should run.
     ///
-    /// Opt-in via `ATLAS_GDN_FUSED_VERIFY=1` (default OFF — the per-token path
-    /// runs unchanged) AND only when the fused kernels are present in this
-    /// target's PTX module set (NULL handle on non-gb10 targets). Bit-identical
-    /// to the per-token path (gdn_verify_fused_microtest, cos == 1.0).
+    /// Default ON when the fused kernels are present in this target's PTX
+    /// (NULL handle on non-gb10 targets). Kill switch
+    /// `ATLAS_NO_GDN_FUSED_VERIFY=1` restores the two-launch + `copy_d2d`
+    /// path. Bit-identical to the per-token path
+    /// (`gdn_verify_fused_microtest`, cos == 1.0).
     pub(super) fn fused_verify_k2_enabled(&self) -> bool {
-        self.gdn_verify_fused_conv_k2_k.0 != 0
-            && self.gdn_verify_fused_norm_k2_k.0 != 0
-            && matches!(
-                std::env::var("ATLAS_GDN_FUSED_VERIFY").ok().as_deref(),
-                Some("1")
-            )
+        let kernels =
+            self.gdn_verify_fused_conv_k2_k.0 != 0 && self.gdn_verify_fused_norm_k2_k.0 != 0;
+        let env_on = super::gdn_fused_verify_k2::gdn_fused_verify_k2_enabled();
+        super::gdn_fused_verify_k2::log_fused_k2_once(kernels, env_on);
+        kernels && env_on
     }
 
     /// Select the K=2 verify WY kernel: the register-resident twin
