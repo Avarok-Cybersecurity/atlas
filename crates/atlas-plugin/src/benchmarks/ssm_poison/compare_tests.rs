@@ -140,3 +140,54 @@ fn first_divergence_reports_char_offset_and_excerpts() {
     assert!(ref_ex.starts_with("brown"), "{ref_ex}");
     assert!(rep_ex.starts_with("green"), "{rep_ex}");
 }
+
+#[test]
+fn a_zero_token_reference_with_a_nonzero_replay_is_collapsed() {
+    // B1: ref=0, replay>0 is an infinite length ratio — above any ceiling.
+    // The old zero-ref branch returned false here, so an unbounded blowup
+    // relative to an empty reference passed as Jittered.
+    let delta = TurnDelta {
+        turn: 1,
+        ref_tokens: 0,
+        replay_tokens: 80,
+        ref_finish: Some("stop".into()),
+        replay_finish: Some("stop".into()),
+    };
+    assert!(delta.is_collapse());
+
+    let reference = vec![t("", 0)];
+    let replay = vec![t("suddenly a full reply", 80)];
+    match compare_round(&reference, &replay) {
+        RoundVerdict::Collapsed { turns } => assert_eq!(turns[0].turn, 1),
+        other => panic!("expected Collapsed, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zero_token_reference_with_a_zero_replay_is_not_a_collapse() {
+    // The both-empty case stays with the upstream Unmeasured rule; the
+    // collapse predicate must not claim it.
+    let delta = TurnDelta {
+        turn: 1,
+        ref_tokens: 0,
+        replay_tokens: 0,
+        ref_finish: Some("stop".into()),
+        replay_finish: Some("stop".into()),
+    };
+    assert!(!delta.is_collapse());
+}
+
+#[test]
+fn an_unmeasured_turn_is_not_masked_by_a_jittered_turn() {
+    // B2: the gate's stated rule is that ANY unmeasured round fails. A round
+    // with one empty-pair turn and one jittered turn used to return Jittered
+    // (a pass), letting the unmeasured turn hide behind tolerated jitter.
+    let reference = vec![t("", 0), t("two", 200)];
+    let replay = vec![t("", 0), t("two-b", 206)];
+    match compare_round(&reference, &replay) {
+        RoundVerdict::Unmeasured { reason } => {
+            assert!(reason.contains("turn 1"), "{reason}");
+        }
+        other => panic!("expected Unmeasured, got {other:?}"),
+    }
+}
