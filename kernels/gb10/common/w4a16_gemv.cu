@@ -556,7 +556,7 @@ extern "C" __global__ void w4a16_gemv_batch2(
 }
 
 // ============================================================
-// W4A16 GEMV batch2 — cp.async 2-stage weight prefetch (default ON).
+// W4A16 GEMV batch2 — cp.async 2-stage weight prefetch (opt-in).
 // ============================================================
 // Bit-identical to `w4a16_gemv_batch2` / `w4a16_gemv_batchm_impl<2>`:
 // same two-phase coalesced K16 mapping, same `w4a16_gemv_batchm_fma_chunk`
@@ -564,7 +564,7 @@ extern "C" __global__ void w4a16_gemv_batch2(
 // smem buffer via cp.async so phase-1 DMA overlaps phase-0 compute.
 // Production Qwen3.6-35B shapes are K=2048 (one wave per phase); larger
 // K walks superwaves of 128 chunks. Scale + activations stay gmem loads
-// (tiny / L1-resident). Kill: ATLAS_NO_GEMV_BATCH2_CPASYNC=1.
+// (tiny / L1-resident). Opt-in: ATLAS_GEMV_BATCH2_CPASYNC=1.
 // HIP: cp.async degrades to synchronous 8/16-byte copies.
 // Grid: (ceil(N/4),1,1)  Block: (256,1,1) — same as batch2.
 

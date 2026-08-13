@@ -1,36 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Default-ON cp.async `w4a16_gemv_batch2_cpasync` dispatch.
+//! Opt-in cp.async `w4a16_gemv_batch2_cpasync` dispatch.
 //!
-//! Same grid/block/signature as `w4a16_gemv_batch2`. Kill with
-//! `ATLAS_NO_GEMV_BATCH2_CPASYNC=1` (`=0` does **not** disable). Missing
-//! kernel handle falls back to the template `w4a16_gemv_batch2`.
+//! Same grid/block/signature as `w4a16_gemv_batch2`. GB10 cold-DRAM was
+//! 5–16% slower than template batch2, so this stays off unless
+//! `ATLAS_GEMV_BATCH2_CPASYNC=1`. Missing kernel handle falls back to
+//! the template `w4a16_gemv_batch2`.
 
 use anyhow::Result;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 use std::sync::OnceLock;
 
-/// Kill-switch env var. Presence of the name is not enough — value must be `"1"`.
-pub const DISABLE_ENV: &str = "ATLAS_NO_GEMV_BATCH2_CPASYNC";
+/// Opt-in env var. Presence of the name is not enough — value must be `"1"`.
+pub const ENABLE_ENV: &str = "ATLAS_GEMV_BATCH2_CPASYNC";
 
 const MODULE: &str = "w4a16_gemv";
 const FALLBACK: &str = "w4a16_gemv_batch2";
 const CPASYNC: &str = "w4a16_gemv_batch2_cpasync";
 
-/// ON unless `ATLAS_NO_GEMV_BATCH2_CPASYNC` is exactly `"1"`.
+/// ON only when `ATLAS_GEMV_BATCH2_CPASYNC` is exactly `"1"`.
 pub fn batch2_cpasync_from(val: Option<&str>) -> bool {
-    val != Some("1")
+    val == Some("1")
 }
 
-/// Resolve the live K=2 NVFP4 GEMV handle. Default is the cp.async kernel.
+/// Resolve the live K=2 NVFP4 GEMV handle. Default is template batch2.
 pub fn resolve_w4a16_gemv_batch2(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
     static LOGGED: OnceLock<bool> = OnceLock::new();
-    let on = batch2_cpasync_from(std::env::var(DISABLE_ENV).ok().as_deref());
+    let on = batch2_cpasync_from(std::env::var(ENABLE_ENV).ok().as_deref());
     if on {
         let h = super::super::try_kernel(gpu, MODULE, CPASYNC);
         if h.0 != 0 {
             LOGGED.get_or_init(|| {
-                tracing::info!("w4a16_gemv_batch2_cpasync ON (kill {DISABLE_ENV}=1)");
+                tracing::info!("w4a16_gemv_batch2_cpasync ON ({ENABLE_ENV}=1)");
                 true
             });
             return Ok(h);
@@ -50,11 +51,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn cpasync_ships_on_and_only_the_one_value_kills() {
-        assert!(batch2_cpasync_from(None), "unset → ON");
-        assert!(batch2_cpasync_from(Some("0")), "`=0` is NOT off");
-        assert!(batch2_cpasync_from(Some("")), "empty is NOT off");
-        assert!(!batch2_cpasync_from(Some("1")), "`=1` is the kill");
+    fn cpasync_is_opt_in() {
+        assert!(!batch2_cpasync_from(None), "unset → OFF");
+        assert!(!batch2_cpasync_from(Some("0")), "`=0` does not enable");
+        assert!(!batch2_cpasync_from(Some("")), "empty does not enable");
+        assert!(batch2_cpasync_from(Some("1")), "`=1` is the opt-in");
     }
 
     fn kernel_root() -> PathBuf {
