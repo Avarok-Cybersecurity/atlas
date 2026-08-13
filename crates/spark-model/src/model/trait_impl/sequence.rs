@@ -212,51 +212,16 @@ impl TransformerModel {
             }
         }
 
-        // Invalidate cached CUDA graphs that reference this sequence's slot
-        // — the graph was captured with this slot's KV/SSM pointers baked in,
-        // and replaying after the slot is freed would read stale data.
-        // decode_graph is keyed by slot, so drop only this slot's entry.
-        // (parking_lot::Mutex::lock() never poisons, so the previous `if let
-        // Ok(...) = .lock()` graceful-recovery branch is unreachable.)
-        if let Some(graph) = self.decode_graph.lock().remove(&seq.slot_idx)
-            && let Err(e) = self.gpu.destroy_graph(graph)
-        {
-            tracing::error!(
-                "free_sequence: destroy_graph(decode_graph[{}]): {e:#}",
-                seq.slot_idx
-            );
-        }
-        // batch_decode_graphs is now keyed by the per-row SSM slot VECTOR
-        // (decode_graph_key.rs), so a freed slot's entries are already
-        // unreachable unless the exact same vector recurs — at which point the
-        // slot has been re-claimed and its pool addresses are the same ones the
-        // graph baked (SSM pool addresses are per-SLOT and fixed for the life
-        // of the process). The blanket drain is therefore no longer required
-        // for correctness; it is KEPT deliberately — dropping it would extend a
-        // graph's lifetime across arbitrary request turnover, which is a
-        // separate (unmeasured) risk surface, and re-capture costs one eager
-        // step per completion.
-        for (_, (graph, _)) in self.batch_decode_graphs.lock().0.drain() {
-            if let Err(e) = self.gpu.destroy_graph(graph) {
-                tracing::error!("free_sequence: destroy_graph(batch_decode_graphs entry): {e:#}");
-            }
-        }
-        // Verify graphs are now slot-keyed (sibling of decode_graph fix).
-        // Drop only this slot's entry to preserve other concurrent seqs' graphs.
-        for graph_mutex in [
-            &self.verify2_graph,
-            &self.verify3_graph,
-            &self.verify4_graph,
-        ] {
-            if let Some(graph) = graph_mutex.lock().remove(&seq.slot_idx)
-                && let Err(e) = self.gpu.destroy_graph(graph)
-            {
-                tracing::error!(
-                    "free_sequence: destroy_graph(verify[{}]): {e:#}",
-                    seq.slot_idx
-                );
-            }
-        }
+        // Slot-keyed decode / K=2/3/4 verify / batched-decode graphs bake SSM
+        // pool addresses that are a function of the SLOT (fixed for process
+        // lifetime) and read dynamic KV/metadata from staging refreshed before
+        // every replay. A new occupant of this slot can replay them; LRU in
+        // `insert_batch_decode_graph` bounds batched-graph memory. Recapturing
+        // on every completion was an extra eager step per request. Policy is
+        // pinned by `decode_graph_key` tests (`*_graph_on_free` → Retain).
+        //
+        // verify_kgamma / fused still drop below: they bake a per-occupant
+        // LoRA adapter index (`lora_baked_graph_on_free` → DropThisSlot).
         // verify_kgamma_graph + fused_graph are keyed by (slot, K). They now
         // capture the LoRA bgmv-vs-installed-pair branch and read the per-seq
         // seq_slot buffer, so a freed slot's entries MUST be destroyed — else a

@@ -24,10 +24,11 @@
 //!   the dummy slot (its recurrent state never advances), and the converse
 //!   replay writes a real slot that is not in this batch.
 //!
-//! Both were masked in the concurrency benchmark by the blanket cache drain
-//! in `free_sequence` (every completion empties the map), and both are
-//! reachable under continuous load. Keying on the slot vector makes replay
-//! correct by construction instead of by invariant.
+//! Both are reachable under continuous load. Keying on the slot vector makes
+//! replay correct by construction instead of by invariant, so `free_sequence`
+//! retains this cache (LRU at [`batch_decode_graph_cap`] bounds memory). A
+//! blanket drain on every completion would throw away the measured +2.8/+3.2%
+//! and recapture an identical slot-vector graph for the next occupant.
 //!
 //! Multi-seq decode graphs are DEFAULT-ON since 2026-07-27
 //! (`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` disables), validated: C=8
@@ -59,6 +60,64 @@ use crate::traits::SequenceState;
 /// (cap 80). Pure LRU bound — bounds graph memory, never pins eager.
 pub(super) fn batch_decode_graph_cap(decode_meta_rows: usize) -> usize {
     16 + decode_meta_rows
+}
+
+/// What happens to a graph cache when a sequence leaves its slot.
+///
+/// Slot-keyed graphs bake SSM pool addresses that are a pure function of
+/// `(layer, slot)` for the life of the process, plus staging buffers that
+/// decode refreshes before every replay. A new occupant of the same slot
+/// can legally replay them. Graphs that bake a per-occupant LoRA adapter
+/// index (`verify_kgamma` / `fused`) cannot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FreeSlotGraphPolicy {
+    Retain,
+    DropThisSlot,
+}
+
+pub(super) fn decode_graph_on_free() -> FreeSlotGraphPolicy {
+    FreeSlotGraphPolicy::Retain
+}
+
+pub(super) fn batch_decode_graphs_on_free() -> FreeSlotGraphPolicy {
+    FreeSlotGraphPolicy::Retain
+}
+
+pub(super) fn verify_k_graph_on_free() -> FreeSlotGraphPolicy {
+    FreeSlotGraphPolicy::Retain
+}
+
+pub(super) fn lora_baked_graph_on_free() -> FreeSlotGraphPolicy {
+    FreeSlotGraphPolicy::DropThisSlot
+}
+
+/// Insert `graph` at `key`, evicting the LRU entry when at `cap` and the key
+/// is new. Returns handles the caller must `destroy_graph` (evicted LRU
+/// and/or the previous occupant of `key`).
+pub(super) fn lru_insert_graph(
+    cache: &mut (HashMap<Vec<u32>, (GraphHandle, u64)>, u64),
+    cap: usize,
+    key: Vec<u32>,
+    graph: GraphHandle,
+) -> Vec<GraphHandle> {
+    let mut drop = Vec::new();
+    if cache.0.len() >= cap
+        && !cache.0.contains_key(&key)
+        && let Some(evict) = cache
+            .0
+            .iter()
+            .min_by_key(|(_, entry)| entry.1)
+            .map(|(k, _)| k.clone())
+        && let Some((old, _)) = cache.0.remove(&evict)
+    {
+        drop.push(old);
+    }
+    cache.1 += 1;
+    let tick = cache.1;
+    if let Some((old, _)) = cache.0.insert(key, (graph, tick)) {
+        drop.push(old);
+    }
+    drop
 }
 
 /// Graph the batches the padded_n-keyed cache could not legally cover — the
@@ -137,19 +196,104 @@ impl TransformerModel {
         key: Vec<u32>,
         graph: GraphHandle,
     ) {
-        if cache.0.len() >= batch_decode_graph_cap(self.buffers.decode_meta().rows())
-            && let Some(evict) = cache
-                .0
-                .iter()
-                .min_by_key(|(_, entry)| entry.1)
-                .map(|(k, _)| k.clone())
-            && let Some((old, _)) = cache.0.remove(&evict)
-            && let Err(e) = self.gpu.destroy_graph(old)
-        {
-            tracing::warn!("batched-decode graph evict: {e:#}");
+        let cap = batch_decode_graph_cap(self.buffers.decode_meta().rows());
+        for old in lru_insert_graph(cache, cap, key, graph) {
+            if let Err(e) = self.gpu.destroy_graph(old) {
+                tracing::warn!("batched-decode graph evict: {e:#}");
+            }
         }
-        cache.1 += 1;
-        let tick = cache.1;
-        cache.0.insert(key, (graph, tick));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spark_runtime::gpu::GraphHandle;
+
+    fn empty_cache() -> (HashMap<Vec<u32>, (GraphHandle, u64)>, u64) {
+        (HashMap::new(), 0)
+    }
+
+    #[test]
+    fn slot_keyed_decode_graphs_survive_occupant_change() {
+        assert_eq!(decode_graph_on_free(), FreeSlotGraphPolicy::Retain);
+        assert_eq!(batch_decode_graphs_on_free(), FreeSlotGraphPolicy::Retain);
+        assert_eq!(verify_k_graph_on_free(), FreeSlotGraphPolicy::Retain);
+        assert_eq!(
+            lora_baked_graph_on_free(),
+            FreeSlotGraphPolicy::DropThisSlot
+        );
+    }
+
+    #[test]
+    fn lru_insert_below_cap_drops_nothing() {
+        let mut cache = empty_cache();
+        let drop = lru_insert_graph(&mut cache, 2, vec![0], GraphHandle(1));
+        assert!(drop.is_empty());
+        assert_eq!(cache.0.len(), 1);
+    }
+
+    #[test]
+    fn lru_insert_at_cap_evicts_oldest_not_the_new_key() {
+        let mut cache = empty_cache();
+        lru_insert_graph(&mut cache, 2, vec![0], GraphHandle(10));
+        lru_insert_graph(&mut cache, 2, vec![1], GraphHandle(11));
+        let drop = lru_insert_graph(&mut cache, 2, vec![2], GraphHandle(12));
+        assert_eq!(drop.iter().map(|g| g.0).collect::<Vec<_>>(), vec![10]);
+        assert!(cache.0.contains_key(&vec![1]));
+        assert!(cache.0.contains_key(&vec![2]));
+        assert!(!cache.0.contains_key(&vec![0]));
+    }
+
+    #[test]
+    fn replacing_an_existing_key_destroys_the_old_handle_without_evicting_peers() {
+        let mut cache = empty_cache();
+        lru_insert_graph(&mut cache, 2, vec![0], GraphHandle(10));
+        lru_insert_graph(&mut cache, 2, vec![1], GraphHandle(11));
+        let drop = lru_insert_graph(&mut cache, 2, vec![0], GraphHandle(99));
+        assert_eq!(drop.iter().map(|g| g.0).collect::<Vec<_>>(), vec![10]);
+        assert_eq!(cache.0.len(), 2);
+        assert_eq!(cache.0.get(&vec![0]).unwrap().0.0, 99);
+        assert_eq!(cache.0.get(&vec![1]).unwrap().0.0, 11);
+    }
+
+    #[test]
+    fn cap_is_headroom_over_decode_meta_rows() {
+        assert_eq!(batch_decode_graph_cap(32), 48);
+        assert_eq!(batch_decode_graph_cap(64), 80);
+    }
+
+    /// NEGATIVE: `free_sequence_dispatch` must not drain slot-keyed decode
+    /// graphs. Recapturing on every completion was the cost this PR removes.
+    /// LoRA-baked `verify_kgamma` / `fused` still drop (adapter index baked).
+    ///
+    /// PROVEN BY: restoring `self.decode_graph.lock()` or
+    /// `self.batch_decode_graphs.lock()` inside `free_sequence_dispatch`
+    /// turns this red.
+    #[test]
+    fn free_sequence_does_not_destroy_slot_keyed_decode_graphs() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/model/trait_impl/sequence.rs"),
+        )
+        .unwrap();
+        let start = src
+            .find("fn free_sequence_dispatch")
+            .expect("free_sequence_dispatch");
+        let body = &src[start..];
+        let end = body.find("\n    pub(super) fn ").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            !body.contains("self.decode_graph.lock()"),
+            "free_sequence must retain decode_graph"
+        );
+        assert!(
+            !body.contains("self.batch_decode_graphs.lock()"),
+            "free_sequence must retain batch_decode_graphs"
+        );
+        assert!(
+            body.contains("verify_kgamma_graph") && body.contains("fused_graph"),
+            "LoRA-baked graphs still drop"
+        );
     }
 }
