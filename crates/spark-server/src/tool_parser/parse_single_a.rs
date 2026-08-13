@@ -6,13 +6,28 @@ use super::*;
 /// Parse a body whose outer `</tool_call>` delimiter was observed. A bare
 /// identifier is Poolside's zero-argument shape and is only safe to recognize
 /// here: the same bytes without an outer close are an incomplete envelope.
-pub(super) fn parse_complete_call(text: &str, idx: u32) -> Option<ToolCall> {
+pub(super) fn parse_complete_call(
+    text: &str,
+    idx: u32,
+    promote_bare_names: bool,
+) -> Option<ToolCall> {
     let body = text.trim();
     if is_tool_name_component(body) {
-        parse_poolside_v1_call(body)
-    } else {
-        parse_one_call(body, idx)
+        if promote_bare_names {
+            return parse_poolside_v1_call(body);
+        }
+        // Pre-batch4 behaviour for every non-Poolside format: a bare
+        // identifier inside `<tool_call>` is malformed output, not a call.
+        // Logged (not silent) so one benchmark run quantifies how often the
+        // shape occurs — the 2026-08 bfcl-subset-echolp residual hunt needs
+        // exactly this counter.
+        tracing::warn!(
+            "tool_parser: dropped bare-identifier <tool_call> body {body:?} \
+             (parser does not promote bare names; pre-batch4 behaviour)"
+        );
+        return None;
     }
+    parse_one_call(body, idx)
 }
 
 /// Auto-detect and parse inner content of a `<tool_call>` block.

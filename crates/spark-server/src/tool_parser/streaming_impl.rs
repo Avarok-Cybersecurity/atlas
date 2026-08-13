@@ -20,6 +20,7 @@ impl StreamingToolDetector {
             buffer: String::new(),
             inside_tag: false,
             inside_dsml: false,
+            promote_bare_names: false,
             call_counter: 0,
             emitted_tool_calls: false,
             current_tc_name: None,
@@ -31,6 +32,13 @@ impl StreamingToolDetector {
             emitted_keys: Vec::new(),
             incremental_emitted: false,
         }
+    }
+
+    /// Opt this detector into Poolside v1's bare-name zero-argument calls.
+    /// Wired from `ToolCallParser::promotes_bare_call_names` at stream setup;
+    /// request-scoped, so `reset()` deliberately leaves it alone.
+    pub fn set_promote_bare_names(&mut self, on: bool) {
+        self.promote_bare_names = on;
     }
 
     /// Reset the detector state. Called when thinking→content transition occurs
@@ -115,7 +123,9 @@ impl StreamingToolDetector {
                         // Buffered mode OR never-streamed fallback: emit the full
                         // canonical args once (unchanged legacy behaviour).
                         // Parse the complete inner content to extract JSON arguments.
-                        if let Some(tc) = parse_complete_call(&inner, self.call_counter) {
+                        if let Some(tc) =
+                            parse_complete_call(&inner, self.call_counter, self.promote_bare_names)
+                        {
                             // Always emit when the parser produced a named call,
                             // even if arguments are `{}`. Argument-less tools
                             // (e.g. get_current_time) are legitimate. The bare-
@@ -157,7 +167,9 @@ impl StreamingToolDetector {
                                 self.emitted_tool_calls = true;
                                 outputs.push(DetectorOutput::ToolCall(tc, call_idx));
                             }
-                        } else if let Some(tc) = parse_complete_call(trimmed, self.call_counter) {
+                        } else if let Some(tc) =
+                            parse_complete_call(trimmed, self.call_counter, self.promote_bare_names)
+                        {
                             self.call_counter += 1;
                             self.emitted_tool_calls = true;
                             outputs.push(DetectorOutput::ToolCall(tc, idx));
