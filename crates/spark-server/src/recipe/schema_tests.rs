@@ -22,13 +22,18 @@ fn the_three_renames_are_applied() {
 }
 
 #[test]
-fn a_true_boolean_is_a_bare_flag_and_a_false_one_is_omitted() {
+fn a_presence_only_boolean_is_a_bare_flag_and_a_false_one_is_omitted() {
+    // `--speculative` is a clap SetTrue flag: it takes no value, so `false`
+    // can only be expressed by not passing it — which the shipped
+    // qwen3.5-0.8b recipe (`speculative: false`) depends on.
     assert_eq!(
-        argv_for("enable_prefix_caching", "true"),
-        Some(vec!["--enable-prefix-caching".to_string()])
+        argv_for("speculative", "true"),
+        Some(vec!["--speculative".to_string()])
     );
-    // `--enable-prefix-caching false` is not accepted by a SetTrue flag, so a
-    // recipe restating the default must not break the parse.
+    assert_eq!(argv_for("speculative", "false"), None);
+    // `enable_prefix_caching` is `bool` (not `Option<bool>`), so the derive
+    // gives it SetTrue despite its `num_args = 0..=1` — clap, not the field
+    // syntax, is the authority the presence-only set is read from.
     assert_eq!(argv_for("enable_prefix_caching", "false"), None);
 }
 
@@ -39,6 +44,19 @@ fn a_flag_that_takes_an_explicit_bool_keeps_its_value() {
     assert_eq!(
         argv_for("disable_tool_grammar", "false"),
         Some(vec!["--disable-tool-grammar".into(), "false".into()])
+    );
+    // The Option<bool> levers are the case the old hand-kept exception list
+    // missed: absent leaves the legacy env fallback live, explicit false
+    // seals it, so rendering `false` as NOTHING changed the config.
+    assert_eq!(
+        argv_for("gdn_fused_norm", "false"),
+        Some(vec!["--gdn-fused-norm".into(), "false".into()])
+    );
+    // `--ssm-tail-midchunk` REQUIRES a value (ArgAction::Set, one arg), so
+    // `true` must be passed through too — a bare flag fails its parse.
+    assert_eq!(
+        argv_for("ssm_tail_midchunk", "true"),
+        Some(vec!["--ssm-tail-midchunk".into(), "true".into()])
     );
 }
 

@@ -13,6 +13,8 @@
 //! question, and getting either wrong sends a multi-gigabyte request at the
 //! wrong repository.
 
+use crossterm::event::{KeyCode, KeyEvent};
+
 use super::app::{App, MainSub};
 use super::section::Section;
 
@@ -31,6 +33,69 @@ impl App {
     pub(super) fn download_selected_model(&mut self) {
         let Some(model) = self.selected_model() else {
             self.toast("no model selected".to_string(), true);
+            return;
+        };
+        let Some(root) = self.cache_root() else {
+            self.toast(
+                "no HuggingFace cache directory to download into".to_string(),
+                true,
+            );
+            return;
+        };
+        // A second download is refused by `DownloadState::start` with a
+        // message, which is correct as the backstop but a dead end as UX: it
+        // names the running job and leaves the user to work out that `x` on
+        // ANOTHER row is the way forward. Ask instead.
+        if let Some(running) = self.download.job.as_ref().map(|j| j.repo.clone())
+            && running != model
+        {
+            self.download_switch = Some((running, model));
+            return;
+        }
+        let (text, error) = self.download.start(&model, root);
+        self.toast(text, error);
+    }
+
+    /// Answer the "one download at a time" question.
+    ///
+    /// Only an affirmative goes through; every other key keeps the running
+    /// download. Same rule and the same reason as `answer_quit_prompt`: the
+    /// reflex a user learns on one confirmation has to be safe on the other,
+    /// so a fat-finger can never throw away a transfer in progress.
+    ///
+    /// `x` because the help overlay already teaches it as "stop the running
+    /// download"; `y` because the quit prompt already taught the affirmative.
+    pub(super) fn answer_download_switch(&mut self, key: KeyEvent) -> bool {
+        let Some((running, wanted)) = self.download_switch.take() else {
+            return false;
+        };
+        if matches!(
+            key.code,
+            KeyCode::Char('x') | KeyCode::Char('y') | KeyCode::Char('Y')
+        ) {
+            // `cancel` returns None when there was nothing to stop — the job
+            // can settle between the question being asked and answered.
+            if let Some((text, error)) = self.download.cancel() {
+                self.toast(text, error);
+            }
+            // Queue rather than start: the slot is not free until the worker
+            // acknowledges, and starting now would break the one-job rule.
+            self.pending_start = Some(wanted.clone());
+            self.toast(format!("{wanted} starts when {running} settles"), false);
+        }
+        true
+    }
+
+    /// Start a queued download once the slot is actually free.
+    ///
+    /// Called from the event loop after `pump`. Covers every way A can end —
+    /// cancelled, abandoned, failed, or finished on its own — because the
+    /// user's expressed intent was B either way.
+    pub(super) fn start_pending_download(&mut self) {
+        if self.download.job.is_some() {
+            return;
+        }
+        let Some(model) = self.pending_start.take() else {
             return;
         };
         let Some(root) = self.cache_root() else {

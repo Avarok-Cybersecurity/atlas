@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// `[behavior]` MODEL.toml parsing for build.rs. Split from build_parse.rs
-// (500-LoC cap). Included via `#[path = "build_behavior.rs"] mod build_behavior;`.
+// `[behavior]` MODEL.toml parsing for build.rs. Split from `build_parse.rs`
+// (500-LoC cap). Included as a child module of `build_parse`, so `super::`
+// reaches its items and `crate::` reaches build.rs types.
 
 /// Parsed `[behavior]` table from a model's MODEL.toml. Field defaults
 /// match `ModelBehavior::default()` so an absent table / absent field is
 /// behavior-neutral.
 #[derive(Clone)]
-pub(super) struct ParsedBehavior {
+pub(crate) struct ParsedBehavior {
     pub thinking_in_tools: bool,
     pub max_thinking_budget: u32,
     pub thinking_default: bool,
@@ -15,8 +16,39 @@ pub(super) struct ParsedBehavior {
     pub default_kv_dtype: String,
     pub default_num_drafts: u32,
     pub disable_tool_steering: bool,
+    pub disable_cwd_hint_injection: bool,
+    pub use_sampling_presets_for_core: bool,
     pub tool_call_parser: String,
     pub enable_loop_watchdog: bool,
+    /// Gate for the THINKING-phase token-loop watchdog, which force-injects
+    /// `</think>` when it detects a period-4..20 repeat in the reasoning tail.
+    /// Defaults TRUE (the behaviour every model had before this flag existed).
+    /// Set false for models where it misfires: force-closing a reasoning block
+    /// the model did not choose to end leaves it in a state it cannot continue
+    /// from, and the post-close content degenerates into token spam.
+    pub enable_think_loop_watchdog: bool,
+    /// Honor an EOS the model samples INSIDE a `<think>` block by implicitly
+    /// closing the block, instead of discarding the token and forcing the
+    /// model to keep reasoning.
+    ///
+    /// Defaults FALSE (the behaviour every model had before this flag
+    /// existed): a suppressed mid-think EOS is dropped and the model recovers,
+    /// closes `</think>` itself and goes on to emit its tool call.
+    ///
+    /// ★ Why this is a flag and not unconditional. Landed unconditionally in
+    /// the p350 stack, where it fixed a real Laguna-S-2.1 stall. But for a
+    /// model that samples a spurious mid-think EOS and would otherwise
+    /// recover, closing the block early leaves only the post-think content
+    /// guard (POST_THINK_MIN_CONTENT = 16) holding the turn open: the model
+    /// emits ~16 tokens of narration, its next EOS is honored, and the turn
+    /// ends WITH NO TOOL CALL. Measured on Qwen3.6-35B-A3B-FP8 (thinking on by
+    /// default, tools active): agentic runs collapsed to a single announcement
+    /// sentence and an empty workspace, 8/10 on three consecutive N=10 tiers,
+    /// against 10/10 without the change. So it is opt-in per model.
+    pub honor_eos_inside_thinking: bool,
+    /// Cap the thinking budget at 90% of the request's `max_tokens` (true), or
+    /// let `max_thinking_budget` be the sole cap (false, vLLM single-budget).
+    pub cap_thinking_at_max_tokens: bool,
     pub min_p_floor: f32,
     pub temperature_max: f32,
     pub think_loop_min_repeats: u32,
@@ -47,8 +79,13 @@ impl Default for ParsedBehavior {
             default_kv_dtype: String::new(),
             default_num_drafts: 0,
             disable_tool_steering: false,
+            disable_cwd_hint_injection: false,
+            use_sampling_presets_for_core: false,
             tool_call_parser: String::new(),
             enable_loop_watchdog: false,
+            enable_think_loop_watchdog: true,
+            honor_eos_inside_thinking: false,
+            cap_thinking_at_max_tokens: true,
             min_p_floor: 0.0,
             temperature_max: 0.0,
             think_loop_min_repeats: 3,
@@ -70,7 +107,7 @@ impl Default for ParsedBehavior {
 
 /// Parse `[behavior]` from MODEL.toml. Absent table or parse error →
 /// `ParsedBehavior::default()`.
-pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
+pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
         return ParsedBehavior::default();
@@ -113,6 +150,14 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("disable_tool_steering"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let disable_cwd_hint_injection = b
+        .and_then(|v| v.get("disable_cwd_hint_injection"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let use_sampling_presets_for_core = b
+        .and_then(|v| v.get("use_sampling_presets_for_core"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let tool_call_parser = b
         .and_then(|v| v.get("tool_call_parser"))
         .and_then(|v| v.as_str())
@@ -122,10 +167,22 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("enable_loop_watchdog"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let no_decode_graphs = b
-        .and_then(|v| v.get("no_decode_graphs"))
+    let enable_think_loop_watchdog = b
+        .and_then(|v| v.get("enable_think_loop_watchdog"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    // Default FALSE: pre-p350 behaviour (discard a mid-think EOS, let the
+    // model recover and emit its tool call). Opt in per model.
+    let honor_eos_inside_thinking = b
+        .and_then(|v| v.get("honor_eos_inside_thinking"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // Default true: keep the 90%-of-max_tokens thinking cap. Set false for
+    // vLLM-style single-budget behavior (only max_thinking_budget caps).
+    let cap_thinking_at_max_tokens = b
+        .and_then(|v| v.get("cap_thinking_at_max_tokens"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     // Server-side sampling safety floor/ceiling (0.0 = disabled). See
     // ModelBehavior::{min_p_floor,temperature_max} for rationale.
     let min_p_floor = b
@@ -187,6 +244,10 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let no_decode_graphs = b
+        .and_then(|v| v.get("no_decode_graphs"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let tool_retry = b
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
@@ -199,8 +260,13 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         default_kv_dtype,
         default_num_drafts,
         disable_tool_steering,
+        disable_cwd_hint_injection,
+        use_sampling_presets_for_core,
         tool_call_parser,
         enable_loop_watchdog,
+        enable_think_loop_watchdog,
+        honor_eos_inside_thinking,
+        cap_thinking_at_max_tokens,
         min_p_floor,
         temperature_max,
         think_loop_min_repeats,

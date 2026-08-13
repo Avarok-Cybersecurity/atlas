@@ -15,7 +15,7 @@ use crate::tui::data::library::LibraryEntry;
 use crate::tui::lib_state::View;
 use crate::tui::render::harness::{has, screen};
 
-fn recipe(stem: &str) -> Recipe {
+pub(super) fn recipe(stem: &str) -> Recipe {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/recipes/qwen3.6")
         .join(format!("{stem}.yaml"));
@@ -26,7 +26,7 @@ fn recipe(stem: &str) -> Recipe {
     .expect("parses")
 }
 
-fn local(id: &str, has_weights: bool) -> LibraryEntry {
+pub(super) fn local(id: &str, has_weights: bool) -> LibraryEntry {
     LibraryEntry {
         id: id.to_string(),
         snapshot_dir: Default::default(),
@@ -44,7 +44,7 @@ fn local(id: &str, has_weights: bool) -> LibraryEntry {
 }
 
 /// A Library holding one recipe whose weights are on disk.
-fn lib(recipes: Vec<Recipe>, locals: Vec<LibraryEntry>) -> App {
+pub(super) fn lib(recipes: Vec<Recipe>, locals: Vec<LibraryEntry>) -> App {
     let mut a = crate::tui::render::tests::app();
     a.section = Section::Library;
     a.library = locals;
@@ -230,16 +230,30 @@ fn a_search_that_matches_nothing_says_so_rather_than_looking_empty() {
 }
 
 #[test]
-fn the_search_box_echoes_what_is_being_typed_and_keeps_it_after() {
+fn the_search_field_is_visible_before_anyone_knows_the_key_for_it() {
+    // The defect this field fixes was discoverability: `/` worked for months
+    // and nobody found it, because until pressed it appeared nowhere.
+    let a = flagship();
+    let rows = screen(&a, 200, 40);
+    assert!(
+        has(&rows, "⌕ search models — / or click"),
+        "the idle field must name both ways in:\n{rows:#?}"
+    );
+}
+
+#[test]
+fn the_search_field_echoes_what_is_being_typed_and_keeps_it_after() {
     let mut a = flagship();
     a.lib.filter = "qwen".into();
     a.lib.filter_editing = true;
-    assert!(has(&screen(&a, 200, 40), "search: qwen▏"));
+    assert!(has(&screen(&a, 200, 40), "⌕ qwen▏"));
 
     a.lib.filter_editing = false;
     let rows = screen(&a, 200, 40);
-    assert!(has(&rows, "search: qwen"), "{rows:#?}");
-    assert!(!has(&rows, "search: qwen▏"));
+    // A kept filter states its effect — how many rows of how many survive it —
+    // because a silently-filtered list reads as missing models.
+    assert!(has(&rows, "⌕ qwen  — 1 of 1 · / edits"), "{rows:#?}");
+    assert!(!has(&rows, "qwen▏"));
 }
 
 #[test]
@@ -294,7 +308,7 @@ fn the_settings_form_marks_the_rows_that_were_changed_and_previews_the_command()
     a.lib.open_cards().expect("opens");
     a.lib.open_config().expect("opens");
     assert_eq!(a.lib.view, View::Config);
-    let (key, _, _) = a.lib.config_rows()[0].clone();
+    let key = a.lib.config_rows()[0].key.clone();
     a.lib.overrides.insert(key.clone(), "4242".into());
 
     let rows = screen(&a, 200, 50);
@@ -384,4 +398,92 @@ fn every_library_pane_survives_narrow_and_short_terminals() {
     for (w, h) in [(20u16, 4u16), (20, 8), (40, 12), (200, 3)] {
         assert_eq!(screen(&a, w, h).len(), h as usize, "config at {w}x{h}");
     }
+}
+
+/// The reported confusion this badge exists for: a user pressed `d` on a model
+/// that was already fully downloaded, the no-op finished inside one frame, and
+/// they concluded downloads were broken. The mark glyph was on screen the
+/// whole time; a state needs a WORD.
+#[test]
+fn every_weights_state_is_a_word_on_the_row_not_only_a_mark_glyph() {
+    let r = recipe("qwen3.6-35b-a3b-fp8-mtp");
+    let model = r.model.clone();
+
+    let complete = lib(vec![r.clone()], vec![local(&model, true)]);
+    let rows = screen(&complete, 200, 50);
+    assert!(has(&rows, " on disk "), "{rows:#?}");
+
+    let partial = lib(vec![r.clone()], vec![local(&model, false)]);
+    let rows = screen(&partial, 200, 50);
+    assert!(has(&rows, " partial "), "{rows:#?}");
+
+    let absent = lib(vec![r], Vec::new());
+    let rows = screen(&absent, 200, 50);
+    assert!(has(&rows, " not downloaded "), "{rows:#?}");
+    assert!(
+        !has(&rows, " on disk "),
+        "absence must not wear the presence badge:\n{rows:#?}"
+    );
+
+    let running = downloading(4_000_000_000, 34_900_000_000);
+    let rows = screen(&running, 200, 50);
+    assert!(has(&rows, " downloading "), "{rows:#?}");
+}
+
+/// A mixed list must read row by row: each row wears its own state, none
+/// inherits a neighbour's.
+#[test]
+fn a_mixed_list_shows_each_rows_own_state() {
+    let mut here = recipe("qwen3.6-35b-a3b-fp8-mtp");
+    here.model = "org/model-here".into();
+    let mut gone = recipe("qwen3.6-35b-a3b-fp8-mtp");
+    gone.model = "org/model-absent".into();
+    let a = lib(vec![here, gone], vec![local("org/model-here", true)]);
+    let rows = screen(&a, 200, 50);
+    let here_row = rows
+        .iter()
+        .position(|r| r.contains("org/model-here"))
+        .expect("row");
+    let gone_row = rows
+        .iter()
+        .position(|r| r.contains("org/model-absent"))
+        .expect("row");
+    // The badge is on line 2 of each 3-line row.
+    assert!(rows[here_row + 1].contains(" on disk "), "{rows:#?}");
+    assert!(rows[gone_row + 1].contains(" not downloaded "), "{rows:#?}");
+}
+
+/// The form built one line per row for ALL rows with no windowing — unlike
+/// the list, the cards and every modal — so on a short terminal `j` walked
+/// the cursor below the fold, and `select_row` after an add landed it at the
+/// end of the form: exactly where the clipping was.
+#[test]
+fn the_settings_form_scrolls_to_keep_the_selected_row_on_screen() {
+    let mut a = flagship();
+    a.lib.open_cards().expect("opens");
+    a.lib.open_config().expect("opens");
+    let rows_in_form = a.lib.config_rows();
+    let first_key = rows_in_form.first().expect("has rows").key.clone();
+    let last_key = rows_in_form.last().expect("has rows").key.clone();
+    a.lib.row = rows_in_form.len() - 1;
+
+    // Short enough that head + every row + preview cannot all fit.
+    let rows = screen(&a, 100, 16);
+    assert!(
+        has(&rows, &last_key),
+        "the selected (last) row is on screen:\n{rows:#?}"
+    );
+    assert!(
+        !has(&rows, &first_key),
+        "the top scrolled away to make room:\n{rows:#?}"
+    );
+    assert!(
+        has(&rows, "COMMAND") || has(&rows, "spark "),
+        "the preview stays pinned at the bottom:\n{rows:#?}"
+    );
+
+    // Back at the top, the first row is the one on screen again.
+    a.lib.row = 0;
+    let rows = screen(&a, 100, 16);
+    assert!(has(&rows, &first_key), "{rows:#?}");
 }

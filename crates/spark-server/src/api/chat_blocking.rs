@@ -242,7 +242,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
 }
 
 /// Decode `(reasoning_content, output_text)` from the scheduler's
-/// response. When `enable_thinking=true`, split at the last `</think>`
+/// response. When `enable_thinking=true`, split at the first `</think>`
 /// token. When `enable_thinking=false`, decode all output_tokens as
 /// content — mirrors streaming's `thinking_done = !enable_thinking`
 /// init in chat_stream/state.rs and recovers the answer Qwen3.x emits
@@ -253,15 +253,12 @@ fn decode_response_text(
     response: &super::inference_types::InferenceResponse,
     enable_thinking: bool,
 ) -> (Option<String>, String) {
+    let output_tokens =
+        output_tokens_without_stop(&response.output_tokens, response.finish_reason.as_str());
     if let Some(think_tok) = state.think_end_token_id {
-        let last_think_pos = if enable_thinking {
-            response.output_tokens.iter().rposition(|&t| t == think_tok)
-        } else {
-            None
-        };
-        if let Some(pos) = last_think_pos {
-            let thinking_tokens = &response.output_tokens[..pos];
-            let content_tokens = &response.output_tokens[pos + 1..];
+        if let Some((thinking_tokens, content_tokens)) =
+            split_at_first_think_end(output_tokens, think_tok, enable_thinking)
+        {
             let reasoning = if !thinking_tokens.is_empty() {
                 state
                     .tokenizer
@@ -271,26 +268,106 @@ fn decode_response_text(
             } else {
                 None
             };
-            let content = state
-                .tokenizer
-                .decode(content_tokens)
-                .unwrap_or_default()
-                .trim_start()
-                .to_string();
+            // The split consumes only the FIRST close. Laguna emits the close
+            // more than once (observed: [19, answer, 19, answer] for a question
+            // it declines to reason about), so scrub any survivor — the
+            // streaming path has always done this, the blocking path did not,
+            // which is why stream:false leaked '</think>' into content while
+            // stream:true did not.
+            let content = super::strip::scrub_think_markers(
+                state
+                    .tokenizer
+                    .decode(content_tokens)
+                    .unwrap_or_default()
+                    .trim_start(),
+            );
             return (reasoning, content);
         }
-        let text = state
-            .tokenizer
-            .decode(&response.output_tokens)
-            .unwrap_or_default();
-        (None, text)
+        // Fallback: the exact close TOKEN was not found. That does not mean
+        // the model never closed — it routinely spells the close as ordinary
+        // BPE tokens instead of id 19, because the scheduler masks id 19:
+        // PostCloseThinkMask pins logits[19] = -inf once think_ended is set,
+        // and MidWordThinkEndMask masks it at ~93% of thinking positions. Both
+        // push probability mass onto the text spelling ["</", "think", ">"],
+        // which decodes byte-identically and is invisible to every `== 19`
+        // comparison in the stack.
+        //
+        // So fall back to the STRING-level reasoning parser rather than
+        // dumping everything into content. It is configured for this model and
+        // was previously unreachable here (the `else` below only runs when
+        // think_end_token_id is None), and it handles the unterminated case by
+        // routing the chain of thought to reasoning instead of content.
+        let text = state.tokenizer.decode(output_tokens).unwrap_or_default();
+        let (reasoning, content) =
+            extract_thinking(&text, enable_thinking, state.reasoning_parser.as_deref());
+        (reasoning, super::strip::scrub_think_markers(&content))
     } else {
-        let text = state
-            .tokenizer
-            .decode(&response.output_tokens)
-            .unwrap_or_default();
+        let text = state.tokenizer.decode(output_tokens).unwrap_or_default();
         extract_thinking(&text, enable_thinking, state.reasoning_parser.as_deref())
     }
+}
+
+/// Split native reasoning from assistant content at the first end marker.
+/// Any later marker belongs to post-reasoning output and must not move an
+/// already-complete answer or tool call back into the reasoning channel.
+fn split_at_first_think_end(
+    tokens: &[u32],
+    think_end_token: u32,
+    enable_thinking: bool,
+) -> Option<(&[u32], &[u32])> {
+    if !enable_thinking {
+        return None;
+    }
+
+    let pos = tokens.iter().position(|&token| token == think_end_token)?;
+    Some((&tokens[..pos], &tokens[pos + 1..]))
+}
+
+/// The scheduler retains a terminal stop token in blocking output for usage
+/// accounting. Do not expose its decoded text when a tokenizer does not mark
+/// that EOS token as special (Laguna's `</assistant>` is one such token).
+fn output_tokens_without_stop<'a>(tokens: &'a [u32], finish_reason: &str) -> &'a [u32] {
+    if finish_reason == "stop" {
+        tokens.split_last().map_or(tokens, |(_, visible)| visible)
+    } else {
+        tokens
+    }
+}
+
+/// Recover tool calls from reasoning for legacy parsers that depend on F7.
+/// Poolside v1 uses native interleaved reasoning: only post-reasoning content
+/// is executable, so an envelope in the reasoning channel remains trace text.
+pub(super) fn extract_hoisted_tool_calls(
+    reasoning_content: Option<&str>,
+    parser_name: Option<&str>,
+) -> (Option<String>, Vec<tool_parser::ToolCall>) {
+    let Some(reasoning) = reasoning_content else {
+        return (None, Vec::new());
+    };
+    if parser_name == Some("poolside_v1") {
+        return (Some(reasoning.to_string()), Vec::new());
+    }
+
+    tool_parser::parse_tool_calls(reasoning)
+}
+
+/// Merge calls recovered from reasoning with calls in assistant content.
+///
+/// Some reasoning models emit the same native tool envelope immediately
+/// before and after their final `</think>`. Prefer the content copy in that
+/// case, while preserving intentional repeated calls within either channel.
+pub(super) fn merge_hoisted_tool_calls(
+    mut hoisted: Vec<tool_parser::ToolCall>,
+    parsed: Vec<tool_parser::ToolCall>,
+) -> Vec<tool_parser::ToolCall> {
+    hoisted.retain(|candidate| {
+        !parsed.iter().any(|call| {
+            call.function.name == candidate.function.name
+                && call.function.arguments == candidate.function.arguments
+        })
+    });
+    hoisted.extend(parsed);
+    hoisted
 }
 
 /// Core finalization: usage assembly, metrics, and the rate-limit
@@ -392,5 +469,86 @@ mod stop_match_corrected_tests {
             stop_match_corrected(FinishReason::Other(FINISH_REASON_TIMEOUT.into()), true),
             FinishReason::Other(FINISH_REASON_TIMEOUT.into())
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_hoisted_tool_calls, merge_hoisted_tool_calls, output_tokens_without_stop,
+        split_at_first_think_end,
+    };
+    use crate::tool_parser::{FunctionCall, ToolCall};
+
+    fn tool_call(id: &str, city: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "get_weather".into(),
+                arguments: format!(r#"{{"city":"{city}"}}"#),
+            },
+        }
+    }
+
+    #[test]
+    fn duplicate_call_across_reasoning_and_content_is_emitted_once() {
+        let merged = merge_hoisted_tool_calls(
+            vec![tool_call("reasoning", "Boston")],
+            vec![tool_call("content", "Boston")],
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "content");
+    }
+
+    #[test]
+    fn distinct_calls_across_reasoning_and_content_are_preserved() {
+        let merged = merge_hoisted_tool_calls(
+            vec![tool_call("reasoning", "Boston")],
+            vec![tool_call("content", "Seattle")],
+        );
+
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn blocking_decode_excludes_terminal_stop_token() {
+        let tokens = [10, 11, 24];
+
+        assert_eq!(output_tokens_without_stop(&tokens, "stop"), &[10, 11]);
+        assert_eq!(output_tokens_without_stop(&tokens, "length"), &tokens);
+    }
+
+    #[test]
+    fn blocking_thinking_split_uses_first_end_token() {
+        let tokens = [10, 19, 20, 19, 30];
+
+        let split = split_at_first_think_end(&tokens, 19, true);
+
+        assert_eq!(split, Some((&[10][..], &[20, 19, 30][..])));
+        assert_eq!(split_at_first_think_end(&tokens, 19, false), None);
+    }
+
+    #[test]
+    fn poolside_tool_call_in_reasoning_is_not_hoisted() {
+        let reasoning = "plan <tool_call>write_file<arg_key>path</arg_key>\
+            <arg_value>/tmp/x</arg_value></tool_call> more";
+
+        let (preserved, calls) = extract_hoisted_tool_calls(Some(reasoning), Some("poolside_v1"));
+
+        assert_eq!(preserved.as_deref(), Some(reasoning));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn non_poolside_tool_call_in_reasoning_is_still_hoisted() {
+        let reasoning =
+            r#"plan <tool_call>{"name":"get_weather","arguments":{"city":"Boston"}}</tool_call>"#;
+
+        let (_scrubbed, calls) = extract_hoisted_tool_calls(Some(reasoning), Some("hermes"));
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "get_weather");
     }
 }

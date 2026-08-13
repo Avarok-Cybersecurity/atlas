@@ -85,8 +85,13 @@ struct Target {
     behavior_default_kv_dtype: String,
     behavior_default_num_drafts: u32,
     behavior_disable_tool_steering: bool,
+    behavior_disable_cwd_hint_injection: bool,
+    behavior_use_sampling_presets_for_core: bool,
     behavior_tool_call_parser: String,
     behavior_enable_loop_watchdog: bool,
+    behavior_enable_think_loop_watchdog: bool,
+    behavior_honor_eos_inside_thinking: bool,
+    behavior_cap_thinking_at_max_tokens: bool,
     behavior_min_p_floor: f32,
     behavior_temperature_max: f32,
     behavior_think_loop_min_repeats: u32,
@@ -1102,8 +1107,13 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_default_kv_dtype: pb.default_kv_dtype,
                 behavior_default_num_drafts: pb.default_num_drafts,
                 behavior_disable_tool_steering: pb.disable_tool_steering,
+                behavior_disable_cwd_hint_injection: pb.disable_cwd_hint_injection,
+                behavior_use_sampling_presets_for_core: pb.use_sampling_presets_for_core,
                 behavior_tool_call_parser: pb.tool_call_parser,
                 behavior_enable_loop_watchdog: pb.enable_loop_watchdog,
+                behavior_enable_think_loop_watchdog: pb.enable_think_loop_watchdog,
+                behavior_honor_eos_inside_thinking: pb.honor_eos_inside_thinking,
+                behavior_cap_thinking_at_max_tokens: pb.cap_thinking_at_max_tokens,
                 behavior_min_p_floor: pb.min_p_floor,
                 behavior_temperature_max: pb.temperature_max,
                 behavior_think_loop_min_repeats: pb.think_loop_min_repeats,
@@ -1150,9 +1160,6 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 #[path = "build_parse.rs"]
 mod build_parse;
 
-#[path = "build_behavior.rs"]
-mod build_behavior;
-
 // Entry-point resolution for `shadowed_dropped_pairs`. Lives in its own file so
 // `tests/kernel_shadow_detector.rs` can compile the SAME code a build script
 // would otherwise keep untestable — a build script's `#[cfg(test)]` modules are
@@ -1160,9 +1167,8 @@ mod build_behavior;
 // with no test that could have noticed.
 #[path = "build_shadow.rs"]
 mod build_shadow;
-use build_behavior::parse_behavior;
 use build_parse::{
-    parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
+    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
     parse_sampling_presets, parse_shadow_exempt,
 };
 use build_shadow::shadowed_missing_symbols;

@@ -153,6 +153,34 @@ fn thinking_budget_aliases_thinking_token_budget() {
 }
 
 #[test]
+fn top_level_reasoning_effort_channel_and_nested_priority() {
+    let mut top_level = base_body();
+    top_level["reasoning_effort"] = serde_json::json!("max");
+    let req = chat_req(top_level);
+    assert_eq!(
+        req.client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(1024) }
+    );
+    assert_eq!(
+        req.client_reasoning_effort(),
+        Some(crate::ir::ReasoningEffort::Max)
+    );
+
+    let mut both = base_body();
+    both["reasoning_effort"] = serde_json::json!("max");
+    both["reasoning"] = serde_json::json!({"effort": "high"});
+    let req = chat_req(both);
+    assert_eq!(
+        req.client_thinking_directive(),
+        ThinkingDirective::On { budget: Some(512) }
+    );
+    assert_eq!(
+        req.client_reasoning_effort(),
+        Some(crate::ir::ReasoningEffort::High)
+    );
+}
+
+#[test]
 fn chat_template_kwargs_channel() {
     // Struct still parses as a request-body wire field.
     let kw: ChatTemplateKwargs =
@@ -213,10 +241,18 @@ fn legacy_enable_thinking_channel() {
         ThinkingDirective::On { budget: None }
     );
 
-    // false is the serde default — indistinguishable from absent, so it
-    // must NOT count as an explicit opt-out.
+    // Explicit false now DISABLES thinking (it is Option<bool>, so it is
+    // distinguishable from absent). Previously it was silently ignored.
     let mut b = base_body();
     b["enable_thinking"] = serde_json::json!(false);
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::Off
+    );
+
+    // Field ABSENT → Unspecified, so a client that doesn't send the flag
+    // inherits the model's design intent (thinking_default).
+    let b = base_body();
     assert_eq!(
         chat_req(b).client_thinking_directive(),
         ThinkingDirective::Unspecified
