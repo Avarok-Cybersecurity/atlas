@@ -37,6 +37,25 @@ pub(crate) fn load_weight_store(
     let mult = quant_multiplier(config);
     let use_fast_load =
         !args.no_fast_load && std::env::var("ATLAS_FAST_LOAD").ok().as_deref() != Some("0");
+
+    // The fast loader needs O_DIRECT / posix_fadvise, which Windows does not
+    // have. It is ON by default, so a Windows user who passes nothing special
+    // hits a hard error before a single weight loads -- and the flag that fixes
+    // it (`--no-fast-load`) is not mentioned in the porting guide. Degrade to
+    // the standard loader with a warning instead: slower, but it starts, and
+    // nobody has to discover a Unix-only default to run the server at all.
+    #[cfg(not(unix))]
+    let use_fast_load = {
+        if use_fast_load {
+            tracing::warn!(
+                "Fast weight loader is Unix-only (needs O_DIRECT / posix_fadvise); \
+                 falling back to the standard loader on this host. Pass --no-fast-load \
+                 to silence this."
+            );
+        }
+        false
+    };
+
     let store = if use_fast_load {
         #[cfg(unix)]
         {

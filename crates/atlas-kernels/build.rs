@@ -279,6 +279,7 @@ fn main() {
             target.model,
             target.quant,
         );
+        assert_sources_are_not_symlink_stubs(&cu_files);
 
         // Gather work for this target (no compilation yet — that runs
         // in parallel after the full work plan is built).
@@ -805,22 +806,86 @@ fn build_hip_shim_windows(manifest_dir: &std::path::Path, out_dir: &std::path::P
             .unwrap_or_else(|e| panic!("copy import lib -> {lib}: {e}"));
     }
 
-    // 5. Stage the HIP runtime DLL for packaging. On Windows it is versioned
-    // (amdhip64_6.dll, not amdhip64.dll), so glob `amdhip64*.dll` under the SDK
-    // bin. If absent (a driverless CI runner may ship only the import lib), it
-    // is not fatal: amdhip64 is an AMD-driver component present on any real AMD
-    // Windows host, so the shipped shim resolves it there. Informational, not a
-    // warning, so a green build is not noisy.
+    // 5. Stage the HIP runtime DLLs for packaging. On Windows they are versioned
+    // (amdhip64_6.dll, not amdhip64.dll), so glob by prefix under the SDK bin.
+    //
+    // Staging amdhip64 ALONE is not enough, and the "it is an AMD-driver
+    // component, present on any real AMD Windows host" reasoning is a trap.
+    // amdhip64_6.dll loads its code-object compiler by plain name, and Windows
+    // resolves that against the whole search path -- so on a machine whose
+    // driver dropped an older amd_comgr_2.dll in System32, HIP binds the STALE
+    // comgr and every hipModuleLoadData fails as `CUDA_ERROR_OUT_OF_MEMORY`.
+    // That is a wildly misleading error: it looks like a KV-cache sizing bug and
+    // sends you tuning --gpu-memory-utilization for hours. Measured on a
+    // Ryzen AI MAX+ 395 / gfx1151 box: System32 amd_comgr_2.dll 109 MB (no
+    // version resource) vs ROCm 6.4's 115.55 MB.
+    //
+    // So stage the full set the runtime actually pulls in. Bundling them beside
+    // spark.exe wins because the executable's own directory precedes System32 in
+    // the default DLL search order.
+    const HIP_RUNTIME_PREFIXES: [&str; 4] = [
+        "amdhip64",         // the HIP runtime itself
+        "amd_comgr",        // code-object manager -- the one that gets shadowed
+        "hiprtc-builtins",  // must precede "hiprtc" below only for readability
+        "hiprtc",           // runtime compilation, pulled in by comgr
+    ];
     let mut staged_runtime = false;
+    let mut staged_names: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(hip_root.join("bin")) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("amdhip64") && name.ends_with(".dll") {
+            if name.ends_with(".dll")
+                && HIP_RUNTIME_PREFIXES.iter().any(|p| name.starts_with(p))
+            {
                 std::fs::copy(entry.path(), out_dir.join(&*name))
                     .unwrap_or_else(|e| panic!("stage {name}: {e}"));
+                staged_names.push(name.to_string());
                 staged_runtime = true;
             }
+        }
+    }
+    if staged_runtime {
+        staged_names.sort();
+        println!(
+            "cargo:warning=atlas-kernels: staged HIP runtime DLLs for packaging: {}",
+            staged_names.join(", ")
+        );
+    }
+
+    // 5b. Also drop the runtime DLLs NEXT TO THE BUILT BINARY.
+    //
+    // Staging into OUT_DIR only serves the packaging step. A developer who runs
+    // `cargo build && target\...\release\spark.exe` gets an exe with no
+    // nvcuda.dll beside it, so cudarc's dlopen falls back to whatever is on the
+    // system path -- which on an AMD box is the driver's amdhip64 bound to a
+    // stale System32 comgr, i.e. the fake-OOM above. Worse, a rebuilt cuda.dll
+    // silently goes unused because a previous copy is already sitting there.
+    //
+    // OUT_DIR is <target>/<triple>/<profile>/build/<pkg>-<hash>/out, so the
+    // profile dir (where the exe lands) is three ancestors up. Best-effort:
+    // never fail the build over this, since the layout is a cargo implementation
+    // detail rather than a guarantee.
+    if let Some(profile_dir) = out_dir.ancestors().nth(3) {
+        let mut copied = Vec::new();
+        let mut to_copy = staged_names.clone();
+        to_copy.push("cuda.dll".to_string());
+        to_copy.push("nvcuda.dll".to_string());
+        for name in &to_copy {
+            let src = out_dir.join(name);
+            if !src.exists() {
+                continue;
+            }
+            if std::fs::copy(&src, profile_dir.join(name)).is_ok() {
+                copied.push(name.clone());
+            }
+        }
+        if !copied.is_empty() {
+            println!(
+                "cargo:warning=atlas-kernels: copied {} runtime DLL(s) next to the binary in {}",
+                copied.len(),
+                profile_dir.display()
+            );
         }
     }
     if !staged_runtime {
@@ -1027,6 +1092,59 @@ mod build_parse;
 use build_parse::{
     parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
 };
+
+/// Fail with an actionable message if any "kernel source" is really an
+/// unmaterialised git symlink.
+///
+/// `kernels/` leans on symlinks (strix-hip -> strix -> gb10), and Git for
+/// Windows defaults to `core.symlinks=false`, which checks each one out as a
+/// small TEXT FILE whose entire content is the link target path. A default
+/// Windows clone therefore substitutes a few hundred path strings for real
+/// sources. The compiler's complaint about those points at the compiler and
+/// tells you nothing about the clone, so diagnose it here instead.
+fn assert_sources_are_not_symlink_stubs(files: &[std::path::PathBuf]) {
+    let mut stubs = Vec::new();
+    for f in files {
+        // A real kernel is never this small; a link target path always is.
+        match std::fs::metadata(f) {
+            Ok(m) if m.len() < 512 => {}
+            _ => continue,
+        }
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        let t = text.trim();
+        let is_stub = !t.is_empty()
+            && !t.contains('\n')
+            && !t.contains(['{', '}', ';'])
+            && (t.contains('/') || t.contains('\\'))
+            && (t.ends_with(".cu") || t.ends_with(".cuh") || t.ends_with(".h"));
+        if is_stub {
+            stubs.push(format!("  {}  ->  {t}", f.display()));
+        }
+    }
+    if stubs.is_empty() {
+        return;
+    }
+    let shown: Vec<_> = stubs.iter().take(5).cloned().collect();
+    panic!(
+        "{} kernel source(s) are unmaterialised git symlinks -- they contain a path, not code:\n\
+         {}{}\n\n\
+         This is a Windows clone with core.symlinks=false. Fix the clone, not the build:\n\
+         \x20 git config core.symlinks true\n\
+         \x20 git checkout -- kernels/\n\
+         (Developer Mode or an elevated shell is needed for Windows to create symlinks.)\n\
+         Re-cloning with `git clone -c core.symlinks=true ...` works too. Note the links\n\
+         CHAIN (strix-hip -> strix -> gb10), so materialise them target-first.",
+        stubs.len(),
+        shown.join("\n"),
+        if stubs.len() > shown.len() {
+            format!("\n  ... and {} more", stubs.len() - shown.len())
+        } else {
+            String::new()
+        },
+    );
+}
 
 /// Collect kernel-source files with shadowing: common dir provides the
 /// base set, model-specific dir can override individual files by matching
