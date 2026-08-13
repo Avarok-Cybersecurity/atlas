@@ -58,7 +58,7 @@ impl Qwen3SsmLayer {
             gated_rms_norm_f32_k: super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input"),
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
-            w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_k: crate::layers::ops::resolve_w4a16_gemv(gpu)?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w4a16_gemv_qkvz_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qkvz")?,

@@ -87,7 +87,7 @@ impl TransformerModel {
         // residual stream, which no longer exists, so this stays
         // KernelHandle(0) and the BF16 path is always taken.
         let dense_gemv_fp32out_kernel = KernelHandle(0);
-        let w4a16_gemv_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;
+        let w4a16_gemv_kernel = crate::layers::ops::resolve_w4a16_gemv(gpu.as_ref())?;
         let w4a16_gemv_logits_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_logits")?;
         // lm_head shares the tile GEMM, so route it through the same resolver as
         // the SSM/attention sites — it picks the 3-deep pipeline variant when

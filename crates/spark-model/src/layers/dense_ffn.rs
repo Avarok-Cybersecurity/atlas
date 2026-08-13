@@ -323,7 +323,7 @@ impl DenseFfnLayer {
         let layer = Self {
             weights,
             activation,
-            w4a16_gemv: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv: crate::layers::ops::resolve_w4a16_gemv(gpu)?,
             w4a16_gemv_sw: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w4a16_gemv_dual: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             w4a16_gemv_silu_input: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_silu_input")?,

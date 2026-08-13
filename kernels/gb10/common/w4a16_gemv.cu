@@ -65,6 +65,42 @@ __device__ __constant__ float E2M1_LUT[16] = {
 // SW copy used the older stride-64 sequential `acc += a*w` loop and was 1 ULP
 // lossy vs this pipelined association (GB10 oracle: gdn in_proj / K-tail).
 
+
+// Shared by `w4a16_gemv_partial` and `w4a16_gemv_cpasync` so FMA order cannot
+// drift. `part` is 16 fmaf into a fresh accumulator, then `acc = fmaf(scale, part, acc)`.
+__device__ __forceinline__ float w4a16_gemv_decode_scale(unsigned char scale_byte, float scale2)
+{
+    __nv_fp8_e4m3 fp8;
+    *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+    return scl_fp8(scale_byte) * scale2;
+#else
+    return (float)fp8 * scale2;
+#endif
+}
+
+__device__ __forceinline__ float w4a16_gemv_mac_chunk(
+    const __nv_bfloat16* __restrict__ A,
+    unsigned int kk,
+    unsigned long long packed8,
+    float scale,
+    float acc)
+{
+    uint4 a_lo = ((const uint4*)A)[kk * 2];
+    uint4 a_hi = ((const uint4*)A)[kk * 2 + 1];
+    const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                    a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+    float part = 0.0f;
+    #pragma unroll
+    for (int b = 0; b < 8; b++) {
+        unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+        float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
+        part = fmaf(af.x, E2M1_LUT[byte_val & 0xF], part);
+        part = fmaf(af.y, E2M1_LUT[byte_val >> 4], part);
+    }
+    return fmaf(scale, part, acc);
+}
+
 // One orig-lane's pipelined K16 partial. `orig_lane` is the 64-thread kernel's
 // lane (0..63): k16 = orig_lane*2, stride 128, inner c={0,1} → kk pair.
 __device__ __forceinline__ float w4a16_gemv_partial(
@@ -83,30 +119,12 @@ __device__ __forceinline__ float w4a16_gemv_partial(
             const unsigned int kk = k16 + (unsigned int)c;
             if (kk >= K16) break;
 
-            uint4 a_lo = ((const uint4*)A)[kk * 2];
-            uint4 a_hi = ((const uint4*)A)[kk * 2 + 1];
-            const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
-                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
             unsigned long long packed8 = *(const unsigned long long*)(
                 B_packed + (unsigned long long)n * half_K + kk * 8);
             unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
-            __nv_fp8_e4m3 fp8;
-            *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-            float scale = scl_fp8(scale_byte) * scale2;
-#else
-            float scale = (float)fp8 * scale2;
-#endif
-            float part = 0.0f;
-            #pragma unroll
-            for (int b = 0; b < 8; b++) {
-                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
-                part = fmaf(af.x, E2M1_LUT[byte_val & 0xF], part);
-                part = fmaf(af.y, E2M1_LUT[byte_val >> 4], part);
-            }
-            if (c == 0) acc0 = fmaf(scale, part, acc0);
-            else        acc1 = fmaf(scale, part, acc1);
+            float scale = w4a16_gemv_decode_scale(scale_byte, scale2);
+            if (c == 0) acc0 = w4a16_gemv_mac_chunk(A, kk, packed8, scale, acc0);
+            else        acc1 = w4a16_gemv_mac_chunk(A, kk, packed8, scale, acc1);
         }
     }
     return acc0 + acc1;
@@ -151,6 +169,134 @@ extern "C" __global__ void w4a16_gemv(
     }
     __syncthreads();
 
+    if (lane == 0 && n < N) {
+        float result = smem[local_out * 2] + smem[local_out * 2 + 1];
+        C[n] = __float2bfloat16(result);
+    }
+}
+
+
+// ============================================================
+// W4A16 GEMV M=1 — cp.async 2-stage packed-weight prefetch (default ON).
+// ============================================================
+// Bit-identical to `w4a16_gemv`: same `w4a16_gemv_mac_chunk` FMA order, same
+// two-chunk (acc0/acc1) association, same 64-thread / 2-warp smem reduce.
+// Packed weights move through a 2-stage smem buffer so chunk-1 DMA overlaps
+// chunk-0 compute (phase overlap across the already-pipelined pair, not a
+// new intra-K software pipeline). Scale + activations stay gmem.
+// Kill: ATLAS_NO_GEMV_CPASYNC=1. HIP: cp.async degrades to sync copies.
+// Grid: (ceil(N/4),1,1)  Block: (256,1,1) — same as w4a16_gemv.
+
+__device__ __forceinline__ void gemv1_cp_async_8(
+    void* dst_smem, const void* src_gmem, bool pred)
+{
+#if defined(__HIP_PLATFORM_AMD__)
+    if (!pred) return;
+    *reinterpret_cast<unsigned long long*>(dst_smem) =
+        *reinterpret_cast<const unsigned long long*>(src_gmem);
+#else
+    unsigned int dst = __cvta_generic_to_shared(dst_smem);
+    unsigned int n = pred ? 8u : 0u;
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 8, %2;"
+                 :: "r"(dst), "l"(src_gmem), "r"(n));
+#endif
+}
+
+__device__ __forceinline__ void gemv1_cp_commit() {
+#if !defined(__HIP_PLATFORM_AMD__)
+    asm volatile("cp.async.commit_group;");
+#endif
+}
+__device__ __forceinline__ void gemv1_cp_wait_one() {
+#if !defined(__HIP_PLATFORM_AMD__)
+    asm volatile("cp.async.wait_group 1;");
+#endif
+}
+__device__ __forceinline__ void gemv1_cp_wait_all() {
+#if !defined(__HIP_PLATFORM_AMD__)
+    asm volatile("cp.async.wait_group 0;");
+#endif
+}
+
+extern "C" __global__ void w4a16_gemv_cpasync(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+    const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    __shared__ float smem[N_PER_BLOCK * 2];
+    __shared__ __align__(8) unsigned long long smem_pk[2][N_PER_BLOCK][64];
+
+    float acc0 = 0.0f, acc1 = 0.0f;
+    // Uniform trip count (same `super` bound as batch2 cpasync). A
+    // `k16 = lane*2; k16 += 128` loop deadlocks __syncwarp/__syncthreads
+    // because lanes take different iteration counts. N%4!=0 tail threads
+    // still enter so HIP's block barrier is valid.
+    const bool row_live = n < N;
+    for (unsigned int super = 0; super < K16; super += 128u) {
+        const unsigned int k16 = lane * 2u + super;
+        const bool live0 = row_live && k16 < K16;
+        const bool live1 = row_live && (k16 + 1u) < K16;
+        const unsigned char* src0 = live0
+            ? B_packed + (unsigned long long)n * half_K + (unsigned long long)k16 * 8u
+            : B_packed;
+        const unsigned char* src1 = live1
+            ? B_packed + (unsigned long long)n * half_K + (unsigned long long)(k16 + 1u) * 8u
+            : B_packed;
+        gemv1_cp_async_8(&smem_pk[0][local_out][lane], src0, live0);
+        gemv1_cp_commit();
+        gemv1_cp_async_8(&smem_pk[1][local_out][lane], src1, live1);
+        gemv1_cp_commit();
+
+        gemv1_cp_wait_one();
+#if defined(__HIP_PLATFORM_AMD__)
+        __syncthreads();
+#else
+        __syncwarp();
+#endif
+        if (live0) {
+            unsigned char sb = B_scale[(unsigned long long)n * num_groups + k16];
+            acc0 = w4a16_gemv_mac_chunk(
+                A, k16, smem_pk[0][local_out][lane],
+                w4a16_gemv_decode_scale(sb, scale2), acc0);
+        }
+
+        gemv1_cp_wait_all();
+#if defined(__HIP_PLATFORM_AMD__)
+        __syncthreads();
+#else
+        __syncwarp();
+#endif
+        if (live1) {
+            unsigned char sb = B_scale[(unsigned long long)n * num_groups + (k16 + 1u)];
+            acc1 = w4a16_gemv_mac_chunk(
+                A, k16 + 1u, smem_pk[1][local_out][lane],
+                w4a16_gemv_decode_scale(sb, scale2), acc1);
+        }
+    }
+
+    float acc = acc0 + acc1;
+    const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc += __shfl_down_sync(0xFFFFFFFF, acc, offset);
+    }
+    if (warp_lane == 0) {
+        unsigned int smem_idx = local_out * 2 + (lane / WARP_SIZE);
+        smem[smem_idx] = acc;
+    }
+    __syncthreads();
     if (lane == 0 && n < N) {
         float result = smem[local_out * 2] + smem[local_out * 2 + 1];
         C[n] = __float2bfloat16(result);

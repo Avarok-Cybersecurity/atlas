@@ -153,7 +153,7 @@ impl NemotronMoeLayer {
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             topk_sigmoid_k: gpu.kernel("moe_topk_sig", "moe_topk_sigmoid")?,
             moe_expert_gemv_k: gpu.kernel("moe_expert_gemv", "moe_expert_gemv")?,
-            w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_k: crate::layers::ops::resolve_w4a16_gemv(gpu)?,
             w4a16_gemv_sw_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),

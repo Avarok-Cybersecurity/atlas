@@ -126,7 +126,7 @@ impl NemotronMamba2Layer {
             in_proj_bf16: None,
             out_proj_bf16: None,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
-            w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_k: crate::layers::ops::resolve_w4a16_gemv(gpu)?,
             w4a16_gemv_sw_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             conv1d_update_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
