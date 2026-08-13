@@ -184,10 +184,20 @@ fn release_state(host: &Arc<ModelHost>, grace: std::time::Duration) -> Result<Ca
 /// Both the swap and the restore need it, which is why it is a function and
 /// not two copies.
 fn signal_listener_phases(host: &Arc<ModelHost>) {
-    if let Some((_, port)) = host.bound() {
+    if let Some((bind, port)) = host.bound() {
         spark_runtime::progress::phase(10, "router");
         spark_runtime::progress::phase(11, "listening");
         spark_runtime::progress::ready(port);
+        // The same closing line a boot prints, at the same moment of truth:
+        // the model was published a breath ago onto a listener that has been
+        // serving since boot, so "live and ready" is a statement, not a
+        // forecast. Emitted here, not in `load_model`, because the scheduler's
+        // last init line ("Swap space: …") lands minutes before the model is
+        // reachable and a user curling on it gets 503.
+        tracing::info!(
+            "{}",
+            super::serve_router::ready_line(&bind, port, host.live_model().as_deref())
+        );
     }
 }
 

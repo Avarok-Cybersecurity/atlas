@@ -41,7 +41,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             draw_stats(f, &frame.summary, rows[1]);
         }
         if let Some(table) = &frame.table {
-            draw_table(f, table, app.bench.table_scroll, rows[2]);
+            let max = draw_table(f, table, app.bench.table_scroll, rows[2]);
+            app.bench.table_scroll_max.set(max);
         }
         if let Some(verdict) = &frame.verdict {
             f.render_widget(Paragraph::new(verdict_line(verdict)), rows[3]);

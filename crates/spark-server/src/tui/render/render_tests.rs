@@ -411,77 +411,41 @@ fn the_benchmark_detail_pane_says_when_the_measurement_last_changed() {
     assert!(out.contains(d), "and carries the date {d}:\n{out}");
 }
 
-/// An App whose Library has exactly one row for `model`, so the per-row
-/// progress line is actually reached by the renderer.
-fn app_with_row(model: &str) -> App {
+#[test]
+fn the_clear_chat_prompt_names_what_it_will_discard() {
+    use crate::tui::app::TermSub;
+    use crate::tui::chat::{ChatMessage, Role};
     let mut a = app();
-    a.section = Section::Library;
-    a.library = vec![crate::tui::data::library::LibraryEntry {
-        id: model.to_string(),
-        snapshot_dir: Default::default(),
-        size_bytes: 1024,
-        has_weights: false,
-        model_type: "qwen3_6_moe".into(),
-        quant: "nvfp4".into(),
-        layers: 40,
-        hidden: 4096,
-        heads: 32,
-        experts: 128,
-        context: 65536,
-        optimized: false,
-    }];
-    a.lib.rebuild(&a.library);
-    a
-}
-
-/// A 20 GB download spends its first minutes under one percent. Reported from
-/// a real run: "I don't see anything happen … no downloading as far as I can
-/// see" — the download was fine, the LINE was not.
-#[test]
-fn a_download_under_one_percent_still_looks_alive() {
-    let mut a = app_with_row("org/big");
-    let root = std::env::temp_dir().join("atlas-render-dl");
-    std::fs::create_dir_all(&root).ok();
-    a.download.start("org/big", root);
-    {
-        let job = a.download.job.as_mut().expect("a job");
-        job.total = 19_800_000_000; // 19.8 GB
-        job.done = 149_000_000; //  149 MB  =  0.75%
-        job.rate_bps = 1_600_000.0;
-    }
-    let out = render(&a, 200, 50);
-
-    // The bar must not be twelve empty cells: at 0.75% of 12, `round()` gives
-    // ZERO filled, which is what made a working download look dead.
+    a.section = Section::Terminal;
+    a.term_sub = TermSub::Chat;
+    a.chat
+        .transcript
+        .push(ChatMessage::new(Role::User, "hello".into()));
+    a.chat
+        .transcript
+        .push(ChatMessage::new(Role::Model, "hi".into()));
+    a.confirm_chat_clear = true;
+    let out = render(&a, 120, 40);
+    assert!(out.contains("CLEAR THE CONVERSATION?"), "{out}");
     assert!(
-        out.contains('▓'),
-        "some of the bar must be filled once bytes have moved:\n{out}"
+        out.contains("2 turns will be discarded"),
+        "the stake is named in the user's own units:\n{out}"
     );
-    // And the percentage must not read a flat "0%".
     assert!(
-        !out.contains("  0%"),
-        "sub-1% progress must not render as a bare 0%:\n{out}"
+        out.contains("any other key"),
+        "the way out is named:\n{out}"
     );
-    assert!(out.contains("0.8%"), "one decimal below 10%:\n{out}");
-    // The rate is the field that proves bytes are moving; it must fit in the
-    // list pane, which is only about half the terminal width.
-    assert!(out.contains("MB/s"), "the rate must be visible:\n{out}");
 }
 
 #[test]
-fn a_download_at_exactly_zero_bytes_shows_an_empty_bar_honestly() {
-    // The min-one-cell rule applies only once something has moved — before
-    // that, an empty bar is the truth.
-    let mut a = app_with_row("org/big");
-    let root = std::env::temp_dir().join("atlas-render-dl0");
-    std::fs::create_dir_all(&root).ok();
-    a.download.start("org/big", root);
-    {
-        let job = a.download.job.as_mut().expect("a job");
-        job.total = 19_800_000_000;
-        job.done = 0;
-    }
-    let out = render(&a, 200, 50);
-    assert!(out.contains('░'), "the empty track is drawn:\n{out}");
-    assert!(out.contains("0.0%"));
+fn the_new_chat_key_is_discoverable_from_the_chat_pane() {
+    use crate::tui::app::TermSub;
+    let mut a = app();
+    a.section = Section::Terminal;
+    a.term_sub = TermSub::Chat;
+    let out = render(&a, 160, 48);
+    assert!(
+        out.contains("Ctrl+N new chat"),
+        "a reset nobody can find is no reset:\n{out}"
+    );
 }

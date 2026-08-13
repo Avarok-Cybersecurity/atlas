@@ -28,7 +28,7 @@ sudo docker run -d --name "$CONTAINER" \
 echo "Starting $MODEL on port $PORT..." >&2
 READY=0
 for i in $(seq 1 60); do
-  if sudo docker logs "$CONTAINER" 2>&1 | grep -q "Listening on"; then
+  if sudo docker logs "$CONTAINER" 2>&1 | grep -qE "Listening on|Server live"; then
     READY=1
     break
   fi

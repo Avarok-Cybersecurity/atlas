@@ -39,9 +39,27 @@ impl MoeLayer {
             ctx.gpu.stream_wait_event(aux, self.event_a)?;
         }
 
-        // Shared gate + up GEMM on aux stream
         let shared_gate_out = ctx.buffers.ssm_deinterleaved();
         let shared_up_out = ctx.buffers.ssm_qkvz();
+        let shared_down_out = ctx.buffers.attn_output();
+        if self.run_bf16_shared_expert(
+            input,
+            n,
+            h,
+            shared_inter,
+            shared_gate_out,
+            shared_up_out,
+            shared_down_out,
+            ctx,
+            aux,
+        )? {
+            if use_overlap {
+                ctx.gpu.record_event(self.event_b, aux)?;
+            }
+            return Ok(());
+        }
+
+        // Shared gate + up GEMM on aux stream
         if let (Some(sg_fp8), Some(su_fp8)) = (self.shared_gate_fp8, self.shared_up_fp8) {
             ops::fp8_gemm_n128(
                 ctx.gpu,
@@ -125,7 +143,6 @@ impl MoeLayer {
             n * shared_inter,
             aux,
         )?;
-        let shared_down_out = ctx.buffers.attn_output();
         if let Some(sd_fp8) = self.shared_down_fp8 {
             ops::fp8_gemm_n128(
                 ctx.gpu,

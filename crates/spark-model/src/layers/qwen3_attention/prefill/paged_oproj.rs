@@ -238,7 +238,9 @@ impl Qwen3AttentionLayer {
             // BF16 dense fallback (Gemma-4 dense per Nvidia ModelOpt's
             // ignore list — all self_attn projections must stay BF16).
             // Tensor-core pipelined GEMM (~40× scalar on large-M prefill).
-            if self.dense_gemm_pipelined_k.0 != 0 {
+            if ctx.dispatch.cublas_gemm && n > 1 {
+                ops::cublas_bf16_proj_dense(attn_out, o_bf16.weight, o_out, n, h, nq * hd, stream)?;
+            } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(
                     ctx.gpu,
                     self.dense_gemm_pipelined_k,

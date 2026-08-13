@@ -7,10 +7,11 @@
 
 use anyhow::Result;
 use spark_runtime::kv_cache::PagedKvCache;
+use spark_runtime::prefix_cache::PrefixMatch;
 
 use super::super::super::block_mgmt::reuse_prefix_match_disk_ids;
 use super::super::super::types::TransformerModel;
-use crate::traits::SequenceState;
+use crate::traits::{PrefillSlice, SequenceState};
 
 impl TransformerModel {
     pub(in crate::model) fn prefill_b_prefix_lookup(
@@ -21,6 +22,7 @@ impl TransformerModel {
         total: usize,
         kv_cache: &mut PagedKvCache,
         stream: u64,
+        reserved_match: Option<PrefixMatch>,
     ) -> Result<(usize, bool)> {
         let bs = kv_cache.block_size();
         // Retry re-entry (scheduler preempt-and-retry on KV exhaustion): chunk 0
@@ -41,9 +43,12 @@ impl TransformerModel {
             // Prompt-logprob collection needs a live hidden row for EVERY
             // position — a cache/Marconi skip would leave gaps. Force the
             // full-recompute path (documented perf cost, scoring calls only).
+            let reserved = reserved_match.is_some();
             let mut prefix_match =
                 if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
-                    spark_runtime::prefix_cache::PrefixMatch::empty()
+                    PrefixMatch::empty()
+                } else if let Some(prefix_match) = reserved_match {
+                    prefix_match
                 } else {
                     self.prefix_cache
                         .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
@@ -71,7 +76,7 @@ impl TransformerModel {
             // EP *or* pure TP: any multi-rank world must agree on `matched`
             // (rank-local prefix caches can diverge in either topology).
             let ep_active = self.multi_rank_protocol_active();
-            if ep_active {
+            if ep_active && !reserved {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;
                 if agreed < prefix_match.matched_tokens {
@@ -363,6 +368,67 @@ impl TransformerModel {
             Ok((seq.marconi_skip_to, true))
         } else {
             Ok((0, false))
+        }
+    }
+
+    /// Acquire all cache matches before the batched path mutates any sequence
+    /// or KV state. On rejection, roll back exactly the references acquired by
+    /// this pass; a later cache insertion cannot make that rollback touch a
+    /// deeper node.
+    pub(in crate::model) fn prefill_b_reserve_batched_prefix_matches(
+        &self,
+        streams: &[PrefillSlice<'_>],
+        block_size: usize,
+    ) -> Option<Vec<PrefixMatch>> {
+        if !self.prefix_cache.is_active() || streams.first()?.chunk_start != 0 {
+            return Some(Vec::new());
+        }
+        // A multi-rank prefix match needs the normal EP min-reduction, while
+        // SSM snapshots can restore different recurrent state per sequence.
+        // Neither operation is safe inside this v1 transactional admission.
+        if self.multi_rank_protocol_active() || self.config.num_ssm_layers() != 0 {
+            return None;
+        }
+
+        let mut matches = Vec::with_capacity(streams.len());
+        for slice in streams {
+            let seq = &*slice.seq;
+            if self.tokens_have_vision_pad(slice.prompt_tokens)
+                || seq.collect_prompt_logprobs.is_some()
+            {
+                self.release_batched_prefix_reservations(streams, &matches, block_size);
+                return None;
+            }
+            matches.push(self.prefix_cache.lookup(
+                slice.prompt_tokens,
+                block_size,
+                seq.session_hash,
+                seq.adapter_id,
+            ));
+        }
+
+        if !super::batch_kernel::cache_batch_matches_compatible(&matches, streams[0].chunk_len) {
+            self.release_batched_prefix_reservations(streams, &matches, block_size);
+            return None;
+        }
+        Some(matches)
+    }
+
+    fn release_batched_prefix_reservations(
+        &self,
+        streams: &[PrefillSlice<'_>],
+        matches: &[PrefixMatch],
+        block_size: usize,
+    ) {
+        for (slice, prefix_match) in streams.iter().zip(matches) {
+            if prefix_match.matched_tokens > 0 {
+                self.prefix_cache.release_matched(
+                    slice.prompt_tokens,
+                    block_size,
+                    prefix_match.matched_tokens,
+                    slice.seq.adapter_id,
+                );
+            }
         }
     }
 }

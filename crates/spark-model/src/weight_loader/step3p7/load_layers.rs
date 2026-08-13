@@ -435,7 +435,10 @@ fn load_attention_layer(
     }
 
     if let Some(gw) = g_proj_weight {
-        layer.set_head_gate_weight(gw);
+        layer.set_head_gate_weight(
+            gw,
+            crate::layers::qwen3_attention::HeadGateActivation::Sigmoid,
+        );
     }
 
     let qt = q_nvfp4.transpose_for_gemm(gpu, q_proj_n, h)?;

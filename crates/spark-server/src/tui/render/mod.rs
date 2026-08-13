@@ -6,6 +6,8 @@
 mod bench;
 mod chat_lines;
 mod header;
+mod help_tab;
+mod hints;
 mod library;
 mod main_tab;
 mod main_tab_kernels;
@@ -83,6 +85,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         Block::default().style(Style::default().bg(theme::BG_BASE.color())),
         area,
     );
+    // Every published hit-target resets each frame: a rect from a frame that
+    // is no longer on screen must not keep catching clicks.
+    app.lib_search_click.set(None);
     let chrome = Chrome::of(area.as_size());
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -116,15 +121,22 @@ pub fn draw(f: &mut Frame, app: &App) {
         Section::Library => library::draw(f, app, content),
         Section::Benchmarks => bench::draw(f, app, content),
         Section::Terminal => terminal_tab::draw(f, app, content),
+        Section::Help => help_tab::draw(f, app, content),
     }
 
     draw_footer(f, app, rows[2]);
     overlay::draw_toasts(f, app, content);
     if app.help_open {
-        overlay::draw_help(f, area);
+        overlay::draw_help(f, app, area);
     }
     // After the help modal: a question the user must answer outranks a
     // reference they were browsing.
+    // Before the quit prompt: stopping the SERVER outranks a question about a
+    // download, so if both are somehow up the server one is on top.
+    overlay::draw_download_switch(f, app, area);
+    // Below the quit prompt for the same reason the download question is:
+    // stopping the server outranks a question about a transcript.
+    overlay::draw_chat_clear_confirm(f, app, area);
     if app.confirm_quit {
         overlay::draw_quit_confirm(f, app, area);
     }
@@ -274,11 +286,13 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         (" NORMAL ", theme::BORDER_DIM)
     };
     let hints = match app.section {
-        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-6 jump · ? help · q quit",
-        Section::Stats => "⇥ cycle · 1-6 jump · ? help · q quit",
-        Section::Network => "←/→ node · ⏎ detail · ⇥ cycle · 1-6 jump · ? help",
-        Section::Library => library_hints(app),
-        Section::Benchmarks => bench_hints(app),
+        Section::Main => "j/k scroll · f filter · ⇥ Overview↔Kernels · 1-7 jump · ? help · q quit",
+        Section::Stats => "⇥ cycle · 1-7 jump · ? help · q quit",
+        // No "⏎ detail" here: Enter used to toggle a bool nothing rendered —
+        // an advertised key with zero effect. The detail pane is always drawn.
+        Section::Network => "←/→ node · ⇥ cycle · 1-7 jump · ? help",
+        Section::Library => hints::library_hints(app),
+        Section::Benchmarks => hints::bench_hints(app),
         // `/detach` named here and nowhere else on screen: it is the only way
         // out that leaves the server running, and this is the tab it is typed
         // into. Without it the only exit a user could find was `q`, which
@@ -286,6 +300,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Section::Terminal => {
             "⏎ input · Esc back · ↑/↓ scroll · ⇥ Ops↔Chat · /detach leave · ? help"
         }
+        Section::Help => hints::help_hints(app),
     };
     let line = Line::from(vec![
         Span::styled(
@@ -300,26 +315,6 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(line).style(Style::default().bg(theme::BG_PANEL.color())),
         area,
     );
-}
-
-/// The Benchmarks footer changes with the step you are on — the form and the
-/// live run answer to different keys, and a single generic hint would be wrong
-/// in both.
-fn bench_hints(app: &App) -> &'static str {
-    use crate::tui::app::BenchSub;
-    use crate::tui::bench_state::View;
-    if app.bench_sub == BenchSub::History {
-        return "j/k run · ⇥ Suite↔History · 1-6 jump · ? help";
-    }
-    match (app.bench.view, app.bench.editing) {
-        (View::List, _) if app.bench.frame.is_some() => {
-            "j/k select · ⏎ configure · v last run · ⇥ Suite↔History · ? help"
-        }
-        (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-6 jump · ? help",
-        (View::Params, true) => "⏎ commit · Esc cancel",
-        (View::Params, false) => "j/k move · ⏎ edit · d defaults · p probe · s START · Esc back",
-        (View::Run, _) => "c cancel · j/k scroll · Esc back to suite",
-    }
 }
 
 /// Shared rounded-panel block.
@@ -367,30 +362,9 @@ mod tests;
 #[path = "chrome_tests.rs"]
 mod chrome_tests;
 
-/// The Library's footer, which depends on which pane and mode it is in.
-fn library_hints(app: &App) -> &'static str {
-    use crate::tui::lib_state::View;
-    if app.lib.filter_editing {
-        return "type to search · ⏎ keep · Esc clear";
-    }
-    match (app.lib.view, app.lib.editing) {
-        (View::Cards, _) => "j/k move · ⏎ configure · d download · u updates · Esc back",
-        (View::Config, true) => "⏎ commit · Esc cancel",
-        // `s` cannot start a model whose weights are absent, so the footer
-        // says so BEFORE it is pressed rather than leaving the user to find
-        // out from a refusal. Naming the way out matters more than naming the
-        // key that will not work.
-        (View::Config, false) if !app.lib.selected_has_weights() => {
-            "⚠ weights not downloaded · Esc then d to download · ⏎ edit"
-        }
-        (View::Config, false) => {
-            "j/k move · ⏎ edit · d recipe defaults · s START · Esc back to recipes"
-        }
-        (View::List, _) => {
-            "j/k move · ⏎ configure · d download · x stop · / search · r refresh · ? help"
-        }
-    }
-}
+#[cfg(test)]
+#[path = "download_render_tests.rs"]
+mod download_tests;
 
 /// The model actually being served, or the one the argv asked for.
 ///
@@ -408,50 +382,17 @@ pub(crate) fn live_model_name(app: &App) -> String {
         .unwrap_or_default()
 }
 
-/// Wrap `text` to `width` columns as owned lines.
+/// Wrap `text` to `width` columns as styled lines.
 ///
-/// Measured in bytes, which over-counts anything non-ASCII and so wraps early
-/// rather than late — the panes that use this hand the result straight to a
-/// `Paragraph` with no `Wrap`, so a row that is too LONG is silently clipped
-/// while a row that is too short is merely a short row.
+/// The accumulation loop is `format::wrap_words` — one loop for the whole
+/// dashboard, styled here. It measures BYTES, wrapping early rather than late,
+/// and the `Paragraph`s downstream have no `Wrap` of their own; see the loop
+/// for both arguments.
 pub(crate) fn wrap(text: &str, width: usize, style: ratatui::style::Style) -> Vec<Line<'static>> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        if !current.is_empty() && current.len() + 1 + word.len() > width {
-            lines.push(Line::from(Span::styled(
-                std::mem::take(&mut current),
-                style,
-            )));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        // A token wider than the pane — a long URL, a snapshot path, a hash —
-        // has no space to break at, and the `Paragraph`s downstream do not
-        // wrap what they are handed: left whole, everything past the panel
-        // edge was simply cut. Hard-split it, as the chat pane already does.
-        if word.len() > width {
-            for ch in word.chars() {
-                if !current.is_empty() && current.len() + ch.len_utf8() > width {
-                    lines.push(Line::from(Span::styled(
-                        std::mem::take(&mut current),
-                        style,
-                    )));
-                }
-                current.push(ch);
-            }
-        } else {
-            current.push_str(word);
-        }
-    }
-    if !current.is_empty() {
-        lines.push(Line::from(Span::styled(current, style)));
-    }
-    lines
+    crate::tui::format::wrap_words(text, width)
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, style)))
+        .collect()
 }
 
 #[cfg(test)]

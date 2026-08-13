@@ -258,6 +258,22 @@ pub fn cublas_bf16_proj(
     spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, w_bf16, out.0, m, n, k, stream)
 }
 
+/// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16 for
+/// a weight that is already native BF16 `[N,K]` (no dequant step). Used by
+/// models whose attention/shared-expert weights ship unquantized (e.g. Laguna),
+/// which can never satisfy the `as_fp8()` gate of [`cublas_bf16_proj`].
+pub fn cublas_bf16_proj_dense(
+    act: spark_runtime::gpu::DevicePtr,
+    weight_bf16: spark_runtime::gpu::DevicePtr,
+    out: spark_runtime::gpu::DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> anyhow::Result<()> {
+    spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, weight_bf16.0, out.0, m, n, k, stream)
+}
+
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through CUTLASS BF16.
 /// This is the M0 de-risk path for replacing Atlas/cuBLAS GEMMs with
 /// CUTLASS-backed kernels on GB10; keep it behind `ATLAS_CUTLASS_GEMM=1`.
