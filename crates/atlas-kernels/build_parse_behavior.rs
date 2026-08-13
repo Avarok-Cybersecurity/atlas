@@ -63,6 +63,10 @@ pub(crate) struct ParsedBehavior {
     pub rollback_resteer: bool,
     pub rom_head: String,
     pub tool_retry: bool,
+    /// Suppress CUDA decode-graph capture for this model family.
+    /// Nemotron-H models crash under graph replay (CUDA 700/716 at
+    /// specific prompt lengths) and graphs are a measured no-op on GB10.
+    pub no_decode_graphs: bool,
 }
 
 impl Default for ParsedBehavior {
@@ -96,6 +100,7 @@ impl Default for ParsedBehavior {
             rollback_resteer: true,
             rom_head: String::new(),
             tool_retry: true,
+            no_decode_graphs: false,
         }
     }
 }
@@ -239,6 +244,10 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let no_decode_graphs = b
+        .and_then(|v| v.get("no_decode_graphs"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let tool_retry = b
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
@@ -272,5 +281,6 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         rollback_resteer,
         rom_head,
         tool_retry,
+        no_decode_graphs,
     }
 }
