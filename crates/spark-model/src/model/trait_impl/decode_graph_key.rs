@@ -262,4 +262,38 @@ mod tests {
         assert_eq!(batch_decode_graph_cap(32), 48);
         assert_eq!(batch_decode_graph_cap(64), 80);
     }
+
+    /// NEGATIVE: `free_sequence_dispatch` must not drain slot-keyed decode
+    /// graphs. Recapturing on every completion was the cost this PR removes.
+    /// LoRA-baked `verify_kgamma` / `fused` still drop (adapter index baked).
+    ///
+    /// PROVEN BY: restoring `self.decode_graph.lock()` or
+    /// `self.batch_decode_graphs.lock()` inside `free_sequence_dispatch`
+    /// turns this red.
+    #[test]
+    fn free_sequence_does_not_destroy_slot_keyed_decode_graphs() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/model/trait_impl/sequence.rs"),
+        )
+        .unwrap();
+        let start = src
+            .find("fn free_sequence_dispatch")
+            .expect("free_sequence_dispatch");
+        let body = &src[start..];
+        let end = body.find("\n    pub(super) fn ").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            !body.contains("self.decode_graph.lock()"),
+            "free_sequence must retain decode_graph"
+        );
+        assert!(
+            !body.contains("self.batch_decode_graphs.lock()"),
+            "free_sequence must retain batch_decode_graphs"
+        );
+        assert!(
+            body.contains("verify_kgamma_graph") && body.contains("fused_graph"),
+            "LoRA-baked graphs still drop"
+        );
+    }
 }
