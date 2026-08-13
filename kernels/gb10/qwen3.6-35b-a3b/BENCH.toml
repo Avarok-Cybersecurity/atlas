@@ -193,12 +193,17 @@ agentic gate into early-EOS). It is REQUIRED, not a promotion candidate, \
 because the bug it exists to catch already landed once.
 
 The zero-tolerance thresholds are DEFINITIONS of the invariant, not measured \
-performance: `diverged` and `unmeasured` must be 0 and `invariant` must equal \
-`rounds` — same footing as the agentic gate's exact `iterations` pin. They are \
-belt-and-suspenders with the run verdict (which itself fails on any divergence), \
-enforcing the invariant at the record level too. `rounds` is pinned at exactly \
-12, the N the invariant was written for: the incident poisoned rounds 8-9 of 10, \
-so the gate carries margin past that.
+performance: `collapsed` and `unmeasured` must be 0 — same footing as the \
+agentic gate's exact `iterations` pin. (`invariant` is deliberately NOT pinned \
+to `rounds`: healthy restore jitter means most rounds are Jittered, not \
+Invariant, and a note claiming otherwise once contradicted the gate's own \
+verdict rule.) They are belt-and-suspenders with the run verdict (which itself \
+fails on any collapse, any unmeasured round, any zero-cache replay, and any \
+reference round that misses the script's semantic anchors), enforcing the \
+invariant at the record level too. `rounds` is pinned at exactly 12, the N the \
+invariant was written for: the incident poisoned rounds 8-9 of 10, so the gate \
+carries margin past that. `min_cached_prompt_tokens` is the vacuity \
+attestation — see its own comment below.
 
 `sum_wall_s` is the only genuinely measured-style number — a BLOWUP DETECTOR, \
 not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
@@ -238,6 +243,20 @@ max = 0.0
 # between rounds on a healthy engine (clean main jitters 11/12 replays —
 # 2026-08-12, sha a1c8000d44), and bounding it would fail healthy builds.
 # It is recorded for the record, not gated.
+
+# The vacuity attestation: the minimum turn-1 `cached_tokens` the server
+# reported across the replay rounds. Every replay's first turn is a
+# cross-round restore of the shared ~1.5K-token prefix, so on a caching
+# server this is far above zero (the 2026-08-12 run on sha 7dd4cc33bc
+# restored from anchors 992-1152). The floor of 1 is a DEFINITION, not a
+# measurement: it distinguishes "the restore path ran" from "prefix caching
+# was off and the gate replayed against a cold engine" — the configuration
+# under which this gate once returned a green PASS proving nothing. Ratchet
+# toward the observed anchor scale (~992 on this checkpoint) after the first
+# recorded run that carries this metric; do not guess a higher floor before
+# then.
+[benchmarks.metrics.min_cached_prompt_tokens]
+min = 1.0
 
 [benchmarks.metrics.sum_wall_s]
 max = 1200.0

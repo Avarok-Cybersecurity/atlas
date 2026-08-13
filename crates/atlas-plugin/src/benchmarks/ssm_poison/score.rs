@@ -13,6 +13,23 @@ use crate::result::Verdict;
 
 use super::compare::{RoundVerdict, TurnDelta};
 
+/// One replay round as the driver collected it: the comparison verdict plus
+/// the server-attested cache state of the round's first turn.
+#[derive(Debug, Clone)]
+pub struct RoundRecord {
+    /// 1-based round number over the replays.
+    pub round: usize,
+    pub verdict: RoundVerdict,
+    /// `usage.prompt_tokens_details.cached_tokens` from the round's FIRST
+    /// turn — the cross-round prefix restore this gate exists to exercise.
+    /// `None` when the replay errored before turn 1 completed (the round is
+    /// Unmeasured and fails on that already). `Some(0)` is the finding that
+    /// motivated this field: a replay whose turn 1 restored nothing ran the
+    /// script against a cold engine, and its "invariant" verdict says nothing
+    /// about the poisoning class.
+    pub turn1_cached: Option<usize>,
+}
+
 /// Everything the report and the gate record read.
 #[derive(Debug, Clone)]
 pub struct Score {
@@ -25,16 +42,26 @@ pub struct Score {
     pub jittered_rounds: Vec<(usize, Vec<TurnDelta>)>,
     /// Which rounds collapsed — the poisoning signature.
     pub collapsed_rounds: Vec<(usize, Vec<TurnDelta>)>,
+    /// Which rounds were unmeasured, with the transport reason. Carried per
+    /// round so the report attributes the failure to the round that actually
+    /// failed, not to the earliest unlabeled row.
+    pub unmeasured_rounds: Vec<(usize, String)>,
+    /// Rounds whose first turn attested ZERO cached prompt tokens — replays
+    /// that never exercised the restore path under test.
+    pub vacuous_rounds: Vec<usize>,
+    /// Minimum turn-1 cached-token attestation across the replays that
+    /// produced one. `None` when no replay got that far.
+    pub min_turn1_cached: Option<usize>,
 }
 
-/// Reduce the collected replay verdicts to a [`Score`].
-pub(super) fn score(replays: &[(usize, RoundVerdict)]) -> Score {
-    let count = |f: fn(&RoundVerdict) -> bool| replays.iter().filter(|(_, v)| f(v)).count();
+/// Reduce the collected replay records to a [`Score`].
+pub(super) fn score(replays: &[RoundRecord]) -> Score {
+    let count = |f: fn(&RoundVerdict) -> bool| replays.iter().filter(|r| f(&r.verdict)).count();
     let jittered_rounds = replays
         .iter()
-        .filter_map(|(n, v)| {
-            if let RoundVerdict::Jittered { turns } = v {
-                Some((*n, turns.clone()))
+        .filter_map(|r| {
+            if let RoundVerdict::Jittered { turns } = &r.verdict {
+                Some((r.round, turns.clone()))
             } else {
                 None
             }
@@ -42,14 +69,30 @@ pub(super) fn score(replays: &[(usize, RoundVerdict)]) -> Score {
         .collect();
     let collapsed_rounds = replays
         .iter()
-        .filter_map(|(n, v)| {
-            if let RoundVerdict::Collapsed { turns } = v {
-                Some((*n, turns.clone()))
+        .filter_map(|r| {
+            if let RoundVerdict::Collapsed { turns } = &r.verdict {
+                Some((r.round, turns.clone()))
             } else {
                 None
             }
         })
         .collect();
+    let unmeasured_rounds = replays
+        .iter()
+        .filter_map(|r| {
+            if let RoundVerdict::Unmeasured { reason } = &r.verdict {
+                Some((r.round, reason.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let vacuous_rounds = replays
+        .iter()
+        .filter(|r| r.turn1_cached == Some(0))
+        .map(|r| r.round)
+        .collect();
+    let min_turn1_cached = replays.iter().filter_map(|r| r.turn1_cached).min();
     Score {
         rounds: replays.len(),
         invariant: count(|v| matches!(v, RoundVerdict::Invariant)),
@@ -58,6 +101,9 @@ pub(super) fn score(replays: &[(usize, RoundVerdict)]) -> Score {
         unmeasured: count(|v| matches!(v, RoundVerdict::Unmeasured { .. })),
         jittered_rounds,
         collapsed_rounds,
+        unmeasured_rounds,
+        vacuous_rounds,
+        min_turn1_cached,
     }
 }
 
@@ -80,6 +126,10 @@ fn turn_summary(turns: &[TurnDelta]) -> String {
 /// * ANY unmeasured round FAILS — a transport error means the invariant is
 ///   unproven for that round, and a gate that cannot prove its invariant
 ///   must not pass.
+/// * ANY replay whose first turn attested zero cached prompt tokens FAILS —
+///   the gate polices the prefix-restore path, and a replay that restored
+///   nothing ran against a cold engine. Before this rule, serving with
+///   prefix caching disabled produced a green PASS that proved nothing.
 /// * Jittered rounds PASS but are recorded: clean main's restore anchor
 ///   selection jitters turn lengths by a few percent between rounds; that
 ///   is a healthy engine, and failing it would train people to override
@@ -112,6 +162,15 @@ pub(super) fn verdict(s: &Score, rounds: usize) -> Verdict {
             "{} of {} replays were unmeasurable (transport errors) — the replay invariant is \
              unproven for those rounds",
             s.unmeasured, rounds
+        ));
+    }
+    if !s.vacuous_rounds.is_empty() {
+        return Verdict::fail(format!(
+            "replay round(s) {:?} attested 0 cached prompt tokens on turn 1 — the prefix \
+             restore path this gate polices was never exercised, so their transcripts prove \
+             nothing about the poisoning class (is prefix caching enabled on the served \
+             recipe?)",
+            s.vacuous_rounds
         ));
     }
     if s.jittered > 0 {
