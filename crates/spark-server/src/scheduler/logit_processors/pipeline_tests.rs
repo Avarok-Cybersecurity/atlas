@@ -94,22 +94,22 @@ fn argmax_invariance_advertisement() {
 #[test]
 fn forced_think_end_gate_semantics() {
     // Not armed → never inject.
-    assert!(!should_inject_think_end(false, false, false, false, false));
-    assert!(!should_inject_think_end(false, true, false, true, true));
+    assert!(!should_inject_think_end(false, false, false, false));
+    assert!(!should_inject_think_end(false, true, true, true));
 
     // Armed + hard override → always inject (even mid-fence).
-    assert!(should_inject_think_end(true, true, false, false, true));
-    assert!(should_inject_think_end(true, false, false, false, true));
+    assert!(should_inject_think_end(true, true, false, true));
+    assert!(should_inject_think_end(true, false, false, true));
 
     // Armed + in fence + no override → defer.
-    assert!(!should_inject_think_end(true, true, false, false, false));
-    assert!(!should_inject_think_end(true, true, false, true, false));
+    assert!(!should_inject_think_end(true, true, false, false));
+    assert!(!should_inject_think_end(true, true, true, false));
 
     // Armed + outside fence + at sentence boundary → inject.
-    assert!(should_inject_think_end(true, false, false, true, false));
+    assert!(should_inject_think_end(true, false, true, false));
 
     // Armed + outside fence + NOT at boundary → defer (await period).
-    assert!(!should_inject_think_end(true, false, false, false, false));
+    assert!(!should_inject_think_end(true, false, false, false));
 }
 
 /// The defer-override math in `ForcedThinkEndInjector::apply` mirrors

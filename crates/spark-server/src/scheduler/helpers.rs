@@ -459,26 +459,28 @@ pub const MAX_POST_THINK_CONTENT_TOKENS: u32 = 100_000;
 
 /// Is an UNTERMINATED tool-call block open at the end of `tokens`?
 ///
-/// SSOT for "this sequence is mid-`<tool_call>` right now". Two callers
-/// need it and they used to answer it differently:
-///
-/// * the content-phase fuzzy-repetition detector, which must not fire on
-///   the natural `<parameter=…></parameter>` repetition of an XML tool
-///   body (it had this logic inline), and
-/// * the thinking-phase `</think>` force-close path, which must not cut
-///   the block in half. A `<tool_call>` truncated mid-arguments is not
-///   discarded — the blocking path hoists it out of the reasoning trace
-///   (`chat_blocking_choice.rs` F7) — so a cut between the tool NAME and
-///   its arguments produced a name-only call that then looked complete
-///   to the client.
+/// SSOT for "this sequence is mid-`<tool_call>` right now". One caller: the
+/// content-phase fuzzy-repetition detector, which must not fire on the
+/// natural `<parameter=…></parameter>` repetition of an XML tool body. It
+/// carried this logic inline; lifting it here is a behaviour-neutral dedupe.
 ///
 /// Token-level, not text-level: `start`/`end` are the per-sequence atomic
 /// ids of the active tool format's open/close markers
 /// (`<tool_call>`/`</tool_call>`, or the `minimax_xml` pair), resolved
 /// once at startup from `tool_defaults.toml`. When the tokenizer does not
 /// encode the opener as ONE token, `start` is `None` and this returns
-/// `false` — every caller then keeps exactly its pre-existing behaviour
+/// `false` — the caller then keeps exactly its pre-existing behaviour
 /// instead of guessing from decoded text.
+///
+/// ★ That token-level limit is why this predicate is NOT used to defer the
+/// thinking-phase `</think>` force-close. Such a guard was implemented in
+/// this PR and then removed: an instrumented build logged ZERO engagements
+/// across the whole in-`<think>` tool-drafting corpus, because the models
+/// that draft a call inside `<think>` emit PLAIN TEXT (Qwen3.6) or a bare
+/// `<function=` (Nemotron Nano) — neither is an atomic opener token, so
+/// this returns `false` exactly when the guard was meant to fire. Making
+/// the predicate text-aware is tracked as a follow-up; argument-honesty is
+/// enforced instead by the parser-side validation in this PR.
 pub fn tool_call_open_in_tail(tokens: &[u32], start: Option<u32>, end: Option<u32>) -> bool {
     let Some(start_tok) = start else {
         return false;

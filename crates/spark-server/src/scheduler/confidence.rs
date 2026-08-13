@@ -84,14 +84,6 @@ pub const MAX_SENTENCE_DEFER_TOKENS: u32 = 64;
 ///
 /// 1. **In-code-fence defer** (existing): never split a ``` block —
 ///    code is finite, brake fires after the closing ```.
-/// 1b. **In-tool-call defer** (2026-08-13): never split a `<tool_call>`
-///    block either. A tool call the model writes INSIDE `<think>` is not
-///    discarded — the blocking path hoists it out of the reasoning trace
-///    — so cutting it mid-arguments yields a call carrying its name and
-///    nothing else. Same shape as the fence rule (finite block, brake
-///    fires after `</tool_call>`) and bounded by the same
-///    `hard_override`, so a never-closing tool body cannot trap thinking
-///    forever.
 /// 2. **Sentence-boundary defer** (2026-05-23): outside a fence, wait
 ///    until the previously-emitted token is a sentence boundary
 ///    (`.`/`!`/`?`/`\n`, per `VocabMasks::boundary`).
@@ -107,7 +99,6 @@ pub const MAX_SENTENCE_DEFER_TOKENS: u32 = 64;
 pub fn should_inject_think_end(
     force_end_thinking: bool,
     in_code_fence: bool,
-    in_tool_call: bool,
     at_sentence_boundary: bool,
     hard_override: bool,
 ) -> bool {
@@ -117,7 +108,7 @@ pub fn should_inject_think_end(
     if hard_override {
         return true;
     }
-    if in_code_fence || in_tool_call {
+    if in_code_fence {
         return false;
     }
     at_sentence_boundary
