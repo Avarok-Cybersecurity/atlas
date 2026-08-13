@@ -55,6 +55,8 @@ pub use model_stats::ModelStats;
 mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
+#[path = "ops/gemv_batch2.rs"]
+mod gemv_batch2;
 #[path = "ops/gemv_q2.rs"]
 mod gemv_q2;
 #[path = "ops/gemv_q2_vec.rs"]
@@ -149,6 +151,7 @@ pub use gemm_dense_int8::*;
 pub use gemm_fp4::*;
 pub use gemm_fp8_prefill::*;
 pub use gemm_quant::*;
+pub use gemv_batch2::*;
 pub use gemv_q2::*;
 pub use gemv_q2_vec::*;
 pub use gemv_sw::*;

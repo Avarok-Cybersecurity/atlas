@@ -104,7 +104,7 @@ impl MoeLayer {
                 .kernel("moe_fused_batch2", "moe_expert_silu_down_shared_batch2")?,
             moe_weighted_sum_blend_batch2: gpu
                 .kernel("moe_fused_batch2", "moe_weighted_sum_blend_batch2")?,
-            w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
+            w4a16_gemv_batch2: crate::layers::ops::resolve_w4a16_gemv_batch2(gpu)?,
             moe_expert_gate_up_shared_batch3: gpu
                 .kernel("moe_fused_batch3", "moe_expert_gate_up_shared_batch3")?,
             moe_expert_silu_down_shared_batch3: gpu

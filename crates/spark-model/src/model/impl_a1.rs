@@ -107,7 +107,7 @@ impl TransformerModel {
             spark_runtime::gpu::KernelHandle(0)
         };
         let w4a16_gemm_kernel = gpu.kernel("w4a16", "w4a16_gemm")?;
-        let w4a16_gemv_batch2_kernel = gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?;
+        let w4a16_gemv_batch2_kernel = crate::layers::ops::resolve_w4a16_gemv_batch2(gpu.as_ref())?;
         // M<=4 batched GEMV for the K=3/K=4 verify lm_head (try_kernel:
         // 0-handle on targets that predate it; dispatch falls back).
         let w4a16_gemv_batch4_kernel =

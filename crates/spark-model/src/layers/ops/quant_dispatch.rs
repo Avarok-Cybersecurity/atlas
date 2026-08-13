@@ -131,6 +131,10 @@ pub fn w4a16_gemv(
 ///
 /// Kernel: `w4a16_gemv_batch2(A, B_packed, B_scale, scale2, C, N, K)`
 /// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+///
+/// Live decode resolves the handle via [`super::gemv_batch2::resolve_w4a16_gemv_batch2`]
+/// (cp.async kernel by default; `ATLAS_NO_GEMV_BATCH2_CPASYNC=1` restores this
+/// template instantiation). The launcher is shared — same grid/args.
 pub fn w4a16_gemv_batch2(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
