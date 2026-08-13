@@ -135,15 +135,59 @@ fn load_moe_ffn(
         .collect::<Result<Vec<_>>>()?;
 
     let shared = format!("{mlp}.shared_expert");
-    let shared_gate = dense_auto(store, &format!("{shared}.gate_proj.weight"), gpu)?;
-    let shared_up = dense_auto(store, &format!("{shared}.up_proj.weight"), gpu)?;
-    let shared_down = dense_auto(store, &format!("{shared}.down_proj.weight"), gpu)?;
     let si = config.shared_expert_intermediate_size;
     let h = config.hidden_size;
-    let shared_expert = ExpertWeight {
-        gate_proj: quantize_to_nvfp4(&shared_gate, si, h, gpu, absmax_k, quantize_k, stream)?,
-        up_proj: quantize_to_nvfp4(&shared_up, si, h, gpu, absmax_k, quantize_k, stream)?,
-        down_proj: quantize_to_nvfp4(&shared_down, h, si, gpu, absmax_k, quantize_k, stream)?,
+    // Shared-expert precision differs across Laguna variants, and the
+    // checkpoint says which. S-2.1 lists `shared_expert.{gate,up,down}_proj` in
+    // its `quantization_config.ignore` set and ships them BF16; XS-2.1 lists
+    // them in `targets` instead and ships them NVFP4-packed, exactly like the
+    // routed experts. Detect by tensor presence (`.weight_packed`) rather than
+    // by hidden_size, so a future variant is classified by what it actually
+    // contains.
+    let shared_packed = store.contains(&format!("{shared}.gate_proj.weight_packed"));
+    let (shared_expert, bf16_shared) = if shared_packed {
+        // XS-2.1: the NVFP4 shared expert is authoritative and runs on the same
+        // machinery as the routed NVFP4 experts — no BF16 override.
+        (
+            ExpertWeight {
+                gate_proj: quantized_v2(store, &format!("{shared}.gate_proj"), gpu)?,
+                up_proj: quantized_v2(store, &format!("{shared}.up_proj"), gpu)?,
+                down_proj: quantized_v2(store, &format!("{shared}.down_proj"), gpu)?,
+            },
+            None,
+        )
+    } else {
+        // S-2.1: BF16 shared expert. The NVFP4 copies below are placeholders so
+        // the fused routed kernels have something to read; the BF16 tensors are
+        // installed as authoritative below and overwrite the shared
+        // contribution before blending.
+        let shared_gate = dense_auto(store, &format!("{shared}.gate_proj.weight"), gpu)?;
+        let shared_up = dense_auto(store, &format!("{shared}.up_proj.weight"), gpu)?;
+        let shared_down = dense_auto(store, &format!("{shared}.down_proj.weight"), gpu)?;
+        (
+            ExpertWeight {
+                gate_proj: quantize_to_nvfp4(
+                    &shared_gate,
+                    si,
+                    h,
+                    gpu,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                )?,
+                up_proj: quantize_to_nvfp4(&shared_up, si, h, gpu, absmax_k, quantize_k, stream)?,
+                down_proj: quantize_to_nvfp4(
+                    &shared_down,
+                    h,
+                    si,
+                    gpu,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                )?,
+            },
+            Some((shared_gate, shared_up, shared_down)),
+        )
     };
     let weights = MoeWeights {
         gate,
@@ -156,11 +200,15 @@ fn load_moe_ffn(
         correction_bias: Some(correction_bias),
     };
     let mut layer = MoeLayer::new(weights, config.num_experts, None, gpu, config)?;
-    // The checkpoint explicitly excludes the shared expert from NVFP4
-    // compression. Keep its BF16 weights authoritative for both prefill and
-    // decode; the quantized copies above are placeholders for fused routed
-    // kernels and their shared contribution is overwritten before blending.
-    layer.set_bf16_shared_expert(shared_gate, shared_up, shared_down)?;
+    // S-2.1 excludes the shared expert from NVFP4 compression: keep its BF16
+    // weights authoritative for both prefill and decode. XS-2.1 ships the
+    // shared expert NVFP4-packed, so nothing overrides `weights.shared_expert`
+    // and it stays on the quantized path (`has_mixed_bf16_shared_expert()`
+    // reports false, which is what keeps the fused routed kernels' shared
+    // contribution rather than recomputing it in BF16).
+    if let Some((shared_gate, shared_up, shared_down)) = bf16_shared {
+        layer.set_bf16_shared_expert(shared_gate, shared_up, shared_down)?;
+    }
     if unified_moe_layout {
         layer.transpose_for_prefill_unified(gpu, config)?;
     }
