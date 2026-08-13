@@ -7,7 +7,7 @@
 //! are the fix for a defect in `tests/run_all_models.py`:
 //!
 //! * **The roster is derived.** `library::scan` reports what is in the HF cache
-//!   and `atlas_kernels::ptx_for_config` decides whether this build compiled
+//!   and `atlas_kernels::ptx_for_shape` decides whether this build compiled
 //!   kernels for it. Nothing here lists a model. The Python's `ROUNDS` is a
 //!   hand-maintained Qwen3.5-era list of twelve checkpoints, not one of which
 //!   is in this box's cache — a second roster that went stale silently.

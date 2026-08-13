@@ -343,6 +343,54 @@ pub struct ModelTypeMatch {
     pub model_type: &'static str,
     /// `None` = wildcard (matches any hidden_size not caught by a more specific entry).
     pub hidden_size: Option<usize>,
+    /// `num_nextn_predict_layers` (HF) / `mtp_num_hidden_layers` (Atlas)
+    /// this entry claims.
+    ///
+    /// `None` = the entry does not discriminate on MTP depth (every target
+    /// predating the discriminator). `Some(n)` matches ONLY checkpoints
+    /// whose MTP depth is exactly `n` — including `Some(0)`, which is how a
+    /// target says "the variant of this family that ships NO draft head",
+    /// the half of the split that would otherwise be a catch-all.
+    pub mtp_layers: Option<usize>,
+}
+
+/// The model shape a kernel target is selected for.
+///
+/// Every field is an explicit discriminator read off the checkpoint's
+/// `config.json`; there is no defaulting here on purpose. Two Nemotron-H
+/// 30B checkpoints (Nano and 3.5 Lightning) are identical in
+/// `(model_type, hidden_size)` and differ only in `mtp_layers`, and they
+/// need OPPOSITE `[behavior]` policy — so a caller that guesses this
+/// silently serves the other model's policy.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelShape<'a> {
+    pub model_type: &'a str,
+    pub hidden_size: usize,
+    /// `ModelConfig::mtp_num_hidden_layers`. 0 = no MTP draft module.
+    pub mtp_layers: usize,
+}
+
+impl ModelTypeMatch {
+    /// Specificity of this entry against `shape`, or `None` if it does not
+    /// match at all. Higher wins: an entry that pins BOTH hidden_size and
+    /// MTP depth (3) outranks one pinning only hidden_size (2), which
+    /// outranks a bare `model_type` wildcard (0).
+    fn specificity(&self, shape: &ModelShape<'_>) -> Option<u8> {
+        if self.model_type != shape.model_type {
+            return None;
+        }
+        let hs = match self.hidden_size {
+            Some(h) if h == shape.hidden_size => 2,
+            Some(_) => return None,
+            None => 0,
+        };
+        let mtp = match self.mtp_layers {
+            Some(m) if m == shape.mtp_layers => 1,
+            Some(_) => return None,
+            None => 0,
+        };
+        Some(hs + mtp)
+    }
 }
 
 /// DFlash speculative-decoding pairing for a target model.
@@ -428,24 +476,23 @@ pub fn ptx_for_model(needle: &str) -> Option<TargetPtxSet> {
 /// 1. Exact match on `(model_type, Some(hidden_size))` wins
 /// 2. Wildcard match `(model_type, None)` is fallback
 /// 3. Returns `None` if no compiled target matches
-pub fn ptx_for_config(model_type: &str, hidden_size: usize) -> Option<TargetPtxSet> {
+pub fn ptx_for_shape(shape: ModelShape<'_>) -> Option<TargetPtxSet> {
     let targets = all_ptx_sets();
-    // Exact match first (specific hidden_size)
-    let exact = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size == Some(hidden_size))
-    });
-    if let Some(idx) = exact {
-        return targets.into_iter().nth(idx);
-    }
-    // Wildcard fallback (hidden_size == None)
-    let wildcard = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size.is_none())
-    });
-    wildcard.and_then(|idx| targets.into_iter().nth(idx))
+    // Most specific entry wins; ties go to the earliest target so the
+    // registry order (alphabetical by model dir) stays the tie-break it
+    // has always been.
+    let best = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, t)| {
+            t.model_type_matches
+                .iter()
+                .filter_map(|m| m.specificity(&shape))
+                .max()
+                .map(|score| (score, std::cmp::Reverse(idx)))
+        })
+        .max();
+    best.and_then(|(_, std::cmp::Reverse(idx))| targets.into_iter().nth(idx))
 }
 
 #[cfg(test)]

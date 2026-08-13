@@ -131,8 +131,12 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
                     q.quant_algo.to_lowercase()
                 };
             }
-            entry.optimized =
-                atlas_kernels::ptx_for_config(&cfg.model_type, cfg.hidden_size).is_some();
+            entry.optimized = atlas_kernels::ptx_for_shape(atlas_kernels::ModelShape {
+                model_type: &cfg.model_type,
+                hidden_size: cfg.hidden_size,
+                mtp_layers: cfg.mtp_num_hidden_layers,
+            })
+            .is_some();
         }
         out.push(entry);
     }
