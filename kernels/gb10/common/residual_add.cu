@@ -189,6 +189,26 @@ extern "C" __global__ void sigmoid_gate_mul_head_broadcast(
     }
 }
 
+extern "C" __global__ void softplus_gate_mul_head_broadcast(
+    const __nv_bfloat16* __restrict__ input,
+    const __nv_bfloat16* __restrict__ gate,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int nq,
+    unsigned int hd,
+    unsigned int total_elements
+) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < total_elements) {
+        unsigned int dim = nq * hd;
+        unsigned int t = i / dim;
+        unsigned int head_idx = (i % dim) / hd;
+        float x = __bfloat162float(input[i]);
+        float g = __bfloat162float(gate[t * nq + head_idx]);
+        float softplus_g = fmaxf(g, 0.0f) + log1pf(expf(-fabsf(g)));
+        output[i] = __float2bfloat16(x * softplus_g);
+    }
+}
+
 extern "C" __global__ void bf16_sigmoid_blend_device(
     __nv_bfloat16* __restrict__ output,             // [n] — routed output, modified in-place
     const __nv_bfloat16* __restrict__ src,          // [n] — shared expert output

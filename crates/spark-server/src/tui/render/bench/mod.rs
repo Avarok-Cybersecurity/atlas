@@ -111,12 +111,14 @@ pub(super) fn draw_stats(f: &mut Frame, stats: &[atlas_plugin::Stat], area: Rect
 
 /// A benchmark's results table. Shared by the live run and History, since a
 /// stored frame is the same `BenchmarkResult` the run emitted.
+/// Returns the scroll ceiling it clamped the display to, so the caller can
+/// publish it for its reducer — only this function knows the viewport.
 pub(super) fn draw_table(
     f: &mut Frame,
     table: &atlas_plugin::ResultTable,
     scroll: usize,
     area: Rect,
-) {
+) -> usize {
     let block = panel(
         format!("{} ─ {} rows ─", table.title, table.rows.len()),
         false,
@@ -160,6 +162,7 @@ pub(super) fn draw_table(
             .style(theme::text()),
         inner,
     );
+    max_scroll
 }
 
 #[cfg(test)]

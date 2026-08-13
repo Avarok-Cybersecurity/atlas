@@ -210,6 +210,13 @@ pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
 // an atomic inside the run's levers, which serve hands to the scheduler and
 // the dashboard as an `Arc`.
 
+// `enable_think_loop_watchdog` was a `OnceLock<bool>` with a setter called from
+// `serve_phases::runtime` — the exact anti-pattern `WatchdogParams` documents
+// below and was created to retire: the value is PER MODEL, so a process global
+// keeps the first model's answer for every model loaded after it, and the
+// installer ran after the scheduler thread had already spawned. It now lives in
+// `WatchdogParams::enable_think_loop_watchdog`, built per load and carried.
+
 // ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
 
 // Resolved once into `SchedLevers::forced_token_fastpath` and read off
@@ -316,6 +323,26 @@ pub struct WatchdogParams {
     /// historical no-op. Backstops a grammar-legal-but-never-closing
     /// runaway that would otherwise burn to `max_tokens`.
     pub max_post_think_content_tokens: u32,
+    /// Honor a mid-`<think>` EOS by implicitly closing the thinking block.
+    /// Per-model (MODEL.toml `[behavior].honor_eos_inside_thinking`), default
+    /// FALSE = pre-p350 behaviour (discard the EOS, let the model recover and
+    /// emit its tool call). Carried here rather than in a `OnceLock` for the
+    /// reason `from_behavior` documents below: a process global keeps the
+    /// FIRST model's value for every model after it, and its installer runs
+    /// after the scheduler thread is already spawned.
+    pub honor_eos_inside_thinking: bool,
+    /// Per-model gate for the THINKING-phase token-loop watchdog. Default
+    /// `true` (the behaviour before the flag existed), so a model that does not
+    /// opt out is unaffected. Was a `OnceLock`; see the note above.
+    ///
+    /// Why a model would opt out: the watchdog force-injects `</think>` on a
+    /// period-4..20 repeat in the reasoning tail. When it misfires, the model
+    /// is yanked out of a reasoning block it did not choose to end, has no
+    /// natural continuation, and the post-close CONTENT degenerates into token
+    /// spam. Observed on Laguna-S-2.1: watchdog on -> `finish=length` with
+    /// content '####...' / backtick spam; same prompt with watchdogs off ->
+    /// coherent reasoning and no spam.
+    pub enable_think_loop_watchdog: bool,
     /// Phase-C: when a degeneration watchdog fires, roll back to the last
     /// well-formed boundary and re-steer instead of hard-stopping.
     /// Default `true`. See [`super::rollback::rollback_to_boundary`].
@@ -336,6 +363,9 @@ const DEFAULT_WATCHDOG_PARAMS: WatchdogParams = WatchdogParams {
     max_inter_tool_prose: MAX_INTER_TOOL_PROSE,
     max_post_think_content_tokens: MAX_POST_THINK_CONTENT_TOKENS,
     rollback_resteer: true,
+    // FALSE = pre-p350 behaviour: a mid-think EOS is discarded, not honored.
+    honor_eos_inside_thinking: false,
+    enable_think_loop_watchdog: true,
 };
 
 impl Default for WatchdogParams {
@@ -370,6 +400,8 @@ impl WatchdogParams {
             max_inter_tool_prose: b.max_inter_tool_prose,
             max_post_think_content_tokens: b.max_post_think_content_tokens,
             rollback_resteer: b.rollback_resteer,
+            honor_eos_inside_thinking: b.honor_eos_inside_thinking,
+            enable_think_loop_watchdog: b.enable_think_loop_watchdog,
         };
         // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
         // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on

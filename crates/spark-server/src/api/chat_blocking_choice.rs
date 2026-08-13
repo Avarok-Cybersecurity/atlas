@@ -12,6 +12,8 @@ use crate::AppState;
 use crate::ir;
 use crate::tool_parser;
 
+use super::chat_blocking::{extract_hoisted_tool_calls, merge_hoisted_tool_calls};
+
 /// Build the assistant message + finish_reason for one choice. Tool
 /// parsing, validation, content-strip + refusal-classifier all live
 /// here.
@@ -55,13 +57,9 @@ pub(super) fn build_choice_message(
         // reasoning, hoist the calls back into the assistant message and
         // scrub the residual XML from the reasoning trace so it isn't
         // double-emitted to the client.
-        let (hoisted_reasoning, hoisted_tool_calls): (Option<String>, Vec<_>) =
-            if let Some(ref rc) = reasoning_content {
-                let (scrubbed, tcs) = tool_parser::parse_tool_calls(rc);
-                (scrubbed, tcs)
-            } else {
-                (None, Vec::new())
-            };
+        let parser_name = state.tool_call_parser.as_ref().map(|parser| parser.name());
+        let (hoisted_reasoning, hoisted_tool_calls) =
+            extract_hoisted_tool_calls(reasoning_content.as_deref(), parser_name);
         if !hoisted_tool_calls.is_empty() {
             tracing::info!(
                 "F7: hoisted {} tool-call(s) from inside <think> block (would have been silently dropped)",
@@ -70,8 +68,7 @@ pub(super) fn build_choice_message(
             reasoning_content = hoisted_reasoning;
         }
         let (content, parsed_tool_calls) = tool_parser::parse_tool_calls(&output_text_i);
-        let mut tool_calls_i = hoisted_tool_calls;
-        tool_calls_i.extend(parsed_tool_calls);
+        let mut tool_calls_i = merge_hoisted_tool_calls(hoisted_tool_calls, parsed_tool_calls);
         if !tool_calls_i.is_empty() {
             let tools_ref = req.tools.clone();
             tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
@@ -132,6 +129,15 @@ pub(super) fn build_choice_message(
                 }
             }
         }
+    }
+
+    // Orphan tool-call markup: the model can emit a `<tool_call>…` block after
+    // a normal answer even when no tool call is used (tools inactive, or tools
+    // active but nothing valid parsed). The tools_active parser above only
+    // scrubbed content when it produced a call, so any surviving markup here is
+    // spurious — cut it from content so it does not reach the client.
+    if msg_tool_calls.is_none() {
+        msg_content = msg_content.map(|c| super::strip::strip_orphan_tool_markup(&c));
     }
 
     // Refusal classifier: when the model's assistant text opens with

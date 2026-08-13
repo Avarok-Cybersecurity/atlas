@@ -31,6 +31,18 @@ impl MoeLayer {
         if self.bf16_gate_weight_ptrs.is_some() {
             return self.forward_batched(input, 3, ctx, stream);
         }
+        // Mixed NVFP4-routed / BF16-shared (Laguna): batch the routed half
+        // through the _t kernels and run the shared expert as one batched BF16
+        // pass afterwards. See forward_k2 for the rationale.
+        let mixed_bf16_shared = self.has_mixed_bf16_shared_expert();
+        if mixed_bf16_shared
+            && !(self.use_t_layout_for_decode()
+                && self.moe_expert_gate_up_shared_batch3_t_k.0 != 0
+                && self.moe_expert_silu_down_shared_batch3_t_k.0 != 0
+                && !(ctx.comm.is_some() && ctx.config.ep_world_size > 1))
+        {
+            return self.forward_batched(input, 3, ctx, stream);
+        }
         // E8M0 (native MXFP4, per-32 E8M0 scale) routed experts MUST NOT reach
         // the unified-T batch3 kernel `moe_expert_gate_up_shared_batch3_t`: like
         // its K=2 twin it is an NVFP4 kernel that hardcodes GROUP_SIZE=16 and
@@ -209,9 +221,18 @@ impl MoeLayer {
                 .as_ref()
                 .expect("down_ptrs_t under unified_t");
             let null_qw = QuantizedWeight::null();
-            let sh_gate_t = self.shared_gate_t.as_ref().unwrap_or(&null_qw);
-            let sh_up_t = self.shared_up_t.as_ref().unwrap_or(&null_qw);
-            let sh_down_t = self.shared_down_t.as_ref().unwrap_or(&null_qw);
+            // Mixed config: in-kernel shared expert off (NULL), computed in
+            // BF16 below instead — the NVFP4 shared_*_t tables are load-time
+            // placeholders and numerically wrong for this checkpoint.
+            let (sh_gate_t, sh_up_t, sh_down_t) = if mixed_bf16_shared {
+                (&null_qw, &null_qw, &null_qw)
+            } else {
+                (
+                    self.shared_gate_t.as_ref().unwrap_or(&null_qw),
+                    self.shared_up_t.as_ref().unwrap_or(&null_qw),
+                    self.shared_down_t.as_ref().unwrap_or(&null_qw),
+                )
+            };
             ops::moe_expert_gate_up_shared_batch3_t(
                 ctx.gpu,
                 self.moe_expert_gate_up_shared_batch3_t_k,
@@ -251,6 +272,43 @@ impl MoeLayer {
                 h,
                 inter,
                 top_k,
+                stream,
+            )?;
+            if mixed_bf16_shared {
+                let shared_inter = ctx.config.shared_expert_intermediate_size as u32;
+                self.run_bf16_shared_expert(
+                    input,
+                    3,
+                    h,
+                    shared_inter,
+                    shared_gate_scratch,
+                    shared_up_scratch,
+                    shared_down_out,
+                    ctx,
+                    stream,
+                )?;
+            }
+            // The _t branch previously returned without writing moe_output at
+            // all — every sibling branch ends in this blend.
+            let shared_for_blend = if is_ep && !shared_down_out.is_null() {
+                ctx.gpu
+                    .memset_async(expert_gate_out, 0, 3 * h as usize * 2, stream)?;
+                expert_gate_out
+            } else {
+                shared_down_out
+            };
+            ops::moe_weighted_sum_blend_batch3(
+                ctx.gpu,
+                self.moe_weighted_sum_blend_batch3,
+                output,
+                expert_down_out,
+                weights_dev,
+                shared_for_blend,
+                input,
+                self.weights.shared_expert_gate.weight,
+                h,
+                top_k,
+                h,
                 stream,
             )?;
         } else {

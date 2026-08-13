@@ -17,6 +17,11 @@
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
 //!   events          input/tick event loop on the dedicated "atlas-tui" thread
 //!   events_rules    the loop's decisions as pure functions, so they are testable
+//!   help_state      Help section state + the issue-report phase machine
+//!   help_keys       Help section key handling, one function per phase
+//!   report          GitHub issue reporting, the pure protocol half
+//!   report_http     GitHub issue reporting, the transport + worker threads
+//!   redact          best-effort log scrubbing + size budget for reports
 //!   section         Section — the sidebar/nav SSOT
 //!   app             App state + reducer (section, focus, per-tab state)
 //!   app_quit        what `q` costs, and when it costs a second press
@@ -61,7 +66,8 @@
 //!
 //! The threads, all named so a stack dump during an incident is attributable:
 //! `atlas-tui` (this render loop) · `atlas-recipes` · `atlas-recipe-date` ·
-//! `atlas-libscan` · `atlas-download` · `atlas-freshness` · `atlas-swap`.
+//! `atlas-libscan` · `atlas-download` · `atlas-freshness` · `atlas-swap` ·
+//! `atlas-report` (GitHub device flow + issue submit).
 //!
 //! The first five one-shot workers go through [`worker::spawn`], which owns the
 //! part that is easy to forget: answering anyway when the thread will not
@@ -81,8 +87,10 @@ pub mod terminal_guard;
 pub mod app;
 mod app_input;
 pub mod app_library;
+mod app_nav;
 pub mod app_quit;
 pub mod app_scroll;
+mod app_types;
 pub mod bench_host;
 pub mod bench_keys;
 pub mod bench_preflight;
@@ -92,12 +100,22 @@ pub mod download_state;
 pub mod events;
 pub mod events_rules;
 pub mod format;
+pub mod help_keys;
+pub mod help_state;
+pub mod lib_borrow;
+pub mod lib_config;
 pub mod lib_dates;
+pub mod lib_fields;
 pub mod lib_keys;
+pub mod lib_modal;
 pub mod lib_scan;
+pub mod lib_start;
 pub mod lib_state;
 pub mod logo;
 pub mod progress;
+pub mod redact;
+pub mod report;
+pub mod report_http;
 pub mod section;
 pub mod theme;
 pub mod worker;

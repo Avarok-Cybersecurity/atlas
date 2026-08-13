@@ -6,6 +6,7 @@
 #   qwen3_coder — XML:  <tool_call><function=fn><parameter=k>v</parameter></function></tool_call>
 #   gemma4      — Native: <|tool_call>call:fn{key:val,...}<tool_call|>
 #   mistral     — Native: [TOOL_CALLS]fn[ARGS]{"k":"v",...}
+#   deepseek_v4 — Native DSML: <｜DSML｜tool_calls>...<｜DSML｜invoke ...>
 
 [model_type]
 qwen3_5_moe = "qwen3_coder"    # Qwen3.5-35B, Qwen3.5-122B — native XML format
@@ -18,6 +19,8 @@ qwen3_vl_moe = "hermes"       # Qwen3-VL-30B
 mistral     = "mistral"       # Mistral Small 4 — native [TOOL_CALLS]name[ARGS]{json}
 gemma4      = "gemma4"        # Gemma-4 — native format: <|tool_call>call:name{...}<tool_call|>
 minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=""><parameter name="">...
+laguna      = "poolside_v1"     # Poolside — <tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value>
+deepseek_v4 = "deepseek_v4"    # DeepSeek-V4-Flash — checkpoint-native typed DSML
 
 # Default reasoning parser per model_type.
 # Override at runtime with --reasoning-parser <format>.
@@ -46,3 +49,4 @@ qwen3_next  = "qwen"
 qwen3_vl_moe = "qwen"
 mistral     = "mistral"
 minimax_m2  = "minimax"        # MiniMax M2/M2.7 — <think>...</think>, own identity
+laguna      = "qwen"           # Laguna uses ordinary <think>...</think> tags

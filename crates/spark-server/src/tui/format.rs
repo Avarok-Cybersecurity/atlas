@@ -62,6 +62,24 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
+/// A completion percentage for a human: `0.8%` below ten, `42%` above.
+///
+/// ★ One rule, two call sites. The download ROW invented this rule to fix a
+/// real report — a 20 GB pull sits under 1% for minutes, and `0%` for twenty
+/// minutes of moving bytes reads as a dead transfer ("I don't see anything
+/// happen … no downloading as far as I can see"). The header chip needs the
+/// identical rule, and a second copy of it is a second chance to drift: the
+/// row saying `0.8%` while the chip says `0%` for the same job would be worse
+/// than either alone. Unpadded — callers that need column alignment pad it.
+pub fn percent(frac: f64) -> String {
+    let pct = frac.clamp(0.0, 1.0) * 100.0;
+    if pct < 10.0 {
+        format!("{pct:.1}%")
+    } else {
+        format!("{pct:.0}%")
+    }
+}
+
 /// A byte-per-second rate for a human: `92 MB/s`, `3.0 MB/s`, `2.0 KB/s`,
 /// `0 B/s`.
 ///
@@ -114,6 +132,87 @@ pub fn mtp_mode_label(mode: MtpModeSnap) -> &'static str {
         MtpModeSnap::Probing => "probing",
         MtpModeSnap::Off => "off",
     }
+}
+
+/// Word-wrap one paragraph to `width` columns, as owned lines.
+///
+/// The one wrapping loop in the dashboard: `render::wrap` styles these lines
+/// and [`wrap_help`] runs this per source line — a second copy of the
+/// accumulation loop is how two panes come to disagree about where a row ends.
+///
+/// Measured in bytes, which over-counts anything non-ASCII and so wraps early
+/// rather than late — the `Paragraph`s downstream have no `Wrap`, so a row
+/// that is too LONG is silently clipped while a too-short row is merely short.
+pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        // A token wider than the pane — a long URL, a snapshot path, a hash —
+        // has no space to break at: hard-split it rather than let it run past
+        // the border.
+        if word.len() > width {
+            for ch in word.chars() {
+                if !current.is_empty() && current.len() + ch.len_utf8() > width {
+                    lines.push(std::mem::take(&mut current));
+                }
+                current.push(ch);
+            }
+        } else {
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Wrap multi-paragraph help text to `width`, keeping the blank lines.
+///
+/// [`wrap_words`] flattens ALL whitespace, which is right for a one-sentence
+/// error and wrong for clap help: `kv_cache_dtype`'s doc is several
+/// paragraphs, and collapsed into one block its warning about experimental
+/// variants reads as part of the sentence before it.
+pub fn wrap_help(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut paragraph = String::new();
+    let flush = |paragraph: &mut String, out: &mut Vec<String>| {
+        if !paragraph.is_empty() {
+            out.extend(wrap_words(paragraph, width));
+            paragraph.clear();
+        }
+    };
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            flush(&mut paragraph, &mut out);
+            // One blank per paragraph break, and none leading.
+            if out.last().is_some_and(|l| !l.is_empty()) {
+                out.push(String::new());
+            }
+        } else {
+            // Whole paragraphs re-flow: the source was wrapped for `--help`'s
+            // width, and re-wrapping its lines one by one leaves every second
+            // panel row a stub.
+            if !paragraph.is_empty() {
+                paragraph.push(' ');
+            }
+            paragraph.push_str(line.trim());
+        }
+    }
+    flush(&mut paragraph, &mut out);
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out
 }
 
 #[cfg(test)]

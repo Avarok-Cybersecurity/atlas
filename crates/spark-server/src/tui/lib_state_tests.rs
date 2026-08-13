@@ -52,14 +52,15 @@ fn the_list_populates_from_cache_without_a_network() {
 }
 
 #[test]
-fn a_model_with_no_recipe_never_reaches_the_cards() {
-    // Unchanged behaviour, asked for explicitly: a local-only checkpoint is
-    // listed and serveable by hand, but there is nothing to show a card for.
+fn a_model_with_no_recipe_opens_on_starting_points() {
+    // This used to refuse with "no recipe", which made a local-only
+    // checkpoint a dead end. It now opens the cards on synthesized starting
+    // points; the honesty rules for those live in `lib_start_tests`.
     let mut s = LibState::default();
     s.rebuild(&[local_of("org/orphan")]);
-    let err = s.open_cards().expect_err("refused");
-    assert!(err.contains("no recipe"), "{err}");
-    assert_eq!(s.view, View::List, "and it stays on the list");
+    s.open_cards().expect("no longer refused");
+    assert_eq!(s.view, View::Cards);
+    assert!(s.cards().iter().all(|c| c.starting_point.is_some()));
 }
 
 #[test]
@@ -70,13 +71,10 @@ fn the_form_shows_every_recipe_key_with_its_value() {
     let rows = s.config_rows();
     let recipe = s.config_recipe().expect("recipe");
     assert_eq!(rows.len(), recipe.defaults.len());
-    assert!(
-        rows.iter().all(|(_, _, edited)| !edited),
-        "nothing edited yet"
-    );
-    let (key, value, _) = rows.iter().find(|(k, _, _)| k == "port").expect("port");
-    assert_eq!(key, "port");
-    assert_eq!(value, "8888");
+    assert!(rows.iter().all(|r| !r.changed), "nothing edited yet");
+    let row = rows.iter().find(|r| r.key == "port").expect("port");
+    assert_eq!(row.key, "port");
+    assert_eq!(row.value, "8888");
 }
 
 #[test]
@@ -87,7 +85,7 @@ fn a_valid_edit_is_kept_and_marked() {
     let rows = s.config_rows();
     s.row = rows
         .iter()
-        .position(|(k, _, _)| k == "max_model_len")
+        .position(|r| r.key == "max_model_len")
         .expect("key");
     s.editing = true;
     s.edit_buffer = "4096".into();
@@ -95,14 +93,14 @@ fn a_valid_edit_is_kept_and_marked() {
 
     assert!(s.error.is_none(), "{:?}", s.error);
     assert!(!s.editing);
-    let (_, value, edited) = s
+    let row = s
         .config_rows()
         .into_iter()
-        .find(|(k, _, _)| k == "max_model_len")
+        .find(|r| r.key == "max_model_len")
         .expect("key");
-    assert_eq!(value, "4096");
+    assert_eq!(row.value, "4096");
     assert!(
-        edited,
+        row.changed,
         "an edited row is marked as differing from the recipe"
     );
 }
@@ -116,7 +114,7 @@ fn an_invalid_edit_is_rejected_and_not_kept() {
     let rows = s.config_rows();
     s.row = rows
         .iter()
-        .position(|(k, _, _)| k == "scheduling_policy")
+        .position(|r| r.key == "scheduling_policy")
         .expect("key");
     s.editing = true;
     s.edit_buffer = "nonsense".into();
@@ -131,13 +129,13 @@ fn an_invalid_edit_is_rejected_and_not_kept() {
         s.overrides.is_empty(),
         "the bad value must not enter the overrides"
     );
-    let (_, value, edited) = s
+    let row = s
         .config_rows()
         .into_iter()
-        .find(|(k, _, _)| k == "scheduling_policy")
+        .find(|r| r.key == "scheduling_policy")
         .expect("key");
-    assert_eq!(value, "slai", "still the recipe's value");
-    assert!(!edited);
+    assert_eq!(row.value, "slai", "still the recipe's value");
+    assert!(!row.changed);
 }
 
 #[test]
@@ -164,10 +162,7 @@ fn the_whole_config_is_validated_not_just_the_field() {
     s.open_cards().expect("opens the cards");
     s.open_config().expect("opens the form");
     let rows = s.config_rows();
-    if let Some(i) = rows
-        .iter()
-        .position(|(k, _, _)| k == "gpu_memory_utilization")
-    {
+    if let Some(i) = rows.iter().position(|r| r.key == "gpu_memory_utilization") {
         s.row = i;
         s.editing = true;
         s.edit_buffer = "9.0".into(); // out of range
@@ -185,7 +180,7 @@ fn resetting_returns_to_the_recipes_own_values() {
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "port")
+        .position(|r| r.key == "port")
         .expect("port");
     s.editing = true;
     s.edit_buffer = "9999".into();
@@ -194,13 +189,13 @@ fn resetting_returns_to_the_recipes_own_values() {
 
     s.reset_overrides();
     assert!(s.overrides.is_empty());
-    let (_, value, edited) = s
+    let row = s
         .config_rows()
         .into_iter()
-        .find(|(k, _, _)| k == "port")
+        .find(|r| r.key == "port")
         .expect("port");
-    assert_eq!(value, "8888");
-    assert!(!edited);
+    assert_eq!(row.value, "8888");
+    assert!(!row.changed);
 }
 
 #[test]
@@ -211,7 +206,7 @@ fn the_preview_argv_reflects_the_edits() {
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "port")
+        .position(|r| r.key == "port")
         .expect("port");
     s.editing = true;
     s.edit_buffer = "9999".into();
@@ -335,7 +330,7 @@ fn edits_do_not_survive_onto_a_recipe_the_user_never_opened() {
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "port")
+        .position(|r| r.key == "port")
         .expect("port");
     s.editing = true;
     s.edit_buffer = "9100".into();
@@ -420,4 +415,22 @@ fn a_launch_that_succeeds_reports_nothing() {
     s.launch_result = Some(rx);
     drop(tx);
     assert!(s.poll_launch().is_none(), "silence means it worked");
+}
+
+/// The quit guard reads this: a launch is "in flight" from spawn until its
+/// result channel settles — including the silent success, where the loader
+/// thread just drops the sender.
+#[test]
+fn launch_in_flight_tracks_the_result_channel() {
+    let mut s = LibState::default();
+    assert!(!s.launch_in_flight(), "nothing launched yet");
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    s.launch_result = Some(rx);
+    assert!(s.launch_in_flight(), "loader thread is out");
+
+    drop(tx); // thread finished successfully without a message
+    assert!(s.launch_in_flight(), "still in flight until polled");
+    assert!(s.poll_launch().is_none(), "silence means it worked");
+    assert!(!s.launch_in_flight(), "and the guard lets go");
 }

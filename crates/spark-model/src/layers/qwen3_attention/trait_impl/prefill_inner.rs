@@ -128,10 +128,8 @@ impl Qwen3AttentionLayer {
         // tried and FAILED for large prefill chunks — numerically off + ~7x
         // slower (the kernel's batch dim is not compatible with the co-dispatch
         // stacking at large seq_len). So batched chunk-0 still uses paged.
-        let allow_batched_first_chunk = batched_meta.is_some()
-            && std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+        let allow_batched_first_chunk =
+            batched_meta.is_some() && crate::layers::ops::prefill_batched_first_chunk_enabled();
         if batched_meta.is_some() && seq_len_start == 0 && !allow_batched_first_chunk {
             anyhow::bail!(
                 "prefill_inner: batched mode requires seq_len_start > 0 (paged path); \
@@ -308,9 +306,17 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        // HOST-TIME split (ATLAS_PREFILL_HOST_TIMING=1): isolate the FFN/MoE
+        // half of this layer from the attention half. No synchronize — see
+        // prefill_b/forward_layers.rs for why.
+        let t_ffn = (std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1"))
+            .then(std::time::Instant::now);
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)
             .map_err(|e| anyhow::anyhow!("ffn.forward_prefill failed: {e}"))?;
+        if let Some(t) = t_ffn {
+            crate::layers::qwen3_attention::add_ffn_host_us(t.elapsed().as_micros() as u64);
+        }
 
         let dense_out = ctx.buffers.moe_output();
         // ATLAS_OP_DUMP hook: MoE output (sum of all weighted expert outputs).
