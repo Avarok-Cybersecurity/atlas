@@ -718,11 +718,30 @@ pub fn process_decode_logits(
             }
 
             // Check request timeout.
+            //
+            // `timeout_at` is stamped at ARRIVAL in the API layer, but
+            // `request_start` is stamped at PREFILL — different origins. A
+            // request can therefore burn its entire budget waiting in the
+            // scheduler queue and trip this on its very first decode step.
+            // The old message reported only `request_start.elapsed()`, which
+            // renders as "Request timeout after 8.4s" against a 300 s budget
+            // and sends the reader looking at decode instead of at queue
+            // depth. Report the overrun and the tokens actually produced:
+            // `output_tokens=1` is the signature of a deadline that expired
+            // before decode ever began, and is otherwise invisible because
+            // the response goes back as a normal `finish_reason="length"`.
             if !a.finished
                 && let Some(deadline) = a.timeout_at
-                && Instant::now() >= deadline
+                && now >= deadline
             {
-                tracing::warn!("Request timeout after {:?}", a.request_start.elapsed());
+                tracing::warn!(
+                    output_tokens = a.output_tokens.len(),
+                    since_prefill_s = a.request_start.elapsed().as_secs_f64(),
+                    overdue_s = now.saturating_duration_since(deadline).as_secs_f64(),
+                    "Request timeout: deadline expired (stamped at arrival, so it \
+                     includes time queued before prefill); truncating output"
+                );
+                a.guard_stop = Some("request_timeout");
                 a.finished = true;
             }
         }
