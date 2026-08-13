@@ -187,11 +187,12 @@ impl TransformerModel {
             moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
-        // FP8 calibration re-enable (mirrors verify_b.rs).
-        if self
-            .suppress_graphs
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && seq.seq_len > self.config.fp8_kv_calibration_tokens + 10
+        // FP8 calibration re-enable (mirrors verify_b.rs / decode_a.rs).
+        if self.config.fp8_kv_calibration_tokens > 0
+            && self
+                .suppress_graphs
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && self.fp8_calibration_frozen()
         {
             self.suppress_graphs
                 .store(false, std::sync::atomic::Ordering::Relaxed);
