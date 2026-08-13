@@ -53,6 +53,8 @@ pub struct NemotronMamba2Layer {
     // Kernel handles — decode
     rms_norm_residual_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
+    /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
+    w4a16_gemv_sw_k: KernelHandle,
     w8a16_gemv_k: KernelHandle,
     conv1d_update_k: KernelHandle,
     mamba2_ssm_k: KernelHandle,
@@ -125,6 +127,7 @@ impl NemotronMamba2Layer {
             out_proj_bf16: None,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_sw_k: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             conv1d_update_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
             mamba2_ssm_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_decode")?,

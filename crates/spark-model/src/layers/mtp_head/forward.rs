@@ -451,9 +451,11 @@ impl MtpHead {
             ctx.config.vocab_size as u32
         };
         let logits = ctx.buffers.logits();
-        ops::w4a16_gemv(
+        ops::w4a16_decode_gemv(
             ctx.gpu,
             self.w4a16_gemv_k,
+            self.w4a16_gemv_sw_k,
+            ctx.levers.gemv_sw,
             final_normed,
             &self.lm_head_nvfp4,
             logits,
