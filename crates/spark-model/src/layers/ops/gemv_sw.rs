@@ -187,4 +187,45 @@ mod tests {
             assert!(src.contains(&want_sw), "{} missing {want_sw}", p.display());
         }
     }
+
+    /// POSITIVE: SW GEMV must share the 2-chunk K16 pipeline with the 64-thread
+    /// kernel. A stride-64 sequential `acc += a*w` copy was 1 ULP lossy on GB10
+    /// (`w4a16_gemv_sw_microtest`: gdn in_proj 99.992%, K-tail 99.976%).
+    ///
+    /// PROVEN BY: restoring `k16 += 64u` in `w4a16_gemv.cu` or dropping
+    /// `orig_lane * 2u` from `w4a16_gemv_partial` turns this red.
+    #[test]
+    fn sw_partial_shares_pipelined_k16_loop() {
+        for p in named_cu("w4a16_gemv.cu") {
+            let src = fs::read_to_string(&p).unwrap();
+            assert!(
+                src.contains("orig_lane * 2u"),
+                "{}: w4a16_gemv_partial must start k16 at orig_lane*2",
+                p.display()
+            );
+            assert!(
+                src.contains("k16 < K16 + 1u"),
+                "{}: pipelined K16+1 bound missing",
+                p.display()
+            );
+            assert!(
+                !src.contains("k16 += 64u"),
+                "{}: stride-64 sequential loop drifted back in",
+                p.display()
+            );
+        }
+        for p in named_cu("w4a16_gemv_fused.cu") {
+            let src = fs::read_to_string(&p).unwrap();
+            assert!(
+                src.contains("w4a16_dual_partial"),
+                "{}: dual and dual_sw must share w4a16_dual_partial",
+                p.display()
+            );
+            assert!(
+                src.contains("orig_lane * 2u"),
+                "{}: dual_partial must start k16 at orig_lane*2",
+                p.display()
+            );
+        }
+    }
 }
