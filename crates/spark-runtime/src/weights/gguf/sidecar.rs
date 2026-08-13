@@ -69,16 +69,32 @@ pub fn open_gguf(path: &Path) -> Result<(std::fs::File, memmap2::Mmap, container
     // pages + copies to GPU faster than NFS delivers, so it PACES with the
     // readahead (the cache gap stays small) while SEQUENTIAL drops pages behind
     // the cursor. Best-effort: a failed advise never blocks the load.
+    advise_prefetch(&mmap);
+    let gguf = container::GgufFile::parse(&mmap)
+        .with_context(|| format!("Failed to parse GGUF container: {}", path.display()))?;
+    Ok((file, mmap, gguf))
+}
+
+/// `madvise(SEQUENTIAL) + madvise(WILLNEED)` on a GGUF mmap, or nothing where
+/// the platform has no such call.
+///
+/// `memmap2::Advice` and `Mmap::advise` are `#[cfg(unix)]` in memmap2, so
+/// naming them unconditionally does not merely no-op on Windows — it fails to
+/// compile (E0433/E0599 on the `windows-x86_64-*` release-matrix targets).
+/// Two arms, the same shape as `fast_weights::advise_prefetch_shard`.
+#[cfg(unix)]
+fn advise_prefetch(mmap: &memmap2::Mmap) {
+    // Best-effort: a failed advise never blocks the load.
     if let Err(e) = mmap.advise(memmap2::Advice::Sequential) {
         tracing::debug!("madvise(SEQUENTIAL) on GGUF mmap failed (non-fatal): {e}");
     }
     if let Err(e) = mmap.advise(memmap2::Advice::WillNeed) {
         tracing::debug!("madvise(WILLNEED) on GGUF mmap failed (non-fatal): {e}");
     }
-    let gguf = container::GgufFile::parse(&mmap)
-        .with_context(|| format!("Failed to parse GGUF container: {}", path.display()))?;
-    Ok((file, mmap, gguf))
 }
+
+#[cfg(not(unix))]
+fn advise_prefetch(_mmap: &memmap2::Mmap) {}
 
 /// Sum the BF16 footprint of every tensor a pass will actually keep (i.e. that
 /// `names::translate` maps to a stored tensor, plus the clip patch-embed frames
