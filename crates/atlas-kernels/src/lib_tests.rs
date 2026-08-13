@@ -245,26 +245,9 @@ fn mismatched_model_type_or_hidden_size_never_matches() {
     }
 }
 
-#[test]
-#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset"]
-fn nemotron_h_2688_splits_by_mtp_depth() {
-    let nano = ptx_for_shape(ModelShape {
-        model_type: "nemotron_h",
-        hidden_size: 2688,
-        mtp_layers: 0,
-    })
-    .expect("Nano must resolve a target");
-    let lightning = ptx_for_shape(ModelShape {
-        model_type: "nemotron_h",
-        hidden_size: 2688,
-        mtp_layers: 1,
-    })
-    .expect("Lightning must resolve a target");
-    assert_eq!(nano.target.model, "nemotron-3-nano-30b-a3b");
-    assert_eq!(lightning.target.model, "nemotron-3.5-lightning-30b-a3b");
-    // The split exists for POLICY, and this is the policy that could not
-    // be expressed while the two shared a target.
-    assert!(!nano.behavior.thinking_default);
-    assert!(lightning.behavior.thinking_default);
-    assert!(!lightning.behavior.thinking_in_tools);
-}
+// The registry-level counterpart of the two tests above — resolving a
+// (nemotron_h, 2688, mtp_layers) shape to two DISTINCT compiled targets —
+// lands with the PR that creates the second target
+// (`nemotron-3.5-lightning-30b-a3b`). Until then the only nemotron_h/2688
+// target declares `mtp_layers = None`, so both depths correctly resolve to
+// it and there is nothing for such a test to discriminate.

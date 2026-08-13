@@ -773,6 +773,10 @@ fn detect_token_loop_with_period(
 mod thinking_loop_tests;
 
 #[cfg(test)]
+#[path = "helpers_tests_tool_call.rs"]
+mod tool_call_open_tests;
+
+#[cfg(test)]
 mod inter_tool_prose_tests {
     #[test]
     fn default_prose_budget_is_plan_friendly() {
