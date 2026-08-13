@@ -96,15 +96,17 @@ pub struct DenseFfnLayer {
     pub weights: DenseFfnWeights,
     activation: FfnActivation,
     w4a16_gemv: KernelHandle,
+    /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
+    w4a16_gemv_sw: KernelHandle,
     w4a16_gemv_dual: KernelHandle,
     w4a16_gemv_silu_input: KernelHandle,
     // LOSSLESS single-warp-per-output decode variants (8 outputs/block, no smem
     // cross-warp reduce). Bit-identical to the 64-thread kernels (proven by the
-    // w4a16_gemv_sw microtest). Opt-in via ATLAS_DECODE_OPT (default off →
-    // dispatch unchanged). KernelHandle(0) on miss → fall back to base kernels.
+    // w4a16_gemv_sw microtest). Default ON via `ModelLevers::gemv_sw`;
+    // `ATLAS_NO_GEMV_SW=1` restores the 64-thread kernels. KernelHandle(0) on
+    // miss → fall back to base kernels.
     w4a16_gemv_dual_sw: KernelHandle,
     w4a16_gemv_silu_input_sw: KernelHandle,
-    decode_opt: bool,
     w4a16_gemv_dual_batch2: KernelHandle,
     w4a16_gemv_dual_batch3: KernelHandle,
     w4a16_gemv_batch2: KernelHandle,
@@ -322,6 +324,7 @@ impl DenseFfnLayer {
             weights,
             activation,
             w4a16_gemv: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_sw: super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w4a16_gemv_dual: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             w4a16_gemv_silu_input: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_silu_input")?,
             w4a16_gemv_dual_sw: super::try_kernel(gpu, "w4a16_gemv_fused", "w4a16_gemv_dual_sw"),
@@ -330,7 +333,6 @@ impl DenseFfnLayer {
                 "w4a16_gemv_fused",
                 "w4a16_gemv_silu_input_sw",
             ),
-            decode_opt: std::env::var_os("ATLAS_DECODE_OPT").is_some(),
             w4a16_gemv_dual_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch2")?,
             w4a16_gemv_dual_batch3: gpu.kernel("w4a16_gemv", "w4a16_gemv_dual_batch3")?,
             w4a16_gemv_batch2: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
@@ -1101,12 +1103,13 @@ impl DenseFfnLayer {
         }
 
         // Fused gate_proj + up_proj: [1, H] → [1, inter] × 2.
-        // Single-warp variant (lossless) when ATLAS_DECODE_OPT is on and the
-        // _sw kernel is present; otherwise the proven 64-thread kernel.
-        let use_sw = self.decode_opt
-            && self.w4a16_gemv_dual_sw.0 != 0
-            && self.w4a16_gemv_silu_input_sw.0 != 0;
-        if use_sw {
+        // Single-warp variant (lossless) when the lever is on and the kernel
+        // resolved; otherwise the 64-thread kernel. Dual and silu-input SW
+        // are independent — missing silu_input_sw must not skip dual_sw on
+        // the default split-SiLU path.
+        let use_dual_sw = ops::use_gemv_sw(ctx.levers.gemv_sw, self.w4a16_gemv_dual_sw);
+        let use_silu_sw = ops::use_gemv_sw(ctx.levers.gemv_sw, self.w4a16_gemv_silu_input_sw);
+        if use_dual_sw {
             ops::w4a16_gemv_dual_sw(
                 ctx.gpu,
                 self.w4a16_gemv_dual_sw,
@@ -1156,9 +1159,11 @@ impl DenseFfnLayer {
                 inter,
                 stream,
             )?;
-            ops::w4a16_gemv(
+            ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv,
+                self.w4a16_gemv_sw,
+                ctx.levers.gemv_sw,
                 gate_out,
                 &self.weights.down_proj,
                 output,
@@ -1171,7 +1176,7 @@ impl DenseFfnLayer {
         match self.activation {
             FfnActivation::SiLU => {
                 // Fused SiLU(gate)*up + down_proj: [1, inter] → [1, H]
-                if use_sw {
+                if use_silu_sw {
                     ops::w4a16_gemv_silu_input_sw(
                         ctx.gpu,
                         self.w4a16_gemv_silu_input_sw,
@@ -1208,9 +1213,11 @@ impl DenseFfnLayer {
                     inter,
                     stream,
                 )?;
-                ops::w4a16_gemv(
+                ops::w4a16_decode_gemv(
                     ctx.gpu,
                     self.w4a16_gemv,
+                    self.w4a16_gemv_sw,
+                    ctx.levers.gemv_sw,
                     gate_out,
                     &self.weights.down_proj,
                     output,

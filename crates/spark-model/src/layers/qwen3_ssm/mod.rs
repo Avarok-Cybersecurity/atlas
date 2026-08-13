@@ -78,6 +78,8 @@ pub struct Qwen3SsmLayer {
     /// both verify tokens instead of two M=1 `dense_gemv` reads.
     dense_gemv_batch2_k: KernelHandle,
     w4a16_gemv_k: KernelHandle,
+    /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
+    w4a16_gemv_sw_k: KernelHandle,
     w8a16_gemv_k: KernelHandle,
     w4a16_gemv_qkvz_k: KernelHandle,
     deinterleave_k: KernelHandle,

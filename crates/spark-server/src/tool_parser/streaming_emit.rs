@@ -179,6 +179,58 @@ impl StreamingToolDetector {
                 });
                 self.incremental_emitted = true;
             }
+        } else if scan.contains("call:") {
+            // ── Gemma-4 native path ──
+            let args_start = super::streaming::find_args_start(&self.buffer);
+            if args_start >= limit {
+                return outputs;
+            }
+            let body = &self.buffer[args_start..limit];
+            let settled = if let Some(e) = body.find('}') {
+                e
+            } else {
+                let mut s = body.len();
+                while s > 0 && !body.is_char_boundary(s) {
+                    s -= 1;
+                }
+                s
+            };
+
+            let accumulated_raw = &body[..settled];
+            let converted_json = gemma4_to_json(&format!("gemma4{{{}}}", accumulated_raw));
+            if converted_json.len() > 2 {
+                let json_args_body = &converted_json[1..converted_json.len() - 1];
+                let already = self.current_tc_emitted;
+                if json_args_body.len() > already {
+                    let new_frag = &json_args_body[already..];
+                    let prefix = if !self.args_open {
+                        self.args_open = true;
+                        "{"
+                    } else {
+                        ""
+                    };
+                    outputs.push(DetectorOutput::ToolCallArgsFragment {
+                        fragment: format!("{}{}", prefix, new_frag),
+                        idx,
+                    });
+                    self.current_tc_emitted = json_args_body.len();
+                    self.incremental_emitted = true;
+                }
+            }
+
+            if final_close {
+                let closing = if !self.args_open {
+                    self.args_open = true;
+                    "{}".to_string()
+                } else {
+                    "}".to_string()
+                };
+                outputs.push(DetectorOutput::ToolCallArgsFragment {
+                    fragment: closing,
+                    idx,
+                });
+                self.incremental_emitted = true;
+            }
         } else if scan.contains("\"arguments\"") {
             // ── JSON path (Hermes etc.) — forward raw bytes verbatim ──
             let args_start = super::streaming::find_args_start(&self.buffer);

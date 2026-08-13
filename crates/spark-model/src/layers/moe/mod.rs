@@ -118,6 +118,8 @@ pub struct MoeLayer {
     pre_expert_norm_k: spark_runtime::gpu::KernelHandle,
     dense_gemv: KernelHandle,
     w4a16_gemv: KernelHandle,
+    /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
+    w4a16_gemv_sw: KernelHandle,
     w4a16_gemm: KernelHandle,
     dense_gemm: KernelHandle,
     dense_gemm_pipelined: KernelHandle,

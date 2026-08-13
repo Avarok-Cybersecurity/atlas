@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! BYTE-parity gate for the NVFP4 batched SSM projections.
 //!
-//! `MAMBA2_PROJ_MIN_NVFP4` (crates/spark-model/src/layers/nemotron_mamba2/proj_rungs.rs)
-//! decides whether Nemotron-H may batch its `in_proj`/`out_proj` on the
-//! `w4a16` arm at low rungs. That is legitimate only if
-//! `w4a16_gemv_batch4/8/16` is byte-identical to M separate `w4a16_gemv`
+//! Every NVFP4 model that decodes more than one sequence at a time routes its
+//! projections through these kernels — the batched LM head
+//! (`model/trait_impl/lm_head_batched.rs`), `dense_ffn`, the qwen3 multi-seq
+//! `qkv`/`o_proj`/`ffn` paths, the MTP head, and Nemotron-H's SSM
+//! `in_proj`/`out_proj` (whose batched-projection rung is only sound if this
+//! gate passes). All of that is legitimate only if
+//! `w4a16_gemv_batch2/3/4/8/16` is byte-identical to M separate `w4a16_gemv`
 //! calls. The kernel header claimed exactly that ("Per-row accumulation
 //! order is IDENTICAL to `w4a16_gemv`") — this test is what decides it.
 //!
 //! Mirrors `w8a16_batch_bitparity_microtest.rs`: RAW BF16 BYTES, not a
-//! cosine, at the PRODUCTION Nemotron projection shapes, over several seeds
-//! and every M each tier can serve. A cosine gate is exactly what hid the
+//! cosine, at PRODUCTION projection shapes, over several seeds and every M
+//! each tier can serve. A cosine gate is exactly what hid the
 //! `w8a16_gemv_batch4` fused-add defect.
+//!
+//! 3 seeds x 4 shapes x (15 templated M + 2 fixed-M kernels) = 204 legs,
+//! plus 12 negative controls.
 //!
 //! Exit: 0 all legs byte-identical, 1 any leg differs,
 //! 2 kernels absent from this target's module set.
@@ -178,8 +184,20 @@ fn main() -> Result<()> {
             Some((*t, kh, ms))
         })
         .collect();
+
+    // batch2/batch3 are SEPARATE fixed-M kernels (no `M` argument), not
+    // instantiations of the batchm template, and serve K=2/K=3 spec verify
+    // plus C=2/C=3 multi-seq decode (dense_ffn, qwen3 qkv/o_proj, MoE
+    // forward_k3). They had never been byte-checked against M x w4a16_gemv.
+    let fixed_tiers: Vec<(&str, KernelHandle, usize)> = [("batch2", 2usize), ("batch3", 3usize)]
+        .iter()
+        .filter_map(|(t, m)| {
+            let kh = g.kernel("w4a16_gemv", &format!("w4a16_gemv_{t}")).ok()?;
+            Some((*t, kh, *m))
+        })
+        .collect();
     let m1_k = match m1_k {
-        Ok(kh) if tiers.len() == 3 => kh,
+        Ok(kh) if tiers.len() == 3 && fixed_tiers.len() == 2 => kh,
         _ => {
             println!("w4a16 GEMV kernels absent from this target set — SKIP");
             std::process::exit(2);
@@ -227,6 +245,25 @@ fn main() -> Result<()> {
                 }
             }
 
+            for (tier, kh, m) in &fixed_tiers {
+                let m = *m;
+                g.memset(c_batch, 0, MAX_M * n * 2)?;
+                g.memset(c_ref, 0, MAX_M * n * 2)?;
+                launch(g, *kh, a_d, w_d, ws_d, c_batch, None, n as u32, k as u32)?;
+                reference(g, m1_k, a_d, w_d, ws_d, c_ref, m, n, k)?;
+                g.synchronize(0)?;
+                let cb = down(g, c_batch, m * n * 2)?;
+                let cr = down(g, c_ref, m * n * 2)?;
+                let identical = cb == cr;
+                let (n_diff, worst) = worst_delta(&cb, &cr);
+                clean &= identical;
+                println!(
+                    "seed {seed:>5}  {label}  {tier:<7} M={m:<3} \
+                     byte-identical={identical:<5} diff_elems={n_diff:<7} \
+                     max|delta|={worst:.6}"
+                );
+            }
+
             // ── Negative control: the harness MUST see a 1-ULP activation
             // perturbation on row 1. Without this a byte compare that
             // silently compares two zeroed buffers would "pass".
@@ -266,14 +303,14 @@ fn main() -> Result<()> {
     }
     if clean {
         println!(
-            "PASS — the w4a16 batched GEMV tiers are byte-identical to M x w4a16_gemv at \
-             every Nemotron projection shape and every M they serve."
+            "PASS — the w4a16 batched GEMV tiers (batch2/3/4/8/16) are byte-identical to \
+             M x w4a16_gemv at every projection shape and every M they serve."
         );
         Ok(())
     } else {
         println!(
-            "FAIL — a w4a16 batched tier is NOT byte-identical; MAMBA2_PROJ_MIN_NVFP4 must \
-             stay above the rungs those tiers serve."
+            "FAIL — a w4a16 batched tier is NOT byte-identical, so NVFP4 decode output \
+             depends on how many sequences happen to share the step."
         );
         std::process::exit(1);
     }

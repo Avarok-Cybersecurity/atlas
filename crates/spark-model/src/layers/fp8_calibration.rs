@@ -22,12 +22,38 @@
 use anyhow::Result;
 use parking_lot::Mutex;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::kv_cache::KvCacheDtype;
 
 /// FP8 E4M3 max representable magnitude.
 const FP8_E4M3_MAX: f32 = 448.0;
 
 /// Minimum scale to prevent division by zero or denormalized values.
 const MIN_SCALE: f32 = 1e-12;
+
+/// Whether this KV dtype's write path calls [`Fp8KvCalibration::observe`].
+///
+/// SSOT with `qwen3_attention/decode/write_kv_cache.rs`: only the plain
+/// `KvCacheDtype::Fp8` arm observes. BF16 boundary layers
+/// (`--kv-high-precision-layers auto` on FP8 KV) never observe; attaching a
+/// tracker there leaves `is_calibrating() == true` forever, and
+/// `Iterator::find_map` on that first attention layer pins CUDA graphs eager
+/// for the life of the process.
+pub fn dtype_runs_online_fp8_kv_calibration(kv_dtype: KvCacheDtype) -> bool {
+    matches!(kv_dtype, KvCacheDtype::Fp8)
+}
+
+/// Lift CUDA-graph suppression once every calibrating layer has frozen.
+///
+/// `None` = this layer does not calibrate (SSM, BF16 KV, static scales).
+/// `Some(false)` = still warming. Vacuously true when no layer calibrates.
+/// Must not use `find_map`: a BF16 boundary layer reporting `Some(false)`
+/// would shadow later FP8 layers that already froze.
+pub fn graphs_ready_after_fp8_kv_cal<I>(states: I) -> bool
+where
+    I: IntoIterator<Item = Option<bool>>,
+{
+    states.into_iter().all(|s| s.unwrap_or(true))
+}
 
 /// Mutable calibration state protected by Mutex for Send + Sync.
 struct CalibrationInner {
@@ -321,6 +347,96 @@ mod tests {
             frozen,
             "the frozen scale moved after later observes — pre-freeze KV would \
              now dequantize through a different scale than it was written with"
+        );
+    }
+
+    #[test]
+    fn only_plain_fp8_kv_runs_online_calibration() {
+        use spark_runtime::kv_cache::KvCacheDtype as D;
+        assert!(super::dtype_runs_online_fp8_kv_calibration(D::Fp8));
+        assert!(!super::dtype_runs_online_fp8_kv_calibration(D::Bf16));
+        assert!(!super::dtype_runs_online_fp8_kv_calibration(D::Nvfp4));
+        assert!(!super::dtype_runs_online_fp8_kv_calibration(D::Turbo8));
+        assert!(!super::dtype_runs_online_fp8_kv_calibration(D::Fp8KTurbo4V));
+    }
+
+    #[test]
+    fn graphs_ready_vacuous_when_no_calibrator() {
+        assert!(super::graphs_ready_after_fp8_kv_cal([None, None]));
+    }
+
+    #[test]
+    fn graphs_ready_blocked_while_any_calibrator_is_warm() {
+        assert!(!super::graphs_ready_after_fp8_kv_cal([
+            None,
+            Some(false),
+            Some(true)
+        ]));
+    }
+
+    #[test]
+    fn graphs_ready_when_every_calibrator_frozen() {
+        assert!(super::graphs_ready_after_fp8_kv_cal([
+            None,
+            Some(true),
+            Some(true)
+        ]));
+    }
+
+    /// Qwen3.6 `--kv-high-precision-layers auto`: first/last 2 attention
+    /// layers are BF16 (report `None` after we stop attaching a tracker)
+    /// and the FP8 middles freeze on first observe (`Some(true)`).
+    /// `find_map` on a leftover BF16 `Some(false)` would keep graphs off.
+    #[test]
+    fn graphs_ready_ignores_bf16_boundary_layers() {
+        assert!(super::graphs_ready_after_fp8_kv_cal([
+            None,
+            Some(true),
+            Some(true),
+            None
+        ]));
+    }
+
+    #[test]
+    fn attention_init_attaches_calibrator_only_via_dtype_predicate() {
+        let src = include_str!("qwen3_attention/init.rs");
+        assert!(
+            src.contains("dtype_runs_online_fp8_kv_calibration(kv_dtype)"),
+            "init.rs must attach Fp8KvCalibration only when the KV dtype observes"
+        );
+    }
+
+    #[test]
+    fn decode_unsuppress_aggregates_all_layers_not_find_map() {
+        let src = include_str!("../model/trait_impl/decode_a.rs");
+        assert!(
+            src.contains("graphs_ready_after_fp8_kv_cal"),
+            "decode_a must lift graph suppression from every layer's frozen flag"
+        );
+        let frozen_fn = src
+            .split("fn fp8_calibration_frozen")
+            .nth(1)
+            .expect("fp8_calibration_frozen");
+        let body = frozen_fn
+            .split("pub(super) fn decode_dispatch")
+            .next()
+            .unwrap();
+        assert!(
+            !body.contains("find_map"),
+            "find_map lets a BF16 boundary layer's Some(false) shadow frozen FP8 layers"
+        );
+    }
+
+    #[test]
+    fn fused_verify_unsuppress_matches_decode_frozen_flag() {
+        let src = include_str!("../model/trait_impl/verify_fused.rs");
+        assert!(
+            src.contains("fp8_calibration_frozen()"),
+            "fused verify must not wait seq_len > calibration_tokens+10"
+        );
+        assert!(
+            !src.contains("calibration_tokens + 10"),
+            "old token-count gate kept fused verify eager for ~266 tokens"
         );
     }
 }

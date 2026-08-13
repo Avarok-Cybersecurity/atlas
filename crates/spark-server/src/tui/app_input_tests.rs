@@ -10,15 +10,15 @@ use crate::tui::app::MainSub;
 use crate::tui::chat_thinking::{ThinkingRequest, ThinkingView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-fn app() -> App {
+pub(super) fn app() -> App {
     App::new(clap::Parser::parse_from(["spark", "org/m"]))
 }
 
-fn press(a: &mut App, c: char) {
+pub(super) fn press(a: &mut App, c: char) {
     a.on_key(KeyEvent::from(KeyCode::Char(c)));
 }
 
-fn tap(a: &mut App, code: KeyCode) {
+pub(super) fn tap(a: &mut App, code: KeyCode) {
     a.on_key(KeyEvent::from(code));
 }
 

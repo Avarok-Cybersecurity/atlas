@@ -169,6 +169,8 @@ pub struct Qwen3AttentionLayer {
     /// w4a16/w8a16 batch tiers, BF16 had none.
     pub(super) dense_gemv_batchm_k: KernelHandle,
     pub(super) w4a16_gemv_k: KernelHandle,
+    /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
+    pub(super) w4a16_gemv_sw_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,

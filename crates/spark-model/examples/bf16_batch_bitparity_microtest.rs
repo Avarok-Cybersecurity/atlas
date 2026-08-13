@@ -1,21 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! BYTE-parity gate for the native-BF16 batched SSM projections.
+//! BYTE-parity gate for the native-BF16 batched projections.
 //!
-//! `MAMBA2_PROJ_MIN_BF16` (crates/spark-model/src/layers/nemotron_mamba2/proj_rungs.rs)
-//! decides whether Nemotron-H may batch its `in_proj`/`out_proj` on the
-//! native-BF16 arm. Batching there swaps `m x dense_gemv_bf16` (K split over
-//! 64 lanes, warp-shuffle reduction tree) for one
-//! `dense_gemm_bf16_pipelined` (m16n8k16 tensor-core MMA, one FP32
-//! accumulator marched sequentially over K in 32-wide steps). Those are two
-//! different reduction orders, so this test MEASURES the divergence rather
-//! than assuming either way.
+//! THIS GATE IS EXPECTED TO REPORT `FAIL` TODAY, AND THAT IS THE POINT. It is
+//! standing evidence of a KNOWN, deliberately-unfixed gap, checked in
+//! alongside the w4a16 twin so the BF16 arm's status is a measured number
+//! instead of an assumption. Do not "fix" it by loosening the comparison.
 //!
-//! Same standard as `w8a16_batch_bitparity_microtest.rs` / the w4a16 twin:
-//! RAW BF16 BYTES at the PRODUCTION Nemotron projection shapes, several
-//! seeds, every M the batched arm can be handed at rungs 2..16.
+//! Batching the BF16 arm swaps `m x dense_gemv_bf16` (K split over 64 lanes,
+//! warp-shuffle reduction tree) for one `dense_gemm_bf16_pipelined` (m16n8k16
+//! tensor-core MMA, one FP32 accumulator marched sequentially over K in
+//! 32-wide steps). Unlike the w4a16 defect this test's twin found, that is a
+//! different ALGORITHM, not a reassociation that can be un-fused: there is no
+//! surgical reordering that recovers parity. The clean fix is a bit-exact
+//! batched BF16 GEMV, which is a kernel port, not an edit, and is not done
+//! here. Callers that require batch-invariant BF16 output must keep their
+//! batched-projection threshold above the rungs this arm serves.
 //!
-//! Exit: 0 all legs byte-identical, 1 any leg differs,
-//! 2 kernels absent from this target's module set.
+//! Same standard as `w4a16_batch_bitparity_microtest.rs`: RAW BF16 BYTES at
+//! production projection shapes, several seeds, every M the batched arm can
+//! be handed at rungs 2..16.
+//!
+//! Exit: 0 all legs byte-identical, 1 any leg differs (the current, expected
+//! outcome), 2 kernels absent from this target's module set.
 //!
 //! Run:
 //!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=nemotron-3-nano-30b-a3b \
@@ -240,8 +246,11 @@ fn main() -> Result<()> {
         Ok(())
     } else {
         println!(
-            "FAIL — dense_gemm_bf16_pipelined is NOT byte-identical to the per-row GEMV; \
-             MAMBA2_PROJ_MIN_BF16 must stay above the rungs it serves."
+            "FAIL (EXPECTED) — dense_gemm_bf16_pipelined is NOT byte-identical to the \
+             per-row GEMV. This is the known BF16 gap documented at the top of this \
+             file, not a regression: batching swaps in a tensor-core tile GEMM, a \
+             different algorithm. Callers needing batch-invariant BF16 output must keep \
+             their batched-projection threshold above the rungs this arm serves."
         );
         std::process::exit(1);
     }
