@@ -494,38 +494,11 @@ pub fn process_decode_logits(
                 // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
                 // cycling) within ~24-60 tokens of the loop starting,
                 // instead of waiting for the 256-token thinking budget.
-                // Tool-call-aware (2026-08-13): never ARM the loop
-                // watchdog while an unterminated `<tool_call>` sits in the
-                // tail. Two reasons, both observed on Nemotron-3.5
-                // Lightning with thinking on + tools armed (the model
-                // emits its call INSIDE `<think>`):
-                //   1. false positives — an XML tool body is structurally
-                //      repetitive (`<parameter=…></parameter>`), which is
-                //      exactly what a period-4…20 repeat detector keys on.
-                //      The content-phase fuzzy detector below has excluded
-                //      `inside_tool_call` for this reason since 2026-04-26;
-                //      the thinking-phase twin never did.
-                //   2. truncation — arming here force-closes `</think>` at
-                //      a token offset that varies with the prompt, cutting
-                //      the call between its name and its arguments. The F7
-                //      hoist then ships that half-call to the client.
-                // Let the call CLOSE, then apply the loop rule: the check
-                // re-runs every THINK_LOOP_CHECK_STRIDE thinking tokens, so
-                // a model that loops around whole tool-call blocks is still
-                // caught on the first stride after a `</tool_call>`. The
-                // `ForcedThinkEndInjector` carries the same guard for the
-                // other two arming paths (budget cap, F2 confidence), where
-                // it is additionally bounded by MAX_SENTENCE_DEFER_TOKENS.
                 if !sched.levers.disable_watchdogs
                     && sched.watchdog.enable_think_loop_watchdog
                     && !a.force_end_thinking
                     && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
                     && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
-                    && !tool_call_open_in_tail(
-                        &a.output_tokens,
-                        a.tool_call_start_token,
-                        a.tool_call_end_token,
-                    )
                     && detect_thinking_token_loop_with(
                         &a.output_tokens,
                         a.repetition_detection,
