@@ -651,13 +651,8 @@ impl Qwen3AttentionLayer {
                 "quantize_bf16_to_nvfp4",
             ),
             fp8_calibration: if fp8_calibration_tokens > 0
-                && !matches!(
-                    kv_dtype,
-                    KvCacheDtype::Nvfp4
-                        | KvCacheDtype::Turbo4
-                        | KvCacheDtype::Turbo3
-                        | KvCacheDtype::Turbo8
-                ) {
+                && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
+            {
                 Some(Fp8KvCalibration::new(
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,
