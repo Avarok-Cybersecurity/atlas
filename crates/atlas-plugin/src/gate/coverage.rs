@@ -193,6 +193,10 @@ const TTFT_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/contamination",
         "the contamination driver cannot change what a first-token latency probe measures",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change what a first-token latency probe measures",
+    ),
 ];
 
 const BFCL_EXCLUDES: &[Exclusion] = &[
@@ -209,6 +213,10 @@ const BFCL_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/contamination",
         "the contamination driver cannot change a tool-calling accuracy score",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change a tool-calling accuracy score",
+    ),
 ];
 
 const AGENTIC_EXCLUDES: &[Exclusion] = &[
@@ -224,6 +232,39 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
     other_driver(
         "crates/atlas-plugin/src/benchmarks/contamination",
         "the contamination driver cannot change whether the agent's webserver task succeeds",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change whether the agent's webserver task succeeds",
+    ),
+];
+
+/// What the SSM state poisoning gate ignores: gate bookkeeping and every
+/// OTHER benchmark driver. Its own driver directory is deliberately NOT here
+/// — a change to the poison detector re-opens the poison gate, exactly as a
+/// change to the TTFT probe re-opens the TTFT gates.
+///
+/// The gate measures accumulated engine state (prefix-cache / SSM-snapshot
+/// restore determinism). A client-side driver that only issues requests —
+/// TTFT, BFCL, agentic, contamination — cannot change whether an identical
+/// replay comes back byte-identical; only the engine can.
+const SSM_POISON_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change whether an identical replay returns identical bytes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change whether an identical replay returns identical bytes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change whether an identical replay returns identical bytes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change whether an identical replay returns identical bytes",
     ),
 ];
 
@@ -279,7 +320,7 @@ const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
 ];
 
 /// The gates whose records must pass, and what each one ignores.
-pub const REQUIRED: [GateCoverage; 5] = [
+pub const REQUIRED: [GateCoverage; 6] = [
     GateCoverage {
         id: "agentic-webserver",
         excludes: AGENTIC_EXCLUDES,
@@ -299,6 +340,14 @@ pub const REQUIRED: [GateCoverage; 5] = [
     GateCoverage {
         id: "bfcl-subset-echolp",
         excludes: BFCL_EXCLUDES,
+    },
+    // 2026-08-11: the batch4 stack poisoned the Marconi SSM-snapshot restore
+    // and the agentic gate only caught it by accident (runs 8/9 degenerated).
+    // This gate polices that class directly — it is mandatory, not a
+    // promotion candidate, because the bug it exists to catch already shipped.
+    GateCoverage {
+        id: "ssm-state-poisoning-gate",
+        excludes: SSM_POISON_EXCLUDES,
     },
 ];
 

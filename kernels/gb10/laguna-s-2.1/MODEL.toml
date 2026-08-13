@@ -1,0 +1,209 @@
+[model]
+name = "laguna-s-2.1"
+hf_id = "poolside/Laguna-S-2.1-NVFP4"
+model_type = "laguna"
+architecture = "Hybrid Full/Sliding Attention + Dense/MoE"
+parameters = "117.6B-A8.5B"
+
+layers_total = 48
+layers_sliding_attention = 36
+layers_full_attention = 12
+layer_pattern = "1 full attention followed by 3 sliding attention"
+
+hidden_dim = 3072
+head_dim = 128
+q_heads = 72
+kv_heads = 8
+intermediate_size = 12288
+moe_experts = 256
+moe_topk = 10
+moe_intermediate = 1024
+shared_expert_intermediate = 1024
+moe_scoring_func = "sigmoid"
+moe_routing_bias = true
+
+rotary_dim = 64
+rope_theta = 500000
+partial_rotary_factor = 0.5
+vocab_size = 100352
+max_position_embeddings = 262144
+sliding_window = 512
+vision = false
+mtp_layers = 0
+
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 50
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 50
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 0.95
+top_k = 50
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 1.0
+top_p = 0.95
+top_k = 50
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# The thinking-phase loop watchdog force-injects `</think>` on a period-4..20
+# repeat in the reasoning tail. On this model it does more harm than good:
+# measured 2026-07-22 on RC1, "Explain why the sky is blue in two sentences."
+#   watchdog ON  -> fires at thinking_tokens=264, finish=length, and the
+#                   post-close CONTENT is spam ('####...' / backtick runs)
+#   watchdog OFF -> reasoning stays coherent, no spam
+# Force-closing a reasoning block the model did not choose to end leaves it
+# with no natural continuation. Other models keep the watchdog (flag defaults
+# to true); this opts Laguna out.
+enable_think_loop_watchdog = false
+# ── Honor EOS inside thinking ──────────────────────────────────────────────
+# This model stalls when a mid-`<think>` EOS is discarded: it has sampled its
+# stop and forcing it to keep reasoning produces the same spam tail described
+# above. Closing the block on that EOS is the fix p350 was written for, so
+# Laguna opts IN.
+#
+# The flag exists because the behaviour is NOT safe globally. On
+# Qwen3.6-35B-A3B-FP8 (thinking on by default, tools armed every turn) the
+# implicit close leaves only POST_THINK_MIN_CONTENT=16 holding the turn open:
+# the model emits one announcement sentence and stops WITHOUT its tool call.
+# Measured 8/10 webserver_ok on three consecutive N=10 tiers with the close
+# unconditional, 10/10 without it. Hence per-model, default false.
+honor_eos_inside_thinking = true
+# The rest of the thinking-watchdog family misfires the same way on this model:
+# they all trip on the temperature-0 greedy repeat-plateau the model falls into
+# (it is designed for 0.7/0.95, not greedy), then force-close </think> or
+# rollback mid-reason, after which the content channel degenerates into token
+# spam. Measured 2026-07-22 on RC1: F2 "Confidence early stop armed" fired on
+# "explain the sky in two sentences" -> finish=length garbage; with the whole
+# family off + default sampling the same prompt is coherent. Disable all of them
+# for Laguna; other models keep the defaults (true).
+confidence_early_stop = false
+rollback_resteer = false
+# This model loops stochastically even at its recommended 0.7 sampling
+# ('TheTheThe' / 'I. ofA. of' repeat spam on long reasoning). Unlike the
+# qwen3.6-35b-a3b sibling (NVFP4 lm-head), we serve a BF16 lm-head, so the
+# drift is NOT the head -- it is the NVFP4 MoE / general FP-quant tail. A min_p
+# FLOOR truncates that tail; MEASURED here: min_p 0 -> most prompts degenerate,
+# 0.05 -> 1/6, 0.1 -> see below. It is a partial mitigation (the thinking
+# watchdogs above were the other, cruder catch). temperature_max caps runaway
+# client temps at the model's recommended ceiling.
+min_p_floor = 0.1
+temperature_max = 1.0
+thinking_in_tools = true
+max_thinking_budget = 8192
+# vLLM single-budget: max_thinking_budget is the SOLE thinking cap. Real agents
+# set a small max_tokens per turn but still want full reasoning; the default
+# 90%-of-max_tokens secondary clamp (a budget vLLM does not have) truncated
+# thinking on those turns. False = reasoning bounded only by max_thinking_budget.
+cap_thinking_at_max_tokens = false
+# Poolside recommends thinking for agentic coding and preserving it between
+# tool calls. Clients can still opt out per request with enable_thinking=false.
+thinking_default = true
+default_kv_dtype = "fp8"
+tool_call_parser = "poolside_v1"
+# The model card recommends 0.7 / 0.95 for quality and reliability, while the
+# generic generation_config.json retains 1.0 / 1.0 evaluation defaults.
+use_sampling_presets_for_core = true
+# OpenCode already supplies its cwd in the native system prompt. Reinjecting a
+# second Atlas-specific environment block made Laguna fixate on path discovery.
+disable_cwd_hint_injection = true
+
+[[model_types]]
+model_type = "laguna"
+hidden_size = 3072
+
+[kernel]
+moe_gate_shmem_bytes = 6144
+
+# Harvested 2026-08-09 from `spark serve --check-kernels` (35 lookups) on the
+# post-#388 fail-closed audit. All are try_kernel() probes; every fallback
+# path the dispatch reaches resolves on this target (this checkpoint served
+# at full speed on the pre-audit builds these probes were written against).
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
+E8M0-scale twin; forward_k2/k3 gate on handle != 0 plus the checkpoint's
+scale format, and fall back to the non-e8m0 ptrtable kernels compiled in
+this target's own moe_w4a16_grouped_gemm.cu. Laguna ships FP8 scales,
+never E8M0."""
+moe_w4a16_grouped_gemm_ptrtable_t_e8m0 = "Same family — transposed twin; non-e8m0 sibling resolves here."
+moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = "Same family — k64 twin; non-e8m0 sibling resolves here."
+moe_w4a16_fused_gate_up_t_e8m0 = "Same family — fused gate/up twin; non-e8m0 sibling resolves here."
+moe_w4a16_fused_gate_up_t_k64_e8m0 = "Same family — fused k64 twin; non-e8m0 sibling resolves here."
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FP4-scale twin of the fused k64 kernel; scale-format-gated like the e8m0 twins; the plain sibling resolves from this target's moe_w4a16_grouped_gemm.cu."
+moe_w4a16_down_t_k64_fp4 = "FP4-scale down-projection twin; scale-format-gated; plain sibling resolves here."
+
+
+[expected_absent.nvfp4_mmq]
+atlas_nvfp4_mmq128_nc = """
+Keep-packed NVFP4 MMQ family (dense-FFN prefill for runtime-quantized
+GGUF/BF16 checkpoints). DenseFfnLayer probes the whole family and gates
+every dispatch on handle != 0; Laguna's single dense FFN (layer 0) loads
+from safetensors NVFP4 and takes the w4a16/dense arms, which resolve from
+this target's own w4a16_gemm.cu. UNMEASURED here — candidate, not loss."""
+atlas_nvfp4_mmq128_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq16_nc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq16_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq32_nc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq32_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq64_nc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_mmq64_wc = "Same family; handle-gated, w4a16 arm resolves."
+atlas_nvfp4_quantize_bf16 = "MMQ-family activation quantizer; only reached from the MMQ arms above."
+atlas_nvfp4_repack = "MMQ-family weight repacker; only reached from the MMQ arms above."
+atlas_nvfp4_scale_bf16 = "MMQ-family scale conversion; only reached from the MMQ arms above."
+atlas_nvfp4_silu_mul_quant = "MMQ-family fused epilogue; only reached from the MMQ arms above."
+atlas_nvfp4_silu_mul_scaled = "MMQ-family fused epilogue; only reached from the MMQ arms above."
+
+[expected_absent.w4a16]
+int8_gemm_faith2 = "Int8 requant experiment probed by dense_ffn; handle-gated, w4a16 arm resolves."
+int8_gemm_i32acc = "Same family; handle-gated."
+requant_a_bf16_int8 = "Same family — activation requant; only reached from the int8 arms above."
+requant_w_nvfp4_int8 = "Same family — weight requant; only reached from the int8 arms above."
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+dense_ffn probes it, falls back to w4a16_gemm_t (resolves from this
+target's w4a16_gemm.cu). UNMEASURED for this target — candidate, not
+loss."""
+w4a16_gemm_t_k64_p3 = "Same family; falls back to the resolved w4a16_gemm_t_k64."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; qwen3_attention::init returns 0-handle, dispatch gates on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; handle-gated, falls back through the resolved w4a16 path."
+w4a16_gemm_t_m128_bf16_v2 = "Same family — v2 twin; handle-gated."
+
+[expected_absent.w4a4]
+w4a4_gemm = """
+Direct FP4-activation GEMM probed by dense_ffn; opt-in path
+(ATLAS_ATTN_W4A4-family), handle-gated, never default-dispatched."""
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b. qwen3_attention::init
+probes it; opt-in, handle-gated. UNMEASURED."""
+
+[expected_absent.q4k_mmq]
+atlas_q4k_mmq128_nc = """
+Q4_K keep-packed MMQ (dense-FFN prefill for GGUF Q4_K checkpoints).
+DenseFfnLayer probes the family and gates every dispatch on handle != 0;
+a safetensors NVFP4 checkpoint never installs packed-Q4K weights, so the
+arm is unreachable here."""
+atlas_q4k_mmq128_wc = "Same family — unreachable without packed-Q4K weights."
+atlas_q8_1_quantize_ds4_bf16 = "MMQ-family activation quantizer; only reached from the Q4K MMQ arms above."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K runtime quantizer probed by dense_ffn for GGUF paths; handle-gated, unreachable here."

@@ -39,6 +39,33 @@ pub(crate) struct Fp8ExpertPtrTable {
     pub(crate) scale_ptrs: DevicePtr,
 }
 
+/// Checkpoint-native BF16 weights for a shared expert.
+///
+/// This is intentionally independent of routed-expert precision. Models such
+/// as Laguna ship NVFP4 routed experts but explicitly exempt the shared expert
+/// from quantization, so coupling these pointers to the all-BF16 routed path
+/// silently changes model numerics.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Bf16SharedExpert {
+    gate_proj: DenseWeight,
+    up_proj: DenseWeight,
+    down_proj: DenseWeight,
+}
+
+impl Bf16SharedExpert {
+    fn new(gate_proj: DenseWeight, up_proj: DenseWeight, down_proj: DenseWeight) -> Result<Self> {
+        anyhow::ensure!(
+            !gate_proj.weight.is_null() && !up_proj.weight.is_null() && !down_proj.weight.is_null(),
+            "BF16 shared expert requires non-null gate/up/down weights"
+        );
+        Ok(Self {
+            gate_proj,
+            up_proj,
+            down_proj,
+        })
+    }
+}
+
 /// Unified expert pointer table for any quantization format.
 ///
 /// Replaces the separate `ExpertPtrTable` (NVFP4) and `Fp8ExpertPtrTable` (FP8)
@@ -93,6 +120,7 @@ pub struct MoeLayer {
     w4a16_gemv: KernelHandle,
     w4a16_gemm: KernelHandle,
     dense_gemm: KernelHandle,
+    dense_gemm_pipelined: KernelHandle,
     /// FP32-output router GEMM + FP32-input top-K for the ATLAS_FP32_GATE path.
     /// Zero (unresolved) when the kernels are absent; dispatch falls back to BF16.
     dense_gemm_f32out: KernelHandle,
@@ -343,12 +371,9 @@ pub struct MoeLayer {
     bf16_gate_weight_ptrs: Option<DevicePtr>,
     bf16_up_weight_ptrs: Option<DevicePtr>,
     bf16_down_weight_ptrs: Option<DevicePtr>,
-    // BF16 shared expert weights — direct device pointers for the
-    // fused-decode dispatch. Mirrors `fp8_shared_expert` but with raw
-    // BF16 pointers (no scale).
-    bf16_shared_gate: Option<DevicePtr>,
-    bf16_shared_up: Option<DevicePtr>,
-    bf16_shared_down: Option<DevicePtr>,
+    // Checkpoint-native BF16 shared expert. Independent of routed-expert
+    // precision so mixed NVFP4-routed/BF16-shared checkpoints stay faithful.
+    bf16_shared_expert: Option<Bf16SharedExpert>,
     // FP8 shared expert weights (None when shared expert is NVFP4)
     fp8_shared_expert: Option<Fp8ExpertWeight>,
     /// FP4 down kernel handle (`moe_w4a16_down_t_k64_fp4`). `try_kernel` =>

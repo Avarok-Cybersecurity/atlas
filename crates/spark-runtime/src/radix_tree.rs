@@ -242,7 +242,21 @@ impl PrefixCache for RadixTree {
     }
 
     fn release(&self, tokens: &[u32], block_size: usize, adapter_id: u64) {
-        self.inner.lock().dec_refs(tokens, block_size, adapter_id);
+        self.inner
+            .lock()
+            .dec_refs(tokens, block_size, tokens.len(), adapter_id);
+    }
+
+    fn release_matched(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        matched_tokens: usize,
+        adapter_id: u64,
+    ) {
+        self.inner
+            .lock()
+            .dec_refs(tokens, block_size, matched_tokens, adapter_id);
     }
 
     fn evict(&self, num_blocks: usize) -> EvictedBlocks {

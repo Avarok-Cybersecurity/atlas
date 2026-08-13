@@ -168,3 +168,69 @@ concurrency.
 NO [benchmarks.metrics] TABLE ON PURPOSE — see the dense entry. Unmeasured \
 means unmeasured; thresholds follow the first run on main.\
 """
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "ssm-state-poisoning-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "measured"
+note = """\
+SSM State Poisoning Gate — mandatory since 2026-08-11. Replays a fixed 4-turn \
+script 12 times against one prefix-cached server at temperature 0 and demands \
+byte-identical transcripts every round. Atlas is bitwise-deterministic at batch \
+1, so ANY divergence is accumulated engine-state corruption — the exact class \
+the batch4 stack shipped (Marconi SSM-snapshot restore poisoned runs 8/9 of the \
+agentic gate into early-EOS). It is REQUIRED, not a promotion candidate, \
+because the bug it exists to catch already landed once.
+
+The zero-tolerance thresholds are DEFINITIONS of the invariant, not measured \
+performance: `diverged` and `unmeasured` must be 0 and `invariant` must equal \
+`rounds` — same footing as the agentic gate's exact `iterations` pin. They are \
+belt-and-suspenders with the run verdict (which itself fails on any divergence), \
+enforcing the invariant at the record level too. `rounds` is pinned at exactly \
+12, the N the invariant was written for: the incident poisoned rounds 8-9 of 10, \
+so the gate carries margin past that.
+
+`sum_wall_s` is the only genuinely measured-style number — a BLOWUP DETECTOR, \
+not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
+the first recorded run; ratchet after measurement, never to the best.
+
+Serves with `--serve-override ssm_cache_slots=256` (the flagship recipe's \
+pinned value; recorded in the gate record's serve_overrides). The bf16head \
+recipe leaves the Marconi snapshot pool at its default 16, which evicts \
+under this multi-turn load — replays then restore from DRIFTING anchors \
+(different replay geometry, legitimately different output), which is \
+pool-churn noise, not the poisoned-restore-content class this gate polices. \
+Pinning the pool tests restore CONTENT without the noise. Same footing as \
+the agentic gate's norm.rs: normalize known bookkeeping variance so the \
+measurement is repeatable, never hide signal. The first unpinned run on \
+main (2026-08-12, sha 7dd4cc33bc) proved the churn: replays 2-12 diverged \
+with restore anchors drifting 992→1040→1088→1152 and 33 'no SSM snapshot — \
+recomputing' events in the serve log.\
+"""
+
+[benchmarks.metrics.rounds]
+min = 12.0
+max = 12.0
+
+# The POISONING bar: zero tolerance for a collapsed replay. This is the
+# definition of the invariant the gate exists to police — a restored prefix
+# must never produce degenerate output (early-EOS or runaway). Same footing
+# as the agentic gate's exact `iterations` pin.
+[benchmarks.metrics.collapsed]
+max = 0.0
+
+# Zero tolerance for an unmeasured round too: a transport error means the
+# invariant was not proven for that round.
+[benchmarks.metrics.unmeasured]
+max = 0.0
+
+# `jittered` is deliberately NOT bounded: restore-anchor selection varies
+# between rounds on a healthy engine (clean main jitters 11/12 replays —
+# 2026-08-12, sha a1c8000d44), and bounding it would fail healthy builds.
+# It is recorded for the record, not gated.
+
+[benchmarks.metrics.sum_wall_s]
+max = 1200.0

@@ -15,6 +15,7 @@ use atlas_core::config::ModelConfig;
 
 use super::super::super::super::types::TransformerModel;
 use crate::traits::PrefillSlice;
+use spark_runtime::prefix_cache::PrefixMatch;
 
 /// The fact the batched-kernel gate reads: MLA attention (kv_lora_rank > 0),
 /// i.e. `AttentionType::Mla` — read directly rather than rebuilding the full
@@ -45,31 +46,16 @@ impl TransformerModel {
     /// streams. Cheap upfront check — caller (dispatch) falls back to
     /// per-stream when false.
     pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
-        // Fix #4 (mixed-length cache + co-dispatch silent failure): when the
-        // prefix cache is active a co-dispatched batch can contain streams with
-        // DIFFERENT cache-hit depths (the first arrival recomputes →
-        // effective_seq_len_start=0; later arrivals restore the just-saved
-        // snapshot → effective_seq_len_start>0). The kernel-batched PHASE A
-        // mutates each stream IN ORDER (snapshot restore into the SSM pool slot,
-        // KV block alloc, kv_valid_tokens/seq_len) BEFORE it discovers the
-        // effective_seq_len_start mismatch and bails Err — leaving streams
-        // 0..b partially mutated. The dispatch then re-runs the per-stream loop
-        // on those dirty seqs (double snapshot-restore / double block-alloc),
-        // and any surfaced Err drops ALL streams in the scheduler
-        // (run_batched_prefill.rs: every stream marked failed → client sees a
-        // connection reset, server survives). Route cache-possible batches
-        // STRAIGHT to the per-stream loop (batch.rs:199) on pristine seqs — that
-        // loop is structurally equivalent to the proven single-stream cache path
-        // (prefill_chunk_dispatch) and already handles hits correctly, with
-        // per-stream logits rows (fix #1). NoPrefixCaching::is_active()==false,
-        // so no-cache co-dispatch (the +35% PHASE-C scaling) and the cold path
-        // stay byte-identical — the gate only fires when a real radix cache holds
-        // refs. Trade: cold requests under active caching lose kernel-batched
-        // co-dispatch, but with caching on most requests hit and a hit's
-        // processed suffix is tiny, so the co-dispatch scaling is moot.
-        if self.prefix_cache.is_active() {
-            return false;
-        }
+        // Routed-MoE prefill is a flat [total_tokens] sort/grouped-GEMM/scatter
+        // with no notion of stream boundaries (layers/moe/** contains no
+        // chunk_len / batch_size / stream_idx), so it needs no ragged
+        // awareness. The C=4 heterogeneous illegal access that motivated the
+        // original `num_experts == 0` restriction had two causes, both now
+        // fixed: the scratch SSOT divergence (charged n*max_chunk_len at
+        // runtime vs sum(chunk_len) at admission — fixed in the same commit
+        // that added the restriction) and the batched paged-attention kernel
+        // indexing Q/O at `b * max_len` on a buffer packed by sum(len), with a
+        // scalar kv_len at the max. The kernels are now cu_seqlens-aware.
         let varlen = varlen_prefill_enabled();
         // Effective staged length per stream. `peek_matched_tokens` is a
         // read-only probe: no refs taken, no LRU touch, no hit/miss counted, so
@@ -108,10 +94,41 @@ impl TransformerModel {
             self.config.num_experts_per_tok,
             self.config.mrope_interleaved,
             // VARLEN v1 batches chunk-0 (fresh K/V) through FlashInfer ragged.
-            first_chunk_batched_enabled() || varlen,
+            crate::layers::ops::prefill_batched_first_chunk_enabled() || varlen,
             varlen,
         )
     }
+}
+
+/// Whether reserved prefix matches can share one stacked attention forward.
+///
+/// This is deliberately narrower than the single-stream prefix-cache path.
+/// A batched cache hit is admitted only when every request has identical
+/// processing geometry and needs neither an SSM restore nor disk-cache work.
+/// The caller owns the reservation/rollback protocol; this predicate is pure
+/// so the safety envelope remains unit-testable.
+pub(in crate::model) fn cache_batch_matches_compatible(
+    matches: &[PrefixMatch],
+    chunk_len: usize,
+) -> bool {
+    let Some(first) = matches.first() else {
+        return false;
+    };
+    let matched = first.matched_tokens;
+    // Full-chunk hits use the single-token logits/early-return special cases;
+    // keep those on the established sequential path in v1.
+    if matched >= chunk_len {
+        return false;
+    }
+    matches.iter().all(|m| {
+        m.matched_tokens == matched
+            && m.matched_blocks.len() == first.matched_blocks.len()
+            && m.matched_disk_block_ids.is_empty()
+            && m.ssm_snapshot.is_none()
+            && m.ssm_snapshot_tokens == 0
+            && m.ssm_snapshot_tier_key.is_none()
+            && m.ssm_snapshot_tier_tokens == 0
+    })
 }
 
 impl TransformerModel {
@@ -163,9 +180,8 @@ impl TransformerModel {
 /// varied-length concurrent prefills into one forward (cu_seqlens geometry,
 /// FlashInfer ragged attention). Requires a FLASHINFER_HOME build.
 pub(in crate::model) fn varlen_prefill_enabled() -> bool {
-    std::env::var("ATLAS_PREFILL_VARLEN")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    // SSOT with the batched-attention layer's chunk-0 guard.
+    crate::layers::ops::prefill_varlen_enabled()
 }
 
 /// Pure-data predicate extracted from [`TransformerModel::kernel_batched_eligible`]
@@ -256,7 +272,18 @@ where
     // per-stream path from a clean state (a mid-dispatch overrun would leave
     // streams dirty and the fallback would re-run setup → corruption).
     // VARLEN: size the scratch pre-flight by the worst-case per-stream length.
-    spark_runtime::buffers::q12_batched_scratch_bytes(n, max_chunk_len, top_k, mrope) <= scratch_cap
+    let scratch_needed = if varlen {
+        spark_runtime::buffers::q12_batched_scratch_bytes_varlen(
+            n,
+            total,
+            max_chunk_len,
+            top_k,
+            mrope,
+        )
+    } else {
+        spark_runtime::buffers::q12_batched_scratch_bytes(n, max_chunk_len, top_k, mrope)
+    };
+    scratch_needed <= scratch_cap
 }
 
 /// `ATLAS_Q12_EFFECTIVE_ARENA=1` — charge the Q12 batched-prefill arena budget

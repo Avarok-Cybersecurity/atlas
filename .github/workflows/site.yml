@@ -7,12 +7,16 @@ on:
       - 'site/**'
       - '.benchmarks/**'
       - '.github/workflows/site.yml'
+  # No path filter on pull_request: this check joins the required set, and a
+  # path-filtered required check never reports on PRs outside its paths,
+  # leaving them permanently "expected" and unmergeable.
   pull_request:
     branches: [main, master]
-    paths:
-      - 'site/**'
-      - '.benchmarks/**'
-      - '.github/workflows/site.yml'
+  # Merge queue: queue commits fire none of the events above, and this check
+  # is required — without this trigger the entry hangs until timeout.
+  # Unfiltered for the same reason as pull_request. The deploy job stays
+  # push/schedule-only by its own `if`.
+  merge_group:
   # Daily rebuild so the dashboard picks up gate records that landed on
   # branches whose PRs have not merged yet (gen-gates.mjs walks all heads).
   schedule:

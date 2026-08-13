@@ -531,7 +531,8 @@ pub struct ServeArgs {
     /// Supported: "hermes" (JSON `<tool_call>`, Qwen3-VL / Qwen3-Next),
     /// "qwen3_coder" (Qwen3-Coder XML `<function=...>`, Qwen3.5 family +
     /// Nemotron-H), "qwen3_xml", "gemma4", "mistral", "minimax_xml",
-    /// "bare_json". See the `FromStr for ToolCallFormat` in tool_parser.rs.
+    /// "bare_json", "poolside_v1". See the `FromStr for ToolCallFormat` in
+    /// tool_parser.rs.
     /// When set, tool definitions in requests are injected into the system
     /// prompt and model output is parsed for tool_call tags.
     #[arg(long, value_name = "FORMAT")]

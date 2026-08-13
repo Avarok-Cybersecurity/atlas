@@ -28,16 +28,32 @@ on:
   # fork-controlled input executing with the write scopes declared below.
   pull_request_target:
     types: [opened, closed, synchronize]
+  # Merge queue: entries are validated on a temporary gh-readonly-queue/**
+  # merge-commit that fires NONE of the above events, and `CLAAssistant` is a
+  # required check the queue waits for — without this trigger it is never
+  # reported and every entry times out. The queue step below re-proves the
+  # signature verdict for the queued PR. Same safety envelope as the
+  # pull_request_target job, and tighter: it performs NO checkout at all —
+  # the signatures file is read from the cla-signatures branch through the
+  # contents API — and interpolates no event free text into the run body.
+  merge_group:
 
 jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     # `issue_comment` fires for plain issues too, where the action's
     # `pulls.get(issue.number)` 404s and reds the job for no reason. Gate on
-    # the `pull_request` key that only PR-backed issues carry.
+    # the `pull_request` key that only PR-backed issues carry. `merge_group`
+    # is handled by the mirror step below, never by the pinned action.
     if: >-
       github.event_name == 'pull_request_target' ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+    env:
+      # SSOT for the allowlist: both the pinned action's `allowlist` input
+      # below and the merge-queue mirror step read this one value. Keep it
+      # here, nowhere else.
+      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude,AzeezIsh,tbraun96
     # Scoped to what contributor-assistant actually calls (verified against the
     # action source at the pinned sha):
     #   contents      — git refs/commits that persist signatures/version1/cla.json
@@ -54,6 +70,11 @@ jobs:
       actions: write
     steps:
       - name: "CLA Assistant"
+        # The pinned action resolves "the PR" from `github.event.pull_request` /
+        # `context.issue`, which do not exist under `merge_group` — so it runs
+        # only for the two original triggers, and queue commits take the mirror
+        # step below instead.
+        if: github.event_name != 'merge_group'
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,7 +85,8 @@ jobs:
           # Maintainer-controlled identities are allowlisted: they own the copyright
           # and have already signed, so gating their own (AI-generated) PRs adds only
           # friction. External first-time contributors are still asked to sign.
-          allowlist: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],google-labs-jules,claude,AzeezIsh,tbraun96
+          # (SSOT: $CLA_ALLOWLIST above — do not re-list these here.)
+          allowlist: ${{ env.CLA_ALLOWLIST }}
           lock-pullrequest-aftermerge: false
           create-file-commit-message: 'chore: setup CLA signatures file'
           signed-commit-message: 'chore: $contributorName signed the CLA in PR #$pullRequestNo'
@@ -82,3 +104,72 @@ jobs:
           # `use-dco-flag: false` regex, which matches the phrase anywhere in a
           # comment and credits it to the COMMENT AUTHOR's committer id only.
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you!'
+
+      # Merge-queue mirror of the step above. The pinned action cannot run on a
+      # queue commit (no pull_request payload, no issue number), but the queue
+      # still needs the SAME check name reported on the merge-commit or the
+      # entry hangs until timeout. This step re-proves the verdict itself:
+      #   contributors of the queued PR ⊆ (allowlist ∪ signedContributors)
+      # Same safety envelope as the pull_request_target path, and tighter: NO
+      # checkout at all — the signatures file is read from the cla-signatures
+      # branch through the contents API (never queue-commit code), and event
+      # text (`head_ref`) arrives via an `env:` binding, never interpolated
+      # into the run body. Both steps live in the one job `CLAAssistant`, so
+      # the required context (the JOB key, not the step name) is reported
+      # identically on both trigger types; the steps are mutually exclusive by
+      # `if`, so exactly one runs per run.
+      - name: "CLA Assistant (merge queue)"
+        if: github.event_name == 'merge_group'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MQ_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          # Queue branches are GitHub-generated: gh-readonly-queue/<base>/pr-<N>-<sha>.
+          BRANCH="${MQ_HEAD_REF#refs/heads/}"
+          PR_NUM="$(sed -n 's|.*/pr-\([0-9][0-9]*\)-.*|\1|p' <<< "$BRANCH")"
+          if [ -z "$PR_NUM" ]; then
+            echo "::error::cannot derive a PR number from queue branch '$BRANCH'"
+            exit 1
+          fi
+          # ONE identity per commit, extracted EXACTLY as the pinned action
+          # does (graphql.ts extractUserFromCommit: author.user || committer.user
+          # || author || committer, then .login || .name): the GitHub-resolved
+          # AUTHOR login first (commit emails like 38082993+tbraun96@users.noreply
+          # resolve to a login), the raw commit name ONLY when GitHub resolves
+          # no user at all. Collecting all four fields as separate identities
+          # would reject raw names ("Thomas Braun") that the pinned action never
+          # asks about — a mirror stricter than its original is not a mirror.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/commits" \
+            --jq '.[] | [ .author.login?, .committer.login?,
+                          .commit.author.name?, .commit.committer.name? ]
+                    | map(select(. != null and . != "")) | first // empty' \
+            | sort -u > identities.txt
+          # The pinned action drops databaseId 41898282 (github-actions[bot]).
+          grep -vxF 'github-actions[bot]' identities.txt > ids.txt || true
+          # Signed identities from the cla-signatures branch (SSOT: same file
+          # and branch the pinned action writes to). `name` there is the login
+          # of the comment author at signing time.
+          gh api "repos/$GITHUB_REPOSITORY/contents/signatures/version1/cla.json?ref=cla-signatures" \
+            --jq '.content' | base64 -d \
+            | python3 -c 'import json,sys; print("\n".join(s["name"] for s in json.load(sys.stdin)["signedContributors"]))' \
+            > signed.txt
+          # Split the allowlist with tr, NOT unquoted shell expansion:
+          # entries like dependabot[bot] are shell glob patterns and would be
+          # expanded against the cwd if word-split unquoted. Comparison is
+          # case-sensitive exact match, same as checkAllowList.ts (`pattern ===
+          # committer`; wildcard patterns are not in this repo's allowlist).
+          tr ',' '\n' <<< "$CLA_ALLOWLIST" > allow.txt
+          cat allow.txt signed.txt | sort -u > accepted.txt
+          MISSING=()
+          while IFS= read -r id; do
+            [ -z "$id" ] && continue
+            grep -qxF -- "$id" accepted.txt || MISSING+=("$id")
+          done < ids.txt
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            echo "::error::unsigned contributors on PR #$PR_NUM: ${MISSING[*]}"
+            echo "Sign by replying on PR #$PR_NUM: 'I have read the CLA Document and I hereby sign the CLA'"
+            exit 1
+          fi
+          echo "All contributors of PR #$PR_NUM have signed the CLA (or are allowlisted)."

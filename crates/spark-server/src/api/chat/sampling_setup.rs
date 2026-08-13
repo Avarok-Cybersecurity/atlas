@@ -113,31 +113,38 @@ pub(super) fn build_sampling(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    // Core sampling (temp/top_k/top_p) defaults to the model's shipped
-    // generation_config.json (state.default_*) — matching vLLM and the model
-    // author's recommended config — instead of the hand-curated MODEL.toml
-    // [sampling] presets. The lower preset temps (e.g. Holo thinking/tools =
-    // 0.6 vs generation_config 1.0) made the model over-commit to tool calls
-    // vs vLLM: lower temperature is more deterministic, so it picks "call the
-    // tool" far more consistently. The selected preset still drives the
-    // penalties below (generation_config doesn't define those); min_p and
-    // top_n_sigma already default to generation_config.
+    // Core sampling defaults to generation_config.json unless MODEL.toml opts
+    // into its category presets. Laguna's generation config ships 1.0/1.0 for
+    // general evaluation, while its model card recommends 0.7/0.95 for
+    // reliability; the model-owned opt-in preserves the historical behavior
+    // for every other target. Explicit request values always win.
+    let core_preset = state.behavior.use_sampling_presets_for_core;
     let temperature = if force_temp_zero {
         0.0
     } else {
-        req.sampling
-            .temperature
-            .unwrap_or(state.default_temperature)
+        req.sampling.temperature.unwrap_or(if core_preset {
+            preset.temperature
+        } else {
+            state.default_temperature
+        })
     };
     let top_k = if force_temp_zero {
         0
     } else {
-        req.sampling.top_k.unwrap_or(state.default_top_k)
+        req.sampling.top_k.unwrap_or(if core_preset {
+            preset.top_k
+        } else {
+            state.default_top_k
+        })
     };
     let top_p = if force_temp_zero {
         1.0
     } else {
-        req.sampling.top_p.unwrap_or(state.default_top_p)
+        req.sampling.top_p.unwrap_or(if core_preset {
+            preset.top_p
+        } else {
+            state.default_top_p
+        })
     };
     let top_n_sigma = if force_temp_zero {
         0.0

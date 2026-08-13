@@ -33,16 +33,20 @@ on:
   # can only be started by an event you do not control is a check you cannot
   # get a verdict from when you most need it.
   workflow_dispatch:
+  # No path filter on pull_request: this check joins the required set, and a
+  # path-filtered required check never reports on PRs outside its paths,
+  # leaving them permanently "expected" and unmergeable. The job is one grep
+  # over two directories — running it on every PR costs seconds.
   pull_request:
-    paths:
-      - 'crates/spark-server/src/tui/**'
-      - 'crates/spark-server/src/recipe/**'
-      - '.github/workflows/tui-threading.yml'
   push:
     branches: [main]
     paths:
       - 'crates/spark-server/src/tui/**'
       - 'crates/spark-server/src/recipe/**'
+  # Merge queue: queue commits fire none of the events above, and this check
+  # is required — without this trigger the entry hangs until timeout.
+  # Unfiltered for the same reason as pull_request.
+  merge_group:
 
 jobs:
   no-blocking-on-the-render-thread:

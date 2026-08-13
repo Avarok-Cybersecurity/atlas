@@ -46,6 +46,13 @@ fn chips(recipe: &Recipe) -> Vec<Span<'static>> {
         ));
         out.push(Span::raw(" "));
     };
+    // First, so it cannot be clipped off while the rest of the card survives:
+    // a starting point that loses its marker is a guess dressed as a
+    // measurement. Warn amber — it needs the reader's attention before Enter,
+    // not after. Under NO_COLOR the REVERSED block and the words remain.
+    if recipe.starting_point.is_some() {
+        chip("starting point".into(), theme::warn());
+    }
     if !recipe.quantization.is_empty() {
         chip(recipe.quantization.clone(), theme::brand_cyan());
     }
@@ -81,9 +88,18 @@ fn draw_cards(f: &mut Frame, app: &App, area: Rect) {
         .current()
         .map(|e| e.model.clone())
         .unwrap_or_default();
+    // Starting points are named as what they are, in the pane title too: a
+    // user who reads "3 recipes" above three guesses has been lied to before
+    // reaching any card's own marker.
+    let synthesized = recipes.first().is_some_and(|r| r.starting_point.is_some());
+    let noun = if synthesized {
+        "starting point"
+    } else {
+        "recipe"
+    };
     let block = panel(
         format!(
-            "{} ─ {} recipe{} ─",
+            "{} ─ {} {noun}{} ─",
             model.to_uppercase(),
             recipes.len(),
             if recipes.len() == 1 { "" } else { "s" }

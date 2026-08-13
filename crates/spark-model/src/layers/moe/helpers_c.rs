@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! predequant_for_prefill, set_fp8_experts, router_input.
+//! Shared-expert precision setup, predequantization, and router input.
 
 use super::*;
 
@@ -26,8 +26,12 @@ impl MoeLayer {
                 Some(nvfp4.predequant_to_fp8(gpu, predequant_k, num_experts, h, stream)?);
         }
 
-        // Pre-dequant shared expert weights
-        if !self.weights.shared_expert.gate_proj.is_null() && shared_inter > 0 {
+        // A checkpoint-native BF16 shared expert is the authoritative copy.
+        // Do not manufacture an FP8 prefill variant with different numerics.
+        if self.bf16_shared_expert.is_none()
+            && !self.weights.shared_expert.gate_proj.is_null()
+            && shared_inter > 0
+        {
             self.shared_gate_fp8 = Some(self.weights.shared_expert.gate_proj.predequant_to_fp8(
                 gpu,
                 predequant_k,
@@ -95,10 +99,142 @@ impl MoeLayer {
         self.bf16_gate_weight_ptrs = Some(build_bf16_ptr_table(gate_experts, gpu)?);
         self.bf16_up_weight_ptrs = Some(build_bf16_ptr_table(up_experts, gpu)?);
         self.bf16_down_weight_ptrs = Some(build_bf16_ptr_table(down_experts, gpu)?);
-        self.bf16_shared_gate = Some(shared_gate);
-        self.bf16_shared_up = Some(shared_up);
-        self.bf16_shared_down = Some(shared_down);
+        if shared_gate.is_null() && shared_up.is_null() && shared_down.is_null() {
+            self.bf16_shared_expert = None;
+        } else {
+            self.set_bf16_shared_expert(
+                DenseWeight {
+                    weight: shared_gate,
+                },
+                DenseWeight { weight: shared_up },
+                DenseWeight {
+                    weight: shared_down,
+                },
+            )?;
+        }
         Ok(())
+    }
+
+    /// Install checkpoint-native BF16 shared-expert weights independently of
+    /// routed-expert precision.
+    pub fn set_bf16_shared_expert(
+        &mut self,
+        gate_proj: DenseWeight,
+        up_proj: DenseWeight,
+        down_proj: DenseWeight,
+    ) -> Result<()> {
+        self.bf16_shared_expert = Some(Bf16SharedExpert::new(gate_proj, up_proj, down_proj)?);
+        Ok(())
+    }
+
+    /// Whether a BF16 shared expert must overwrite the contribution produced
+    /// by a quantized fused routed-expert kernel.
+    pub(super) fn has_mixed_bf16_shared_expert(&self) -> bool {
+        self.bf16_shared_expert.is_some() && self.bf16_gate_weight_ptrs.is_none()
+    }
+
+    /// Evaluate a checkpoint-native BF16 shared expert into `down_out`.
+    ///
+    /// Callers supply scratch buffers because the safe aliases differ between
+    /// decode and prefill. Returns `true` when BF16 weights were installed.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn run_bf16_shared_expert(
+        &self,
+        input: DevicePtr,
+        num_tokens: u32,
+        hidden_size: u32,
+        shared_intermediate: u32,
+        gate_out: DevicePtr,
+        up_out: DevicePtr,
+        down_out: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<bool> {
+        let Some(shared) = self.bf16_shared_expert else {
+            return Ok(false);
+        };
+        anyhow::ensure!(
+            num_tokens > 0 && shared_intermediate > 0,
+            "BF16 shared expert requires non-zero token and intermediate dimensions"
+        );
+
+        let project = |activation: DevicePtr,
+                       weight: &DenseWeight,
+                       output: DevicePtr,
+                       n: u32,
+                       k: u32|
+         -> Result<()> {
+            if num_tokens == 1 {
+                ops::dense_gemv(
+                    ctx.gpu,
+                    self.dense_gemv,
+                    activation,
+                    weight,
+                    output,
+                    n,
+                    k,
+                    stream,
+                )
+            } else if ctx.dispatch.cublas_gemm {
+                // Multi-token shared expert: cuBLASLt BF16 beats the hand-written
+                // mma.sync GEMM. The single-token arm above stays on the GEMV —
+                // decode-sized shapes do not repay cuBLAS heuristic overhead.
+                ops::cublas_bf16_proj_dense(
+                    activation,
+                    weight.weight,
+                    output,
+                    num_tokens,
+                    n,
+                    k,
+                    stream,
+                )
+            } else {
+                ops::dense_gemm_prefill(
+                    ctx.gpu,
+                    self.dense_gemm,
+                    self.dense_gemm_pipelined,
+                    activation,
+                    weight,
+                    output,
+                    num_tokens,
+                    n,
+                    k,
+                    stream,
+                )
+            }
+        };
+
+        project(
+            input,
+            &shared.gate_proj,
+            gate_out,
+            shared_intermediate,
+            hidden_size,
+        )?;
+        project(
+            input,
+            &shared.up_proj,
+            up_out,
+            shared_intermediate,
+            hidden_size,
+        )?;
+        ops::silu_mul(
+            ctx.gpu,
+            self.moe_act_mul,
+            gate_out,
+            up_out,
+            gate_out,
+            num_tokens * shared_intermediate,
+            stream,
+        )?;
+        project(
+            gate_out,
+            &shared.down_proj,
+            down_out,
+            hidden_size,
+            shared_intermediate,
+        )?;
+        Ok(true)
     }
 
     /// Apply the router pre-normalization (Gemma-4 only) and return the

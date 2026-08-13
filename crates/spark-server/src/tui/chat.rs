@@ -259,6 +259,29 @@ impl ChatState {
         }
     }
 
+    /// Clear the conversation and start a fresh session.
+    ///
+    /// Purely client state: every request re-sends the full history (see
+    /// `send`), so the server holds no session to reset — clearing the
+    /// transcript IS the new session.
+    ///
+    /// `rx` is dropped as well as cancelled, deliberately: cancellation is
+    /// async, and a delta already in the channel would otherwise be pumped
+    /// into the FRESH transcript — the old conversation's tokens appearing in
+    /// the new one is worse than no reset at all. `observed_thinking` goes
+    /// too; it described a reply that no longer exists. What stays: the typed
+    /// input (a draft is the user's work, and it was never sent), and the
+    /// thinking request/view — the doc on both calls them session preferences,
+    /// and emptying the transcript does not change what the user prefers.
+    pub fn reset(&mut self) {
+        self.cancel();
+        self.rx = None;
+        self.streaming = false;
+        self.transcript.clear();
+        self.observed_thinking = None;
+        self.scroll = None;
+    }
+
     /// End the stream, whatever ended it.
     fn settle(&mut self) {
         if let Some(m) = self.transcript.last_mut() {

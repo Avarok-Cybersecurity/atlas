@@ -355,8 +355,16 @@ extern "C" __global__ void moe_weighted_sum_blend_batch3(
     __nv_bfloat16* my_output = output + (unsigned long long)token * hidden;
 
     // ── Phase 1: Compute gate scalar (dot product + sigmoid) ──
+    // NULL gate_weight = no gate modulation → sigmoid=1.0 (shared expert always
+    // on). Matches the per-token moe_weighted_sum_blend; models with an
+    // ungated shared expert (Laguna, Mistral) pass a NULL pointer here.
     __shared__ float s_warp_sums[8];
     __shared__ float sigmoid_val;
+
+    if (gate_weight == 0) {
+        if (tid == 0) sigmoid_val = 1.0f;
+        __syncthreads();
+    } else {
 
     float dot_acc = 0.0f;
     unsigned int K8 = K / 8;
@@ -396,6 +404,8 @@ extern "C" __global__ void moe_weighted_sum_blend_batch3(
         sigmoid_val = 1.0f / (1.0f + __expf(-gate_scalar));
     }
     __syncthreads();
+
+    }  // end else (gate_weight != 0)
 
     // ── Phase 2: Weighted sum + blend ──
     unsigned int j = blockIdx.x * blockDim.x + tid;

@@ -57,7 +57,7 @@ pub fn ships_vanilla_norm_weights(config: &atlas_core::config::ModelConfig) -> b
 /// The dispatch predicate itself, on the bare `model_type`, so it is unit-testable
 /// without constructing a full `ModelConfig`.
 pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
-    model_type == "deepseek_v4"
+    matches!(model_type, "deepseek_v4" | "laguna")
 }
 
 #[cfg(test)]
@@ -68,8 +68,9 @@ mod norm_convention_tests {
     /// Only DeepSeek-V4 takes the vanilla path. Every other family keeps the
     /// offset-from-1 convention it was loaded and validated under.
     #[test]
-    fn only_deepseek_v4_uses_vanilla_norm_weights() {
+    fn vanilla_norm_models_are_explicit() {
         assert!(vanilla("deepseek_v4"));
+        assert!(vanilla("laguna"));
         for other in [
             "qwen3_next",
             "qwen3_5_moe",

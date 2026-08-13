@@ -8,6 +8,10 @@ use std::collections::HashMap;
 
 use super::{DflashRaw, ModelTypeMatch, SamplingCat};
 
+#[path = "build_parse_behavior.rs"]
+mod behavior;
+pub(super) use behavior::*;
+
 pub(super) fn parse_kernel_toml(
     kernel_dir: &std::path::Path,
     vendor: &str,

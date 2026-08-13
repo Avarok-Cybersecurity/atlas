@@ -10,6 +10,16 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  # Merge queue: entries are validated on a temporary `gh-readonly-queue/**`
+  # merge-commit, which fires NONE of the above events. A required check that
+  # does not subscribe here is never reported for the queue commit, and the
+  # queue then fails the entry with "required status check not reported".
+  # Every job that is (or becomes) a required check must stay event-agnostic
+  # or run here too. Jobs that are event-gated to `pull_request` and NOT
+  # required (pr-categorize) are advisory only and need not report on queue
+  # commits. release-matrix and pr-benchmark-gate both run under merge_group
+  # deliberately — see their own comments for why.
+  merge_group:
   # Reusable: release.yml gates its (expensive) build matrix on CI passing, so
   # a fmt or clippy failure costs one cheap runner instead of eight toolchain
   # installs. Defined once here; release.yml calls it rather than copying it.
@@ -176,11 +186,14 @@ jobs:
   # second matrix build there.
   release-matrix:
     name: release matrix
-    if: github.event_name == 'pull_request'
+    # Runs for pull_request AND merge_group (queue entry validation on the
+    # temporary gh-readonly-queue/** commit). github.event.number is empty
+    # under merge_group, so the version string falls back to "queue".
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     needs: [fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
-      version: 0.0.0-pr${{ github.event.number }}
+      version: 0.0.0-pr${{ github.event.number || 'queue' }}
       pr_mode: true
       retention_days: 1
 
@@ -483,6 +496,17 @@ jobs:
   pr-benchmark-gate:
     name: PR benchmark gate
     runs-on: ubuntu-latest
+    # Runs under `merge_group` too, deliberately. There the checkout is the
+    # queue's temporary merge commit (latest main + this PR), and the gate
+    # answers "do the committed records still cover the MERGED tree" — which
+    # is exactly the invariant 2026-08-11's double-merge broke: #457 and #461
+    # were each green in isolation, yet #461's perf-path content invalidated
+    # #457's records the moment both were on main. In the queue, a preceding
+    # merge that invalidates this entry's records turns this check red HERE
+    # and the entry is ejected, instead of silently landing a broken main.
+    # Records are keyed by tree (record_still_stands diffs TREES, never
+    # ancestry), so a record taken at the PR's frozen sha covers the queue
+    # commit iff nothing perf-relevant moved on main since the cycle ran.
     # ENFORCING as of this commit. The `continue-on-error: true` that used to
     # sit here was justified by a bootstrap gap — "no bench record is committed
     # yet, and the PR that introduces the gate cannot commit one". That gap is
@@ -496,9 +520,13 @@ jobs:
     # rust-toolchain.toml) — which is the point. Fix it by measuring on a GPU
     # box and committing the record, not by re-adding continue-on-error.
     #
-    # It is deliberately NOT in `release-matrix`'s `needs`, and deliberately
-    # not a required status check on `main`: a missing GPU measurement must
-    # show as red without wedging the image path or the merge button.
+    # It is deliberately NOT in `release-matrix`'s `needs`: a missing GPU
+    # measurement must show as red without wedging the image path. It IS a
+    # required status check on `main` (added with the merge queue): the point
+    # of the queue is that NOTHING lands with an uncovered perf-relevant tree,
+    # so "no record covers this merge-commit" must eject the entry rather than
+    # land a broken main — which is exactly the invariant the 2026-08-11
+    # double-merge broke before this job ran in the queue.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

@@ -3,7 +3,9 @@
 //! The benchmark suite, in the order the Benchmarks pane lists it.
 
 use crate::benchmark::BenchmarkDescriptor;
-use crate::benchmarks::{agentic, bfcl, concurrency, contamination, serve_matrix, ttft};
+use crate::benchmarks::{
+    agentic, bfcl, concurrency, contamination, serve_matrix, ssm_poison, ttft,
+};
 
 /// Every benchmark, list order. Cheapest and most-run first.
 ///
@@ -16,6 +18,10 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
     &contamination::DESCRIPTOR,
+    // Cheaper than the agentic gate (~10 min vs ~17 min) and catches a
+    // class the agentic run only surfaces by accident, so it is listed
+    // before it.
+    &ssm_poison::DESCRIPTOR,
     &agentic::DESCRIPTOR,
     &bfcl::SUBSET_DESCRIPTOR,
     &bfcl::SUBSET_ECHOLP_DESCRIPTOR,

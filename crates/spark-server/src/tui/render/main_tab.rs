@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Row, Sparkline, Table};
+use ratatui::widgets::{Paragraph, Sparkline};
 
 use super::{gradient_bar, panel};
 use crate::tui::app::App;
@@ -273,8 +273,19 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let want = inner.height as usize + app.log_scroll.unwrap_or(0);
-    let mut lines: Vec<Line> = log_ring::tail(want.max(64))
+    // Headroom past the current offset, so the ceiling published below always
+    // sits ahead of the scroll. The fetch used to stop at exactly
+    // `height + offset` (floored at 64), so the ceiling could never exceed
+    // what one frame happened to hold — scrolling up jammed ~64 lines in
+    // while the ring held thousands. The offset only moves a few lines
+    // between frames and each frame re-fetches from the new offset, so a
+    // margin of one ring-page keeps the ceiling ahead of the fastest scroll
+    // without cloning and wrapping the whole 10k-line ring at 10 Hz — and
+    // while FOLLOWING, the margin stays small: it exists only so the first
+    // wheel-up has a nonzero ceiling to move into.
+    let headroom = if app.log_scroll.is_some() { 512 } else { 64 };
+    let want = inner.height as usize + app.log_scroll.unwrap_or(0) + headroom;
+    let mut lines: Vec<Line> = log_ring::tail(want)
         .into_iter()
         .filter(|l| {
             app.log_filter.is_empty()
@@ -366,97 +377,6 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         out.push(Line::from(row));
     }
     out
-}
-
-pub fn draw_kernels(f: &mut Frame, app: &App, area: Rect) {
-    let Some(model) = &app.kernels else {
-        let block = panel("KERNELS ─ waiting for startup ─".into(), false);
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                "  kernel audit runs at model load…",
-                theme::dim(),
-            ))
-            .block(block),
-            area,
-        );
-        return;
-    };
-    // Only the ACTIONABLE class alarms; expected-absent is declared with a reason.
-    let missing = &model.missing_required;
-    let mut constraints = vec![Constraint::Min(6)];
-    if !missing.is_empty() {
-        constraints.insert(0, Constraint::Length(missing.len().min(6) as u16 + 2));
-    }
-    let rows_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-    let mut idx = 0;
-    if !missing.is_empty() {
-        let n = missing.len();
-        let title = format!(
-            "⚠ {n} UNRESOLVED ─ {} EXPECTED-ABSENT ─",
-            model.missing_expected.len()
-        );
-        let block = panel(title, false).border_style(theme::warn());
-        let lines: Vec<Line> = missing
-            .iter()
-            .take(6)
-            .map(|m| {
-                Line::from(Span::styled(
-                    format!("  {}::{}  at {}", m.module, m.func, m.site),
-                    theme::warn(),
-                ))
-            })
-            .collect();
-        f.render_widget(Paragraph::new(lines).block(block), rows_layout[idx]);
-        idx += 1;
-    }
-    let filtered: Vec<_> = model
-        .rows
-        .iter()
-        .filter(|r| app.kernel_filter.is_empty() || r.module.contains(&app.kernel_filter))
-        .collect();
-    // Two rows of chrome (header + border) come off the visible count; the
-    // ceiling is what remains once a full screen is showing.
-    let kernel_view = rows_layout[idx].height.saturating_sub(3) as usize;
-    app.kernel_scroll_max
-        .set(filtered.len().saturating_sub(kernel_view));
-    let title = format!("KERNELS ─ {} modules ─", filtered.len());
-    let header = Row::new(vec!["MODULE", "PTX-HASH", "RESOLUTION"])
-        .style(theme::text2().add_modifier(Modifier::BOLD));
-    let table_rows: Vec<Row> = filtered
-        .iter()
-        .skip(app.kernel_scroll)
-        .map(|r| {
-            let (res, style) = match r.resolution {
-                Some(true) => ("used", theme::brand_cyan()),
-                Some(false) => ("** lookup FAILED **", theme::error()),
-                None => ("-", theme::dim()),
-            };
-            let row_style = if r.resolution.is_none() {
-                theme::dim()
-            } else {
-                theme::text()
-            };
-            Row::new(vec![
-                Span::styled(r.module.clone(), row_style),
-                Span::styled(r.ptx_hash.clone(), theme::dim()),
-                Span::styled(res, style),
-            ])
-        })
-        .collect();
-    let table = Table::new(
-        table_rows,
-        [
-            Constraint::Length(34),
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ],
-    )
-    .header(header)
-    .block(panel(title, true));
-    f.render_widget(table, rows_layout[idx]);
 }
 
 fn middle_truncate(s: &str, max: usize) -> String {

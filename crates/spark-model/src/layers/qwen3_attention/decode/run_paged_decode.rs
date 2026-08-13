@@ -591,6 +591,7 @@ impl Qwen3AttentionLayer {
                 }
 
                 let (k_scale, v_scale) = self.effective_fp8_scales();
+                let sliding = self.sliding_window.unwrap_or(0);
 
                 if num_splits > 1 {
                     let splitk_k = self
@@ -620,6 +621,7 @@ impl Qwen3AttentionLayer {
                         q_stride,
                         kv_cache.cache_stride() as u64,
                         num_seqs,
+                        sliding,
                         stream,
                     )?;
                     ops::paged_decode_attn_reduce_fp8(
@@ -661,6 +663,7 @@ impl Qwen3AttentionLayer {
                         v_scale,
                         q_stride,
                         kv_cache.cache_stride() as u64,
+                        sliding,
                         stream,
                     )
                 }
