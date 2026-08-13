@@ -282,6 +282,18 @@ pub struct MtpHead {
     argmax_batch_lp_k: KernelHandle,
     /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
+    /// CUDA graph of the grammarless propose GPU body (full, or pre-MoE
+    /// when generic experts force a split).
+    propose_graph: Mutex<Option<spark_runtime::gpu::GraphHandle>>,
+    /// Post-MoE graph (final norm + lm_head + argmax). Used only when
+    /// [`MtpHead::moe_experts_generic`] is `Some` so MoE stays eager.
+    propose_graph_post: Mutex<Option<spark_runtime::gpu::GraphHandle>>,
+    /// Process-lifetime staging for `target_hidden` so one graph covers
+    /// both `mtp_hidden_save` (draft 0) and `hidden_states()` (later drafts).
+    propose_in_hidden: DevicePtr,
+    /// Device-side BF16 expert dispatch (fused kernels + pointer tables).
+    /// `None` → host loop in `moe_forward_generic` (FP8, missing kernels).
+    bf16_moe_fused: Option<bf16_moe_fused::MtpBf16MoeFused>,
 }
 
 impl MtpHead {
@@ -375,12 +387,15 @@ impl MtpHead {
 }
 
 mod batch_caps;
+mod bf16_moe_fused;
 mod draft_proposer;
 mod forward;
 mod forward_batch;
 mod moe_forward;
 mod new;
 mod prefill;
+mod propose_gpu;
+mod propose_graph;
 
 #[cfg(test)]
 mod tests {

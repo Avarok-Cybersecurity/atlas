@@ -177,7 +177,6 @@ jobs:
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
             "crates/spark-model/src/layers/moe/forward.rs"
-            "crates/spark-model/src/layers/mtp_head/forward.rs"
             "crates/spark-model/src/layers/ops/gemm_quant.rs"
             "crates/spark-model/src/layers/ops/moe_expert.rs"
             # 648 LoC — grew via #231 (per-call penalty-history scope) + the

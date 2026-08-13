@@ -80,6 +80,9 @@ impl MtpHead {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
+        if let Some(fused) = self.bf16_moe_fused.as_ref() {
+            return self.moe_forward_bf16_fused(fused, input, ctx, stream);
+        }
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;

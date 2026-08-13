@@ -346,6 +346,10 @@ impl MtpHead {
             None
         };
 
+        let bf16_moe_fused = moe_experts_generic
+            .as_ref()
+            .and_then(|e| super::bf16_moe_fused::MtpBf16MoeFused::try_build(e, gpu));
+
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,
             pre_fc_norm_hidden: weights.pre_fc_norm_hidden,
@@ -445,6 +449,10 @@ impl MtpHead {
             propose_meta: gpu.alloc(super::batch_caps::PROPOSE_META_SEQS * propose_meta_stride)?,
             propose_meta_stride,
             prefill_scratch,
+            propose_graph: Mutex::new(None),
+            propose_graph_post: Mutex::new(None),
+            propose_in_hidden: gpu.alloc(h * 2)?,
+            bf16_moe_fused,
         })
     }
 }
