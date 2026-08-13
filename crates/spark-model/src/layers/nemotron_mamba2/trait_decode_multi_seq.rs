@@ -201,6 +201,10 @@ impl NemotronMamba2Layer {
     /// Native-BF16 arm: one pipelined tensor-core GEMM; per-row GEMV loop if
     /// the GEMM kernel is not compiled for this target (weights re-read m×,
     /// still correct — the risk-register fallback for tiny-M misbehavior).
+    ///
+    /// The GEMM is NOT bit-identical to the per-row GEMV (measured: 0.08%-0.5%
+    /// of elements differ, max|delta| 0.0625). That is why this arm's rung
+    /// stays at 8 — see `MAMBA2_PROJ_MIN_BF16`.
     #[allow(clippy::too_many_arguments)]
     fn batched_dense_proj(
         &self,
@@ -372,9 +376,10 @@ impl NemotronMamba2Layer {
     ) -> Result<()> {
         if !batched {
             // Byte-identical to the default loop: the SAME single-row GEMV,
-            // once per row. This is the arm whose batched tiers moved the
-            // temp-0 divergence onset, so below the rung we pay the m× weight
-            // read rather than the reordering.
+            // once per row. Reached only when a caller passes `batched=false`
+            // (MTP/verify paths that pin the per-row order); the SSM decode
+            // rung is 2, since the batchm tiers are now byte-identical to this
+            // loop — see `MAMBA2_PROJ_MIN_NVFP4`.
             for i in 0..m as usize {
                 ops::w4a16_gemv(
                     ctx.gpu,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! BYTE-parity gate for the native-FP8 batched SSM projections.
 //!
-//! `MAMBA2_PROJ_MIN_FP8` (crates/spark-model/src/layers/nemotron_mamba2.rs)
+//! `MAMBA2_PROJ_MIN_FP8` (crates/spark-model/src/layers/nemotron_mamba2/proj_rungs.rs)
 //! lets Nemotron-H batch its `in_proj`/`out_proj` at low rungs ONLY because
 //! `w8a16_gemv_batch4` is byte-identical to M separate `w8a16_gemv` calls.
 //! That claim cannot be taken from the kernel's header comment: the sibling
@@ -16,6 +16,9 @@
 //!
 //! `w8a16_gemv_batch16` (the tier rungs 8..16 take) shares the same templated
 //! body and is held to the same byte standard here.
+//!
+//! A 1-ULP negative control runs per (seed, shape) so a `byte-identical=true`
+//! sweep can never be vacuous — the same control the w4a16/bf16 twins carry.
 //!
 //! FAILS WITHOUT the 2026-08-12 association fix in `w8a16_gemv_batch4.cu`:
 //! at f6216c8b every one of the 36 legs below reported
@@ -126,6 +129,7 @@ fn main() -> Result<()> {
     };
 
     let mut batch4_clean = true;
+    let mut control_ok = true;
     for seed in [1u64, 99, 12345] {
         for (label, n, k) in SHAPES {
             let mut rng = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xB4B4);
@@ -192,12 +196,54 @@ fn main() -> Result<()> {
                     );
                 }
             }
-            for p in [a_d, w_d, bs_d, c_batch, c_ref] {
+            // ── Negative control: the harness MUST see a 1-ULP activation
+            // perturbation on row 1, so a "byte-identical" verdict can never
+            // be an artefact of comparing two blank buffers.
+            let m = 4usize;
+            let mut pert = a_bytes.clone();
+            pert[2 * (k + 7)] ^= 1;
+            let a_pert = up(g, &pert)?;
+            g.memset(c_batch, 0, max_m * n * 2)?;
+            g.memset(c_ref, 0, max_m * n * 2)?;
+            launch(
+                g,
+                batch4_k,
+                a_d,
+                w_d,
+                bs_d,
+                c_batch,
+                Some(m as u32),
+                n as u32,
+                k as u32,
+            )?;
+            for t in 0..m {
+                launch(
+                    g,
+                    m1_k,
+                    a_pert.offset(t * k * 2),
+                    w_d,
+                    bs_d,
+                    c_ref.offset(t * n * 2),
+                    None,
+                    n as u32,
+                    k as u32,
+                )?;
+            }
+            g.synchronize(0)?;
+            let differs = down(g, c_batch, m * n * 2)? != down(g, c_ref, m * n * 2)?;
+            control_ok &= differs;
+            println!("seed {seed:>5}  {label}  CONTROL 1-ULP perturbation detected={differs}");
+
+            for p in [a_d, w_d, bs_d, c_batch, c_ref, a_pert] {
                 g.free(p).ok();
             }
         }
     }
 
+    if !control_ok {
+        println!("FAIL — negative control did not mismatch; this harness is VACUOUS.");
+        std::process::exit(1);
+    }
     if batch4_clean {
         println!(
             "PASS — the w8a16 batched GEMV tiers are byte-identical to M x w8a16_gemv at \

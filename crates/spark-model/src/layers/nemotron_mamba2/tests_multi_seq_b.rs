@@ -15,7 +15,8 @@ use super::*;
 
 /// Milestone B: the whole point of splitting the gate. At n=4 on the BF16
 /// arm — BELOW `MAMBA2_PROJ_MIN_BF16` — the PROJECTIONS must stay per-row
-/// (that arm's batched twin has never been proven bit-exact), while the
+/// (that arm's batched twin is a tile GEMM, MEASURED not bit-exact by
+/// `examples/bf16_batch_bitparity_microtest.rs`), while the
 /// conv/scan still collapses into ONE strided launch pair and the norms
 /// still batch. Fails without the split: milestone A delegated the whole
 /// layer to the default loop here, so all four phases were per-row.
@@ -133,6 +134,43 @@ fn mamba2_multi_seq_n2_fp8_batches_everything() {
         count(&seen, [64, 2, 1], [128, 1, 1]),
         1,
         "expected ONE strided mamba2_ssm over 2 rows; grids: {seen:?}"
+    );
+}
+
+/// The NVFP4 arm — the one Nano-30B takes — also batches from rung 2, now
+/// that `w4a16_gemv_batch4/8/16` is byte-identical to M x `w4a16_gemv`
+/// (proven by `examples/w4a16_batch_bitparity_microtest.rs`). `mk_layer`
+/// installs no BF16/FP8 weights, so this is the NVFP4 arm. At n=2 the
+/// projections must be ONE `w4a16_gemv_batch4` launch each, not two GEMVs.
+#[test]
+fn mamba2_multi_seq_n2_nvfp4_batches_projections() {
+    let config = lightning_config();
+    let gpu = MockGpuBackend::new();
+    let layer = mk_layer(&gpu, &config);
+    assert_eq!(
+        layer.proj_batch_min(),
+        2,
+        "NVFP4 arm must batch from rung 2"
+    );
+
+    let mut owned = pool_states(&gpu, &layer, 2);
+    let mut states: Vec<&mut (dyn LayerState + 'static)> =
+        owned.iter_mut().map(|b| &mut **b).collect();
+    run_multi_seq(&gpu, &config, &layer, &mut states).unwrap();
+
+    let seen = grids(&gpu);
+    // w4a16_gemv_batch4 shares the single-GEMV geometry (ceil(N/4),1,1) /
+    // (256,1,1), so the tell is the COUNT: one launch per projection, where
+    // the per-row loop below the rung would issue two.
+    assert_eq!(
+        count(&seen, [2576, 1, 1], [256, 1, 1]),
+        1,
+        "expected ONE batched in_proj NVFP4 GEMV at n=2; grids: {seen:?}"
+    );
+    assert_eq!(
+        count(&seen, [672, 1, 1], [256, 1, 1]),
+        1,
+        "expected ONE batched out_proj NVFP4 GEMV at n=2; grids: {seen:?}"
     );
 }
 
