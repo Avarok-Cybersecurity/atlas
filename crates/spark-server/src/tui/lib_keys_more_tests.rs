@@ -205,11 +205,14 @@ fn leaving_the_form_clears_the_error_it_was_showing() {
     let mut s = state();
     s.on_key(key(KeyCode::Enter));
     s.on_key(key(KeyCode::Enter));
+    // `port` rather than `scheduling_policy`: enumerated fields now open a
+    // picker that cannot produce an invalid value, so earning a rejection
+    // takes a free-text field.
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "scheduling_policy")
-        .expect("scheduling_policy");
+        .position(|r| r.key == "port")
+        .expect("port");
     s.on_key(key(KeyCode::Enter));
     for _ in 0..40 {
         s.on_key(key(KeyCode::Backspace));
@@ -230,6 +233,12 @@ fn cancelling_an_edit_keeps_an_error_the_previous_commit_earned() {
     s.on_key(key(KeyCode::Enter));
     s.on_key(key(KeyCode::Enter));
     s.error = Some("earlier complaint".into());
+    // A free-text row: the first row is a boolean and opens a picker now.
+    s.row = s
+        .config_rows()
+        .iter()
+        .position(|r| r.key == "port")
+        .expect("port");
     s.on_key(key(KeyCode::Enter));
     assert!(s.editing);
     typed(&mut s, "x");
@@ -246,6 +255,13 @@ fn a_field_being_edited_owns_the_keyboard() {
     s.on_key(key(KeyCode::Enter));
     s.on_key(key(KeyCode::Enter));
     assert!(!s.is_editing(), "not until a row is opened");
+    // A free-text row: the first row is a boolean and opens a picker now
+    // (which owns the keyboard on the same contract; see lib_config tests).
+    s.row = s
+        .config_rows()
+        .iter()
+        .position(|r| r.key == "port")
+        .expect("port");
     s.on_key(key(KeyCode::Enter));
     assert!(s.is_editing(), "global bindings must stand down");
 
@@ -261,6 +277,11 @@ fn backspace_on_an_empty_edit_buffer_is_not_an_error() {
     let mut s = state();
     s.on_key(key(KeyCode::Enter));
     s.on_key(key(KeyCode::Enter));
+    s.row = s
+        .config_rows()
+        .iter()
+        .position(|r| r.key == "port")
+        .expect("port");
     s.on_key(key(KeyCode::Enter));
     for _ in 0..40 {
         s.on_key(key(KeyCode::Backspace));

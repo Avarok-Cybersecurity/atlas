@@ -170,7 +170,7 @@ pub fn lower_responses_to_chat(
         // Responses API has no token-IDs knob; lowered requests keep
         // the default off (PCND — no implicit behavior change).
         return_token_ids: false,
-        enable_thinking: false,
+        enable_thinking: None,
         thinking: None,
         thinking_token_budget: None,
         repetition_detection: None,

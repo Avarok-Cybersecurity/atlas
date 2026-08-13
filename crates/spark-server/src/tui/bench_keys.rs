@@ -212,13 +212,19 @@ impl BenchState {
             // Toasts here are reserved for what the pane cannot already say.
             KeyCode::Char('c') => self.cancel(),
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => self.view = View::List,
+            // Clamped to the renderer-published ceiling: `draw_table` clamps
+            // the DISPLAY, so an unclamped offset banked invisible presses
+            // that were paid back one dead `k` at a time.
             KeyCode::Down | KeyCode::Char('j') => {
-                self.table_scroll = self.table_scroll.saturating_add(1);
+                self.table_scroll = (self.table_scroll + 1).min(self.table_scroll_max.get());
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.table_scroll = self.table_scroll.saturating_sub(1);
             }
             KeyCode::Char('g') | KeyCode::Home => self.table_scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => {
+                self.table_scroll = self.table_scroll_max.get();
+            }
             _ => {}
         }
         Outcome::None
@@ -229,9 +235,24 @@ impl BenchState {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') if n > 0 => {
                 self.history_row = (self.history_row + 1).min(n - 1);
+                // The offset described ANOTHER run's table; carrying it over
+                // would open the next run scrolled to a random depth.
+                self.history_table_scroll = 0;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.history_row = self.history_row.saturating_sub(1);
+                self.history_table_scroll = 0;
+            }
+            // A stored table is the same 40-row sweep the live Run view
+            // scrolls with j/k; here j/k are spent on run selection, so the
+            // page pair does the moving. Without it, rows below the pane
+            // height were unreadable anywhere in the TUI.
+            KeyCode::PageDown => {
+                self.history_table_scroll =
+                    (self.history_table_scroll + 5).min(self.history_table_scroll_max.get());
+            }
+            KeyCode::PageUp => {
+                self.history_table_scroll = self.history_table_scroll.saturating_sub(5);
             }
             _ => {}
         }

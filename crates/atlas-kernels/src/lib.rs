@@ -177,6 +177,14 @@ pub struct ModelBehavior {
     /// when the prefix forces them into that structure. Default: false
     /// (keep the existing Nemotron-Nano-correct behavior).
     pub disable_tool_steering: bool,
+    /// Do not append Atlas's derived `<environment>working_directory` block to
+    /// a client system prompt. Native agent clients may already provide the
+    /// cwd; duplicating it can become a tool-selection attractor.
+    pub disable_cwd_hint_injection: bool,
+    /// Use the selected MODEL.toml sampling category for default temperature,
+    /// top-k, and top-p instead of generation_config.json. Explicit request
+    /// values still take precedence.
+    pub use_sampling_presets_for_core: bool,
     /// Per-model tool-call parser override. Empty string = use the
     /// `tool_defaults.toml` mapping for this `model_type`. Set in MODEL.toml
     /// `[behavior].tool_call_parser` when one variant of a model_type needs
@@ -195,6 +203,15 @@ pub struct ModelBehavior {
     /// JSON arrays of similar objects, multiplication tables). Enable only
     /// when the model has been observed to need it.
     pub enable_loop_watchdog: bool,
+    /// See build_parse.rs: gate for the THINKING-phase loop watchdog.
+    pub enable_think_loop_watchdog: bool,
+    /// See build_parse_behavior.rs: honor a mid-`<think>` EOS by implicitly
+    /// closing the block. Defaults FALSE (pre-p350 behaviour).
+    pub honor_eos_inside_thinking: bool,
+    /// Cap the thinking budget at 90% of the request's `max_tokens` (true), or
+    /// let `max_thinking_budget` be the sole cap (false = vLLM single-budget:
+    /// reasoning may use the full generation budget). See thinking.rs::resolve.
+    pub cap_thinking_at_max_tokens: bool,
     /// Server-side min-p FLOOR (0.0 = disabled). Applied as `min_p.max(floor)`
     /// AFTER request/preset resolution, so it binds even when a client sends
     /// `min_p = 0` (or omits it on a server without `--default-min-p`). On
@@ -311,8 +328,13 @@ impl Default for ModelBehavior {
             default_kv_dtype: "",
             default_num_drafts: 0,
             disable_tool_steering: false,
+            disable_cwd_hint_injection: false,
+            use_sampling_presets_for_core: false,
             tool_call_parser: "",
             enable_loop_watchdog: false,
+            enable_think_loop_watchdog: true,
+            honor_eos_inside_thinking: false,
+            cap_thinking_at_max_tokens: true,
             min_p_floor: 0.0,
             temperature_max: 0.0,
             think_loop_min_repeats: 3,

@@ -8,7 +8,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::super::{gradient_bar, panel, wrap};
+use super::super::{panel, wrap};
 use crate::tui::app::App;
 use crate::tui::data::catalogue::Entry;
 use crate::tui::theme;
@@ -19,13 +19,55 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .split(area);
     draw_list(f, app, cols[0]);
-    draw_detail(f, app, cols[1]);
+    super::list_detail::draw_detail(f, app, cols[1]);
 }
 
-/// `▐recipe▌` and `▐optimized▌`. Two independent facts: a recipe with no
-/// compiled kernel target still serves, on generic kernels.
+/// The weights-state badge, then `▐recipe▌` and `▐optimized▌`. Recipe and
+/// kernel target are two independent facts: a recipe with no compiled kernel
+/// target still serves, on generic kernels.
+///
+/// The weights state is a WORD, first on the line, not only the mark glyph in
+/// the left column. A user pressed `d` on a model that was already fully on
+/// disk, the no-op finished inside one frame, and they concluded downloads
+/// were broken — the `✓` was on screen the whole time and read as decoration.
+/// A word needs no decoding. A badge rather than re-sorting (the sort already
+/// puts runnable rows first, but a filtered or scrolled list gives no visible
+/// boundary to read the grouping from) and rather than a column (which spends
+/// fixed width on every row at every terminal size). First on the line so the
+/// `Paragraph`'s clipping drops the subtitle before it ever drops the state.
+///
+/// Under `NO_COLOR` the states still differ twice over: present/partial/
+/// downloading are REVERSED blocks (a modifier, which survives), absent is
+/// plain dim text — and the words themselves are four different words.
 fn badges(app: &App, entry: &Entry) -> Vec<Span<'static>> {
     let mut out = Vec::new();
+    // Deliberately static while downloading: the row already pulses on the
+    // `(tick/4)%2` cadence and the third line carries the moving bar — a
+    // second animation here would compete with that cadence, not add to it.
+    let (label, style) = if app.download.is_downloading(&entry.model) {
+        (
+            " downloading ",
+            theme::brand_cyan().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+    } else if entry.has_weights() {
+        (
+            " on disk ",
+            theme::brand_green().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+    } else if entry.local.is_some() {
+        // A started, unfinished download: `d` resumes it.
+        (
+            " partial ",
+            theme::warn().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+    } else {
+        // Plain dim text, never a block: absence drawn as a solid badge reads
+        // as a state that was ACHIEVED, and the asymmetry is itself the
+        // signal once colour is gone.
+        (" not downloaded ", theme::dim())
+    };
+    out.push(Span::styled(label, style));
+    out.push(Span::raw(" "));
     if let Some(r) = entry.primary() {
         let (label, style) = if r.is_atlas() {
             (" recipe ", theme::brand_purple())
@@ -65,15 +107,48 @@ fn badges(app: &App, entry: &Entry) -> Vec<Span<'static>> {
     out
 }
 
+/// The persistent search field: one row, always drawn, at the top of the list.
+///
+/// The filter has existed for as long as the Library — `/` opens it — and
+/// users did not find it, because until pressed it appeared NOWHERE: an
+/// affordance that only exists while active is not an affordance. The field
+/// costs one list row and is drawn in all three states (empty, set, editing),
+/// so "can I search this?" is answered by looking, not by knowing.
+///
+/// Publishes its rect through `App::lib_search_click` so a mouse click can
+/// focus it — published from what was actually DRAWN rather than recomputed in
+/// the hit-tester, for the same reason `render::Chrome` exists: two copies of
+/// layout math drift, and the failure is silent.
+///
+/// Under `NO_COLOR`: the `⌕` glyph and the bracketed hint carry "this is a
+/// search box"; while editing the row is REVERSED (`theme::selected`) and the
+/// footer mode chip flips to INPUT, both of which survive without colour.
+fn draw_search_field(f: &mut Frame, app: &App, row: Rect, total: usize, shown: usize) {
+    app.lib_search_click.set(Some(row));
+    let mut spans = vec![Span::styled(" ⌕ ", theme::brand_cyan())];
+    if app.lib.filter_editing {
+        spans.push(Span::styled(app.lib.filter.clone(), theme::text()));
+        spans.push(Span::styled("▏", theme::brand_cyan()));
+    } else if !app.lib.filter.is_empty() {
+        spans.push(Span::styled(app.lib.filter.clone(), theme::text()));
+        spans.push(Span::styled(
+            format!("  — {shown} of {total} · / edits"),
+            theme::dim(),
+        ));
+    } else {
+        // The hint names both ways in. "click" is honest: the rect published
+        // above is exactly what `events::on_mouse` tests.
+        spans.push(Span::styled("search models — / or click", theme::dim()));
+    }
+    let mut line = Line::from(spans);
+    if app.lib.filter_editing {
+        line = line.style(theme::selected());
+    }
+    f.render_widget(Paragraph::new(line), row);
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let rows = app.lib.visible();
-    let search = if app.lib.filter_editing {
-        format!(" search: {}▏", app.lib.filter)
-    } else if !app.lib.filter.is_empty() {
-        format!(" search: {}", app.lib.filter)
-    } else {
-        String::new()
-    };
     // The freshness of the recipe list belongs in the title: it is context for
     // every row, not a property of any one of them.
     let status = if app.lib.fetching {
@@ -85,10 +160,19 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         format!(" recipes {} ─", app.lib.index.status_text())
     };
     // Kept short: a long title is the first thing to overflow on a narrow
-    // terminal, and the separators are decoration, not information.
-    let block = panel(format!("MODELS ─ {} ─{search}{status} ─", rows.len()), true);
-    let inner = block.inner(area);
+    // terminal, and the separators are decoration, not information. The
+    // filter moved out of the title and into the persistent field below.
+    let block = panel(format!("MODELS ─ {} ─{status} ─", rows.len()), true);
+    let mut inner = block.inner(area);
     f.render_widget(block, area);
+
+    // The search field owns the first inner row; the list gets the rest.
+    if inner.height >= 1 {
+        let field = Rect { height: 1, ..inner };
+        draw_search_field(f, app, field, app.lib.rows.len(), rows.len());
+        inner.y += 1;
+        inner.height -= 1;
+    }
 
     // Why the recipe list is stale belongs on screen, not only in a log. The
     // title has room for "offline"; the cause is what the reader has to act on,
@@ -149,11 +233,22 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         // to miss. It glows — bold and dim alternating on the tick — because a
         // static dot next to a stalled job and one next to a moving job would
         // look identical.
-        if app.download.is_downloading(&entry.model) {
-            let glow = if (app.tick / 4).is_multiple_of(2) {
-                theme::warn().add_modifier(Modifier::BOLD)
-            } else {
+        if let Some(job) = app.download.job.as_ref().filter(|j| j.repo == entry.model) {
+            // CYAN, not amber. Amber in this palette means "something needs
+            // your attention" — the update badge, the loading lamp, the word
+            // `stopping` — and a healthy transfer wearing it invites the
+            // question "is something wrong?". Cyan is the momentum colour and
+            // is what the header chip uses, so the two beat as one system.
+            //
+            // While stopping the pulse STOPS and the colour becomes amber:
+            // that is a state needing attention, and the halted pulse is the
+            // only signal that survives NO_COLOR.
+            let glow = if job.cancelling {
                 theme::warn().add_modifier(Modifier::DIM)
+            } else if (app.tick / 4).is_multiple_of(2) {
+                theme::brand_cyan().add_modifier(Modifier::BOLD)
+            } else {
+                theme::brand_cyan().add_modifier(Modifier::DIM)
             };
             head_spans.push(Span::styled(" ●", glow));
         }
@@ -182,7 +277,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(entry.size_text(), theme::text2()),
                 Span::styled(
                     match entry.recipes.len() {
-                        0 => "  ·  no recipe".to_string(),
+                        // Not a dead end any more: Enter opens synthesized
+                        // starting points (see `lib_start`), and the row is
+                        // where that has to be discoverable.
+                        0 => "  ·  no recipe — ⏎ starting points".to_string(),
                         // One recipe still names itself; several become a count,
                         // because listing three stems is what the card view is for.
                         1 => format!("  ·  {}", entry.recipes[0].id),
@@ -194,167 +292,6 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         });
     }
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
-    let Some(entry) = app.lib.current() else {
-        let block = panel("MODEL ─".into(), false);
-        f.render_widget(block, area);
-        return;
-    };
-    let block = panel(format!("{} ─", entry.model.to_uppercase()), false);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width.saturating_sub(2) as usize;
-
-    let mut lines: Vec<Line> = Vec::new();
-    match entry.primary() {
-        Some(recipe) => {
-            lines.extend(wrap(&recipe.description, width, theme::text2()));
-            lines.push(Line::from(""));
-            for (label, value) in [
-                ("recipe", recipe.id.clone()),
-                ("maintainer", recipe.maintainer.clone()),
-                ("updated", app.lib.date_text(recipe)),
-                ("quantization", recipe.quantization.clone()),
-                ("kv cache", recipe.kv_dtype.clone()),
-                ("container", recipe.container.clone()),
-                (
-                    "nodes",
-                    if recipe.min_nodes > 1 {
-                        format!("{} (multi-node)", recipe.min_nodes)
-                    } else {
-                        "1".into()
-                    },
-                ),
-            ] {
-                if value.is_empty() {
-                    continue;
-                }
-                lines.push(kv(label, &value));
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                match entry.recipes.len() {
-                    1 => format!(" SETTINGS  {} editable", recipe.defaults.len()),
-                    n => format!(" {n} RECIPES  ⏎ to choose"),
-                },
-                theme::dim(),
-            )));
-            // A preview, not the form: enough to judge the recipe without
-            // opening it, capped so the pane stays readable.
-            for (key, value) in recipe.defaults.iter().take(6) {
-                lines.push(kv(key, value));
-            }
-            if recipe.defaults.len() > 6 {
-                lines.push(Line::from(Span::styled(
-                    format!("   … {} more", recipe.defaults.len() - 6),
-                    theme::dim(),
-                )));
-            }
-        }
-        None => {
-            lines.push(Line::from(Span::styled(
-                "No recipe covers this checkpoint. It can still be served, but",
-                theme::text2(),
-            )));
-            lines.push(Line::from(Span::styled(
-                "you choose the flags yourself.",
-                theme::text2(),
-            )));
-        }
-    }
-
-    if let Some(local) = &entry.local {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" ON DISK", theme::dim())));
-        lines.push(kv("size", &entry.size_text()));
-        lines.push(kv("architecture", &local.model_type));
-        lines.push(kv("layers", &local.layers.to_string()));
-        lines.push(kv(
-            "kernels",
-            if local.optimized {
-                "optimized"
-            } else {
-                "generic"
-            },
-        ));
-    } else {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " weights are not in the local cache",
-            theme::warn(),
-        )));
-    }
-
-    // The download this model is in the middle of, as a real bar. The list
-    // row's one-line progress survives narrow panes; this pane has the width
-    // to answer "how far along, how fast, which file" in full.
-    if let Some(job) = app.download.job.as_ref().filter(|j| j.repo == entry.model) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" DOWNLOADING", theme::dim())));
-        let bar_w = inner.width.saturating_sub(12).clamp(8, 36);
-        let mut bar = vec![Span::raw("  ")];
-        match job.fraction() {
-            Some(frac) => {
-                bar.extend(gradient_bar(frac, bar_w).spans);
-                bar.push(Span::styled(
-                    format!(" {:>3.0}%", frac * 100.0),
-                    theme::text().add_modifier(Modifier::BOLD),
-                ));
-            }
-            // No sizes from the Hub: motion instead of a bar stuck at zero,
-            // same rule as the list row.
-            None => {
-                let phase = (app.tick as usize / 2) % theme::SPINNER.len();
-                bar.push(Span::styled(theme::SPINNER[phase], theme::brand_cyan()));
-                bar.push(Span::styled(" resolving…", theme::text2()));
-            }
-        }
-        lines.push(Line::from(bar));
-        if job.total > 0 {
-            let mut detail = vec![Span::styled(
-                format!(
-                    "  {} / {}",
-                    crate::tui::format::bytes(job.done),
-                    crate::tui::format::bytes(job.total)
-                ),
-                theme::text2(),
-            )];
-            // No rate while stopping: it is the one field that implies the
-            // bytes are still moving, and the user just asked them not to.
-            if job.rate_bps > 0.0 && !job.cancelling {
-                detail.push(Span::styled(
-                    format!("  {}", crate::tui::format::rate(job.rate_bps)),
-                    theme::dim(),
-                ));
-            }
-            lines.push(Line::from(detail));
-        }
-        if let Some((i, of, name)) = &job.file {
-            lines.push(Line::from(Span::styled(
-                format!("  file {i}/{of}  {name}"),
-                theme::dim(),
-            )));
-        }
-        if job.cancelling {
-            lines.push(Line::from(Span::styled("  stopping…", theme::warn())));
-        }
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        detail_footer(app, entry),
-        theme::brand_cyan(),
-    )));
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn kv(label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("  {label:<14}"), theme::dim()),
-        Span::styled(value.to_string(), theme::text()),
-    ])
 }
 
 /// The progress line for a model, if one is being downloaded.
@@ -393,14 +330,11 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
                 theme::dim(),
             ));
             // One decimal below 10%, because "0%" for twenty minutes of real
-            // progress reads as a stall. Whole numbers above that.
-            let pct = f * 100.0;
+            // progress reads as a stall. Whole numbers above that. The RULE
+            // lives in `format::percent` so the header chip cannot drift from
+            // this row; the width here is just column alignment.
             spans.push(Span::styled(
-                if pct < 10.0 {
-                    format!("  {pct:>4.1}%")
-                } else {
-                    format!("  {pct:>3.0}%")
-                },
+                format!("  {:>5}", crate::tui::format::percent(f)),
                 theme::text(),
             ));
         }
@@ -444,33 +378,4 @@ fn progress_line(app: &App, model: &str, width: u16) -> Option<Line<'static>> {
 /// became "18.6 GB" the moment it finished, for no reason the user could see.
 fn gb(bytes: u64) -> String {
     crate::tui::format::bytes(bytes)
-}
-
-/// What the keys will do for THIS row, said on the row itself.
-///
-/// The alternative — one static hint listing every key — makes the reader work
-/// out which of them apply, and `d` means three different things depending on
-/// what is on disk.
-fn detail_footer(app: &App, entry: &Entry) -> String {
-    if app.download.is_downloading(&entry.model) {
-        return " x stop the download  ·  ⏎ choose a recipe".into();
-    }
-    let stale = app
-        .download
-        .freshness
-        .get(&entry.model)
-        .is_some_and(|f| f.is_stale());
-    match (
-        entry.runnable_now(),
-        entry.has_recipe(),
-        entry.local.is_some(),
-    ) {
-        // Everything is here. Only mention updating if we KNOW it is behind.
-        (true, _, _) if stale => " d update  ·  ⏎ choose a recipe".into(),
-        (true, _, _) => " ⏎ choose a recipe  ·  u check for updates".into(),
-        // On disk but unloadable: a previous download did not finish.
-        (_, true, true) => " d resume the download  ·  ⏎ choose a recipe".into(),
-        (_, true, false) => " d download the weights  ·  ⏎ choose a recipe".into(),
-        _ => " d download the weights".into(),
-    }
 }

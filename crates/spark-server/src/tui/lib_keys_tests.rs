@@ -121,19 +121,17 @@ fn esc_from_the_cards_returns_to_the_model_list() {
 }
 
 #[test]
-fn enter_on_a_row_without_a_recipe_explains_rather_than_opening_a_blank_form() {
+fn enter_on_a_row_without_a_recipe_opens_starting_points_not_a_blank_form() {
     let mut s = state();
     // The orphan sorts last.
     s.selected = s.visible().len() - 1;
     let outcome = s.on_key(key(KeyCode::Enter));
-    assert_eq!(s.view, View::List, "stays put");
-    match outcome {
-        Outcome::Toast { text, error } => {
-            assert!(error);
-            assert!(text.contains("no recipe"), "{text}");
-        }
-        other => panic!("expected a toast, got {other:?}"),
-    }
+    assert_eq!(outcome, Outcome::None);
+    assert_eq!(s.view, View::Cards, "the picker opens");
+    assert!(
+        s.cards().iter().all(|c| c.starting_point.is_some()),
+        "and every card admits to being a guess"
+    );
 }
 
 #[test]
@@ -178,10 +176,17 @@ fn editing_seeds_the_buffer_with_the_current_value() {
     // Adjusting a setting is the common case; retyping it from scratch is not.
     let mut s = state();
     open_config(&mut s);
-    let (key_name, value, _) = s.config_rows().into_iter().next().expect("a row");
+    // A free-text row: enumerated and boolean rows open a picker instead
+    // (covered in lib_config's tests), and a picker has no buffer to seed.
+    s.row = s
+        .config_rows()
+        .iter()
+        .position(|r| r.key == "port")
+        .expect("port");
+    let row = s.config_rows().into_iter().nth(s.row).expect("a row");
     s.on_key(key(KeyCode::Enter));
     assert!(s.editing);
-    assert_eq!(s.edit_buffer, value, "seeded from {key_name}");
+    assert_eq!(s.edit_buffer, row.value, "seeded from {}", row.key);
 }
 
 #[test]
@@ -191,7 +196,7 @@ fn a_committed_edit_shows_in_the_form_and_the_command() {
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "port")
+        .position(|r| r.key == "port")
         .expect("port");
     s.on_key(key(KeyCode::Enter));
     for _ in 0..8 {
@@ -225,7 +230,7 @@ fn d_restores_the_recipes_own_values() {
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "port")
+        .position(|r| r.key == "port")
         .expect("port");
     s.on_key(key(KeyCode::Enter));
     for _ in 0..8 {

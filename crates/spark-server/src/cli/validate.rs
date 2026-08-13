@@ -18,23 +18,13 @@
 //! combinations are rejected.
 
 use super::ServeArgs;
-
-/// Enumerated string flags and their allowed values. Kept next to the rules so
-/// the "did you mean" listing stays in sync with the parse sites in `serve.rs`.
-const LM_HEAD_DTYPES: &[&str] = &["default", "bf16", "nvfp4", "fp8"];
-const MTP_QUANTS: &[&str] = &["bf16", "fp8", "nvfp4"];
-const SCHEDULING_POLICIES: &[&str] = &["fifo", "slai"];
-const SSM_H_DTYPES: &[&str] = &["f32", "f16"];
-const MTP_GATES: &[&str] = &["auto", "force"];
-const TOOL_CALL_PARSERS: &[&str] = &[
-    "hermes",
-    "qwen3_coder",
-    "qwen3_xml",
-    "gemma4",
-    "mistral",
-    "minimax_xml",
-    "bare_json",
-];
+// The allowed-value lists live in `flag_values` — one module read by BOTH this
+// validator and the dashboard's option picker, so what is offered and what is
+// enforced cannot drift apart. Their sync with the parse sites in `serve.rs`
+// is pinned by `flag_values_tests`.
+use super::flag_values::{
+    LM_HEAD_DTYPES, MTP_GATES, MTP_QUANTS, SCHEDULING_POLICIES, SSM_H_DTYPES, TOOL_CALL_PARSERS,
+};
 
 /// One validation failure: what is wrong, why it is wrong, and how to fix it.
 struct Violation {

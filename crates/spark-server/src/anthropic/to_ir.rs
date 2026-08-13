@@ -239,6 +239,7 @@ impl From<MessagesRequest> for ir::ChatRequest {
             n: 1,
             response_format: None,
             thinking,
+            reasoning_effort: None,
             repetition_detection: None,
             adapter: None,
             src_lang: None,

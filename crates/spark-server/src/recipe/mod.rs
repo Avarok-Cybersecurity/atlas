@@ -45,6 +45,16 @@ pub struct Recipe {
     pub updated: String,
     /// The `defaults:` block verbatim.
     pub defaults: BTreeMap<String, String>,
+    /// `Some(provenance)` when this is a dashboard-synthesized STARTING POINT
+    /// rather than a recipe fetched from the index — the provenance names the
+    /// donor recipe the settings were copied from, or says none were.
+    ///
+    /// A published recipe's description is a measured rationale; a starting
+    /// point is a guess wearing the same struct. This codebase does not
+    /// present a guess as a measurement, so the guess carries the marker and
+    /// every pane that draws one says so. `parse` always sets `None`: nothing
+    /// read from the index is a starting point.
+    pub starting_point: Option<String>,
 }
 
 impl Recipe {
@@ -109,6 +119,7 @@ impl Recipe {
             updated: meta_str("updated"),
             defaults,
             id,
+            starting_point: None,
         })
     }
 
@@ -123,6 +134,22 @@ impl Recipe {
     /// Overrides are merged into `defaults` before rendering rather than
     /// appended after, so an edited value cannot end up specified twice.
     pub fn argv(&self, overrides: &BTreeMap<String, String>) -> Result<Vec<String>> {
+        self.argv_edited(overrides, &std::collections::BTreeSet::new())
+    }
+
+    /// [`Recipe::argv`], minus the keys in `removed`.
+    ///
+    /// A removed key means the flag is NOT PASSED — the server's own default
+    /// applies. That is a different thing from overriding it to some "off"
+    /// value, and it is the only honest rendering of "delete this parameter":
+    /// the recipe pinned a value, the user un-pinned it. Removal is applied
+    /// after the override merge, so the caller cannot accidentally resurrect
+    /// a removed key by also carrying a stale override for it.
+    pub fn argv_edited(
+        &self,
+        overrides: &BTreeMap<String, String>,
+        removed: &std::collections::BTreeSet<String>,
+    ) -> Result<Vec<String>> {
         if !self.is_atlas() {
             bail!(
                 "{} is a {} recipe — only `runtime: atlas` recipes can be served from here",
@@ -160,6 +187,9 @@ impl Recipe {
             }
             merged.insert(key.clone(), value.clone());
         }
+        for key in removed {
+            merged.remove(key);
+        }
 
         let mut argv = vec!["spark".to_string(), "serve".to_string(), self.model.clone()];
         for (key, value) in &merged {
@@ -181,8 +211,20 @@ impl Recipe {
         &self,
         overrides: &BTreeMap<String, String>,
     ) -> Result<crate::cli::ServeArgs> {
+        self.serve_args_edited(overrides, &std::collections::BTreeSet::new())
+    }
+
+    /// [`Recipe::serve_args`] with removals — the validating twin of
+    /// [`Recipe::argv_edited`], so a removal is checked against the WHOLE
+    /// config exactly as an edit is (flags interact; dropping one can strand
+    /// another).
+    pub fn serve_args_edited(
+        &self,
+        overrides: &BTreeMap<String, String>,
+        removed: &std::collections::BTreeSet<String>,
+    ) -> Result<crate::cli::ServeArgs> {
         use clap::Parser as _;
-        let argv = self.argv(overrides)?;
+        let argv = self.argv_edited(overrides, removed)?;
         let cli = crate::cli::Cli::try_parse_from(&argv)
             .with_context(|| format!("{}: recipe produced an invalid command line", self.id))?;
         let crate::cli::Command::Serve(args) = cli.command else {
