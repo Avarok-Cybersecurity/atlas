@@ -46,7 +46,12 @@ impl App {
             return;
         }
         if self.section == Section::Help {
-            self.on_help_overlay_key(key);
+            // `on_help_key` (the SECTION's keys), not `on_help_overlay_key`
+            // (the `?` modal's scroll). They differed by one word and the
+            // wrong one swallowed every character in its `_ =>` arm, so
+            // editing the report title looked like a frozen dashboard:
+            // keystrokes vanished and nothing on screen moved.
+            self.on_help_key(key);
             return;
         }
         // Terminal input.
@@ -294,6 +299,10 @@ impl App {
 #[cfg(test)]
 #[path = "app_input_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "app_input_help_tests.rs"]
+mod help_tests;
 
 #[cfg(test)]
 #[path = "app_paste_tests.rs"]

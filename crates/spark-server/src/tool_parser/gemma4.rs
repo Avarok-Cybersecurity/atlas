@@ -14,6 +14,15 @@ impl ToolCallParser for Gemma4Parser {
         "gemma4"
     }
 
+    fn leak_markers(&self) -> LeakMarkers {
+        LeakMarkers {
+            orphan_open: &[],
+            close: &[],
+            envelope_open: &["<|tool_call>"],
+            envelope_close: &["<tool_call|>"],
+        }
+    }
+
     fn compile_tool_grammar(
         &self,
         engine: &mut GrammarEngine,

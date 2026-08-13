@@ -3,10 +3,13 @@
 //! `Qwen3AttentionLayer` setters and small per-layer compute helpers
 //! (`apply_layer_scalar`, `effective_attn_scale`).
 
+use anyhow::Result;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
+
 use super::types::{HcWeights, HeadGateActivation, MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
-use crate::weight_map::DenseWeight;
-use spark_runtime::gpu::DevicePtr;
+use crate::layers::ops;
+use crate::weight_map::{DenseWeight, QuantizedWeight};
 
 /// YaRN attention-temperature factor for a single `mscale` value.
 /// Matches HF `yarn_get_mscale`: `0.1 * mscale * ln(scale) + 1.0` for
@@ -97,6 +100,34 @@ impl Qwen3AttentionLayer {
     /// attention scale should be 1.0 (not 1/sqrt(head_dim)).
     pub fn set_attn_scale_override(&mut self, scale: f32) {
         self.attn_scale_override = Some(scale);
+    }
+
+    /// NVFP4 M=1 decode GEMV. Single-warp when the lever is on and the kernel
+    /// resolved; otherwise the 64-thread kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn nvfp4_decode_gemv(
+        &self,
+        gpu: &dyn GpuBackend,
+        use_sw: bool,
+        input: DevicePtr,
+        weight: &QuantizedWeight,
+        output: DevicePtr,
+        n: u32,
+        k: u32,
+        stream: u64,
+    ) -> Result<()> {
+        ops::w4a16_decode_gemv(
+            gpu,
+            self.w4a16_gemv_k,
+            self.w4a16_gemv_sw_k,
+            use_sw,
+            input,
+            weight,
+            output,
+            n,
+            k,
+            stream,
+        )
     }
 
     /// Set K=V mode (Gemma-4 full-attention layers).
