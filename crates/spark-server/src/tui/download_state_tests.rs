@@ -166,3 +166,80 @@ fn a_download_for_a_model_not_being_downloaded_reads_as_not_downloading() {
     assert!(!s.is_downloading("org/other"));
     assert!(!DownloadState::default().is_downloading("org/m"));
 }
+
+/// `u` used to report only the stale case: for a current model or an
+/// unreachable Hub the skeleton badge simply vanished — indistinguishable
+/// from the feature being broken, the exact shape of the "toast flashed, no
+/// progress bar" report the downloader already fixed.
+#[test]
+fn a_freshness_answer_reports_every_outcome_not_only_stale() {
+    use crate::model_download::stale::Freshness;
+    let cases = [
+        (Freshness::Current, "up to date", false),
+        (
+            Freshness::Stale {
+                local: "aaaaaaaaaaaaaaaaaaaa".into(),
+                remote: "bbbbbbbbbbbbbbbbbbbb".into(),
+            },
+            "has an update",
+            false,
+        ),
+        (Freshness::Missing, "nothing on disk", false),
+        (Freshness::Unknown, "could not reach the Hub", true),
+    ];
+    for (f, needle, wants_error_tone) in cases {
+        let mut s = DownloadState::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.pending_check = Some(rx);
+        s.checking = Some("org/m".into());
+        tx.send(("org/m".to_string(), f.clone())).unwrap();
+        s.pump();
+        let (text, error) = s.last_message.take().expect("the check must say something");
+        assert!(text.contains("org/m"), "names the model: {text}");
+        assert!(text.contains(needle), "{f:?}: {text}");
+        assert_eq!(error, wants_error_tone, "{f:?}: {text}");
+        assert!(s.checking.is_none(), "the skeleton is cleared");
+        assert!(s.pending_check.is_none());
+        assert_eq!(
+            s.freshness.get("org/m"),
+            Some(&f),
+            "the badge map still fills"
+        );
+    }
+}
+
+/// Only the confirmed mismatch invites `d`: telling someone to download over
+/// a current copy would be advice the state does not support.
+#[test]
+fn only_the_actionable_outcomes_name_the_d_key() {
+    use crate::model_download::stale::Freshness;
+    for (f, should_teach_d) in [
+        (Freshness::Current, false),
+        (Freshness::Missing, true),
+        (Freshness::Unknown, false),
+    ] {
+        let mut s = DownloadState::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.pending_check = Some(rx);
+        tx.send(("org/m".to_string(), f)).unwrap();
+        s.pump();
+        let (text, _) = s.last_message.take().unwrap();
+        assert_eq!(text.contains("d downloads"), should_teach_d, "{text}");
+    }
+}
+
+#[test]
+fn a_freshness_worker_that_died_settles_out_loud() {
+    use crate::model_download::stale::Freshness;
+    let mut s = DownloadState::default();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, Freshness)>();
+    s.pending_check = Some(rx);
+    s.checking = Some("org/m".into());
+    drop(tx);
+    s.pump();
+    assert!(s.pending_check.is_none(), "settled, not stuck checking");
+    assert!(s.checking.is_none());
+    let (text, error) = s.last_message.take().expect("says so");
+    assert!(error, "{text}");
+    assert!(text.contains("u retries"), "and names the way back: {text}");
+}

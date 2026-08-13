@@ -7,8 +7,8 @@ use std::path::Path;
 use tokenizers::Tokenizer;
 
 use super::{
-    ChatTokenizer, StreamingDecoder, autoclose_assistant_think, normalize_tool_call_arguments,
-    remap_developer_role, resolve_think_control,
+    ChatEncoding, ChatTokenizer, StreamingDecoder, autoclose_assistant_think,
+    normalize_tool_call_arguments, remap_developer_role, resolve_think_control,
 };
 
 /// Run Atlas's cross-cutting message preprocessing (formerly encoded in
@@ -109,12 +109,19 @@ impl ChatTokenizer {
                 tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
                 super::jinja_helpers::build_jinja_env(&tmpl).ok()
             });
+        let chat_encoding = if model_type == "deepseek_v4" {
+            tracing::info!("Using checkpoint-native DeepSeek-V4 message encoding");
+            ChatEncoding::DeepseekV4
+        } else {
+            ChatEncoding::Jinja
+        };
 
         tracing::info!("Loaded tokenizer from {}", tokenizer_path.display());
         Ok(Self {
             tokenizer,
             eos_token_id,
             supports_thinking,
+            chat_encoding,
             chat_template,
             jinja_env,
             openai_jinja_env,
@@ -216,6 +223,33 @@ impl ChatTokenizer {
         enable_thinking: bool,
         disable_tool_steering: bool,
     ) -> Result<Vec<u32>> {
+        self.apply_chat_template_jinja_with_effort(
+            messages,
+            tools,
+            enable_thinking,
+            disable_tool_steering,
+            None,
+        )
+    }
+
+    pub fn apply_chat_template_jinja_with_effort(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        enable_thinking: bool,
+        disable_tool_steering: bool,
+        reasoning_effort: Option<&str>,
+    ) -> Result<Vec<u32>> {
+        if self.chat_encoding == ChatEncoding::DeepseekV4 {
+            let rendered = super::deepseek_v4::encode_messages(
+                messages,
+                tools,
+                enable_thinking,
+                reasoning_effort,
+            )?;
+            return self.encode(&rendered);
+        }
+
         let tmpl = self
             .jinja_env
             .get_template("chat")
@@ -249,7 +283,9 @@ impl ChatTokenizer {
         // The api.rs layer controls enable_thinking based on thinking_in_tools MODEL.toml.
         // Mistral's template defaults `reasoning_effort` to "high" when
         // undefined, so we must explicitly pass "none" to disable thinking.
-        let reasoning_effort: minijinja::Value = if enable_thinking {
+        let reasoning_effort: minijinja::Value = if let Some(effort) = reasoning_effort {
+            effort.into()
+        } else if enable_thinking {
             "high".into()
         } else {
             "none".into()
@@ -303,6 +339,32 @@ impl ChatTokenizer {
         enable_thinking: bool,
         disable_tool_steering: bool,
     ) -> Result<Vec<u32>> {
+        self.apply_chat_template_openai_with_effort(
+            messages,
+            tools,
+            enable_thinking,
+            disable_tool_steering,
+            None,
+        )
+    }
+
+    pub fn apply_chat_template_openai_with_effort(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        enable_thinking: bool,
+        disable_tool_steering: bool,
+        reasoning_effort: Option<&str>,
+    ) -> Result<Vec<u32>> {
+        if self.chat_encoding == ChatEncoding::DeepseekV4 {
+            return self.apply_chat_template_jinja_with_effort(
+                messages,
+                tools,
+                enable_thinking,
+                disable_tool_steering,
+                reasoning_effort,
+            );
+        }
         if let Some(ref env) = self.openai_jinja_env {
             let tmpl = env
                 .get_template("chat")
@@ -313,7 +375,9 @@ impl ChatTokenizer {
                 preprocess_for_render(messages, enable_thinking);
             let messages_val = minijinja::Value::from_serialize(&messages_for_render);
             let tools_val = tools.map(minijinja::Value::from_serialize);
-            let reasoning_effort: minijinja::Value = if enable_thinking {
+            let reasoning_effort: minijinja::Value = if let Some(effort) = reasoning_effort {
+                effort.into()
+            } else if enable_thinking {
                 "high".into()
             } else {
                 "none".into()
@@ -332,7 +396,13 @@ impl ChatTokenizer {
                 .map_err(|e| anyhow::anyhow!("Failed to render OpenAI Jinja template: {e}"))?;
             self.encode(&rendered)
         } else {
-            self.apply_chat_template_jinja(messages, tools, enable_thinking, disable_tool_steering)
+            self.apply_chat_template_jinja_with_effort(
+                messages,
+                tools,
+                enable_thinking,
+                disable_tool_steering,
+                reasoning_effort,
+            )
         }
     }
 
@@ -373,6 +443,10 @@ impl ChatTokenizer {
 
     pub fn supports_thinking(&self) -> bool {
         self.supports_thinking
+    }
+
+    pub fn uses_deepseek_v4_encoding(&self) -> bool {
+        self.chat_encoding == ChatEncoding::DeepseekV4
     }
 
     /// Encode the `<|image_pad|>` placeholder token and return its ID.

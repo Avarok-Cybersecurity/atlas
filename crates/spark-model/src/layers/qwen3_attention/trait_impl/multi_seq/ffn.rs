@@ -9,6 +9,32 @@ use super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
+/// Kill-switch for the pairwise batched MoE decode path (`ATLAS_MOE_PAIRWISE_DECODE=0`).
+fn pairwise_moe_decode_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MOE_PAIRWISE_DECODE").as_deref() != Ok("0"))
+}
+
+/// Route batched decode MoE (n >= min) through the grouped read-once GEMM
+/// (forward_prefill) instead of the pairwise per-slot loop. Default OFF.
+/// Min default 2: one consistent grouped path for every batched decode size.
+fn grouped_routed_decode_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_MOE_GROUPED_ROUTED_DECODE").as_deref() == Ok("1"))
+}
+fn grouped_routed_decode_min() -> usize {
+    use std::sync::OnceLock;
+    static M: OnceLock<usize> = OnceLock::new();
+    *M.get_or_init(|| {
+        std::env::var("ATLAS_MOE_GROUPED_ROUTED_DECODE_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+    })
+}
+
 impl Qwen3AttentionLayer {
     pub(super) fn ms_phase_ffn(&self, c: &MultiSeqCtx<'_>, o_out: DevicePtr) -> Result<()> {
         let MultiSeqCtx {
@@ -47,7 +73,15 @@ impl Qwen3AttentionLayer {
         // without depending on the buggy batched-MoE kernels. Fixing the
         // batched-MoE kernel is tracked separately (out of #84 scope).
         let force_seq_ffn = self.mla.is_some();
-        if n == 3 && !force_seq_ffn {
+        // Grouped read-once MoE decode: when enabled and eligible, ALL batched
+        // decode (n >= min, default 2) goes through the single grouped branch
+        // below instead of the n==2/n==3/pairwise special cases. One consistent
+        // path for every batch size.
+        let use_grouped = !force_seq_ffn
+            && n >= grouped_routed_decode_min()
+            && grouped_routed_decode_enabled()
+            && self.ffn.moe_grouped_decode_ok();
+        if !use_grouped && n == 3 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(
                 fwd.gpu,
@@ -72,7 +106,7 @@ impl Qwen3AttentionLayer {
                 (3 * h) as u32,
                 stream,
             )?;
-        } else if n == 2 && !force_seq_ffn {
+        } else if !use_grouped && n == 2 && !force_seq_ffn {
             let normed2 = fwd.buffers.norm_output();
             ops::residual_add_rms_norm(
                 fwd.gpu,
@@ -173,6 +207,72 @@ impl Qwen3AttentionLayer {
                 (n * h) as u32,
                 stream,
             )?;
+        } else if use_grouped {
+            // GROUPED READ-ONCE MoE DECODE (A/B, default off). The pairwise
+            // branch below issues 4*top_k per-slot CTAs at n=4, each re-reading
+            // an expert weight for one token; forward_prefill sorts by expert
+            // and reads each DISTINCT active expert ONCE (+ one batched BF16
+            // shared pass). Byte-identical structure to the is_dense branch
+            // above; only reachable for native-NVFP4-routed MoE with the flag.
+            let normed2 = fwd.buffers.norm_output();
+            ops::residual_add_rms_norm(
+                fwd.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                o_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            self.ffn.forward_prefill(normed2, n, fwd, stream)?;
+            let moe_out = fwd.buffers.moe_output();
+            ops::residual_add(
+                fwd.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (n * h) as u32,
+                stream,
+            )?;
+        } else if !force_seq_ffn && n > 2 && n % 2 == 0 && pairwise_moe_decode_enabled() {
+            // BATCHED MoE DECODE (n = 4/8 after padding). The per-token loop
+            // below re-reads every routed expert weight once per token; the
+            // fused batch2 kernels process a token PAIR in 5 launches. Walk the
+            // batch two tokens at a time and consume moe_output before the next
+            // pair overwrites it. Falls back inside forward_k2 for layouts that
+            // have no fused batch2 path, which is still no worse than per-token
+            // (the gate GEMM is batched there too).
+            let normed2 = fwd.buffers.norm_output();
+            ops::residual_add_rms_norm(
+                fwd.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                o_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            for pair in 0..(n / 2) {
+                let off = pair * 2 * h;
+                self.ffn
+                    .forward_k2(normed2.offset(off * bf16), fwd, stream)?;
+                ops::residual_add(
+                    fwd.gpu,
+                    self.residual_add_k,
+                    hidden.offset(off * 2),
+                    fwd.buffers.moe_output(),
+                    (2 * h) as u32,
+                    stream,
+                )?;
+            }
         } else {
             // force_seq_ffn (MLA / batched-MoE-unsafe): per-token sequential.
             // CONCURRENT-DECODE BUG (sibling of qwen3_ssm.rs:1102 fix):

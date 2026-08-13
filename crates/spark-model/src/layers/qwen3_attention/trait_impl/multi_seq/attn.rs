@@ -76,22 +76,41 @@ impl Qwen3AttentionLayer {
             let q_out_i = qkv_buf.offset(i * per_seq_qkv);
             let k_out_i = q_out_i.offset(q_proj_bytes);
             let pos_i = meta.positions.offset(i * 4); // u32 per position
-            ops::rope(
-                fwd.gpu,
-                self.rope_k,
-                q_out_i,
-                k_out_i,
-                pos_i,
-                1,
-                nq,
-                nkv,
-                hd,
-                self.rotary_dim_override
-                    .unwrap_or(fwd.config.rotary_dim() as u32),
-                self.rope_theta_override
-                    .unwrap_or(fwd.config.rope_theta as f32),
-                stream,
-            )?;
+            if self.yarn_inv_freq.is_null() {
+                ops::rope(
+                    fwd.gpu,
+                    self.rope_k,
+                    q_out_i,
+                    k_out_i,
+                    pos_i,
+                    1,
+                    nq,
+                    nkv,
+                    hd,
+                    self.rotary_dim_override
+                        .unwrap_or(fwd.config.rotary_dim() as u32),
+                    self.rope_theta_override
+                        .unwrap_or(fwd.config.rope_theta as f32),
+                    stream,
+                )?;
+            } else {
+                ops::rope_yarn_scaled(
+                    fwd.gpu,
+                    self.rope_yarn_scaled_k,
+                    q_out_i,
+                    k_out_i,
+                    pos_i,
+                    1,
+                    nq,
+                    nkv,
+                    hd,
+                    self.rotary_dim_override
+                        .unwrap_or(fwd.config.rotary_dim() as u32),
+                    self.yarn_inv_freq,
+                    self.yarn_attention_factor,
+                    stream,
+                )?;
+            }
         }
         Ok(())
     }
@@ -299,172 +318,6 @@ impl Qwen3AttentionLayer {
         }
         Ok(attn_out)
     }
-
-    /// Phase 6: gate multiply (when gated) + O projection. Writes to
-    /// `o_out`. Returns the o_out buffer pointer.
-    pub(super) fn ms_phase_o_proj(
-        &self,
-        c: &MultiSeqCtx<'_>,
-        attn_out: DevicePtr,
-    ) -> Result<DevicePtr> {
-        let MultiSeqCtx {
-            fwd,
-            n,
-            stream,
-            h,
-            nq,
-            hd,
-            bf16,
-            q_dim,
-            per_seq_qkv,
-            qkv_buf,
-            ..
-        } = *c;
-        if self.gated {
-            // ONE launch for all n sequences. `attn_out` is contiguous [n, q_dim]
-            // and the gate lives at a fixed offset inside each sequence's slice of
-            // `qkv_buf`, i.e. strided by per_seq_qkv — which is exactly the layout
-            // `sigmoid_gate_mul_batched` takes (`gate[t * gate_stride + d]`, stride
-            // in ELEMENTS). The PREFILL path already drives this kernel on these
-            // same buffers (prefill/paged.rs); multi-seq decode was looping the
-            // single-token variant instead, n launches per layer x 16 layers.
-            debug_assert_eq!(
-                per_seq_qkv % bf16,
-                0,
-                "gate stride must be whole bf16 elements"
-            );
-            ops::sigmoid_gate_mul_batched(
-                fwd.gpu,
-                self.sigmoid_gate_mul_batched_k,
-                attn_out,
-                qkv_buf.offset(q_dim as usize * bf16),
-                attn_out,
-                q_dim,
-                (per_seq_qkv / bf16) as u32,
-                n as u32,
-                stream,
-            )?;
-        }
-
-        let o_out = fwd.buffers.moe_output();
-        if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
-            // Keep-packed Q2_0 (Tier-1c): per-token 2-bit o_proj GEMV.
-            for i in 0..n {
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                let o_out_i = o_out.offset(i * h * bf16);
-                ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, attn_out_i, q2, o_out_i, stream)?;
-            }
-        } else if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
-            // ATLAS_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
-            // attn_out is contiguous [n, q_dim] and o_out is [n, h], so a single
-            // batched GEMM reads the BF16 o_proj weight ONCE for all n sequences
-            // instead of once per sequence (per-seq dense_gemv re-read it N×).
-            ops::dense_gemm(
-                fwd.gpu,
-                self.dense_gemm_k,
-                attn_out,
-                o_bf16,
-                o_out,
-                n as u32,
-                h as u32,
-                nq * hd,
-                stream,
-            )?;
-        } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
-            // FP8 native: per-token w8a16_gemv for O projection.
-            for i in 0..n {
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                let o_out_i = o_out.offset(i * h * bf16);
-                ops::w8a16_gemv(
-                    fwd.gpu,
-                    self.w8a16_gemv_k,
-                    attn_out_i,
-                    o_fp8.weight,
-                    o_fp8.row_scale,
-                    o_out_i,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
-            }
-        } else if n == 3 && !self.attn.o_proj.is_null() {
-            ops::w4a16_gemv_batch3(
-                fwd.gpu,
-                self.w4a16_gemv_batch3_k,
-                attn_out,
-                &self.attn.o_proj,
-                o_out,
-                h as u32,
-                nq * hd,
-                stream,
-            )?;
-        } else if n == 2 && !self.attn.o_proj.is_null() {
-            ops::w4a16_gemv_batch2(
-                fwd.gpu,
-                self.w4a16_gemv_batch2_k,
-                attn_out,
-                &self.attn.o_proj,
-                o_out,
-                h as u32,
-                nq * hd,
-                stream,
-            )?;
-        } else if !self.attn.o_proj.is_null() {
-            // WIDE-VERIFY BATCHED O-PROJ (DFlash γ=16, n>3). One GEMM reads
-            // the o_proj weight ONCE for all n rows instead of the per-row
-            // GEMV loop below. attn_out is contiguous [n, q_dim]; o_out is
-            // contiguous [n, h]; both already laid out for a single M=n GEMM
-            // (no scatter). Uses the pipelined m128_v2 kernel when the
-            // transposed weight is present (base M64 GEMM is the slow path).
-            self.wide_verify_gemm(
-                c,
-                attn_out,
-                &self.attn.o_proj,
-                self.o_nvfp4_t.as_ref(),
-                o_out,
-                n as u32,
-                h as u32,
-                nq * hd,
-            )?;
-        } else {
-            for i in 0..n {
-                let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
-                let o_out_i = o_out.offset(i * h * bf16);
-                ops::w4a16_gemv(
-                    fwd.gpu,
-                    self.w4a16_gemv_k,
-                    attn_out_i,
-                    &self.attn.o_proj,
-                    o_out_i,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
-            }
-        }
-
-        // ── Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
-        // contiguous [n, q_dim]); base_out = o_out (contiguous [n, h]) folded in
-        // place — matches the single-seq apply_lora_delta on o after o_proj.
-        // No-op unless a routing table is installed AND seq_slot is non-null.
-        if let Some(ref lw) = self.lora
-            && c.seq_slot.0 != 0
-            && let Some(ref route) = lw.o_route
-        {
-            ops::lora_delta::apply_lora_bgmv(
-                fwd.gpu,
-                &lw.kernels,
-                route,
-                attn_out,
-                o_out,
-                c.seq_slot,
-                n as u32,
-                q_dim,    // x row stride (elements): attn_out is [n, q_dim]
-                h as u32, // out row stride (elements): o_out is [n, h] contiguous
-                fwd.buffers.lora_xa(),
-                stream,
-            )?;
-        }
-        Ok(o_out)
-    }
 }
+
+mod o_proj;

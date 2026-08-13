@@ -62,7 +62,7 @@ trap "kill $HSW_PID 2>/dev/null || true" EXIT
 
 # Wait for server to come up (look for "ready" in log).
 for i in $(seq 1 120); do
-  if grep -q "Listening on" "$HSW_LOG" 2>/dev/null; then
+  if grep -qE "Listening on|Server live" "$HSW_LOG" 2>/dev/null; then
     break
   fi
   if ! kill -0 $HSW_PID 2>/dev/null; then
@@ -108,7 +108,7 @@ REF_PID=$!
 trap "kill $REF_PID 2>/dev/null || true" EXIT
 
 for i in $(seq 1 120); do
-  if grep -q "Listening on" "$REF_LOG" 2>/dev/null; then
+  if grep -qE "Listening on|Server live" "$REF_LOG" 2>/dev/null; then
     break
   fi
   if ! kill -0 $REF_PID 2>/dev/null; then

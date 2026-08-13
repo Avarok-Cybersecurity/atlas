@@ -67,6 +67,11 @@ impl Qwen3AttentionLayer {
         let chunk_len = batched_meta.chunk_len;
         let batch_size = batched_meta.batch_size;
         let block_table_ptrs = batched_meta.block_table_ptrs;
+        // VARLEN: per-stream Q offsets/lengths and KV extents. NULL under the
+        // legacy uniform path, where the kernels keep using `b * chunk_len`
+        // and the scalar `kv_len`. `chunk_len` is the MAX and bounds the grid.
+        let cu_seqlens = batched_meta.cu_seqlens;
+        let kv_lens = batched_meta.kv_lens;
 
         // Q12 batched mode only supports the standard paths. HSS, MLA,
         // and HDIM=512 layers fall back to per-stream at the dispatch
@@ -79,9 +84,11 @@ impl Qwen3AttentionLayer {
                 self.attn_layer_idx
             );
         }
-        let allow_first_chunk = std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        // Must mirror `check_kernel_batched_eligible`'s `allow_chunk_zero`
+        // exactly — a batch admitted there and rejected here bails after the
+        // streams have already been mutated.
+        let allow_first_chunk = crate::layers::ops::prefill_batched_first_chunk_enabled()
+            || crate::layers::ops::prefill_varlen_enabled();
         if seq_len_start == 0 && !allow_first_chunk {
             anyhow::bail!(
                 "prefill_attention_paged_attn_batched: seq_len_start=0 not supported \
@@ -111,6 +118,8 @@ impl Qwen3AttentionLayer {
                     attn_out,
                     block_table_ptrs,
                     batch_size,
+                    cu_seqlens,
+                    kv_lens,
                     chunk_len,
                     kv_len,
                     q_offset_u32,
@@ -141,6 +150,8 @@ impl Qwen3AttentionLayer {
                     attn_out,
                     block_table_ptrs,
                     batch_size,
+                    cu_seqlens,
+                    kv_lens,
                     chunk_len,
                     kv_len,
                     q_offset_u32,
@@ -172,6 +183,8 @@ impl Qwen3AttentionLayer {
                     attn_out,
                     block_table_ptrs,
                     batch_size,
+                    cu_seqlens,
+                    kv_lens,
                     chunk_len,
                     kv_len,
                     q_offset_u32,
@@ -203,6 +216,8 @@ impl Qwen3AttentionLayer {
                     attn_out,
                     block_table_ptrs,
                     batch_size,
+                    cu_seqlens,
+                    kv_lens,
                     chunk_len,
                     kv_len,
                     q_offset_u32,
@@ -231,6 +246,8 @@ impl Qwen3AttentionLayer {
                     attn_out,
                     block_table_ptrs,
                     batch_size,
+                    cu_seqlens,
+                    kv_lens,
                     chunk_len,
                     kv_len,
                     q_offset_u32,

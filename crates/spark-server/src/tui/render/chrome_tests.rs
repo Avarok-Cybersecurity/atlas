@@ -352,6 +352,9 @@ fn the_quit_prompt_covers_the_help_overlay_and_fits_any_frame() {
 #[test]
 fn the_quit_prompt_declines_when_the_dashboard_is_idle() {
     let mut a = app();
+    // Idle means SERVING, not mid-boot: a fresh App is still loading the
+    // model its argv names, and the guard (correctly) has something to say.
+    a.progress.ready = true;
     a.confirm_quit = true;
     assert!(a.work_in_flight().is_none());
     assert!(!has(&screen(&a, 160, 48), "STOP THE SERVER?"));
@@ -391,4 +394,48 @@ fn the_frame_is_laid_out_where_the_chrome_says_it_is() {
             "{w}x{h}: labels iff the wide rail:\n{rows:#?}"
         );
     }
+}
+
+#[test]
+fn the_help_overlay_scrolls_its_tail_into_view_at_the_80x24_floor() {
+    // Third recurrence of the help clip: sized-to-the-list held only while
+    // the terminal was taller than the list. At 80x24 the modal gets 22 rows
+    // for a table of KEYS.len()+2, so the tail — `q` and `?` — was silently
+    // below the border. The fix is a scrolling view, which survives the
+    // table growing again.
+    let mut a = app();
+    a.help_open = true;
+    let rows = screen(&a, 80, 24);
+    assert!(
+        has(&rows, &format!("of {}", overlay::KEYS.len())),
+        "the clipped modal names its position:\n{rows:#?}"
+    );
+    assert!(
+        !has(&rows, "this help"),
+        "the last entry starts below the fold:\n{rows:#?}"
+    );
+
+    // Any over-large offset is clamped by the renderer, so the bottom of the
+    // list is exactly reachable.
+    a.help_scroll = usize::MAX;
+    let rows = screen(&a, 80, 24);
+    assert!(
+        has(&rows, "this help"),
+        "scrolled to the ceiling, the last entry is readable:\n{rows:#?}"
+    );
+}
+
+#[test]
+fn a_help_overlay_that_fits_carries_no_scroll_chrome() {
+    // A list that fits needs no scrollbar and gets no noise — the same rule
+    // the Library pickers follow.
+    let mut a = app();
+    a.help_open = true;
+    let rows = screen(&a, 160, 48);
+    // Not "j/k scroll" — Main's footer hint contains that too. The position
+    // counter is the part only the clipped modal draws.
+    assert!(
+        !has(&rows, &format!("of {}", overlay::KEYS.len())),
+        "{rows:#?}"
+    );
 }

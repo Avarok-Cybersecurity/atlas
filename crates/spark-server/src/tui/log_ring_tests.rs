@@ -175,3 +175,33 @@ fn the_layer_captures_events_and_leaves_the_progress_channel_alone() {
         last.target
     );
 }
+
+/// An error toast expires in 12 s and used to be written nowhere else — one
+/// that fired while the operator watched another window was simply gone.
+/// Here rather than in `app_tests` because the assertion is against THIS
+/// module's process-global ring, and only this file holds `SERIAL`.
+#[test]
+fn an_error_toast_lands_in_the_ring_and_an_info_toast_does_not() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let _serial = SERIAL.lock();
+    let mut app = crate::tui::app::App::new(clap::Parser::parse_from(["spark", "org/m"]));
+    let sub = tracing_subscriber::registry().with(LogRingLayer);
+    tracing::subscriber::with_default(sub, || {
+        app.toast("toast-trace-9f3a: the launch was refused", true);
+        app.toast("toast-trace-9f3a-ok: downloaded", false);
+    });
+    let lines = tail(10);
+    assert!(
+        lines.iter().any(|l| l
+            .message
+            .contains("toast-trace-9f3a: the launch was refused")
+            && l.level == Level::WARN),
+        "the error toast has a history: {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.message.contains("toast-trace-9f3a-ok")),
+        "info toasts stay ephemeral — mirroring them would double every receipt"
+    );
+}

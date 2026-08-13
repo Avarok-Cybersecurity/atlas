@@ -180,8 +180,15 @@ impl TransformerModel {
         self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
 
         // ── Phase 2: prefix-cache lookup + EP sync + Marconi snapshot restore ──
-        let (kv_write_start, marconi_skip) =
-            self.prefill_b_prefix_lookup(tokens, seq, chunk_start, total, &mut kv_cache, stream)?;
+        let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
+            tokens,
+            seq,
+            chunk_start,
+            total,
+            &mut kv_cache,
+            stream,
+            None,
+        )?;
 
         if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(

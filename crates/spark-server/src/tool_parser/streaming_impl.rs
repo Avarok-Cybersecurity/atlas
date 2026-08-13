@@ -19,6 +19,7 @@ impl StreamingToolDetector {
         Self {
             buffer: String::new(),
             inside_tag: false,
+            inside_dsml: false,
             call_counter: 0,
             emitted_tool_calls: false,
             current_tc_name: None,
@@ -38,6 +39,7 @@ impl StreamingToolDetector {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.inside_tag = false;
+        self.inside_dsml = false;
         self.reset_call_state();
     }
 
@@ -59,6 +61,11 @@ impl StreamingToolDetector {
         let mut outputs = Vec::new();
         self.buffer.push_str(new_text);
         loop {
+            match self.process_dsml(&mut outputs) {
+                DsmlStreamAction::Continue => continue,
+                DsmlStreamAction::Wait => break,
+                DsmlStreamAction::NotDsml => {}
+            }
             if self.inside_tag {
                 // Check for closing tag. Recognised forms:
                 //   - `</tool_call>` (hermes / qwen3-coder, 12 chars)
@@ -108,7 +115,7 @@ impl StreamingToolDetector {
                         // Buffered mode OR never-streamed fallback: emit the full
                         // canonical args once (unchanged legacy behaviour).
                         // Parse the complete inner content to extract JSON arguments.
-                        if let Some(tc) = parse_one_call(inner.trim(), self.call_counter) {
+                        if let Some(tc) = parse_complete_call(&inner, self.call_counter) {
                             // Always emit when the parser produced a named call,
                             // even if arguments are `{}`. Argument-less tools
                             // (e.g. get_current_time) are legitimate. The bare-
@@ -150,7 +157,7 @@ impl StreamingToolDetector {
                                 self.emitted_tool_calls = true;
                                 outputs.push(DetectorOutput::ToolCall(tc, call_idx));
                             }
-                        } else if let Some(tc) = parse_one_call(trimmed, self.call_counter) {
+                        } else if let Some(tc) = parse_complete_call(trimmed, self.call_counter) {
                             self.call_counter += 1;
                             self.emitted_tool_calls = true;
                             outputs.push(DetectorOutput::ToolCall(tc, idx));
@@ -291,11 +298,18 @@ impl StreamingToolDetector {
                 }
                 break; // Wait for more tokens (closing `</function>` not yet seen)
             } else {
+                if self.buffer.trim().is_empty() {
+                    break;
+                }
                 let safe = self.safe_emit_len();
                 if safe > 0 {
                     let content = self.buffer[..safe].to_string();
-                    self.buffer = self.buffer[safe..].to_string();
-                    if !content.is_empty() {
+                    let remainder = self.buffer[safe..].to_string();
+                    let dsml_leading_whitespace = !remainder.is_empty()
+                        && content.trim().is_empty()
+                        && DSML_OPEN.starts_with(&remainder);
+                    self.buffer = remainder;
+                    if !content.is_empty() && !dsml_leading_whitespace {
                         outputs.push(DetectorOutput::Content(content));
                     }
                 }
@@ -308,6 +322,9 @@ impl StreamingToolDetector {
     /// Flush remaining buffer (call at stream end).
     /// Also attempts bare `<function>` detection as a last resort.
     pub fn flush(&mut self) -> Vec<DetectorOutput> {
+        if let Some(outputs) = self.flush_dsml() {
+            return outputs;
+        }
         if self.buffer.is_empty() {
             return vec![];
         }
@@ -335,6 +352,7 @@ impl StreamingToolDetector {
         // drop the param section) before salvaging, so drifted tail garbage
         // is never swallowed into an argument string.
         if was_inside_tag
+            && !text.contains("<arg_key>")
             && let Some(tc) = parse_one_call(
                 contain_unterminated_call_tail(text.trim()),
                 self.call_counter,
@@ -442,7 +460,7 @@ impl StreamingToolDetector {
     /// `tool_describe`) being reassembled across token boundaries — dropping
     /// it truncates the streamed name by exactly `len("tool")` == 4 chars.
     pub fn inside_tool_call(&self) -> bool {
-        self.inside_tag
+        self.inside_tag || self.inside_dsml || self.has_partial_tool_opener()
     }
 
     /// Returns safe byte length to emit without splitting a partial tag.
@@ -465,6 +483,7 @@ impl StreamingToolDetector {
             b"<|tool_call>",
             b"<minimax:tool_call>",
             b"<minimax:_call>",
+            DSML_OPEN.as_bytes(),
             b"<function",
             b"call:",
             MISTRAL_TOOL_CALLS_TAG.as_bytes(),

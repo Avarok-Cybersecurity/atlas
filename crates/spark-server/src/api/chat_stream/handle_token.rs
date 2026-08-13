@@ -394,17 +394,9 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
 
     // Strip residual think tags from content after thinking is done.
     if state.thinking_done {
-        for tag in &[
-            "</think>",
-            "</thinking>",
-            "<thinking>",
-            "</analysis>",
-            "<analysis>",
-        ] {
-            while let Some(pos) = delta.find(tag) {
-                delta = format!("{}{}", &delta[..pos], delta[pos + tag.len()..].trim_start());
-            }
-        }
+        // SSOT with the blocking path (api/chat_blocking.rs), which had no
+        // equivalent scrub and therefore leaked '</think>' into content.
+        delta = crate::api::strip::scrub_think_markers(&delta);
         // If model re-opens <think>, suppress content from <think> onward.
         if let Some(pos) = delta.find("<think>") {
             delta = delta[..pos].to_string();
@@ -414,6 +406,16 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
             state.content_decoded.clear();
             state.detok_prefix_offset = 0;
             state.detok_read_offset = 0;
+        }
+        // Orphan tool-call markup in content when NO tools are defined: the
+        // model emits a spurious `<tool_call>…` block after a normal answer and
+        // the tool detector (which would strip it) is not running. Cut content
+        // at the opener — SSOT with the blocking path's strip_orphan_tool_markup.
+        // When tools ARE active the detector owns tool markup, so leave it.
+        let tools_active_request =
+            !ctx.tool_defs_for_backfill.is_empty() || state.detector.is_some();
+        if !tools_active_request {
+            delta = crate::api::strip::strip_orphan_tool_markup(&delta);
         }
     }
 
@@ -982,6 +984,45 @@ mod role_literal_strip_tests {
             strip_bare_role_literal(&mut d, true);
             assert_eq!(d, lit, "fragment {lit:?} must survive inside a tool call");
         }
+    }
+
+    #[test]
+    fn dsml_split_opener_preserves_tool_fragment_and_streams_call() {
+        let mut det = StreamingToolDetector::new();
+        let chunks = [
+            "\n\n",
+            "<｜DSM",
+            "L",
+            "｜",
+            "tool",
+            "_calls>\n<｜DSML｜invoke name=\"get_weather\">\n",
+            "<｜DSML｜parameter name=\"city\" string=\"true\">Paris</｜DSML｜parameter>\n",
+            "</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+        ];
+        let mut outputs = Vec::new();
+        for chunk in chunks {
+            let mut delta = chunk.to_string();
+            strip_bare_role_literal(&mut delta, det.inside_tool_call());
+            if !delta.is_empty() {
+                outputs.extend(det.process(&delta));
+            }
+        }
+        outputs.extend(det.flush());
+
+        let mut content = String::new();
+        let mut calls = Vec::new();
+        for output in outputs {
+            match output {
+                DetectorOutput::Content(text) => content.push_str(&text),
+                DetectorOutput::ToolCall(call, index) => calls.push((index, call)),
+                _ => {}
+            }
+        }
+        assert!(content.is_empty(), "DSML envelope leaked: {content:?}");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, 0);
+        assert_eq!(calls[0].1.function.name, "get_weather");
+        assert_eq!(calls[0].1.function.arguments, r#"{"city":"Paris"}"#);
     }
 
     /// Ordinary content (not a bare role literal) is never touched, in or out

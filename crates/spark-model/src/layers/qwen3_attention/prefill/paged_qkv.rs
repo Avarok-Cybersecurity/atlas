@@ -367,7 +367,9 @@ impl Qwen3AttentionLayer {
             // Prefer the tensor-core pipelined GEMM (~40× the scalar kernel on
             // these large-M prefill projections; same math) — the scalar
             // `dense_gemm` dominated batched-prefill GPU time (nsys: 60%).
-            if self.dense_gemm_pipelined_k.0 != 0 {
+            if ctx.dispatch.cublas_gemm && n > 1 {
+                ops::cublas_bf16_proj_dense(normed, dense.weight, out, n, out_dim, h, stream)?;
+            } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(
                     ctx.gpu,
                     self.dense_gemm_pipelined_k,

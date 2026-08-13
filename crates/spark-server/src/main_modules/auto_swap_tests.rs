@@ -19,6 +19,7 @@ fn recipe(id: &str, model: &str, runtime: &str) -> Recipe {
         kv_dtype: "bf16".into(),
         updated: "2026-08-01".into(),
         defaults: BTreeMap::new(),
+        starting_point: None,
     }
 }
 

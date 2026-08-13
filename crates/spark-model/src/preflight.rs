@@ -22,6 +22,8 @@ use anyhow::{Result, bail};
 use atlas_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
+mod deepseek_v4;
+
 /// Run all model-agnostic + model-type-specific pre-flight checks.
 ///
 /// Called by `spark-server/src/main.rs` immediately after the
@@ -47,6 +49,7 @@ pub fn preflight(store: &WeightStore, config: &ModelConfig, use_speculative: boo
     // Model-agnostic checks — driven purely by `store.names()` and
     // `config` (which already carries the parsed `config.json` values).
     check_quant_method(config)?;
+    deepseek_v4::check_native_dspark_checkpoint(store, config, use_speculative)?;
     check_embedding_and_head(store)?;
     let max_layer_idx = check_layer_count(store, config)?;
     check_expert_count(store, config)?;

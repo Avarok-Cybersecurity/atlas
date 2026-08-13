@@ -9,12 +9,25 @@ use std::ffi::c_void;
 #[cfg(atlas_cutlass)]
 use super::*;
 
-/// Repack an Atlas E4M3 weight scale `[K/16,N]` (or `[N,K/16]`) into the CUTLASS
-/// SM120 blockscaled SFB swizzle atom (`tile_atom_to_shape_SFB`, ue4m3) that the
-/// grouped collective reads. M-independent (the SFB atom depends only on N,K) so
-/// this runs once per expert at load. `scale_out` must hold the swizzled SFB
-/// region the grouped kernel consumes.
-pub fn pack_weight_sfb(scale_in: u64, scale_out: u64, n: u32, k: u32, stream: u64) -> Result<()> {
+/// Repack an Atlas E4M3 weight scale into the CUTLASS SM120 blockscaled SFB
+/// swizzle atom (`tile_atom_to_shape_SFB`, ue4m3) that the grouped collective
+/// reads. M-independent (the SFB atom depends only on N,K) so this runs once
+/// per expert at load. `scale_out` must hold the swizzled SFB region the
+/// grouped kernel consumes.
+///
+/// `src_n_major` selects the SOURCE layout: `false` = Atlas-transposed
+/// `[K/16,N]`, `true` = checkpoint-native `[N,K/16]`. The N-major mode lets a
+/// checkpoint that already ships `[N,K/16]` scales (Laguna) build SFB without
+/// first materialising an Atlas-transposed copy. Output layout is identical
+/// either way.
+pub fn pack_weight_sfb(
+    scale_in: u64,
+    scale_out: u64,
+    n: u32,
+    k: u32,
+    src_n_major: bool,
+    stream: u64,
+) -> Result<()> {
     #[cfg(atlas_cutlass)]
     {
         let status = unsafe {
@@ -23,6 +36,7 @@ pub fn pack_weight_sfb(scale_in: u64, scale_out: u64, n: u32, k: u32, stream: u6
                 scale_out as *mut c_void,
                 n as i32,
                 k as i32,
+                i32::from(src_n_major),
                 stream as *mut c_void,
             )
         };
@@ -33,7 +47,7 @@ pub fn pack_weight_sfb(scale_in: u64, scale_out: u64, n: u32, k: u32, stream: u6
     }
     #[cfg(not(atlas_cutlass))]
     {
-        let _ = (scale_in, scale_out, n, k, stream);
+        let _ = (scale_in, scale_out, n, k, src_n_major, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")
     }
 }

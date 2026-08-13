@@ -11,7 +11,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 // function pointer: coercing a `#[track_caller]` fn to a pointer inserts a shim
 // and the audit would name the shim instead of the dispatch site below.
 use super::init_arch_gates::{ArchProbes, gated as gate};
-use super::types::Qwen3AttentionLayer;
+use super::types::{HeadGateActivation, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
 use crate::weight_map::{AttentionWeights, DenseWeight, QuantWeight, QuantizedWeight};
@@ -123,11 +123,19 @@ impl Qwen3AttentionLayer {
             k_eq_v: false,
             v_norm_weight: None,
             head_gate_weight: None,
+            head_gate_activation: HeadGateActivation::Sigmoid,
             sigmoid_gate_head_broadcast_k: super::super::try_kernel(
                 gpu,
                 "residual_add",
                 "sigmoid_gate_mul_head_broadcast",
             ),
+            softplus_gate_head_broadcast_k: super::super::try_kernel(
+                gpu,
+                "residual_add",
+                "softplus_gate_mul_head_broadcast",
+            ),
+            yarn_inv_freq: spark_runtime::gpu::DevicePtr::NULL,
+            yarn_attention_factor: 1.0,
             post_attn_out_norm: None,
             post_ffn_out_norm: None,
             layer_scalar: None,
@@ -193,8 +201,18 @@ impl Qwen3AttentionLayer {
             } else {
                 gpu.kernel("norm", "rms_norm")?
             },
+            rms_norm_w_warp_row_k: if crate::ships_vanilla_norm_weights(config) {
+                gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla_warp_row")
+                    .unwrap_or(KernelHandle(0))
+            } else {
+                KernelHandle(0)
+            },
             norm_vanilla: crate::ships_vanilla_norm_weights(config),
-            rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
+            rms_norm_residual_k: if crate::ships_vanilla_norm_weights(config) {
+                gpu.kernel("norm", "rms_norm_residual_vanilla")?
+            } else {
+                gpu.kernel("norm", "rms_norm_residual")?
+            },
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dequant_q2_0_gn_k: super::super::try_kernel(
                 gpu,
@@ -208,6 +226,9 @@ impl Qwen3AttentionLayer {
             q2_0_mmq_wc_k: KernelHandle(0),
             q4k_quant_act_k: KernelHandle(0),
             q2_0_gemv_k: super::super::try_kernel(gpu, "q2_0_gemv_vec", "q2_0_gemv_vec"),
+            dense_gemv_batchm_k: gpu
+                .kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")
+                .unwrap_or(KernelHandle(0)),
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
@@ -231,6 +252,7 @@ impl Qwen3AttentionLayer {
                 "rope_forward_mrope_interleaved_k_only",
             ),
             rope_yarn_k: super::super::try_kernel(gpu, "rope", "rope_forward_yarn"),
+            rope_yarn_scaled_k: super::super::try_kernel(gpu, "rope", "rope_forward_yarn_scaled"),
             // Interleaved (GPT-J / is_neox_style=False) YaRN RoPE — DeepSeek-V4 MLA.
             rope_yarn_interleaved_k: super::super::try_kernel(
                 gpu,
@@ -418,7 +440,11 @@ impl Qwen3AttentionLayer {
             sigmoid_gate_mul_k: gpu.kernel("residual_add", "sigmoid_gate_mul")?,
             deinterleave_qg_k: gpu.kernel("ssm_preprocess", "deinterleave_qg")?,
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
-            residual_add_rms_norm_k: gpu.kernel("norm", "residual_add_rms_norm")?,
+            residual_add_rms_norm_k: if crate::ships_vanilla_norm_weights(config) {
+                gpu.kernel("norm", "residual_add_rms_norm_vanilla")?
+            } else {
+                gpu.kernel("norm", "residual_add_rms_norm")?
+            },
             residual_add_rms_norm_gatef32_k: crate::layers::try_kernel(
                 gpu,
                 "norm",

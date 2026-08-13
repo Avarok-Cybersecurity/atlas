@@ -9,13 +9,17 @@
 //! Caller is responsible for:
 //!   1. Uploading a device array `block_table_ptrs: [int*; batch_size]`
 //!      that holds the per-stream paged-KV block-table device pointers.
-//!   2. Stacking `Q` and `O` for all batched streams contiguously:
-//!      `[batch_size, q_len, num_q_heads, head_dim]` BF16. Each stream's
-//!      Q/O lives at `b * q_len * num_q_heads * head_dim` within the
-//!      stacked buffer.
-//!   3. Ensuring all batched streams share the same `q_len`, `kv_len`,
-//!      `q_offset`, `sliding_window`, and (for FP8/NVFP4) quantisation
-//!      scales. The scheduler `can_batch_prefill_only` gate enforces.
+//!   2. Stacking `Q` and `O` for all batched streams contiguously.
+//!      UNIFORM (`cu_seqlens` NULL): `[batch_size, q_len, num_q_heads,
+//!      head_dim]` BF16, stream `b` at `b * q_len * num_q_heads * head_dim`.
+//!      VARLEN (`cu_seqlens` non-NULL): the buffer is PACKED by the prefix
+//!      sum, stream `b` at `cu_seqlens[b] * num_q_heads * head_dim` with
+//!      length `cu_seqlens[b+1] - cu_seqlens[b]` and KV extent `kv_lens[b]`.
+//!   3. UNIFORM only: ensuring all batched streams share the same `q_len`,
+//!      `kv_len` and `q_offset`. Under VARLEN those come from `cu_seqlens` /
+//!      `kv_lens` per stream and `q_len` is passed as the MAX (it bounds the
+//!      grid's Q-tile dimension only). `q_offset`, `sliding_window` and (for
+//!      FP8/NVFP4) quantisation scales are still shared.
 //!
 //! Validation status: kernels unvalidated against hardware.
 
@@ -35,6 +39,8 @@ pub fn prefill_attention_paged_batched(
     output: DevicePtr,
     block_table_ptrs: DevicePtr,
     batch_size: u32,
+    cu_seqlens: DevicePtr,
+    kv_lens: DevicePtr,
     q_len: u32,
     kv_len: u32,
     q_offset: u32,
@@ -56,6 +62,8 @@ pub fn prefill_attention_paged_batched(
         .arg_ptr(output)
         .arg_ptr(block_table_ptrs)
         .arg_u32(batch_size)
+        .arg_ptr(cu_seqlens)
+        .arg_ptr(kv_lens)
         .arg_u32(q_len)
         .arg_u32(kv_len)
         .arg_u32(q_offset)
@@ -79,6 +87,8 @@ pub fn prefill_attention_paged_batched_64(
     output: DevicePtr,
     block_table_ptrs: DevicePtr,
     batch_size: u32,
+    cu_seqlens: DevicePtr,
+    kv_lens: DevicePtr,
     q_len: u32,
     kv_len: u32,
     q_offset: u32,
@@ -100,6 +110,8 @@ pub fn prefill_attention_paged_batched_64(
         .arg_ptr(output)
         .arg_ptr(block_table_ptrs)
         .arg_u32(batch_size)
+        .arg_ptr(cu_seqlens)
+        .arg_ptr(kv_lens)
         .arg_u32(q_len)
         .arg_u32(kv_len)
         .arg_u32(q_offset)
@@ -123,6 +135,8 @@ pub fn prefill_attention_paged_fp8_batched(
     output: DevicePtr,
     block_table_ptrs: DevicePtr,
     batch_size: u32,
+    cu_seqlens: DevicePtr,
+    kv_lens: DevicePtr,
     q_len: u32,
     kv_len: u32,
     q_offset: u32,
@@ -147,6 +161,8 @@ pub fn prefill_attention_paged_fp8_batched(
         .arg_ptr(output)
         .arg_ptr(block_table_ptrs)
         .arg_u32(batch_size)
+        .arg_ptr(cu_seqlens)
+        .arg_ptr(kv_lens)
         .arg_u32(q_len)
         .arg_u32(kv_len)
         .arg_u32(q_offset)
@@ -173,6 +189,8 @@ pub fn prefill_attention_paged_fp8_batched_64(
     output: DevicePtr,
     block_table_ptrs: DevicePtr,
     batch_size: u32,
+    cu_seqlens: DevicePtr,
+    kv_lens: DevicePtr,
     q_len: u32,
     kv_len: u32,
     q_offset: u32,
@@ -197,6 +215,8 @@ pub fn prefill_attention_paged_fp8_batched_64(
         .arg_ptr(output)
         .arg_ptr(block_table_ptrs)
         .arg_u32(batch_size)
+        .arg_ptr(cu_seqlens)
+        .arg_ptr(kv_lens)
         .arg_u32(q_len)
         .arg_u32(kv_len)
         .arg_u32(q_offset)
@@ -223,6 +243,8 @@ pub fn prefill_attention_paged_nvfp4_batched(
     output: DevicePtr,
     block_table_ptrs: DevicePtr,
     batch_size: u32,
+    cu_seqlens: DevicePtr,
+    kv_lens: DevicePtr,
     q_len: u32,
     kv_len: u32,
     q_offset: u32,
@@ -246,6 +268,8 @@ pub fn prefill_attention_paged_nvfp4_batched(
         .arg_ptr(output)
         .arg_ptr(block_table_ptrs)
         .arg_u32(batch_size)
+        .arg_ptr(cu_seqlens)
+        .arg_ptr(kv_lens)
         .arg_u32(q_len)
         .arg_u32(kv_len)
         .arg_u32(q_offset)

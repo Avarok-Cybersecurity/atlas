@@ -191,7 +191,7 @@ impl MoeLayer {
         let h = config.hidden_size;
         let inter = config.moe_intermediate_size;
         let shared_inter = config.shared_expert_intermediate_size;
-        let num_experts = self.weights.experts.len();
+        let _num_experts = self.weights.experts.len();
 
         // ── Phase A: transpose gate+up routed experts ──
         // ARM-2 Phase-K Family C: native-MXFP4 routed experts are per-32 E8M0.
@@ -201,25 +201,32 @@ impl MoeLayer {
             } else {
                 16
             };
-        let mut gate_t = Vec::with_capacity(num_experts);
-        let mut up_t = Vec::with_capacity(num_experts);
-        for expert in &self.weights.experts {
-            if expert.gate_proj.is_null() {
-                gate_t.push(QuantizedWeight::null());
-                up_t.push(QuantizedWeight::null());
-            } else {
-                gate_t.push(
-                    expert
-                        .gate_proj
-                        .transpose_for_gemm_gs(gpu, inter, h, routed_gs)?,
-                );
-                up_t.push(
-                    expert
-                        .up_proj
-                        .transpose_for_gemm_gs(gpu, inter, h, routed_gs)?,
-                );
-            }
-        }
+        let gate_src: Vec<QuantizedWeight> = self
+            .weights
+            .experts
+            .iter()
+            .map(|e| {
+                if e.gate_proj.is_null() {
+                    QuantizedWeight::null()
+                } else {
+                    e.gate_proj
+                }
+            })
+            .collect();
+        let up_src: Vec<QuantizedWeight> = self
+            .weights
+            .experts
+            .iter()
+            .map(|e| {
+                if e.gate_proj.is_null() {
+                    QuantizedWeight::null()
+                } else {
+                    e.up_proj
+                }
+            })
+            .collect();
+        let gate_t = self.transpose_experts_gpu(gpu, &gate_src, inter, h, routed_gs)?;
+        let up_t = self.transpose_experts_gpu(gpu, &up_src, inter, h, routed_gs)?;
         self.gate_ptrs_t = Some(build_ptr_table_from_qw(&gate_t, gpu)?);
         self.up_ptrs_t = Some(build_ptr_table_from_qw(&up_t, gpu)?);
         // Shared expert (tiny, do unconditionally — fits regardless).
@@ -268,18 +275,19 @@ impl MoeLayer {
         }
 
         // ── Phase C: transpose down routed experts ──
-        let mut down_t = Vec::with_capacity(num_experts);
-        for expert in &self.weights.experts {
-            if expert.down_proj.is_null() {
-                down_t.push(QuantizedWeight::null());
-            } else {
-                down_t.push(
-                    expert
-                        .down_proj
-                        .transpose_for_gemm_gs(gpu, h, inter, routed_gs)?,
-                );
-            }
-        }
+        let down_src: Vec<QuantizedWeight> = self
+            .weights
+            .experts
+            .iter()
+            .map(|e| {
+                if e.down_proj.is_null() {
+                    QuantizedWeight::null()
+                } else {
+                    e.down_proj
+                }
+            })
+            .collect();
+        let down_t = self.transpose_experts_gpu(gpu, &down_src, h, inter, routed_gs)?;
         self.down_ptrs_t = Some(build_ptr_table_from_qw(&down_t, gpu)?);
         if !self.weights.shared_expert.down_proj.is_null() && shared_inter > 0 {
             self.shared_down_t = Some(self.weights.shared_expert.down_proj.transpose_for_gemm(
@@ -310,6 +318,93 @@ impl MoeLayer {
         Ok(())
     }
 
+    /// Transpose one projection across ALL routed experts on the GPU, into a
+    /// single slab allocation per buffer.
+    ///
+    /// Replaces a per-expert `QuantizedWeight::transpose_for_gemm_gs`, which
+    /// round-trips every expert through the host (D2H, a strided host byte
+    /// loop, H2D) and takes two `gpu.alloc`s each. At 256 experts x 3
+    /// projections x ~47 MoE layers that was ~36k host round-trips and ~145k
+    /// allocations, measured at ~1.0 s per layer (~48 s of load). The batched
+    /// kernel is the same one the lazy down-scratch path already uses.
+    ///
+    /// `src` supplies the per-expert untransposed `[n, k/2]` packed bytes and
+    /// `[n, k/group_size]` scales; the returned `QuantizedWeight`s point into
+    /// the two slabs and carry the source's scale metadata unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn transpose_experts_gpu(
+        &self,
+        gpu: &dyn GpuBackend,
+        src: &[QuantizedWeight],
+        n: usize,
+        k: usize,
+        group_size: usize,
+    ) -> Result<Vec<QuantizedWeight>> {
+        let num_experts = src.len();
+        let packed_each = n * (k / 2);
+        let scale_each = n * (k / group_size);
+        anyhow::ensure!(
+            packed_each > 0 && scale_each > 0,
+            "transpose_experts_gpu: zero-sized projection (n={n} k={k} gs={group_size})"
+        );
+
+        // One slab per buffer instead of two allocations per expert.
+        let packed_slab = gpu.alloc(num_experts * packed_each)?;
+        let scale_slab = gpu.alloc(num_experts * scale_each)?;
+
+        // Destinations carve the slabs; a NULL source keeps a NULL slot so the
+        // kernel's own NULL guard skips that expert (EP-remote convention).
+        let mut out = Vec::with_capacity(num_experts);
+        for (e, w) in src.iter().enumerate() {
+            if w.is_null() {
+                out.push(QuantizedWeight::null());
+            } else {
+                out.push(QuantizedWeight {
+                    weight: packed_slab.offset(e * packed_each),
+                    weight_scale: scale_slab.offset(e * scale_each),
+                    weight_scale_2: w.weight_scale_2,
+                    input_scale: w.input_scale,
+                    weight_scale_2_vec: w.weight_scale_2_vec,
+                });
+            }
+        }
+
+        let src_tbl = build_ptr_table_from_qw(src, gpu)?;
+        let dst_tbl = build_ptr_table_from_qw(&out, gpu)?;
+        let stream = gpu.default_stream();
+        // Packed [n, k/2] -> [k/2, n].
+        crate::layers::ops::moe_transpose_u8_batched(
+            gpu,
+            self.moe_transpose_u8_batched_k,
+            src_tbl.packed_ptrs,
+            dst_tbl.packed_ptrs,
+            n as u32,
+            (k / 2) as u32,
+            num_experts as u32,
+            stream,
+        )?;
+        // Scales [n, k/group_size] -> [k/group_size, n].
+        crate::layers::ops::moe_transpose_u8_batched(
+            gpu,
+            self.moe_transpose_u8_batched_k,
+            src_tbl.scale_ptrs,
+            dst_tbl.scale_ptrs,
+            n as u32,
+            (k / group_size) as u32,
+            num_experts as u32,
+            stream,
+        )?;
+        gpu.synchronize(stream)?;
+        // The pointer tables were scratch for the launch only.
+        gpu.free(src_tbl.packed_ptrs)?;
+        gpu.free(src_tbl.scale_ptrs)?;
+        gpu.free(src_tbl.scale2_vals)?;
+        gpu.free(dst_tbl.packed_ptrs)?;
+        gpu.free(dst_tbl.scale_ptrs)?;
+        gpu.free(dst_tbl.scale2_vals)?;
+        Ok(out)
+    }
+
     /// Build per-expert swizzled SFB weight-scale tables for the CUTLASS grouped
     /// NVFP4 path (`ATLAS_HOLO_MOE_GROUPED_CUTLASS`). For each expert, swizzle the
     /// `[K/16,N]` `gate_ptrs_t`/`up_ptrs_t` scale into the CUTLASS SFB atom via
@@ -327,12 +422,25 @@ impl MoeLayer {
         let num = self.weights.experts.len();
         // Swizzled SFB atom size (bytes): round_up(N,128) * round_up(K/16,4).
         let sfb_len = |n: usize, k: usize| n.div_ceil(128) * 128 * (k / 16).div_ceil(4) * 4;
-        let (gate_scale_dev, up_scale_dev) =
+        // Prefer the Atlas-transposed [K/16,N] scales when they exist. Without
+        // them (a checkpoint served straight from its native tables, e.g.
+        // Laguna with the unified transpose disabled) fall back to the
+        // ORIGINAL [N,K/16] scales and tell the packer to read N-major — the
+        // SFB output is identical, so this avoids materialising a transposed
+        // copy purely to feed the swizzle.
+        let (gate_scale_dev, up_scale_dev, src_n_major) =
             match (self.gate_ptrs_t.as_ref(), self.up_ptrs_t.as_ref()) {
-                (Some(g), Some(u)) => (g.scale_ptrs, u.scale_ptrs),
-                _ => return Ok(()),
+                (Some(g), Some(u)) => (g.scale_ptrs, u.scale_ptrs, false),
+                _ => (self.gate_ptrs.scale_ptrs, self.up_ptrs.scale_ptrs, true),
             };
-        let down_scale_dev = self.down_ptrs_t.as_ref().map(|d| d.scale_ptrs);
+        if gate_scale_dev.is_null() || up_scale_dev.is_null() {
+            return Ok(());
+        }
+        let down_scale_dev = match self.down_ptrs_t.as_ref() {
+            Some(d) => Some(d.scale_ptrs),
+            None if !self.down_ptrs.scale_ptrs.is_null() => Some(self.down_ptrs.scale_ptrs),
+            None => None,
+        };
         let mut owned: Vec<DevicePtr> = Vec::new();
         // Swizzle each expert's [K/16,N] scale into the CUTLASS SFB atom. `n`/`k`
         // are the projection's GEMM dims: gate/up = (inter, hidden); down = (hidden, inter).
@@ -350,7 +458,14 @@ impl MoeLayer {
                     continue; // remote/placeholder expert
                 }
                 let sfb = gpu.alloc(len)?;
-                spark_runtime::cutlass::pack_weight_sfb(sptr, sfb.0, n as u32, k as u32, stream)?;
+                spark_runtime::cutlass::pack_weight_sfb(
+                    sptr,
+                    sfb.0,
+                    n as u32,
+                    k as u32,
+                    src_n_major,
+                    stream,
+                )?;
                 sfb_ptrs[e] = sfb.0;
                 owned.push(sfb);
             }

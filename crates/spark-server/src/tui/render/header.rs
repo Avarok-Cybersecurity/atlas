@@ -37,6 +37,91 @@ pub(crate) fn status_pill(app: &App) -> Span<'static> {
     )
 }
 
+/// The download chip: proof a transfer is alive, from ANY section.
+///
+/// ★ Why this exists. Every download signal used to live in the Library list —
+/// the row mark, the glowing dot, the progress line. Switch to Main or Stats
+/// and a 20 GB pull became completely invisible: reported as "I don't see ANY
+/// indication of downloading except an 'x to cancel'-like tag at the bottom",
+/// where that tag was the Library footer's STATIC hint, present whether or not
+/// anything was running. So the one place that is on screen in every section
+/// now carries it.
+///
+/// Returns `None` when nothing is downloading, so the header is byte-identical
+/// to before in the common case.
+///
+/// Tiers by width rather than one truncated string: the fields degrade
+/// right-to-left (rate, then name, then the number), because the glyph alone
+/// still answers "is something moving" and that is the question this element
+/// exists for.
+pub(crate) fn download_chip(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
+    let job = app.download.job.as_ref()?;
+    // The pulse is the liveness signal, and it is deliberately the SAME
+    // divisor and phase as the list row's dot: two blinkers at different
+    // cadences read as noise, one heartbeat reads as one system. At the 10 Hz
+    // tick, /4 is a 0.8 s period — /2 strobes, /8 looks static on a glance.
+    let pulse = if (app.tick / 4).is_multiple_of(2) {
+        Modifier::BOLD
+    } else {
+        Modifier::DIM
+    };
+    // Stopping is not progress: the pulse stops so the state is legible
+    // without reading the word, and under NO_COLOR that is the ONLY signal.
+    let (glyph_style, steady) = if job.cancelling {
+        (theme::warn(), true)
+    } else {
+        (theme::brand_cyan(), false)
+    };
+    let glyph = Span::styled(
+        "\u{2193} ",
+        if steady {
+            glyph_style
+        } else {
+            glyph_style.add_modifier(pulse)
+        },
+    );
+    if width < 48 {
+        // Glyph only. Still pulsing, still positioned left of the pill: that
+        // is enough to say "a transfer is running" without a number.
+        return Some(vec![glyph, Span::raw(" ")]);
+    }
+    // `fraction()` is None when the Hub reported no sizes. Bytes moved is the
+    // honest substitute — a percentage we cannot compute must never be faked,
+    // and a bar stuck at zero was the original complaint.
+    let measure = match job.fraction() {
+        Some(f) => crate::tui::format::percent(f),
+        None if job.done > 0 => crate::tui::format::bytes(job.done),
+        None => "resolving\u{2026}".to_string(),
+    };
+    let mut out = vec![glyph];
+    if job.cancelling {
+        out.push(Span::styled("stopping", theme::warn()));
+        out.push(Span::raw(" "));
+        return Some(out);
+    }
+    if width >= 60 {
+        // The repo tail, not the full id: the org prefix is the same for every
+        // model a user pulls, so it spends columns without distinguishing.
+        let tail = job.repo.rsplit('/').next().unwrap_or(&job.repo);
+        let cap = if width >= 96 { 24 } else { 16 };
+        let name: String = if tail.chars().count() > cap {
+            tail.chars().take(cap - 1).collect::<String>() + "\u{2026}"
+        } else {
+            tail.to_string()
+        };
+        out.push(Span::styled(format!("{name} \u{b7} "), theme::text2()));
+    }
+    out.push(Span::styled(measure, theme::text2()));
+    if width >= 96 && job.rate_bps > 0.0 {
+        out.push(Span::styled(
+            format!(" \u{b7} {}", crate::tui::format::rate(job.rate_bps)),
+            theme::text2(),
+        ));
+    }
+    out.push(Span::raw(" "));
+    Some(out)
+}
+
 pub(crate) fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
     // Chevron wave only during loading (motion restraint).
     //
@@ -50,10 +135,18 @@ pub(crate) fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
     };
     let up = app.started.elapsed().as_secs();
     let uptime = fmt_uptime(up);
-    let right = Line::from(vec![
-        status_pill(app),
-        Span::styled(format!("  {uptime} "), theme::text2()),
-    ]);
+    // The chip sits LEFT of the pill, never in it: the pill answers "is the
+    // server ok" and is reversed-bold for that reason; the chip answers "is my
+    // transfer moving" at `text2` weight so a glance ranks the two correctly.
+    let chip = download_chip(app, area.width);
+    let mut right_spans = Vec::new();
+    if !tall && let Some(c) = chip.as_ref() {
+        right_spans.extend(c.iter().cloned());
+        right_spans.push(Span::raw(" "));
+    }
+    right_spans.push(status_pill(app));
+    right_spans.push(Span::styled(format!("  {uptime} "), theme::text2()));
+    let right = Line::from(right_spans);
     if tall {
         let lines = logo::three_line(wave);
         for (i, line) in lines.into_iter().enumerate() {
@@ -88,6 +181,19 @@ pub(crate) fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
                 ..area
             },
         );
+        // Row 2 is the only right-hand row the tall header leaves empty (0 is
+        // the pill cluster, 1 the mini-strip), so the chip lands there —
+        // directly under the pill without sharing its row.
+        if let Some(c) = chip {
+            f.render_widget(
+                Paragraph::new(Line::from(c)).alignment(ratatui::layout::Alignment::Right),
+                Rect {
+                    y: area.y + 2,
+                    height: 1,
+                    ..area
+                },
+            );
+        }
     } else {
         f.render_widget(Paragraph::new(logo::one_line(wave)), area);
         f.render_widget(

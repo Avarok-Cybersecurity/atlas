@@ -24,67 +24,27 @@ impl MoeLayer {
         let total_expanded = n * top_k;
         let ne = num_experts as usize;
 
-        let (gp, up, dp, sg, su, sd) = match (
+        let (gp, up, dp) = match (
             self.bf16_gate_weight_ptrs,
             self.bf16_up_weight_ptrs,
             self.bf16_down_weight_ptrs,
-            self.bf16_shared_gate,
-            self.bf16_shared_up,
-            self.bf16_shared_down,
         ) {
-            (Some(g), Some(u), Some(d), Some(sg), Some(su), Some(sd)) => (g, u, d, sg, su, sd),
+            (Some(g), Some(u), Some(d)) => (g, u, d),
             _ => anyhow::bail!("BF16 expert pointer tables not set"),
         };
 
         // ── Shared expert (BF16 dense GEMM) ──
-        let has_shared = shared_inter > 0 && !sg.is_null();
+        let has_shared = shared_inter > 0 && self.bf16_shared_expert.is_some();
         if has_shared {
-            let shared_gate_out = ctx.buffers.ssm_deinterleaved();
-            let shared_up_out = ctx.buffers.ssm_qkvz();
-            let sh_gate_w = DenseWeight { weight: sg };
-            let sh_up_w = DenseWeight { weight: su };
-            let sh_down_w = DenseWeight { weight: sd };
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm,
+            self.run_bf16_shared_expert(
                 input,
-                &sh_gate_w,
-                shared_gate_out,
-                n,
-                shared_inter,
-                h,
-                stream,
-            )?;
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm,
-                input,
-                &sh_up_w,
-                shared_up_out,
-                n,
-                shared_inter,
-                h,
-                stream,
-            )?;
-            ops::silu_mul(
-                ctx.gpu,
-                self.moe_act_mul,
-                shared_gate_out,
-                shared_up_out,
-                shared_gate_out,
-                n * shared_inter,
-                stream,
-            )?;
-            let shared_down_out = ctx.buffers.attn_output();
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm,
-                shared_gate_out,
-                &sh_down_w,
-                shared_down_out,
                 n,
                 h,
                 shared_inter,
+                ctx.buffers.ssm_deinterleaved(),
+                ctx.buffers.ssm_qkvz(),
+                ctx.buffers.attn_output(),
+                ctx,
                 stream,
             )?;
         }
@@ -107,9 +67,10 @@ impl MoeLayer {
                 stream,
             )?;
         } else {
-            ops::dense_gemm(
+            ops::dense_gemm_prefill(
                 ctx.gpu,
                 self.dense_gemm,
+                self.dense_gemm_pipelined,
                 router_in,
                 &self.weights.gate,
                 gate_logits,

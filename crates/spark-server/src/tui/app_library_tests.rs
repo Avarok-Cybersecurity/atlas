@@ -15,6 +15,10 @@ fn library() -> App {
     a
 }
 
+fn key(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE)
+}
+
 fn last_toast(a: &App) -> (&str, bool) {
     let t = a.toasts.last().expect("a toast");
     (t.text.as_str(), t.error)
@@ -72,4 +76,52 @@ fn cancelling_when_nothing_is_downloading_is_not_an_error() {
     let mut a = library();
     a.on_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(last_toast(&a), ("nothing is downloading", false));
+}
+
+/// Asking for a SECOND download must ask, not refuse. The old behaviour was a
+/// toast naming the running job — accurate, and a dead end: the way forward
+/// was to know `x` stops it, find its row, press it, then press `d` again.
+#[test]
+fn a_second_download_opens_the_question_instead_of_refusing() {
+    let mut a = library();
+    let root = std::env::temp_dir().join("atlas-switch");
+    std::fs::create_dir_all(&root).ok();
+    a.download.start("org/first", root);
+    a.download_switch = None;
+    // Ask for a different model while the first is running.
+    a.download_switch = Some(("org/first".to_string(), "org/second".to_string()));
+    assert!(a.download_switch.is_some(), "the question is open");
+
+    // Any key that is not affirmative keeps the running download.
+    let consumed = a.answer_download_switch(key('n'));
+    assert!(consumed, "the question owns the keyboard");
+    assert!(a.download_switch.is_none(), "answered");
+    assert!(a.pending_start.is_none(), "nothing was queued");
+    assert!(a.download.job.is_some(), "the running download survives");
+}
+
+/// The affirmative queues the wanted model rather than starting it next to the
+/// running one — the one-job invariant is the whole reason the question exists.
+#[test]
+fn the_affirmative_queues_the_second_download_it_does_not_race_it() {
+    let mut a = library();
+    let root = std::env::temp_dir().join("atlas-switch2");
+    std::fs::create_dir_all(&root).ok();
+    a.download.start("org/first", root);
+    a.download_switch = Some(("org/first".to_string(), "org/second".to_string()));
+
+    assert!(a.answer_download_switch(key('x')));
+    assert_eq!(
+        a.pending_start.as_deref(),
+        Some("org/second"),
+        "queued, not started"
+    );
+    // Still exactly one job tracked: B must not start until the slot is free.
+    assert!(
+        a.download
+            .job
+            .as_ref()
+            .is_some_and(|j| j.repo == "org/first"),
+        "B must not have displaced A"
+    );
 }

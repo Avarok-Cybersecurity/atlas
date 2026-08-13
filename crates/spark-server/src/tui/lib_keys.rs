@@ -31,9 +31,10 @@ pub enum Outcome {
 }
 
 impl LibState {
-    /// True while a text field owns the keyboard, so global bindings stand down.
+    /// True while a text field or a picker owns the keyboard, so global
+    /// bindings stand down.
     pub fn is_editing(&self) -> bool {
-        self.editing || self.filter_editing
+        self.editing || self.filter_editing || self.modal.is_some()
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Outcome {
@@ -152,6 +153,12 @@ impl LibState {
     }
 
     fn config_key(&mut self, key: KeyEvent) -> Outcome {
+        // An open picker outranks everything below, exactly as `editing`
+        // does: two owners for one keystroke is how Esc closes the modal AND
+        // leaves the form.
+        if self.modal.is_some() {
+            return self.modal_key(key);
+        }
         if self.editing {
             return self.edit_key(key);
         }
@@ -161,14 +168,18 @@ impl LibState {
                 self.row = (self.row + 1).min(rows - 1);
             }
             KeyCode::Up | KeyCode::Char('k') => self.row = self.row.saturating_sub(1),
-            KeyCode::Enter => {
-                // Seed the buffer with the current value: editing a setting is
-                // usually adjusting it, not retyping it.
-                if let Some((_, value, _)) = self.config_rows().into_iter().nth(self.row) {
-                    self.edit_buffer = value;
-                    self.editing = true;
-                }
-            }
+            // Enter dispatches on the field: closed set → picker, free text →
+            // buffer, removed → restore. See `lib_config`.
+            KeyCode::Enter => return self.open_value_editor(),
+            // `a` beside `d`/`x` and not `+`: every verb in this pane is a
+            // letter, and a chord-ish symbol would be the one binding a user
+            // cannot guess from the footer.
+            KeyCode::Char('a') => return self.open_add_modal(),
+            // `b` borrow: apply another recipe's parameters over this form.
+            // A letter for the same reason as `a`, and mnemonic enough that
+            // the footer hint can teach it in one word.
+            KeyCode::Char('b') => return self.open_borrow_modal(),
+            KeyCode::Char('x') => return self.toggle_removed(),
             KeyCode::Char('d') => {
                 self.reset_overrides();
                 return Outcome::Toast {
@@ -192,8 +203,7 @@ impl LibState {
             KeyCode::Esc => {
                 // Cancel discards the buffer and leaves the committed value —
                 // and any error from a PREVIOUS commit, which is still true.
-                self.editing = false;
-                self.edit_buffer.clear();
+                self.cancel_edit();
             }
             KeyCode::Backspace => {
                 self.edit_buffer.pop();

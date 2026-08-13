@@ -86,6 +86,15 @@ impl PrefixCache for NoPrefixCaching {
 
     fn release(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) {}
 
+    fn release_matched(
+        &self,
+        _tokens: &[u32],
+        _block_size: usize,
+        _matched_tokens: usize,
+        _adapter_id: u64,
+    ) {
+    }
+
     fn evict(&self, _num_blocks: usize) -> EvictedBlocks {
         EvictedBlocks::default()
     }

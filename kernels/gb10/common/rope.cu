@@ -404,6 +404,51 @@ extern "C" __global__ void rope_forward_yarn(
     ptr[d1] = __float2bfloat16(y1);
 }
 
+// Standard (NeoX-style) YaRN with the model's explicit attention factor.
+// Only the rotated prefix is scaled; pass-through head channels stay unchanged.
+extern "C" __global__ void rope_forward_yarn_scaled(
+    __nv_bfloat16* __restrict__ Q,
+    __nv_bfloat16* __restrict__ K,
+    const unsigned int* __restrict__ positions,
+    const unsigned int seq_len,
+    const unsigned int num_q_heads,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int rotary_dim,
+    const float* __restrict__ inv_freq,
+    const float attention_factor
+) {
+    const unsigned int head_idx = blockIdx.x;
+    const unsigned int seq_block = blockIdx.y;
+    const unsigned int batch = blockIdx.z;
+    const unsigned int tid = threadIdx.x;
+    const bool is_q = head_idx < num_q_heads;
+    const unsigned int head = is_q ? head_idx : head_idx - num_q_heads;
+    if (!is_q && head >= num_kv_heads) return;
+
+    const unsigned int pairs_per_pos = rotary_dim / 2;
+    const unsigned int pos_per_block = 128 / pairs_per_pos;
+    const unsigned int local_pos = tid / pairs_per_pos;
+    const unsigned int pair_idx = tid % pairs_per_pos;
+    const unsigned int seq_pos = seq_block * pos_per_block + local_pos;
+    if (seq_pos >= seq_len) return;
+
+    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
+    __nv_bfloat16* ptr = (is_q ? Q : K)
+        + batch * seq_len * num_heads * head_dim
+        + seq_pos * num_heads * head_dim
+        + head * head_dim;
+    const float angle = (float)positions[batch * seq_len + seq_pos] * inv_freq[pair_idx];
+    const float cos_val = cosf(angle) * attention_factor;
+    const float sin_val = sinf(angle) * attention_factor;
+    const unsigned int d0 = pair_idx;
+    const unsigned int d1 = pair_idx + pairs_per_pos;
+    const float x0 = __bfloat162float(ptr[d0]);
+    const float x1 = __bfloat162float(ptr[d1]);
+    ptr[d0] = __float2bfloat16(x0 * cos_val - x1 * sin_val);
+    ptr[d1] = __float2bfloat16(x1 * cos_val + x0 * sin_val);
+}
+
 // rope_forward_yarn_interleaved — GPT-J / is_neox_style=False variant.
 //
 // DeepSeek MLA (V2/V3/V4) stores the rope channels in INTERLEAVED layout:

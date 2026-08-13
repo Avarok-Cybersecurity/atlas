@@ -313,6 +313,7 @@ fn a_pending_pre_flight_reports_that_it_is_still_checking() {
 fn the_run_pane_scrolls_and_clamps_at_the_top() {
     let mut s = state();
     s.view = View::Run;
+    s.table_scroll_max.set(30); // j clamps against the published ceiling now
     for _ in 0..3 {
         s.on_key(key(KeyCode::Char('j')), BenchSub::Suite);
     }
@@ -395,4 +396,50 @@ fn record() -> atlas_plugin::RunRecord {
             elapsed: std::time::Duration::from_secs(1),
         },
     )
+}
+
+/// `draw_table` clamps the DISPLAY, so an unclamped offset banked invisible
+/// presses; and `G`/End is the advertised bottom half the Run view lacked.
+#[test]
+fn the_run_table_clamps_at_its_published_ceiling_and_answers_g_end() {
+    let mut s = state();
+    s.view = View::Run;
+    s.table_scroll_max.set(12);
+    for _ in 0..40 {
+        s.on_key(key(KeyCode::Char('j')), BenchSub::Suite);
+    }
+    assert_eq!(s.table_scroll, 12, "j stops at the last row, never banks");
+    s.on_key(key(KeyCode::Char('k')), BenchSub::Suite);
+    assert_eq!(s.table_scroll, 11, "one press up means one row up");
+
+    s.on_key(key(KeyCode::Char('g')), BenchSub::Suite);
+    assert_eq!(s.table_scroll, 0);
+    s.on_key(key(KeyCode::Char('G')), BenchSub::Suite);
+    assert_eq!(s.table_scroll, 12);
+    s.on_key(key(KeyCode::End), BenchSub::Suite);
+    assert_eq!(s.table_scroll, 12, "End is the same jump");
+}
+
+/// A stored 40-row sweep was readable only down to the pane height: History
+/// passed scroll=0 and bound nothing to move it. j/k stay on run selection;
+/// the page pair moves the table; changing runs resets the offset, which
+/// described another run's table.
+#[test]
+fn the_history_table_pages_and_a_selection_change_resets_it() {
+    let mut s = state();
+    s.history_table_scroll_max.set(20);
+    s.on_key(key(KeyCode::PageDown), BenchSub::History);
+    assert_eq!(s.history_table_scroll, 5);
+    for _ in 0..10 {
+        s.on_key(key(KeyCode::PageDown), BenchSub::History);
+    }
+    assert_eq!(s.history_table_scroll, 20, "clamped at the ceiling");
+    s.on_key(key(KeyCode::PageUp), BenchSub::History);
+    assert_eq!(s.history_table_scroll, 15);
+
+    s.on_key(key(KeyCode::Char('k')), BenchSub::History);
+    assert_eq!(
+        s.history_table_scroll, 0,
+        "the offset described another run's table"
+    );
 }

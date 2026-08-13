@@ -1,0 +1,66 @@
+{# Poolside Laguna native chat format, adapted for MiniJinja. #}
+{{- "〈|EOS|〉" -}}
+{%- set enable_thinking = enable_thinking | default(false) -%}
+{%- set add_generation_prompt = add_generation_prompt | default(false) -%}
+{%- set system_message = "You are a helpful, conversationally-fluent assistant made by Poolside. You are here to be helpful to users through natural language conversations." -%}
+{%- if messages and messages[0].role == "system" -%}
+  {%- set system_message = messages[0].content -%}
+  {%- set messages = messages[1:] -%}
+{%- endif -%}
+{%- set has_sys = system_message and system_message.strip() -%}
+{%- if has_sys or tools or enable_thinking -%}
+  {{- "<system>" -}}
+  {%- if has_sys -%}
+    {{- system_message.rstrip() -}}
+    {%- if tools -%}{{- "\n\n" -}}{%- endif -%}
+  {%- endif -%}
+  {%- if tools -%}
+    {{- "### Tools\n\nYou may call functions to assist with the user query.\nAll available function signatures are listed below:\n<available_tools>\n" -}}
+    {%- for tool in tools -%}
+      {{- (tool | tojson_hf) ~ "\n" -}}
+    {%- endfor -%}
+    {{- "</available_tools>" -}}
+  {%- endif -%}
+  {{- "</system>\n" -}}
+{%- endif -%}
+{%- for message in messages -%}
+  {%- set content = message.content if message.content is string else "" -%}
+  {%- if message.role == "user" -%}
+    {{- "<user>" + content + "</user>\n" -}}
+  {%- elif message.role == "assistant" -%}
+    {{- "<assistant>" -}}
+    {%- set reasoning_content = "" -%}
+    {%- if message.reasoning is string -%}
+      {%- set reasoning_content = message.reasoning -%}
+    {%- elif message.reasoning_content is string -%}
+      {%- set reasoning_content = message.reasoning_content -%}
+    {%- endif -%}
+    {%- if enable_thinking -%}
+      {{- "<think>" + reasoning_content + "</think>" -}}
+    {%- else -%}
+      {{- "</think>" -}}
+    {%- endif -%}
+    {%- if content -%}{{- content -}}{%- endif -%}
+    {%- if message.tool_calls -%}
+      {%- for tool_call in message.tool_calls -%}
+        {%- set function_data = tool_call.function -%}
+        {{- "<tool_call>" + function_data.name -}}
+        {%- for key, value in function_data.arguments.items() -%}
+          {{- "<arg_key>" ~ key ~ "</arg_key><arg_value>" -}}
+          {{- value | tojson_hf if value is not string else value -}}
+          {{- "</arg_value>" -}}
+        {%- endfor -%}
+        {{- "</tool_call>" -}}
+      {%- endfor -%}
+    {%- endif -%}
+    {{- "</assistant>\n" -}}
+  {%- elif message.role == "tool" -%}
+    {{- "<tool_response>" + content + "</tool_response>\n" -}}
+  {%- elif message.role == "system" -%}
+    {{- "<system>" + content + "</system>\n" -}}
+  {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+  {{- "<assistant>" -}}
+  {%- if enable_thinking -%}{{- "<think>" -}}{%- else -%}{{- "</think>" -}}{%- endif -%}
+{%- endif -%}

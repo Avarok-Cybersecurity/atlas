@@ -79,6 +79,11 @@ impl MoeLayer {
             w4a16_gemv: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            dense_gemm_pipelined: super::super::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined",
+            ),
             // FP32 gate path (ATLAS_FP32_GATE) — optional; KernelHandle(0) if the
             // target's kernel set predates these symbols, dispatch then stays BF16.
             dense_gemm_f32out: super::super::try_kernel(gpu, "gemm", "dense_gemm_bf16_f32out"),
@@ -409,9 +414,7 @@ impl MoeLayer {
             bf16_gate_weight_ptrs: None,
             bf16_up_weight_ptrs: None,
             bf16_down_weight_ptrs: None,
-            bf16_shared_gate: None,
-            bf16_shared_up: None,
-            bf16_shared_down: None,
+            bf16_shared_expert: None,
             fp8_shared_expert: None,
             moe_down_t_k64_fp4: super::super::try_kernel(
                 gpu,

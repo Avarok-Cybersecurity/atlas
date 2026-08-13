@@ -153,7 +153,18 @@ impl TransformerModel {
             None
         };
         let mut layer_times: Vec<u128> = Vec::new();
+        // HOST-TIME instrumentation (ATLAS_PREFILL_HOST_TIMING=1). Distinct
+        // from `profile_now`: that path synchronizes per layer, which
+        // serialises host and device and hides the host-side cost this is
+        // meant to expose. Here NOTHING synchronizes — these are pure host
+        // wall-clock spans, to be compared against the GPU-busy time an nsys
+        // trace reports for the same request.
+        let host_timing = std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1");
+        let t_loop = host_timing.then(std::time::Instant::now);
+        let mut t_in_prefill = std::time::Duration::ZERO;
+        let mut t_dflash = std::time::Duration::ZERO;
         for (i, layer) in self.layers.iter().enumerate() {
+            let t_pf = host_timing.then(std::time::Instant::now);
             let lt0 = if profile_now {
                 self.gpu.synchronize(stream)?;
                 Some(std::time::Instant::now())
@@ -193,6 +204,10 @@ impl TransformerModel {
                     )
                     .map_err(|e| anyhow::anyhow!("Prefill chunk layer {i} failed: {e}"))?;
             }
+            if let Some(t) = t_pf {
+                t_in_prefill += t.elapsed();
+            }
+            let t_df = host_timing.then(std::time::Instant::now);
             // DFlash chunked-prefill capture.
             self.try_dflash_prefill_capture_layer(
                 seq,
@@ -201,6 +216,9 @@ impl TransformerModel {
                 proc_count,
                 stream,
             )?;
+            if let Some(t) = t_df {
+                t_dflash += t.elapsed();
+            }
             if let Some(lt0) = lt0 {
                 self.gpu.synchronize(stream)?;
                 layer_times.push(lt0.elapsed().as_micros());
@@ -283,6 +301,31 @@ impl TransformerModel {
                 );
             }
         }
+        if let Some(t) = t_loop {
+            let wall = t.elapsed();
+            let ffn_us = crate::layers::qwen3_attention::take_ffn_host_us();
+            let ph = crate::layers::qwen3_attention::take_attn_phase_us();
+            // loop_wall is the host's own elapsed time across the whole layer
+            // dispatch. `in_prefill` is time inside layer.prefill() itself,
+            // `dflash` is the per-layer DFlash capture (expected ~0 for models
+            // with DFlash disabled), and the remainder is other per-layer
+            // bookkeeping. Compare loop_wall against nsys GPU-busy time: the
+            // difference is host work not overlapped with the device.
+            tracing::info!(
+                "PREFILL HOST TIMING layers={} tokens={}: loop_wall={:.1}ms in_prefill={:.1}ms ffn={:.1}ms attn_rest={:.1}ms dflash={:.1}ms | qkv={:.1}ms mid={:.1}ms attn_kernel={:.1}ms",
+                self.layers.len(),
+                proc_count,
+                wall.as_secs_f64() * 1e3,
+                t_in_prefill.as_secs_f64() * 1e3,
+                ffn_us as f64 / 1e3,
+                (t_in_prefill.as_micros() as f64 - ffn_us as f64) / 1e3,
+                t_dflash.as_secs_f64() * 1e3,
+                ph[0] as f64 / 1e3,
+                ph[1] as f64 / 1e3,
+                ph[2] as f64 / 1e3,
+            );
+        }
+
         // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
         // rows for the whole-prompt drafter prefill. No-op when disabled.
         self.try_mtp_prefill_capture(seq, effective_seq_len_start, proc_count, stream)?;

@@ -193,6 +193,15 @@ pub struct BatchedAttnMetadata {
     /// dereferences the indptr on the CPU, and per-request slice offsets are
     /// computed host-side. Empty in the legacy path.
     pub cu_seqlens_host: Vec<i32>,
+    /// VARLEN geometry: per-stream KV length `[batch_size]` i32 on device,
+    /// `kv_lens[b] = chunk_start + per-stream token count`. The batched paged
+    /// attention kernels need this per stream: a single scalar at the MAX
+    /// makes short streams index their block_table past the blocks they
+    /// actually own, and applies the wrong causal bound. `DevicePtr::NULL` in
+    /// the legacy same-length path (kernels fall back to the scalar `kv_len`).
+    pub kv_lens: DevicePtr,
+    /// Host copy of `kv_lens`. Empty in the legacy path.
+    pub kv_lens_host: Vec<i32>,
     /// Maximum block_table length across the batch (kernel uses for
     /// bounds checking; per-stream block_table reads via the pointer
     /// array dereference).

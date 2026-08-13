@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub use super::app_types::{OpsState, Toast};
 pub use super::section::Section;
 
 use super::bench_state::BenchState;
@@ -39,22 +40,6 @@ pub enum Focus {
     Sidebar,
     Content,
     Input,
-}
-
-pub struct Toast {
-    pub text: String,
-    pub error: bool,
-    pub at: Instant,
-}
-
-/// Ops REPL state.
-#[derive(Default)]
-pub struct OpsState {
-    pub input: String,
-    pub history: Vec<String>,
-    pub history_pos: Option<usize>,
-    pub output: Vec<String>,
-    pub scroll_up: usize,
 }
 
 pub struct App {
@@ -112,6 +97,13 @@ pub struct App {
     pub lib: crate::tui::lib_state::LibState,
     /// Model downloads and update checks.
     pub download: crate::tui::download_state::DownloadState,
+    /// Where the Library's search field was drawn, published by the renderer
+    /// for the mouse handler — same pattern as the scroll ceilings below, and
+    /// for the same reason `render::Chrome` is shared: a hit-tester holding
+    /// its own copy of the layout math drifts from what is actually on
+    /// screen, and the failure is silent. `None` whenever the last frame did
+    /// not draw the field.
+    pub lib_search_click: std::cell::Cell<Option<ratatui::layout::Rect>>,
     /// Scroll ceilings, published by the renderer. See `app_scroll`.
     pub log_scroll_max: std::cell::Cell<usize>,
     pub kernel_scroll_max: std::cell::Cell<usize>,
@@ -123,20 +115,45 @@ pub struct App {
     /// survive the ticks between button-down and button-up.
     pub selection: Option<crate::tui::selection::Selection>,
     pub network_selected: usize,
-    pub network_detail: bool,
     pub ops: OpsState,
     pub chat: ChatState,
     pub bench: BenchState,
+    /// The Help section: the guide pane and the issue-report pipeline.
+    pub help: crate::tui::help_state::HelpState,
     /// The running scheduler's levers, published by `serve` once the run
     /// starts. `None` until then — the ops commands that toggle a lever say
     /// so rather than silently doing nothing.
     pub run: Option<crate::tui::RunHandles>,
     pub toasts: Vec<Toast>,
     pub help_open: bool,
+    /// Help-modal scroll offset: at the 80x24 floor the key table is taller
+    /// than the modal, and a fixed view left its last rows unreadable.
+    pub help_scroll: usize,
+    pub help_scroll_max: std::cell::Cell<usize>,
     /// A `q` that would have destroyed work in flight, waiting to be answered.
     /// Set only when [`App::work_in_flight`] named something; an idle
     /// dashboard still quits on the first press.
     pub confirm_quit: bool,
+    /// A `Ctrl+N` waiting to be answered before it discards the chat
+    /// transcript. Set only when there is a conversation to lose — same rule
+    /// as `confirm_quit`, and for the same reason: a prompt that is usually
+    /// pointless is one the user learns to dismiss without reading.
+    pub confirm_chat_clear: bool,
+    /// An open "one download at a time" question: which job is running, and
+    /// which one the user just asked for.
+    ///
+    /// A modal rather than the old refusal toast because the toast named the
+    /// constraint and then left the user with nothing to do about it — the
+    /// only way forward was to know that `x` stops the running one, go find
+    /// its row, press it, and press `d` again.
+    pub download_switch: Option<(String, String)>,
+    /// A download to start as soon as the running one lets go of the slot.
+    ///
+    /// The one-job invariant is real (two multi-gigabyte pulls halve each other
+    /// on the same NVMe and write into the same cache dir), so B cannot simply
+    /// be started next to A. Cancellation is honoured within a chunk, so this
+    /// waits for the slot rather than racing it.
+    pub pending_start: Option<String>,
     pub tick: u64,
     pub should_quit: bool,
     pub detach: bool,
@@ -178,18 +195,24 @@ impl App {
             library_dirty: true,
             download: Default::default(),
             selection: None,
+            lib_search_click: std::cell::Cell::new(None),
             log_scroll_max: std::cell::Cell::new(0),
             kernel_scroll_max: std::cell::Cell::new(0),
             chat_scroll_max: std::cell::Cell::new(0),
             lib: Default::default(),
             network_selected: 0,
-            network_detail: false,
             ops: OpsState::default(),
             chat: ChatState::default(),
             bench: BenchState::default(),
+            help: Default::default(),
             toasts: Vec::new(),
             help_open: false,
+            help_scroll: 0,
+            help_scroll_max: std::cell::Cell::new(0),
             confirm_quit: false,
+            confirm_chat_clear: false,
+            download_switch: None,
+            pending_start: None,
             tick: 0,
             should_quit: false,
             detach: false,
@@ -197,8 +220,16 @@ impl App {
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
+        let text = text.into();
+        // An error toast expires in 12 s and was written nowhere else, so one
+        // that fired while the operator watched another window was simply
+        // gone — launch refusals and download failures reached the user only
+        // as toasts. WARN puts it in the log ring and the tee for free.
+        if error {
+            tracing::warn!("{text}");
+        }
         self.toasts.push(Toast {
-            text: text.into(),
+            text,
             error,
             at: Instant::now(),
         });
@@ -265,6 +296,7 @@ impl App {
         self.log_filter_editing
             || (self.section == Section::Library && self.lib.is_editing())
             || (self.section == Section::Benchmarks && self.bench.is_editing())
+            || (self.section == Section::Help && self.help.is_editing())
             || (self.section == Section::Terminal && self.focus == Focus::Input)
     }
 
@@ -286,8 +318,17 @@ impl App {
         if self.confirm_quit && self.answer_quit_prompt(key) {
             return;
         }
+        // Same rule as the quit prompt: an open question owns the keyboard.
+        // Placed after it deliberately — stopping the SERVER outranks a
+        // question about a download.
+        if self.download_switch.is_some() && self.answer_download_switch(key) {
+            return;
+        }
+        if self.confirm_chat_clear && self.answer_chat_clear(key) {
+            return;
+        }
         if self.help_open {
-            self.help_open = false;
+            self.on_help_overlay_key(key);
             return;
         }
         if self.in_input() {
@@ -303,6 +344,7 @@ impl App {
             KeyCode::Char('4') => self.jump(Section::Library),
             KeyCode::Char('5') => self.jump(Section::Benchmarks),
             KeyCode::Char('6') => self.jump(Section::Terminal),
+            KeyCode::Char('7') => self.jump(Section::Help),
             KeyCode::Tab => self.cycle_section(1),
             KeyCode::BackTab => self.cycle_section(-1),
             KeyCode::Char('f') if self.section == Section::Main => {
@@ -318,82 +360,15 @@ impl App {
             // step" and not "drop focus".
             _ if self.section == Section::Benchmarks => self.on_section_key(key),
             _ if self.section == Section::Library => self.on_library_key(key),
+            // Help owns its keys for the same reason the Library does: Esc
+            // there means "back one step in the report pipeline".
+            _ if self.section == Section::Help => self.on_help_key(key),
             KeyCode::Esc => {
                 self.focus = Focus::Content;
                 self.log_scroll = None;
             }
             _ => self.on_section_key(key),
         }
-    }
-
-    /// Which subsection of `s` is active, as an index into [`Section::subs`].
-    pub fn sub_index(&self, s: Section) -> usize {
-        match s {
-            Section::Main => (self.main_sub == MainSub::Kernels) as usize,
-            Section::Benchmarks => (self.bench_sub == BenchSub::History) as usize,
-            Section::Terminal => (self.term_sub == TermSub::Chat) as usize,
-            _ => 0,
-        }
-    }
-
-    fn set_sub(&mut self, s: Section, i: usize) {
-        match s {
-            Section::Main => {
-                self.main_sub = if i == 0 {
-                    MainSub::Overview
-                } else {
-                    MainSub::Kernels
-                }
-            }
-            Section::Benchmarks => {
-                self.bench_sub = if i == 0 {
-                    BenchSub::Suite
-                } else {
-                    BenchSub::History
-                }
-            }
-            Section::Terminal => self.term_sub = if i == 0 { TermSub::Ops } else { TermSub::Chat },
-            _ => {}
-        }
-    }
-
-    /// Every navigable sidebar row, flattened in the order the sidebar draws them:
-    /// one entry per subsection, or a single entry for a section that has none.
-    fn nav_rows() -> Vec<(Section, usize)> {
-        Section::ALL
-            .iter()
-            .flat_map(|s| (0..s.subs().len().max(1)).map(move |i| (*s, i)))
-            .collect()
-    }
-
-    pub(super) fn jump(&mut self, s: Section) {
-        if self.section != s {
-            self.repaint = true;
-        }
-        if self.section == s {
-            // Repeat-press cycles this section's subsections.
-            let n = s.subs().len();
-            if n > 1 {
-                self.set_sub(s, (self.sub_index(s) + 1) % n);
-            }
-        }
-        self.section = s;
-        self.focus = Focus::Content;
-    }
-
-    /// `⇥` / `⇧⇥` walk the sidebar exactly as drawn — subsection rows included.
-    /// Previously they stepped over top-level sections only, so Main ▸ Kernels was
-    /// reachable solely by pressing `1` a second time, which nothing on screen said.
-    fn cycle_section(&mut self, dir: i32) {
-        let rows = Self::nav_rows();
-        let cur = rows
-            .iter()
-            .position(|(s, i)| *s == self.section && *i == self.sub_index(*s))
-            .unwrap_or(0) as i32;
-        let (s, i) = rows[((cur + dir).rem_euclid(rows.len() as i32)) as usize];
-        self.section = s;
-        self.set_sub(s, i);
-        self.focus = Focus::Content;
     }
 
     fn on_section_key(&mut self, key: KeyEvent) {
@@ -406,6 +381,9 @@ impl App {
             // past the oldest line blanked the pane, and coming back cost as
             // many presses as had been spent going up.
             Section::Main => match self.main_sub {
+                // The help overlay advertises "g / G — top / bottom" globally,
+                // and each pane used to implement exactly half the pair. The
+                // missing half was a bound, advertised key that did nothing.
                 MainSub::Overview => {
                     if up {
                         self.scroll(-1);
@@ -413,6 +391,11 @@ impl App {
                         self.scroll(1);
                     } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
                         self.log_scroll = None;
+                    } else if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
+                        // Oldest line the pane can show; ceiling published by
+                        // the renderer, same contract as the wheel's.
+                        let max = self.log_scroll_max.get();
+                        self.log_scroll = (max > 0).then_some(max);
                     }
                 }
                 MainSub::Kernels => {
@@ -420,8 +403,10 @@ impl App {
                         self.scroll(1);
                     } else if up {
                         self.scroll(-1);
-                    } else if matches!(key.code, KeyCode::Char('g')) {
+                    } else if matches!(key.code, KeyCode::Char('g') | KeyCode::Home) {
                         self.kernel_scroll = 0;
+                    } else if matches!(key.code, KeyCode::Char('G') | KeyCode::End) {
+                        self.kernel_scroll = self.kernel_scroll_max.get();
                     }
                 }
             },
@@ -434,15 +419,16 @@ impl App {
                     self.network_selected = (self.network_selected + 1).min(n - 1);
                 } else if matches!(key.code, KeyCode::Left | KeyCode::Char('h')) {
                     self.network_selected = self.network_selected.saturating_sub(1);
-                } else if key.code == KeyCode::Enter {
-                    self.network_detail = !self.network_detail;
                 }
             }
             // Chat owns its own keys in `app_input`, where the input-focused
             // half of the same map already lives.
             Section::Terminal if self.term_sub == TermSub::Chat => self.on_chat_content_key(key),
+            // Ops scrolls its own output. It used to fall through to the
+            // empty arm below while the Terminal footer said "↑/↓ scroll".
+            Section::Terminal => self.on_ops_content_key(key),
             Section::Benchmarks => self.on_bench_key(key),
-            Section::Terminal | Section::Stats => {}
+            Section::Stats | Section::Help => {}
         }
     }
 
@@ -467,24 +453,6 @@ impl App {
             self.bench.on_key(key, self.bench_sub)
         {
             self.toast(text, error);
-        }
-    }
-
-    pub fn sidebar_click(&mut self, row_in_sidebar: usize) {
-        // Rows are laid out by render/mod.rs: one section per visual row,
-        // in Section::ALL order (subsection rows are handled there).
-        if let Some(s) = Section::ALL.get(row_in_sidebar) {
-            self.jump(*s);
-        }
-    }
-
-    /// Click on one of the ACTIVE section's subsection rows — the only ones the
-    /// sidebar draws. Selects it outright rather than cycling, because a click
-    /// names the row it landed on.
-    pub fn sidebar_sub_click(&mut self, sub: usize) {
-        if sub < self.section.subs().len() {
-            self.set_sub(self.section, sub);
-            self.focus = Focus::Content;
         }
     }
 }

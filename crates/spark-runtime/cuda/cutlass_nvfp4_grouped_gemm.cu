@@ -185,16 +185,84 @@ __global__ void pack_act_group(
   }
 }
 
+// ─── BATCHED A-pack: one launch for ALL active expert groups ───
+//
+// The per-group `pack_act_group` above was launched in a host loop, once per
+// active expert. With 256 experts that is ~256 launches per projection x 2
+// projections x 47 MoE layers = ~11.5k launches per prefill — measured (nsys)
+// as 89.3% of all prefill kernel launches for 2% of prefill GPU time, i.e.
+// ~345 ms of pure host launch overhead against 32 ms of actual work. That was
+// the dominant term in Laguna's C=1 TTFT.
+//
+// This does the identical computation with grid.z indexing the group, so the
+// whole loop becomes ONE launch. Per-group scalars come in as device arrays.
+// grid.x is sized to max(m_e) with an early exit for the ragged tail.
+template <class LayoutSFA_t>
+__global__ void pack_act_grouped_batched(
+    const __nv_bfloat16* __restrict__ act_global,  // TOKEN-MAJOR base [*, k]
+    const int* __restrict__ sorted_token_ids,      // null => identity
+    const int* __restrict__ ms_arr,                // [G] group's first sorted row
+    const int* __restrict__ m_arr,                 // [G] group row count
+    unsigned char* const* __restrict__ packed_arr, // [G] group packed-A region
+    unsigned char* const* __restrict__ scales_arr, // [G] group SFA region
+    int k,
+    LayoutSFA_t layout_sfa_dummy) {
+  const int e = blockIdx.z;
+  const int m_e = m_arr[e];
+  int row = blockIdx.x;
+  if (row >= m_e) {
+    return;  // ragged tail: grid.x is max(m_e)
+  }
+  int group = blockIdx.y * blockDim.x + threadIdx.x;
+  const int groups = k / 16;
+  if (group >= groups) {
+    return;
+  }
+  // The SFA atom's layout depends on this group's m_e, so rebuild it here
+  // rather than baking one per launch.
+  auto layout_sfa = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(
+      cute::make_shape(m_e, 1, k, 1));
+  (void)layout_sfa_dummy;
+
+  unsigned char* packed = packed_arr[e];
+  unsigned char* scales = scales_arr[e];
+  const int ms = ms_arr[e];
+
+  int gid = ms + row;
+  int tok = sorted_token_ids ? sorted_token_ids[gid] : gid;
+  const __nv_bfloat16* arow = act_global + (unsigned long long)tok * k;
+  int base = group * 16;
+  float max_abs = 0.0f;
+#pragma unroll
+  for (int i = 0; i < 16; ++i) {
+    float v = __bfloat162float(arow[base + i]);
+    max_abs = fmaxf(max_abs, fabsf(v));
+  }
+  float scale = max_abs > 0.0f ? max_abs / 6.0f : 1.0f;
+  cutlass::float_ue4m3_t sf(scale);
+  scales[layout_sfa(row, base, 0)] = *reinterpret_cast<unsigned char*>(&sf);
+  float dec = static_cast<float>(sf);
+  float inv = dec > 0.0f ? 1.0f / dec : 0.0f;
+#pragma unroll
+  for (int i = 0; i < 16; i += 2) {
+    float v0 = __bfloat162float(arow[base + i]) * inv;
+    float v1 = __bfloat162float(arow[base + i + 1]) * inv;
+    packed[(unsigned long long)row * (k / 2) + base / 2 + i / 2] =
+        static_cast<unsigned char>(float_to_e2m1_g(v0) | (float_to_e2m1_g(v1) << 4));
+  }
+}
+
 // ─── per-{n,k} SFB swizzle pack (load-time helper) ───
 // Reads Atlas-transposed E4M3 weight scale [K/16, N] (the pack_bf16_weight_to_nvfp4_t
 // layout) and writes it into the grouped/dense SFB atom for one expert. SFB depends
 // ONLY on N,K (not M), so a single load-time call is valid for all per-group M.
 template <class LayoutSFB_t>
 __global__ void pack_weight_sfb_group(
-    const unsigned char* __restrict__ atlas_scales_t,  // [K/16, N] E4M3
-    unsigned char* __restrict__ cutlass_scales,        // swizzled SFB out
+    const unsigned char* __restrict__ atlas_scales,  // [K/16,N] (K-major) or [N,K/16] (N-major)
+    unsigned char* __restrict__ cutlass_scales,      // swizzled SFB out
     int n,
     int k,
+    int src_n_major,  // 0 = Atlas-transposed [K/16,N]; 1 = checkpoint-native [N,K/16]
     LayoutSFB_t layout_sfb) {
   int col = blockIdx.x;
   int group = blockIdx.y * blockDim.x + threadIdx.x;
@@ -202,7 +270,12 @@ __global__ void pack_weight_sfb_group(
   if (col >= n || group >= groups) {
     return;
   }
-  unsigned char atlas_scale = atlas_scales_t[(unsigned long long)group * n + col];
+  // SFB output layout is unchanged; only the SOURCE indexing differs. N-major
+  // lets a checkpoint that ships [N,K/16] scales (Laguna) build SFB without
+  // materialising an Atlas-transposed copy first.
+  unsigned char atlas_scale =
+      src_n_major ? atlas_scales[(unsigned long long)col * groups + group]
+                  : atlas_scales[(unsigned long long)group * n + col];
   __nv_fp8_e4m3 in;
   *reinterpret_cast<unsigned char*>(&in) = atlas_scale;
   float scale = static_cast<float>(in);
@@ -218,10 +291,11 @@ __global__ void pack_weight_sfb_group(
 // this is a one-time-per-expert call (gated by FAST_MOE_MODE at the Rust layer).
 // ════════════════════════════════════════════════════════════════════════════
 extern "C" int atlas_cutlass_pack_weight_sfb(
-    const void* scale_in,  // [K/16, N] E4M3 (Atlas transposed)
+    const void* scale_in,  // [K/16,N] E4M3 (Atlas transposed) or [N,K/16] when src_n_major
     void* scale_out,       // swizzled SFB (ue4m3)
     int n,
     int k,
+    int src_n_major,
     cudaStream_t stream) {
 #if defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
   if (n <= 0 || k <= 0 || (k % 16) != 0) {
@@ -237,6 +311,7 @@ extern "C" int atlas_cutlass_pack_weight_sfb(
       static_cast<unsigned char*>(scale_out),
       n,
       k,
+      src_n_major,
       layout_sfb);
   cudaError_t err = cudaGetLastError();
   return err == cudaSuccess ? 0 : -static_cast<int>(err);
@@ -245,6 +320,7 @@ extern "C" int atlas_cutlass_pack_weight_sfb(
   (void)scale_out;
   (void)n;
   (void)k;
+  (void)src_n_major;
   (void)stream;
   return -120;
 #endif
@@ -312,7 +388,11 @@ static GroupedAPrep prep_grouped_a(
   size_t sfa_off = align_up_(a_acc, 256);
   size_t cursor = align_up_(sfa_off + sfa_acc, 256);
 
-  // Second pass: pack A per active group + build A-side host arrays.
+  // Second pass: collect per-group A-pack params + build A-side host arrays.
+  // The A-pack itself is issued ONCE after the loop.
+  std::vector<int> h_ms, h_me;
+  std::vector<unsigned char*> h_apk, h_sfa;
+  int max_me = 0;
   int gi = 0;
   for (int e = 0; e < num_experts; ++e) {
     int ms = expert_offsets_host[e];
@@ -327,8 +407,15 @@ static GroupedAPrep prep_grouped_a(
 
     dim3 blk(256);
     dim3 grd(m_e, (k / 16 + blk.x - 1) / blk.x);
-    pack_act_group<<<grd, blk, 0, stream>>>(
-        A_global, sorted_token_ids, ms, a_e, sfa_e, m_e, k, lsa);
+    // A-pack is BATCHED after this loop (one launch for all groups) — see
+    // pack_act_grouped_batched. Collect this group's scalars instead of
+    // launching per group.
+    h_ms.push_back(ms);
+    h_me.push_back(m_e);
+    h_apk.push_back(a_e);
+    h_sfa.push_back(sfa_e);
+    if (m_e > max_me) max_me = m_e;
+    (void)lsa;
 
     p.host_shapes.push_back(ProblemShape{m_e, n, k});
     p.ms.push_back(ms);
@@ -339,6 +426,31 @@ static GroupedAPrep prep_grouped_a(
     sA.push_back(cutlass::make_cute_packed_stride(StrideA{}, {m_e, k, 1}));
     ++gi;
   }
+  // ── ONE A-pack launch for every active group ──
+  // Replaces ~256 launches per call (89.3% of all prefill kernel launches,
+  // ~345 ms of host launch overhead for 32 ms of GPU work).
+  if (!h_me.empty()) {
+    const int G = (int)h_me.size();
+    size_t ms_b = align_up_((size_t)G * sizeof(int), 256);
+    size_t pk_b = align_up_((size_t)G * sizeof(void*), 256);
+    unsigned char* d_ms = ws + cursor;
+    unsigned char* d_me = d_ms + ms_b;
+    unsigned char* d_apk = d_me + ms_b;
+    unsigned char* d_sfa = d_apk + pk_b;
+    cursor = align_up_(cursor + 2 * ms_b + 2 * pk_b, 256);
+    cudaMemcpyAsync(d_ms, h_ms.data(), G * sizeof(int), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_me, h_me.data(), G * sizeof(int), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_apk, h_apk.data(), G * sizeof(void*), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_sfa, h_sfa.data(), G * sizeof(void*), cudaMemcpyHostToDevice, stream);
+    auto lsa0 = Sm1xxBlkScaledConfig::tile_atom_to_shape_SFA(
+        cute::make_shape(max_me, n, k, 1));
+    dim3 blk(256);
+    dim3 grd(max_me, (k / 16 + blk.x - 1) / blk.x, G);
+    pack_act_grouped_batched<<<grd, blk, 0, stream>>>(
+        A_global, sorted_token_ids, (const int*)d_ms, (const int*)d_me,
+        (unsigned char* const*)d_apk, (unsigned char* const*)d_sfa, k, lsa0);
+  }
+
   p.G = (int)p.host_shapes.size();
   if (p.G == 0) {
     p.cursor = cursor;

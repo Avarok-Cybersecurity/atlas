@@ -77,9 +77,20 @@ pub struct BenchState {
     pub glow: bool,
     pub started: Option<Instant>,
     pub table_scroll: usize,
+    /// Results-table scroll ceilings, published by the renderer
+    /// (`draw_table` returns what it clamped the display to) — the
+    /// `log_scroll_max` contract, held here because `bench_keys` cannot see
+    /// `App`. Without them the offset banked presses the display quietly
+    /// clamped, and coming back cost as many dead keys as had been spent.
+    pub table_scroll_max: std::cell::Cell<usize>,
+    pub history_table_scroll_max: std::cell::Cell<usize>,
 
     pub history: Vec<atlas_plugin::RunRecord>,
     pub history_row: usize,
+    /// Viewport offset into the selected past run's results table. The run
+    /// list scrolls its SELECTION with j/k; this is the only way to read row
+    /// 20 of a stored 40-row BFCL sweep without leaving the TUI.
+    pub history_table_scroll: usize,
     history_loaded: bool,
     /// Set once a terminal frame has been persisted, so it is written once.
     persisted: bool,

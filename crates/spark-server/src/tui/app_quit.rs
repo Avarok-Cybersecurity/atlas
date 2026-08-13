@@ -40,6 +40,28 @@ impl App {
         if self.chat.streaming {
             return Some("a chat reply is still streaming");
         }
+        // A model load: minutes of shard reading (a swap or the boot load)
+        // that `q` used to tear down with no confirmation. The boot arm
+        // checks the HOST is empty rather than `!progress.ready` alone — a
+        // swap that failed while an old model kept serving leaves `ready`
+        // false with nothing actually loading, and a guard that cries wolf
+        // there trains the reflex that dismisses the one that matters.
+        if self.lib.launch_in_flight()
+            || (!self.progress.ready
+                && !self.awaiting_model
+                && self.host.as_ref().and_then(|h| h.live_model()).is_none())
+        {
+            return Some("a model is still loading");
+        }
+        // The report keeps its draft through every failure, but not through
+        // the process ending — and a submit that is mid-POST may have already
+        // cost the user a browser authorization.
+        if self.help.report_in_flight() {
+            return Some("an issue report is being submitted");
+        }
+        if self.help.has_draft() {
+            return Some("an unsubmitted issue report has text in it");
+        }
         None
     }
 
@@ -70,3 +92,7 @@ impl App {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "app_quit_tests.rs"]
+mod tests;

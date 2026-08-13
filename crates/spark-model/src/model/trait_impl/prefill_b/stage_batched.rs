@@ -91,10 +91,16 @@ impl TransformerModel {
         cu_seqlens_host.push(0);
         let mut acc = 0i32;
         let mut chunk_len = 0usize;
+        // Per-stream KV extent. Under VARLEN the batched attention kernels
+        // must not use a single scalar at the MAX: a short stream would index
+        // its block_table past the blocks it owns and take the wrong causal
+        // bound.
+        let mut kv_lens_host: Vec<i32> = Vec::with_capacity(n);
         for info in streams_info.iter() {
             acc += info.proc_count as i32;
             cu_seqlens_host.push(acc);
             chunk_len = chunk_len.max(info.proc_count);
+            kv_lens_host.push((info.proc_start + info.proc_count) as i32);
         }
         let total_tokens = acc as usize;
 
@@ -129,7 +135,11 @@ impl TransformerModel {
         let cu_seqlens_off = seq_len_ptrs_off + seq_len_ptrs_aligned;
         let cu_seqlens_bytes = (n + 1) * 4;
         let cu_seqlens_aligned = (cu_seqlens_bytes + 7) & !7;
-        let total_meta_bytes = cu_seqlens_off + cu_seqlens_aligned - scratch_offset_bytes;
+        // VARLEN: kv_lens [n] i32, immediately after cu_seqlens.
+        let kv_lens_off = cu_seqlens_off + cu_seqlens_aligned;
+        let kv_lens_bytes = n * 4;
+        let kv_lens_aligned = (kv_lens_bytes + 7) & !7;
+        let total_meta_bytes = kv_lens_off + kv_lens_aligned - scratch_offset_bytes;
 
         // #110 defense-in-depth: bounds-check the metadata footprint against
         // the scratch allocation. This should NEVER fire — the dispatch-entry
@@ -250,6 +260,8 @@ impl TransformerModel {
         cursor += seq_len_ptrs_aligned;
         pack.put_prefix_at("cu_seqlens", cursor, &cu_seqlens_host, n + 1)?;
         cursor += cu_seqlens_aligned;
+        pack.put_prefix_at("kv_lens", cursor, &kv_lens_host, n)?;
+        cursor += kv_lens_aligned;
         pack.pad_to(cursor)?;
         self.gpu
             .copy_h2d_async_retained(pack.packed(), scratch_base, stream)?;
@@ -266,6 +278,8 @@ impl TransformerModel {
             total_tokens: total_tokens as u32,
             cu_seqlens: scratch_base.offset(cu_seqlens_off - positions_off),
             cu_seqlens_host,
+            kv_lens: scratch_base.offset(kv_lens_off - positions_off),
+            kv_lens_host,
             max_blocks_per_seq: max_blocks,
             staged_bytes: total_meta_bytes,
         })

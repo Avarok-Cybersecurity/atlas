@@ -162,8 +162,13 @@ pub(super) fn generate_target_ptx_rs(
              \x20               default_kv_dtype: \"{}\",\n\
              \x20               default_num_drafts: {},\n\
              \x20               disable_tool_steering: {},\n\
+             \x20               disable_cwd_hint_injection: {},\n\
+             \x20               use_sampling_presets_for_core: {},\n\
              \x20               tool_call_parser: \"{}\",\n\
              \x20               enable_loop_watchdog: {},\n\
+             \x20               enable_think_loop_watchdog: {},\n\
+             \x20               honor_eos_inside_thinking: {},\n\
+             \x20               cap_thinking_at_max_tokens: {},\n\
              \x20               min_p_floor: {:?},\n\
              \x20               temperature_max: {:?},\n\
              \x20               think_loop_min_repeats: {},\n\
@@ -196,8 +201,13 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_default_kv_dtype,
             target.behavior_default_num_drafts,
             target.behavior_disable_tool_steering,
+            target.behavior_disable_cwd_hint_injection,
+            target.behavior_use_sampling_presets_for_core,
             target.behavior_tool_call_parser,
             target.behavior_enable_loop_watchdog,
+            target.behavior_enable_think_loop_watchdog,
+            target.behavior_honor_eos_inside_thinking,
+            target.behavior_cap_thinking_at_max_tokens,
             target.behavior_min_p_floor,
             target.behavior_temperature_max,
             target.behavior_think_loop_min_repeats,

@@ -16,16 +16,18 @@ pub enum Section {
     Library,
     Benchmarks,
     Terminal,
+    Help,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Main,
         Section::Stats,
         Section::Network,
         Section::Library,
         Section::Benchmarks,
         Section::Terminal,
+        Section::Help,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -35,6 +37,7 @@ impl Section {
             Section::Library => "Library",
             Section::Benchmarks => "Benchmarks",
             Section::Terminal => "Terminal",
+            Section::Help => "Help",
         }
     }
     pub fn icon(self) -> &'static str {
@@ -45,6 +48,7 @@ impl Section {
             Section::Library => "▤",
             Section::Benchmarks => "▰",
             Section::Terminal => "❯",
+            Section::Help => "✚",
         }
     }
     /// Subsection labels, in sidebar order. SSOT for three things that must agree:
@@ -56,6 +60,7 @@ impl Section {
             Section::Main => &["Overview", "Kernels"],
             Section::Benchmarks => &["Suite", "History"],
             Section::Terminal => &["Ops", "Chat"],
+            Section::Help => &["Guide", "Report Issue"],
             Section::Stats | Section::Network | Section::Library => &[],
         }
     }

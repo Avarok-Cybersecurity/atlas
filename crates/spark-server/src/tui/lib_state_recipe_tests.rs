@@ -136,11 +136,7 @@ fn the_form_rows_come_from_the_selected_card_not_the_first_one() {
     s.open_config().expect("form opens");
 
     let rows = s.config_rows();
-    let value = |key: &str| {
-        rows.iter()
-            .find(|(k, _, _)| k == key)
-            .map(|(_, v, _)| v.clone())
-    };
+    let value = |key: &str| rows.iter().find(|r| r.key == key).map(|r| r.value.clone());
     assert_eq!(value("max_model_len").as_deref(), Some("60000"));
     assert_eq!(value("speculative").as_deref(), Some("true"));
     assert_eq!(
@@ -181,7 +177,7 @@ fn opening_another_card_starts_from_that_recipes_own_values() {
     s.row = s
         .config_rows()
         .iter()
-        .position(|(k, _, _)| k == "max_model_len")
+        .position(|r| r.key == "max_model_len")
         .expect("max_model_len");
     s.editing = true;
     s.edit_buffer = "8192".into();
@@ -203,16 +199,20 @@ fn opening_another_card_starts_from_that_recipes_own_values() {
 }
 
 #[test]
-fn a_model_with_no_recipe_has_no_cards_and_no_form() {
+fn a_model_with_no_recipe_has_no_cards_until_starting_points_are_opened() {
     let mut s = LibState::default();
     s.rebuild(&[with_weights("org/local-only")]);
+    // Before Enter, nothing claims to be configurable.
     assert!(s.cards().is_empty());
     assert!(s.selected_card().is_none());
     assert!(s.config_recipe().is_none());
     assert!(s.config_rows().is_empty(), "an empty form, not a blank one");
     assert!(s.preview_argv().is_none());
-    assert!(s.open_cards().is_err());
-    assert!(s.open_config().is_err(), "and nothing to configure");
+    // Enter now offers starting points rather than refusing; from there the
+    // form opens on the guess, marked as one.
+    s.open_cards().expect("starting points");
+    assert!(!s.cards().is_empty());
+    s.open_config().expect("a starting point is configurable");
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn a_recipe_that_needs_more_nodes_still_emits_its_world_size() {
     s.open_cards().expect("cards open");
     s.open_config().expect("form opens");
     assert!(
-        !s.config_rows().iter().any(|(k, _, _)| k == "min_nodes"),
+        !s.config_rows().iter().any(|r| r.key == "min_nodes"),
         "it is not a form row"
     );
     assert_eq!(flag(&s, "--world-size").as_deref(), Some("2"));

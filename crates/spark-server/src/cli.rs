@@ -8,6 +8,7 @@ mod bench_args;
 mod bench_print;
 pub mod bench_run;
 mod bench_selfstart;
+pub(crate) mod flag_values;
 mod serve_args;
 mod validate;
 pub use bench_args::BenchmarkArgs;

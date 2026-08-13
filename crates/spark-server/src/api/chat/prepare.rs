@@ -64,16 +64,7 @@ pub(crate) fn prepare_chat_prompt(
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
         let tool_prompt = parser.system_prompt(&req.tools, tool_choice, &state.chat.prompt);
-        if let Some(first) = req
-            .messages
-            .first_mut()
-            .filter(|m| m.role == crate::ir::Role::System)
-        {
-            first.prepend_text(&format!("{tool_prompt}\n\n"));
-        } else {
-            req.messages
-                .insert(0, crate::ir::Message::synthetic_system(tool_prompt));
-        }
+        inject_tool_system_prompt(&mut req.messages, tool_prompt);
     }
 
     tracing::info!(
@@ -104,6 +95,7 @@ pub(crate) fn prepare_chat_prompt(
         &req.messages,
         tools_active,
         &state.chat,
+        state.tokenizer.uses_deepseek_v4_encoding(),
     )?;
     let us_msg_entry = _t_phase.elapsed().as_micros();
 
@@ -136,6 +128,7 @@ pub(crate) fn prepare_chat_prompt(
         &image_pad_counts,
         enable_thinking,
         thinking_budget,
+        req.reasoning_effort,
         tools_active,
     )?;
     if state.chat.phase_timing {
@@ -155,4 +148,64 @@ pub(crate) fn prepare_chat_prompt(
         enable_thinking,
         thinking_budget,
     })
+}
+
+/// Inject a parser's behavioral prompt without changing requests for parsers
+/// whose native chat template already owns tool instructions.
+fn inject_tool_system_prompt(messages: &mut Vec<crate::ir::Message>, tool_prompt: String) {
+    if tool_prompt.is_empty() {
+        return;
+    }
+
+    if let Some(first) = messages
+        .first_mut()
+        .filter(|m| m.role == crate::ir::Role::System)
+    {
+        first.prepend_text(&format!("{tool_prompt}\n\n"));
+    } else {
+        messages.insert(0, crate::ir::Message::synthetic_system(tool_prompt));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inject_tool_system_prompt;
+    use crate::ir::{Message, Role};
+
+    #[test]
+    fn empty_tool_prompt_does_not_change_existing_system_message() {
+        let mut messages = vec![Message::synthetic_system("original".into())];
+        let before = messages.clone();
+
+        inject_tool_system_prompt(&mut messages, String::new());
+
+        assert_eq!(messages, before);
+    }
+
+    #[test]
+    fn empty_tool_prompt_does_not_insert_system_message() {
+        let mut messages = vec![Message {
+            role: Role::User,
+            content: vec![crate::ir::ContentPart::Text("hello".into())],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            reasoning: None,
+            tool_error: false,
+        }];
+        let before = messages.clone();
+
+        inject_tool_system_prompt(&mut messages, String::new());
+
+        assert_eq!(messages, before);
+    }
+
+    #[test]
+    fn nonempty_tool_prompt_preserves_existing_injection_behavior() {
+        let mut messages = vec![Message::synthetic_system("original".into())];
+
+        inject_tool_system_prompt(&mut messages, "tool instructions".into());
+
+        assert_eq!(messages[0].text(), "tool instructions\n\noriginal");
+    }
 }

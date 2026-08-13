@@ -126,7 +126,10 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
         draw_stats(f, &frame.summary, rows[1]);
     }
     if let Some(table) = &frame.table {
-        draw_table(f, table, 0, rows[2]);
+        // A stored 40-row sweep was readable only down to the pane height —
+        // `scroll` was hardcoded 0 and History bound no key to move it.
+        let max = draw_table(f, table, app.bench.history_table_scroll, rows[2]);
+        app.bench.history_table_scroll_max.set(max);
     }
     if let Some(verdict) = &frame.verdict {
         f.render_widget(Paragraph::new(verdict_line(verdict)), rows[3]);

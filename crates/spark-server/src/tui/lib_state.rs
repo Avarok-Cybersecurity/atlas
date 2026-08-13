@@ -51,6 +51,11 @@ pub struct LibState {
     /// The local cache needs re-scanning. Set by the reducer, which has no
     /// access to `App`; the event loop drains it into `App::library_dirty`.
     pub mark_dirty: bool,
+    /// Starting points synthesized for a no-recipe model: which model they
+    /// were built for, and the cards. The model id is the guard — `cards()`
+    /// refuses a set built for another row, because those cards would launch
+    /// a different checkpoint than the one on screen. See `lib_start`.
+    pub(super) starting: Option<(String, Vec<crate::recipe::Recipe>)>,
     /// The recipe id whose date is being looked up, and the channel it will
     /// arrive on. `Some` drives the skeleton placeholder in the detail pane.
     ///
@@ -83,10 +88,29 @@ pub struct LibState {
     /// ten times a second, warning each time; see `events_rules::tick_work`.
     pub(super) recipes_unavailable: bool,
 
-    // --- config form ---
+    // --- config form (the editing logic lives in `lib_config`) ---
     /// Edited values, keyed as the recipe keys them. Only touched keys appear,
-    /// so an untouched setting always follows the recipe rather than a stale copy.
+    /// so an untouched setting always follows the recipe rather than a stale
+    /// copy. A key the recipe does not list is an ADDED setting.
     pub overrides: BTreeMap<String, String>,
+    /// Recipe keys the user removed: the flag is not passed and the server's
+    /// own default applies. Disjoint from `overrides` by construction —
+    /// removing a key drops its override, restoring does not bring it back.
+    pub removed: std::collections::BTreeSet<String>,
+    /// The open picker, if any. While one is up it owns the keyboard, the
+    /// same contract as `editing`.
+    pub modal: Option<crate::tui::lib_modal::ConfigModal>,
+    /// A free-text setting being added that clap declares no default for:
+    /// its key, while the value is still being typed. No override exists
+    /// until the commit, so an Esc leaves the form exactly as it was.
+    pub pending_add: Option<String>,
+    /// Provenance of a borrow: donor recipe id and the model it was measured
+    /// on, set when donor parameters are applied over this form. `Some` means
+    /// the values below are no longer this recipe's measured configuration —
+    /// the form says so for as long as the borrowed values are on it. It does
+    /// NOT replace `Recipe::starting_point`: "synthesized card" and "borrowed
+    /// values" are different claims, and both can be true at once.
+    pub borrowed: Option<String>,
     pub row: usize,
     pub editing: bool,
     pub edit_buffer: String,
@@ -189,6 +213,10 @@ impl LibState {
                 Some(i) => self.card = i,
                 None => {
                     self.overrides.clear();
+                    self.removed.clear();
+                    self.modal = None;
+                    self.pending_add = None;
+                    self.borrowed = None;
                     self.editing = false;
                     if self.view == View::Config {
                         self.view = View::Cards;
@@ -250,28 +278,37 @@ impl LibState {
 
     /// Open the card view for the selected model.
     ///
-    /// Refuses rather than opening an empty pane: a row with no recipe has no
-    /// cards to show, and a blank pane would imply otherwise. That is the
-    /// unchanged behaviour for local-only checkpoints.
+    /// A row with no recipe used to be refused here, which made it a dead
+    /// end: the user was told to "serve it with explicit flags" and left to
+    /// reconstruct a command line outside the dashboard. It now opens on
+    /// synthesized starting points instead — see `lib_start` for what they
+    /// are and how honestly they are labelled.
     pub fn open_cards(&mut self) -> Result<(), String> {
         let Some(entry) = self.current() else {
             return Err("nothing selected".into());
         };
         if !entry.has_recipe() {
-            return Err(format!(
-                "{} has no recipe — serve it with explicit flags instead",
-                entry.model
-            ));
+            self.open_starting_points();
         }
         self.card = 0;
         self.view = View::Cards;
         Ok(())
     }
 
-    /// The recipes of the selected model, in id order.
+    /// The cards for the selected model: its recipes, or — when it has none —
+    /// the starting points built for it.
+    ///
+    /// Real recipes always win: if a background refresh lands one for this
+    /// model while its starting points are open, the guess must give way to
+    /// the measurement (the card anchor in `rebuild` then steps the view back
+    /// rather than silently swapping what Enter configures).
     pub fn cards(&self) -> &[crate::recipe::Recipe] {
         match self.current() {
-            Some(entry) => &entry.recipes,
+            Some(entry) if entry.has_recipe() => &entry.recipes,
+            Some(entry) => match &self.starting {
+                Some((for_model, cards)) if *for_model == entry.model => cards,
+                _ => &[],
+            },
             None => &[],
         }
     }
@@ -294,6 +331,10 @@ impl LibState {
             ));
         }
         self.overrides.clear();
+        self.removed.clear();
+        self.modal = None;
+        self.pending_add = None;
+        self.borrowed = None;
         self.error = None;
         self.row = 0;
         self.editing = false;
@@ -304,65 +345,6 @@ impl LibState {
     /// The recipe backing the config form, if it is open on one.
     pub fn config_recipe(&self) -> Option<&crate::recipe::Recipe> {
         self.selected_card()
-    }
-
-    /// The form's rows: every recipe key, in recipe order, with the effective
-    /// value (override if edited, recipe value otherwise).
-    pub fn config_rows(&self) -> Vec<(String, String, bool)> {
-        let Some(recipe) = self.config_recipe() else {
-            return Vec::new();
-        };
-        recipe
-            .defaults
-            .iter()
-            .map(|(key, value)| {
-                let edited = self.overrides.get(key);
-                (
-                    key.clone(),
-                    edited.unwrap_or(value).clone(),
-                    edited.is_some(),
-                )
-            })
-            .collect()
-    }
-
-    /// Commit the edit buffer into the overrides, validating the whole recipe.
-    ///
-    /// Validation is of the WHOLE config, not the one field: flags interact
-    /// (`--ep-size` against `--world-size`, KV dtype against high-precision
-    /// layers), so a per-field check would accept combinations that cannot serve.
-    pub fn commit_edit(&mut self) {
-        let rows = self.config_rows();
-        let Some((key, _, _)) = rows.get(self.row) else {
-            return;
-        };
-        let key = key.clone();
-        let raw = self.edit_buffer.trim().to_string();
-        self.editing = false;
-        if raw.is_empty() {
-            self.error = Some(format!("{key} must not be empty"));
-            return;
-        }
-        let Some(recipe) = self.config_recipe().cloned() else {
-            return;
-        };
-        let mut candidate = self.overrides.clone();
-        candidate.insert(key.clone(), raw);
-        match recipe.serve_args(&candidate) {
-            Ok(_) => {
-                self.overrides = candidate;
-                self.error = None;
-            }
-            // Keep the rejected value out of the form: an invalid override that
-            // stays visible reads as accepted.
-            Err(e) => self.error = Some(problem_line(&format!("{e:#}"))),
-        }
-    }
-
-    /// Drop every edit and return to the recipe's own values.
-    pub fn reset_overrides(&mut self) {
-        self.overrides.clear();
-        self.error = None;
     }
 
     /// Start the selected recipe, replacing whatever is running.
@@ -393,7 +375,7 @@ impl LibState {
         // toast rather than a torn-down model: `swap` re-validates, but by then
         // the user has already been told the run started.
         let args = recipe
-            .serve_args(&self.overrides)
+            .serve_args_edited(&self.overrides, &self.removed)
             .map_err(|e| problem_line(&format!("{e:#}")))?;
         let previous = host.current().map(|s| s.model_name.clone());
         // The loader reports back. `launch` returns as soon as the thread is
@@ -424,6 +406,13 @@ impl LibState {
         Ok(())
     }
 
+    /// A launch's loader thread is still out — its result channel has not
+    /// settled. What the quit guard asks about: minutes of shard reading the
+    /// user cannot resume.
+    pub fn launch_in_flight(&self) -> bool {
+        self.launch_result.is_some()
+    }
+
     /// Are the selected model's weights actually on disk and complete?
     ///
     /// `has_weights` means "the resolver would load this" — a real shard AND a
@@ -432,11 +421,6 @@ impl LibState {
     /// cautious.
     pub fn selected_has_weights(&self) -> bool {
         self.current().is_some_and(|e| e.has_weights())
-    }
-
-    /// The argv this form would launch, for the confirm line.
-    pub fn preview_argv(&self) -> Option<Vec<String>> {
-        self.config_recipe()?.argv(&self.overrides).ok()
     }
 }
 

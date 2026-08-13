@@ -6,6 +6,9 @@ use anyhow::Context as _;
 
 use super::*;
 
+mod originals;
+mod unified_t;
+
 impl MoeLayer {
     /// Fused K=2 forward: process 2 tokens through MoE in 5 kernel launches.
     ///
@@ -53,6 +56,27 @@ impl MoeLayer {
         // GS32 `_e8m0` kernel via `e8m0_or` — the same correct path ordinary decode
         // already uses. Mirrors the BF16 fallback above.
         if k2_e8m0_needs_per_token(self.experts_scale_kind) {
+            return self.forward_batched(input, 2, ctx, stream);
+        }
+        // Mixed NVFP4-routed / BF16-shared (Laguna): the fused batch2 kernels
+        // cannot compute a BF16 shared expert alongside NVFP4 routed weights.
+        // Under the transposed unified layout we still batch the routed half
+        // through the _t kernels and run the shared expert as one batched BF16
+        // GEMM pass afterwards (`mixed_bf16_shared` below). Every other layout
+        // falls back to the per-token loop.
+        let mixed_bf16_shared = self.has_mixed_bf16_shared_expert();
+        // Either fused layout serves the mixed config. The originals-layout
+        // kernels are usable only since 37e818ad NULL-guarded their shared
+        // expert (their `_t` siblings always had that guard); before it, this
+        // faulted with CUDA 700 on the first 2-sequence batch.
+        let mixed_t_ok = self.use_t_layout_for_decode()
+            && self.moe_expert_gate_up_shared_batch2_t_k.0 != 0
+            && self.moe_expert_silu_down_shared_batch2_t_k.0 != 0;
+        let mixed_orig_ok = !self.use_t_layout_for_decode()
+            && self.moe_expert_gate_up_shared_batch2.0 != 0
+            && self.moe_expert_silu_down_shared_batch2.0 != 0
+            && !self.gate_ptrs.packed_ptrs.is_null();
+        if mixed_bf16_shared && !((mixed_t_ok || mixed_orig_ok) && !is_ep) {
             return self.forward_batched(input, 2, ctx, stream);
         }
 
@@ -178,13 +202,11 @@ impl MoeLayer {
         let output = ctx.buffers.moe_output();
 
         if use_bf16_batch2
-            && let (Some(gp), Some(up), Some(dp), Some(sg), Some(su), Some(sd)) = (
+            && let (Some(gp), Some(up), Some(dp), Some(shared)) = (
                 self.bf16_gate_weight_ptrs,
                 self.bf16_up_weight_ptrs,
                 self.bf16_down_weight_ptrs,
-                self.bf16_shared_gate,
-                self.bf16_shared_up,
-                self.bf16_shared_down,
+                self.bf16_shared_expert,
             )
         {
             // BF16 batch2 path (FP8-dequant-on-load experts, MTP K=2 verify).
@@ -200,9 +222,9 @@ impl MoeLayer {
                 up,
                 expert_up_out,
                 indices_dev,
-                sg,
+                shared.gate_proj.weight,
                 shared_gate_scratch,
-                su,
+                shared.up_proj.weight,
                 shared_up_scratch,
                 inter,
                 h,
@@ -219,7 +241,7 @@ impl MoeLayer {
                 indices_dev,
                 shared_gate_scratch,
                 shared_up_scratch,
-                sd,
+                shared.down_proj.weight,
                 shared_down_out,
                 h,
                 inter,
@@ -309,129 +331,43 @@ impl MoeLayer {
                 stream,
             )?;
         } else if self.use_t_layout_for_decode() {
-            // Phase 8a unified-layout NVFP4 batch=2 verify (MTP K=2). Hybrid
-            // mode skips this branch — small-N MTP verify wins on warp-
-            // reduction originals.
-            let gate_t = self
-                .gate_ptrs_t
-                .as_ref()
-                .expect("gate_ptrs_t under unified_t");
-            let up_t = self.up_ptrs_t.as_ref().expect("up_ptrs_t under unified_t");
-            let down_t = self
-                .down_ptrs_t
-                .as_ref()
-                .expect("down_ptrs_t under unified_t");
-            let null_qw = QuantizedWeight::null();
-            let sh_gate_t = self.shared_gate_t.as_ref().unwrap_or(&null_qw);
-            let sh_up_t = self.shared_up_t.as_ref().unwrap_or(&null_qw);
-            let sh_down_t = self.shared_down_t.as_ref().unwrap_or(&null_qw);
-            ops::moe_expert_gate_up_shared_batch2_t(
-                ctx.gpu,
-                self.moe_expert_gate_up_shared_batch2_t_k,
+            self.forward_k2_unified_t(
                 input,
-                gate_t.packed_ptrs,
-                gate_t.scale_ptrs,
-                gate_t.scale2_vals,
-                expert_gate_out,
-                up_t.packed_ptrs,
-                up_t.scale_ptrs,
-                up_t.scale2_vals,
-                expert_up_out,
                 indices_dev,
-                sh_gate_t,
-                shared_gate_scratch,
-                sh_up_t,
-                shared_up_scratch,
-                inter,
-                h,
-                top_k,
-                stream,
-            )?;
-            ops::moe_expert_silu_down_shared_batch2_t(
-                ctx.gpu,
-                self.moe_expert_silu_down_shared_batch2_t_k,
+                weights_dev,
                 expert_gate_out,
                 expert_up_out,
-                down_t.packed_ptrs,
-                down_t.scale_ptrs,
-                down_t.scale2_vals,
                 expert_down_out,
-                indices_dev,
                 shared_gate_scratch,
                 shared_up_scratch,
-                sh_down_t,
                 shared_down_out,
-                h,
+                output,
                 inter,
+                h,
                 top_k,
+                is_ep,
+                mixed_bf16_shared,
+                ctx,
                 stream,
             )?;
         } else {
-            // NVFP4 batch2 path
-            let batch2_block = batch2_block_width(ctx.config.hidden_size);
-            ops::moe_expert_gate_up_shared_batch2(
-                ctx.gpu,
-                self.moe_expert_gate_up_shared_batch2,
+            self.forward_k2_originals(
                 input,
-                self.gate_ptrs.packed_ptrs,
-                self.gate_ptrs.scale_ptrs,
-                self.gate_ptrs.scale2_vals,
-                expert_gate_out,
-                self.up_ptrs.packed_ptrs,
-                self.up_ptrs.scale_ptrs,
-                self.up_ptrs.scale2_vals,
-                expert_up_out,
                 indices_dev,
-                &self.weights.shared_expert.gate_proj,
-                shared_gate_scratch,
-                &self.weights.shared_expert.up_proj,
-                shared_up_scratch,
-                inter,
-                h,
-                top_k,
-                batch2_block,
-                stream,
-            )?;
-            ops::moe_expert_silu_down_shared_batch2(
-                ctx.gpu,
-                self.moe_expert_silu_down_shared_batch2,
-                expert_gate_out,
-                expert_up_out,
-                self.down_ptrs.packed_ptrs,
-                self.down_ptrs.scale_ptrs,
-                self.down_ptrs.scale2_vals,
-                expert_down_out,
-                indices_dev,
-                shared_gate_scratch,
-                shared_up_scratch,
-                &self.weights.shared_expert.down_proj,
-                shared_down_out,
-                h,
-                inter,
-                top_k,
-                batch2_block,
-                stream,
-            )?;
-            // EP fix: after silu_down, expert_gate_out is free — use as zero buffer
-            let shared_for_blend = if is_ep && !shared_down_out.is_null() {
-                ctx.gpu
-                    .memset_async(expert_gate_out, 0, 2 * h as usize * 2, stream)?;
-                expert_gate_out
-            } else {
-                shared_down_out
-            };
-            ops::moe_weighted_sum_blend_batch2(
-                ctx.gpu,
-                self.moe_weighted_sum_blend_batch2,
-                output,
-                expert_down_out,
                 weights_dev,
-                shared_for_blend,
-                input,
-                self.weights.shared_expert_gate.weight,
+                expert_gate_out,
+                expert_up_out,
+                expert_down_out,
+                shared_gate_scratch,
+                shared_up_scratch,
+                shared_down_out,
+                output,
+                inter,
                 h,
                 top_k,
-                h,
+                is_ep,
+                mixed_bf16_shared,
+                ctx,
                 stream,
             )?;
         }

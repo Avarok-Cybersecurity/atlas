@@ -40,6 +40,9 @@ pub fn complete(input: &str) -> Option<&'static str> {
 /// is routed to the Chat tab's engine instead.
 pub fn execute(line: &str, app: &mut App) {
     let line = line.trim();
+    // Enter means "show me the result": a reader parked in scrollback would
+    // otherwise miss the output of the command they just ran.
+    app.ops.scroll_up = 0;
     app.ops.output.push(format!("❯ {line}"));
     if !line.starts_with('/') {
         app.ops
@@ -92,6 +95,16 @@ pub fn execute(line: &str, app: &mut App) {
             .ops
             .output
             .push(format!("unknown command {other} — /help")),
+    }
+    // Cap the scrollback like every other buffer in the tree (log ring CAP
+    // 10_000, bench LOG_CAPACITY 500): /metrics alone adds 40+ lines per
+    // call, and this was the one buffer with no limit — a slow leak on a
+    // dashboard that serves for days. One choke point, because every append
+    // happens inside this call.
+    const OUTPUT_CAP: usize = 1_000;
+    if app.ops.output.len() > OUTPUT_CAP {
+        let excess = app.ops.output.len() - OUTPUT_CAP;
+        app.ops.output.drain(..excess);
     }
 }
 

@@ -114,3 +114,35 @@ fn every_mtp_state_reads_as_english_not_as_a_variant_name() {
         );
     }
 }
+
+#[test]
+fn wrap_help_keeps_paragraph_breaks_that_wrap_words_flattens() {
+    // clap help is paragraphs; collapsed into one block, a flag's warning
+    // paragraph reads as part of the sentence before it.
+    let text =
+        "First paragraph here.\n\nSecond paragraph, which is deliberately long enough to wrap.";
+    let wrapped = wrap_help(text, 20);
+    assert_eq!(wrapped[0], "First paragraph");
+    assert!(
+        wrapped.contains(&String::new()),
+        "the blank line survives: {wrapped:?}"
+    );
+    assert!(
+        wrap_words(text, 20).iter().all(|l| !l.is_empty()),
+        "wrap_words flattens whitespace, which is its contract"
+    );
+    // No trailing blank: it would render as a dangling empty row.
+    assert!(!wrapped.last().unwrap().is_empty());
+}
+
+#[test]
+fn wrap_words_hard_splits_a_token_wider_than_the_pane() {
+    // A URL or snapshot path has no space to break at; left whole it would
+    // run past the border and be silently cut.
+    let lines = wrap_words("see https://example.com/very/long/path/indeed", 10);
+    assert!(lines.iter().all(|l| l.len() <= 10), "{lines:?}");
+    assert_eq!(
+        lines.concat().replace(' ', ""),
+        "seehttps://example.com/very/long/path/indeed".replace(' ', "")
+    );
+}

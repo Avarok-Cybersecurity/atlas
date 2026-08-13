@@ -96,6 +96,11 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
                         let s = value.as_str().unwrap_or_default().trim().to_string();
                         return Ok(minijinja::Value::from(s));
                     }
+                    "rstrip" => {
+                        let _: () = from_args(args)?;
+                        let s = value.as_str().unwrap_or_default().trim_end().to_string();
+                        return Ok(minijinja::Value::from(s));
+                    }
                     _ => {}
                 }
             }
@@ -176,28 +181,9 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
     //   unset / anything else (DEFAULT)  -> compact (fixes ST-995 GDN irrelevance)
     //
     // Key order is preserved via the `preserve_order` feature in BOTH modes.
+    env.add_filter("tojson_hf", python_tojson);
     if std::env::var("ATLAS_USE_HF_REF_JSON_DUMPS").as_deref() == Ok("1") {
-        env.add_filter(
-            "tojson",
-            |value: minijinja::Value| -> Result<minijinja::Value, minijinja::Error> {
-                let mut buf = Vec::new();
-                let mut ser = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
-                serde::Serialize::serialize(&value, &mut ser).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::InvalidOperation,
-                        format!("tojson serialization failed: {e}"),
-                    )
-                })?;
-                // serde_json writes valid UTF-8 (ensure_ascii=False — no \uXXXX).
-                let s = String::from_utf8(buf).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::InvalidOperation,
-                        format!("tojson produced invalid UTF-8: {e}"),
-                    )
-                })?;
-                Ok(minijinja::Value::from_safe_string(s))
-            },
-        );
+        env.add_filter("tojson", python_tojson);
     }
     // else: fall through to minijinja's builtin COMPACT `tojson` (DEFAULT) —
     // the ST-995 fix. (PythonJsonFormatter below is retained for the env path.)
@@ -215,6 +201,24 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
 /// byte-identical to transformers/vLLM.
 #[derive(Clone, Debug)]
 struct PythonJsonFormatter;
+
+fn python_tojson(value: minijinja::Value) -> Result<minijinja::Value, minijinja::Error> {
+    let mut buf = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut buf, PythonJsonFormatter);
+    serde::Serialize::serialize(&value, &mut serializer).map_err(|error| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("tojson serialization failed: {error}"),
+        )
+    })?;
+    let json = String::from_utf8(buf).map_err(|error| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("tojson produced invalid UTF-8: {error}"),
+        )
+    })?;
+    Ok(minijinja::Value::from_safe_string(json))
+}
 
 impl serde_json::ser::Formatter for PythonJsonFormatter {
     #[inline]

@@ -6,6 +6,8 @@
 pub mod cards;
 pub mod config;
 pub mod list;
+mod list_detail;
+mod modal;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,8 +21,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         View::Cards => cards::draw(f, app, area),
         View::Config => config::draw(f, app, area),
     }
+    // On top of the pane, under the app-level overlays (toasts, help, the
+    // confirmations) — a picker is part of the form, not a question that
+    // outranks the section.
+    modal::draw(f, app, area);
 }
 
 #[cfg(test)]
 #[path = "library_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "start_tests.rs"]
+mod start_tests;

@@ -61,6 +61,7 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::super::types::TransformerModel;
+use super::batch_kernel::KernelBatchResult;
 use super::proc_range::ProcRange;
 use super::upload_meta::MetaLayout;
 use crate::traits::{Model, PrefillSlice, SequenceState};
@@ -176,21 +177,20 @@ impl TransformerModel {
                 "Q12 kernel-batched dispatch attempt"
             );
             match self.prefill_batch_chunk_kernel_batched(streams, stream, row_base) {
-                Ok(v) => {
+                Ok(KernelBatchResult::Completed(v)) => {
                     tracing::debug!(target: "atlas::q12", "Q12 kernel-batched succeeded");
                     return Ok(v);
                 }
-                Err(e) => {
-                    // Structural bails (proc_count/seq_lens_start mismatch,
-                    // unsupported layer feature) are logged at info so the
-                    // first occurrence is visible in production logs without
-                    // requiring debug-level tracing. Subsequent bails are
-                    // still logged but with reduced verbosity in tight loops.
+                Ok(KernelBatchResult::NotAdmitted) => {
                     tracing::info!(
                         target: "atlas::q12",
-                        "Q12 kernel-batched bailed → falling back to per-stream: {e}"
+                        "Q12 kernel-batched cache plan not admitted → falling back to per-stream"
                     );
                 }
+                // An admitted batch can already own KV/sequence state. Retrying
+                // it sequentially would double-allocate or restore, so errors
+                // must reach the scheduler's normal failure-cleanup path.
+                Err(e) => return Err(e),
             }
         } else if !q12_batched_enabled {
             tracing::trace!(
@@ -271,6 +271,7 @@ impl TransformerModel {
                     total,
                     &mut kv_cache,
                     stream,
+                    None,
                 )?;
 
                 // Block allocation through end of chunk.

@@ -13,7 +13,9 @@ pub mod response;
 pub mod stream;
 
 pub use message::{ContentPart, ImageData, Message, Role};
-pub use request::{ChatRequest, ResponseFormat, SamplingParams, ThinkingDirective};
+pub use request::{
+    ChatRequest, ReasoningEffort, ResponseFormat, SamplingParams, ThinkingDirective,
+};
 pub use response::{
     ChatResponse, Choice, ChoiceLogprobs, FINISH_REASON_TIMEOUT, FinishReason, TokenLogprob, Usage,
 };

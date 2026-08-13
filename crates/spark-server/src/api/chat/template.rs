@@ -33,20 +33,24 @@ pub(super) fn render_template(
     image_pad_counts: &[usize],
     enable_thinking: bool,
     thinking_budget: Option<u32>,
+    reasoning_effort: Option<crate::ir::ReasoningEffort>,
     tools_active: bool,
 ) -> Result<TemplateOut, Response> {
     // Use closed thinking when client doesn't explicitly enable it.
     let template_thinking = enable_thinking;
 
     // Build JSON messages with structured tool_calls for Jinja.
-    let json_messages = build_json_messages(messages);
+    let json_messages =
+        build_json_messages_for(messages, state.tokenizer.uses_deepseek_v4_encoding());
     // When TSCG is enabled the parser's `system_prompt()` has already
     // placed the compact tool signatures into messages[0]; passing
     // `tools` to Jinja as well would re-render the full JSON schema and
     // defeat the compaction. Pass `None` so the template's `{% if tools
     // %}` branch falls through — the tool-call format instructions
     // still come from `system_prompt()`.
-    let jinja_tools: Option<Vec<serde_json::Value>> = if tools_active && !state.chat.prompt.tscg {
+    let jinja_tools: Option<Vec<serde_json::Value>> = if tools_active
+        && (state.tokenizer.uses_deepseek_v4_encoding() || !state.chat.prompt.tscg)
+    {
         Some(
             tools
                 .iter()
@@ -66,11 +70,12 @@ pub(super) fn render_template(
     let json_messages = if auto_compact_active && json_messages.len() > 4 {
         let trial_tokens = state
             .tokenizer
-            .apply_chat_template_openai(
+            .apply_chat_template_openai_with_effort(
                 &json_messages,
                 jinja_tools.as_deref(),
                 template_thinking,
                 state.behavior.disable_tool_steering,
+                reasoning_effort.map(crate::ir::ReasoningEffort::as_str),
             )
             .map(|t| t.len())
             .unwrap_or(0);
@@ -83,11 +88,12 @@ pub(super) fn render_template(
         json_messages
     };
 
-    let prompt_tokens = match state.tokenizer.apply_chat_template_openai(
+    let prompt_tokens = match state.tokenizer.apply_chat_template_openai_with_effort(
         &json_messages,
         jinja_tools.as_deref(),
         template_thinking,
         state.behavior.disable_tool_steering,
+        reasoning_effort.map(crate::ir::ReasoningEffort::as_str),
     ) {
         Ok(t) => t,
         Err(e) => {
@@ -148,6 +154,13 @@ pub(super) fn render_template(
 /// Roles arrive canonical (`developer` → `system` normalization happens
 /// at MsgEntry build time).
 pub(super) fn build_json_messages(messages: &[MsgEntry]) -> Vec<serde_json::Value> {
+    build_json_messages_for(messages, false)
+}
+
+fn build_json_messages_for(
+    messages: &[MsgEntry],
+    include_tool_call_ids: bool,
+) -> Vec<serde_json::Value> {
     messages
         .iter()
         .map(|m| {
@@ -169,6 +182,9 @@ pub(super) fn build_json_messages(messages: &[MsgEntry]) -> Vec<serde_json::Valu
             let mut msg = serde_json::json!({"role": m.role, "content": content_val});
             if let Some(ref tcs) = m.tool_calls {
                 msg["tool_calls"] = serde_json::Value::Array(tcs.clone());
+            }
+            if include_tool_call_ids && let Some(ref id) = m.tool_call_id {
+                msg["tool_call_id"] = serde_json::Value::String(id.clone());
             }
             // F1: forward historical reasoning trace to the Jinja
             // template. The template at qwen3_5_moe.jinja:90-104
@@ -195,6 +211,7 @@ mod json_message_tests {
             role: role.to_string(),
             content: content.to_string(),
             tool_calls: None,
+            tool_call_id: None,
             image_count,
             reasoning_content: None,
         }
@@ -261,6 +278,7 @@ mod json_message_tests {
             &msgs,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,
+            false,
         )
         .expect("fixture builds");
         assert_eq!(out.cwd_hint.as_deref(), Some("/tmp/proj"));

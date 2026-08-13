@@ -27,6 +27,8 @@ pub(crate) struct MsgEntry {
     /// Structured tool_calls for the Jinja template (arguments
     /// pre-parsed to dicts).
     pub(super) tool_calls: Option<Vec<serde_json::Value>>,
+    /// Links a tool-result message to the assistant call it answers.
+    pub(super) tool_call_id: Option<String>,
     /// Number of image content parts on this message. When > 0
     /// the json_messages builder emits a structured content array
     /// so the Jinja template can render
@@ -95,6 +97,7 @@ pub(super) fn build_msg_entries(
     input: &[Message],
     tools_active: bool,
     levers: &super::levers::ChatLevers,
+    preserve_developer_role: bool,
 ) -> Result<BuildOut, Response> {
     let mut messages: Vec<MsgEntry> = Vec::with_capacity(input.len());
     let mut all_images: Vec<String> = Vec::new();
@@ -183,6 +186,7 @@ pub(super) fn build_msg_entries(
                 role: "tool".into(),
                 content: text,
                 tool_calls: None,
+                tool_call_id: m.tool_call_id.clone(),
                 image_count: m.image_count(),
                 reasoning_content: None,
             });
@@ -209,13 +213,14 @@ pub(super) fn build_msg_entries(
         // happened only at JSON render time, so `developer` messages
         // bypassed those scans.
         let role = match &m.role {
-            Role::Other(r) if r == "developer" => "system".to_string(),
+            Role::Other(r) if r == "developer" && !preserve_developer_role => "system".to_string(),
             r => r.as_wire().to_string(),
         };
         messages.push(MsgEntry {
             role,
             content: text,
             tool_calls: tool_calls_json,
+            tool_call_id: m.tool_call_id.clone(),
             image_count,
             // F1: forward reasoning_content for assistant messages only.
             // Wave 3: when strip_reasoning=true, drop it for ALL turns,
@@ -274,7 +279,10 @@ pub(super) fn build_msg_entries(
 
     // Inject CWD hint into the system message (NOT tool definitions —
     // those go to the Jinja template).
-    if tools_active && let Some(ref cwd) = cwd_hint {
+    if tools_active
+        && !levers.disable_cwd_hint_injection
+        && let Some(ref cwd) = cwd_hint
+    {
         let hints = format!("\n<environment>\nworking_directory: {cwd}\n</environment>");
         if let Some(first) = messages.first_mut()
             && first.role == "system"

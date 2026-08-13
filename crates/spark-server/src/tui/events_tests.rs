@@ -260,3 +260,52 @@ fn buttons_other_than_the_left_one_are_left_to_the_terminal() {
         assert!(a.selection.is_none(), "{kind:?}");
     }
 }
+
+#[test]
+fn clicking_the_library_search_field_focuses_it_and_a_miss_does_not() {
+    // The renderer publishes the field's rect; the handler consumes it. Using
+    // the published rect rather than hardcoded coordinates is the point of the
+    // test: it holds wherever the layout puts the field.
+    let mut a = app();
+    a.section = Section::Library;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(WIDE.width, WIDE.height))
+            .expect("backend");
+    terminal
+        .draw(|f| crate::tui::render::draw(f, &a))
+        .expect("draw");
+    let rect = a.lib_search_click.get().expect("the field was drawn");
+
+    assert!(!a.lib.filter_editing);
+    click(&mut a, rect.x + 2, rect.y, WIDE);
+    assert!(a.lib.filter_editing, "the click focuses the field");
+    assert!(
+        a.selection.is_none(),
+        "focusing a field is not the start of a drag"
+    );
+
+    // One row below the field is content, so it is an ordinary drag start.
+    let mut b = app();
+    b.section = Section::Library;
+    terminal
+        .draw(|f| crate::tui::render::draw(f, &b))
+        .expect("draw");
+    let rect = b.lib_search_click.get().expect("drawn");
+    click(&mut b, rect.x + 2, rect.y + 1, WIDE);
+    assert!(!b.lib.filter_editing, "a miss must not focus the field");
+}
+
+#[test]
+fn the_search_rect_is_not_published_outside_the_library_list() {
+    // The cell resets every frame: a rect from a frame that is no longer on
+    // screen must not keep catching clicks after a section switch.
+    let a = app();
+    debug_assert!(a.section != Section::Library);
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(WIDE.width, WIDE.height))
+            .expect("backend");
+    terminal
+        .draw(|f| crate::tui::render::draw(f, &a))
+        .expect("draw");
+    assert!(a.lib_search_click.get().is_none());
+}

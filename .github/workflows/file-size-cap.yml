@@ -407,6 +407,23 @@ jobs:
             # arrays -> sibling module) is tracked as follow-up; this entry
             # lands with the PR that tipped it.
             "crates/atlas-plugin/src/gate/coverage.rs"
+            # -- PR #464 (batch4 stack: #400/#401/#402/#350/#403) --
+            # Three files the restack tipped marginally over, each of which sat
+            # JUST under the cap on main (498/489/499 -> 509/501/501). The
+            # overage is a mechanical consequence of merging five upstream
+            # branches, not new monolith growth, and the content belongs to the
+            # upstream PRs rather than to this restack -- same footing as the
+            # #90/#229/#300 carry-over entries above. Clean splits tracked as
+            # follow-up with the upstream authors.
+            # 509 LoC (was 498) -- routed-expert prefill; grew with p400's
+            # native MXFP4/E8M0 routed-expert loading (#293 content).
+            "crates/spark-model/src/layers/moe/forward_prefill_routed.rs"
+            # 501 LoC (was 489) -- tool-call parser entry point; grew with
+            # p350 (Laguna-S-2.1) adding its parser arm.
+            "crates/spark-server/src/tool_parser.rs"
+            # 501 LoC (was 499) -- paged QKV prefill; +2 lines from the
+            # Nemotron-H-Puzzle/Mamba work (#281 content) carried in the stack.
+            "crates/spark-model/src/layers/qwen3_attention/prefill/paged_qkv.rs"
           )
 
           violations=0

@@ -138,6 +138,39 @@ pub fn dense_gemm_bf16_pipelined(
         .launch(stream)
 }
 
+/// Dense BF16 prefill GEMM. Prefer the pipelined tensor-core kernel when the
+/// selected target ships it, and retain the scalar kernel as an explicit
+/// compatibility fallback for older targets.
+#[allow(clippy::too_many_arguments)]
+pub fn dense_gemm_prefill(
+    gpu: &dyn GpuBackend,
+    fallback_kernel: KernelHandle,
+    pipelined_kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    if pipelined_kernel.0 != 0 {
+        dense_gemm_bf16_pipelined(
+            gpu,
+            pipelined_kernel,
+            input,
+            weight,
+            output,
+            m,
+            n,
+            k,
+            stream,
+        )
+    } else {
+        dense_gemm(gpu, fallback_kernel, input, weight, output, m, n, k, stream)
+    }
+}
+
 /// W4A16 GEMM: C = A @ dequant(B).
 ///
 /// A: [M, K] BF16 activations

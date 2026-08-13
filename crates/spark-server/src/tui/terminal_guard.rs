@@ -20,7 +20,9 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -110,7 +112,12 @@ pub fn restore() {
     unredirect_stderr();
     let _ = disable_raw_mode();
     let mut out = std::io::stdout();
-    let _ = crossterm::execute!(out, DisableMouseCapture, LeaveAlternateScreen);
+    let _ = crossterm::execute!(
+        out,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
     let _ = crossterm::execute!(out, crossterm::cursor::Show);
     let _ = out.flush();
 }
@@ -122,7 +129,16 @@ impl TerminalGuard {
     /// Enter raw mode + alternate screen + mouse capture.
     pub fn enter() -> std::io::Result<Self> {
         enable_raw_mode()?;
-        crossterm::execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        // Bracketed paste, or a pasted newline arrives as an Enter KEY: each
+        // line of a multi-line prompt pasted into Chat was SENT as its own
+        // message, and in Ops each line executed. With it, the paste arrives
+        // whole as one `Event::Paste`.
+        crossterm::execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
         TERM.taken.store(true, Ordering::SeqCst);
         redirect_stderr_to_tee();
         Ok(Self)

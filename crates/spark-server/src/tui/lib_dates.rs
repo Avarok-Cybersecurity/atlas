@@ -48,6 +48,13 @@ impl LibState {
     /// seconds after the date does. A map the refresh does not own cannot be
     /// clobbered by it.
     pub fn date_text(&self, recipe: &crate::recipe::Recipe) -> String {
+        // A starting point has no date, by construction: its id is the DONOR's
+        // id, so the maps below would answer with the donor file's date — and
+        // "updated 2026-05-01" on a synthesized guess reads as "verified
+        // then", which nothing ever was.
+        if recipe.starting_point.is_some() {
+            return String::new();
+        }
         if !recipe.updated.is_empty() {
             return recipe.updated.clone();
         }
@@ -74,7 +81,12 @@ impl LibState {
                 .current()
                 .and_then(|e| e.primary())
                 .map(|r| r.id.clone()),
-            View::Cards | View::Config => self.selected_card().map(|r| r.id.clone()),
+            View::Cards | View::Config => self
+                .selected_card()
+                // Never a starting point: its id names the donor's file, so a
+                // lookup would date (or 404 on) a path this card is not.
+                .filter(|r| r.starting_point.is_none())
+                .map(|r| r.id.clone()),
         }
     }
 

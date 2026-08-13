@@ -75,6 +75,44 @@ pub fn rms_norm(
         .launch(stream)
 }
 
+/// Warp-per-row RMS norm for SHORT rows — one warp per row instead of one
+/// block, so the grid shrinks 8x and the reduction needs no shared memory or
+/// barrier. Profitable exactly for the Qwen3 per-head `q_norm`/`k_norm` during
+/// prefill (`num_rows = heads * seq`, `hidden_size = head_dim`), where the
+/// block-per-row kernel measured ~43x above its bandwidth floor.
+pub fn rms_norm_warp_row(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    num_rows: u32,
+    hidden_size: u32,
+    eps: f32,
+    stream: u64,
+) -> Result<()> {
+    const ROWS_PER_BLOCK: u32 = 8;
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_rows.div_ceil(ROWS_PER_BLOCK), 1, 1])
+        .block([32 * ROWS_PER_BLOCK, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(num_rows)
+        .arg_u32(hidden_size)
+        .arg_f32(eps)
+        .launch(stream)
+}
+
+/// Gate for [`rms_norm_warp_row`]: short even rows, many of them.
+/// Disable with `ATLAS_RMS_NORM_WARP_ROW=0`.
+pub fn rms_norm_short_row_eligible(num_rows: u32, hidden_size: u32) -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    let on = *ON.get_or_init(|| std::env::var("ATLAS_RMS_NORM_WARP_ROW").as_deref() != Ok("0"));
+    on && hidden_size <= 256 && hidden_size.is_multiple_of(2) && num_rows >= 1024
+}
+
 /// Fused RMS norm + residual save: normed = rms_norm(input), residual = input.
 ///
 /// Eliminates a separate D2D copy by writing the raw input to the residual

@@ -14,6 +14,9 @@
 
 use anyhow::{Result, bail};
 
+mod hd128;
+pub use hd128::ragged_prefill_bf16_hd128;
+
 #[cfg(atlas_flashinfer)]
 use std::ffi::c_void;
 #[cfg(atlas_flashinfer)]

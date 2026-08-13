@@ -91,6 +91,9 @@ pub fn run(
                 Ok(Event::Resize(..)) => {
                     let _ = terminal.clear();
                 }
+                // Bracketed paste (enabled by the guard): the whole paste in
+                // one event, instead of a newline masquerading as Enter.
+                Ok(Event::Paste(text)) => app.on_paste(text),
                 _ => {}
             }
         }
@@ -104,6 +107,10 @@ pub fn run(
         }
         app.chat.pump();
         app.bench.pump();
+        app.help.pump();
+        if let Some((text, error)) = app.help.take_message() {
+            app.toast(text, error);
+        }
         // Downloads are pumped UNCONDITIONALLY, not only in the Library: one
         // started there must still finish, and report, if the user navigates
         // away to watch the logs — the same argument as `poll_preflight`.
@@ -118,6 +125,15 @@ pub fn run(
         }
         if let Some((text, error)) = app.download.last_message.take() {
             app.toast(text, error);
+        }
+        // A queued download starts the moment the slot is free. This also
+        // covers the race where the running job finishes ON ITS OWN while the
+        // question is still on screen: the user asked for B, and B never
+        // touches A's bytes, so honouring it is right either way.
+        app.start_pending_download();
+        if app.download_switch.is_some() && app.download.job.is_none() {
+            // The job it was asking about is gone; the question is moot.
+            app.download_switch = None;
         }
         // 3. Tick.
         if last_tick.elapsed() >= TICK {
@@ -219,7 +235,14 @@ pub fn run(
         }
         if let Some((res, was_empty)) = copy_result.take() {
             match res {
-                Ok(n) => app.toast(format!("Copied {n} characters to clipboard"), false),
+                // "sent", not "copied": OSC 52 has no acknowledgement — Ok
+                // means the escape sequence went out, not that the terminal
+                // honoured it (see `clipboard.rs`). On a terminal with OSC 52
+                // disabled, "copied" would be a false success claim.
+                Ok(n) => app.toast(
+                    format!("sent {n} characters to the terminal clipboard (OSC 52)"),
+                    false,
+                ),
                 // A stray drag across blank space is a non-event, not an error
                 // worth interrupting anyone about.
                 Err(e) if was_empty => tracing::debug!("copy skipped: {e}"),
@@ -322,6 +345,16 @@ fn on_mouse(
                     SidebarRow::Sub(i) => app.sidebar_sub_click(i),
                 }
                 // A sidebar click is navigation, not the start of a drag.
+                app.selection = None;
+            } else if app
+                .lib_search_click
+                .get()
+                .is_some_and(|r| r.contains(ratatui::layout::Position::new(m.column, m.row)))
+            {
+                // The Library's search field. The rect is what the renderer
+                // actually drew last frame (see `App::lib_search_click`), so
+                // clicking focuses exactly the field the user can see.
+                app.lib.filter_editing = true;
                 app.selection = None;
             } else {
                 // Anywhere else, the button going down is a potential drag.

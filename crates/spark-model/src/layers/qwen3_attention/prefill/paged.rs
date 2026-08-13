@@ -311,6 +311,23 @@ impl Qwen3AttentionLayer {
             .unwrap();
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
+        } else if !self.yarn_inv_freq.is_null() {
+            ops::rope_yarn_scaled(
+                ctx.gpu,
+                self.rope_yarn_scaled_k,
+                q_contiguous,
+                k_contiguous,
+                bmeta_positions,
+                n,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                self.yarn_inv_freq,
+                self.yarn_attention_factor,
+                stream,
+            )?;
         } else if let Some(ref mla) = self.mla {
             // unreachable but keeps the else chain valid
             if !mla.yarn_inv_freq.is_null() {
@@ -517,8 +534,14 @@ impl Qwen3AttentionLayer {
             // reason co-dispatch flatlined). Chunk-0 only (seq_len_start==0):
             // later chunks need the cached prefix, which isn't in the fresh
             // buffers. BF16 / no-WHT only; head_dim 256.
+            // hd=256 (Holo) and hd=128 (Laguna) are both instantiated in
+            // cuda/flashinfer_ragged_prefill.cu. Only the hd=128 entry point
+            // takes a sliding window, so a windowed layer is safe there and
+            // NOT safe on hd=256 (whose variant is use_sliding_window=false).
+            let windowed_ok = hd == 128 || self.sliding_window.is_none();
             let use_flashinfer = seq_len_start == 0
-                && hd == 256
+                && (hd == 256 || hd == 128)
+                && windowed_ok
                 && !k_is_turbo
                 && !v_is_turbo
                 && spark_runtime::flashinfer::available()
@@ -536,29 +559,54 @@ impl Qwen3AttentionLayer {
                         tracing::warn!(
                             "FLASHINFER_PREFILL(varlen) batch={batch} total={total} \
                              num_tokens={num_tokens} cu_seqlens={indptr_h:?} \
-                             nq={nq} nkv={nkv} hd={hd} sm_scale={inv_sqrt_d}"
+                             nq={nq} nkv={nkv} hd={hd} sm_scale={inv_sqrt_d} \
+                             sliding_window={sw:?}",
+                            sw = self.sliding_window
                         );
                     }
                 }
-                spark_runtime::flashinfer::ragged_prefill_bf16_hd256(
-                    q_contiguous.0,
-                    k_contiguous.0,
-                    v_contiguous.0,
-                    attn_out.0,
-                    indptr_h,
-                    indptr_h,
-                    indptr_d,
-                    indptr_d,
-                    batch as u32,
-                    total,
-                    total,
-                    nq,
-                    nkv,
-                    hd,
-                    inv_sqrt_d,
-                    true,
-                    stream,
-                )?;
+                if hd == 128 {
+                    spark_runtime::flashinfer::ragged_prefill_bf16_hd128(
+                        q_contiguous.0,
+                        k_contiguous.0,
+                        v_contiguous.0,
+                        attn_out.0,
+                        indptr_h,
+                        indptr_h,
+                        indptr_d,
+                        indptr_d,
+                        batch as u32,
+                        total,
+                        total,
+                        nq,
+                        nkv,
+                        hd,
+                        inv_sqrt_d,
+                        true,
+                        self.sliding_window,
+                        stream,
+                    )?;
+                } else {
+                    spark_runtime::flashinfer::ragged_prefill_bf16_hd256(
+                        q_contiguous.0,
+                        k_contiguous.0,
+                        v_contiguous.0,
+                        attn_out.0,
+                        indptr_h,
+                        indptr_h,
+                        indptr_d,
+                        indptr_d,
+                        batch as u32,
+                        total,
+                        total,
+                        nq,
+                        nkv,
+                        hd,
+                        inv_sqrt_d,
+                        true,
+                        stream,
+                    )?;
+                }
             } else {
                 // Q12 Path B: batched paged-prefill attention. The kernel reads
                 // Q/O at per-batch offsets internally via blockIdx.z and uses
@@ -658,28 +706,54 @@ impl Qwen3AttentionLayer {
         // ── 9b. Per-head attention gate (Step 3.7 g_proj) ──
         if let Some(ref g_proj) = self.head_gate_weight {
             let gate_buf = q_contiguous; // Q buffer free after attention
-            ops::dense_gemm_tc(
-                ctx.gpu,
-                self.dense_gemm_tc_k,
-                normed,
-                g_proj,
-                gate_buf,
-                n,
-                nq,
-                h,
-                stream,
-            )?;
-            ops::sigmoid_gate_mul_head_broadcast(
-                ctx.gpu,
-                self.sigmoid_gate_head_broadcast_k,
-                attn_out,
-                gate_buf,
-                attn_out,
-                nq,
-                hd,
-                n,
-                stream,
-            )?;
+            // Route the tiny [n,72] head-gate projection through cuBLASLt like
+            // q/k/v/o: on dense_gemm_tc the N=72 output gives only 2 N-blocks
+            // (grid [2, ceil(n/16)]) so the kernel is badly underutilized.
+            // A/B (ISL 1024/8192, C=1): sTTFT 765->747 / 4177->4068 ms = ~2.5%.
+            // dense_gemm_tc stays as the fallback when cuBLAS is off.
+            if ctx.dispatch.cublas_gemm {
+                ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
+            } else {
+                ops::dense_gemm_tc(
+                    ctx.gpu,
+                    self.dense_gemm_tc_k,
+                    normed,
+                    g_proj,
+                    gate_buf,
+                    n,
+                    nq,
+                    h,
+                    stream,
+                )?;
+            }
+            match self.head_gate_activation {
+                super::super::types::HeadGateActivation::Sigmoid => {
+                    ops::sigmoid_gate_mul_head_broadcast(
+                        ctx.gpu,
+                        self.sigmoid_gate_head_broadcast_k,
+                        attn_out,
+                        gate_buf,
+                        attn_out,
+                        nq,
+                        hd,
+                        n,
+                        stream,
+                    )?;
+                }
+                super::super::types::HeadGateActivation::Softplus => {
+                    ops::softplus_gate_mul_head_broadcast(
+                        ctx.gpu,
+                        self.softplus_gate_head_broadcast_k,
+                        attn_out,
+                        gate_buf,
+                        attn_out,
+                        nq,
+                        hd,
+                        n,
+                        stream,
+                    )?;
+                }
+            }
         }
 
         // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).

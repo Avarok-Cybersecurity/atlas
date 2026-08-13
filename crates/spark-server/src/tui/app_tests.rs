@@ -28,6 +28,8 @@ fn nav_rows_include_subsections_in_sidebar_order() {
             "Benchmarks/History",
             "Terminal/Ops",
             "Terminal/Chat",
+            "Help/Guide",
+            "Help/Report Issue",
         ]
     );
 }

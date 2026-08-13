@@ -58,7 +58,7 @@ print(f"Loading {MODEL} (max_seq_len={MAX_SEQ_LEN})...", file=sys.stderr)
 for i in range(90):  # 7.5 min (64K needs more KV cache alloc time)
     time.sleep(5)
     logs = run(f"sudo docker logs {CONTAINER} 2>&1").stdout
-    if "Listening on" in logs:
+    if "Listening on" in logs or "Server live" in logs:
         break
     if "Error:" in logs or "panic" in logs:
         err = [l for l in logs.split("\n") if "Error:" in l or "panic" in l][-1:]

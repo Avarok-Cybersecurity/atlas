@@ -251,3 +251,57 @@ fn every_failure_is_described_with_something_to_do_about_it() {
         "a gated repo names the credential, not the network"
     );
 }
+
+/// The centml-27B report: `d` on a model whose every file is already on disk
+/// finishes inside one frame — list, stat, publish, done — so the user sees a
+/// toast flash and no progress bar, and reads it as a broken download.
+///
+/// The outcome must SAY that nothing needed fetching. "downloaded" describes
+/// work that did not happen, and is indistinguishable from the real thing.
+#[test]
+fn an_already_complete_model_says_so_instead_of_claiming_a_download() {
+    let mut s = DownloadState::default();
+    let root = std::env::temp_dir().join("atlas-already-complete");
+    std::fs::create_dir_all(&root).ok();
+    s.start("centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf", root);
+    {
+        let job = s.job.as_mut().expect("a job");
+        // What `Planned` reports when every file is already present.
+        job.total = 18_000_000_000;
+        job.done = 18_000_000_000;
+        job.already_have = 18_000_000_000;
+    }
+    // Drive the Done arm the way `pump` does.
+    s.settle_done_for_test();
+    let (text, error) = s.last_message.take().expect("it must say something");
+    assert!(!error, "nothing went wrong: {text}");
+    assert!(
+        text.contains("already complete"),
+        "must name the real outcome: {text}"
+    );
+    assert!(
+        !text.contains("downloaded —"),
+        "must not print a transfer receipt for a transfer that did not happen: {text}"
+    );
+}
+
+/// The converse: a real transfer gets a receipt with the bytes that moved and
+/// how long it took, not a bare "downloaded".
+#[test]
+fn a_real_transfer_reports_what_moved() {
+    let mut s = DownloadState::default();
+    let root = std::env::temp_dir().join("atlas-real-transfer");
+    std::fs::create_dir_all(&root).ok();
+    s.start("org/fresh", root);
+    {
+        let job = s.job.as_mut().expect("a job");
+        job.total = 8_000_000_000;
+        job.done = 8_000_000_000;
+        job.already_have = 0; // nothing was on disk
+    }
+    s.settle_done_for_test();
+    let (text, error) = s.last_message.take().expect("it must say something");
+    assert!(!error, "{text}");
+    assert!(text.contains("downloaded"), "{text}");
+    assert!(text.contains("GB"), "the bytes that moved: {text}");
+}

@@ -28,6 +28,7 @@ pub(super) fn resolve_thinking(
             model_default: state.behavior.thinking_default,
             thinking_in_tools: state.behavior.thinking_in_tools,
             max_thinking_budget: state.behavior.max_thinking_budget,
+            cap_at_max_tokens: state.behavior.cap_thinking_at_max_tokens,
         },
         max_tokens,
         tools_active,
@@ -36,11 +37,15 @@ pub(super) fn resolve_thinking(
 
 /// Server/model policy inputs, split from `AppState` so the resolution
 /// core is a pure function.
+#[derive(Clone, Copy)]
 struct Policy {
     disable_thinking: bool,
     model_default: bool,
     thinking_in_tools: bool,
     max_thinking_budget: u32,
+    /// When false, `max_thinking_budget` is the SOLE thinking cap (vLLM
+    /// single-budget); the 90%-of-max_tokens clamp is skipped.
+    cap_at_max_tokens: bool,
 }
 
 fn resolve(
@@ -71,18 +76,25 @@ fn resolve(
     };
     let budget = if et {
         let b = tb.unwrap_or(policy.max_thinking_budget);
-        // 2026-05-23 sweep: dropped the 70% special case for
-        // `tools_active && thinking_in_tools` (previously 7/10, now
-        // 9/10 uniformly). With `thinking_in_tools=true` as the
-        // project-wide default the 70% branch fired on every tool turn
-        // and silently undermined the MODEL.toml `max_thinking_budget`
-        // bump (opencode-style requests at max_tokens=2048 capped to
-        // 1433 instead of 2048). 90% leaves headroom for content +
-        // tool args without crippling reasoning chains that now run
-        // naturally after the F1 reflection-penalty removal.
-        let safety_cap_pct = 9;
-        let max = ((max_tokens * safety_cap_pct) / 10).max(1);
-        Some(b.min(max))
+        if !policy.cap_at_max_tokens {
+            // vLLM single-budget: `max_thinking_budget` (or an explicit
+            // client budget) is the sole cap. Reasoning may use the full
+            // generation budget; there is no second, max_tokens-derived cap.
+            Some(b)
+        } else {
+            // 2026-05-23 sweep: dropped the 70% special case for
+            // `tools_active && thinking_in_tools` (previously 7/10, now
+            // 9/10 uniformly). With `thinking_in_tools=true` as the
+            // project-wide default the 70% branch fired on every tool turn
+            // and silently undermined the MODEL.toml `max_thinking_budget`
+            // bump (opencode-style requests at max_tokens=2048 capped to
+            // 1433 instead of 2048). 90% leaves headroom for content +
+            // tool args without crippling reasoning chains that now run
+            // naturally after the F1 reflection-penalty removal.
+            let safety_cap_pct = 9;
+            let max = ((max_tokens * safety_cap_pct) / 10).max(1);
+            Some(b.min(max))
+        }
     } else {
         None
     };
@@ -99,6 +111,7 @@ mod tests {
             model_default: false,
             thinking_in_tools: true,
             max_thinking_budget: 2048,
+            cap_at_max_tokens: true,
         }
     }
 
@@ -158,6 +171,28 @@ mod tests {
             false,
         );
         assert!(et);
+        assert_eq!(tb, Some(2048));
+    }
+
+    #[test]
+    fn cap_at_max_tokens_false_skips_the_90pct_clamp() {
+        // vLLM single-budget: max_thinking_budget is the SOLE cap; a small
+        // max_tokens no longer clamps thinking down to 90% of it.
+        let no_cap = Policy {
+            cap_at_max_tokens: false,
+            ..policy()
+        };
+        // Explicit client budget passes through untouched (was 900 under cap).
+        let (et, tb) = resolve(
+            ThinkingDirective::On { budget: Some(4096) },
+            no_cap,
+            1000,
+            false,
+        );
+        assert!(et);
+        assert_eq!(tb, Some(4096));
+        // Budgetless On → max_thinking_budget, not clamped to 0.9*max_tokens.
+        let (_, tb) = resolve(ThinkingDirective::On { budget: None }, no_cap, 1000, false);
         assert_eq!(tb, Some(2048));
     }
 

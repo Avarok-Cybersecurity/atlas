@@ -346,6 +346,7 @@ pub fn paged_decode_attn_fp8(
     v_scale: f32,
     q_stride: u32,
     cache_stride: u64,
+    sliding_window: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -367,5 +368,6 @@ pub fn paged_decode_attn_fp8(
         .arg_f32(v_scale)
         .arg_u32(q_stride)
         .arg_u64(cache_stride)
+        .arg_u32(sliding_window)
         .launch(stream)
 }

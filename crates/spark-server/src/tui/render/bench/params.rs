@@ -37,7 +37,12 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     let label_w = 22usize;
-    let mut lines: Vec<Line> = Vec::new();
+    // Same cursor-follows-scroll treatment as the Library config form (its
+    // structural twin, on purpose): all rows into a body region, the probe
+    // status pinned at the bottom, and the window anchored past the selected
+    // row so `j` can never walk the cursor below the fold.
+    let mut body: Vec<Line> = Vec::new();
+    let mut anchor_end = 0usize;
     for row in 0..app.bench.row_count() {
         let (label, help, hint) = app.bench.row_meta(row);
         let selected = row == app.bench.row;
@@ -47,11 +52,11 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
         // The two endpoint rows are a different kind of thing from the
         // benchmark's own knobs, so they get a rule rather than blending in.
         if row == app.bench.specs.len() {
-            lines.push(Line::from(Span::styled(
+            body.push(Line::from(Span::styled(
                 format!(" {}", "─".repeat(inner.width.saturating_sub(2) as usize)),
                 theme::dim(),
             )));
-            lines.push(Line::from(Span::styled(" TARGET", theme::dim())));
+            body.push(Line::from(Span::styled(" TARGET", theme::dim())));
         }
 
         let marker = if selected { "▌" } else { " " };
@@ -81,19 +86,20 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
         if selected {
             line = line.style(theme::selected());
         }
-        lines.push(line);
+        body.push(line);
 
         // Help and validation attach to the selected row only — showing every
         // help line at once turns the form into a wall of grey.
         if selected {
             if let Some(err) = app.bench.row_error(row) {
-                lines.push(Line::from(Span::styled(
+                body.push(Line::from(Span::styled(
                     format!("   {err}"),
                     theme::error(),
                 )));
             } else {
-                lines.push(Line::from(Span::styled(format!("   {help}"), theme::dim())));
+                body.push(Line::from(Span::styled(format!("   {help}"), theme::dim())));
             }
+            anchor_end = body.len();
         }
     }
 
@@ -109,9 +115,14 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
             theme::warn(),
         ),
     };
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(probe_text, probe_style)));
-
+    let tail = vec![
+        Line::from(""),
+        Line::from(Span::styled(probe_text, probe_style)),
+    ];
+    let body_h = (inner.height as usize).saturating_sub(tail.len()).max(1);
+    let off = anchor_end.saturating_sub(body_h);
+    let mut lines: Vec<Line> = body.into_iter().skip(off).take(body_h).collect();
+    lines.extend(tail);
     f.render_widget(Paragraph::new(lines), inner);
 }
 

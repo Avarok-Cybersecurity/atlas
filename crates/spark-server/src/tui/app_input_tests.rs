@@ -196,6 +196,7 @@ fn the_chat_line_scrolls_the_transcript_without_losing_focus() {
     // Up/Down are free here (unlike Ops, which spends them on history), and
     // scrollback has to stay live while a reply streams — that is where you are.
     let mut a = chat_input();
+    a.chat_scroll_max.set(11); // the keys clamp like the wheel now
     tap(&mut a, KeyCode::Up);
     assert_eq!(a.chat.scroll, Some(1));
     tap(&mut a, KeyCode::PageUp);
@@ -399,4 +400,81 @@ fn the_log_filter_outranks_every_other_buffer() {
     type_str(&mut a, "jjj");
     assert_eq!(a.log_filter, "jjj");
     assert_eq!(a.kernel_scroll, 0, "`j` did not also scroll the table");
+}
+
+/// Terminal ▸ Chat with a two-turn conversation on screen.
+fn chat_session(focused: bool) -> App {
+    use crate::tui::chat::{ChatMessage, Role};
+    let mut a = app();
+    a.section = Section::Terminal;
+    a.term_sub = TermSub::Chat;
+    a.focus = if focused {
+        Focus::Input
+    } else {
+        Focus::Content
+    };
+    a.chat
+        .transcript
+        .push(ChatMessage::new(Role::User, "hello".into()));
+    a.chat
+        .transcript
+        .push(ChatMessage::new(Role::Model, "hi".into()));
+    a
+}
+
+#[test]
+fn ctrl_n_asks_before_discarding_a_conversation() {
+    let mut a = chat_session(false);
+    chord(&mut a, 'n', KeyModifiers::CONTROL);
+    assert!(a.confirm_chat_clear, "the question is on screen");
+    assert_eq!(a.chat.transcript.len(), 2, "nothing destroyed yet");
+
+    // Any non-affirmative key keeps the conversation — including a plain `n`,
+    // which reads as "no" and must never be the key that destroys.
+    press(&mut a, 'n');
+    assert!(!a.confirm_chat_clear);
+    assert_eq!(a.chat.transcript.len(), 2, "kept");
+
+    // The affirmative clears.
+    chord(&mut a, 'n', KeyModifiers::CONTROL);
+    press(&mut a, 'y');
+    assert!(a.chat.transcript.is_empty(), "cleared");
+    assert!(
+        a.toasts
+            .iter()
+            .any(|t| t.text.contains("2 turns discarded")),
+        "the receipt names what was lost"
+    );
+}
+
+#[test]
+fn a_second_ctrl_n_is_the_same_affirmative_the_quit_prompt_taught() {
+    let mut a = chat_session(false);
+    chord(&mut a, 'n', KeyModifiers::CONTROL);
+    chord(&mut a, 'n', KeyModifiers::CONTROL);
+    assert!(a.chat.transcript.is_empty());
+    assert!(!a.confirm_chat_clear);
+}
+
+#[test]
+fn ctrl_n_on_an_empty_chat_says_so_instead_of_asking() {
+    // A prompt that protects nothing trains the reflex that dismisses the
+    // one that matters.
+    let mut a = chat_session(false);
+    a.chat.transcript.clear();
+    chord(&mut a, 'n', KeyModifiers::CONTROL);
+    assert!(!a.confirm_chat_clear);
+    assert!(a.toasts.iter().any(|t| t.text.contains("already empty")));
+}
+
+#[test]
+fn ctrl_n_works_while_typing_and_a_plain_n_still_types() {
+    let mut a = chat_session(true);
+    type_str(&mut a, "never");
+    assert_eq!(a.chat.input, "never", "bare letters stay text");
+    chord(&mut a, 'n', KeyModifiers::CONTROL);
+    assert!(a.confirm_chat_clear, "the chord reaches the handler");
+    press(&mut a, 'y');
+    assert!(a.chat.transcript.is_empty());
+    assert_eq!(a.chat.input, "never", "the unsent draft survives the reset");
 }

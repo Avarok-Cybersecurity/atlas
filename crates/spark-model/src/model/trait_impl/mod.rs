@@ -183,11 +183,10 @@ impl Model for TransformerModel {
         Ok(out)
     }
 
-    /// Q12 Phase 4b override: try the model-level batched dispatch
-    /// (`prefill_batch_chunk_dispatch`) first; on the not-yet-implemented
-    /// stub failure, fall back to the trait's default per-stream loop.
-    /// This keeps callers correct while the per-layer-batched body is
-    /// staged in subsequent commits.
+    /// Q12 Phase 4b override. The concrete dispatcher routes ineligible
+    /// batches to its sequential path before state mutation. Errors from an
+    /// admitted kernel batch must propagate: retrying sequentially can
+    /// reapply prefix-cache and KV state.
     fn prefill_batch_chunk(
         &self,
         streams: &mut [PrefillSlice<'_>],
@@ -203,46 +202,7 @@ impl Model for TransformerModel {
         stream: u64,
         row_base: usize,
     ) -> Result<Vec<DevicePtr>> {
-        // Try the concrete dispatch. The Phase 4b stub returns Err for the
-        // "not-yet-implemented" path so we transparently downgrade to the
-        // single-stream-loop default impl. Once Phase 2b/3 land, the
-        // dispatch returns Ok with logits and this fallback becomes dead
-        // code that we can drop.
-        match self.prefill_batch_chunk_dispatch(streams, stream, row_base) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                // Log at debug — under expected for this stub. Promotes to
-                // info if a real error is encountered (future Phase 4b body).
-                tracing::debug!(
-                    "prefill_batch_chunk_dispatch unavailable, falling back to \
-                     per-stream loop: {e}"
-                );
-                if row_base > 0 {
-                    // The per-stream loop writes each stream's logits where
-                    // the single-stream path always puts them; it cannot
-                    // honor the shifted window. Mirrors pre-fix behavior —
-                    // say so instead of silently aliasing.
-                    tracing::warn!(
-                        "prefill_batch_chunk_rows: per-stream fallback cannot \
-                         honor row_base={row_base}; decode lanes may alias \
-                         prefill logits rows this step"
-                    );
-                }
-                let mut out = Vec::with_capacity(streams.len());
-                for slice in streams.iter_mut() {
-                    let logits = self.prefill_chunk(
-                        slice.prompt_tokens,
-                        slice.seq,
-                        slice.chunk_start,
-                        slice.chunk_len,
-                        slice.is_last_chunk,
-                        stream,
-                    )?;
-                    out.push(logits);
-                }
-                Ok(out)
-            }
-        }
+        self.prefill_batch_chunk_dispatch(streams, stream, row_base)
     }
     fn vocab_size(&self) -> usize {
         self.vocab_size_dispatch()

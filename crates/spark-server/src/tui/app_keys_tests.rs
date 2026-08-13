@@ -77,6 +77,8 @@ fn tab_walks_every_sidebar_row_in_order_and_wraps_home() {
             "Benchmarks/History",
             "Terminal/Ops",
             "Terminal/Chat",
+            "Help/Guide",
+            "Help/Report Issue",
         ]
     );
     tap(&mut a, KeyCode::Tab);
@@ -87,13 +89,22 @@ fn tab_walks_every_sidebar_row_in_order_and_wraps_home() {
 fn shift_tab_walks_the_same_rows_backwards() {
     let mut a = app();
     tap(&mut a, KeyCode::BackTab);
-    assert_eq!(at(&a), "Terminal/Chat", "the first row wraps to the last");
-    for expected in ["Terminal/Ops", "Benchmarks/History", "Benchmarks/Suite"] {
+    assert_eq!(
+        at(&a),
+        "Help/Report Issue",
+        "the first row wraps to the last"
+    );
+    for expected in [
+        "Help/Guide",
+        "Terminal/Chat",
+        "Terminal/Ops",
+        "Benchmarks/History",
+    ] {
         tap(&mut a, KeyCode::BackTab);
         assert_eq!(at(&a), expected);
     }
     tap(&mut a, KeyCode::Tab);
-    assert_eq!(at(&a), "Benchmarks/History", "and ⇥ undoes ⇧⇥");
+    assert_eq!(at(&a), "Terminal/Ops", "and ⇥ undoes ⇧⇥");
 }
 
 #[test]
@@ -173,6 +184,7 @@ fn ctrl_c_quits_even_while_a_text_field_owns_the_keyboard() {
 #[test]
 fn q_quits_only_when_no_text_field_owns_the_keyboard() {
     let mut a = app();
+    a.progress.ready = true; // the boot load finished; nothing is in flight
     press(&mut a, 'q');
     assert!(a.should_quit);
 
@@ -302,10 +314,13 @@ fn the_network_pane_walks_its_ranks_and_stops_at_both_ends() {
     tap(&mut a, KeyCode::Left);
     assert_eq!(a.network_selected, 0);
 
+    // Enter used to toggle `network_detail`, a bool no renderer read — an
+    // advertised key with zero effect. The detail pane is always drawn, so
+    // the honest binding is none at all.
+    let before = snapshot(&a);
     tap(&mut a, KeyCode::Enter);
-    assert!(a.network_detail);
-    tap(&mut a, KeyCode::Enter);
-    assert!(!a.network_detail, "Enter is a toggle");
+    assert_eq!(snapshot(&a), before, "Enter is unbound on Network");
+    assert_eq!(a.network_selected, 0);
 }
 
 #[test]
@@ -401,6 +416,7 @@ fn a_keystroke_ends_a_mouse_selection() {
 #[test]
 fn q_still_quits_immediately_when_there_is_nothing_to_lose() {
     let mut a = app();
+    a.progress.ready = true; // the boot load finished; nothing is in flight
     assert!(a.work_in_flight().is_none());
     press(&mut a, 'q');
     assert!(a.should_quit);

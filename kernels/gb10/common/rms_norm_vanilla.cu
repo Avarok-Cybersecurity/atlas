@@ -98,3 +98,66 @@ extern "C" __global__ void rms_norm_vanilla(
         out[hidden_size - 1] = __float2bfloat16(val * rms * w);
     }
 }
+
+// Warp-per-row vanilla RMS norm for SHORT rows (per-head q_norm / k_norm).
+//
+// `rms_norm_vanilla` assigns one BLOCK per row. For the Qwen3-style PER-HEAD
+// norms the row is only head_dim (128) elements and the prefill call passes
+// num_rows = num_heads * seq_len — at ISL 1K with 72 Q heads that is 70,560
+// blocks of 128 threads, each taking a shared-memory barrier to reduce a
+// 256-byte row. Measured 6.4 ms/layer against a ~0.15 ms bandwidth floor
+// (Q+K = 40 MB moved): launch/occupancy bound, not bandwidth bound.
+//
+// One WARP owns one row here: the reduction is pure __shfl_xor_sync with no
+// shared memory and no __syncthreads, and RMSV_ROWS_PER_BLOCK warps share a
+// block so the grid shrinks by that factor.
+//
+// Same formula as the block kernel — FP32 accumulate, mean over hidden_size,
+// rsqrtf(mean + eps), VANILLA `x * w` scaling with NO `(1 + w)` offset. The
+// reduction ORDER differs, so results are equivalent but not bit-identical.
+#define RMSV_ROWS_PER_BLOCK 8
+
+extern "C" __global__ void rms_norm_vanilla_warp_row(
+    const __nv_bfloat16* __restrict__ input,   // [num_rows, hidden_size]
+    const __nv_bfloat16* __restrict__ weight,  // [hidden_size]
+    __nv_bfloat16* __restrict__ output,        // [num_rows, hidden_size]
+    unsigned int num_rows,
+    unsigned int hidden_size,
+    float eps
+) {
+    const unsigned int lane = threadIdx.x & 31;
+    const unsigned int row = blockIdx.x * RMSV_ROWS_PER_BLOCK + (threadIdx.x >> 5);
+    if (row >= num_rows) return;
+
+    const size_t base = (size_t)row * hidden_size;
+    const unsigned int half_size = hidden_size >> 1;
+    const unsigned int* x32 = (const unsigned int*)(input + base);
+    const unsigned int* w32 = (const unsigned int*)weight;
+    unsigned int* out32 = (unsigned int*)(output + base);
+
+    float sum_sq = 0.0f;
+    for (unsigned int i = lane; i < half_size; i += 32) {
+        float v0, v1;
+        unpack_bf16x2(x32[i], v0, v1);
+        sum_sq += v0 * v0 + v1 * v1;
+    }
+    if ((hidden_size & 1) && lane == 0) {
+        float val = __bfloat162float(input[base + hidden_size - 1]);
+        sum_sq += val * val;
+    }
+
+    sum_sq = warp_reduce_sum(sum_sq);
+    const float rms = rsqrtf(sum_sq / (float)hidden_size + eps);
+
+    for (unsigned int i = lane; i < half_size; i += 32) {
+        float xv0, xv1, wv0, wv1;
+        unpack_bf16x2(x32[i], xv0, xv1);
+        unpack_bf16x2(w32[i], wv0, wv1);
+        out32[i] = pack_bf16x2(xv0 * rms * wv0, xv1 * rms * wv1);
+    }
+    if ((hidden_size & 1) && lane == 0) {
+        float val = __bfloat162float(input[base + hidden_size - 1]);
+        float w = __bfloat162float(weight[hidden_size - 1]);
+        output[base + hidden_size - 1] = __float2bfloat16(val * rms * w);
+    }
+}

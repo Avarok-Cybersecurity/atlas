@@ -324,6 +324,20 @@ impl FfnComponent {
         matches!(self, Self::Dense(_))
     }
 
+    /// True when this MoE FFN can serve DECODE through the grouped read-once
+    /// GEMM (forward_prefill) instead of the pairwise per-slot loop. The
+    /// is_dense() comment above asserts grouped is "a net loss at small batch"
+    /// on a 256-expert MoE, but that was never measured for decode CONCURRENCY
+    /// (n=4) where the pairwise path re-reads ~14-20 distinct experts as 40
+    /// per-slot CTAs. Native-NVFP4-routed only (forward_prefill's unconditional
+    /// grouped path); dense/none are false.
+    pub fn moe_grouped_decode_ok(&self) -> bool {
+        match self {
+            Self::Moe(m) => m.grouped_decode_ok(),
+            _ => false,
+        }
+    }
+
     /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
     pub fn fp32_routing_active(&self) -> bool {
         match self {

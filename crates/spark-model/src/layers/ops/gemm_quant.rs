@@ -4,7 +4,7 @@
 
 #![allow(unused_imports)]
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -159,6 +159,63 @@ pub fn dense_gemv_batch2(
         .arg_ptr(input)
         .arg_ptr(weight.weight)
         .arg_ptr(output)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
+/// Dense BF16 batched GEMV (M rows): `C[t] = A[t] @ B^T` for `t` in `[0, M)`.
+///
+/// The M-row generalisation of [`dense_gemv_batch2`]. Reads the BF16 weight
+/// matrix ONCE for all M rows instead of M times, which is the whole point:
+/// at decode the BF16 projections (q/k/v/o + shared expert) are pure weight
+/// streaming, so M separate M=1 GEMVs make the step scale linearly with the
+/// number of concurrent sequences.
+///
+/// Bit-identical to M separate `dense_gemv` calls (same K-iteration order and
+/// reduction tree per row; the kernel dir builds with --fmad=false).
+///
+/// `input`: `[M, K]` BF16 contiguous. `output`: M rows at
+/// `output + t * out_stride` (BF16 elements). Caller must pass `m <= 8`
+/// (MAX_M in the kernel); larger batches should use a tiled GEMM.
+///
+/// Kernel: `dense_gemv_bf16_batchm(A, B, C, M, N, K, out_stride)`
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+/// Mirror of `MAX_M` in `kernels/gb10/common/dense_gemv_bf16_batchm.cu`.
+/// The kernel clamps silently above this, so the Rust side must refuse.
+pub const DENSE_GEMV_BATCHM_MAX_M: u32 = 8;
+
+pub fn dense_gemv_batchm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    // The kernel caps rows at a compile-time MAX_M 8 and CLAMPS rather than
+    // erroring, so an over-large m used to mean "rows 8..m are silently never
+    // written". Refuse instead: a caller that wants more rows must use a
+    // kernel that can do them (dense_gemm_tc), not get 8 rows of truth and
+    // stale memory for the rest.
+    ensure!(
+        (1..=DENSE_GEMV_BATCHM_MAX_M).contains(&m),
+        "dense_gemv_batchm: m={m} outside 1..={DENSE_GEMV_BATCHM_MAX_M} \
+         (kernel MAX_M clamps silently; use dense_gemm_tc for wider batches)"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(m)
         .arg_u32(n)
         .arg_u32(k)
         .arg_u32(out_stride)
@@ -716,8 +773,8 @@ pub fn transpose_fp8(
 
 /// Widen an FP8 block-scale tensor to FP32 on the GPU.
 ///
-/// `src` is `[total]` BF16 (`in_is_fp32 == false`) or FP32 (`in_is_fp32 ==
-/// true`); `dst` is `[total]` FP32. Lossless BF16→FP32 widen / straight copy.
+/// `src` is `[total]` BF16 (0), FP32 (1), or F8_E8M0 (2); `dst` is `[total]`
+/// FP32. E8M0 uses the exact `exp << 23` power-of-two representation.
 /// Run once at load so downstream FP8 block-scale kernels read `const float*`.
 /// Grid: (ceil(total/256), 1, 1)  Block: (256, 1, 1)
 pub fn widen_block_scale_f32(
@@ -726,7 +783,7 @@ pub fn widen_block_scale_f32(
     src: DevicePtr,
     dst: DevicePtr,
     total: u32,
-    in_is_fp32: bool,
+    input_dtype: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -735,7 +792,7 @@ pub fn widen_block_scale_f32(
         .arg_ptr(src)
         .arg_ptr(dst)
         .arg_u32(total)
-        .arg_u32(in_is_fp32 as u32)
+        .arg_u32(input_dtype)
         .launch(stream)
 }
 

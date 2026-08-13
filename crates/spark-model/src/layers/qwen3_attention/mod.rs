@@ -40,6 +40,7 @@ mod types_weights;
 pub use innerq_driver::InnerQDriver;
 // V4: re-export the new hyper-connection / compressor weight types alongside the
 // existing ones. These are only constructed under DeepSeek-V4 detection.
+pub(crate) use types::HeadGateActivation;
 pub use types::Qwen3AttentionLayer;
 pub use types_weights::{CompressorWeights, HcHeadWeights, HcSiteWeights, HcWeights, MlaWeights};
 
@@ -81,6 +82,44 @@ pub(crate) fn split_ref_seqs(num_seqs: u32, max_decode_seqs: u32) -> u32 {
     // decode gap vs vLLM is core kernel efficiency (MoE GEMV + per-step
     // overhead), a separate multi-week effort. Determinism pin kept intact.
     max_decode_seqs.max(num_seqs)
+}
+
+/// Host-time accumulator for the FFN/MoE half of prefill layers
+/// (`ATLAS_PREFILL_HOST_TIMING=1`). Summed across layers and read+reset once
+/// per prefill by the layer loop, so the attention half can be derived as
+/// loop_wall - ffn.
+pub static FFN_HOST_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn add_ffn_host_us(us: u64) {
+    FFN_HOST_US.fetch_add(us, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn take_ffn_host_us() -> u64 {
+    FFN_HOST_US.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Per-phase host-time accumulators for the prefill ATTENTION path
+/// (`ATLAS_PREFILL_HOST_TIMING=1`). Index: 0=qkv projections, 1=everything
+/// between qkv and the attention call (deinterleave + per-head norms + RoPE +
+/// KV write), 2=the attention kernel call itself, 3=o_proj + head gate.
+/// Summed across layers; read and reset once per prefill.
+pub static ATTN_PHASE_US: [std::sync::atomic::AtomicU64; 4] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
+pub fn add_attn_phase_us(i: usize, us: u64) {
+    ATTN_PHASE_US[i].fetch_add(us, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn take_attn_phase_us() -> [u64; 4] {
+    let mut o = [0u64; 4];
+    for (i, a) in ATTN_PHASE_US.iter().enumerate() {
+        o[i] = a.swap(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    o
 }
 
 #[cfg(test)]

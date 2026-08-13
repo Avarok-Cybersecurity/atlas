@@ -3,9 +3,10 @@
 //! `Qwen3AttentionLayer` setters and small per-layer compute helpers
 //! (`apply_layer_scalar`, `effective_attn_scale`).
 
-use super::types::{HcWeights, MlaWeights, Qwen3AttentionLayer};
+use super::types::{HcWeights, HeadGateActivation, MlaWeights, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::weight_map::DenseWeight;
+use spark_runtime::gpu::DevicePtr;
 
 /// YaRN attention-temperature factor for a single `mscale` value.
 /// Matches HF `yarn_get_mscale`: `0.1 * mscale * ln(scale) + 1.0` for
@@ -68,8 +69,14 @@ impl Qwen3AttentionLayer {
 
     /// Set per-head attention gate weight (Step 3.7 g_proj).
     /// The weight is BF16 shape [num_q_heads, hidden_size].
-    pub fn set_head_gate_weight(&mut self, w: DenseWeight) {
+    pub(crate) fn set_head_gate_weight(&mut self, w: DenseWeight, activation: HeadGateActivation) {
         self.head_gate_weight = Some(w);
+        self.head_gate_activation = activation;
+    }
+
+    pub(crate) fn set_yarn_rope(&mut self, inv_freq: DevicePtr, attention_factor: f32) {
+        self.yarn_inv_freq = inv_freq;
+        self.yarn_attention_factor = attention_factor;
     }
 
     /// Set per-layer RoPE overrides (theta, rotary_dim) for dual-RoPE

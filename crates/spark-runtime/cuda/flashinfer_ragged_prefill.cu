@@ -51,9 +51,12 @@ using flashinfer::PosEncodingMode;
 using flashinfer::PrefillPlan;
 using flashinfer::PrefillPlanInfo;
 
-// Compile-time configuration. head_dim is always 256 here.
+// Compile-time configuration. head_dim is a template parameter; each extern "C"
+// entry point pins one value. Instantiated for 128 (Laguna) and 256 (Holo);
+// FlashInfer's DISPATCH_HEAD_DIM (utils.cuh) accepts 64/128/256/512 and its own
+// AOT matrix ships (128,128) for FA2, so both are supported instantiations of
+// BatchPrefillWithRaggedKVCacheDispatched.
 namespace {
-constexpr uint32_t kHeadDim = 256;
 constexpr PosEncodingMode kPosEnc = PosEncodingMode::kNone;
 constexpr bool kUseFp16QkReduction = false;
 
@@ -65,6 +68,25 @@ constexpr bool kUseFp16QkReduction = false;
 //  csrc/batch_decode_mla_config.jinja).
 using StandardAttention = DefaultAttention</*use_custom_mask=*/false,
                                            /*use_sliding_window=*/false,
+                                           /*use_logits_soft_cap=*/false,
+                                           /*use_alibi=*/false>;
+
+// Sliding-window-capable variant, used by the hd=128 (Laguna) entry point.
+// Laguna is 48 layers = 12 full-attention + 36 sliding-window-512, so the
+// windowed variant is required for correctness on the SWA layers.
+//
+// One instantiation serves BOTH layer kinds: with params.window_left == -1 the
+// variant sets window_left = kv_len (variants.cuh:64), and the mask predicate
+//   kv_idx + qo_len + window_left >= kv_len + qo_idx   (variants.cuh:88-90)
+// becomes  kv_idx + qo_len >= qo_idx, which is unconditionally true because
+// qo_idx < qo_len. That is exactly StandardAttention's behaviour, so full
+// -attention layers pass window_left = -1 and SWA layers pass 511.
+//
+// Atlas's own kernel masks when (q - k) >= sliding_window
+// (kernels/gb10/common/inferspark_prefill.cu:754-762), so the FlashInfer
+// equivalent is window_left = sliding_window - 1.
+using WindowedAttention = DefaultAttention</*use_custom_mask=*/false,
+                                           /*use_sliding_window=*/true,
                                            /*use_logits_soft_cap=*/false,
                                            /*use_alibi=*/false>;
 
@@ -103,7 +125,7 @@ extern "C" int atlas_fi_ragged_prefill_workspace_sizes(
       pinned_int_ws_bytes_out == nullptr) {
     return -1;
   }
-  if (head_dim != kHeadDim) {
+  if (head_dim != 128 && head_dim != 256) {
     return -2;
   }
 
@@ -197,34 +219,50 @@ inline void apply_plan_info(Params& params, const PrefillPlanInfo& plan_info,
   *tmp_s_out = tmp_s;
 }
 
-// Run the dispatched kernel for a fixed MaskMode, dispatching on cta_tile_q.
-template <MaskMode MASK_MODE>
+// Run the dispatched kernel for a fixed head_dim / variant / MaskMode,
+// dispatching on cta_tile_q.
+//
+// NOTE on cta_tile_q: it is chosen by the scheduler via
+// FA2DetermineCtaTileQ(avg_packed_qo_len, head_dim) (utils.cuh:389). At hd=256
+// the `head_dim < 256` clause is false so it caps at 64; at hd=128 the value
+// 128 becomes reachable. The hd=128 path therefore exercises a kernel shape
+// (NUM_MMA_Q=2, NUM_WARPS_Q=4, NUM_WARPS_KV=1) that hd=256 never used.
+template <uint32_t HEAD_DIM, typename Variant, MaskMode MASK_MODE>
 inline cudaError_t run_dispatched(Params& params, __nv_bfloat16* tmp_v, float* tmp_s,
                                   int64_t cta_tile_q, cudaStream_t stream) {
   cudaError_t status = cudaSuccess;
   DISPATCH_CTA_TILE_Q(cta_tile_q, CTA_TILE_Q, {
     status = flashinfer::BatchPrefillWithRaggedKVCacheDispatched<
-        CTA_TILE_Q, kHeadDim, kHeadDim, kPosEnc, kUseFp16QkReduction, MASK_MODE,
-        StandardAttention, Params>(params, tmp_v, tmp_s, /*enable_pdl=*/false, stream);
+        CTA_TILE_Q, HEAD_DIM, HEAD_DIM, kPosEnc, kUseFp16QkReduction, MASK_MODE,
+        Variant, Params>(params, tmp_v, tmp_s, /*enable_pdl=*/false, stream);
   });
   return status;
 }
 
 }  // namespace
 
-extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
+// Shared implementation. `window_left` is the FlashInfer sliding-window bound:
+// -1 means "unbounded" (full causal attention), otherwise it is
+// sliding_window - 1. See the WindowedAttention comment above.
+template <uint32_t HEAD_DIM, typename Variant>
+static int run_ragged_prefill(
     const void* q, const void* k, const void* v, void* o,
     const int32_t* qo_indptr_h, const int32_t* kv_indptr_h,
     const int32_t* qo_indptr_d, const int32_t* kv_indptr_d,
     uint32_t batch, uint32_t total_qo_rows, uint32_t total_kv_rows,
     uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t head_dim,
-    float sm_scale, int causal,
+    float sm_scale, int causal, int32_t window_left,
     void* float_ws, size_t float_ws_bytes,
     void* int_ws, size_t int_ws_bytes,
     void* pinned_int_ws, size_t pinned_int_ws_bytes,
     void* stream_raw) {
-  if (head_dim != kHeadDim) return -2;
+  if (head_dim != HEAD_DIM) return -2;
   if (num_kv_heads == 0 || num_qo_heads % num_kv_heads != 0) return -3;
+
+  // FLASHINFER_ERROR throws (exception.h); prefill.cuh's smem-capacity and
+  // IsInvalid() bail-outs use it. An exception must not unwind across the C ABI
+  // into Rust, so contain it here.
+  try {
 
   cudaStream_t stream = static_cast<cudaStream_t>(stream_raw);
 
@@ -245,7 +283,10 @@ extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
       /*page_size=*/1,
       /*enable_cuda_graph=*/false,
       /*sizeof_dtype_o=*/sizeof(__nv_bfloat16),
-      /*window_left=*/-1,
+      // The scheduler uses window_left to size effective_kv_len, so passing it
+      // here (not just in params) is what lets FlashInfer skip out-of-window
+      // KV tiles rather than merely mask them.
+      /*window_left=*/window_left,
       /*fixed_split_size=*/-1,
       /*disable_split_kv=*/false,
       /*num_colocated_ctas=*/0,
@@ -281,7 +322,7 @@ extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
   params.v_stride_n = num_kv_heads * head_dim;
   params.v_stride_h = head_dim;
 
-  params.window_left = -1;
+  params.window_left = window_left;
   params.logits_soft_cap = 0.0f;
   params.sm_scale = sm_scale;
   // rope_* unused (PosEncodingMode::kNone); leave at ctor defaults (0).
@@ -296,12 +337,62 @@ extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
   // selected at runtime from `causal`.
   // ------------------------------------------------------------------
   if (causal) {
-    status = run_dispatched<MaskMode::kCausal>(params, tmp_v, tmp_s, plan_info.cta_tile_q, stream);
+    status = run_dispatched<HEAD_DIM, Variant, MaskMode::kCausal>(
+        params, tmp_v, tmp_s, plan_info.cta_tile_q, stream);
   } else {
-    status = run_dispatched<MaskMode::kNone>(params, tmp_v, tmp_s, plan_info.cta_tile_q, stream);
+    status = run_dispatched<HEAD_DIM, Variant, MaskMode::kNone>(
+        params, tmp_v, tmp_s, plan_info.cta_tile_q, stream);
   }
   if (status != cudaSuccess) {
     return static_cast<int>(status);
   }
   return 0;
+
+  } catch (...) {
+    return -4;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Entry points. hd=256 keeps its exact original ABI and semantics
+// (StandardAttention, window_left = -1) so the Holo path is bit-identical.
+// ---------------------------------------------------------------------------
+extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
+    const void* q, const void* k, const void* v, void* o,
+    const int32_t* qo_indptr_h, const int32_t* kv_indptr_h,
+    const int32_t* qo_indptr_d, const int32_t* kv_indptr_d,
+    uint32_t batch, uint32_t total_qo_rows, uint32_t total_kv_rows,
+    uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t head_dim,
+    float sm_scale, int causal,
+    void* float_ws, size_t float_ws_bytes,
+    void* int_ws, size_t int_ws_bytes,
+    void* pinned_int_ws, size_t pinned_int_ws_bytes,
+    void* stream_raw) {
+  return run_ragged_prefill<256, StandardAttention>(
+      q, k, v, o, qo_indptr_h, kv_indptr_h, qo_indptr_d, kv_indptr_d,
+      batch, total_qo_rows, total_kv_rows, num_qo_heads, num_kv_heads, head_dim,
+      sm_scale, causal, /*window_left=*/-1,
+      float_ws, float_ws_bytes, int_ws, int_ws_bytes,
+      pinned_int_ws, pinned_int_ws_bytes, stream_raw);
+}
+
+// hd=128 (Laguna). Adds `window_left` after `causal`: pass -1 for the 12
+// full-attention layers and sliding_window - 1 (= 511) for the 36 SWA layers.
+extern "C" int atlas_fi_ragged_prefill_bf16_hd128(
+    const void* q, const void* k, const void* v, void* o,
+    const int32_t* qo_indptr_h, const int32_t* kv_indptr_h,
+    const int32_t* qo_indptr_d, const int32_t* kv_indptr_d,
+    uint32_t batch, uint32_t total_qo_rows, uint32_t total_kv_rows,
+    uint32_t num_qo_heads, uint32_t num_kv_heads, uint32_t head_dim,
+    float sm_scale, int causal, int32_t window_left,
+    void* float_ws, size_t float_ws_bytes,
+    void* int_ws, size_t int_ws_bytes,
+    void* pinned_int_ws, size_t pinned_int_ws_bytes,
+    void* stream_raw) {
+  return run_ragged_prefill<128, WindowedAttention>(
+      q, k, v, o, qo_indptr_h, kv_indptr_h, qo_indptr_d, kv_indptr_d,
+      batch, total_qo_rows, total_kv_rows, num_qo_heads, num_kv_heads, head_dim,
+      sm_scale, causal, window_left,
+      float_ws, float_ws_bytes, int_ws, int_ws_bytes,
+      pinned_int_ws, pinned_int_ws_bytes, stream_raw);
 }

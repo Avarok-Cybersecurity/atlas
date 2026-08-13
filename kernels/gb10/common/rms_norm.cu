@@ -331,6 +331,45 @@ extern "C" __global__ void rms_norm_residual(
     }
 }
 
+// HF-vanilla counterpart of rms_norm_residual: uses weight, not (1 + weight).
+extern "C" __global__ void rms_norm_residual_vanilla(
+    const __nv_bfloat16* __restrict__ input,
+    const __nv_bfloat16* __restrict__ weight,
+    __nv_bfloat16* __restrict__ output,
+    __nv_bfloat16* __restrict__ residual,
+    unsigned int hidden_size,
+    float eps
+) {
+    unsigned int token = blockIdx.x;
+    unsigned int tid = threadIdx.x;
+    const __nv_bfloat16* x = input + token * hidden_size;
+    __nv_bfloat16* out = output + token * hidden_size;
+    __nv_bfloat16* res = residual + token * hidden_size;
+    float sum_sq = 0.0f;
+    for (unsigned int i = tid; i < hidden_size; i += blockDim.x) {
+        float value = __bfloat162float(x[i]);
+        sum_sq += value * value;
+    }
+    sum_sq = warp_reduce_sum(sum_sq);
+    __shared__ float warp_sums_vanilla[32];
+    unsigned int warp_id = tid / 32;
+    unsigned int lane_id = tid % 32;
+    if (lane_id == 0) warp_sums_vanilla[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float value = lane_id < (blockDim.x + 31) / 32 ? warp_sums_vanilla[lane_id] : 0.0f;
+        value = warp_reduce_sum(value);
+        if (lane_id == 0) warp_sums_vanilla[0] = value;
+    }
+    __syncthreads();
+    float rms = rsqrtf(warp_sums_vanilla[0] / (float)hidden_size + eps);
+    for (unsigned int i = tid; i < hidden_size; i += blockDim.x) {
+        float value = __bfloat162float(x[i]);
+        out[i] = __float2bfloat16(value * rms * __bfloat162float(weight[i]));
+        res[i] = x[i];
+    }
+}
+
 // Fused Residual Add + RMS Norm + Residual Save.
 //
 // hidden[i] += src[i]; normed = rms_norm(hidden); residual = hidden.
@@ -422,6 +461,48 @@ extern "C" __global__ void residual_add_rms_norm(
         float w = __bfloat162float(weight[hidden_size - 1]);
         out[hidden_size - 1] = __float2bfloat16(val * rms * (1.0f + w));
         res[hidden_size - 1] = h[hidden_size - 1];
+    }
+}
+
+// HF-vanilla counterpart of residual_add_rms_norm.
+extern "C" __global__ void residual_add_rms_norm_vanilla(
+    __nv_bfloat16* __restrict__ hidden,
+    const __nv_bfloat16* __restrict__ src,
+    const __nv_bfloat16* __restrict__ weight,
+    __nv_bfloat16* __restrict__ output,
+    __nv_bfloat16* __restrict__ residual,
+    unsigned int hidden_size,
+    float eps
+) {
+    unsigned int token = blockIdx.x;
+    unsigned int tid = threadIdx.x;
+    __nv_bfloat16* h = hidden + token * hidden_size;
+    const __nv_bfloat16* s = src + token * hidden_size;
+    __nv_bfloat16* out = output + token * hidden_size;
+    __nv_bfloat16* res = residual + token * hidden_size;
+    float sum_sq = 0.0f;
+    for (unsigned int i = tid; i < hidden_size; i += blockDim.x) {
+        float value = __bfloat162float(h[i]) + __bfloat162float(s[i]);
+        h[i] = __float2bfloat16(value);
+        sum_sq += value * value;
+    }
+    sum_sq = warp_reduce_sum(sum_sq);
+    __shared__ float warp_sums_vanilla[32];
+    unsigned int warp_id = tid / 32;
+    unsigned int lane_id = tid % 32;
+    if (lane_id == 0) warp_sums_vanilla[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float value = lane_id < (blockDim.x + 31) / 32 ? warp_sums_vanilla[lane_id] : 0.0f;
+        value = warp_reduce_sum(value);
+        if (lane_id == 0) warp_sums_vanilla[0] = value;
+    }
+    __syncthreads();
+    float rms = rsqrtf(warp_sums_vanilla[0] / (float)hidden_size + eps);
+    for (unsigned int i = tid; i < hidden_size; i += blockDim.x) {
+        float value = __bfloat162float(h[i]);
+        out[i] = __float2bfloat16(value * rms * __bfloat162float(weight[i]));
+        res[i] = h[i];
     }
 }
 

@@ -36,7 +36,7 @@ def ready(name, host=None, secs=420):
     p = f"ssh {host} " if host else ""
     for _ in range(secs//5):
         l = sh(f"{p}sudo docker logs {name} 2>&1 | tail -5", 10)
-        if "Listening on" in l: return True
+        if "Listening on" in l or "Server live" in l: return True
         if "Error:" in l and "FP8" not in l: return False
         time.sleep(5)
     return False

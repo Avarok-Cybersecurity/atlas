@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
+
+#[test]
+fn mixed_dense_moe_sizes_for_widest_ffn() {
+    let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
+    cfg.intermediate_size = 12_288;
+    cfg.num_experts = 256;
+    cfg.num_experts_per_tok = 10;
+    cfg.moe_intermediate_size = 1_024;
+
+    let sizes = BufferSizes::from_config(&cfg, 4, 4096, 16, 32);
+    assert_eq!(sizes.expert_gate_out, 4 * 12_288 * 2);
+    assert_eq!(sizes.expert_up_out, 4 * 12_288 * 2);
+}
 use crate::gpu::mock::MockGpuBackend;
 
 #[test]

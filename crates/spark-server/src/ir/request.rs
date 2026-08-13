@@ -39,6 +39,9 @@ pub struct ChatRequest {
     /// Client thinking intent (edge-resolved). Server/model defaults
     /// fold in later (`api/chat/thinking.rs`).
     pub thinking: ThinkingDirective,
+    /// Qualitative reasoning effort retained separately from the token budget.
+    /// DeepSeek-V4 uses this to select its checkpoint-native prompt prefix.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Per-request token-loop detector override.
     pub repetition_detection: Option<crate::api::inference_types::RepetitionDetectionParams>,
     /// M2 per-request LoRA routing: optional resident adapter NAME for
@@ -126,6 +129,23 @@ pub enum ThinkingDirective {
     /// force-injects `</think>` mid-reasoning and wrecks tool
     /// selection).
     On { budget: Option<u32> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Low,
+    High,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
 }
 
 impl ThinkingDirective {

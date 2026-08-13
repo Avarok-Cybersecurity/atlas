@@ -87,6 +87,7 @@ pub fn pack_weight_sfb(
     _scale_out: u64,
     _n: u32,
     _k: u32,
+    _src_n_major: bool,
     _stream: u64,
 ) -> Result<()> {
     unreachable!("cutlass::pack_weight_sfb is cuda-only (not built for metal)")

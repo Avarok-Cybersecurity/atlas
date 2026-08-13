@@ -51,7 +51,19 @@ impl MoeLayer {
             && self.fp8_gemm_t_blockscaled_k.0 != 0
             && self.per_token_group_quant_fp8_k.0 != 0;
         let has_shared = shared_inter > 0;
-        if has_shared && force_w8a8_sh {
+        let bf16_shared = has_shared
+            && self.run_bf16_shared_expert(
+                input,
+                n,
+                h,
+                shared_inter,
+                ctx.buffers.ssm_deinterleaved(),
+                ctx.buffers.ssm_qkvz(),
+                ctx.buffers.attn_output(),
+                ctx,
+                stream,
+            )?;
+        if !bf16_shared && has_shared && force_w8a8_sh {
             let shared_gate_out = ctx.buffers.ssm_deinterleaved();
             let shared_up_out = ctx.buffers.ssm_qkvz();
             let m_us: usize = n as usize;
@@ -139,7 +151,7 @@ impl MoeLayer {
             ctx.gpu.synchronize(stream)?;
             ctx.gpu.free(down_in_fp8)?;
             ctx.gpu.free(down_in_scale)?;
-        } else if has_shared {
+        } else if !bf16_shared && has_shared {
             let shared_gate_out = ctx.buffers.ssm_deinterleaved();
             let shared_up_out = ctx.buffers.ssm_qkvz();
             // Shared-expert dense GEMMs (gate/up/down, every token). The
@@ -240,9 +252,10 @@ impl MoeLayer {
                 stream,
             )?;
         } else {
-            ops::dense_gemm(
+            ops::dense_gemm_prefill(
                 ctx.gpu,
                 self.dense_gemm,
+                self.dense_gemm_pipelined,
                 router_in,
                 &self.weights.gate,
                 gate_logits,

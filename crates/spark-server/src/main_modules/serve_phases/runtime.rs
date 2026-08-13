@@ -193,8 +193,27 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
         },
         ptx_set.behavior.thinking_default,
     );
-    // The value reaches the scheduler as `SchedLevers::loop_watchdog`, armed in
-    // `serve`; this phase only audits it.
+    if ptx_set.behavior.use_sampling_presets_for_core {
+        let non_thinking = &ptx_set.sampling.non_thinking;
+        let tools = &ptx_set.sampling.tools;
+        tracing::info!(
+            "Model behavior: MODEL sampling defaults enabled (non-thinking: temp={}, top_k={}, top_p={}; tools: temp={}, top_k={}, top_p={})",
+            non_thinking.temperature,
+            non_thinking.top_k,
+            non_thinking.top_p,
+            tools.temperature,
+            tools.top_k,
+            tools.top_p,
+        );
+    }
+    // The content-loop watchdog value reaches the scheduler as
+    // `SchedLevers::loop_watchdog`, armed in `serve`; this phase only audits it.
+    if !ptx_set.behavior.enable_think_loop_watchdog {
+        tracing::info!(
+            "Model behavior: THINKING-loop watchdog DISABLED (per MODEL.toml \
+             [behavior].enable_think_loop_watchdog = false)"
+        );
+    }
     if ptx_set.behavior.enable_loop_watchdog {
         tracing::info!(
             "Model behavior: content-loop watchdog ENABLED (period-{}…{} repetition detector)",

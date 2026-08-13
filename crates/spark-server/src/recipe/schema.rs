@@ -43,27 +43,50 @@ pub fn flag_for(key: &str) -> Option<String> {
 
 /// Render one `key: value` pair as argv.
 ///
-/// A `true` boolean becomes a bare `--flag`, because that is how clap's
-/// `SetTrue` flags are written. A `false` boolean is **omitted rather than
-/// negated**: `--enable-prefix-caching false` is not accepted by a `SetTrue`
-/// flag, and emitting it would fail the parse for a recipe that is merely
-/// restating a default.
+/// For a **presence-only** flag (clap `SetTrue`, e.g. `--speculative`),
+/// `true` becomes the bare `--flag` and `false` is **omitted rather than
+/// negated**: `--speculative false` is not accepted by a `SetTrue` flag, and
+/// emitting it would fail the parse for a recipe that is merely restating a
+/// default.
 ///
-/// The exception is a flag clap declares as taking an explicit bool value —
-/// `--disable-tool-grammar` is `Option<bool>` — where `false` is meaningful and
-/// must be passed through. Those are listed in `EXPLICIT_BOOLS`.
+/// Every other boolean takes its value on the command line and KEEPS it —
+/// `--disable-tool-grammar false` is meaningful, and for the `Option<bool>`
+/// levers (`--gdn-fused-norm`, `--ssm-tail-midchunk`, …) explicit `false` is
+/// a different config from absent (absent leaves the legacy environment
+/// fallback live; explicit off seals it). This used to be a hand-kept
+/// exception list holding only `disable_tool_grammar`, which silently
+/// rendered `gdn_fused_norm: false` as NOTHING; the presence-only set is now
+/// read out of clap, so a new lever cannot repeat that.
 pub fn argv_for(key: &str, value: &str) -> Option<Vec<String>> {
     let flag = flag_for(key)?;
     let dashed = format!("--{flag}");
     match value {
-        "true" if !EXPLICIT_BOOLS.contains(&key) => Some(vec![dashed]),
-        "false" if !EXPLICIT_BOOLS.contains(&key) => None,
+        "true" if presence_only(&flag) => Some(vec![dashed]),
+        "false" if presence_only(&flag) => None,
         other => Some(vec![dashed, other.to_string()]),
     }
 }
 
-/// Flags declared as `Option<bool>` in `ServeArgs`, which take a value.
-const EXPLICIT_BOOLS: &[&str] = &["disable_tool_grammar"];
+/// Whether `flag` is a presence-only boolean (clap action `SetTrue`).
+///
+/// Asked of clap once per process rather than written down again: the set is
+/// derived from `ServeArgs` itself, so it cannot drift from it. A flag not in
+/// `ServeArgs` at all is not presence-only; its value passes through and clap
+/// rejects the unknown flag by name at parse, which is the SSOT typo shield.
+fn presence_only(flag: &str) -> bool {
+    use std::sync::OnceLock;
+    static SET_TRUE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    SET_TRUE
+        .get_or_init(|| {
+            use clap::CommandFactory as _;
+            crate::cli::ServeArgs::command()
+                .get_arguments()
+                .filter(|a| matches!(a.get_action(), clap::ArgAction::SetTrue))
+                .filter_map(|a| a.get_long().map(str::to_string))
+                .collect()
+        })
+        .contains(flag)
+}
 
 #[cfg(test)]
 #[path = "schema_tests.rs"]

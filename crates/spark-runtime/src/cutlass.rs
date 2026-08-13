@@ -116,6 +116,7 @@ unsafe extern "C" {
         scale_out: *mut c_void,
         n: i32,
         k: i32,
+        src_n_major: i32,
         stream: *mut c_void,
     ) -> i32;
     pub(crate) fn atlas_cutlass_transpose_nvfp4_packed_kton(
