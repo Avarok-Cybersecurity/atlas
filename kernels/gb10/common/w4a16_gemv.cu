@@ -52,13 +52,66 @@ __device__ __constant__ float E2M1_LUT[16] = {
 
 // W4A16 GEMV: C[n] = sum_k A[k] * dequant(B_fp4[n, k])
 //
-// Vectorized: processes 8 K-values per iteration.
-// - 4 packed weight bytes (uint32_t) → 8 FP4 values via E2M1 LUT
-// - 8 BF16 activations (uint4 = 128-bit load)
-// - 1 FP8 scale (all 8 values in same group since GROUP_SIZE=16, stride=8)
+// Vectorized: 16 K-values per chunk (2× uint4 activation + uint64 weight),
+// TWO chunks in flight per iteration with independent accumulators. Keeping 2
+// outstanding weight loads per thread hides DRAM latency (ncu: 72% of warp
+// stalls are long-scoreboard on GB10). The FP8 group scale is factored out of
+// the inner 16-FMA block (exact regroup: sum(s*w*a) == s*sum(w*a)).
 //
-// Coalescing: within a warp, consecutive threads read consecutive 4-byte
-// weight chunks and consecutive 16-byte activation chunks. Perfectly coalesced.
+// Coalescing: within a warp, consecutive threads read consecutive weight and
+// activation chunks. Perfectly coalesced.
+//
+// SSOT: `w4a16_gemv` and `w4a16_gemv_sw` share `w4a16_gemv_partial`. A previous
+// SW copy used the older stride-64 sequential `acc += a*w` loop and was 1 ULP
+// lossy vs this pipelined association (GB10 oracle: gdn in_proj / K-tail).
+
+// One orig-lane's pipelined K16 partial. `orig_lane` is the 64-thread kernel's
+// lane (0..63): k16 = orig_lane*2, stride 128, inner c={0,1} → kk pair.
+__device__ __forceinline__ float w4a16_gemv_partial(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    unsigned int n, unsigned int half_K, unsigned int num_groups,
+    unsigned int K16, unsigned int orig_lane)
+{
+    float acc0 = 0.0f, acc1 = 0.0f;
+    const unsigned int stride2 = 128u; // threads_per_out (64) * 2
+    for (unsigned int k16 = orig_lane * 2u; k16 < K16 + 1u; k16 += stride2) {
+        #pragma unroll
+        for (int c = 0; c < 2; c++) {
+            const unsigned int kk = k16 + (unsigned int)c;
+            if (kk >= K16) break;
+
+            uint4 a_lo = ((const uint4*)A)[kk * 2];
+            uint4 a_hi = ((const uint4*)A)[kk * 2 + 1];
+            const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+            unsigned long long packed8 = *(const unsigned long long*)(
+                B_packed + (unsigned long long)n * half_K + kk * 8);
+            unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            float scale = scl_fp8(scale_byte) * scale2;
+#else
+            float scale = (float)fp8 * scale2;
+#endif
+            float part = 0.0f;
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
+                part = fmaf(af.x, E2M1_LUT[byte_val & 0xF], part);
+                part = fmaf(af.y, E2M1_LUT[byte_val >> 4], part);
+            }
+            if (c == 0) acc0 = fmaf(scale, part, acc0);
+            else        acc1 = fmaf(scale, part, acc1);
+        }
+    }
+    return acc0 + acc1;
+}
+
 extern "C" __global__ void w4a16_gemv(
     const __nv_bfloat16* __restrict__ A,        // [1, K]
     const unsigned char* __restrict__ B_packed,  // [N, K/2] uint8
@@ -73,67 +126,18 @@ extern "C" __global__ void w4a16_gemv(
     const unsigned int lane = threadIdx.x % threads_per_out;
 
     const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
-    if (n >= N) return;
-
     const unsigned int half_K = K / 2;
     const unsigned int num_groups = K / GROUP_SIZE;
     const unsigned int K16 = K / 16;
 
-    __shared__ float s_lut[16];
     __shared__ float smem[N_PER_BLOCK * 2];  // cross-warp reduction
-    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
-    __syncthreads();
 
-    float acc0 = 0.0f, acc1 = 0.0f;
-
-    // Vectorized: 16 K-values per chunk (2× uint4 activation + uint64 weight),
-    // TWO chunks in flight per iteration with independent accumulators. Keeping 2
-    // outstanding weight loads per thread hides DRAM latency (ncu: 72% of warp
-    // stalls are long-scoreboard on GB10). The FP8 group scale is factored out of
-    // the inner 16-FMA block (exact regroup: sum(s*w*a) == s*sum(w*a)).
-    const unsigned int stride2 = threads_per_out * 2u;
-    for (unsigned int k16 = lane * 2u; k16 < K16 + 1u; k16 += stride2) {
-        #pragma unroll
-        for (int c = 0; c < 2; c++) {
-            const unsigned int kk = k16 + (unsigned int)c;
-            if (kk >= K16) break;
-
-            // Load 16 BF16 activations as 2× uint4 (256-bit total)
-            uint4 a_lo = ((const uint4*)A)[kk * 2];
-            uint4 a_hi = ((const uint4*)A)[kk * 2 + 1];
-            const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
-                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
-
-            // Load 8 packed weight bytes as uint64 (16 FP4 values)
-            unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + kk * 8);
-
-            // Load single FP8 scale — 16 values = exactly 1 group (group index == kk)
-            unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
-            __nv_fp8_e4m3 fp8;
-            *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-            float scale = scl_fp8(scale_byte) * scale2;
-#else
-            float scale = (float)fp8 * scale2;
-#endif
-
-            // Unpack 8 bytes × 2 nibbles = 16 weight values, FMA with activations
-            float part = 0.0f;
-            #pragma unroll
-            for (int b = 0; b < 8; b++) {
-                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-                float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
-                part = fmaf(af.x, s_lut[byte_val & 0xF], part);
-                part = fmaf(af.y, s_lut[byte_val >> 4], part);
-            }
-            if (c == 0) acc0 = fmaf(scale, part, acc0);
-            else        acc1 = fmaf(scale, part, acc1);
-        }
+    // Do not return early: N%4!=0 tail warps must still hit the smem barrier.
+    float acc = 0.0f;
+    if (n < N) {
+        acc = w4a16_gemv_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane);
     }
-    float acc = acc0 + acc1;
 
-    // Warp shuffle reduction within each group of 64 threads
-    // First reduce within each warp (32 threads)
     const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
 
     #pragma unroll
@@ -141,87 +145,34 @@ extern "C" __global__ void w4a16_gemv(
         acc += __shfl_down_sync(0xFFFFFFFF, acc, offset);
     }
 
-    // threads_per_out=64 means 2 warps per output. Use shared memory for cross-warp reduce.
     if (warp_lane == 0) {
-        // Each warp writes its partial sum
         unsigned int smem_idx = local_out * 2 + (lane / WARP_SIZE);
         smem[smem_idx] = acc;
     }
     __syncthreads();
 
-    // First thread of each output group writes final result
-    if (lane == 0) {
+    if (lane == 0 && n < N) {
         float result = smem[local_out * 2] + smem[local_out * 2 + 1];
         C[n] = __float2bfloat16(result);
     }
 }
 
 // ============================================================
-// W4A16 GEMV — SINGLE-WARP-PER-OUTPUT variant (lossless, opt-in).
+// W4A16 GEMV — SINGLE-WARP-PER-OUTPUT variant (lossless; default ON, kill ATLAS_NO_GEMV_SW=1).
 //
-// Bit-identical to w4a16_gemv above, but uses 32 threads (1 warp) per output
-// instead of 64 (2 warps). 8 outputs per 256-thread block (was 4). The cross-
-// warp __syncthreads() + shared-memory round-trip is ELIMINATED — the final
-// combine collapses to a single FP32 add of two warp-shuffle results.
+// Bit-identical to w4a16_gemv: same `w4a16_gemv_partial` per orig-lane. 32
+// threads (1 warp) per output instead of 64 (2 warps). 8 outputs per 256-thread
+// block (was 4). The cross-warp __syncthreads() + smem round-trip is gone —
+// the final combine is one FP32 add of two warp-shuffle results.
 //
-// BIT-IDENTICALITY (the hard gate): the original splits the K-strided partials
-// across 64 lanes; warp A (orig lanes 0..31) and warp B (orig lanes 32..63) are
-// each shuffle-reduced, then summed `smem[0]+smem[1]`. Here each of the 32 lanes
-// holds TWO accumulators that reproduce EXACTLY those two lane-sets:
-//   acc_a[lane]  == orig acc[lane]      (chunks lane, lane+64, ...)      -> warp A
-//   acc_b[lane]  == orig acc[lane+32]   (chunks lane+32, lane+32+64, ...) -> warp B
-// We shuffle-reduce acc_a (== warp-A reduction) and acc_b (== warp-B reduction)
-// in the SAME tree order, then `reduced_a + reduced_b` (== smem[0]+smem[1]).
-// Every FP32 add is in the identical order/operands -> byte-identical output.
-//
-// 8 outputs per block, 32 threads (1 warp) per output. NO smem, NO __syncthreads
-// in the reduction. Grid: (ceil(N / 8), 1, 1)   Block: (256, 1, 1)
+// BIT-IDENTICALITY: orig warp A is lanes 0..31, warp B is 32..63. Each SW lane
+// holds those two orig-lane partials:
+//   acc_a[lane] == orig acc[lane]     (k16 = lane*2,     stride 128)
+//   acc_b[lane] == orig acc[lane+32]  (k16 = (lane+32)*2, stride 128)
+// Shuffle-reduce each in the same tree, then `reduced_a + reduced_b` ==
+// smem[0]+smem[1]. Grid: (ceil(N / 8), 1, 1)   Block: (256, 1, 1)
 
 #define N_PER_BLOCK_SW 8
-
-// Accumulate the K-strided partial for one "virtual lane" (start chunk +
-// stride 64), matching the inner math of w4a16_gemv exactly.
-__device__ __forceinline__ float w4a16_gemv_partial(
-    const __nv_bfloat16* __restrict__ A,
-    const unsigned char* __restrict__ B_packed,
-    const unsigned char* __restrict__ B_scale,
-    const float scale2,
-    unsigned int n, unsigned int half_K, unsigned int num_groups,
-    unsigned int K16, unsigned int start_chunk)
-{
-    float acc = 0.0f;
-    // stride 64 == the original threads_per_out, so the per-chunk membership and
-    // accumulation order of orig lane `start_chunk` are reproduced exactly.
-    for (unsigned int k16 = start_chunk; k16 < K16; k16 += 64u) {
-        const unsigned int base_k = k16 * 16;
-        uint4 a_lo = ((const uint4*)A)[k16 * 2];
-        uint4 a_hi = ((const uint4*)A)[k16 * 2 + 1];
-        const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
-                                        a_hi.x, a_hi.y, a_hi.z, a_hi.w};
-        unsigned long long packed8 = *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + k16 * 8);
-        unsigned int scale_group = base_k / GROUP_SIZE;
-        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
-#else
-        float scale = (float)fp8 * scale2;
-#endif
-        #pragma unroll
-        for (int b = 0; b < 8; b++) {
-            unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-            float w_lo = E2M1_LUT[byte_val & 0xF] * scale;
-            float w_hi = E2M1_LUT[byte_val >> 4] * scale;
-            __nv_bfloat16 a_lo_bf, a_hi_bf;
-            *(unsigned short*)&a_lo_bf = (unsigned short)(a_raw[b] & 0xFFFF);
-            *(unsigned short*)&a_hi_bf = (unsigned short)(a_raw[b] >> 16);
-            acc += __bfloat162float(a_lo_bf) * w_lo;
-            acc += __bfloat162float(a_hi_bf) * w_hi;
-        }
-    }
-    return acc;
-}
 
 extern "C" __global__ void w4a16_gemv_sw(
     const __nv_bfloat16* __restrict__ A,        // [1, K]

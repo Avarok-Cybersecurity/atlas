@@ -44,6 +44,9 @@ pub struct ModelLevers {
     pub gdn_wyn: bool,
 
     // ── FFN / MoE ──
+    /// Lossless single-warp decode GEMV (`w4a16_gemv_sw`, `w4a16_gemv_dual_sw`).
+    /// Ships ON; `ATLAS_NO_GEMV_SW=1` restores the 64-thread kernels.
+    pub gemv_sw: bool,
     /// Route decode FFN through the tile GEMM rather than the scalar GEMV.
     pub decode_ffn_via_gemm: bool,
     /// Small-M FFN GEMM tile shape. Ships ON; `ATLAS_FFN_SMALLM=0` opts out.
@@ -133,6 +136,9 @@ impl ModelLevers {
             gdn_wy17: opt_out("ATLAS_GDN_WY17"),
             gdn_wyn: opt_out("ATLAS_GDN_WYN"),
             ffn_small_m: opt_out("ATLAS_FFN_SMALLM"),
+            gemv_sw: super::gemv_sw::gemv_sw_from(
+                std::env::var("ATLAS_NO_GEMV_SW").ok().as_deref(),
+            ),
             decode_ffn_via_gemm: opt_in("ATLAS_DECODE_FFN_VIA_GEMM"),
             // These two accept `true` as well as `1`.
             holo_moe_down_fp4: opt_in_truthy("ATLAS_HOLO_MOE_DOWN_FP4"),
@@ -162,6 +168,7 @@ impl ModelLevers {
             gdn_wy17: true,
             gdn_wyn: true,
             ffn_small_m: true,
+            gemv_sw: true,
             ..Self::default()
         }
     }
@@ -174,11 +181,15 @@ mod tests {
     #[test]
     fn the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off() {
         let d = ModelLevers::defaults();
-        // Four levers ship ON. Getting one of these senses backwards is a
+        // Five levers ship ON. Getting one of these senses backwards is a
         // silent behaviour change, which is why they are pinned here.
         assert!(d.gdn_regresident, "PR #369 folded this default-on");
         assert!(d.gdn_wy17 && d.gdn_wyn, "opt-OUT via =0");
         assert!(d.ffn_small_m, "opt-OUT via =0");
+        assert!(
+            d.gemv_sw,
+            "lossless SW GEMV ships ON; ATLAS_NO_GEMV_SW=1 kills"
+        );
         assert!(!d.gdn_batched_fla);
         assert!(!d.decode_ffn_via_gemm);
         assert!(!d.lora_eager);

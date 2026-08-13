@@ -169,7 +169,7 @@ pub fn w4a16_gemv_dual(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 4), 1, 2])
+        .grid([w4a16_gemv_grid_x(n), 1, 2])
         .block([256, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight1.weight)
@@ -186,7 +186,8 @@ pub fn w4a16_gemv_dual(
 }
 
 /// Single-warp-per-output variant of `w4a16_gemv_dual` (8 outputs/block → N/8
-/// grid). Bit-identical output (see w4a16_gemv_fused.cu); opt-in via ATLAS_DECODE_OPT.
+/// grid). Bit-identical output (see w4a16_gemv_fused.cu). Default ON via
+/// `ModelLevers::gemv_sw`; kill with `ATLAS_NO_GEMV_SW=1`.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_gemv_dual_sw(
     gpu: &dyn GpuBackend,
@@ -201,7 +202,7 @@ pub fn w4a16_gemv_dual_sw(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 8), 1, 2])
+        .grid([w4a16_gemv_sw_grid_x(n), 1, 2])
         .block([256, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight1.weight)
@@ -218,7 +219,7 @@ pub fn w4a16_gemv_dual_sw(
 }
 
 /// Single-warp-per-output variant of `w4a16_gemv_silu_input` (N/8 grid).
-/// Bit-identical; opt-in via ATLAS_DECODE_OPT.
+/// Bit-identical. Default ON via `ModelLevers::gemv_sw`.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_gemv_silu_input_sw(
     gpu: &dyn GpuBackend,
@@ -232,7 +233,7 @@ pub fn w4a16_gemv_silu_input_sw(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 8), 1, 1])
+        .grid([w4a16_gemv_sw_grid_x(n), 1, 1])
         .block([256, 1, 1])
         .arg_ptr(gate_out)
         .arg_ptr(up_out)

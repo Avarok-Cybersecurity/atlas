@@ -98,9 +98,11 @@ impl Qwen3SsmLayer {
                     // Tier-1c keep-packed Q2_0: 2-bit fused-qkvz GEMV.
                     ops::q2_0_gemv_vec(ctx.gpu, self.q2_0_gemv_k, normed, q2, deinterleaved, stream)
                 } else if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-                    ops::w4a16_gemv(
+                    ops::w4a16_decode_gemv(
                         ctx.gpu,
                         self.w4a16_gemv_k,
+                        self.w4a16_gemv_sw_k,
+                        ctx.levers.gemv_sw,
                         normed,
                         nvfp4,
                         deinterleaved,
@@ -439,9 +441,11 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else {
-            ops::w4a16_gemv(
+            ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
+                self.w4a16_gemv_sw_k,
+                ctx.levers.gemv_sw,
                 normed_out,
                 &self.ssm.out_proj,
                 out,
