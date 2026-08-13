@@ -249,7 +249,7 @@ extern "C" __global__ void w4a16_gemv_silu_input(
 }
 
 // ════════════════════════════════════════════════════════════════════
-// SINGLE-WARP-PER-OUTPUT variants (lossless, opt-in via ATLAS_DECODE_OPT).
+// SINGLE-WARP-PER-OUTPUT variants (lossless; default ON, kill ATLAS_NO_GEMV_SW=1).
 //
 // Bit-identical to the 64-thread kernels above. Each of 32 lanes holds TWO
 // accumulators reproducing orig warp-A (lanes 0..31) and warp-B (lanes 32..63):

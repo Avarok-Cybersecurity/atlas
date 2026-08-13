@@ -157,7 +157,7 @@ extern "C" __global__ void w4a16_gemv(
 }
 
 // ============================================================
-// W4A16 GEMV — SINGLE-WARP-PER-OUTPUT variant (lossless, opt-in).
+// W4A16 GEMV — SINGLE-WARP-PER-OUTPUT variant (lossless; default ON, kill ATLAS_NO_GEMV_SW=1).
 //
 // Bit-identical to w4a16_gemv above, but uses 32 threads (1 warp) per output
 // instead of 64 (2 warps). 8 outputs per 256-thread block (was 4). The cross-
