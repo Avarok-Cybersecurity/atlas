@@ -11,12 +11,22 @@ model_type = "nemotron_h"
 # 2026-06-06: pin hidden_size so this stays an EXACT match. Without it this is a "nemotron_h"
 # wildcard; since nemotron-super pins hidden_size=4096, any future nemotron_h whose hidden_size
 # isn't 4096 would silently route to THIS (nano's) kernels. Pinning 2688 removes the catch-all.
-# 2026-08-11: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 matches here INTENTIONALLY —
-# it is dimensionally identical to Nano (nemotron_h, hidden 2688, same 52-layer M/E/A hybrid,
-# same 128-expert MoE) and uses the same kernel set; its FP8 mamba in/out_proj load through the
-# native-FP8 SSM path. The (model_type, hidden_size) matcher cannot split the two; give
-# Lightning its own target only if its kernel needs ever diverge.
 hidden_size = 2688
+# 2026-08-13: SPLIT from nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4, which is
+# dimensionally identical (nemotron_h, hidden 2688, 52-layer M/E/A hybrid, 128-expert MoE)
+# and shared this target from 2026-08-11. The kernels never diverged — the POLICY did:
+# Nano documents `thinking_default = false` (thinking leaks training-corpus text, see below)
+# while Lightning needs thinking ON for general quality and OFF only inside tool turns. One
+# target cannot hold both, and the workaround (`--default-chat-template-kwargs
+# '{"enable_thinking":true}'`) is an EXPLICIT directive that overrides `thinking_in_tools`
+# (api/chat/thinking.rs), so Lightning's tool turns could not be made non-thinking at all.
+#
+# The discriminator is `num_nextn_predict_layers`: Lightning ships a DeepSeek-style 1-step
+# MTP draft head under `mtp.layers.*` and declares 1; Nano ships none and the key is absent,
+# which `ModelConfig::mtp_num_hidden_layers` reads as 0. This is stated EXPLICITLY on BOTH
+# sides — an omitted `num_nextn_predict_layers` here would leave Nano a catch-all for every
+# 2688-wide nemotron_h, which is the silent-fallthrough failure this repo keeps re-learning.
+num_nextn_predict_layers = 0
 
 # Nemotron-H uses ChatML format. No official sampling recommendations.
 # Conservative defaults to prevent repetition in hybrid SSM architecture.
@@ -62,24 +72,10 @@ dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loo
 # 64 prompt tokens, CUDA 716 on Nano/Lightning) and are a measured no-op on
 # GB10 — serve eager. Replaces the retired ATLAS_NO_DECODE_GRAPHS env var.
 no_decode_graphs = true
-# MTP speculative decoding (Nemotron-3.5 Lightning routes here and ships a
-# DeepSeek-style 1-step draft head under `mtp.layers.*`; Nano ships none —
-# for Nano the value is inert because no proposer loads). K = drafts + 1;
-# the head is 1-step, so 1 draft is the trained depth. Engagement still
-# requires `--speculative`; this is the per-model default the CLI
-# `--num-drafts` overrides.
-#
-# Serve-validated 2026-08-11 on Lightning 30B (C=1, 400-tok story, temp 0):
-# drafts are GOOD (K2 accept p1 = 0.49-0.65) but the verify step is NET
-# NEGATIVE — 55.0 tok/s forced-MTP vs 70.1 tok/s serial — because this
-# target has no K-token batched verify kernels: the 23 Mamba-2 layers run
-# K sequential recurrent decodes and the 23 MoE layers K per-token expert
-# GEMV sweeps (the grouped relu2 GEMMs are expected-absent here), so a
-# K=2 verify costs ~2x a decode in weight reads for only 1+p1 ~ 1.55
-# tokens. The auto MTP gate measures exactly this and parks speculation
-# (serving stays at the serial rate — `--speculative` never regresses).
-# The lever that flips the sign is kernel work: a batched K-row Mamba-2
-# verify step and/or an M-generic relu2 MoE verify arm.
+# Nano ships no MTP draft head (`num_nextn_predict_layers` absent from its
+# config.json), so no proposer ever loads and this value is inert. It stays
+# at the 1 the family default used to carry; the measured Lightning MTP
+# story moved to that target's MODEL.toml with the split.
 default_num_drafts = 1
 # 2026-05-23 sweep: false → true. Project-wide default flipped to true
 # after F1 reflection-penalty removal eliminated the original Qwen3.6
