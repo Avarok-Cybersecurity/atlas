@@ -139,9 +139,9 @@ impl Qwen3AttentionLayer {
                     // q adapter resident: split the FUSED gemv+deinterleave into
                     // raw interleaved gemv → q LoRA fold → deinterleave, so the
                     // delta lands in the interleaved basis PEFT trained against.
-                    ops::w4a16_gemv(
+                    self.nvfp4_decode_gemv(
                         ctx.gpu,
-                        self.w4a16_gemv_k,
+                        ctx.levers.gemv_sw,
                         normed,
                         nvfp4,
                         q_out,
@@ -215,9 +215,9 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             } else if let Some(nvfp4) = self.q_weight.as_ref().and_then(|w| w.as_nvfp4()) {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv_k,
+                    ctx.levers.gemv_sw,
                     normed,
                     nvfp4,
                     q_out,

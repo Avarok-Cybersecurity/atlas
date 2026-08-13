@@ -228,4 +228,35 @@ mod tests {
             );
         }
     }
+
+    /// NEGATIVE: attention decode must not launch the base GEMV directly.
+    /// A new `ops::w4a16_gemv(` site there ships the 64-thread kernel on
+    /// the default path even though `nvfp4_decode_gemv` exists.
+    ///
+    /// PROVEN BY: restoring any of the pre-PR call sites turns this red.
+    #[test]
+    fn attention_decode_does_not_call_base_w4a16_gemv() {
+        let attn = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/layers/qwen3_attention");
+        let mut offenders = Vec::new();
+        for rel in [
+            "decode/attention_forward.rs",
+            "decode/attention_forward_v4.rs",
+            "decode/attention_forward_oproj.rs",
+            "decode/attention_forward_mla.rs",
+            "decode/attention_forward_kv.rs",
+            "trait_impl/multi_seq/qkv.rs",
+            "trait_impl/multi_seq/attn.rs",
+            "trait_impl/multi_seq/attn/o_proj.rs",
+            "trait_impl/multi_seq/mla.rs",
+        ] {
+            let src = fs::read_to_string(attn.join(rel)).unwrap();
+            if src.contains("ops::w4a16_gemv(") {
+                offenders.push(rel);
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "use nvfp4_decode_gemv (N/8 grid) not ops::w4a16_gemv: {offenders:?}"
+        );
+    }
 }

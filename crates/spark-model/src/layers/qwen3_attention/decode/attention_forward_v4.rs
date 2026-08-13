@@ -268,9 +268,9 @@ impl Qwen3AttentionLayer {
         let q_latent = ctx.buffers.ssm_ba();
         prof!("wq_a", {
             if let Some(ref wqa_nvfp4) = mla.wq_a_nvfp4 {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv_k,
+                    ctx.levers.gemv_sw,
                     normed,
                     wqa_nvfp4,
                     q_latent,
@@ -320,9 +320,9 @@ impl Qwen3AttentionLayer {
         })?;
         prof!("wq_b", {
             if let Some(ref wqb_nvfp4) = mla.wq_b_nvfp4 {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv_k,
+                    ctx.levers.gemv_sw,
                     q_latent,
                     wqb_nvfp4,
                     q_out,
@@ -386,9 +386,9 @@ impl Qwen3AttentionLayer {
         let kv_dim = nkv * hd;
         prof!("wkv", {
             if let Some(ref wkva_nvfp4) = mla.wkv_a_nvfp4 {
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     ctx.gpu,
-                    self.w4a16_gemv_k,
+                    ctx.levers.gemv_sw,
                     normed,
                     wkva_nvfp4,
                     k_out,

@@ -374,6 +374,10 @@ impl MtpHead {
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
+            w4a16_gemv_sw_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
+            gemv_sw: crate::layers::ops::gemv_sw_from(
+                std::env::var("ATLAS_NO_GEMV_SW").ok().as_deref(),
+            ),
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,

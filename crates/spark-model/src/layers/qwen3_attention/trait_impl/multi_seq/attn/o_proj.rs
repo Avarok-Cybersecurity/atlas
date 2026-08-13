@@ -237,9 +237,9 @@ impl Qwen3AttentionLayer {
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
                 let o_out_i = o_out.offset(i * h * bf16);
-                ops::w4a16_gemv(
+                self.nvfp4_decode_gemv(
                     fwd.gpu,
-                    self.w4a16_gemv_k,
+                    fwd.levers.gemv_sw,
                     attn_out_i,
                     &self.attn.o_proj,
                     o_out_i,
