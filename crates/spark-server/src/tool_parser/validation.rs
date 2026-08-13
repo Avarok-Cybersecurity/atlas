@@ -10,8 +10,10 @@ use super::*;
 /// 1. **Type coercion**: Converts string values to the schema-expected type
 ///    (number, boolean, integer, object, array). Prevents "expected number,
 ///    received string" errors from clients like OpenCode.
-/// 2. **Backfill**: Adds empty strings for missing required string parameters.
-///    Prevents cascading error loops from missing params.
+/// 2. **Backfill**: fills a missing/empty REQUIRED parameter only when a
+///    REAL value can be derived from what the model did produce (see
+///    [`derive_required_param`]). It never invents a placeholder — see the
+///    comment on step 3 for why an `""` here is worse than an absent key.
 ///
 /// Matches vLLM's qwen3coder_tool_parser behavior (schema-aware type conversion).
 ///
@@ -174,6 +176,48 @@ fn infer_default_subagent_type(description: Option<&str>) -> String {
         .unwrap_or_else(|| "general".to_string())
 }
 
+/// Derive a REAL value for a required parameter the model left missing or
+/// empty, or `None` when no honest value exists.
+///
+/// The bar is deliberately high: a value qualifies only when it is recoverable
+/// from what the model DID produce (`description` restates the `command`) or
+/// from the tool definition itself (`subagent_type`'s legal values live only in
+/// the description prose — there is no JSON-Schema `enum` — so the model omits
+/// it constantly and the client rejects `""` with an opaque
+/// `Unknown agent type:  is not a valid agent type` it cannot self-correct).
+///
+/// Everything else returns `None`, and [`backfill_required_params`] leaves the
+/// key absent. Guessing a path, a search string, or a city is not repair — it
+/// is fabricating the model's intent, and the resulting call is wrong in a way
+/// no downstream schema check can detect.
+fn derive_required_param(
+    key: &str,
+    func_name: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    tool_def: &ToolDefinition,
+) -> Option<String> {
+    match key {
+        // Shell tools: `description` is metadata ABOUT the payload, and the
+        // payload (`command`) is right there.
+        "description" => Some(match args.get("command").and_then(|c| c.as_str()) {
+            // Truncate on a char boundary — `cmd` is raw model output and a
+            // byte slice at [..47] would panic if a multibyte char straddles
+            // byte 47.
+            Some(cmd) if cmd.len() > 50 => {
+                let head: String = cmd.chars().take(47).collect();
+                format!("Run: {head}...")
+            }
+            Some(cmd) => format!("Run: {cmd}"),
+            None => format!("{func_name} operation"),
+        }),
+        // Delegation tools (opencode / Claude Code `task`).
+        "subagent_type" | "subagentType" => Some(infer_default_subagent_type(
+            tool_def.function.description.as_deref(),
+        )),
+        _ => None,
+    }
+}
+
 pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]) {
     for call in calls.iter_mut() {
         let Some(tool_def) = tools.iter().find(|t| t.function.name == call.function.name) else {
@@ -284,66 +328,45 @@ pub fn backfill_required_params(calls: &mut [ToolCall], tools: &[ToolDefinition]
             }
         }
 
-        // 3. Backfill missing required string parameters.
-        for key in &required {
-            if !args.contains_key(*key) {
-                let is_string = properties
-                    .and_then(|p| p.get(*key))
-                    .and_then(|v| v.get("type"))
-                    .and_then(|t| t.as_str())
-                    .is_none_or(|t| t == "string"); // default to string if no schema
-                if is_string {
-                    args.insert(key.to_string(), serde_json::Value::String(String::new()));
-                    changed = true;
-                }
-            }
-        }
-
-        // 4. Auto-fill empty parameters with sensible defaults.
-        // The model often generates empty required fields. Instead of rejecting
-        // (which causes error loops), fill them with context-derived defaults.
+        // 3. Required parameters the model did not supply: DERIVE a real
+        // value, or leave the key ABSENT. Never synthesize a placeholder.
+        //
+        // Until 2026-08-13 a missing required string was backfilled with
+        // `""`. That is strictly worse than leaving it out, because an
+        // empty string is a VALID instance of `{"type": "string"}`: the key
+        // is present, so the call passes `assess_tool_call` (which
+        // deliberately does not enforce non-empty — Theia's
+        // `getWorkspaceFileList` legitimately sends `path=""`) AND the
+        // client's own JSON-Schema `required` check. A truncated call —
+        // model emitted the tool NAME and nothing else, e.g. because a
+        // `</think>` force-close cut it mid-arguments — was therefore
+        // delivered as a well-formed call, and `get_weather` ran with
+        // `{"city": ""}`. Nothing downstream could tell that Atlas, not the
+        // model, authored that argument.
+        //
+        // Leaving the key absent restores the intended failure surface:
+        // `assess_tool_call` reports `MissingParam`, whose documented
+        // disposition is "attach the call as the model produced it and let
+        // the client's schema check give the model actionable feedback"
+        // (dropping it outright was the 2026-07-03 ST-995 empty-response
+        // collapse). The client's `required` check then rejects `{}` with an
+        // error the model can act on, instead of silently acting on "".
         let func_name = call.function.name.clone();
         for key in &required {
-            if let Some(serde_json::Value::String(val)) = args.get(*key) {
-                if !val.trim().is_empty() {
-                    continue;
-                }
-                let auto_val = match *key {
-                    "description" => {
-                        if let Some(serde_json::Value::String(cmd)) = args.get("command") {
-                            if cmd.len() > 50 {
-                                // Truncate on a char boundary — `cmd` is raw
-                                // model output and a byte slice at [..47] would
-                                // panic if a multibyte char straddles byte 47.
-                                let head: String = cmd.chars().take(47).collect();
-                                format!("Run: {head}...")
-                            } else {
-                                format!("Run: {cmd}")
-                            }
-                        } else {
-                            format!("{func_name} operation")
-                        }
-                    }
-                    "filePath" | "file_path" => {
-                        // Can't guess the path — leave empty so validation catches it
-                        continue;
-                    }
-                    "oldString" | "old_string" => {
-                        // Can't guess what to replace — leave empty
-                        continue;
-                    }
-                    // Delegation tools (opencode / Claude Code `task`) require a
-                    // free-form `subagent_type` whose legal values live only in
-                    // the description prose (no JSON-Schema enum). An empty value
-                    // is rejected downstream with an opaque "Unknown agent type:
-                    // …" the model can't self-correct, so fill a VALID agent name
-                    // parsed from the description instead of "".
-                    "subagent_type" | "subagentType" => {
-                        infer_default_subagent_type(tool_def.function.description.as_deref())
-                    }
-                    _ => continue,
-                };
-                args.insert(key.to_string(), serde_json::Value::String(auto_val));
+            // Present and non-empty → the model supplied it; nothing to do.
+            // Present but EMPTY → the model authored that empty string, so it
+            // stays unless a real value is derivable (`description`,
+            // `subagent_type`). Absent → same derivation, else stay absent.
+            let model_supplied = match args.get(*key) {
+                Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+                Some(_) => true,
+                None => false,
+            };
+            if model_supplied {
+                continue;
+            }
+            if let Some(derived) = derive_required_param(key, &func_name, &args, tool_def) {
+                args.insert(key.to_string(), serde_json::Value::String(derived));
                 changed = true;
             }
         }
@@ -704,10 +727,29 @@ pub fn assess_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(),
 
         for key in &required {
             if args.get(*key).is_none() {
-                return Err(ToolCallIssue::MissingParam(format!(
-                    "Error: {} requires parameter '{}' but it was not provided.",
-                    name, key
-                )));
+                let msg =
+                    format!("Error: {name} requires parameter '{key}' but it was not provided.");
+                // Severity mirrors the F78 / shell-family rules further
+                // down, which refuse an EMPTY path or command outright
+                // (the call becomes a no-op and the response falls through
+                // to text). Those rules used to cover the OMITTED case too,
+                // by accident: `backfill_required_params` fabricated `""`
+                // for the missing key and the empty-string check caught it.
+                // Now that nothing is fabricated, absence arrives here
+                // instead — and a mutation tool with no path, or a shell
+                // tool with no command, is exactly as unexecutable as one
+                // with an empty string. Keep it out of `valid`. Everything
+                // else keeps the recoverable MissingParam disposition
+                // (attach as produced; the client's schema check gives the
+                // model actionable feedback — 2026-07-03 ST-995).
+                let unexecutable = (WRITE_FAMILY.contains(&name.as_str())
+                    && PATH_KEYS.contains(key))
+                    || (SHELL_FAMILY.contains(&name.as_str()) && CMD_KEYS.contains(key));
+                return Err(if unexecutable {
+                    ToolCallIssue::EmptyRequired(msg)
+                } else {
+                    ToolCallIssue::MissingParam(msg)
+                });
             }
         }
     }

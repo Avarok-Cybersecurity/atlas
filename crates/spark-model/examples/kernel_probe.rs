@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Standalone probe: replicate the server's `ptx_for_config` kernel-load path
+//! Standalone probe: replicate the server's `ptx_for_shape` kernel-load path
 //! and report, per pipelined kernel, whether it is in the target's module set
 //! and whether `gpu.kernel(module, func)` resolves — printing the exact error.
 //! No model load; runs in seconds. Resolves "why is the pipelined handle 0".
@@ -8,10 +8,14 @@ use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 
 fn main() -> anyhow::Result<()> {
-    // Server path: serve.rs uses ptx_for_config(model_type, hidden_size).
+    // Server path: serve.rs uses ptx_for_shape(model_type, hidden_size).
     // Qwen3.6-35B-A3B → model_type "qwen3_6_moe", hidden_size 2048.
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048)
-        .expect("no ptx set for (qwen3_6_moe, 2048)");
+    let set = atlas_kernels::ptx_for_shape(atlas_kernels::ModelShape {
+        model_type: "qwen3_6_moe",
+        hidden_size: 2048,
+        mtp_layers: 0,
+    })
+    .expect("no ptx set for (qwen3_6_moe, 2048)");
     eprintln!(
         "target.model={} quant={} modules={}",
         set.target.model,

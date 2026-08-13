@@ -42,11 +42,15 @@ impl Default for SamplingCat {
     }
 }
 
-/// A `(model_type, optional hidden_size)` pair declaring which models a kernel target supports.
+/// One `[[model_types]]` entry: the model shapes a kernel target claims.
 #[derive(Debug, Clone)]
 struct ModelTypeMatch {
     model_type: String,
     hidden_size: Option<usize>,
+    /// `num_nextn_predict_layers` (HF) / `mtp_num_hidden_layers` (Atlas)
+    /// this entry claims. `None` = the entry does not discriminate on MTP
+    /// depth; `Some(0)` explicitly claims checkpoints with NO draft head.
+    mtp_layers: Option<usize>,
 }
 
 /// A resolved (hw, model, quant) compilation target.

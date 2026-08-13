@@ -457,6 +457,41 @@ pub const MAX_INTER_TOOL_PROSE: u32 = 3072;
 /// (which attaches no grammar) is never truncated.
 pub const MAX_POST_THINK_CONTENT_TOKENS: u32 = 100_000;
 
+/// Is an UNTERMINATED tool-call block open at the end of `tokens`?
+///
+/// SSOT for "this sequence is mid-`<tool_call>` right now". Two callers
+/// need it and they used to answer it differently:
+///
+/// * the content-phase fuzzy-repetition detector, which must not fire on
+///   the natural `<parameter=…></parameter>` repetition of an XML tool
+///   body (it had this logic inline), and
+/// * the thinking-phase `</think>` force-close path, which must not cut
+///   the block in half. A `<tool_call>` truncated mid-arguments is not
+///   discarded — the blocking path hoists it out of the reasoning trace
+///   (`chat_blocking_choice.rs` F7) — so a cut between the tool NAME and
+///   its arguments produced a name-only call that then looked complete
+///   to the client.
+///
+/// Token-level, not text-level: `start`/`end` are the per-sequence atomic
+/// ids of the active tool format's open/close markers
+/// (`<tool_call>`/`</tool_call>`, or the `minimax_xml` pair), resolved
+/// once at startup from `tool_defaults.toml`. When the tokenizer does not
+/// encode the opener as ONE token, `start` is `None` and this returns
+/// `false` — every caller then keeps exactly its pre-existing behaviour
+/// instead of guessing from decoded text.
+pub fn tool_call_open_in_tail(tokens: &[u32], start: Option<u32>, end: Option<u32>) -> bool {
+    let Some(start_tok) = start else {
+        return false;
+    };
+    let last_start = tokens.iter().rposition(|&t| t == start_tok);
+    let last_end = end.and_then(|e| tokens.iter().rposition(|&t| t == e));
+    match (last_start, last_end) {
+        (Some(s), Some(e)) => s > e,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
 /// Return `true` iff some contiguous subsequence of length
 /// `p ∈ [THINK_LOOP_PERIOD_MIN, THINK_LOOP_PERIOD_MAX]` appears
 /// `THINK_LOOP_MIN_REPEATS`+ times in the last

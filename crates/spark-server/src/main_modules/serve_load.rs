@@ -162,32 +162,45 @@ pub(crate) fn load_model(
     // 2. Select kernel target and initialize GPU backend
     spark_runtime::progress::phase(3, "gpu init");
     //
-    // Each kernel target declares which (model_type, hidden_size) pairs it supports
-    // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over wildcards.
-    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
-        .with_context(|| {
-            format!(
-                "No compiled kernel target matches model_type '{}' / hidden_size={}. \
-             Available targets: {:?}",
-                config.model_type,
-                config.hidden_size,
-                atlas_kernels::available_targets()
-                    .iter()
-                    .map(|t| &t.target.model)
-                    .collect::<Vec<_>>(),
-            )
-        })?;
+    // Each kernel target declares which model shapes it supports via
+    // [[model_types]] in MODEL.toml. The most SPECIFIC entry wins: pinning
+    // both hidden_size and MTP depth beats pinning hidden_size alone, which
+    // beats a bare model_type wildcard. `mtp_layers` is load-bearing for the
+    // Nemotron-H 30B pair — Nano and 3.5 Lightning are identical in
+    // (model_type, hidden_size) and need opposite thinking policy.
+    let shape = atlas_kernels::ModelShape {
+        model_type: &config.model_type,
+        hidden_size: config.hidden_size,
+        mtp_layers: config.mtp_num_hidden_layers,
+    };
+    let ptx_set = atlas_kernels::ptx_for_shape(shape).with_context(|| {
+        format!(
+            "No compiled kernel target matches model_type '{}' / hidden_size={} / \
+             num_nextn_predict_layers={}. Available targets: {:?}",
+            config.model_type,
+            config.hidden_size,
+            config.mtp_num_hidden_layers,
+            atlas_kernels::available_targets()
+                .iter()
+                .map(|t| &t.target.model)
+                .collect::<Vec<_>>(),
+        )
+    })?;
     let sampling_presets = ptx_set.sampling;
     // The dashboard's kernel table re-resolves the live target through this
     // same `ptx_for_config` call. It needs the config shape that selected the
     // target, because the served-model name is an HF id, not a kernel-target
     // directory name — and `atlas_kernels::ptx_modules()` (what the table used
     // to read) is a plain alias of TARGET 0 in a multi-target build.
-    crate::tui::data::kernels::publish_loaded_shape(&config.model_type, config.hidden_size);
+    crate::tui::data::kernels::publish_loaded_shape(
+        &config.model_type,
+        config.hidden_size,
+        config.mtp_num_hidden_layers,
+    );
 
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //
-    // `ptx_for_config` selects on (model_type, hidden_size) but not on
+    // `ptx_for_shape` selects on the model SHAPE but not on
     // QUANT. With ATLAS_TARGET_QUANT=* the build emits one bundle per
     // model whose label happens to be the first variant compiled
     // ("nvfp4") even when the bundle contains native FP8 dispatch too.

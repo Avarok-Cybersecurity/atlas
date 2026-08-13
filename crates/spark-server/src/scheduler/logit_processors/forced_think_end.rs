@@ -47,10 +47,20 @@ impl LogitsProcessor for ForcedThinkEndInjector {
             Some(b) => a.thinking_tokens >= b.saturating_mul(THINK_DEFER_BUDGET_FACTOR),
             None => a.thinking_tokens >= THINK_DEFER_ABS_CEILING,
         } || a.sentence_defer_count >= MAX_SENTENCE_DEFER_TOKENS;
+        // Never force `</think>` while the model is mid-`<tool_call>`:
+        // the call would be hoisted out of the reasoning trace with its
+        // arguments missing. `defer_hard_override` still wins, so a
+        // never-closing tool body cannot defer the cut indefinitely.
+        let in_tool_call = crate::scheduler::helpers::tool_call_open_in_tail(
+            &a.output_tokens,
+            a.tool_call_start_token,
+            a.tool_call_end_token,
+        );
         if a.inside_thinking
             && should_inject_think_end(
                 a.force_end_thinking,
                 a.in_code_fence,
+                in_tool_call,
                 at_sentence_boundary,
                 defer_hard_override,
             )

@@ -126,6 +126,11 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
         }
     }
 
+    // XML-attribute drift salvage. Runs AFTER the strict loop and only
+    // fills keys it did not already produce, so a well-formed call is
+    // untouched. See `harvest_attribute_params`.
+    harvest_attribute_params(after_name, &mut args);
+
     // Fallback: if no <parameter> tags found, try JSON between the function
     // tag and </function>. Grammar-constrained decoding emits:
     //   <function=Bash>{"command":"which cargo"}</function>
@@ -160,6 +165,105 @@ pub(super) fn parse_qwen3_coder_call(text: &str, _idx: u32) -> Option<ToolCall> 
                 .unwrap_or_else(|_| "{}".into()),
         },
     })
+}
+
+/// Salvage the XML-ATTRIBUTE drift of the qwen3_coder parameter form.
+///
+/// `<parameter=city>Santiago</parameter>` is the wire format. Under
+/// `tool_choice="auto"` the grammar is a LATE trigger — it only engages once
+/// the model has emitted `<tool_call>\n<function=NAME>` verbatim — so a model
+/// that opens with a bare `<function=NAME>` decodes UNCONSTRAINED, and
+/// Nemotron-3.5 Lightning then writes the parameter as an XML attribute
+/// instead. Measured 2026-08-13, 10-city sweep, temperature 0, 4/10 requests:
+///
+///   `<function=get_weather>\n<parameter city="Santiago">\nChile\n</parameter>`
+///
+/// The strict loop finds no `<parameter=`, so the call reached the client
+/// carrying its name and no arguments at all. This is the exact drift mode the
+/// `compile_tools.rs` F2-revert note predicted when the value EBNF was relaxed
+/// to admit `<` ("let the model fall into XML-attribute syntax"), with
+/// parser-side recovery named as the standing defence in depth.
+///
+/// Two dialects, both anchored on the attribute NAME so neither can misread
+/// the other:
+///
+/// * `<parameter KEY="VALUE">…</parameter>` — the attribute IS the parameter.
+///   Key `KEY`, value `VALUE`; the element body is drift continuation
+///   (`Chile` above) and is dropped.
+/// * `<parameter name="KEY">VALUE</parameter>` — the `name=` dialect other
+///   XML tool formats use. Key is the attribute value, value is the body.
+///
+/// Deliberately narrow: exactly one attribute, a bare-identifier name, a
+/// fully quoted value, and `or_insert` so a key the strict `<parameter=` loop
+/// already parsed always wins.
+fn harvest_attribute_params(body: &str, args: &mut serde_json::Map<String, serde_json::Value>) {
+    let mut rest = body;
+    while let Some(p) = rest.find("<parameter ") {
+        // Same sibling-function guard as the strict loop: a `</function>`
+        // before the next parameter ends THIS call's parameter list.
+        if let Some(fc) = rest.find("</function>")
+            && fc < p
+        {
+            return;
+        }
+        rest = &rest[p + "<parameter ".len()..];
+        let Some(tag_end) = rest.find('>') else {
+            return;
+        };
+        let attrs = &rest[..tag_end];
+        let after_tag = &rest[tag_end + 1..];
+        let inner_end = after_tag.find("</parameter>").unwrap_or(after_tag.len());
+        let inner = after_tag[..inner_end].trim();
+        rest = if inner_end < after_tag.len() {
+            &after_tag[inner_end + "</parameter>".len()..]
+        } else {
+            ""
+        };
+        let Some((ident, value)) = split_single_attribute(attrs) else {
+            continue;
+        };
+        let (key, val) = if ident.eq_ignore_ascii_case("name") {
+            (value, inner.to_string())
+        } else {
+            (ident, value)
+        };
+        if key.is_empty() {
+            continue;
+        }
+        args.entry(key).or_insert(serde_json::Value::String(val));
+    }
+}
+
+/// Split `KEY="VALUE"` (or `KEY='VALUE'`) into its two halves.
+///
+/// Returns `None` unless the whole attribute region is exactly one bare
+/// identifier, one `=`, and one fully quoted value — anything looser and a
+/// legitimate `<parameter ` occurrence inside prose could be misread as a
+/// parameter.
+fn split_single_attribute(attrs: &str) -> Option<(String, String)> {
+    let attrs = attrs.trim().trim_end_matches('/').trim_end();
+    let (ident, value) = attrs.split_once('=')?;
+    let ident = ident.trim();
+    if ident.is_empty()
+        || !ident.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        || !ident
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    let value = value.trim();
+    let quote = value.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let unquoted = value.strip_prefix(quote)?.strip_suffix(quote)?;
+    // One attribute only: a second quoted pair means a multi-attribute tag
+    // whose intent we cannot pin down.
+    if unquoted.contains(quote) {
+        return None;
+    }
+    Some((ident.to_string(), unquoted.to_string()))
 }
 
 /// Parse tag-style function call: `<function>NAME</function>` with optional `<parameters>` block.

@@ -219,8 +219,10 @@ pub(super) fn parse_sampling_presets(
 
 /// Parse `[[model_types]]` from MODEL.toml.
 ///
-/// Each entry maps a `(model_type, optional hidden_size)` pair to this kernel target.
+/// Each entry maps a `(model_type, optional hidden_size, optional
+/// num_nextn_predict_layers)` shape to this kernel target.
 /// Missing `hidden_size` = wildcard (matches any hidden_size not caught by a more specific entry).
+/// Missing `num_nextn_predict_layers` = the entry does not discriminate on MTP depth.
 pub(super) fn parse_model_types(model_dir: &std::path::Path) -> Vec<ModelTypeMatch> {
     let model_toml_path = model_dir.join("MODEL.toml");
     if !model_toml_path.exists() {
@@ -242,9 +244,14 @@ pub(super) fn parse_model_types(model_dir: &std::path::Path) -> Vec<ModelTypeMat
                 .get("hidden_size")
                 .and_then(|v| v.as_integer())
                 .map(|v| v as usize);
+            let mtp = entry
+                .get("num_nextn_predict_layers")
+                .and_then(|v| v.as_integer())
+                .map(|v| v as usize);
             Some(ModelTypeMatch {
                 model_type: mt,
                 hidden_size: hs,
+                mtp_layers: mtp,
             })
         })
         .collect()
