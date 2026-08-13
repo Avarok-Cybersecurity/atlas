@@ -67,18 +67,9 @@ impl MoeLayer {
                 stream,
             )?;
         } else {
-            ops::dense_gemm_prefill(
-                ctx.gpu,
-                self.dense_gemm,
-                self.dense_gemm_pipelined,
-                router_in,
-                &self.weights.gate,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
+            // Selection numerics — see router_gate_gemm_dense for why this
+            // must stay on the scalar kernel (2026-08-12 BFCL regression).
+            self.router_gate_gemm_dense(router_in, gate_logits, n, num_experts, h, ctx, stream)?;
         }
 
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
