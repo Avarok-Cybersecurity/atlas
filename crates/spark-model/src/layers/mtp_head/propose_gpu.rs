@@ -359,6 +359,10 @@ impl MtpHead {
         } else {
             ctx.config.vocab_size as u32
         };
+        // Base 64-thread GEMV, not the Batch 5 single-warp decode launcher.
+        // SW is an occupancy win on small-N C=1 decode; this lm_head is
+        // N≈1e5 × K=hidden=2048, where the single-warp K-walk is slower.
+        // C=1 decode still uses SW — not this graphable propose slice.
         ops::w4a16_gemv(
             ctx.gpu,
             self.w4a16_gemv_k,
@@ -390,5 +394,28 @@ impl MtpHead {
         self.propose_gpu_pre_moe(ctx, stream, kv)?;
         let ffn_out = self.propose_gpu_ffn(ctx, stream)?;
         self.propose_gpu_post_moe(ctx, stream, ffn_out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// NEGATIVE: the graphable MTP lm_head must not take Batch 5's SW GEMV.
+    /// The single-warp K-walk is slower at K=hidden=2048; production propose
+    /// (2.16 ms) was image-proven on the base 64-thread launch.
+    ///
+    /// PROVEN BY: restoring the SW decode launcher in `propose_gpu_post_moe`
+    /// turns this red.
+    #[test]
+    fn propose_lm_head_does_not_dispatch_sw_gemv() {
+        let src = include_str!("propose_gpu.rs");
+        let prod = src.split("#[cfg(test)]").next().expect("prod before tests");
+        assert!(
+            prod.contains("ops::w4a16_gemv("),
+            "lm_head must launch the base w4a16_gemv"
+        );
+        assert!(
+            !prod.contains("ops::w4a16_decode_gemv("),
+            "SW decode GEMV must not be on the propose lm_head path"
+        );
     }
 }
