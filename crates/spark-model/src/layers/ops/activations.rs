@@ -121,6 +121,32 @@ pub fn sigmoid_gate_mul_head_broadcast(
         .launch(stream)
 }
 
+/// Per-head softplus gate multiply with broadcast over `head_dim`.
+#[allow(clippy::too_many_arguments)]
+pub fn softplus_gate_mul_head_broadcast(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    gate: DevicePtr,
+    output: DevicePtr,
+    nq: u32,
+    hd: u32,
+    num_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    let total = num_tokens * nq * hd;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(total, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(gate)
+        .arg_ptr(output)
+        .arg_u32(nq)
+        .arg_u32(hd)
+        .arg_u32(total)
+        .launch(stream)
+}
+
 /// BF16 residual add: `residual[i] += src[i]` (in-place).
 ///
 /// Kernel: `bf16_residual_add(residual, src, n)`

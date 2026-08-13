@@ -108,7 +108,7 @@ def wait_ready(name, host=None, timeout_s=420):
     prefix = f"ssh {host} " if host else ""
     for _ in range(timeout_s // 5):
         logs, _ = run(f"{prefix}sudo docker logs {name} 2>&1 | tail -20", timeout=10)
-        if "Listening on" in logs:
+        if "Listening on" in logs or "Server live" in logs:
             return True
         if "Error:" in logs and "FP8" not in logs:
             return False

@@ -18,6 +18,7 @@ fn every_variant() -> Vec<Section> {
         Section::Library,
         Section::Benchmarks,
         Section::Terminal,
+        Section::Help,
     ];
     for s in &all {
         match s {
@@ -26,7 +27,8 @@ fn every_variant() -> Vec<Section> {
             | Section::Network
             | Section::Library
             | Section::Benchmarks
-            | Section::Terminal => {}
+            | Section::Terminal
+            | Section::Help => {}
         }
     }
     all
@@ -89,6 +91,7 @@ fn the_sections_with_subsections_are_the_ones_that_have_two_panes() {
         vec!["Suite", "History"]
     );
     assert_eq!(Section::Terminal.subs().to_vec(), vec!["Ops", "Chat"]);
+    assert_eq!(Section::Help.subs().to_vec(), vec!["Guide", "Report Issue"]);
     for s in [Section::Stats, Section::Network, Section::Library] {
         assert!(s.subs().is_empty(), "{s:?}");
     }
@@ -100,7 +103,7 @@ fn the_navigable_row_count_is_what_the_sidebar_draws() {
     // count `⇥` steps through. Three hardcoded copies of this is how `⇥` came
     // to skip past rows the sidebar was drawing.
     let rows: usize = Section::ALL.iter().map(|s| s.subs().len().max(1)).sum();
-    assert_eq!(rows, 3 + 3 * 2, "3 plain sections and 3 with a pair each");
+    assert_eq!(rows, 3 + 4 * 2, "3 plain sections and 4 with a pair each");
 }
 
 #[test]
@@ -109,4 +112,7 @@ fn benchmarks_is_last_but_one_so_terminal_keeps_the_bottom_row() {
     // every one of them.
     assert_eq!(Section::ALL[4], Section::Benchmarks);
     assert_eq!(Section::ALL[5], Section::Terminal);
+    // Help is LAST deliberately: appending kept every existing digit key
+    // where users learned it.
+    assert_eq!(Section::ALL[6], Section::Help);
 }
