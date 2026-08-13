@@ -2,9 +2,11 @@
 
 ## PROVENANCE (2026-08-10)
 
-**What is pinned** — `PINS.sha256` records sha256 of the two committed binaries
-(`libatlasgdn.so`, `gdn_holo.so`) and of `delta_rule_sm120_aot_export.patch`, plus the
-source provenance they are believed to correspond to: FlashInfer
+**What is pinned** — `PINS.sha256` records sha256 of the committed binary artifacts
+and of `delta_rule_sm120_aot_export.patch`, plus the source provenance they are believed
+to correspond to. Since TRACK B (below) that set is `gdn_holo_0.o` + the patch: the two
+.so are no longer committed, so their hashes are retained in `PINS.sha256` as commented
+historical records rather than as checked lines. Provenance: FlashInfer
 `a671c02ee2fbcdde7cc991f5a01c7cf5eb4a8972` + that patch, exported with
 `nvidia-cutlass-dsl[cu13]==4.5.0` (`CUTE_DSL_ARCH=sm_121a`, GB10), linked with
 g++ 13.3.0 (Ubuntu 24.04 aarch64) + nvcc 13.x. The committed `libatlasgdn.so`'s
@@ -14,7 +16,8 @@ RUNPATH shows the original build env was a venv at `/tmp/gdn-bench/…/nvidia_cu
 pinned FlashInfer rev, applies the patch, runs `gdn_export.py` (GPU + CuTe-DSL step),
 links both .so exactly per this file + `docker/gb10/Dockerfile.builder`, and ends by
 printing sha256 of everything it produced vs the pins. `GDN_HOLO_O=<gdn_holo_0.o>`
-skips the export for link-only rebuilds (the AOT .o is gitignored, not committed).
+skips the export for link-only rebuilds. Since TRACK B the AOT .o IS committed
+(`.gitignore` un-ignores it) and is what `PINS.sha256` pins.
 
 **What CI enforces** — `.github/workflows/gdn-so-pin.yml` runs `sha256sum -c PINS.sha256`
 on every PR/push touching this dir (pure hashing, no GPU). A silent blob swap is a red
