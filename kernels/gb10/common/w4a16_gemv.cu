@@ -349,108 +349,10 @@ extern "C" __global__ void w4a16_gemv_logits(
 // Extra cost: 2x activation reads (K*2 bytes per vector, fits in L1/L2).
 //
 // Grid: (ceil(N / 4), 1, 1)   Block: (256, 1, 1)
-extern "C" __global__ void w4a16_gemv_batch2(
-    const __nv_bfloat16* __restrict__ A,        // [2, K]
-    const unsigned char* __restrict__ B_packed,  // [N, K/2] uint8
-    const unsigned char* __restrict__ B_scale,   // [N, K/GROUP_SIZE] FP8-E4M3
-    const float scale2,
-    __nv_bfloat16* __restrict__ C,               // [2, N]
-    unsigned int N,
-    unsigned int K
-) {
-    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
-    const unsigned int local_out = threadIdx.x / threads_per_out;
-    const unsigned int lane = threadIdx.x % threads_per_out;
-
-    const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
-    if (n >= N) return;
-
-    const unsigned int half_K = K / 2;
-    const unsigned int num_groups = K / GROUP_SIZE;
-    const unsigned int K8 = K / 8;
-
-    // Pointers to second input/output rows
-    const __nv_bfloat16* __restrict__ A1 = A + K;  // second input vector
-    __nv_bfloat16* __restrict__ C1 = C + N;         // second output vector
-
-    __shared__ float s_lut[16];
-    __shared__ float smem[N_PER_BLOCK * 4];  // 2 warps × 2 accumulators per output
-    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
-    __syncthreads();
-
-    float acc0 = 0.0f;  // accumulator for first input
-    float acc1 = 0.0f;  // accumulator for second input
-
-    for (unsigned int k8 = lane; k8 < K8; k8 += threads_per_out) {
-        const unsigned int base_k = k8 * 8;
-
-        // Load 8 BF16 activations from BOTH input vectors
-        uint4 a0_data = ((const uint4*)A)[k8];
-        uint4 a1_data = ((const uint4*)A1)[k8];
-        const unsigned int a0_raw[4] = {a0_data.x, a0_data.y, a0_data.z, a0_data.w};
-        const unsigned int a1_raw[4] = {a1_data.x, a1_data.y, a1_data.z, a1_data.w};
-
-        // Load 4 packed weight bytes (SHARED between both inputs)
-        unsigned int packed4 = *(const unsigned int*)(B_packed + (unsigned long long)n * half_K + k8 * 4);
-
-        // Load single FP8 scale
-        unsigned int scale_group = base_k / GROUP_SIZE;
-        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
-#else
-        float scale = (float)fp8 * scale2;
-#endif
-
-        // Unpack weights and FMA with BOTH activation vectors
-        #pragma unroll
-        for (int b = 0; b < 4; b++) {
-            unsigned char byte_val = (packed4 >> (b * 8)) & 0xFF;
-            float w_lo = s_lut[byte_val & 0xF] * scale;
-            float w_hi = s_lut[byte_val >> 4] * scale;
-
-            // First input vector
-            __nv_bfloat16 a0_lo, a0_hi;
-            *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
-            *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
-            acc0 += __bfloat162float(a0_lo) * w_lo;
-            acc0 += __bfloat162float(a0_hi) * w_hi;
-
-            // Second input vector (same weights, different activations)
-            __nv_bfloat16 a1_lo, a1_hi;
-            *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
-            *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
-            acc1 += __bfloat162float(a1_lo) * w_lo;
-            acc1 += __bfloat162float(a1_hi) * w_hi;
-        }
-    }
-
-    // Warp shuffle reduction for both accumulators
-    const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
-    #pragma unroll
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-        acc0 += __shfl_down_sync(0xFFFFFFFF, acc0, offset);
-        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
-    }
-
-    // Cross-warp reduction via shared memory (2 warps per output × 2 accumulators)
-    if (warp_lane == 0) {
-        unsigned int warp_idx = lane / WARP_SIZE;
-        smem[local_out * 4 + warp_idx * 2]     = acc0;
-        smem[local_out * 4 + warp_idx * 2 + 1] = acc1;
-    }
-    __syncthreads();
-
-    // First thread of each output group writes both results
-    if (lane == 0) {
-        float result0 = smem[local_out * 4]     + smem[local_out * 4 + 2];
-        float result1 = smem[local_out * 4 + 1] + smem[local_out * 4 + 3];
-        C[n]  = __float2bfloat16(result0);
-        C1[n] = __float2bfloat16(result1);
-    }
-}
+// `w4a16_gemv_batch2` is defined below, next to batch4/8/16/32, because it is
+// now a thin instantiation of the shared `w4a16_gemv_batchm_impl` template.
+// Its former standalone body carried the same three bit-parity divergences
+// from `w4a16_gemv` documented on that template — see the note there.
 
 // ============================================================
 // W4A16 batched GEMV (M<=MAX_M) — the NVFP4 sibling of w8a16_gemv_batch4/16.
@@ -464,6 +366,78 @@ extern "C" __global__ void w4a16_gemv_batch2(
 //
 // Per-row accumulation order is IDENTICAL to `w4a16_gemv` (M=1), so the output
 // is bit-identical to running w4a16_gemv M times.
+//
+// That claim was FALSE until 2026-08-12 and is now enforced by
+// `crates/spark-model/examples/w4a16_batch_bitparity_microtest.rs`. The body
+// below had THREE independent divergences from `w4a16_gemv`, each of which
+// alone breaks bit-parity under the dir's `--fmad=false`:
+//
+//   1. K-chunk → lane mapping. `w4a16_gemv` walks `k16 = lane*2` with stride
+//      128 in PAIRS (c = 0,1) into two accumulators; this walked `k16 = lane`
+//      with stride 64 into one. Different lane partitions ⇒ different
+//      partial sums ⇒ a different shuffle-reduction tree.
+//   2. Block scale placement. `w4a16_gemv` factors the FP8 group scale OUT of
+//      the 16-FMA block (`acc = fmaf(scale, part, acc)`); this pre-multiplied
+//      it into every unpacked weight (`lut * scale`). Exact in real
+//      arithmetic, NOT in FP32.
+//   3. Fused vs split accumulation — the same defect found in
+//      `w8a16_gemv_batch4.cu`: `acc += x*w0 + y*w1` associates as
+//      `acc + (x·w0 + y·w1)`, where the M=1 kernel computes
+//      `(acc + x·w0) + y·w1`.
+//
+// Measured at the production Nemotron projection shapes before the fix
+// ([10304x2688], [2688x4096], [18560x4096], [4096x8192], seeds 1/99/12345):
+// 178 of 180 legs differed, 1..62 BF16 elements per launch, max|delta| 0.0625.
+// The body now reproduces `w4a16_gemv` FMA-for-FMA; the weight DRAM read, the
+// packed8 unpack and the scale decode are still done ONCE per chunk for all M
+// rows, which is the entire point of the tier.
+//
+// ── VIRTUAL-LANE REMAP (why this does not walk K the way `w4a16_gemv` does) ──
+//
+// The literal transcription — physical thread `l` walks `k16 = l*2` with stride
+// 128 in pairs, exactly like the M=1 kernel — is bit-exact but 45% SLOWER than
+// the (wrong) body it replaced, and NOT because of the second accumulator
+// array. It is coalescing. Under that mapping a warp's 16-byte activation load
+// has its lanes 64 B apart, so one instruction touches 2048 B to use 512 — half
+// the sector efficiency of the stride-32 walk, and the activation stream is
+// M times the weight stream, which is why the cost grew with M (batch2 +13%,
+// batch16 +49%). Priced directly: holding the pair mapping and both
+// accumulators but addressing activations with the stride-32 pattern lands on
+// baseline (-0.4%); widening the WEIGHT load to 16 B recovers nothing (+44%).
+//
+// So this walks K COALESCED — consecutive lanes read consecutive chunks, the
+// pattern the previous body used — and recovers bit-parity by remapping which
+// REFERENCE accumulator each physical thread stands in for. Write p = physical
+// thread (0..63) and recall that the M=1 kernel's lane l owns chunks
+// {2l + c + 128j} in accumulator c. Then, for either value of `phase`,
+//
+//   chunks {p + 64*phase + 128j} == 2*(p/2 + 32*phase) + (p%2) + 128j
+//                                == ref lane (p/2 + 32*phase), accumulator p%2
+//
+// — the same chunk set in the same order, so the same fmaf chain, so a partial
+// that is bit-identical to the reference one it stands for. The kernel runs
+// that chain TWICE, phase 0 then phase 1, with ONE accumulator array reused;
+// the two phases read DISJOINT halves of the weight row, so total DRAM traffic
+// is unchanged (each pass is a stride-1024 B walk of contiguous 512 B runs) and
+// the register cost stays at the pre-fix `acc[MAX_M]`. Carrying both chains at
+// once instead costs a second array and ~20% at batch8/16, measured.
+//
+// `acc_l = acc0_l + acc1_l` is then one `__shfl_xor_sync(...,1)` between the
+// adjacent threads p and p^1, which hold accumulator 0 and 1 of the SAME
+// reference lane and are always in the same warp. p and p^1 add in opposite
+// operand order, which is exact — FP32 addition is commutative.
+//
+// That leaves acc_l for l = 0..63 on the even threads, so `s_vl` re-lands it in
+// virtual-lane order and the UNCHANGED two-warp shuffle tree below reduces
+// lanes 0..31 and 32..63 exactly as `w4a16_gemv` does. Cost: one shfl per row
+// per phase and a 64-float smem round trip per (row, output) — not per chunk.
+//
+// Register cost lands at or BELOW the pre-fix body — batch16 56 vs 70 and
+// batch32 80 vs 106, so 4 and 3 CTA/SM where the pre-fix body got 3 and 2 —
+// and no `__launch_bounds__` is wanted on the wide tiers: pinning them all
+// measured 12.70 ms against 11.49 ms free. batch8 is the one exception (see
+// its entry point) — it is the only tier still above the pre-fix time.
+//
 // A:[M,K] BF16, B_packed:[N,K/2], B_scale:[N,K/16] FP8-E4M3, scale2 FP32,
 // C:[M,N] BF16. Grid: (ceil(N/4),1,1) Block: (256,1,1).
 template <int MAX_M>
@@ -492,59 +466,88 @@ __device__ __forceinline__ void w4a16_gemv_batchm_impl(
     const unsigned int num_groups = K / GROUP_SIZE;
     const unsigned int K16 = K / 16;
 
+    // ONE accumulator array, reused by both phases — see the two-phase note in
+    // the header. `phase` picks WHICH reference lane this thread is standing in
+    // for; within a phase the thread runs a single reference accumulator chain.
     float acc[MAX_M];
-    #pragma unroll
-    for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
+    __shared__ float s_vl[MAX_M][N_PER_BLOCK][2 * WARP_SIZE];
 
-    for (unsigned int k16 = lane; k16 < K16; k16 += threads_per_out) {
-        const unsigned int base_k = k16 * 16;
-
-        // 8 packed weight bytes (16 FP4) + 1 group scale → dequant ONCE.
-        unsigned long long packed8 =
-            *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + k16 * 8);
-        const unsigned int scale_group = base_k / GROUP_SIZE;  // == k16 (GROUP_SIZE=16)
-        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
-#else
-        float scale = (float)fp8 * scale2;
-#endif
-        float wf[16];
+    #pragma unroll 1
+    for (unsigned int phase = 0; phase < 2u; phase++) {
         #pragma unroll
-        for (int b = 0; b < 8; b++) {
-            unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
-            wf[b * 2]     = s_lut[byte_val & 0xF] * scale;   // W[2j]   <-> act 2j
-            wf[b * 2 + 1] = s_lut[byte_val >> 4] * scale;    // W[2j+1] <-> act 2j+1
+        for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
+
+        // Coalesced walk: at every step the 64 lanes read CONSECUTIVE chunks,
+        // so a warp's 8-byte weight load covers 256 contiguous bytes and its
+        // 16-byte activation loads are 32 B apart — the pre-fix access pattern.
+        for (unsigned int kk = lane + phase * threads_per_out; kk < K16;
+             kk += threads_per_out * 2u) {
+            // 8 packed weight bytes (16 FP4) + 1 group scale → read and
+            // unpacked ONCE for all M rows. This is the weight-DRAM saving
+            // the tier exists for; it is independent of the FP order below.
+            unsigned long long packed8 =
+                *(const unsigned long long*)(B_packed + (unsigned long long)n * half_K + kk * 8);
+            unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            float scale = scl_fp8(scale_byte) * scale2;
+#else
+            float scale = (float)fp8 * scale2;
+#endif
+            // UNSCALED E2M1 values. The group scale stays factored OUT of the
+            // 16-FMA block and is applied once via fmaf(scale, part, acc),
+            // exactly as `w4a16_gemv` does — pre-multiplying it into each
+            // weight is a different FP32 expression.
+            float wl[16];
+            #pragma unroll
+            for (int b = 0; b < 8; b++) {
+                unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                wl[b * 2]     = s_lut[byte_val & 0xF];   // W[2j]   <-> act 2j
+                wl[b * 2 + 1] = s_lut[byte_val >> 4];    // W[2j+1] <-> act 2j+1
+            }
+
+            #pragma unroll
+            for (int t = 0; t < MAX_M; t++) {
+                if ((unsigned int)t >= M) continue;
+                const __nv_bfloat16* At = A + (unsigned long long)t * K;
+                uint4 a_lo = ((const uint4*)At)[kk * 2];
+                uint4 a_hi = ((const uint4*)At)[kk * 2 + 1];
+                const unsigned int ar[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                            a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+                // Per-chunk partial in the M=1 kernel's exact FMA order:
+                // TWO separate fmaf per byte, never `part += x*w0 + y*w1`.
+                float part = 0.0f;
+                #pragma unroll
+                for (int b = 0; b < 8; b++) {
+                    float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&ar[b]);
+                    part = fmaf(af.x, wl[b * 2], part);
+                    part = fmaf(af.y, wl[b * 2 + 1], part);
+                }
+                acc[t] = fmaf(scale, part, acc[t]);
+            }
         }
 
-        // Reuse the scaled weights across each activation row.
+        // Threads p and p^1 hold accumulator 0 and 1 of the SAME reference lane
+        // (p/2 + 32*phase); fold them and land the result in virtual-lane order.
+        // p adds acc0+acc1 and p^1 adds acc1+acc0 — the same FP32 value.
         #pragma unroll
         for (int t = 0; t < MAX_M; t++) {
             if ((unsigned int)t >= M) continue;
-            const __nv_bfloat16* At = A + (unsigned long long)t * K;
-            uint4 a_lo = ((const uint4*)At)[k16 * 2];
-            uint4 a_hi = ((const uint4*)At)[k16 * 2 + 1];
-            const unsigned int ar[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
-                                        a_hi.x, a_hi.y, a_hi.z, a_hi.w};
-            #pragma unroll
-            for (int j = 0; j < 8; j++) {
-                __nv_bfloat16 lo, hi;
-                *(unsigned short*)&lo = (unsigned short)(ar[j] & 0xFFFF);
-                *(unsigned short*)&hi = (unsigned short)(ar[j] >> 16);
-                acc[t] += __bfloat162float(lo) * wf[j * 2]
-                        + __bfloat162float(hi) * wf[j * 2 + 1];
+            const float v = acc[t] + __shfl_xor_sync(0xFFFFFFFF, acc[t], 1);
+            if ((lane & 1u) == 0u) {
+                s_vl[t][local_out][phase * WARP_SIZE + (lane >> 1)] = v;
             }
         }
     }
+    __syncthreads();
 
     __shared__ float smem[MAX_M][N_PER_BLOCK * 2];  // 2 warps/output, per row
     const unsigned int warp_in_out = lane / WARP_SIZE;
     #pragma unroll
     for (int t = 0; t < MAX_M; t++) {
         if ((unsigned int)t >= M) continue;
-        float a = acc[t];
+        float a = s_vl[t][local_out][lane];
         #pragma unroll
         for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
             a += __shfl_down_sync(0xFFFFFFFF, a, offset);
@@ -561,6 +564,44 @@ __device__ __forceinline__ void w4a16_gemv_batchm_impl(
             C[(unsigned long long)t * N + n] = __float2bfloat16(r);
         }
     }
+}
+
+// M==2 (K=2 spec verify, and C=2 multi-seq decode: dense_ffn, qwen3 qkv/o_proj).
+// Fixed-M signature (no `M` argument) — kept for its existing call sites.
+//
+// This used to be a hand-written standalone kernel that walked K in 8-value
+// chunks with ONE accumulator per row and the group scale pre-multiplied into
+// each weight. It therefore carried all three divergences documented on
+// `w4a16_gemv_batchm_impl` above and was never byte-identical to 2 x
+// `w4a16_gemv`. Routing it through the (now bit-exact) template fixes it by
+// construction and deletes ~100 lines of duplicated dequant/reduce code. The
+// template also reads 16 K-values per chunk with two chunks in flight, where
+// the old body read 8 with one, so the weight loads get WIDER, not narrower.
+extern "C" __global__ void w4a16_gemv_batch2(
+    const __nv_bfloat16* __restrict__ A,          // [2, K]
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,    // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [2, N]
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<2>(A, B_packed, B_scale, scale2, C, 2u, N, K);
+}
+
+// M==3 (K=3 spec verify, C=3 multi-seq decode, MoE forward_k3). Same story as
+// batch2 above: formerly a standalone body with the same three divergences,
+// plus the fused `acc += x*w_lo + y*w_hi` form verbatim.
+extern "C" __global__ void w4a16_gemv_batch3(
+    const __nv_bfloat16* __restrict__ A,          // [3, K]
+    const unsigned char* __restrict__ B_packed,   // [N, K/2] uint8
+    const unsigned char* __restrict__ B_scale,    // [N, K/GROUP_SIZE] FP8-E4M3
+    const float scale2,
+    __nv_bfloat16* __restrict__ C,                // [3, N]
+    unsigned int N,
+    unsigned int K
+) {
+    w4a16_gemv_batchm_impl<3>(A, B_packed, B_scale, scale2, C, 3u, N, K);
 }
 
 // M<=4 (common-path batched decode) — sibling of w8a16_gemv_batch4.
@@ -582,7 +623,13 @@ extern "C" __global__ void w4a16_gemv_batch4(
 // batch16's acc[16] + smem[16][8] register/smem pressure is halved at
 // MAX_M=8; per-row accumulation order is identical to batch4/batch16
 // (same template, M-guarded), so output is bit-identical at matching M.
-extern "C" __global__ void w4a16_gemv_batch8(
+//
+// The ONE tier that wants a `__launch_bounds__`: free allocation gives it 56
+// registers / 4 CTA per SM, and pinning it to 48 / 5 measured 2.166 ms against
+// 2.261 ms over the gate's M=5..8 legs (6 CTA is worse again, 2.437 ms). It is
+// also the only tier still slower than the pre-fix body (1.969 ms, +10%);
+// batch2/3/4/16/32 are all at or under it.
+extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 5) void w4a16_gemv_batch8(
     const __nv_bfloat16* __restrict__ A,
     const unsigned char* __restrict__ B_packed,
     const unsigned char* __restrict__ B_scale,
@@ -847,6 +894,20 @@ extern "C" __global__ void w4a16_gemv_qkvz(
 // Input:  A[2, K] BF16 (2 token hidden states)
 // Output: C[2, N] BF16 (deinterleaved: C[0] = [Q0|G0], C[1] = [Q1|G1])
 //
+// FIFTH FAMILY, now fixed. The reference here is `w4a16_gemv_qg` (M=1), NOT
+// `w4a16_gemv` — qg/qkvz have their own k8=lane chunking and pre-multiplied
+// scale. Against that reference all four fused batched variants
+// (`w4a16_gemv_qg_batch2`, `w4a16_gemv_dual_batch2`, `w4a16_gemv_qg_batch3`,
+// `w4a16_gemv_dual_batch3`) diverged in exactly ONE way, defect 3 from the
+// `w4a16_gemv_batchm_impl` note above: they computed
+// `acc += x*w_lo + y*w_hi` where `w4a16_gemv_qg`/`w4a16_gemv_qkvz` do two
+// separate `acc +=`. Chunking and scale placement already MATCHED, so the fix
+// is a one-line split per accumulator — no lane remap, no register cost, and
+// `ptxas -v` is unchanged at 40 registers / 6 CTAs per SM for all four.
+// `w4a16_qg_batch_bitparity_microtest.rs` is the standing gate; the `dual`
+// pair is compared against `w4a16_gemv_qg` driven with num_heads=1,
+// head_dim=N, which makes its deinterleave the identity map.
+//
 // Grid: (ceil(N / 4), 1, 1)   Block: (256, 1, 1)
 extern "C" __global__ void w4a16_gemv_qg_batch2(
     const __nv_bfloat16* __restrict__ A,        // [2, K]
@@ -909,12 +970,14 @@ extern "C" __global__ void w4a16_gemv_qg_batch2(
             __nv_bfloat16 a0_lo, a0_hi;
             *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
             *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
-            acc0 += __bfloat162float(a0_lo) * w_lo + __bfloat162float(a0_hi) * w_hi;
+            acc0 += __bfloat162float(a0_lo) * w_lo;
+            acc0 += __bfloat162float(a0_hi) * w_hi;
 
             __nv_bfloat16 a1_lo, a1_hi;
             *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
             *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
-            acc1 += __bfloat162float(a1_lo) * w_lo + __bfloat162float(a1_hi) * w_hi;
+            acc1 += __bfloat162float(a1_lo) * w_lo;
+            acc1 += __bfloat162float(a1_hi) * w_hi;
         }
     }
 
@@ -1030,12 +1093,14 @@ extern "C" __global__ void w4a16_gemv_dual_batch2(
             __nv_bfloat16 a0_lo, a0_hi;
             *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
             *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
-            acc0 += __bfloat162float(a0_lo) * w_lo + __bfloat162float(a0_hi) * w_hi;
+            acc0 += __bfloat162float(a0_lo) * w_lo;
+            acc0 += __bfloat162float(a0_hi) * w_hi;
 
             __nv_bfloat16 a1_lo, a1_hi;
             *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
             *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
-            acc1 += __bfloat162float(a1_lo) * w_lo + __bfloat162float(a1_hi) * w_hi;
+            acc1 += __bfloat162float(a1_lo) * w_lo;
+            acc1 += __bfloat162float(a1_hi) * w_hi;
         }
     }
 
@@ -1075,110 +1140,10 @@ extern "C" __global__ void w4a16_gemv_dual_batch2(
 // Extra cost: 3x activation reads (K*2 bytes per vector, fits in L1/L2).
 //
 // Grid: (ceil(N / 4), 1, 1)   Block: (256, 1, 1)
-extern "C" __global__ void w4a16_gemv_batch3(
-    const __nv_bfloat16* __restrict__ A,        // [3, K]
-    const unsigned char* __restrict__ B_packed,  // [N, K/2] uint8
-    const unsigned char* __restrict__ B_scale,   // [N, K/GROUP_SIZE] FP8-E4M3
-    const float scale2,
-    __nv_bfloat16* __restrict__ C,               // [3, N]
-    unsigned int N,
-    unsigned int K
-) {
-    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
-    const unsigned int local_out = threadIdx.x / threads_per_out;
-    const unsigned int lane = threadIdx.x % threads_per_out;
-
-    const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
-    if (n >= N) return;
-
-    const unsigned int half_K = K / 2;
-    const unsigned int num_groups = K / GROUP_SIZE;
-    const unsigned int K8 = K / 8;
-
-    const __nv_bfloat16* __restrict__ A1 = A + K;
-    const __nv_bfloat16* __restrict__ A2 = A + 2 * K;
-    __nv_bfloat16* __restrict__ C1 = C + N;
-    __nv_bfloat16* __restrict__ C2 = C + 2 * N;
-
-    __shared__ float s_lut[16];
-    __shared__ float smem[N_PER_BLOCK * 6];  // 2 warps × 3 accumulators per output
-    if (threadIdx.x < 16) s_lut[threadIdx.x] = E2M1_LUT[threadIdx.x];
-    __syncthreads();
-
-    float acc0 = 0.0f;
-    float acc1 = 0.0f;
-    float acc2 = 0.0f;
-
-    for (unsigned int k8 = lane; k8 < K8; k8 += threads_per_out) {
-        const unsigned int base_k = k8 * 8;
-
-        uint4 a0_data = ((const uint4*)A)[k8];
-        uint4 a1_data = ((const uint4*)A1)[k8];
-        uint4 a2_data = ((const uint4*)A2)[k8];
-        const unsigned int a0_raw[4] = {a0_data.x, a0_data.y, a0_data.z, a0_data.w};
-        const unsigned int a1_raw[4] = {a1_data.x, a1_data.y, a1_data.z, a1_data.w};
-        const unsigned int a2_raw[4] = {a2_data.x, a2_data.y, a2_data.z, a2_data.w};
-
-        unsigned int packed4 = *(const unsigned int*)(B_packed + (unsigned long long)n * half_K + k8 * 4);
-
-        unsigned int scale_group = base_k / GROUP_SIZE;
-        unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        __nv_fp8_e4m3 fp8;
-        *(unsigned char*)&fp8 = scale_byte;
-#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-        float scale = scl_fp8(scale_byte) * scale2;
-#else
-        float scale = (float)fp8 * scale2;
-#endif
-
-        #pragma unroll
-        for (int b = 0; b < 4; b++) {
-            unsigned char byte_val = (packed4 >> (b * 8)) & 0xFF;
-            float w_lo = s_lut[byte_val & 0xF] * scale;
-            float w_hi = s_lut[byte_val >> 4] * scale;
-
-            __nv_bfloat16 a0_lo, a0_hi;
-            *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
-            *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
-            acc0 += __bfloat162float(a0_lo) * w_lo + __bfloat162float(a0_hi) * w_hi;
-
-            __nv_bfloat16 a1_lo, a1_hi;
-            *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
-            *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
-            acc1 += __bfloat162float(a1_lo) * w_lo + __bfloat162float(a1_hi) * w_hi;
-
-            __nv_bfloat16 a2_lo, a2_hi;
-            *(unsigned short*)&a2_lo = (unsigned short)(a2_raw[b] & 0xFFFF);
-            *(unsigned short*)&a2_hi = (unsigned short)(a2_raw[b] >> 16);
-            acc2 += __bfloat162float(a2_lo) * w_lo + __bfloat162float(a2_hi) * w_hi;
-        }
-    }
-
-    const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
-    #pragma unroll
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-        acc0 += __shfl_down_sync(0xFFFFFFFF, acc0, offset);
-        acc1 += __shfl_down_sync(0xFFFFFFFF, acc1, offset);
-        acc2 += __shfl_down_sync(0xFFFFFFFF, acc2, offset);
-    }
-
-    if (warp_lane == 0) {
-        unsigned int warp_idx = lane / WARP_SIZE;
-        smem[local_out * 6 + warp_idx * 3]     = acc0;
-        smem[local_out * 6 + warp_idx * 3 + 1] = acc1;
-        smem[local_out * 6 + warp_idx * 3 + 2] = acc2;
-    }
-    __syncthreads();
-
-    if (lane == 0) {
-        float result0 = smem[local_out * 6]     + smem[local_out * 6 + 3];
-        float result1 = smem[local_out * 6 + 1] + smem[local_out * 6 + 4];
-        float result2 = smem[local_out * 6 + 2] + smem[local_out * 6 + 5];
-        C[n]  = __float2bfloat16(result0);
-        C1[n] = __float2bfloat16(result1);
-        C2[n] = __float2bfloat16(result2);
-    }
-}
+// `w4a16_gemv_batch3` is defined above, next to batch4/8/16/32, because it is
+// now a thin instantiation of the shared `w4a16_gemv_batchm_impl` template.
+// Its former standalone body carried the same three bit-parity divergences
+// from `w4a16_gemv` documented on that template — see the note there.
 
 // ============================================================
 // W4A16 GEMV batch3 with inline Q/Gate deinterleave
@@ -1257,17 +1222,20 @@ extern "C" __global__ void w4a16_gemv_qg_batch3(
             __nv_bfloat16 a0_lo, a0_hi;
             *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
             *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
-            acc0 += __bfloat162float(a0_lo) * w_lo + __bfloat162float(a0_hi) * w_hi;
+            acc0 += __bfloat162float(a0_lo) * w_lo;
+            acc0 += __bfloat162float(a0_hi) * w_hi;
 
             __nv_bfloat16 a1_lo, a1_hi;
             *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
             *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
-            acc1 += __bfloat162float(a1_lo) * w_lo + __bfloat162float(a1_hi) * w_hi;
+            acc1 += __bfloat162float(a1_lo) * w_lo;
+            acc1 += __bfloat162float(a1_hi) * w_hi;
 
             __nv_bfloat16 a2_lo, a2_hi;
             *(unsigned short*)&a2_lo = (unsigned short)(a2_raw[b] & 0xFFFF);
             *(unsigned short*)&a2_hi = (unsigned short)(a2_raw[b] >> 16);
-            acc2 += __bfloat162float(a2_lo) * w_lo + __bfloat162float(a2_hi) * w_hi;
+            acc2 += __bfloat162float(a2_lo) * w_lo;
+            acc2 += __bfloat162float(a2_hi) * w_hi;
         }
     }
 
@@ -1390,17 +1358,20 @@ extern "C" __global__ void w4a16_gemv_dual_batch3(
             __nv_bfloat16 a0_lo, a0_hi;
             *(unsigned short*)&a0_lo = (unsigned short)(a0_raw[b] & 0xFFFF);
             *(unsigned short*)&a0_hi = (unsigned short)(a0_raw[b] >> 16);
-            acc0 += __bfloat162float(a0_lo) * w_lo + __bfloat162float(a0_hi) * w_hi;
+            acc0 += __bfloat162float(a0_lo) * w_lo;
+            acc0 += __bfloat162float(a0_hi) * w_hi;
 
             __nv_bfloat16 a1_lo, a1_hi;
             *(unsigned short*)&a1_lo = (unsigned short)(a1_raw[b] & 0xFFFF);
             *(unsigned short*)&a1_hi = (unsigned short)(a1_raw[b] >> 16);
-            acc1 += __bfloat162float(a1_lo) * w_lo + __bfloat162float(a1_hi) * w_hi;
+            acc1 += __bfloat162float(a1_lo) * w_lo;
+            acc1 += __bfloat162float(a1_hi) * w_hi;
 
             __nv_bfloat16 a2_lo, a2_hi;
             *(unsigned short*)&a2_lo = (unsigned short)(a2_raw[b] & 0xFFFF);
             *(unsigned short*)&a2_hi = (unsigned short)(a2_raw[b] >> 16);
-            acc2 += __bfloat162float(a2_lo) * w_lo + __bfloat162float(a2_hi) * w_hi;
+            acc2 += __bfloat162float(a2_lo) * w_lo;
+            acc2 += __bfloat162float(a2_hi) * w_hi;
         }
     }
 
