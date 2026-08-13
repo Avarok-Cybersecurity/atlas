@@ -12,5 +12,8 @@ header:
     - 'vendor/**'
     # Vendored llama.cpp/ggml CUDA MMQ sources (MIT-licensed upstream);
     # third-party material keeps its original license — never stamp AGPL here.
-    - 'kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/**'
+    # Path-independent: this PR promoted the vendored tree from
+    # `qwen3.6-27b/nvfp4/` to `common/` so every model can compile it, and
+    # a hard-coded path silently un-exempts it on the next such move.
+    - 'kernels/**/q4k_vendor/**'
   comment: on-failure
