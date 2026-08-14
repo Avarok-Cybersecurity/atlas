@@ -156,3 +156,19 @@ fn ptx_for_model_lookup() {
         "ptx_for_model('qwen3-next-80b') should find the default target"
     );
 }
+
+#[test]
+fn behavior_default_prose_budget_matches_shared_constant() {
+    // #328: `ModelBehavior::default()` sat at 384 for a month after P2-1
+    // raised the intended default to 3072 in spark-server — production
+    // resolves the budget from THIS struct, so every model without an
+    // explicit MODEL.toml pin kept truncating agent narration at 384
+    // tokens. The default must come from the shared constant (also
+    // `include!`d by the build script) and stay plan-sized.
+    let b = ModelBehavior::default();
+    assert_eq!(b.max_inter_tool_prose, DEFAULT_MAX_INTER_TOOL_PROSE);
+    assert!(
+        b.max_inter_tool_prose >= 2048,
+        "inter-tool prose budget default must fit a plan/analysis turn"
+    );
+}
