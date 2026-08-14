@@ -771,9 +771,23 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub fast_load_prefetch_shards: bool,
 
-    /// Cap decoded vision input area before patching. 0 preserves the
-    /// model/default image preprocessor cap. Also settable with
-    /// `ATLAS_VISION_MAX_PIXELS`.
+    /// Vision input AREA bound in pixels, applied before patching. Overrides
+    /// the checkpoint in BOTH directions — it may raise the bound as well as
+    /// lower it.
+    ///
+    /// 0 (the default) means "use the checkpoint's own bound", read from
+    /// `preprocessor_config.json` (`size.longest_edge`, or `max_pixels`;
+    /// despite the name both are pixel COUNTS). When the checkpoint declares
+    /// none, the preprocessor falls back to clamping the long side to 1280px.
+    ///
+    /// Until 2026-08-14 this flag could only ever LOWER the resolution: the
+    /// 1280px clamp was unconditional and the checkpoint's own bound was
+    /// never read, so a model built for 4096² was served at roughly a tenth
+    /// of its permitted area with nothing logged. Raising this raises the
+    /// vision token count per image quadratically — a 4096² image is ~16k
+    /// merged tokens — so it is charged against the context budget.
+    ///
+    /// Also settable with `ATLAS_VISION_MAX_PIXELS`.
     #[arg(long, default_value_t = 0)]
     pub vision_max_pixels: usize,
 

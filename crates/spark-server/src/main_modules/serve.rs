@@ -258,21 +258,62 @@ pub(super) fn build_auth_config(
     Ok(Some(Arc::new(cfg)))
 }
 
-pub(super) fn resolve_vision_max_pixels(args: &cli::ServeArgs) -> Result<Option<usize>> {
+/// Resolve the vision area bound: operator override, else the checkpoint's
+/// own `preprocessor_config.json`, else `None` (preprocessor falls back to
+/// its historical 1280px long-side clamp).
+///
+/// The checkpoint half is the point. `preprocessor_config.json` was in the
+/// download plan but nothing ever parsed it, so a model declaring
+/// `size = {longest_edge: 16777216}` — 4096² of permitted area — was still
+/// clamped to 1280 on the long side, about a tenth of that. The operator flag
+/// existed but only ever LOWERED the cap, so there was no way to serve a
+/// checkpoint at the resolution it was built for.
+pub(super) fn resolve_vision_max_pixels(
+    args: &cli::ServeArgs,
+    model_dir: &std::path::Path,
+) -> Result<Option<usize>> {
     if args.vision_max_pixels > 0 {
         return Ok(Some(args.vision_max_pixels));
     }
-    let Some(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS").ok() else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "0" {
-        return Ok(None);
+    if let Ok(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && trimmed != "0" {
+            let parsed = trimmed.parse::<usize>().with_context(|| {
+                format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
+            })?;
+            if parsed > 0 {
+                return Ok(Some(parsed));
+            }
+        }
     }
-    let parsed = trimmed.parse::<usize>().with_context(|| {
-        format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
-    })?;
-    Ok((parsed > 0).then_some(parsed))
+    Ok(read_preprocessor_max_pixels(model_dir))
+}
+
+/// Pull the area bound out of `preprocessor_config.json`, if the checkpoint
+/// ships one. `None` on any absence or malformation — a model without the
+/// file, or with one we cannot read, must keep the historical behaviour
+/// rather than fail to serve.
+///
+/// Two spellings are accepted. HF's Qwen2VL/Qwen3VL processors write
+/// `size = {longest_edge, shortest_edge}`, where — despite the names — both
+/// are pixel COUNTS, not edge lengths (Qwen3.8-27B: 16777216 = 4096²,
+/// 65536 = 256²). Older/other processors write `max_pixels` directly.
+pub(super) fn read_preprocessor_max_pixels(model_dir: &std::path::Path) -> Option<usize> {
+    let path = model_dir.join("preprocessor_config.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let from_size = json
+        .get("size")
+        .and_then(|s| s.get("longest_edge"))
+        .and_then(serde_json::Value::as_u64);
+    let direct = json.get("max_pixels").and_then(serde_json::Value::as_u64);
+    let px = from_size.or(direct).filter(|&p| p > 0)? as usize;
+    tracing::info!(
+        "Vision area bound {} px from {} (was: hard-coded 1280px long side)",
+        px,
+        path.display()
+    );
+    Some(px)
 }
 
 /// QV1 (2026-05-26): canonicalize the model's declared quantization to

@@ -857,9 +857,20 @@ pub(crate) fn load_model(
     } = carried;
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
-    let vision_max_pixels = resolve_vision_max_pixels(&args)?;
-    if let Some(max_pixels) = vision_max_pixels {
-        tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
+    let vision_max_pixels = resolve_vision_max_pixels(&args, &model_dir)?;
+    match vision_max_pixels {
+        Some(max_pixels) => tracing::info!(
+            "Vision area bound: {} px ({})",
+            max_pixels,
+            if args.vision_max_pixels > 0 {
+                "--vision-max-pixels"
+            } else {
+                "checkpoint preprocessor_config.json / ATLAS_VISION_MAX_PIXELS"
+            }
+        ),
+        None => tracing::info!(
+            "Vision area bound: none declared — falling back to the 1280px long-side clamp"
+        ),
     }
     // #27: build the STAGEABLE registry (name -> {peer_stage_id, peft}). The peer
     // WeightManifest carries no r/alpha, so the peft scaling is parsed from each
