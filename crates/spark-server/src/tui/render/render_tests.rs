@@ -82,11 +82,22 @@ fn every_benchmarks_view_renders_at_every_size() {
 fn the_suite_list_shows_the_benchmarks_and_their_provenance() {
     let mut a = app();
     a.section = Section::Benchmarks;
-    let out = render(&a, 160, 48);
-    for descriptor in atlas_plugin::registry::all() {
+    // The list SCROLLS: it holds `inner.height / ROWS_PER_ENTRY` entries, so
+    // about eleven at this size, and the window follows the cursor. Once the
+    // registry outgrew one screenful no single frame could hold every name --
+    // this test used to render one frame and so began failing on the run that
+    // registered an eleventh benchmark, reporting a missing name for one that
+    // renders perfectly well a keypress away. Walk the cursor the way an
+    // operator does instead, which is also the stronger claim: every entry is
+    // REACHABLE, not merely present in the registry.
+    for (i, descriptor) in atlas_plugin::registry::all().iter().enumerate() {
+        a.bench.select(i);
+        let out = render(&a, 160, 48);
         // Names can wrap at narrow widths; at 160 columns they must be intact.
         assert!(out.contains(descriptor.name), "missing {}", descriptor.name);
     }
+    a.bench.select(0);
+    let out = render(&a, 160, 48);
     assert!(out.contains("OFFICIAL"), "first-party badge is missing");
     assert!(out.contains("Avarok"), "author is missing");
 }

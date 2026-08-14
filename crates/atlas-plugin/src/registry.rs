@@ -18,8 +18,10 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
     &contamination::DESCRIPTOR,
-    // Cheap and endpoint-only. NOT in gate/required_tests.rs — registered so
-    // it is runnable and can become a gate later, gating nothing today.
+    // Cheap and endpoint-only, and REQUIRED on the vision targets — the
+    // per-model constraint lives in BENCH.toml, since gate coverage is
+    // path-based and has no per-model dimension. A text-only target has no
+    // entry and the gate does not apply to it.
     &vision::DESCRIPTOR,
     // Cheaper than the agentic gate (~10 min vs ~17 min) and catches a
     // class the agentic run only surfaces by accident, so it is listed
