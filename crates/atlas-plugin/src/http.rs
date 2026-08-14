@@ -337,13 +337,18 @@ async fn post_json(target: &TargetEndpoint, path: &str, body: &Value) -> Result<
         if let Some(items) = v["output"].as_array() {
             for item in items {
                 // `content[].text` is the answer; `summary[].text` is the
-                // reasoning. BOTH are collected because this surface does not
-                // currently honour `chat_template_kwargs.enable_thinking`, so
-                // on a thinking-first checkpoint the entire reply arrives as
-                // reasoning and `output_text` is empty. A reader that took
-                // only the answer would report "the Responses API cannot see
-                // images" for a model that plainly can — measured 2026-08-14,
-                // where the reasoning read "I see..." while output_text was "".
+                // reasoning. BOTH are collected, because on a thinking-first
+                // checkpoint the whole reply can arrive as reasoning with an
+                // empty `output_text` — measured 2026-08-14, where the summary
+                // read "I see..." while the answer was "". A reader taking only
+                // the answer would report "the Responses API cannot see images"
+                // for a model that plainly can.
+                //
+                // The lever is `reasoning.effort`, which IS the OpenAI-standard
+                // control and IS honored here. `chat_template_kwargs` is
+                // dropped by the Responses lowering, so the vLLM-style
+                // thinking-off switch the chat-completions path uses has no
+                // effect on this surface.
                 for key in ["content", "summary"] {
                     if let Some(parts) = item[key].as_array() {
                         for part in parts {

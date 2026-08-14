@@ -473,13 +473,22 @@ pub fn responses_image_request(model: &str, mime: &str, bytes: &[u8], prompt: &s
         "model": model,
         "stream": false,
         "temperature": 0.0,
-        // Generous, and thinking OFF. Without the kwarg the model spends the
-        // whole budget reasoning and returns an EMPTY output_text — which
-        // reads as "the Responses surface cannot see images" and is nothing
-        // of the sort. Cost me a false failure before the reasoning trace
-        // showed it describing the picture perfectly well.
+        // `reasoning.effort` is the OPENAI-STANDARD control for this surface,
+        // and Atlas honors it (responses_lowering passes `reasoning` through
+        // and `client_reasoning_effort` reads it). `chat_template_kwargs` —
+        // the vLLM extension the chat-completions legs use — is explicitly
+        // dropped by that lowering, so the standard field is the right lever
+        // here and sending the extension would test a path that does not
+        // exist.
+        //
+        // "low", not "none": `"none"` maps to *unspecified* rather than off,
+        // so it falls back to the model's own default. The budget stays
+        // generous regardless — on a thinking-first checkpoint the reply can
+        // arrive as REASONING with an empty `output_text`, and a small budget
+        // truncates it mid-thought, which reads as "this surface cannot see
+        // images" and is nothing of the sort.
         "max_output_tokens": 600,
-        "chat_template_kwargs": {"enable_thinking": false},
+        "reasoning": {"effort": "low"},
         "input": [{"role": "user", "content": [
             {"type": "input_image", "image_url": {"url": uri}},
             {"type": "input_text", "text": prompt},

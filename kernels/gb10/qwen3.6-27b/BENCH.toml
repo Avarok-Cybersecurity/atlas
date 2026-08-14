@@ -248,3 +248,45 @@ min = 3.0
 
 [benchmarks.metrics.control_held]
 min = 1.0
+
+# --- video-fidelity --------------------------------------------------------
+# The second video target, added after a measured run rather than by analogy
+# with qwen3.8-27b. See that target's entry for what each leg asserts and why
+# the reversed clip is the one that matters.
+#
+# ★ REQUIRES FFMPEG for every container except GIF; legs needing it SKIP
+# rather than fail, so a runner without it degrades to the GIF subset instead
+# of going red.
+#
+# NOT declared on qwen3.6-35b-a3b, and that is a MEASUREMENT, not an
+# oversight: on 2026-08-14 the 35B scored 12/13, failing `video-before-image`
+# with [yellow, green, blue] where [red, green, blue, yellow] was expected —
+# it read the clip correctly in every other arrangement, including the
+# reversed pair and two clips in one request. Whether that is a model-capacity
+# limit on the A3B MoE or an ordering defect that only surfaces there is
+# unresolved, and gating it before that is answered would either block honest
+# work or bake in a lowered floor.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "video-fidelity"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+label = "Qwen3.6-27B dense (NVFP4, unsloth)"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \
+skipped, control held. Confirms video is not specific to the Qwen3.8 checkpoint — all \
+three vision targets declare <|video_pad|> 248057 and share the Qwen3-VL temporal \
+geometry, and this one decodes, groups and orders a clip identically. `default = \
+false`: qwen3.8-27b owns this gate's default serve."""
+
+[benchmarks.metrics.legs_passed]
+min = 13.0
+
+[benchmarks.metrics.legs_skipped]
+max = 0.0
+
+[benchmarks.metrics.control_held]
+min = 1.0
