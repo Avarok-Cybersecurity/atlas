@@ -188,6 +188,12 @@ fn chat_template_kwargs_channel() {
             .expect("should parse");
     assert_eq!(kw.enable_thinking, Some(true));
     assert_eq!(kw.thinking_budget, Some(1024));
+    // preserve_thinking is tri-state: absent must stay None (template
+    // default), never a fabricated bool.
+    assert_eq!(kw.preserve_thinking, None);
+    let kw: ChatTemplateKwargs =
+        serde_json::from_str(r#"{"preserve_thinking":false}"#).expect("should parse");
+    assert_eq!(kw.preserve_thinking, Some(false));
 
     // Budget rung wins over the enable flag.
     let mut b = base_body();
@@ -256,5 +262,46 @@ fn legacy_enable_thinking_channel() {
     assert_eq!(
         chat_req(b).client_thinking_directive(),
         ThinkingDirective::Unspecified
+    );
+}
+
+#[test]
+fn preserve_thinking_lowers_to_ir_tri_state() {
+    // Per-request chat_template_kwargs.preserve_thinking reaches the IR
+    // envelope; a silent client stays None so the MODEL.toml
+    // [behavior].preserve_thinking override (then the template default)
+    // applies downstream in api/chat/prepare.rs.
+    let mut b = base_body();
+    b["chat_template_kwargs"] = serde_json::json!({"preserve_thinking": true});
+    let ir: crate::ir::ChatRequest = chat_req(b).into();
+    assert_eq!(ir.preserve_thinking, Some(true));
+
+    let mut b = base_body();
+    b["chat_template_kwargs"] = serde_json::json!({"preserve_thinking": false});
+    let ir: crate::ir::ChatRequest = chat_req(b).into();
+    assert_eq!(ir.preserve_thinking, Some(false));
+
+    let ir: crate::ir::ChatRequest = chat_req(base_body()).into();
+    assert_eq!(ir.preserve_thinking, None);
+}
+
+#[test]
+fn reasoning_effort_strings_render_template_safe() {
+    // The as_str spellings are consumed by template validators:
+    // Qwen3.8 accepts only xhigh/medium/low after remapping high->xhigh,
+    // so Max MUST NOT surface as "max" (the template raises and the
+    // request 400s). "medium" keeps its own level instead of demoting to
+    // low (different Qwen3.8 instruction bytes).
+    use crate::ir::ReasoningEffort;
+    assert_eq!(ReasoningEffort::Max.as_str(), "xhigh");
+    assert_eq!(ReasoningEffort::Medium.as_str(), "medium");
+    assert_eq!(ReasoningEffort::High.as_str(), "high");
+    assert_eq!(ReasoningEffort::Low.as_str(), "low");
+
+    let mut b = base_body();
+    b["reasoning_effort"] = serde_json::json!("medium");
+    assert_eq!(
+        chat_req(b).client_reasoning_effort(),
+        Some(ReasoningEffort::Medium)
     );
 }

@@ -293,6 +293,17 @@ pub struct ModelBehavior {
     /// specific model is known to ALWAYS get tool args right on the
     /// first attempt (extra inference round-trip cost is wasted there).
     pub tool_retry: bool,
+    /// Jinja `preserve_thinking` chat-template flag (Qwen3.6+ dense family):
+    /// keep historical `<think>` blocks in re-rendered assistant turns
+    /// instead of stripping them before the last user query.
+    ///
+    /// Tri-state on purpose (SSOT): `None` = do NOT inject the variable —
+    /// the model's own template default applies (Qwen3.6 strips unless
+    /// `preserve_thinking` is true; Qwen3.8 KEEPS unless it is explicitly
+    /// false). `Some(_)` pins the value for this target, changing
+    /// multi-turn prompt bytes and therefore prefix-cache hit rate.
+    /// Per-request `chat_template_kwargs.preserve_thinking` still wins.
+    pub preserve_thinking: Option<bool>,
 }
 
 /// Phase-C: maximum number of watchdog-triggered rollbacks a single
@@ -349,6 +360,7 @@ impl Default for ModelBehavior {
             rollback_resteer: true,
             rom_head: "",
             tool_retry: true,
+            preserve_thinking: None,
         }
     }
 }

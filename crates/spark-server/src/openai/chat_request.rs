@@ -286,6 +286,11 @@ pub struct ReasoningConfig {
 pub struct ChatTemplateKwargs {
     pub enable_thinking: Option<bool>,
     pub thinking_budget: Option<u32>,
+    /// Qwen3.6+ dense-family template flag: keep historical `<think>`
+    /// blocks in re-rendered assistant turns. Absent = defer to the
+    /// MODEL.toml `[behavior].preserve_thinking` override, then to the
+    /// model template's own default.
+    pub preserve_thinking: Option<bool>,
 }
 
 /// Default thinking budget when thinking is enabled but no explicit budget set.
@@ -304,7 +309,8 @@ impl ChatCompletionRequest {
     pub fn client_reasoning_effort(&self) -> Option<crate::ir::ReasoningEffort> {
         match self.requested_reasoning_effort()? {
             "none" => None,
-            "minimal" | "low" | "medium" => Some(crate::ir::ReasoningEffort::Low),
+            "minimal" | "low" => Some(crate::ir::ReasoningEffort::Low),
+            "medium" => Some(crate::ir::ReasoningEffort::Medium),
             "high" => Some(crate::ir::ReasoningEffort::High),
             "xhigh" | "max" => Some(crate::ir::ReasoningEffort::Max),
             _ => None,

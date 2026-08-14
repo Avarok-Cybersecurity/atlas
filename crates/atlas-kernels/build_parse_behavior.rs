@@ -63,6 +63,10 @@ pub(crate) struct ParsedBehavior {
     pub rollback_resteer: bool,
     pub rom_head: String,
     pub tool_retry: bool,
+    /// Tri-state `preserve_thinking` chat-template flag. `None` (key absent)
+    /// = do not inject the Jinja variable; the model template's own default
+    /// applies. See `ModelBehavior::preserve_thinking`.
+    pub preserve_thinking: Option<bool>,
 }
 
 impl Default for ParsedBehavior {
@@ -96,6 +100,7 @@ impl Default for ParsedBehavior {
             rollback_resteer: true,
             rom_head: String::new(),
             tool_retry: true,
+            preserve_thinking: None,
         }
     }
 }
@@ -243,6 +248,10 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    // Tri-state: absent key stays `None` (template default), no unwrap_or.
+    let preserve_thinking = b
+        .and_then(|v| v.get("preserve_thinking"))
+        .and_then(|v| v.as_bool());
     ParsedBehavior {
         thinking_in_tools,
         max_thinking_budget,
@@ -272,5 +281,6 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         rollback_resteer,
         rom_head,
         tool_retry,
+        preserve_thinking,
     }
 }

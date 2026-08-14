@@ -42,6 +42,13 @@ pub struct ChatRequest {
     /// Qualitative reasoning effort retained separately from the token budget.
     /// DeepSeek-V4 uses this to select its checkpoint-native prompt prefix.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Per-request `chat_template_kwargs.preserve_thinking` (Qwen3.6+ dense
+    /// templates): keep historical `<think>` blocks when re-rendering
+    /// assistant turns. `None` = client silent — the MODEL.toml
+    /// `[behavior].preserve_thinking` override applies, and when that too is
+    /// unset the variable is left undefined so the model template's own
+    /// default rules (see `tokenizer/chat_impl.rs`).
+    pub preserve_thinking: Option<bool>,
     /// Per-request token-loop detector override.
     pub repetition_detection: Option<crate::api::inference_types::RepetitionDetectionParams>,
     /// M2 per-request LoRA routing: optional resident adapter NAME for
@@ -134,16 +141,28 @@ pub enum ThinkingDirective {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningEffort {
     Low,
+    Medium,
     High,
     Max,
 }
 
 impl ReasoningEffort {
+    /// The string handed to chat templates (Jinja `reasoning_effort`) and
+    /// the DeepSeek-V4 native encoder. Every spelling here must be accepted
+    /// by every consumer that validates the value:
+    /// - Qwen3.8 template: `('xhigh', 'medium', 'low')` after remapping
+    ///   'high'→'xhigh' — so `Max` MUST render as "xhigh", not "max"
+    ///   (the template raises on "max" and the request 400s).
+    /// - DeepSeek-V4 `ReasoningEffort::parse`: accepts all four.
+    /// - Mistral template: `['none', 'high']` — it rejected "low"/"max"
+    ///   before this mapping and rejects "low"/"medium"/"xhigh" after
+    ///   (unchanged behavior; "high" and thinking-off "none" still pass).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
+            Self::Medium => "medium",
             Self::High => "high",
-            Self::Max => "max",
+            Self::Max => "xhigh",
         }
     }
 }
