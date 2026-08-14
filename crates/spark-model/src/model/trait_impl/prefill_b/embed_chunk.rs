@@ -138,7 +138,7 @@ impl TransformerModel {
                 // EITHER pad token. Matching only the image one meant a
                 // video's positions were skipped entirely — no encoder row was
                 // copied over them, the hidden state kept the raw token
-                // embedding, and the model described a featureless grey field
+                // embedding, and the model described a featureless gray field
                 // while every token count looked correct.
                 let (image_pad, video_pad) = self.vision_pad_ids();
                 // Co-dispatch: this request's slice starts at vision_row_base

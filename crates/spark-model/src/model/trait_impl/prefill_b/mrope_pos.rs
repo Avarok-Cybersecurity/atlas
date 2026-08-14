@@ -23,9 +23,9 @@
 /// rule that preceded this: `base + g` collapses to `base`, and the advance
 /// to `max(gh, gw)`.
 ///
-/// Both pad tokens are recognised. They are consumed identically — the item's
+/// Both pad tokens are recognized. They are consumed identically — the item's
 /// own `t_len` already says whether it is a still or a clip — but a video run
-/// whose token went unrecognised would be walked one text token at a time,
+/// whose token went unrecognized would be walked one text token at a time,
 /// handing each of its thousands of pad positions a distinct index and
 /// shifting every token after it.
 #[allow(clippy::too_many_arguments)]

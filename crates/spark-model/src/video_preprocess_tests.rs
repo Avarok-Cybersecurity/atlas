@@ -137,7 +137,7 @@ fn one_frame_cannot_make_a_group_at_tp2() {
 
 // ── decode + grouping, against a real generated GIF ──────────────────────
 
-/// Build an animated GIF of `n` solid-colour frames at `size`x`size`.
+/// Build an animated GIF of `n` solid-color frames at `size`x`size`.
 fn make_gif(n: u16, size: u16) -> String {
     use image::codecs::gif::GifEncoder;
     use image::{Delay, Frame, RgbaImage};
@@ -145,7 +145,7 @@ fn make_gif(n: u16, size: u16) -> String {
     {
         let mut enc = GifEncoder::new(&mut buf);
         for i in 0..n {
-            // Distinct colour per frame so a frame-ordering bug is visible in
+            // Distinct color per frame so a frame-ordering bug is visible in
             // the pixel data rather than invisible.
             let v = (20 + (i as u32 * 37) % 200) as u8;
             let img = RgbaImage::from_pixel(

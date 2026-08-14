@@ -455,7 +455,15 @@ pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
     },
 ];
 
-pub const NOT_REQUIRED: [(&str, &str); 4] = [
+pub const NOT_REQUIRED: [(&str, &str); 5] = [
+    (
+        "video-fidelity",
+        "not required YET: the benchmark landed with the video support it tests and has no \
+         reference run on any target, so there is nothing to ratchet against. It also needs \
+         ffmpeg for every container except GIF, which is an opt-in deployment choice — \
+         requiring it today would fail any runner without the binary for a reason that is not \
+         a defect. Promote once each vision target has a record",
+    ),
     (
         "bfcl-full",
         "the unsampled ~3600-sample draw; the two subset gates cover the same code at a \

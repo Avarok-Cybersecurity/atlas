@@ -122,7 +122,7 @@ impl TransformerModel {
                 let grids = self.vision_image_grids.lock().clone();
                 // Both pad tokens: consumed identically here — the item's
                 // t_len already says which it is — but the scan has to
-                // recognise both, or a video run would be walked one text
+                // recognize both, or a video run would be walked one text
                 // token at a time.
                 let (pad_id, video_pad_id) = self.vision_pad_ids();
                 let is_pad = |tok: u32| tok == pad_id || tok == video_pad_id;

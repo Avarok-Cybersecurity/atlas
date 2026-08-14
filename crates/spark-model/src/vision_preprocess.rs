@@ -12,7 +12,7 @@ use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 
 /// SigLIP normalization — matches HF's Qwen2VLImageProcessor
 /// (`image_mean = image_std = (0.5, 0.5, 0.5)` → pixels mapped to [-1, 1]).
-/// `pub(crate)` because the video path normalises with the identical stats —
+/// `pub(crate)` because the video path normalizes with the identical stats —
 /// a video frame is not a different kind of pixel, and two copies of these
 /// numbers is two places for them to drift apart.
 pub(crate) const MEAN: [f32; 3] = [0.5, 0.5, 0.5];

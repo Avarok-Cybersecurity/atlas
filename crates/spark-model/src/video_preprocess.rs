@@ -186,7 +186,7 @@ pub fn decode_frames(
 }
 
 /// Best-effort container name for error messages. Cosmetic only — nothing
-/// branches on it — so an unrecognised blob is described as such rather than
+/// branches on it — so an unrecognized blob is described as such rather than
 /// guessed at.
 fn sniff_container(bytes: &[u8], mime: &str) -> String {
     let by_magic = if bytes.len() > 12 && &bytes[4..8] == b"ftyp" {
@@ -201,7 +201,7 @@ fn sniff_container(bytes: &[u8], mime: &str) -> String {
     match (by_magic, mime.is_empty()) {
         (Some(k), _) => k.to_string(),
         (None, false) => format!("a {mime} payload"),
-        (None, true) => "an unrecognised container".to_string(),
+        (None, true) => "an unrecognized container".to_string(),
     }
 }
 

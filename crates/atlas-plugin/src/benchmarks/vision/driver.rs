@@ -63,6 +63,7 @@ enum Phase {
     Calibrate,
     Geometry,
     Probes,
+    Concurrency,
     Control,
     Score,
     Done,
@@ -83,6 +84,7 @@ pub struct VisionFidelity {
     probes: Vec<ProbeCell>,
     control_held: bool,
     cursor: usize,
+    conc_results: Vec<crate::benchmarks::video::concurrency::LevelResult>,
     max_tokens: usize,
     request_timeout_s: u64,
 }
@@ -323,12 +325,67 @@ impl Benchmark for VisionFidelity {
                 self.probes.push(cell);
                 self.cursor += 1;
                 if self.cursor >= PROBES.len() {
-                    self.phase = Phase::Control;
+                    self.cursor = 0;
+                    self.phase = Phase::Concurrency;
                 }
                 Ok(self.frame("probes", vec![line]))
             }
 
             // ── Control, LAST ────────────────────────────────────────────
+            // ── Concurrency: C = 1, 2, 4 of the same image request ───────
+            //
+            // Correctness under concurrency, not throughput. Several requests
+            // share one packed ViT output buffer and one grid vector, indexed
+            // by per-request base offsets, and a mistake there hands one
+            // request another's embeddings — a fluent answer about the wrong
+            // picture, with nothing logged. Identical requests must also agree
+            // on prompt_tokens; two different counts mean the shared buffers
+            // were sliced wrongly. Wall time is recorded, not asserted:
+            // vision prefill serializes today.
+            Phase::Concurrency => {
+                use crate::benchmarks::video::concurrency::{LEVELS, run_level};
+                let level = LEVELS[self.cursor];
+                let (_, png, _, _) = FIXTURES[0];
+                let body = request::body(
+                    &self.handle()?.target().model,
+                    &[png],
+                    "Reply with the single word OK.",
+                    16,
+                );
+                // The reply only has to be non-empty and consistent: the
+                // capability probes above already established the model reads
+                // the image, so this leg is about whether concurrency breaks
+                // that, not about re-proving it.
+                let is_correct = |reply: &str| !reply.trim().is_empty();
+                let r = run_level(self.handle()?, &body, level, self.timeout(), &is_correct).await;
+                let line = if r.ok() {
+                    LogLine::info(format!(
+                        "C={level}: {}/{} returned, one geometry, {} ms",
+                        r.returned, r.conc, r.wall_ms
+                    ))
+                } else {
+                    LogLine::warn(format!(
+                        "C={level}: {}/{} returned, {} distinct token counts, {} ms{}",
+                        r.returned,
+                        r.conc,
+                        r.distinct_token_counts,
+                        r.wall_ms,
+                        if r.errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", r.errors.join("; "))
+                        }
+                    ))
+                };
+                self.conc_results.push(r);
+                self.cursor += 1;
+                if self.cursor >= LEVELS.len() {
+                    self.cursor = 0;
+                    self.phase = Phase::Control;
+                }
+                Ok(self.frame("concurrency", vec![line]))
+            }
+
             Phase::Control => {
                 let cell = self.run_probe(&CONTROL).await;
                 self.control_held = matches!(cell, ProbeCell::Pass { .. });
@@ -397,6 +454,15 @@ impl Benchmark for VisionFidelity {
                     .insert("probes_total".into(), self.probes.len() as f64);
                 r.metrics
                     .insert("control_held".into(), self.control_held as u8 as f64);
+                // Recorded so a run shows how vision behaves under a little
+                // load; NOT thresholded — see the Concurrency phase.
+                let conc_clean = self.conc_results.iter().filter(|r| r.ok()).count();
+                r.metrics
+                    .insert("concurrency_levels_clean".into(), conc_clean as f64);
+                for lr in &self.conc_results {
+                    r.metrics
+                        .insert(format!("conc_{}_wall_ms", lr.conc), lr.wall_ms as f64);
+                }
                 r.verdict = Some(match v {
                     VisionVerdict::Pass => RunVerdict::pass(format!(
                         "{asserted} geometry cells matched, {passed}/{} probes, control held",
