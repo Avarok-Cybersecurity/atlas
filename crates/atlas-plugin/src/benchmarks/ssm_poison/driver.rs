@@ -86,6 +86,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // defined on the flagship — same footing as the contamination detector,
     // which runs anywhere, with its baseline measured on one checkpoint.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(SsmPoison::default()),
 };
 

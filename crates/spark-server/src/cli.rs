@@ -5,7 +5,9 @@
 use clap::Parser;
 
 mod bench_args;
+mod bench_gate_check;
 mod bench_print;
+mod bench_resolve;
 pub mod bench_run;
 mod bench_selfstart;
 pub(crate) mod flag_values;

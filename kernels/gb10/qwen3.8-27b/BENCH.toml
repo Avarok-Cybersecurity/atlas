@@ -1,0 +1,82 @@
+# Benchmarks for this model, and the thresholds its gate records must meet.
+#
+# Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path and cannot disagree with the
+# contents. Read by `atlas_plugin::gate::bench`.
+#
+# ★ This file may land BEFORE the model's MODEL.toml/kernels do (they arrive in
+# a sibling change adding the qwen3.8-27b kernel target via a `kernel_source`
+# redirect to qwen3.6-27b). `gate::bench::bench_files` discovers BENCH.toml by
+# path alone for exactly this reason — the gate definition does not wait on the
+# compiled target.
+#
+# Thresholds are per CHECKPOINT, not per model: two checkpoints of one model
+# can differ by several BFCL points, so they cannot share a bar.
+#
+# This file is deliberately OUTSIDE the closure hash (`taxon::configs` does not
+# list it), so ratcheting a threshold does not invalidate the record that
+# justified the ratchet.
+#
+# `status = "unmeasured"` entries carry NO [benchmarks.metrics] table. Absence
+# is the TODO -- a guessed threshold a run could clear would report PASS for
+# something nobody measured.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "agentic-webserver"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+# NOT the default: the required Gate A subject stays the 35B MoE flagship
+# (qwen3.6-35b-a3b/BENCH.toml), whose recorded history is untouched. This
+# variant runs via `--checkpoint unsloth/Qwen3.8-27B-NVFP4`, or from the TUI's
+# variant list.
+default = false
+status = "measured"
+note = """\
+The DENSE variant of the agentic gate. Not comparable to the 35B MoE entry in \
+any direction: a dense 27B activates every parameter per token where the 35B \
+MoE activates ~3B, so its wall band is roughly 2x — which is why this is a \
+separate baseline entry with its own ceiling rather than a shared bar. \
+REFERENCE RUN (the definition of these numbers): 2026-08-14, dgx2, binary main \
+680b3a568, N=10 — webserver_ok 10/10, followed_directions 10/10, Sigma-wall \
+1925.1 s, per-run walls 156.0/187.3/274.2/144.7/230.5/243.3/205.2/117.3/185.2/\
+181.4 s (range 117-274 s, 2.3x min-to-max). That run FAILED only the \
+35B-calibrated 1000 s budget while both correctness counts were perfect — the \
+exact miscomparison per-variant thresholds exist to remove; under this entry's \
+own ceiling it is a PASS. Serve profile of the reference run (what the recipe \
+must pin): --gpu-memory-utilization 0.85 --max-batch-size 1 --max-seq-len \
+32768 --kv-cache-dtype bf16 --lm-head-dtype bf16 --scheduling-policy slai \
+--speculative --mtp-quantization bf16 --enable-prefix-caching \
+--ssm-cache-slots 256 --ssm-checkpoint-interval 16 --kv-high-precision-layers \
+auto, thinking ON. The 35B Gate-A profile (0.70 util, batch 2) CANNOT serve \
+this model at all — it dies at boot with no memory left for KV cache — so the \
+recipe is part of the variant, not a detail. ★ DEPENDENCY: the recipe id \
+above does not exist in atlas-recipes yet; it must be added there with the \
+profile just stated before this variant can self-start under \
+--pull-request-gate. Until then the variant is runnable against an \
+operator-started endpoint only. The two 10/10 counts are ABSOLUTE correctness \
+bounds and take no noise, same footing as the 35B entry; `iterations` is \
+PINNED at exactly 10 for the same reason stated there — a count bound alone \
+does not describe the run that produced it."""
+
+[benchmarks.metrics.followed_directions]
+min = 10.0
+
+[benchmarks.metrics.iterations]
+min = 10.0
+max = 10.0
+
+[benchmarks.metrics.sum_wall_s]
+# ★ PROVISIONAL — derived from a SINGLE N=10 tier (2026-08-14, dgx2, main
+# 680b3a568, serve profile in the note above): Sigma-wall 1925.1 s, per-run
+# 117.3-274.2 s. 2500 s is that tier + ~30% headroom, slightly wider than the
+# 35B's ~25%-over-slowest-tier policy because this model's per-run spread is
+# wider in absolute terms (2.3x min-to-max) and one tier is not a band. Like
+# the 35B ceiling this is a BLOWUP DETECTOR, not a perf gate. Ratchet only
+# after repeated back-to-back tiers exist (the 35B budget was tightened only
+# after 734 s and 783 s tiers on one binary), and never to the best tier.
+max = 2500.0
+
+[benchmarks.metrics.webserver_ok]
+min = 10.0

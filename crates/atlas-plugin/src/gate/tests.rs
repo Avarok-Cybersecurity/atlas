@@ -105,6 +105,7 @@ pub(super) fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> Gat
         model.to_string(),
         crate::gate::ModelBaseline {
             recipe: Some("qwen3.6/test-recipe".to_string()),
+            label: String::new(),
             note: "MLPerf floor".to_string(),
             metrics,
         },

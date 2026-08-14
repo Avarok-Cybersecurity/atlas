@@ -58,16 +58,23 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              'pong') and on PROCESS (did the agent do all six things the prompt asked?), plus \
              wall time. RUNS MODEL-AUTHORED SHELL inside the sandbox directory.",
     duration_hint: "~5 min per iteration",
-    updated: "2026-07-31",
+    updated: "2026-08-14",
     needs_confirmation: true,
-    // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1000 s) were
-    // measured on the 35B MoE flagship and mean nothing against another
-    // checkpoint. FP8 and NVFP4 are both the same family and both valid.
+    // The two families this benchmark carries BENCH.toml variants for. Each
+    // variant has its own thresholds and serve recipe — the numbers are never
+    // comparable ACROSS them (a dense 27B activates every parameter per token
+    // where the 35B MoE activates ~3B, so its wall band is roughly 2×), which
+    // is why they are separate baseline entries rather than one shared bar.
+    // FP8 and NVFP4 of one family are both valid.
     intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-35b-a3b"],
-        note: "Gate A is defined on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or NVFP4). \
-               The dense 27B is a different gate (C2/D) with different thresholds, so a \
-               run here would produce numbers that compare to nothing.",
+        families: &["qwen3.6-35b-a3b", "qwen3.8-27b"],
+        note: "This benchmark is defined on the 35B MoE flagship (Qwen3.6-35B-A3B — the \
+               required Gate A subject) and on the dense Qwen3.8-27B variant. Each variant \
+               has its own thresholds and serve recipe in its model's BENCH.toml; any other \
+               checkpoint would produce numbers that compare to nothing.",
     }),
+    // The run-time Σ-wall verdict reads the SELECTED variant's committed
+    // ceiling rather than a schema default one variant would contradict.
+    threshold_params: &[("wall_budget_s", "sum_wall_s")],
     ctor: || Box::new(AgenticWebserver::default()),
 };

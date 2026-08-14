@@ -91,6 +91,24 @@ pub struct RunArgs {
     /// rather than a guess.
     #[arg(long)]
     pub hardware: Option<String>,
+    /// Which model VARIANT of the benchmark to run, as the checkpoint id its
+    /// `BENCH.toml` entry names — e.g. `unsloth/Qwen3.8-27B-NVFP4`.
+    ///
+    /// Gate-only, like `--hardware`. Omitted, the run takes the one checkpoint
+    /// the benchmark's baseline marks `default = true` — an explicit committed
+    /// declaration, not a guess (two defaults, or none, refuse to assemble at
+    /// all). A checkpoint the baseline does not carry is an error naming what
+    /// exists. Distinct from `--model` on purpose: `--model` names a request
+    /// field against a server someone else started, while this selects which
+    /// (thresholds, serve recipe) pair the gate provisions and is recorded as
+    /// the record's `target_model`.
+    ///
+    /// The pairing is enforced by [`RunArgs::reject_orphan_checkpoint`], not by
+    /// clap's `requires`: `--pull-request-gate` is a `SetTrue` flag whose
+    /// implicit `false` default counts as "present" to clap 4's requirement
+    /// check, so the attribute silently never fires.
+    #[arg(long)]
+    pub checkpoint: Option<String>,
     /// Override one parameter, e.g. `--param osl=8`. Repeatable.
     ///
     /// Anything not overridden takes the schema default and is still recorded.
@@ -151,6 +169,26 @@ pub struct RunArgs {
     /// exact failure this whole record format exists to prevent.
     #[arg(long = "serve-override", value_name = "KEY=VALUE")]
     pub serve_override: Vec<String>,
+}
+
+impl RunArgs {
+    /// Refuse `--checkpoint` without `--pull-request-gate`.
+    ///
+    /// Outside the gate the serve config is whatever the operator started, so
+    /// a variant selector would be a flag that visibly does nothing — the same
+    /// confusion the `--model`/`--url` conflicts exist to remove. An `Err`
+    /// here is a usage error, phrased like one.
+    pub fn reject_orphan_checkpoint(&self) -> Result<(), String> {
+        if self.checkpoint.is_some() && !self.pull_request_gate {
+            return Err(
+                "--checkpoint selects a model variant for a GATE run, which serves that \
+                 variant's own recipe; without --pull-request-gate the endpoint is whatever \
+                 you started, so pass --model to name what it serves instead."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -312,6 +350,55 @@ mod tests {
         assert!(a.yes);
         assert!(a.model.is_none());
         assert!(a.hardware.is_none(), "inferred when the baseline has one");
+    }
+
+    #[test]
+    fn the_gate_takes_an_explicit_checkpoint_variant() {
+        let a = run_args(&[
+            "spark",
+            "benchmark",
+            "run",
+            "agentic-webserver",
+            "--checkpoint",
+            "unsloth/Qwen3.8-27B-NVFP4",
+            "--yes",
+            "--pull-request-gate",
+        ]);
+        assert_eq!(a.checkpoint.as_deref(), Some("unsloth/Qwen3.8-27B-NVFP4"));
+    }
+
+    #[test]
+    fn a_checkpoint_without_the_gate_is_refused() {
+        // Outside the gate the serve config is whatever the operator started,
+        // so a variant selector would be a flag that visibly does nothing —
+        // the same confusion --model/--url vs the gate exists to remove.
+        // Enforced by the explicit check, not clap `requires` — the SetTrue
+        // flag's implicit default satisfies clap's version silently.
+        let a = run_args(&[
+            "spark",
+            "benchmark",
+            "run",
+            "agentic-webserver",
+            "--model",
+            "m",
+            "--checkpoint",
+            "unsloth/Qwen3.8-27B-NVFP4",
+        ]);
+        let err = a.reject_orphan_checkpoint().expect_err("refused");
+        assert!(err.contains("--pull-request-gate"), "{err}");
+        assert!(err.contains("--model"), "names the alternative: {err}");
+
+        let gated = run_args(&[
+            "spark",
+            "benchmark",
+            "run",
+            "agentic-webserver",
+            "--checkpoint",
+            "unsloth/Qwen3.8-27B-NVFP4",
+            "--yes",
+            "--pull-request-gate",
+        ]);
+        assert!(gated.reject_orphan_checkpoint().is_ok());
     }
 
     #[test]

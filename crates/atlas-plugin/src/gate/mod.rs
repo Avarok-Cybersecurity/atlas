@@ -26,6 +26,7 @@ pub mod closure;
 pub mod codeowners;
 pub mod coverage;
 pub mod record;
+pub mod scoring;
 pub mod taxon;
 
 /// The PR INTENT taxonomy — what a change is FOR, and the benchmarks that
@@ -44,7 +45,7 @@ pub use check::{
 };
 pub use record::{
     Bound, GateBaseline, GateRecord, HardwareBaseline, ModelBaseline, date_of, now_secs,
-    read_baseline, read_record, record_path, write_record,
+    read_baseline, read_record, record_path, record_path_for, variant_slug, write_record,
 };
 
 /// The five benches whose records must pass for the branch to be gated.
@@ -201,6 +202,10 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "variant_tests.rs"]
+mod variant_tests;
 
 /// Split from `tests.rs` for the 500-LoC cap: writing a fixture baseline into
 /// the kernel tree, where the thresholds now live.

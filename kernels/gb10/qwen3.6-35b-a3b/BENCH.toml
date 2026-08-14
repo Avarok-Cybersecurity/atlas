@@ -20,6 +20,9 @@ quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
 gate = "agentic-webserver"
 recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+# The human name the TUI's variant list shows; additive only, thresholds and
+# default are unchanged. The dense sibling lives in qwen3.8-27b/BENCH.toml.
+label = "Qwen3.6-35B-A3B MoE flagship (FP8)"
 default = true
 status = "measured"
 note = """\

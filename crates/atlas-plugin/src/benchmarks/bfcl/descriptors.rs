@@ -43,6 +43,7 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
                checkpoint have no recorded baseline to beat.",
     }),
+    threshold_params: &[],
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
@@ -66,6 +67,7 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
                checkpoint have no recorded baseline to beat.",
     }),
+    threshold_params: &[],
     ctor: || Box::new(Bfcl::new(Variant::Full)),
 };
 
@@ -89,5 +91,6 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                high-water). The dense 27B is gated on the golden n=995 draw instead — do not \
                cross the two, the category mix alone moves normalized by ~1.8 points.",
     }),
+    threshold_params: &[],
     ctor: || Box::new(Bfcl::new(Variant::SubsetEcholp)),
 };

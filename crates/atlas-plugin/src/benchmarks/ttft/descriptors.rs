@@ -29,6 +29,7 @@ pub const WARM_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // model, which it stores itself — so it is meaningful for any checkpoint
     // and constrains none.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(TtftGate::new(Mode::Warm)),
 };
 
@@ -47,5 +48,6 @@ pub const COLD_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // model, which it stores itself — so it is meaningful for any checkpoint
     // and constrains none.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(TtftGate::new(Mode::Cold)),
 };

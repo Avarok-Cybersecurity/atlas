@@ -42,6 +42,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(ConcurrencySweep::default()),
 };
 

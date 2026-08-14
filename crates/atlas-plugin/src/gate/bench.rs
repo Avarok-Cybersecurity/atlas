@@ -51,6 +51,10 @@ pub struct BenchEntry {
     /// `<family>/<stem>` in `atlas-recipes`, when one serves this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<String>,
+    /// Human name for this variant, for the TUI's variant list. Optional —
+    /// the checkpoint id is the fallback, so absence costs readability only.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
     /// Whether this is the checkpoint the gate runs when none is named.
     #[serde(default)]
     pub default: bool,
@@ -70,24 +74,18 @@ struct BenchFile {
 }
 
 /// Every benchmark entry in the tree, with the target each belongs to.
+///
+/// Enumerated by scanning `kernels/<hw>/<model>/BENCH.toml` directly rather
+/// than through [`taxon::walk`]: the walk yields COMPILED targets, which
+/// requires a `MODEL.toml` and at least one quant subdirectory — but a gate
+/// definition can legitimately precede its kernel target (a variant declared
+/// while the model's kernels arrive in a sibling change, or a model served
+/// entirely from another target's sources via `kernel_source`). A BENCH.toml
+/// names its hardware and model by its path exactly as MODEL.toml does, so
+/// nothing about its identity depends on the walk.
 pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
     let mut out = Vec::new();
-    let mut seen_models = std::collections::BTreeSet::new();
-    for target in taxon::walk(root) {
-        // One BENCH.toml per MODEL, but `walk` yields one entry per quant, so
-        // the file would otherwise be parsed and its entries duplicated once
-        // per quant directory.
-        if !seen_models.insert((target.hardware.clone(), target.model.clone())) {
-            continue;
-        }
-        let path = root
-            .join("kernels")
-            .join(&target.hardware)
-            .join(&target.model)
-            .join("BENCH.toml");
-        if !path.exists() {
-            continue;
-        }
+    for (hardware, model, path) in bench_files(root) {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let parsed: BenchFile =
@@ -121,8 +119,8 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
             validate_noise(&path, &entry)?;
             out.push((
                 taxon::Target {
-                    hardware: target.hardware.clone(),
-                    model: target.model.clone(),
+                    hardware: hardware.clone(),
+                    model: model.clone(),
                     quant: entry.quant.clone(),
                 },
                 entry,
@@ -130,6 +128,40 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
         }
     }
     Ok(out)
+}
+
+/// Every `kernels/<hw>/<model>/BENCH.toml`, with the two path components that
+/// name its hardware and model. A hardware directory is one holding
+/// `HARDWARE.toml`, exactly as [`taxon::walk`] defines it; the model level
+/// requires only the BENCH.toml itself — see [`load_all`] for why.
+fn bench_files(root: &Path) -> Vec<(String, String, std::path::PathBuf)> {
+    let subdirs = |dir: &Path| -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    };
+    let kernels = root.join("kernels");
+    let mut out = Vec::new();
+    for hardware in subdirs(&kernels) {
+        let hw_dir = kernels.join(&hardware);
+        if !hw_dir.join("HARDWARE.toml").exists() {
+            continue;
+        }
+        for model in subdirs(&hw_dir) {
+            let path = hw_dir.join(&model).join("BENCH.toml");
+            if path.exists() {
+                out.push((hardware.clone(), model, path));
+            }
+        }
+    }
+    out
 }
 
 /// Assemble the baseline for one gate from every `BENCH.toml` in the tree.
@@ -181,6 +213,7 @@ pub fn baseline_for(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
                 entry.checkpoint.clone(),
                 ModelBaseline {
                     recipe: entry.recipe.clone(),
+                    label: entry.label.clone(),
                     note: entry.note.clone(),
                     metrics,
                 },
