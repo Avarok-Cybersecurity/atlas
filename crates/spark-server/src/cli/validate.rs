@@ -114,8 +114,11 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // `kv_cache_dtype` has a large TurboQuant-Plus variant set — validate via
     // the runtime's own `FromStr` so this stays in sync automatically. Only an
     // explicitly passed value can be checked here: an omitted flag resolves
-    // later against MODEL.toml (`resolve_kv_dtype_str`), whose values are
-    // build-validated.
+    // later against MODEL.toml (`resolve_kv_dtype_str`). NOTE the MODEL.toml
+    // value is NOT build-validated — `build_parse_behavior.rs` embeds
+    // `default_kv_dtype` verbatim (`as_str().unwrap_or("")`), so a typo there
+    // surfaces only at load time when the effective string hits this same
+    // `FromStr` in `serve_phases/kv_cache.rs`, after GPU init.
     if let Some(kv_dtype) = args.kv_cache_dtype.as_deref()
         && kv_dtype
             .parse::<spark_runtime::kv_cache::KvCacheDtype>()

@@ -123,6 +123,71 @@ fn no_baseline_means_the_legacy_filename() {
     );
 }
 
+/// ★ A degraded hardware fingerprint must not reopen the overwrite hole.
+/// `fetch_hardware` degrades to `Hardware::unknown()` without surfacing an
+/// error; before the fix, an unknown box class fell through to the legacy
+/// filename even for a NON-default variant, so a dense run with a failed
+/// probe silently destroyed the committed default record for the same
+/// commit and day. Non-default → slugged, regardless of hardware; a model
+/// that IS a declared default keeps the legacy name (historical behavior).
+#[test]
+fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
+    let dir = tempdir::Dir::new();
+    let root = dir.path();
+    write_baseline(root, "bfcl-subset", &two_variant_baseline());
+    let default_path = plant_variant(root, MODEL, 1_785_891_382);
+
+    let mut record = run_record(
+        BTreeMap::from([("overall_accuracy".to_string(), 90.0)]),
+        Verdict::pass("ok"),
+    );
+    record.target_model = DENSE.to_string();
+    record.recorded_at = 1_785_891_382 + 60;
+    let gate = GateRecord::from_run(
+        &record,
+        crate::hardware::Hardware::unknown(),
+        SHA.to_string(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    let dense_path = write_record(root, &gate).unwrap();
+
+    assert_ne!(
+        dense_path, default_path,
+        "a non-default variant with a degraded fingerprint must never take \
+         the default's filename"
+    );
+    assert!(
+        dense_path
+            .to_string_lossy()
+            .ends_with("-unsloth-qwen3.8-27b-nvfp4.json"),
+        "{dense_path:?}"
+    );
+    // The default's committed record survives untouched.
+    assert_eq!(read_record(&default_path).unwrap().target_model, MODEL);
+
+    // And an unknown-hardware record of the DEFAULT model keeps the legacy
+    // name — the pre-variant era behavior this naming promised not to move.
+    let mut record = run_record(
+        BTreeMap::from([("overall_accuracy".to_string(), 90.0)]),
+        Verdict::pass("ok"),
+    );
+    record.target_model = MODEL.to_string();
+    record.recorded_at = 1_785_891_382 + 120;
+    let gate = GateRecord::from_run(
+        &record,
+        crate::hardware::Hardware::unknown(),
+        SHA.to_string(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(write_record(root, &gate).unwrap(), default_path);
+}
+
 /// ★ The required gate's subject is the DEFAULT checkpoint. A newer, passing
 /// record of another variant must not become "the branch's current word" on
 /// it — a plausible green attached to the wrong subject is the single worst

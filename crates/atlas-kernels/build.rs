@@ -1112,7 +1112,16 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             shadow_exempt.sort();
             shadow_exempt.dedup();
 
-            // Parse sampling presets, behavior, and model_types from MODEL.toml
+            // Parse sampling presets, behavior, and model_types from MODEL.toml.
+            // MODEL.toml is a build INPUT (needles, sampling, behavior are
+            // codegen'd into the binary) but lives one level above the
+            // rerun-tracked quant dir — without this line an edit to it (e.g.
+            // a match_names change that MOVES routing) does not rebuild, and
+            // the binary keeps serving stale routing until an unrelated build.
+            println!(
+                "cargo:rerun-if-changed={}",
+                model_dir.join("MODEL.toml").display()
+            );
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
@@ -1222,6 +1231,46 @@ fn validate_collision_match_names(targets: &[Target]) {
                 t.model,
                 t.model,
             );
+        }
+        // Presence is not enough: a target whose every needle is DOMINATED by
+        // a colliding sibling's needle (any reference containing needle X
+        // also contains a substring needle Y of the sibling) can never be the
+        // unique match in this tier — the tier degrades to a guaranteed
+        // Ambiguous startup error for exactly the references it exists to
+        // route. That shape shipped once (qwen3.5-27b's needle set was a
+        // strict subset of qwen3.6-27b's on their shared qwen3_6_moe/5120
+        // entry) and this rejects it at build time.
+        for a in &group {
+            for b in &group {
+                if a.model == b.model {
+                    continue;
+                }
+                let winnable = a.match_names.iter().any(|na| {
+                    let na = na.to_lowercase();
+                    !b.match_names
+                        .iter()
+                        .any(|nb| na.contains(&nb.to_lowercase()))
+                });
+                assert!(
+                    winnable,
+                    "kernel target \"{}\" collides with \"{}\" on (model_type \
+                     \"{model_type}\", hidden_size {hidden:?}), but every one of its \
+                     match_names {:?} contains one of \"{}\"'s needles {:?} — any \
+                     reference matching \"{}\" also matches \"{}\", so \"{}\" can \
+                     never win the tie and the tier always hard-errors Ambiguous. \
+                     Give \"{}\" a needle the sibling does not shadow, or remove \
+                     the colliding [[model_types]] entry.",
+                    a.model,
+                    b.model,
+                    a.match_names,
+                    b.model,
+                    b.match_names,
+                    a.model,
+                    b.model,
+                    a.model,
+                    a.model,
+                );
+            }
         }
     }
 }

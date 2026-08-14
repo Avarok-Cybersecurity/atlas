@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 7] = [
+pub const BOUNDARY_FILES: [&str; 8] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -110,9 +110,15 @@ pub const BOUNDARY_FILES: [&str; 7] = [
     // line silently reduces coverage with nothing to notice — and a cheap edit
     // that quietly weakens the gate is worse than an expensive one that cannot.
     ".github/pr-taxonomy.json",
-    // `record_covers` / `invalidating_paths` / `check_record` / `compare`:
-    // decides whether a record stands and whether its numbers pass.
+    // `record_covers` / `invalidating_paths`: decides whether a record
+    // stands against the changed paths.
     "crates/atlas-plugin/src/gate/check.rs",
+    // `check_record` / `compare`: decides whether a record's numbers pass.
+    // Split out of check.rs at the 500-line boundary — the verdict logic
+    // moved, so the boundary moves with it (a `hardening_tests` test walks
+    // the defining files by symbol so the next split cannot silently drop
+    // one out of the boundary again).
+    "crates/atlas-plugin/src/gate/scoring.rs",
     // `excuses` / `changed_targets`: decides which invalidating paths are
     // forgiven by the closure hash.
     "crates/atlas-plugin/src/gate/closure.rs",

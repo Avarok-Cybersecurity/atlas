@@ -23,7 +23,7 @@ use super::super::chat_render::{RenderFlags, render_chat};
 use super::super::jinja_helpers;
 use serde_json::json;
 
-fn render_fixture(
+pub(crate) fn render_fixture(
     fixture: &str,
     messages: &[serde_json::Value],
     tools: Option<&[serde_json::Value]>,
@@ -46,7 +46,7 @@ fn render_fixture(
 /// `reasoning_content` on the historical assistant turns, and a fresh user
 /// query. This is the shape whose `<think>` retention differs between the
 /// Qwen3.6 and Qwen3.8 template defaults.
-fn fixture_messages() -> Vec<serde_json::Value> {
+pub(crate) fn fixture_messages() -> Vec<serde_json::Value> {
     vec![
         json!({"role": "system", "content": "You are a helpful assistant."}),
         json!({"role": "user", "content": "Check the weather in Paris, then summarize."}),
@@ -70,7 +70,7 @@ fn fixture_messages() -> Vec<serde_json::Value> {
     ]
 }
 
-fn fixture_tools() -> Vec<serde_json::Value> {
+pub(crate) fn fixture_tools() -> Vec<serde_json::Value> {
     vec![json!({
         "type": "function",
         "function": {
@@ -85,7 +85,7 @@ fn fixture_tools() -> Vec<serde_json::Value> {
     })]
 }
 
-fn thinking_on() -> RenderFlags<'static> {
+pub(crate) fn thinking_on() -> RenderFlags<'static> {
     RenderFlags {
         enable_thinking: true,
         ..Default::default()

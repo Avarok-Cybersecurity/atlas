@@ -51,11 +51,18 @@ must pin): --gpu-memory-utilization 0.85 --max-batch-size 1 --max-seq-len \
 --ssm-cache-slots 256 --ssm-checkpoint-interval 16 --kv-high-precision-layers \
 auto, thinking ON. The 35B Gate-A profile (0.70 util, batch 2) CANNOT serve \
 this model at all — it dies at boot with no memory left for KV cache — so the \
-recipe is part of the variant, not a detail. ★ DEPENDENCY: the recipe id \
-above does not exist in atlas-recipes yet; it must be added there with the \
-profile just stated before this variant can self-start under \
---pull-request-gate. Until then the variant is runnable against an \
-operator-started endpoint only. The two 10/10 counts are ABSOLUTE correctness \
+recipe is part of the variant, not a detail. The recipe id above now EXISTS in \
+atlas-recipes (merged 2026-08-14 as atlas-recipes#19, commit 20ac6e8), \
+pinning exactly the profile stated above, so this variant can self-start \
+under --pull-request-gate. ★ Note the recipe pins `num_drafts: 3` (K=4), \
+matching the reference run; the qwen3.8-27b target deliberately omits \
+`default_num_drafts`, so an unpinned run would instead take the engine \
+default K=2. When running against an operator-started endpoint pass \
+`--param wall_budget_s=2500` explicitly: threshold_params substitution \
+happens only under the gate (and in the TUI's variant step), so a plain \
+`benchmark run` keeps the schema default 1000 s and a healthy dense tier \
+(Sigma-wall ~1925 s) FAILS its run verdict on wall alone. \
+The two 10/10 counts are ABSOLUTE correctness \
 bounds and take no noise, same footing as the 35B entry; `iterations` is \
 PINNED at exactly 10 for the same reason stated there — a count bound alone \
 does not describe the run that produced it."""

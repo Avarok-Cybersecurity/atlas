@@ -114,6 +114,7 @@ function parseRecipe(text) {
 const FAMILY_DISPLAY = {
   'qwen3.5': 'Qwen3.5',
   'qwen3.6': 'Qwen3.6',
+  'qwen3.8': 'Qwen3.8',
   'qwen3-next': 'Qwen3-Next',
   'qwen3-coder-next': 'Qwen3-Coder-Next',
   'qwen3-vl': 'Qwen3-VL',
@@ -138,6 +139,7 @@ function familyDisplay(fam) {
 const VENDOR_OF_FAMILY = {
   'qwen3.5': 'Qwen',
   'qwen3.6': 'Qwen',
+  'qwen3.8': 'Qwen',
   'qwen3-next': 'Qwen',
   'qwen3-coder-next': 'Qwen',
   'qwen3-vl': 'Qwen',

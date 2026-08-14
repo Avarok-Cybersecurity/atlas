@@ -269,6 +269,69 @@ fn every_colliding_target_declares_match_names() {
     }
 }
 
+/// Mirror of build.rs's dominated-needle check: within a colliding
+/// `(model_type, hidden_size)` group, every target must own at least one
+/// needle that no sibling needle is a substring of — otherwise any
+/// reference matching it also matches the sibling and the tier is a
+/// guaranteed `Ambiguous` startup error for exactly the checkpoints it
+/// exists to route. This shipped once: qwen3.5-27b's `["qwen3.5-27b"]` was
+/// a strict subset of qwen3.6-27b's needles on their shared
+/// (qwen3_6_moe, 5120) entry, so the "belt-and-braces" tier could only
+/// ever hard-error. The entry is gone; this keeps the shape out.
+#[test]
+fn no_colliding_target_is_needle_dominated() {
+    let parsed = parse_targets();
+    let mut by_pair: std::collections::HashMap<(&str, Option<usize>), Vec<&ParsedTarget>> =
+        std::collections::HashMap::new();
+    for t in &parsed {
+        for m in &t.type_matches {
+            by_pair
+                .entry((m.model_type, m.hidden_size))
+                .or_default()
+                .push(t);
+        }
+    }
+    for ((model_type, hidden), group) in by_pair {
+        for a in &group {
+            for b in &group {
+                if a.name == b.name {
+                    continue;
+                }
+                let winnable = a.match_names.iter().any(|na| {
+                    let na = na.to_lowercase();
+                    !b.match_names
+                        .iter()
+                        .any(|nb| na.contains(&nb.to_lowercase()))
+                });
+                assert!(
+                    winnable,
+                    "target '{}' can never win the ({model_type}, {hidden:?}) tie \
+                     against '{}': every needle in {:?} contains one of {:?}",
+                    a.name, b.name, a.match_names, b.match_names
+                );
+            }
+        }
+    }
+}
+
+/// The (qwen3_6_moe, 5120) belt-and-braces tier — the hypothetical MoE
+/// rewrite of a dense-27B re-upload — resolves UNCONTESTED to qwen3.6-27b
+/// now that qwen3.5-27b's dead duplicate entry is gone. Before the removal
+/// this exact lookup was a hard `Ambiguous` error (both targets declared
+/// the pair and qwen3.5-27b's needles were a subset of qwen3.6-27b's).
+#[test]
+fn qwen36_moe_beltandbraces_tier_resolves_uncontested() {
+    assert_eq!(
+        resolve_name("qwen3_6_moe", 5120, &["Kbenkhaled/Qwen3.5-27B-NVFP4"]),
+        Some("qwen3.6-27b")
+    );
+    // Identity-free too: with one declarer there is no tie to break.
+    assert_eq!(
+        resolve_name("qwen3_6_moe", 5120, &["/model"]),
+        Some("qwen3.6-27b")
+    );
+}
+
 /// Every `kernel_source` redirect points at a real sibling target that owns
 /// its sources (no chains), and the redirected quant tree exists — the
 /// build-time contract, pinned here for the skip-build runner.
