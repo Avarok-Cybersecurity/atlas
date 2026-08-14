@@ -63,11 +63,19 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // Gate A. The webserver_ok thresholds (10/10 and Σ wall ≤ 1000 s) were
     // measured on the 35B MoE flagship and mean nothing against another
     // checkpoint. FP8 and NVFP4 are both the same family and both valid.
+    //
+    // The dense 27B is a REGISTERED, UNMEASURED target (2026-08-14): its
+    // entry in kernels/gb10/qwen3.6-27b/BENCH.toml carries no thresholds,
+    // because none exist to carry — A3B activates ~3B params per token where
+    // the dense 27B activates all 27B, so the 35B's wall ceiling does not
+    // transfer, and a run there BASELINES rather than gates until the
+    // calibration protocol in that entry writes measured floors.
     intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-35b-a3b"],
-        note: "Gate A is defined on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or NVFP4). \
-               The dense 27B is a different gate (C2/D) with different thresholds, so a \
-               run here would produce numbers that compare to nothing.",
+        families: &["qwen3.6-35b-a3b", "qwen3.6-27b"],
+        note: "Gate A is measured on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or NVFP4). \
+               The dense Qwen3.6-27B is a registered but UNMEASURED target — its BENCH.toml \
+               entry has no thresholds yet, so a run there baselines, it does not gate. Any \
+               other checkpoint produces numbers that compare to nothing.",
     }),
     ctor: || Box::new(AgenticWebserver::default()),
 };

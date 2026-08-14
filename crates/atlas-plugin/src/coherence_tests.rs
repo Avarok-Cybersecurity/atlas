@@ -219,15 +219,17 @@ fn a_server_serving_the_requested_model_is_clean() {
     assert!(report.is_clean());
 }
 
-/// Gate A's thresholds were measured on the 35B MoE. Pointing it at the dense
-/// 27B — a perfectly healthy server, serving exactly the model that was
-/// requested — must still say something, because the numbers would compare to
-/// nothing.
+/// Gate A's thresholds were measured on the 35B MoE. The dense 27B is a
+/// registered UNMEASURED target (kernels/gb10/qwen3.6-27b/BENCH.toml) — a run
+/// there baselines rather than gates, so the probe accepts it. A model outside
+/// both families must still be reported, because its numbers would compare to
+/// nothing — and Qwen3.8 in particular must NOT slip in as a substring
+/// accident: adding it is a deliberate re-point owned by its own workstream.
 #[test]
 fn a_gate_run_against_the_wrong_model_family_is_reported() {
     use crate::registry;
     let agentic = registry::find("agentic-webserver").expect("registered");
-    let expect = agentic.intended_for.expect("gate A names its model");
+    let expect = agentic.intended_for.expect("gate A names its models");
 
     assert!(
         expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"),
@@ -238,8 +240,17 @@ fn a_gate_run_against_the_wrong_model_family_is_reported() {
         "and the NVFP4 variant of the same family"
     );
     assert!(
-        !expect.accepts("unsloth/Qwen3.6-27B-NVFP4"),
-        "the dense 27B is a DIFFERENT gate"
+        expect.accepts("unsloth/Qwen3.6-27B-NVFP4"),
+        "the dense 27B is a registered unmeasured baselining target"
+    );
+    assert!(
+        !expect.accepts("unsloth/Qwen3.8-27B-NVFP4"),
+        "Qwen3.8-27B is a different model; accepting it is a deliberate re-point, \
+         not a substring accident"
+    );
+    assert!(
+        !expect.accepts("meta-llama/Llama-3.1-8B"),
+        "an unrelated model still compares to nothing"
     );
 }
 
