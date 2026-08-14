@@ -88,6 +88,7 @@ fn a_finished_run_stays_reachable_after_navigating_away() {
         verdict: None,
         metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
+        dataset_fingerprint: None,
         elapsed: std::time::Duration::from_secs(1),
         hardware_state: None,
     });
@@ -394,6 +395,7 @@ fn record() -> atlas_plugin::RunRecord {
             verdict: None,
             metrics: std::collections::BTreeMap::new(),
             log: Vec::new(),
+            dataset_fingerprint: None,
             elapsed: std::time::Duration::from_secs(1),
             hardware_state: None,
         },

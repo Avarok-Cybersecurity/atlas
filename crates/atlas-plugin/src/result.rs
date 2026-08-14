@@ -250,6 +250,15 @@ pub struct BenchmarkResult {
     /// box, and no reader should be able to confuse the two.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardware_state: Option<crate::hardware::HardwareStateReport>,
+    /// Content identity of the dataset the run scored against, when the
+    /// benchmark has one (e.g. `file-sha256:…;draw-sha256:…` for the MLPerf
+    /// agentic leg). Carried into the gate record: the metrics map is
+    /// f64-only, so without this a record can pin a draw's SIZE but not its
+    /// CONTENT — and two same-size draws of different content are exactly the
+    /// incomparable pair the BFCL notes warn about. `None` for benchmarks
+    /// without a dataset; absent from older persisted frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_fingerprint: Option<String>,
 }
 
 impl BenchmarkResult {
@@ -265,6 +274,7 @@ impl BenchmarkResult {
             log: Vec::new(),
             elapsed,
             hardware_state: None,
+            dataset_fingerprint: None,
         }
     }
 
