@@ -289,7 +289,21 @@ pub(super) fn load_override_template(model_type: &str, repo_root: Option<&Path>)
 }
 
 /// Try loading an OpenAI-variant template from jinja-templates/openai/{model_type}.jinja.
-pub(super) fn load_openai_template(model_type: &str, repo_root: Option<&Path>) -> Option<String> {
+///
+/// `disable_template_overrides` short-circuits to `None`: the OpenAI variant
+/// lives inside the same `jinja-templates/` override directory that
+/// `--disable-template-overrides` promises to ignore, so it obeys the same
+/// gate as the base override (it used to load unconditionally, silently
+/// overriding the operator's opt-out on the request path while /v1/tokenize
+/// honoured it — two different prompts for the same messages).
+pub(super) fn load_openai_template(
+    model_type: &str,
+    repo_root: Option<&Path>,
+    disable_template_overrides: bool,
+) -> Option<String> {
+    if disable_template_overrides {
+        return None;
+    }
     let candidates = [
         repo_root.map(|r| {
             r.join(TEMPLATE_OVERRIDE_DIR)
@@ -441,4 +455,33 @@ pub(super) fn convert_python_jinja_to_minijinja(template: &str) -> String {
     // messages[1:] — minijinja 2.x supports slice syntax natively
 
     t
+}
+
+#[cfg(test)]
+mod openai_override_gate_tests {
+    use super::load_openai_template;
+
+    /// Batch4 leftover: `--disable-template-overrides` must gate the
+    /// OpenAI-variant template too — it lives inside the very
+    /// `jinja-templates/` directory the flag promises to ignore, and it
+    /// wins over the model's own template on every serving route. It
+    /// used to load unconditionally, silently discarding the opt-out.
+    #[test]
+    fn disable_template_overrides_gates_the_openai_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(super::TEMPLATE_OVERRIDE_DIR).join("openai");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gate_probe_model.jinja"), "{{ messages }}").unwrap();
+
+        let enabled = load_openai_template("gate_probe_model", Some(tmp.path()), false);
+        assert!(
+            enabled.is_some(),
+            "variant must load when overrides are enabled"
+        );
+        let disabled = load_openai_template("gate_probe_model", Some(tmp.path()), true);
+        assert!(
+            disabled.is_none(),
+            "--disable-template-overrides must also disable the openai/ variant"
+        );
+    }
 }

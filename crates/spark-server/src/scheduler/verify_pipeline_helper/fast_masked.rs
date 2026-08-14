@@ -79,6 +79,19 @@ pub(super) fn try_chat_fast_path(
     if !fast_masked_enabled || a.grammar_state.is_some() || adadec_recording {
         return None;
     }
+    // P1-3 parity (2026-08-14): at temperature > 0 the slow path SAMPLES
+    // each verify position (the `mtp_verify_sample` branch in
+    // `verify_pick_with_pipeline`), so returning the raw argmax here would
+    // silently disable temperature/top_p/min_p/seed for every spec-accepted
+    // chat token. The grammar sibling has carried this exact load-bearing
+    // gate since P1-3 (2026-07-09, see `verify_pick_all_with_pipeline`);
+    // this path landed one day earlier and missed it. The condition mirrors
+    // the slow path's sampling branch exactly: when that branch cannot fire
+    // (`ATLAS_NO_MTP_VERIFY_SAMPLE` or forced temp-0), the slow path pins
+    // the argmax too and the fast path stays equivalent — and available.
+    if ctx.sampling.mtp_verify_sample && a.temperature > 0.0 && !ctx.sampling.force_temp_zero {
+        return None;
+    }
     use crate::scheduler::confidence::{
         MAX_SENTENCE_DEFER_TOKENS, THINK_DEFER_ABS_CEILING, THINK_DEFER_BUDGET_FACTOR,
     };
@@ -165,4 +178,71 @@ pub(super) fn try_chat_fast_path(
     // Fall through — grammar fast path can't fire (grammar_state is
     // None), so the slow path handles the call.
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::lifecycle_tests::StubModel;
+    use crate::scheduler::logit_processors::SamplingLevers;
+    use crate::scheduler::test_support::test_seq;
+
+    /// Drive `try_chat_fast_path` in the eligible dflash masked-verify
+    /// regime (no grammar, no armed stage, argmax-preserving penalties)
+    /// with only the sampling knobs varying.
+    fn run(temperature: f32, force_temp_zero: bool) -> Option<Vec<u32>> {
+        let scratch = crate::scheduler::sched_ctx::DecodeScratch::default();
+        let dumps = crate::scheduler::dumps::RunDumps::default();
+        let ctx = LogitsContext {
+            scratch: &scratch,
+            dumps: &dumps,
+            stats: std::sync::Arc::new(crate::scheduler::spec_stats::SpecStats::new()),
+            watchdog: crate::scheduler::helpers::WatchdogParams::default(),
+            boundary_mask: None,
+            mid_word_mask: None,
+            sampling: SamplingLevers {
+                dflash_masked_verify: true,
+                fast_masked: true,
+                mtp_verify_sample: true,
+                force_temp_zero,
+                ..Default::default()
+            },
+            timing: std::sync::Arc::default(),
+            think_end_token: None,
+            think_start_token: None,
+            tool_call_start_token: None,
+            tool_call_end_token: None,
+        };
+        let (mut a, _rx) = test_seq(Vec::new(), 5, None, 0);
+        a.temperature = temperature;
+        // The fixture ships the production LZ default; the penalty gate is
+        // not under test here, so pin it argmax-preserving.
+        a.lz_penalty = 0.0;
+        try_chat_fast_path(&StubModel, &[42], &a, &ctx, 0)
+    }
+
+    /// Batch4 leftover: at temperature > 0 the slow path SAMPLES each
+    /// verify position (the `mtp_verify_sample` branch), so the fast path
+    /// returning the raw argmax silently disabled temperature/top_p/min_p/
+    /// seed for every spec-accepted chat token. P1-3 put this load-bearing
+    /// gate on the grammar sibling; this path (landed one day earlier)
+    /// was missing it.
+    #[test]
+    fn nonzero_temperature_defers_to_the_sampling_slow_path() {
+        assert_eq!(run(1.2, false), None);
+    }
+
+    /// Greedy chat is exactly the regime the fast path exists for — the
+    /// new gate must not eat it.
+    #[test]
+    fn greedy_chat_still_takes_the_fast_path() {
+        assert_eq!(run(0.0, false), Some(vec![42]));
+    }
+
+    /// Under ATLAS_FORCE_TEMP_ZERO the slow path pins the argmax at any
+    /// request temperature, so the fast path stays equivalent — and taken.
+    #[test]
+    fn force_temp_zero_keeps_the_fast_path_at_nonzero_temperature() {
+        assert_eq!(run(1.2, true), Some(vec![42]));
+    }
 }

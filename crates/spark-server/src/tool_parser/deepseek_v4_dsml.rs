@@ -93,7 +93,16 @@ pub(super) fn parse_dsml_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall
         }
         let body = &rest[start + DSML_OPEN.len()..];
         let Some(end) = body.find(DSML_CLOSE) else {
-            content.push(rest[start..].to_string());
+            // Unterminated envelope (close tag lost to truncation or EOS
+            // drift): salvage the complete invokes, exactly like the
+            // streaming flush path (`flush_dsml`). Only when nothing
+            // parses is the raw envelope surfaced as content.
+            let salvaged = parse_dsml_invokes(body);
+            if salvaged.is_empty() {
+                content.push(rest[start..].to_string());
+            } else {
+                calls.extend(salvaged);
+            }
             break;
         };
         calls.extend(parse_dsml_invokes(&body[..end]));
@@ -198,7 +207,14 @@ impl StreamingToolDetector {
         self.inside_dsml = false;
         let mut outputs = Vec::new();
         self.emit_dsml_calls(&body, &mut outputs);
-        (!outputs.is_empty()).then_some(outputs)
+        if outputs.is_empty() {
+            // No complete invoke to salvage. Surface the raw envelope as
+            // content — matching the blocking parser
+            // (`parse_dsml_tool_calls`) — instead of dropping the
+            // already-taken buffer on the floor.
+            outputs.push(DetectorOutput::Content(format!("{DSML_OPEN}{body}")));
+        }
+        Some(outputs)
     }
 
     fn emit_dsml_calls(&mut self, body: &str, outputs: &mut Vec<DetectorOutput>) {

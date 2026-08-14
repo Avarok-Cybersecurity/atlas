@@ -104,11 +104,15 @@ impl ChatTokenizer {
         // Load OpenAI-variant template if it exists (jinja-templates/openai/{model_type}.jinja).
         // This variant gates historical <think> wrappers on enable_thinking, preventing
         // spontaneous thinking during tool-use when thinking is disabled.
-        let openai_jinja_env = super::jinja_helpers::load_openai_template(model_type, repo_root)
-            .and_then(|tmpl| {
-                tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
-                super::jinja_helpers::build_jinja_env(&tmpl).ok()
-            });
+        let openai_jinja_env = super::jinja_helpers::load_openai_template(
+            model_type,
+            repo_root,
+            disable_template_overrides,
+        )
+        .and_then(|tmpl| {
+            tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
+            super::jinja_helpers::build_jinja_env(&tmpl).ok()
+        });
         let chat_encoding = if model_type == "deepseek_v4" {
             tracing::info!("Using checkpoint-native DeepSeek-V4 message encoding");
             ChatEncoding::DeepseekV4

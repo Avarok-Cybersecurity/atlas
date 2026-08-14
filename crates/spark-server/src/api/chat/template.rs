@@ -79,7 +79,11 @@ pub(super) fn render_template(
             )
             .map(|t| t.len())
             .unwrap_or(0);
-        if trial_tokens > (state.max_seq_len as f32 * 0.70) as usize {
+        if auto_compact_trigger(
+            state.auto_compact_threshold,
+            trial_tokens,
+            state.max_seq_len,
+        ) {
             compact_messages(&json_messages, trial_tokens, state.max_seq_len)
         } else {
             json_messages
@@ -199,6 +203,52 @@ fn build_json_messages_for(
             msg
         })
         .collect()
+}
+
+/// The auto-compact trigger: fires when the rendered prompt exceeds the
+/// operator's `--auto-compact` THRESHOLD fraction of `max_seq_len`.
+///
+/// A named seam (cf. `config_is_mla`) so the flag→trigger derivation is
+/// pinned by a test instead of living as an inline expression: the
+/// threshold used to be carried on `AppState` but never read — the
+/// comparison hardcoded 0.70, so `--auto-compact 0.95` compacted at 70%
+/// while the startup banner claimed 95%.
+pub(super) fn auto_compact_trigger(
+    threshold: Option<f32>,
+    trial_tokens: usize,
+    max_seq_len: usize,
+) -> bool {
+    match threshold {
+        Some(t) if t > 0.0 => trial_tokens > (max_seq_len as f32 * t) as usize,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod auto_compact_tests {
+    use super::auto_compact_trigger;
+
+    /// Batch4 leftover: the `--auto-compact THRESHOLD` value must BE the
+    /// trigger point. 23 000 rendered tokens of a 32 768 context is 70.2% —
+    /// past the old hardcoded 0.70, short of the operator's 0.95 — and must
+    /// not compact. The same load must compact under a 0.5 threshold, and
+    /// the bare-flag default (0.75, `default_missing_value`) must trigger
+    /// at its documented fraction, not at 70%.
+    #[test]
+    fn threshold_value_is_the_trigger_point() {
+        assert!(!auto_compact_trigger(Some(0.95), 23_000, 32_768));
+        assert!(auto_compact_trigger(Some(0.5), 23_000, 32_768));
+        // Bare --auto-compact (0.75): 23 000 (70.2%) stays, 25 000 (76.3%) compacts.
+        assert!(!auto_compact_trigger(Some(0.75), 23_000, 32_768));
+        assert!(auto_compact_trigger(Some(0.75), 25_000, 32_768));
+    }
+
+    /// Flag absent or explicitly zeroed: compaction never fires.
+    #[test]
+    fn absent_or_zero_threshold_never_fires() {
+        assert!(!auto_compact_trigger(None, 1_000_000, 4_096));
+        assert!(!auto_compact_trigger(Some(0.0), 1_000_000, 4_096));
+    }
 }
 
 #[cfg(test)]
