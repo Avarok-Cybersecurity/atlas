@@ -49,6 +49,7 @@ fn frame(phase: &str) -> BenchmarkResult {
         table: None,
         verdict: Some(Verdict::pass("all good")),
         metrics: std::collections::BTreeMap::new(),
+        dataset_fingerprint: None,
         log: Vec::new(),
         elapsed: std::time::Duration::from_secs(1),
         hardware_state: None,
