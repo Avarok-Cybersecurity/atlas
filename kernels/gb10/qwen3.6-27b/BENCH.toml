@@ -139,14 +139,46 @@ nothing measured on Qwen3.6 transfers, and the calibration protocol runs again f
 # check passed throughout, because a downscaled picture is still recognisably
 # what it is.
 #
-#   geometry_matched  = 9   the CORRECTNESS floor, and the one that moves when
+#   integrity_passed  = 5   the INTEGRITY floor, and the legs a single
+#                           well-formed request cannot reach. Every one of
+#                           them fails as a FLUENT ANSWER TO THE WRONG INPUT
+#                           rather than an error, which is the class this
+#                           repo keeps rediscovering:
+#                             heterogeneous-concurrency  four DIFFERENT
+#                               requests in flight (one text-only), each
+#                               scored against its own input. Identical
+#                               requests cannot test the per-request offsets
+#                               into the shared ViT output buffer, because
+#                               every offset is then interchangeable.
+#                             prefix-cache-isolation     same prompt text,
+#                               different image, back to back. Guards the
+#                               predicate that keeps vision prompts out of
+#                               the prefix cache — it silently missed the
+#                               VIDEO pad token until 2026-08-14.
+#                             long-prompt-splice         a prompt past the
+#                               single-chunk budget, which leaves the batched
+#                               co-dispatch encode for a second splice in a
+#                               different file. Measured 81 vs 7082 prompt
+#                               tokens, so it really does cross over.
+#                             media-in-history           the image in an
+#                               earlier turn, not in the message asking the
+#                               question. The #165 path.
+#                             exif-orientation-pinned    PINS current
+#                               behaviour rather than judging it: EXIF
+#                               orientation is IGNORED, measured 2026-08-14.
+#                               A rotated phone photo reaches the model
+#                               sideways. Whether to honour the tag is a
+#                               product decision; that it must not change by
+#                               accident is not.
+#   integrity_measured = 5  a skipped integrity leg is not a passed one.
+#   geometry_matched  = 14  the CORRECTNESS floor, and the one that moves when
 #                           preprocessing changes. Rung 09 (1600x900) is the
 #                           ONLY rung above the retired 1280px clamp: under the
 #                           clamp it is 920 tokens, un-downscaled it is 1400.
 #                           The other eight fit under either regime and so
 #                           cannot tell the two apart -- without rung 09 this
 #                           gate could not fail on the defect it exists for.
-#   geometry_asserted = 9   the MEASUREMENT floor, which is a DIFFERENT failure.
+#   geometry_asserted = 14  the MEASUREMENT floor, which is a DIFFERENT failure.
 #                           A cell the server cannot serve reports UNMEASURED,
 #                           which is not a mismatch -- so without this floor an
 #                           encoder-capacity regression would turn every cell
@@ -167,9 +199,10 @@ label = "Qwen3.6-27B dense (NVFP4, unsloth)"
 default = false
 status = "measured"
 note = """\
-REFERENCE RUN 2026-08-14, dgx-00, binary vision/sprint @ 5e05465b: PASS, 9/9 geometry \
-cells matched, 3/3 probes, control held, 29.3 s. Geometry was IDENTICAL across all \
-three vision targets (49/121/192/220/576/576/920/405/1400 merged tokens) -- token \
+REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support @ 5a22d7ce: PASS, 14/14 geometry \
+cells matched, 3/3 probes, 5/5 integrity legs, control held, 29.3 s. Geometry was IDENTICAL across all \
+three vision targets (49/121/192/220/576/576/920/405/1400/1/128/49/49/49 merged \
+tokens) -- token \
 count is a property of the preprocessor rather than the checkpoint, so agreement \
 across a dense NVFP4, an unsloth NVFP4 and an FP8 MoE is evidence the arithmetic is \
 right rather than a coincidence. * THIS is the checkpoint that exposed the resolver \
@@ -182,10 +215,16 @@ reports 1400 where the fallback produced 920 -- the gate catching exactly the cl
 defect it was built for, on a real model rather than in a unit test."""
 
 [benchmarks.metrics.geometry_matched]
-min = 9.0
+min = 14.0
 
 [benchmarks.metrics.geometry_asserted]
-min = 9.0
+min = 14.0
+
+[benchmarks.metrics.integrity_passed]
+min = 5.0
+
+[benchmarks.metrics.integrity_measured]
+min = 5.0
 
 [benchmarks.metrics.probes_passed]
 min = 3.0

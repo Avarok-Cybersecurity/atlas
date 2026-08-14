@@ -12,6 +12,7 @@ pub mod baseline;
 pub mod bfcl;
 pub mod concurrency;
 pub mod contamination;
+pub mod media_integrity;
 pub mod serve_matrix;
 pub mod ssm_poison;
 pub mod stats;
