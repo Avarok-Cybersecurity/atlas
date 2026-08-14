@@ -92,6 +92,7 @@ pub(crate) fn prepare_chat_prompt(
     } = msg_entry::build_msg_entries(
         state.vision_config.as_ref(),
         state.vision_max_pixels,
+        &state.remote_image_policy,
         &req.messages,
         tools_active,
         &state.chat,

@@ -172,6 +172,37 @@ pub(crate) fn load_model(
         ),
     }
 
+    // Remote image fetching. Logged at WARN when on, because it is the one
+    // vision setting that changes what the server is allowed to REACH rather
+    // than how it processes what it was given — an operator reading the boot
+    // log should see it without looking for it.
+    let remote_image_policy = crate::api::chat::remote_image::RemoteImagePolicy {
+        enabled: args.vision_allow_remote_images,
+        max_bytes: args.vision_remote_image_max_mb.saturating_mul(1024 * 1024),
+        timeout_secs: args.vision_remote_image_timeout_s,
+        allow_private: args.vision_remote_image_allow_private,
+    };
+    if remote_image_policy.enabled {
+        tracing::warn!(
+            "Remote image fetching ENABLED (--vision-allow-remote-images): this server will \
+             issue outbound HTTP to URLs supplied in chat requests. Cap {} MiB, timeout {} s, \
+             private/loopback/link-local destinations {}.",
+            args.vision_remote_image_max_mb,
+            remote_image_policy.timeout_secs,
+            if remote_image_policy.allow_private {
+                "ALLOWED (--vision-remote-image-allow-private)"
+            } else {
+                "refused"
+            }
+        );
+    } else {
+        tracing::info!(
+            "Remote image fetching disabled (default); image_url parts carrying an http(s) \
+             URL are refused with a 400. Send base64 data: URIs, or pass \
+             --vision-allow-remote-images."
+        );
+    }
+
     if let Some(ref qc) = config.quantization_config {
         tracing::info!(
             "Quantization config: method={:?}, algo={:?}, format={:?}, {} module(s) in ignore list",
@@ -1043,6 +1074,7 @@ pub(crate) fn load_model(
         ),
         vision_config: config.vision.clone(),
         vision_max_pixels,
+        remote_image_policy,
         default_temperature,
         default_top_k,
         default_top_p,

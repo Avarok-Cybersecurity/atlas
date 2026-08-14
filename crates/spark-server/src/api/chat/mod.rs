@@ -27,6 +27,7 @@ pub(crate) mod levers;
 mod loop_detect;
 mod msg_entry;
 pub(crate) mod prepare;
+pub(crate) mod remote_image;
 mod sampling_setup;
 mod template;
 mod thinking;
@@ -65,6 +66,7 @@ pub(crate) fn test_build_msg_entries(
     msg_entry::build_msg_entries(
         None,
         None,
+        &remote_image::RemoteImagePolicy::default(),
         input,
         tools_active,
         &levers::ChatLevers::OFF,

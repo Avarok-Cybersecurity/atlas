@@ -63,24 +63,46 @@ fn collect_message_images(
     m: &Message,
     all_images: &mut Vec<String>,
     image_pad_counts: &mut Vec<usize>,
+    remote: &super::remote_image::RemoteImagePolicy,
 ) -> Result<(), Response> {
     for part in &m.content {
         if let ContentPart::Image(src) = part {
             let uri = match &src.data {
                 ImageData::Base64(s) => s.clone(),
-                // The encoder does not fetch remote URLs. Fed onward, the
-                // URL string would hit the base64 decoder and fail with a
-                // confusing "base64 decode failed" — reject with the real
-                // reason instead (PCND: fail fast).
+                // The encoder does not fetch remote URLs itself. Either the
+                // operator has granted this server the capability, in which
+                // case the URL is resolved to a data: URI here, or it has not,
+                // in which case this is a 400 naming the flag. What must not
+                // happen is feeding the URL string onward: it would reach the
+                // base64 decoder and fail with a confusing "base64 decode
+                // failed" (PCND: fail fast, with the real reason).
                 ImageData::Url(url) => {
                     let shown: String = url.chars().take(120).collect();
-                    return Err(openai_error_response(
-                        StatusCode::BAD_REQUEST,
-                        format!(
-                            "image URLs are not fetched by this server (got '{shown}'); \
-                             send the image as a base64 data: URI"
-                        ),
-                    ));
+                    if !remote.enabled {
+                        return Err(openai_error_response(
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "image URLs are not fetched by this server (got '{shown}'); \
+                                 send the image as a base64 data: URI, or start the server \
+                                 with --vision-allow-remote-images to enable fetching"
+                            ),
+                        ));
+                    }
+                    match super::remote_image::fetch_as_data_uri(url, remote) {
+                        Ok(data_uri) => data_uri,
+                        Err(why) => {
+                            // The reason is surfaced rather than flattened to
+                            // "could not fetch": the operator turned this on
+                            // deliberately, and "resolves to a private
+                            // address" and "exceeds the size cap" call for
+                            // different fixes.
+                            tracing::warn!("remote image fetch refused: {shown}: {why}");
+                            return Err(openai_error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("could not fetch image URL '{shown}': {why}"),
+                            ));
+                        }
+                    }
                 }
             };
             all_images.push(uri);
@@ -94,6 +116,7 @@ fn collect_message_images(
 pub(super) fn build_msg_entries(
     vision_config: Option<&VisionConfig>,
     vision_max_pixels: Option<usize>,
+    remote_images: &super::remote_image::RemoteImagePolicy,
     input: &[Message],
     tools_active: bool,
     levers: &super::levers::ChatLevers,
@@ -190,7 +213,7 @@ pub(super) fn build_msg_entries(
                 image_count: m.image_count(),
                 reasoning_content: None,
             });
-            collect_message_images(m, &mut all_images, &mut image_pad_counts)?;
+            collect_message_images(m, &mut all_images, &mut image_pad_counts, remote_images)?;
             continue;
         }
 
@@ -238,7 +261,7 @@ pub(super) fn build_msg_entries(
                 None
             },
         });
-        collect_message_images(m, &mut all_images, &mut image_pad_counts)?;
+        collect_message_images(m, &mut all_images, &mut image_pad_counts, remote_images)?;
     }
 
     // P1-6 (2026-07-09): duplicate-error observation masking

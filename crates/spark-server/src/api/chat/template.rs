@@ -278,6 +278,7 @@ mod json_message_tests {
         let out = super::super::msg_entry::build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &msgs,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,
