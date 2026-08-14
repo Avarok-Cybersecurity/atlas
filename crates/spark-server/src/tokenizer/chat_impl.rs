@@ -2,7 +2,7 @@
 
 //! `impl ChatTokenizer` body.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
@@ -229,6 +229,7 @@ impl ChatTokenizer {
             enable_thinking,
             disable_tool_steering,
             None,
+            None,
         )
     }
 
@@ -239,6 +240,7 @@ impl ChatTokenizer {
         enable_thinking: bool,
         disable_tool_steering: bool,
         reasoning_effort: Option<&str>,
+        preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
             let rendered = super::deepseek_v4::encode_messages(
@@ -250,70 +252,18 @@ impl ChatTokenizer {
             return self.encode(&rendered);
         }
 
-        let tmpl = self
-            .jinja_env
-            .get_template("chat")
-            .context("Failed to get compiled template")?;
-
-        // Atlas cross-cutting preprocessing (F76 arg-parse + autoclose-think
-        // + think-control), applied to the model's OWN template so the
-        // per-model jinja overrides that used to encode these are no longer
-        // required. Inline `<|think_on|>`/`<|think_off|>` tokens, when
-        // present, override the caller's `enable_thinking`.
-        let (messages_for_render, enable_thinking) =
-            preprocess_for_render(messages, enable_thinking);
-        let messages_val = minijinja::Value::from_serialize(&messages_for_render);
-        let tools_val = tools.map(minijinja::Value::from_serialize);
-
-        // Diagnostic "continue final message" mode: when the LAST message is an
-        // assistant turn, render WITHOUT a generation prompt and strip the
-        // trailing end-of-turn marker so the assistant content becomes the final
-        // prefill token(s). This lets a prefill-vs-decode A/B place a generated
-        // token at the exact position decode produced it. (Standard
-        // continue_final_message convention.)
-        let continue_final = messages
-            .last()
-            .and_then(|m| m.get("role"))
-            .and_then(|r| r.as_str())
-            == Some("assistant");
-
-        // Pass enable_thinking as-is to the template. The Qwen3.5 template uses it
-        // to emit <think>\n (thinking) or <think>\n\n</think>\n\n (no thinking).
-        // Mistral template uses reasoning_effort instead.
-        // The api.rs layer controls enable_thinking based on thinking_in_tools MODEL.toml.
-        // Mistral's template defaults `reasoning_effort` to "high" when
-        // undefined, so we must explicitly pass "none" to disable thinking.
-        let reasoning_effort: minijinja::Value = if let Some(effort) = reasoning_effort {
-            effort.into()
-        } else if enable_thinking {
-            "high".into()
-        } else {
-            "none".into()
-        };
-        let ctx = minijinja::context! {
-            messages => messages_val,
-            tools => tools_val.unwrap_or(minijinja::Value::UNDEFINED),
-            add_generation_prompt => !continue_final,
-            enable_thinking => enable_thinking,
-            reasoning_effort => reasoning_effort,
-            disable_tool_steering => disable_tool_steering,
-            add_vision_id => false,
-        };
-
-        let mut rendered = tmpl.render(ctx).map_err(|e| {
-            tracing::error!("Jinja template error: {e:#}");
-            anyhow::anyhow!("Failed to render Jinja chat template: {e}")
-        })?;
-
-        if continue_final {
-            // Strip the trailing end-of-turn so the assistant content is the
-            // last prefill token (qwen-style templates close with
-            // `<|im_end|>\n`). Trim trailing whitespace first, then the marker.
-            let trimmed = rendered.trim_end();
-            let stripped = trimmed.strip_suffix("<|im_end|>").unwrap_or(trimmed);
-            rendered = stripped.to_string();
-            tracing::info!("continue_final_message: stripped trailing EOT for prefill A/B");
-        }
+        let rendered = super::chat_render::render_chat(
+            &self.jinja_env,
+            messages,
+            tools,
+            super::chat_render::RenderFlags {
+                enable_thinking,
+                disable_tool_steering,
+                reasoning_effort,
+                preserve_thinking,
+                allow_continue_final: true,
+            },
+        )?;
 
         // Debug: log the tail of the rendered template for the first few requests.
         // Use floor_char_boundary to avoid panicking on multi-byte UTF-8 (e.g. Swedish å ä ö).
@@ -345,6 +295,7 @@ impl ChatTokenizer {
             enable_thinking,
             disable_tool_steering,
             None,
+            None,
         )
     }
 
@@ -355,6 +306,7 @@ impl ChatTokenizer {
         enable_thinking: bool,
         disable_tool_steering: bool,
         reasoning_effort: Option<&str>,
+        preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
             return self.apply_chat_template_jinja_with_effort(
@@ -363,37 +315,26 @@ impl ChatTokenizer {
                 enable_thinking,
                 disable_tool_steering,
                 reasoning_effort,
+                preserve_thinking,
             );
         }
         if let Some(ref env) = self.openai_jinja_env {
-            let tmpl = env
-                .get_template("chat")
-                .context("Failed to get compiled OpenAI template")?;
-            // Same Atlas preprocessing as apply_chat_template_jinja:
-            // F76 arg-parse + autoclose-think + think-control resolution.
-            let (messages_for_render, enable_thinking) =
-                preprocess_for_render(messages, enable_thinking);
-            let messages_val = minijinja::Value::from_serialize(&messages_for_render);
-            let tools_val = tools.map(minijinja::Value::from_serialize);
-            let reasoning_effort: minijinja::Value = if let Some(effort) = reasoning_effort {
-                effort.into()
-            } else if enable_thinking {
-                "high".into()
-            } else {
-                "none".into()
-            };
-            let ctx = minijinja::context! {
-                messages => messages_val,
-                tools => tools_val.unwrap_or(minijinja::Value::UNDEFINED),
-                add_generation_prompt => true,
-                enable_thinking => enable_thinking,
-                reasoning_effort => reasoning_effort,
-                disable_tool_steering => disable_tool_steering,
-                add_vision_id => false,
-            };
-            let rendered = tmpl
-                .render(ctx)
-                .map_err(|e| anyhow::anyhow!("Failed to render OpenAI Jinja template: {e}"))?;
+            // Same render core as apply_chat_template_jinja, minus the
+            // continue-final diagnostic (this path always adds the
+            // generation prompt, preserving historical behavior).
+            let rendered = super::chat_render::render_chat(
+                env,
+                messages,
+                tools,
+                super::chat_render::RenderFlags {
+                    enable_thinking,
+                    disable_tool_steering,
+                    reasoning_effort,
+                    preserve_thinking,
+                    allow_continue_final: false,
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to render OpenAI Jinja template: {e}"))?;
             self.encode(&rendered)
         } else {
             self.apply_chat_template_jinja_with_effort(
@@ -402,6 +343,7 @@ impl ChatTokenizer {
                 enable_thinking,
                 disable_tool_steering,
                 reasoning_effort,
+                preserve_thinking,
             )
         }
     }

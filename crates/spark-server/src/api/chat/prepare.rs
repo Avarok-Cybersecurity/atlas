@@ -129,6 +129,10 @@ pub(crate) fn prepare_chat_prompt(
         enable_thinking,
         thinking_budget,
         req.reasoning_effort,
+        // Per-request chat_template_kwargs.preserve_thinking wins; the
+        // MODEL.toml [behavior] override is the fallback; both unset
+        // leaves the Jinja variable undefined (template default).
+        req.preserve_thinking.or(state.behavior.preserve_thinking),
         tools_active,
     )?;
     if state.chat.phase_timing {

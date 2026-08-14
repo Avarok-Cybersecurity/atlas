@@ -29,9 +29,20 @@ The filename must match the model's `model_type` from `config.json`:
 | Model | model_type | Override file |
 |-------|-----------|---------------|
 | Qwen3.5-35B/122B MoE | `qwen3_5_moe` | `qwen3_5_moe.jinja` |
-| Qwen3.5-27B Dense | `qwen3_5` | `qwen3_5.jinja` |
 | Qwen3-Next-80B | `qwen3_next` | `qwen3_next.jinja` |
 | Nemotron-H | `nemotron_h` | `nemotron_h.jinja` |
+
+> `qwen3_5.jinja` (dense 27B family) was RETIRED 2026-08-14. It was a stale
+> April-2026 strict subset of the checkpoints' own templates (no
+> `preserve_thinking`, no Qwen3.8 `reasoning_effort` block), and because
+> Qwen3.5-27B, Qwen3.6-27B AND Qwen3.8-27B all report `model_type =
+> "qwen3_5"`, the one file silently forced an old template onto every new
+> checkpoint generation. The dense family now renders model-first off each
+> checkpoint's own `chat_template.jinja`; byte-parity of the Qwen3.6 render
+> with the retired override is locked by golden tests in
+> `crates/spark-server/src/tokenizer/tests/qwen_dense.rs`. Per-target
+> template knobs (`preserve_thinking`) come from MODEL.toml `[behavior]`
+> and per-request `chat_template_kwargs`, not from a template fork.
 
 ## Priority
 

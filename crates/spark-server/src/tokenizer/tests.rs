@@ -8,6 +8,7 @@ mod deepseek_v4;
 use serde_json::json;
 
 mod laguna;
+mod qwen_dense;
 
 fn render_minimax_openai_template(
     messages: &[serde_json::Value],
