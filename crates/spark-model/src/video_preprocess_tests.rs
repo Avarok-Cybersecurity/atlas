@@ -7,6 +7,13 @@
 //! through a decoded fixture.
 
 use super::*;
+use crate::video_decode_ffmpeg::FfmpegPolicy;
+
+/// The default: no subprocess. Every GIF case must pass without it, which is
+/// the guarantee that the pure-Rust path is not quietly depending on ffmpeg.
+fn no_ffmpeg() -> FfmpegPolicy {
+    FfmpegPolicy::default()
+}
 
 fn cfg() -> VisionConfig {
     VisionConfig {
@@ -163,7 +170,7 @@ fn make_gif(n: u16, size: u16) -> String {
 #[test]
 fn an_animated_gif_decodes_to_its_frames() {
     let uri = make_gif(6, 64);
-    let (frames, fps) = decode_frames(&uri).expect("decode");
+    let (frames, fps) = decode_frames(&uri, 10.0, &no_ffmpeg()).expect("decode");
     assert_eq!(frames.len(), 6);
     // 100 ms per frame → 10 fps.
     assert!((fps - 10.0).abs() < 0.5, "fps was {fps}");
@@ -174,7 +181,7 @@ fn an_animated_gif_decodes_to_its_frames() {
 #[test]
 fn grouping_produces_correctly_shaped_buffers() {
     let uri = make_gif(8, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
     assert_eq!(v.grid_h, 4, "64px / 16 = 4 patches");
     assert_eq!(v.grid_w, 4);
     assert_eq!(v.grid_t, 4, "8 frames at tp=2 = 4 groups");
@@ -189,7 +196,7 @@ fn grouping_produces_correctly_shaped_buffers() {
 #[test]
 fn pad_count_is_groups_times_the_merged_plane() {
     let uri = make_gif(8, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
     // 4 groups × (4/2 × 4/2) = 4 × 4 = 16
     assert_eq!(v.pad_count(2), 16);
     assert_eq!(v.pad_count(1), 4 * 16);
@@ -202,7 +209,7 @@ fn pad_count_is_groups_times_the_merged_plane() {
 #[test]
 fn the_two_frames_of_a_group_are_actually_different() {
     let uri = make_gif(4, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
     let ps = 16usize;
     let g = &v.groups[0];
     // Offsets of t=0 and t=1 within channel 0 of patch 0.
@@ -218,7 +225,7 @@ fn the_two_frames_of_a_group_are_actually_different() {
 #[test]
 fn consecutive_groups_hold_different_frames() {
     let uri = make_gif(4, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
     assert_eq!(v.groups.len(), 2);
     assert_ne!(v.groups[0][0], v.groups[1][0], "group 1 repeated group 0");
 }
@@ -229,8 +236,8 @@ fn consecutive_groups_hold_different_frames() {
 #[test]
 fn the_area_bound_shrinks_the_grid() {
     let uri = make_gif(4, 256);
-    let big = preprocess_video(&uri, &cfg(), None, 10.0).expect("unbounded");
-    let small = preprocess_video(&uri, &cfg(), Some(64 * 64), 10.0).expect("bounded");
+    let big = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("unbounded");
+    let small = preprocess_video(&uri, &cfg(), Some(64 * 64), 10.0, &no_ffmpeg()).expect("bounded");
     assert!(
         small.grid_h < big.grid_h,
         "bound {}x{} did not shrink {}x{}",
@@ -257,7 +264,7 @@ fn an_mp4_is_refused_by_name_with_a_conversion_hint() {
         "data:video/mp4;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(b"\x00\x00\x00\x20ftypmp42")
     );
-    let err = format!("{:#}", decode_frames(&uri).unwrap_err());
+    let err = format!("{:#}", decode_frames(&uri, 10.0, &no_ffmpeg()).unwrap_err());
     assert!(err.contains("mp4"), "{err}");
     assert!(err.contains("ffmpeg"), "no conversion hint: {err}");
 }
@@ -267,15 +274,15 @@ fn a_single_frame_gif_is_refused_rather_than_treated_as_a_still() {
     let uri = make_gif(1, 64);
     let err = format!(
         "{:#}",
-        preprocess_video(&uri, &cfg(), None, 10.0).unwrap_err()
+        preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).unwrap_err()
     );
     assert!(err.contains("temporal group"), "{err}");
 }
 
 #[test]
 fn garbage_is_an_error_not_a_panic() {
-    assert!(decode_frames("data:video/gif;base64,bm90LWEtZ2lm").is_err());
-    assert!(decode_frames("!!! not base64 !!!").is_err());
+    assert!(decode_frames("data:video/gif;base64,bm90LWEtZ2lm", 10.0, &no_ffmpeg()).is_err());
+    assert!(decode_frames("!!! not base64 !!!", 10.0, &no_ffmpeg()).is_err());
 }
 
 #[test]
@@ -283,8 +290,8 @@ fn invalid_geometry_is_refused_before_dividing_by_it() {
     let uri = make_gif(4, 64);
     let mut c = cfg();
     c.temporal_patch_size = 0;
-    assert!(preprocess_video(&uri, &c, None, 10.0).is_err());
+    assert!(preprocess_video(&uri, &c, None, 10.0, &no_ffmpeg()).is_err());
     let mut c = cfg();
     c.patch_size = 0;
-    assert!(preprocess_video(&uri, &c, None, 10.0).is_err());
+    assert!(preprocess_video(&uri, &c, None, 10.0, &no_ffmpeg()).is_err());
 }

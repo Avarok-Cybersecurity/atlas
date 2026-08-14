@@ -32,6 +32,7 @@ pub mod speculative;
 pub mod ssm_reserve;
 pub mod tp_shard;
 pub mod traits;
+pub mod video_decode_ffmpeg;
 pub mod video_preprocess;
 pub mod vision_preprocess;
 pub mod weight_loader;

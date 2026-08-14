@@ -24,13 +24,18 @@
 //!
 //! # Container support
 //!
-//! GIF (and APNG) only, for now. It is the one genuinely multi-frame container
-//! decodable in pure Rust with no system dependency, which lets the temporal
-//! pipeline — sampling, grouping, token accounting, position assignment — be
-//! built and proven before taking on an H.264 decoder. MP4 is refused by name
-//! rather than misparsed. See issue #515.
+//! Two backends, chosen by MAGIC BYTES rather than the declared MIME:
+//!
+//! - **GIF** decodes in-process, pure Rust, always available, no dependency.
+//! - **Everything else** (MP4/MOV, WebM/Matroska, AVI — H.264, H.265, VP9,
+//!   AV1) goes to ffmpeg as a subprocess, which is opt-in.
+//!
+//! Sniffing the bytes rather than trusting the label means a client that
+//! sends an mp4 as `video/gif`, or as `application/octet-stream`, still gets
+//! the right decoder. See `video_decode_ffmpeg` for why a subprocess rather
+//! than a linked decoder, and issue #515.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use atlas_core::config::VisionConfig;
 use image::RgbImage;
 
@@ -147,39 +152,73 @@ pub fn sample_indices(
     out
 }
 
-/// Decode every frame of an animated container.
+/// Decode every frame of a container, choosing a backend by what the bytes
+/// actually are.
 ///
-/// Returns the frames and the container's nominal frame rate, derived from the
-/// per-frame delays GIF stores (they are per-frame, so the rate reported is
-/// the average — enough to drive sampling).
-pub fn decode_frames(data_uri: &str) -> Result<(Vec<RgbImage>, f32)> {
+/// Returns the frames and the rate they represent. GIF is decoded in-process
+/// (pure Rust, no dependency) and reports the container's own average rate,
+/// so the caller still has to sample it. ffmpeg resamples during decode, so
+/// its frames are ALREADY at `target_fps` and it reports that — which makes
+/// the caller's sampling step a no-op rather than a second, lossy resample.
+///
+/// Dispatch is on MAGIC BYTES, not the declared MIME. A client that labels an
+/// mp4 `video/gif`, or sends `application/octet-stream`, still gets the right
+/// decoder; and a GIF mislabelled as mp4 does not needlessly spawn a process.
+pub fn decode_frames(
+    data_uri: &str,
+    target_fps: f32,
+    ffmpeg: &crate::video_decode_ffmpeg::FfmpegPolicy,
+) -> Result<(Vec<RgbImage>, f32)> {
     let (mime, bytes) = decode_data_uri_bytes(data_uri)?;
+    ensure!(!bytes.is_empty(), "the video payload is empty");
 
-    // Name the unsupported containers rather than letting the decoder fail
-    // with something that reads like corruption.
-    let m = mime.to_ascii_lowercase();
-    if m.contains("mp4") || m.contains("quicktime") || m.contains("webm") || m.contains("matroska")
-    {
-        bail!(
-            "video container {mime:?} is not decodable by this build — only animated GIF is \
-             supported so far (issue #515). Convert the clip: \
-             ffmpeg -i in.mp4 -vf fps=2 -loop 0 out.gif"
-        );
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return decode_gif(&bytes);
     }
 
+    // Everything else goes to the subprocess backend. If it is disabled the
+    // error names the flag AND the container, so the operator is not left
+    // guessing which of the two problems they have.
+    let kind = sniff_container(&bytes, &mime);
+    crate::video_decode_ffmpeg::decode_frames(&bytes, target_fps, ffmpeg)
+        .with_context(|| format!("decoding {kind}"))
+        .map(|f| (f, target_fps))
+}
+
+/// Best-effort container name for error messages. Cosmetic only — nothing
+/// branches on it — so an unrecognised blob is described as such rather than
+/// guessed at.
+fn sniff_container(bytes: &[u8], mime: &str) -> String {
+    let by_magic = if bytes.len() > 12 && &bytes[4..8] == b"ftyp" {
+        Some("an MP4/MOV container")
+    } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        Some("a Matroska/WebM container")
+    } else if bytes.starts_with(b"RIFF") {
+        Some("an AVI container")
+    } else {
+        None
+    };
+    match (by_magic, mime.is_empty()) {
+        (Some(k), _) => k.to_string(),
+        (None, false) => format!("a {mime} payload"),
+        (None, true) => "an unrecognised container".to_string(),
+    }
+}
+
+/// In-process GIF decode. The rate is derived from the per-frame delays the
+/// format stores; a GIF may declare 0 delay ("as fast as possible"), which is
+/// treated as the default rather than divided by.
+fn decode_gif(bytes: &[u8]) -> Result<(Vec<RgbImage>, f32)> {
     use image::AnimationDecoder;
     use image::codecs::gif::GifDecoder;
-    let cursor = std::io::Cursor::new(bytes);
-    let decoder = GifDecoder::new(cursor)
-        .with_context(|| format!("not a decodable animated container (mime {mime:?})"))?;
+    let decoder =
+        GifDecoder::new(std::io::Cursor::new(bytes.to_vec())).context("not a decodable GIF")?;
     let frames = decoder
         .into_frames()
         .collect_frames()
         .context("failed to decode animation frames")?;
     ensure!(!frames.is_empty(), "the container decoded to zero frames");
 
-    // Average delay → nominal fps. A GIF may declare 0 delay (meaning "as fast
-    // as possible"); treat that as the default rather than dividing by zero.
     let total_ms: f64 = frames
         .iter()
         .map(|f| {
@@ -211,12 +250,13 @@ pub fn preprocess_video(
     vcfg: &VisionConfig,
     max_pixels: Option<usize>,
     target_fps: f32,
+    ffmpeg: &crate::video_decode_ffmpeg::FfmpegPolicy,
 ) -> Result<PreprocessedVideo> {
     ensure!(
         vcfg.patch_size > 0 && vcfg.spatial_merge_size > 0 && vcfg.temporal_patch_size > 0,
         "vision_config geometry is invalid (patch/merge/temporal size is 0)"
     );
-    let (frames, native_fps) = decode_frames(data_uri)?;
+    let (frames, native_fps) = decode_frames(data_uri, target_fps, ffmpeg)?;
     let tp = vcfg.temporal_patch_size;
 
     let keep = sample_indices(
