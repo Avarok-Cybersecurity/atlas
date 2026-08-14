@@ -229,6 +229,181 @@ mod tests {
         }
     }
 
+    /// Split the declaration starting at `sig` into (parameter list, body).
+    /// The body is brace-matched, so nested blocks are kept and the next
+    /// function is not swept in.
+    fn fn_signature_and_body<'a>(src: &'a str, sig: &str) -> (&'a str, &'a str) {
+        let start = src
+            .find(sig)
+            .unwrap_or_else(|| panic!("signature `{sig}` not found"));
+        let open = start
+            + src[start..]
+                .find('{')
+                .expect("no body brace after signature");
+        let mut depth = 0usize;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (&src[start..open], &src[open..=open + i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces after `{sig}`");
+    }
+
+    fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+        fn_signature_and_body(src, sig).1
+    }
+
+    /// (file, partial signature, `__constant__` table it must NOT index,
+    ///  callers that must hand it a shared-staged copy)
+    const DECODE_PARTIALS: &[(&str, &str, &str, &[&str])] = &[
+        (
+            "w4a16_gemv.cu",
+            "__device__ __forceinline__ float w4a16_gemv_partial(",
+            "E2M1_LUT",
+            &["w4a16_gemv", "w4a16_gemv_sw"],
+        ),
+        (
+            "w4a16_gemv_fused.cu",
+            "__device__ __forceinline__ float w4a16_dual_partial(",
+            "E2M1_LUT_FUSED_W4",
+            &["w4a16_gemv_dual", "w4a16_gemv_dual_sw"],
+        ),
+        (
+            "w4a16_gemv_fused.cu",
+            "__device__ __forceinline__ float w4a16_silu_partial(",
+            "E2M1_LUT_FUSED_W4",
+            &["w4a16_gemv_silu_input_sw"],
+        ),
+    ];
+
+    /// POSITIVE: every M=1 decode GEMV partial must index a SHARED-staged copy
+    /// of the E2M1 table, never `__constant__` memory directly.
+    ///
+    /// WHY (this is the PR #479 regression, not style): the table index is a
+    /// data-dependent weight nibble. `__constant__` is a BROADCAST cache — a
+    /// warp request replays once per distinct address, and 32 lanes over NVFP4
+    /// weights cover ~14 of the 16 entries, so one lookup costs ~14
+    /// transactions. There is exactly one lookup per weight element, i.e. on
+    /// every FMA of the decode inner loop. Shared memory answers all 16
+    /// indices from 16 distinct banks in one conflict-free transaction.
+    ///
+    /// Staging is numerically inert — `s_lut[i]` is a bit-exact FP32 copy — so
+    /// this coexists with `sw_partial_shares_pipelined_k16_loop`, which pins
+    /// the association order that buys base/SW bit-identity.
+    ///
+    /// PROVEN BY: swapping any `lut[byte_val ...]` back to
+    /// `E2M1_LUT[byte_val ...]` turns this red (SASS: 1 LDS + 32 indexed
+    /// `LDC c[0x3][R]` instead of 33 LDS + 1 LDC in `w4a16_gemv`).
+    #[test]
+    fn decode_gemv_partials_index_a_shared_staged_lut() {
+        for &(file, sig, table, callers) in DECODE_PARTIALS {
+            let paths = named_cu(file);
+            assert!(paths.len() >= 3, "{file}: expected 3 backend copies");
+            for path in paths {
+                let src = fs::read_to_string(&path).unwrap();
+                let where_ = format!("{}::{sig}", path.display());
+                let (params, body) = fn_signature_and_body(&src, sig);
+                assert!(
+                    !body.contains(&format!("{table}[byte_val")),
+                    "{where_}: data-dependent index into __constant__ {table} \
+                     serializes the warp — take the staged `lut` instead"
+                );
+                assert!(
+                    body.contains("lut[byte_val"),
+                    "{where_}: must dequant through the staged `lut` parameter"
+                );
+                assert!(
+                    params.contains("const float* __restrict__ lut"),
+                    "{where_}: must accept the staged table as `const float* __restrict__ lut`"
+                );
+                for caller in callers {
+                    let cb = fn_body(&src, &format!("void {caller}("));
+                    assert!(
+                        cb.contains("__shared__ float s_lut"),
+                        "{}::{caller}: must stage the E2M1 table in shared memory",
+                        path.display()
+                    );
+                    assert!(
+                        cb.contains("s_lut"),
+                        "{}::{caller}: must pass its staged copy to the partial",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    /// STRUCTURAL: the single-warp kernels must stage the LUT PER WARP and
+    /// stay free of block barriers.
+    ///
+    /// Two invariants the shared staging leans on, both silently breakable:
+    ///   1. `w4a16_gemv_sw` / `_dual_sw` / `_silu_input_sw` early-return on
+    ///      `n >= N`, which is warp-uniform (`n = blockIdx.x*8 + tid/32`) but
+    ///      NOT block-uniform. A `__syncthreads()` after that return is a
+    ///      divergent barrier — undefined behaviour, not a compile error. So
+    ///      the staging must publish with `__syncwarp()`, and these kernels
+    ///      must contain no `__syncthreads()` at all (the documented
+    ///      "no smem, no __syncthreads in the reduction" property).
+    ///   2. One private 16-float row per warp, so the row count must track
+    ///      `N_PER_BLOCK_SW`. A hardcoded 8 would index out of bounds the day
+    ///      that define moves. 8 rows = 512 B/block, ~50x under the smem that
+    ///      would cap occupancy at 8 blocks/SM, so it is occupancy-neutral.
+    ///
+    /// PROVEN BY: replacing `__syncwarp()` with `__syncthreads()`, or writing
+    /// `s_lut[8][16]`, turns this red.
+    #[test]
+    fn sw_gemv_stages_the_lut_per_warp_without_a_block_barrier() {
+        let want_rows = "__shared__ float s_lut[N_PER_BLOCK_SW][16]";
+        for (file, kernels, helper) in [
+            (
+                "w4a16_gemv.cu",
+                &["w4a16_gemv_sw"][..],
+                "stage_e2m1_lut_warp",
+            ),
+            (
+                "w4a16_gemv_fused.cu",
+                &["w4a16_gemv_dual_sw", "w4a16_gemv_silu_input_sw"][..],
+                "stage_e2m1_lut_fused_warp",
+            ),
+        ] {
+            for path in named_cu(file) {
+                let src = fs::read_to_string(&path).unwrap();
+                let hb = fn_body(&src, &format!("void {helper}("));
+                assert!(
+                    hb.contains("__syncwarp()"),
+                    "{}::{helper}: warp-scoped staging must publish with __syncwarp()",
+                    path.display()
+                );
+                for k in kernels {
+                    let kb = fn_body(&src, &format!("void {k}("));
+                    assert!(
+                        kb.contains(want_rows),
+                        "{}::{k}: per-warp LUT rows must be sized by N_PER_BLOCK_SW",
+                        path.display()
+                    );
+                    assert!(
+                        kb.contains(&format!("{helper}(s_lut[local_out], lane)")),
+                        "{}::{k}: must stage its own warp row",
+                        path.display()
+                    );
+                    assert!(
+                        !kb.contains("__syncthreads()"),
+                        "{}::{k}: block barrier after a warp-uniform early return is \
+                         divergent UB — and it would undo the barrier-free reduction",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
     /// NEGATIVE: attention decode must not launch the base GEMV directly.
     /// A new `ops::w4a16_gemv(` site there ships the 64-thread kernel on
     /// the default path even though `nvfp4_decode_gemv` exists.
