@@ -82,12 +82,22 @@ pub(crate) fn load_sampling_defaults(
 /// Pure per-field resolution: a field present in `generation_config.json` is
 /// honored verbatim (a config that legitimately asks for `temperature=0` gets
 /// it); an ABSENT field backfills from the model's curated MODEL.toml
-/// `[sampling.non_thinking]` preset (temperature/top_k/top_p) or the CLI
-/// defaults (top_n_sigma/min_p, which the preset does not carry). No
-/// hard-coded constants: the old `0.6 / 20 / 0.95` literals duplicated — and
-/// could drift from — the preset that already drives the penalties, and a
-/// missing config must not silently mean "someone's idea of typical" when the
-/// model ships its own numbers.
+/// `[sampling.non_thinking]` preset (temperature/top_k/top_p/min_p) or the CLI
+/// defaults. No hard-coded constants: the old `0.6 / 20 / 0.95` literals
+/// duplicated — and could drift from — the preset that already drives the
+/// penalties, and a missing config must not silently mean "someone's idea of
+/// typical" when the model ships its own numbers.
+///
+/// `min_p` is three-tier because the preset carries it only when MODEL.toml
+/// says so: config → preset (`Some`) → `--default-min-p`. A model card that
+/// specifies `min_p = 0` previously had no way to express it — the server's
+/// 0.08 default reached every request regardless, and `[behavior].min_p_floor`
+/// can only raise min_p, never pin it. A preset that stays silent (`None`)
+/// leaves the CLI default owning the field exactly as before.
+///
+/// `top_n_sigma` remains CLI-only: it is not carried by any model card we
+/// serve, and it is separately suspected of being a no-op on several targets,
+/// so giving it a MODEL.toml voice would advertise a knob that does nothing.
 pub(crate) fn resolve_sampling_defaults(
     gen_cfg: Option<&serde_json::Value>,
     args: &cli::ServeArgs,
@@ -112,6 +122,7 @@ pub(crate) fn resolve_sampling_defaults(
     let min_p = gen_cfg
         .and_then(|v| v.get("min_p")?.as_f64())
         .map(|p| p as f32)
+        .or(preset.min_p)
         .unwrap_or(args.default_min_p);
     SamplingDefaults {
         temperature,
@@ -392,6 +403,7 @@ mod sampling_defaults_tests {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            min_p: None,
         }
     }
 
@@ -437,10 +449,35 @@ mod sampling_defaults_tests {
 
     #[test]
     fn sigma_and_min_p_fall_back_to_cli_args() {
-        // These two are CLI-owned (#388): the preset does not carry them.
+        // top_n_sigma is CLI-owned outright; min_p is CLI-owned only while
+        // the preset stays silent (`min_p: None`), which `preset()` is.
         let a = args();
         let d = resolve_sampling_defaults(None, &a, &preset());
         assert_eq!(d.top_n_sigma, a.default_top_n_sigma);
         assert_eq!(d.min_p, a.default_min_p);
+    }
+
+    #[test]
+    fn model_declared_min_p_zero_beats_the_cli_default() {
+        // The reason this field exists. A card that specifies min_p = 0 must
+        // get 0, not the server's 0.08 — and 0.0 is exactly the value a
+        // non-Option field could not distinguish from "unset".
+        let a = args();
+        assert!(a.default_min_p > 0.0, "guard: CLI default must be nonzero");
+        let mut p = preset();
+        p.min_p = Some(0.0);
+        let d = resolve_sampling_defaults(None, &a, &p);
+        assert_eq!(d.min_p, 0.0, "model preset must win over --default-min-p");
+    }
+
+    #[test]
+    fn generation_config_still_outranks_a_declared_min_p() {
+        // Same precedence as temperature/top_k/top_p: the checkpoint's own
+        // generation_config.json is the most specific source and wins.
+        let cfg = serde_json::json!({"min_p": 0.31});
+        let mut p = preset();
+        p.min_p = Some(0.0);
+        let d = resolve_sampling_defaults(Some(&cfg), &args(), &p);
+        assert_eq!(d.min_p, 0.31);
     }
 }

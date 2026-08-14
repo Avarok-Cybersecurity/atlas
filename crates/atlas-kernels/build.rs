@@ -23,6 +23,9 @@ struct SamplingCat {
     // over the recent token window. 0.0 = disabled. 0.2 is the SGLang
     // reference value; lossless on AIME/GPQA at that strength.
     lz_penalty: f32,
+    // Model-declared min-p. None = MODEL.toml is silent, so the server's
+    // --default-min-p stands (see SamplingCategory in src/lib.rs).
+    min_p: Option<f32>,
 }
 
 impl Default for SamplingCat {
@@ -38,6 +41,7 @@ impl Default for SamplingCat {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            min_p: None,
         }
     }
 }
