@@ -325,11 +325,52 @@ const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
+/// The vision gate answers one question — does the served model see the image
+/// it was sent, at the resolution its checkpoint permits — so anything that
+/// cannot change the pixels reaching the encoder or the tokens they become is
+/// excluded. The other benchmark drivers are the clear case: none of them can
+/// alter vision preprocessing.
+const VISION_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+];
+
 /// The gates whose records must pass, and what each one ignores.
-pub const REQUIRED: [GateCoverage; 6] = [
+pub const REQUIRED: [GateCoverage; 7] = [
     GateCoverage {
         id: "agentic-webserver",
         excludes: AGENTIC_EXCLUDES,
+    },
+    // Vision models only, and that constraint lives in BENCH.toml rather than
+    // here: coverage is path-based with no per-model dimension, while a
+    // `[[benchmarks]] gate = "vision-fidelity"` entry exists on exactly the
+    // three targets that ship a vision tower. A text-only target has no entry,
+    // so the gate has nothing to run and nothing to satisfy.
+    //
+    // REQUIRED rather than a promotion candidate because it is measured: all
+    // three targets ran it on 2026-08-14 and passed 8/8 geometry, 3/3 probes,
+    // control held, with IDENTICAL token counts across a dense NVFP4, an
+    // unsloth NVFP4 and an FP8 MoE. Its bounds are absolute and carry no noise
+    // term, so unlike `concurrency-sweep` there is no thresholds-less entry
+    // problem to solve first.
+    GateCoverage {
+        id: "vision-fidelity",
+        excludes: VISION_EXCLUDES,
     },
     GateCoverage {
         id: "ttft-warm-gate",

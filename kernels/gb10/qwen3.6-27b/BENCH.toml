@@ -78,3 +78,53 @@ measured — the exact failure this file's header warns about. Thresholds land \
 here after the first measured run, and that run is what promotes the bench \
 from PROMOTION_CANDIDATES to REQUIRED.\
 """
+
+# ── vision-fidelity ────────────────────────────────────────────────────────
+# Vision models only. This gate is declared on the three targets that ship a
+# vision tower and have a BENCH.toml; a text-only target has no entry and the
+# gate simply does not apply to it.
+#
+# The bounds are ABSOLUTE and take no noise term, like the cross-contamination
+# gate's. Vision-token count is arithmetic over the patch grid — there is no
+# run-to-run variance for a tolerance to absorb, so any movement is a real
+# change in preprocessing. That is the property that makes this gate worth
+# requiring: the 2026-08-14 resolution-cap defect silently reduced every image
+# above 1280px to about a tenth of its permitted area, and every capability
+# check passed throughout, because a downscaled picture is still recognisably
+# what it is.
+#
+#   geometry_asserted = 8   every ladder rung must MEASURE, not merely not-fail.
+#                           A cell the server cannot serve reports UNMEASURED,
+#                           which is not a failure — so without this floor an
+#                           encoder-capacity regression would turn all eight
+#                           cells UNMEASURED and still read as PASS.
+#   probes_passed     = 3   capability, all three.
+#   control_held      = 1   the no-image control MUST hold. This is the
+#                           non-vacuity requirement expressed as a threshold:
+#                           if the control answers as though it saw a picture,
+#                           the probes are not evidence and the run is VACUOUS.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "vision-fidelity"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+label = "Qwen3.6-27B dense (NVFP4, unsloth)"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary vision/sprint @ 068c8c18: PASS, 8/8 \
+geometry cells matched, 3/3 probes, control held, 24.0 s. Geometry was \
+IDENTICAL across all three vision targets (49/121/192/220/576/576/920/405 \
+merged tokens) — token count is a property of the preprocessor rather than \
+the checkpoint, so agreement across a dense NVFP4, an unsloth NVFP4 and an \
+FP8 MoE is evidence the arithmetic is right, not a coincidence. This checkpoint declares NO preprocessor_config area bound, so it runs the 1280px long-side fallback at 6400 patches — and still matches every cell, which is the non-regression guarantee holding on a real model rather than only in a unit test."""
+
+[benchmarks.metrics.geometry_asserted]
+min = 8.0
+
+[benchmarks.metrics.probes_passed]
+min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0
