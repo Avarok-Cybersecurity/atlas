@@ -81,6 +81,7 @@ fn verdict_logic_is_inside_the_boundary() {
     for f in [
         "crates/atlas-plugin/src/gate/coverage.rs",
         "crates/atlas-plugin/src/gate/check.rs",
+        "crates/atlas-plugin/src/gate/scoring.rs",
         "crates/atlas-plugin/src/gate/closure.rs",
         "crates/atlas-plugin/src/gate/taxon.rs",
         "crates/atlas-plugin/src/gate/bench.rs",
@@ -91,6 +92,65 @@ fn verdict_logic_is_inside_the_boundary() {
             super::coverage::REQUIRED.len(),
             "{f} decides a verdict and must re-open every gate, got {hit:?}"
         );
+    }
+}
+
+/// ★ The boundary follows the SYMBOLS, not the filenames.
+///
+/// The list above pins names, and names go stale: the 6c6fcb2b1 split moved
+/// `check_record`/`compare` from `check.rs` into a new `scoring.rs` that was
+/// in `GATE_MACHINERY`'s excluded prefix and NOT in `BOUNDARY_FILES` — so an
+/// edit to the pass/fail comparison invalidated nothing and would have been
+/// judged by its own new logic, the exact PR #420 shape the boundary exists
+/// to close. This test finds each verdict function's DEFINING file in the
+/// gate sources and asserts that file re-opens every gate, so the next
+/// 500-line split moves the boundary with the function or fails here.
+#[test]
+fn every_verdict_symbol_is_defined_inside_the_boundary() {
+    let gate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gate");
+    let verdict_fns = [
+        "fn record_covers",
+        "fn invalidating_paths",
+        "fn check_record",
+        "fn compare",
+        "fn excuses",
+        "fn changed_targets",
+        "fn baseline_for",
+    ];
+    for symbol in verdict_fns {
+        let mut defined_in = Vec::new();
+        for entry in std::fs::read_dir(&gate_dir).expect("gate dir listable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("gate source readable");
+            if src.contains(symbol) {
+                let rel = format!(
+                    "crates/atlas-plugin/src/gate/{}",
+                    path.file_name().unwrap().to_str().unwrap()
+                );
+                // Test files mention the symbols without defining verdicts.
+                if !rel.ends_with("_tests.rs") && !rel.ends_with("/tests.rs") {
+                    defined_in.push(rel);
+                }
+            }
+        }
+        assert!(
+            !defined_in.is_empty(),
+            "{symbol} not found anywhere under src/gate — if it was renamed, \
+             rename it here too; the boundary must keep tracking it"
+        );
+        for rel in defined_in {
+            let hit = super::coverage::invalidated_by([rel.as_str()]);
+            assert_eq!(
+                hit.len(),
+                super::coverage::REQUIRED.len(),
+                "{rel} contains `{symbol}` but is not in BOUNDARY_FILES — a \
+                 verdict function moved out of the boundary (the PR #420 hole, \
+                 reintroduced by a file split)"
+            );
+        }
     }
 }
 

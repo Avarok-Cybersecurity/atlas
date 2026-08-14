@@ -286,6 +286,19 @@ pub(super) fn parse_match_names(model_dir: &std::path::Path) -> Vec<String> {
                  would match every checkpoint reference",
                 path.display()
             );
+            // The needles are emitted into generated Rust as `"{needle}"`
+            // string literals (build_codegen.rs) with no escaping; a quote
+            // or backslash would produce an uncompilable target_ptx.rs with
+            // an error pointing nowhere near this file. Reject here, where
+            // the operator can see which TOML entry to fix. (No legitimate
+            // HF id / model-dir needle contains either character.)
+            assert!(
+                !s.contains('"') && !s.contains('\\'),
+                "{}: [model] match_names entry {s:?} contains a quote or backslash — \
+                 needles are emitted verbatim into generated Rust string literals \
+                 and checkpoint references never contain these characters",
+                path.display()
+            );
             s.to_string()
         })
         .collect()

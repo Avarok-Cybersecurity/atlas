@@ -163,6 +163,60 @@ fn variant_navigation_and_the_way_back() {
     assert_eq!(s.view, View::Variants);
 }
 
+/// A variant pin is scoped to the benchmark it was chosen for. Before the
+/// fix, choosing the dense variant and then selecting a variantless
+/// benchmark kept `unsloth/Qwen3.8-27B-NVFP4` pinned as its target — with
+/// `follow_live_model` permanently disabled — for the rest of the session.
+#[test]
+fn a_variant_pin_is_released_when_another_benchmark_is_selected() {
+    let mut s = agentic_state();
+    s.variants = two_rows();
+    s.choose_variant(1);
+    assert_eq!(s.target.model, "unsloth/Qwen3.8-27B-NVFP4");
+    assert!(s.target_model_pinned && s.variant_pinned);
+
+    let matrix = atlas_plugin::registry::all()
+        .iter()
+        .position(|d| d.id == "serve-matrix")
+        .expect("registered");
+    s.select(matrix);
+    assert!(
+        !s.target_model_pinned && !s.variant_pinned,
+        "the variant pin must not survive the benchmark it was chosen for"
+    );
+    s.follow_live_model("live/model");
+    assert_eq!(
+        s.target.model, "live/model",
+        "the form follows the live server again"
+    );
+    assert_eq!(
+        s.edit.last().map(String::as_str),
+        Some("live/model"),
+        "the model row shows what the target now is"
+    );
+}
+
+/// An operator-TYPED pin is the session's word, not the variant step's:
+/// switching benchmarks keeps it, exactly as before the variant feature.
+#[test]
+fn an_operator_typed_pin_survives_benchmark_switches() {
+    let mut s = agentic_state();
+    // Type a model into the target field (last form row).
+    let model_row = s.specs.len() + 1;
+    s.edit[model_row] = "my/endpoint-model".into();
+    s.commit_row(model_row);
+    assert!(s.target_model_pinned && !s.variant_pinned);
+
+    let matrix = atlas_plugin::registry::all()
+        .iter()
+        .position(|d| d.id == "serve-matrix")
+        .expect("registered");
+    s.select(matrix);
+    assert!(s.target_model_pinned, "typed pin survives");
+    s.follow_live_model("live/model");
+    assert_eq!(s.target.model, "my/endpoint-model");
+}
+
 /// A benchmark with no declared variants keeps the old two-step flow — and
 /// selecting another benchmark clears the previous one's variants, so a stale
 /// row can never adopt the wrong checkpoint.

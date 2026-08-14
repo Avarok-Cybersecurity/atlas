@@ -29,6 +29,9 @@ pub fn find(id: &str) -> Result<&'static BenchmarkDescriptor> {
 }
 
 pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
+    if let Err(msg) = args.reject_orphan_pr() {
+        bail!("{msg}");
+    }
     if args.pull_request_gate_check {
         let code = super::bench_gate_check::gate_check_cmd(args.pr)?;
         if code != 0 {

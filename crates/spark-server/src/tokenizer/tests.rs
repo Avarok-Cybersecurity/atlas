@@ -9,6 +9,7 @@ use serde_json::json;
 
 mod laguna;
 mod qwen_dense;
+mod qwen_dense_parity;
 
 fn render_minimax_openai_template(
     messages: &[serde_json::Value],

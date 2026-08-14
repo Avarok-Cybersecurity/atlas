@@ -62,6 +62,15 @@ pub struct BenchState {
     /// benchmark request carrying the old name is exactly the trigger that
     /// swaps the server back, mid-run.
     pub target_model_pinned: bool,
+    /// True when the current pin came from [`choose_variant`], not from the
+    /// operator's keyboard. A variant pin is scoped to the benchmark it was
+    /// chosen for: selecting a different benchmark releases it (so the form
+    /// follows the live model again), while an operator-typed pin survives
+    /// benchmark switches — targeting a different endpoint on purpose is a
+    /// real thing to want across the whole session.
+    ///
+    /// [`choose_variant`]: super::bench_variants
+    pub variant_pinned: bool,
     /// Set for a benchmark whose descriptor demands confirmation.
     pub confirm_open: bool,
     /// The selected benchmark's model variants, from its assembled baseline.
@@ -120,6 +129,14 @@ impl BenchState {
             return;
         }
         self.target = TargetEndpoint::new(self.target.base_url.clone(), live);
+        // The form's model row displays its edit buffer (built at `select`
+        // time), so following the live model must move it too or the form
+        // keeps showing the value the target no longer has.
+        if !self.editing
+            && let Some(model_row) = self.edit.get_mut(self.specs.len() + 1)
+        {
+            *model_row = self.target.model.clone();
+        }
     }
 
     pub fn attach(&mut self, executor: atlas_plugin::BenchmarkExecutor, target: TargetEndpoint) {
@@ -166,9 +183,18 @@ impl BenchState {
         self.errors.clear();
         self.row = 0;
         self.editing = false;
-        // Another benchmark's variants would adopt the wrong checkpoint.
+        // Another benchmark's variants would adopt the wrong checkpoint —
+        // and a variant PIN is scoped to the benchmark it was chosen for:
+        // without this release, choosing the dense variant and then
+        // selecting a variantless benchmark left its checkpoint pinned (and
+        // `follow_live_model` disabled) for the rest of the session.
+        // An operator-typed pin (`variant_pinned == false`) survives.
         self.variants.clear();
         self.variant_row = 0;
+        if self.variant_pinned {
+            self.variant_pinned = false;
+            self.target_model_pinned = false;
+        }
     }
 
     /// Provenance of the selected benchmark.
@@ -237,6 +263,8 @@ impl BenchState {
                 } else {
                     self.target = TargetEndpoint::new(self.target.base_url.clone(), trimmed);
                     self.target_model_pinned = true;
+                    // Typed by hand: outlives benchmark switches (see field doc).
+                    self.variant_pinned = false;
                     self.errors.remove("__model");
                 }
             }

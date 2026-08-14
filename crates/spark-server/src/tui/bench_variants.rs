@@ -115,6 +115,7 @@ impl BenchState {
         self.target =
             atlas_plugin::TargetEndpoint::new(self.target.base_url.clone(), &row.checkpoint);
         self.target_model_pinned = true;
+        self.variant_pinned = true;
         if let Some(descriptor) = self.descriptor() {
             for (param, metric) in descriptor.threshold_params {
                 let Some(max) = row

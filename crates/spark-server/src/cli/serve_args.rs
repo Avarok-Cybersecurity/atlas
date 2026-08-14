@@ -433,10 +433,17 @@ pub struct ServeArgs {
     #[arg(long)]
     pub draft_model: Option<String>,
 
-    /// DFlash block size γ (parallel draft tokens per step). Defaults to
-    /// the drafter's `block_size` from `config.json` (16 for the published
-    /// Qwen3.6-DFlash drafters); override only for ablation. Higher γ
-    /// increases per-step verify cost but raises peak speedup.
+    /// DFlash block size γ (parallel draft tokens per step). Default 16 —
+    /// the `block_size` of every published Qwen3.6-DFlash drafter; override
+    /// only for ablation. Higher γ increases per-step verify cost but
+    /// raises peak speedup.
+    ///
+    /// NOTE: because of this clap default the drafter-`config.json`
+    /// `block_size` fallback downstream (`DflashBuildArgs.gamma: None`) is
+    /// currently unreachable — the served γ is always this flag. Fine while
+    /// every published drafter uses 16; a drafter with a different
+    /// block_size needs this flag made `Option` first (same resolution
+    /// pattern as `--num-drafts`).
     #[arg(long, default_value_t = 16)]
     pub dflash_gamma: usize,
 

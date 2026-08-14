@@ -234,10 +234,17 @@ pub fn variant_slug(model: &str) -> String {
 /// provenance failure the whole (hardware, model) keying exists to prevent.
 ///
 /// "Default" is read from the committed baseline for the record's own hardware
-/// class. A benchmark with no baseline, or a record from a box class the
-/// baseline does not know, falls back to the legacy name: there is no declared
-/// variant axis to key by, and such records already fail `check_record`
-/// loudly rather than comparing against anything.
+/// class. A benchmark with no baseline at all falls back to the legacy name:
+/// there is no declared variant axis to key by, and such records already fail
+/// `check_record` loudly rather than comparing against anything.
+///
+/// ★ A record whose hardware key the baseline does NOT know (the fingerprint
+/// probe degrades to `Hardware::unknown()` without surfacing an error) is
+/// still slugged unless its `target_model` is a declared default on SOME
+/// hardware class — otherwise a degraded-probe run of a non-default variant
+/// silently OVERWRITES the committed default record for the same commit and
+/// day. Such a record still fails `check_record` by hardware name; failing
+/// red is fine, destroying the default's green is not.
 pub fn record_path_for(root: &Path, record: &GateRecord) -> PathBuf {
     let legacy = record_path(
         root,
@@ -248,17 +255,31 @@ pub fn record_path_for(root: &Path, record: &GateRecord) -> PathBuf {
     let Ok(baseline) = super::bench::baseline_for(root, &record.benchmark_id) else {
         return legacy;
     };
+    if baseline.hardware.is_empty() {
+        // No hardware entry declared anywhere: no variant axis exists, so
+        // there is no default record a stray name could shadow.
+        return legacy;
+    }
     let hardware = record.hardware.gate_key();
-    match baseline.hardware.get(&hardware) {
-        Some(hw) if hw.default != record.target_model => {
-            gate_dir(root, &record.benchmark_id).join(format!(
-                "{}-{}-{}.json",
-                date_of(record.recorded_at),
-                record.git_sha,
-                variant_slug(&record.target_model)
-            ))
-        }
-        _ => legacy,
+    let is_default = match baseline.hardware.get(&hardware) {
+        Some(hw) => hw.default == record.target_model,
+        // Unknown box class: no entry can say what the default is, so keep
+        // the legacy name only for a model that IS some declared default —
+        // anything else is a variant record and must not shadow one.
+        None => baseline
+            .hardware
+            .values()
+            .any(|hw| hw.default == record.target_model),
+    };
+    if is_default {
+        legacy
+    } else {
+        gate_dir(root, &record.benchmark_id).join(format!(
+            "{}-{}-{}.json",
+            date_of(record.recorded_at),
+            record.git_sha,
+            variant_slug(&record.target_model)
+        ))
     }
 }
 
