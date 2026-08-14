@@ -26,6 +26,10 @@ Oracles must print both. The kill bar is vs **template batch2**, not vs 273.
 2. **Dual-issue** — hoist phase-1 `ld.global` before phase-0 compute. No smem mailbox.
 3. **TMA** — hardware copy engine. Only after (1) exists and (2) is not enough.
 
-Do not default-on (2) or (3) until the oracle says the candidate is ≥3%
-faster than template batch2 on both `12288×2048` and `8192×2048`, and
-bit-identical to `w4a16_gemv` × 2.
+Do not default-on (2) or (3) until the oracle prints `Win` (≥3% faster)
+on both `12288×2048` and `8192×2048`, and a separate microtest is
+bit-identical to `w4a16_gemv` × 2. `Fail` (>3% slower) is a hard no;
+`Neutral` is not a default-on.
+
+The 3% bar lives in `spark_model::layers::ops::gemv_batch2_oracle` so a
+candidate PR cannot silently move it.

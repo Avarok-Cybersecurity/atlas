@@ -24,6 +24,10 @@
 //!     --features cuda,gpu-examples --example w4a16_batch2_bw_oracle
 
 use anyhow::Result;
+use spark_model::layers::ops::gemv_batch2_oracle::{
+    FAIL_SLOWER, OracleVerdict, PEAK_GBPS_DEFAULT, STREAM_GBPS_DEFAULT, gbps_from, parse_candidate,
+    verdict,
+};
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
@@ -33,7 +37,6 @@ const WARMUP: usize = 8;
 const ITERS: usize = 40;
 const COLD_CYCLE_BYTES: usize = 256 << 20;
 const M: usize = 2;
-const FAIL_SLOWER: f64 = 1.03;
 
 const SHAPES: &[(&str, u32, u32)] = &[
     ("gdn in_proj N=12288 K=2048", 12288, 2048),
@@ -63,14 +66,6 @@ fn f32_to_bf16_bits(v: f32) -> u16 {
     let bits = v.to_bits();
     let rounding = 0x7fff + ((bits >> 16) & 1);
     ((bits + rounding) >> 16) as u16
-}
-
-fn parse_candidate(spec: &str) -> Option<(&str, &str)> {
-    let (module, kernel) = spec.split_once(':')?;
-    if module.is_empty() || kernel.is_empty() {
-        return None;
-    }
-    Some((module, kernel))
 }
 
 fn launch(
@@ -146,14 +141,14 @@ fn time_kernel(
 fn main() -> Result<()> {
     let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
-    let peak: f64 = std::env::var("ATLAS_PEAK_GBPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(273.0);
-    let stream_bw: f64 = std::env::var("ATLAS_STREAM_GBPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(230.0);
+    let peak = gbps_from(
+        std::env::var("ATLAS_PEAK_GBPS").ok().as_deref(),
+        PEAK_GBPS_DEFAULT,
+    );
+    let stream_bw = gbps_from(
+        std::env::var("ATLAS_STREAM_GBPS").ok().as_deref(),
+        STREAM_GBPS_DEFAULT,
+    );
 
     let Ok(b2) = g.kernel("w4a16_gemv", "w4a16_gemv_batch2") else {
         eprintln!("w4a16_gemv_batch2 absent — SKIP");
@@ -223,6 +218,7 @@ fn main() -> Result<()> {
         if let Some((name, kh)) = &cand {
             let t_c = time_kernel(g, name, *kh, a, &copies, c, n, k, weight_bytes)?;
             let vs = t_c.us / t_b2.us;
+            let shape = verdict(t_c.us, t_b2.us);
             eprintln!(
                 "  {:<28} {:>8.2} us  {:>6.1} GB/s  {:>5.1}% STREAM  {:>5.1}% peak",
                 t_c.name,
@@ -231,8 +227,8 @@ fn main() -> Result<()> {
                 100.0 * t_c.gbps / stream_bw,
                 100.0 * t_c.gbps / peak,
             );
-            eprintln!("  candidate / batch2 = {vs:.3}x   (fail if >{FAIL_SLOWER})");
-            if vs > FAIL_SLOWER {
+            eprintln!("  candidate / batch2 = {vs:.3}x   {shape:?}   (fail if >{FAIL_SLOWER})");
+            if shape == OracleVerdict::Fail {
                 ok = false;
             }
         }
