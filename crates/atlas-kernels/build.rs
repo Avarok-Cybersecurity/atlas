@@ -670,7 +670,15 @@ fn build_hip_shim(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
     );
 }
 
-#[cfg(windows)]
+/// Locate MSVC `dumpbin.exe` for the Windows HIP shim's export scan.
+///
+/// NOT `#[cfg(windows)]`, despite only ever running there. Its caller
+/// `build_hip_shim_windows` is selected by `if cfg!(windows)`, which is a
+/// runtime bool — the body is still COMPILED on every platform. Gating this
+/// one out therefore broke the Linux build with
+/// `E0425: cannot find function resolve_dumpbin_path in this scope`.
+/// The body is plain cross-platform std, so compiling it everywhere costs
+/// nothing and the `cfg!` guard keeps it from being called off-Windows.
 fn resolve_dumpbin_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("ATLAS_DUMPBIN") {
         let candidate = std::path::PathBuf::from(path);
