@@ -506,7 +506,7 @@ pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
     excludes: CONTAMINATION_EXCLUDES,
 }];
 
-pub const NOT_REQUIRED: [(&str, &str); 4] = [
+pub const NOT_REQUIRED: [(&str, &str); 5] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
@@ -527,6 +527,15 @@ pub const NOT_REQUIRED: [(&str, &str); 4] = [
         "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
          and recorded as debt until it has proven itself; a fresh gate that fails on day one \
          would train people to override it",
+    ),
+    (
+        "mlperf-agentic-subset",
+        "not RUNNABLE yet: the official MLPerf Agentic Inference dataset is unpublished \
+         upstream (mlcommons/endpoints@7935df4: \"MLCommons storage (link TBD)\"), so the leg \
+         cannot be run, scored, or timed, and it refuses proxy datasets on purpose. Not a \
+         promotion candidate either — a candidate accrues debt rows, and debt nobody can \
+         discharge is worse than no row. Promote only after the dataset ships and a \
+         calibration run sizes a <2 h draw",
     ),
 ];
 

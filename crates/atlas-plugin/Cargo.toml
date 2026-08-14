@@ -19,6 +19,9 @@ atlas-closure = { path = "../atlas-closure" }
 # BENCH.toml — a model's benchmarks and thresholds, beside the model.
 toml = "0.8"
 anyhow = { workspace = true }
+# Full-file dataset hashing + draw fingerprints for the MLPerf agentic leg —
+# the same workspace pin atlas-closure already uses, so nothing new is vendored.
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
