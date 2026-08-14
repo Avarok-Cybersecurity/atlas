@@ -155,6 +155,12 @@ curl -s http://localhost:8888/v1/chat/completions \
   }'
 ```
 
+> **EXIF orientation is applied automatically.** Cameras usually store a photo
+> the way the sensor read it and record which way is up in an EXIF tag, so a
+> phone picture is often held sideways in the file. Atlas rotates on decode, so
+> the model sees the image the same way your phone, browser and file manager
+> show it. Images without the tag — and every PNG — are untouched.
+
 **Send a video:**
 
 > ### ⚠️ VIDEO REQUIRES `ffmpeg` ON THE HOST

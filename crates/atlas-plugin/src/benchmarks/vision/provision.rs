@@ -158,17 +158,21 @@ pub const FIXTURES: &[(&str, &[u8], u32, u32)] = &[
 /// assert a behavior rather than a token count — their geometry is an
 /// unremarkable 49.
 ///
-/// ★ MEASURED, NOT ASSUMED, and the measurement is the point. Both images are
-/// the same pixels: red on top, blue on the bottom. One carries
-/// `Orientation = 6` ("rotate 90 CW to display"), the other carries no EXIF at
-/// all. On 2026-08-14 both answered **top**, so ATLAS IGNORES EXIF
-/// ORIENTATION: a phone photo tagged as rotated reaches the model sideways.
+/// Both images are the same pixels — red on the top half, blue on the bottom.
+/// One carries `Orientation = 6` ("rotate 90 CW to display"), the other
+/// carries no EXIF at all.
 ///
-/// That is pinned here rather than fixed, deliberately. Whether to honor the
-/// tag is a product decision with a compatibility cost — it changes what every
-/// existing rotated image looks like to the model, and the reference
-/// implementation's behavior would need checking first. What a benchmark can
-/// do is make sure the answer never changes by accident, in either direction.
+/// ★ ATLAS APPLIES THE TAG, so the pair must DISAGREE: rotating 90 CW carries
+/// the stored top edge to the right, so the tagged image reads RIGHT and the
+/// untagged one reads TOP. Requiring them merely to differ would pass on any
+/// random rotation, so the leg names both expected answers.
+///
+/// This was measured as IGNORED on 2026-08-14 and then fixed, because every
+/// viewer a user compares against — phone, browser, file manager — honors the
+/// tag, and a camera very often stores a photo sideways with the tag as the
+/// only record of which way is up. Ignoring it meant "what the model saw" and
+/// "what the user saw" silently disagreed on a large share of real
+/// photographs, with nothing to indicate it.
 pub const EXIF_PAIR: &[(&str, &[u8])] = &[
     (
         "15_exif_rot90_224.jpg",

@@ -492,26 +492,39 @@ impl Benchmark for VisionFidelity {
                                 )),
                             }
                         }
-                        let same = answers.len() == 2 && answers[0].1 == answers[1].1;
-                        if same && answers[0].1.contains("top") {
+                        // Orientation = 6 means "rotate 90 CW to display",
+                        // which carries the stored TOP edge to the RIGHT. So
+                        // the tagged image must read RIGHT and the untagged
+                        // one TOP — they must DIFFER, and differ in that
+                        // specific way. Requiring them merely to differ would
+                        // pass on any random rotation.
+                        let tagged = answers.first().map(|a| a.1.clone()).unwrap_or_default();
+                        let untagged = answers.get(1).map(|a| a.1.clone()).unwrap_or_default();
+                        if tagged.contains("right") && untagged.contains("top") {
                             mi::Cell::Pass {
-                                id: "exif-orientation-pinned",
+                                id: "exif-orientation",
                                 detail: format!(
-                                    "both answered \"{}\" — EXIF orientation is IGNORED, \
-                                     unchanged from the 2026-08-14 measurement",
-                                    answers[0].1
+                                    "tagged -> \"{tagged}\", untagged -> \"{untagged}\": EXIF \
+                                     orientation is APPLIED, so a rotated photo reaches the \
+                                     model the way its owner sees it"
+                                ),
+                            }
+                        } else if tagged == untagged {
+                            mi::Cell::Fail {
+                                id: "exif-orientation",
+                                detail: format!(
+                                    "both answered \"{tagged}\" — the EXIF tag is being IGNORED \
+                                     again. Every rotated phone photo is reaching the model a \
+                                     quarter turn from how the user saw it, and nothing errors"
                                 ),
                             }
                         } else {
                             mi::Cell::Fail {
-                                id: "exif-orientation-pinned",
+                                id: "exif-orientation",
                                 detail: format!(
-                                    "EXIF handling CHANGED: tagged -> \"{}\", untagged -> \
-                                     \"{}\". If honouring the tag was intentional, update this \
-                                     pin and say so; if not, a decoder swap changed behaviour \
-                                     for every rotated photo",
-                                    answers.first().map(|a| a.1.as_str()).unwrap_or("?"),
-                                    answers.get(1).map(|a| a.1.as_str()).unwrap_or("?"),
+                                    "unexpected orientation: tagged -> \"{tagged}\", untagged -> \
+                                     \"{untagged}\". Orientation=6 should put the red half on \
+                                     the RIGHT and the untagged one on TOP"
                                 ),
                             }
                         }

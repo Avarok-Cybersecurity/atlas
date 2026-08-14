@@ -275,3 +275,83 @@ fn aspect_ratio_is_preserved_within_grid_rounding() {
         "aspect drifted: {got} vs {want} ({h}x{w})"
     );
 }
+
+// ── EXIF orientation ─────────────────────────────────────────────────────
+
+/// The committed benchmark fixtures, reused so the unit test and the
+/// benchmark cannot disagree about what the bytes contain: identical pixels
+/// (red top half, blue bottom half), one tagged `Orientation = 6`, one
+/// untagged.
+const EXIF_ROT90: &[u8] = include_bytes!("../../../tests/fixtures/images/15_exif_rot90_224.jpg");
+const EXIF_NONE: &[u8] = include_bytes!("../../../tests/fixtures/images/16_exif_none_224.jpg");
+
+fn as_data_uri(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+/// Mean red channel of a quadrant, as a fraction of the image.
+fn region_red(img: &image::RgbImage, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let (xs, ys) = ((x0 * w) as u32, (y0 * h) as u32);
+    let (xe, ye) = ((x1 * w) as u32, (y1 * h) as u32);
+    let mut sum = 0f32;
+    let mut n = 0f32;
+    for y in ys..ye {
+        for x in xs..xe {
+            sum += img.get_pixel(x, y)[0] as f32;
+            n += 1.0;
+        }
+    }
+    sum / n.max(1.0)
+}
+
+/// The untagged control: nothing to apply, so red stays on TOP. This is the
+/// non-regression half — every PNG and every untagged JPEG must decode
+/// exactly as it did before orientation handling existed.
+#[test]
+fn an_untagged_image_is_not_rotated() {
+    let img = decode_image(&as_data_uri(EXIF_NONE))
+        .expect("decode")
+        .to_rgb8();
+    let top = region_red(&img, 0.1, 0.05, 0.9, 0.35);
+    let bottom = region_red(&img, 0.1, 0.65, 0.9, 0.95);
+    assert!(
+        top > 200.0 && bottom < 60.0,
+        "expected red on top, blue below; got top={top:.0} bottom={bottom:.0}"
+    );
+}
+
+/// ★ The tagged image MUST come out rotated. `Orientation = 6` means "rotate
+/// 90° clockwise to display", which moves the stored top edge to the right
+/// side — so the red half ends up on the RIGHT.
+///
+/// Before 2026-08-14 this assertion would have failed: the tag was ignored and
+/// red stayed on top, meaning every rotated phone photo reached the model a
+/// quarter turn from how its owner saw it.
+#[test]
+fn an_exif_tagged_image_is_rotated_upright() {
+    let img = decode_image(&as_data_uri(EXIF_ROT90))
+        .expect("decode")
+        .to_rgb8();
+    let left = region_red(&img, 0.05, 0.1, 0.35, 0.9);
+    let right = region_red(&img, 0.65, 0.1, 0.95, 0.9);
+    assert!(
+        right > 200.0 && left < 60.0,
+        "Orientation=6 should put the red half on the RIGHT; got left={left:.0} right={right:.0}"
+    );
+}
+
+/// Rotation happens BEFORE the grid snap, so a portrait photo tagged as
+/// landscape is measured at its displayed shape rather than its stored one.
+/// A 90° turn swaps the axes; on a square fixture the token count is
+/// unchanged, which is what makes this safe to apply universally.
+#[test]
+fn rotation_does_not_change_the_token_count_of_a_square() {
+    let (_, gh_a, gw_a) = preprocess_image(&as_data_uri(EXIF_ROT90), &ok_cfg()).expect("tagged");
+    let (_, gh_b, gw_b) = preprocess_image(&as_data_uri(EXIF_NONE), &ok_cfg()).expect("untagged");
+    assert_eq!((gh_a, gw_a), (gh_b, gw_b));
+}

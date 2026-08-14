@@ -123,6 +123,13 @@ How it works:
 - The radix tree tracks `disk_block_id` and reads back on demand when a
   cold block is referenced again.
 
+### Image orientation
+
+EXIF orientation is **applied on decode**. A photo stored sideways with an
+`Orientation` tag — which is how most phone cameras write them — is rotated
+upright before it reaches the encoder, matching what every ordinary viewer
+shows the user. Files with no tag, including all PNGs, are unchanged.
+
 ### Optional host dependency: `ffmpeg` (video input only)
 
 **Serving video requires `ffmpeg` on the host.** Text and image serving need

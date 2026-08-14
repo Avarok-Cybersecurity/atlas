@@ -66,6 +66,7 @@ enum Phase {
     Order,
     Parity,
     Mixed,
+    Integrity,
     Concurrency,
     Control,
     Score,
@@ -87,6 +88,7 @@ pub struct VideoFidelity {
     plane: usize,
     cursor: usize,
     conc_results: Vec<LevelResult>,
+    integrity: Vec<crate::benchmarks::media_integrity::Cell>,
     max_tokens: usize,
     request_timeout_s: u64,
 }
@@ -403,7 +405,7 @@ impl Benchmark for VideoFidelity {
 
             // ── Mixed: an image and a video in one request ───────────────
             Phase::Mixed => {
-                self.phase = Phase::Concurrency;
+                self.phase = Phase::Integrity;
                 let h = self.handle()?;
                 let vid = clip("03_colors_fwd.gif").context("fixture 03 missing")?;
                 // The image comes from the vision benchmark's own ladder
@@ -472,6 +474,243 @@ impl Benchmark for VideoFidelity {
                 };
                 self.counts.push(cell);
                 Ok(self.frame("mixed", vec![line]))
+            }
+
+            // ── Integrity: the shapes that need MORE THAN ONE video item ─
+            //
+            // The shared media_integrity legs (run by the image benchmark)
+            // already cover the machinery both modalities share. What they
+            // cannot reach is grid bookkeeping across SEVERAL vision items
+            // when at least one has t_len > 1 — a video occupies grid_t
+            // encoder rows behind a single pad run, so any place that walks
+            // rows and items in lockstep is only exercised here.
+            Phase::Integrity => {
+                use crate::benchmarks::media_integrity as mi;
+                let h = self.handle()?;
+                let model = h.target().model.clone();
+                let tmo = self.timeout();
+                let fwd = clip("03_colors_fwd.gif").context("fixture 03 missing")?;
+                let rev = clip("02_colors_rev.mp4").context("fixture 02 missing")?;
+
+                let cell = match self.cursor {
+                    // 1. TWO VIDEOS IN ONE REQUEST. Two items, each t_len > 1,
+                    //    so the second video's rows start at an offset that
+                    //    only a correct per-item walk produces. Asking about
+                    //    the SECOND is the discriminating question: an
+                    //    off-by-one hands back the first's colors.
+                    0 => {
+                        let body = serde_json::json!({
+                            "model": model, "stream": true, "temperature": 0.0,
+                            "max_tokens": self.max_tokens,
+                            "chat_template_kwargs": {"enable_thinking": false},
+                            "messages": [{"role": "user", "content": [
+                                {"type": "video_url", "video_url": {"url":
+                                    request::data_uri(fwd.mime, fwd.bytes)}},
+                                {"type": "video_url", "video_url": {"url":
+                                    request::data_uri(rev.mime, rev.bytes)}},
+                                {"type": "text", "text":
+                                    "Two videos were provided. List the colors of the SECOND \
+                                     video in the order they appear, separated by commas. \
+                                     Answer with only the color names."},
+                            ]}],
+                        });
+                        match http::chat_stream(h.target(), &body, tmo).await {
+                            Ok(o) if order_matches(o.text.trim(), rev.colors, PALETTE) => {
+                                mi::Cell::Pass {
+                                    id: "two-videos",
+                                    detail: format!(
+                                        "second of two clips read correctly ({} prompt tokens)",
+                                        o.prompt_tokens
+                                    ),
+                                }
+                            }
+                            Ok(o) => {
+                                let got = super::score::colors_in_order(o.text.trim(), PALETTE);
+                                let first_instead = got == fwd.colors.to_vec();
+                                mi::Cell::Fail {
+                                    id: "two-videos",
+                                    detail: if first_instead {
+                                        "asked for the SECOND clip and got the FIRST — the \
+                                         per-item row offset is wrong across two videos"
+                                            .to_string()
+                                    } else {
+                                        format!(
+                                            "wanted [{}], got [{}]",
+                                            rev.colors.join(", "),
+                                            got.join(", ")
+                                        )
+                                    },
+                                }
+                            }
+                            Err(e) => {
+                                let msg = one_line(format!("{e:#}"));
+                                if request::is_decoder_unavailable(&msg) {
+                                    mi::Cell::Skipped {
+                                        id: "two-videos",
+                                        why: msg,
+                                    }
+                                } else {
+                                    mi::Cell::Error {
+                                        id: "two-videos",
+                                        msg,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 2. VIDEO BEFORE IMAGE. The Mixed leg sends image-then-
+                    //    video; this is the same contract in the other order,
+                    //    where the image's pad run follows a multi-group item
+                    //    rather than preceding it.
+                    1 => {
+                        let (_, png, _, _) = crate::benchmarks::vision::provision::FIXTURES[0];
+                        let body = serde_json::json!({
+                            "model": model, "stream": true, "temperature": 0.0,
+                            "max_tokens": self.max_tokens,
+                            "chat_template_kwargs": {"enable_thinking": false},
+                            "messages": [{"role": "user", "content": [
+                                {"type": "video_url", "video_url": {"url":
+                                    request::data_uri(fwd.mime, fwd.bytes)}},
+                                {"type": "image_url", "image_url": {"url":
+                                    request::data_uri("image/png", png)}},
+                                {"type": "text", "text":
+                                    "A video came first, then a still image. List the colors of \
+                                     the VIDEO in order, separated by commas. Only color names."},
+                            ]}],
+                        });
+                        match http::chat_stream(h.target(), &body, tmo).await {
+                            Ok(o) if order_matches(o.text.trim(), fwd.colors, PALETTE) => {
+                                mi::Cell::Pass {
+                                    id: "video-before-image",
+                                    detail: format!(
+                                        "video read correctly when it precedes the image ({} \
+                                         prompt tokens)",
+                                        o.prompt_tokens
+                                    ),
+                                }
+                            }
+                            Ok(o) => mi::Cell::Fail {
+                                id: "video-before-image",
+                                detail: format!(
+                                    "wanted [{}], got [{}] — the ordering contract holds one way \
+                                     round but not the other",
+                                    fwd.colors.join(", "),
+                                    super::score::colors_in_order(o.text.trim(), PALETTE)
+                                        .join(", ")
+                                ),
+                            },
+                            Err(e) => {
+                                let msg = one_line(format!("{e:#}"));
+                                if request::is_decoder_unavailable(&msg) {
+                                    mi::Cell::Skipped {
+                                        id: "video-before-image",
+                                        why: msg,
+                                    }
+                                } else {
+                                    mi::Cell::Error {
+                                        id: "video-before-image",
+                                        msg,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 3. TWO DIFFERENT CLIPS CONCURRENTLY. The C=1/2/4 sweep
+                    //    sends identical requests, which cannot detect a
+                    //    mis-sliced per-request offset. Two clips with
+                    //    OPPOSITE color orders in flight together can: a
+                    //    crossed offset returns the other one's sequence, and
+                    //    the reversal makes that unmistakable.
+                    2 => {
+                        let f = fwd.colors.to_vec();
+                        let r = rev.colors.to_vec();
+                        let subjects: Vec<mi::Subject> = vec![
+                            (
+                                request::video_body(
+                                    &model,
+                                    fwd.mime,
+                                    fwd.bytes,
+                                    request::ORDER_PROMPT,
+                                    self.max_tokens,
+                                ),
+                                Box::new(move |t: &str| order_matches(t, &f, PALETTE)),
+                                "forward".to_string(),
+                            ),
+                            (
+                                request::video_body(
+                                    &model,
+                                    rev.mime,
+                                    rev.bytes,
+                                    request::ORDER_PROMPT,
+                                    self.max_tokens,
+                                ),
+                                Box::new(move |t: &str| order_matches(t, &r, PALETTE)),
+                                "reversed".to_string(),
+                            ),
+                        ];
+                        mi::heterogeneous_concurrency(h, subjects, tmo).await
+                    }
+                    // 4. VIDEO IN AN EARLIER TURN.
+                    _ => {
+                        let body = serde_json::json!({
+                            "model": model, "stream": true, "temperature": 0.0,
+                            "max_tokens": self.max_tokens,
+                            "chat_template_kwargs": {"enable_thinking": false},
+                            "messages": [
+                                {"role": "user", "content": [
+                                    {"type": "video_url", "video_url": {"url":
+                                        request::data_uri(fwd.mime, fwd.bytes)}},
+                                    {"type": "text", "text": "Here is a clip."}]},
+                                {"role": "assistant", "content": "Understood."},
+                                {"role": "user", "content":
+                                    "List the colors of the video I sent earlier, in order, \
+                                     separated by commas. Only color names."},
+                            ],
+                        });
+                        let want = fwd.colors.to_vec();
+                        mi::media_in_history(
+                            h,
+                            body,
+                            &move |t: &str| order_matches(t, &want, PALETTE),
+                            "video-in-history",
+                            tmo,
+                        )
+                        .await
+                    }
+                };
+                // A pass and a skip both read as info; only a real failure
+                // warns. (Written as one condition rather than two identical
+                // arms, which clippy rightly objects to.)
+                let line = if cell.passed() || matches!(cell, mi::Cell::Skipped { .. }) {
+                    LogLine::info(cell.line())
+                } else {
+                    LogLine::warn(cell.line())
+                };
+                // Integrity cells join the same tally the other legs use, so a
+                // failure here fails the run rather than being informational.
+                self.counts.push(if cell.passed() {
+                    CountCell::Match {
+                        id: cell.id(),
+                        detail: String::new(),
+                    }
+                } else if matches!(cell, mi::Cell::Skipped { .. }) {
+                    CountCell::Skipped {
+                        id: cell.id(),
+                        why: String::new(),
+                    }
+                } else {
+                    CountCell::Mismatch {
+                        id: cell.id(),
+                        detail: cell.line(),
+                    }
+                });
+                self.integrity.push(cell);
+                self.cursor += 1;
+                if self.cursor >= 4 {
+                    self.cursor = 0;
+                    self.phase = Phase::Concurrency;
+                }
+                Ok(self.frame("integrity", vec![line]))
             }
 
             // ── Concurrency: C = 1, 2, 4 of the same request in flight ───

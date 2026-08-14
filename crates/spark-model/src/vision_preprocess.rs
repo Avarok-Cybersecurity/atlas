@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result, bail};
 use atlas_core::config::VisionConfig;
-use image::{DynamicImage, ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 /// SigLIP normalization — matches HF's Qwen2VLImageProcessor
 /// (`image_mean = image_std = (0.5, 0.5, 0.5)` → pixels mapped to [-1, 1]).
@@ -103,7 +103,35 @@ fn decode_image(data_uri: &str) -> Result<DynamicImage> {
     limits.max_image_height = Some(DECODE_MAX_SIDE);
     limits.max_alloc = Some(DECODE_MAX_ALLOC);
     reader.limits(limits);
-    reader.decode().context("image decode failed")
+
+    // ★ EXIF ORIENTATION IS APPLIED. A camera writes the sensor's raw pixels
+    // and records how to turn them upright in an EXIF tag rather than rotating
+    // the data, so a phone photo is very often stored sideways with
+    // `Orientation = 6` ("rotate 90° CW to display"). Decoding without that
+    // tag hands the model an image rotated a quarter turn — and it does not
+    // error or look broken, it simply answers about a sideways picture, which
+    // is the failure mode this whole benchmark family exists to catch.
+    //
+    // Measured on 2026-08-14: Atlas ignored the tag entirely. Every viewer the
+    // user compares against — their phone, their browser, their file manager —
+    // honours it, so "what the model saw" and "what the user saw" silently
+    // disagreed on a large fraction of real photographs.
+    //
+    // `into_decoder` rather than `decode`, because the tag lives on the
+    // DECODER and is gone once the pixels are out. A format that carries no
+    // orientation reports `NoTransforms`, so this is a no-op for PNG and for
+    // any JPEG without the tag — the earlier behaviour, preserved exactly
+    // where there is nothing to apply.
+    let mut decoder = reader.into_decoder().context("image decode failed")?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).context("image decode failed")?;
+    if orientation != image::metadata::Orientation::NoTransforms {
+        tracing::debug!("applying EXIF orientation {orientation:?}");
+        img.apply_orientation(orientation);
+    }
+    Ok(img)
 }
 
 /// Reject a vision config whose geometry cannot drive the preprocessor.
