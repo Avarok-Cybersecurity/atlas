@@ -37,18 +37,26 @@ pub(super) fn table(s: &Score) -> ResultTable {
         s.jittered_rounds.iter().map(|(n, d)| (*n, d)).collect();
     let collapse_map: BTreeMap<usize, &Vec<TurnDelta>> =
         s.collapsed_rounds.iter().map(|(n, d)| (*n, d)).collect();
-    let mut unmeasured_seen = 0usize;
+    // Unmeasured rows come from the Score's own per-round records. The old
+    // rendering counted unmeasured rounds and painted the label onto the
+    // EARLIEST rows that had no other label, so an unmeasured round 9 could
+    // be reported as round 1 — sending whoever reads the record to the wrong
+    // place in the serve log.
+    let unmeasured_map: BTreeMap<usize, &str> = s
+        .unmeasured_rounds
+        .iter()
+        .map(|(n, r)| (*n, r.as_str()))
+        .collect();
     for round in 1..=s.rounds {
         let (what, style, detail) = if let Some(turns) = collapse_map.get(&round) {
             ("COLLAPSED".to_string(), CellStyle::Bad, delta_detail(turns))
         } else if let Some(turns) = jitter_map.get(&round) {
             ("jittered".to_string(), CellStyle::Warn, delta_detail(turns))
-        } else if unmeasured_seen < s.unmeasured {
-            unmeasured_seen += 1;
+        } else if let Some(reason) = unmeasured_map.get(&round) {
             (
                 "unmeasured".into(),
                 CellStyle::Warn,
-                "transport error — invariant not proven this round".into(),
+                format!("invariant not proven this round — {reason}"),
             )
         } else {
             ("invariant".into(), CellStyle::Good, String::new())
@@ -89,6 +97,18 @@ pub(super) fn summary(s: &Score) -> Vec<Stat> {
         } else {
             CellStyle::Warn
         }),
+        // The vacuity tile. Zero means the replays never touched the restore
+        // path under test, so every other tile on this row is decorative.
+        Stat::new(
+            "Min t1 cache",
+            s.min_turn1_cached.unwrap_or(0).to_string(),
+            "tok",
+        )
+        .with_style(if s.min_turn1_cached.unwrap_or(0) > 0 {
+            CellStyle::Good
+        } else {
+            CellStyle::Bad
+        }),
     ]
 }
 
@@ -102,6 +122,11 @@ pub(super) fn metrics(s: &Score) -> BTreeMap<String, f64> {
         ("jittered", s.jittered),
         ("collapsed", s.collapsed),
         ("unmeasured", s.unmeasured),
+        // The vacuity attestation, floored in BENCH.toml. A run that never
+        // engaged the prefix cache records 0 here and fails at the record
+        // level too — before this metric existed, such a run was a green
+        // PASS that had measured nothing.
+        ("min_cached_prompt_tokens", s.min_turn1_cached.unwrap_or(0)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v as f64))

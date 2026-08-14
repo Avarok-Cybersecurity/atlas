@@ -60,18 +60,30 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     duration_hint: "~5 min per iteration",
     updated: "2026-08-14",
     needs_confirmation: true,
-    // The two families this benchmark carries BENCH.toml variants for. Each
-    // variant has its own thresholds and serve recipe — the numbers are never
-    // comparable ACROSS them (a dense 27B activates every parameter per token
-    // where the 35B MoE activates ~3B, so its wall band is roughly 2×), which
-    // is why they are separate baseline entries rather than one shared bar.
+    // Gate A's thresholds were measured on the 35B MoE flagship, which stays the
+    // DEFAULT subject. This benchmark also carries BENCH.toml variants for both
+    // dense 27Bs, for different reasons — and the numbers are never comparable
+    // ACROSS families: a dense 27B activates every parameter per token where the
+    // 35B MoE activates ~3B, so its wall band is roughly 2x and the 35B's
+    // ceiling does not transfer. That is exactly why they are separate baseline
+    // entries with their own thresholds and serve recipes rather than one bar.
+    //
+    //   qwen3.6-27b : REGISTERED but UNMEASURED — its entry carries no
+    //                 thresholds because none exist to carry, so a run there
+    //                 BASELINES rather than gates.
+    //   qwen3.8-27b : MEASURED — its entry carries thresholds and a serve
+    //                 recipe, so a run there gates against its own bar.
+    //
     // FP8 and NVFP4 of one family are both valid.
     intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-35b-a3b", "qwen3.8-27b"],
-        note: "This benchmark is defined on the 35B MoE flagship (Qwen3.6-35B-A3B — the \
-               required Gate A subject) and on the dense Qwen3.8-27B variant. Each variant \
-               has its own thresholds and serve recipe in its model's BENCH.toml; any other \
-               checkpoint would produce numbers that compare to nothing.",
+        families: &["qwen3.6-35b-a3b", "qwen3.6-27b", "qwen3.8-27b"],
+        note: "This benchmark is defined on the 35B MoE flagship (Qwen3.6-35B-A3B, FP8 or \
+               NVFP4 — the required Gate A subject) and on both dense 27B variants. \
+               Qwen3.6-27B is registered but UNMEASURED: its BENCH.toml entry has no \
+               thresholds, so a run there baselines, it does not gate. Qwen3.8-27B is \
+               MEASURED and gates against its own thresholds. Each variant carries its own \
+               thresholds and serve recipe; any other checkpoint would produce numbers that \
+               compare to nothing.",
     }),
     // The run-time Σ-wall verdict reads the SELECTED variant's committed
     // ceiling rather than a schema default one variant would contradict.

@@ -58,9 +58,13 @@ impl TurnDelta {
             return true;
         }
         if self.ref_tokens == 0 {
-            // A zero-length reference cannot collapse relative to anything;
-            // the empty-reply Unmeasured rule handles it upstream.
-            return false;
+            // A nonzero replay against a zero-token reference is an infinite
+            // length ratio — above any ceiling, a collapse by definition.
+            // Returning false here (as this branch once did) let an unbounded
+            // blowup pass as Jittered. The both-zero pair is the only shape
+            // that genuinely cannot collapse; the empty-reply Unmeasured rule
+            // upstream keeps it from counting as evidence either way.
+            return self.replay_tokens != 0;
         }
         let ratio = self.replay_tokens as f64 / self.ref_tokens as f64;
         !(COLLAPSE_RATIO_FLOOR..=COLLAPSE_RATIO_CEIL).contains(&ratio)
@@ -131,11 +135,16 @@ pub fn compare_round(reference: &[Transcript], replay: &[Transcript]) -> RoundVe
     if !collapsed.is_empty() {
         return RoundVerdict::Collapsed { turns: collapsed };
     }
-    if !jittered.is_empty() {
-        return RoundVerdict::Jittered { turns: jittered };
-    }
+    // Unmeasured outranks Jittered: the gate's rule is that ANY unmeasured
+    // round fails, and Jittered is a pass. With the order reversed, a round
+    // with one empty-pair turn and one jittered turn read as Jittered — the
+    // unproven turn hid behind tolerated jitter. Collapsed still comes first:
+    // both fail, and the poisoning signature is the more specific finding.
     if let Some(reason) = unmeasured {
         return RoundVerdict::Unmeasured { reason };
+    }
+    if !jittered.is_empty() {
+        return RoundVerdict::Jittered { turns: jittered };
     }
     RoundVerdict::Invariant
 }

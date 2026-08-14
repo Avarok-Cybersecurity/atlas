@@ -28,8 +28,8 @@ impl MoeLayer {
     /// `t0` carries the running profile timer so per-step timing output
     /// matches the original inline pipeline exactly.
     #[allow(clippy::too_many_arguments)]
-    // sfb Options are guarded by `.is_some()` in the enclosing `if`; `.expect`
-    // after that is intentional (can't if-let-bind inside the `&&` guard chain).
+    // `cutlass_grouped_host` is guarded by `.is_some()` in the enclosing `if`;
+    // `.expect` after that is intentional.
     #[allow(clippy::unnecessary_unwrap)]
     pub(super) fn run_routed_grouped_gemm(
         &self,
@@ -133,35 +133,26 @@ impl MoeLayer {
             // transposed ones, so it must be reachable when gate_ptrs_t is
             // absent — that is exactly the originals-only layout a
             // checkpoint-native model runs in.
-            if grouped_cutlass_gate_up_enabled()
-                && self.gate_sfb_cutlass.is_some()
-                && self.up_sfb_cutlass.is_some()
-            {
+            if grouped_cutlass_gate_up_enabled() && self.cutlass_grouped_host.is_some() {
                 // ── SINGLE-LAUNCH CUTLASS grouped NVFP4 gate_up
                 // (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1) ── one
                 // GemmUniversalMode::kGrouped launch over all active experts in
-                // place of the per-expert collective loop. Weights: the decode
+                // place of the per-expert collective loop. Weights: the load-time
+                // host snapshot (`cutlass_grouped_host`) of the decode
                 // `gate_ptrs`/`up_ptrs` packed `[N,K/2]` (CUTLASS ColumnMajor B) +
-                // the load-built swizzled SFB tables (`gate_sfb_cutlass`) + the real
-                // per-expert scale2 (epilogue alpha). The token gather is FUSED into
-                // the kernel's per-group A-pack (lever 2): pass token-major
-                // expert_input + sorted_token_ids directly, no separate permute pass.
-                // Writes C_gate/C_up in the sorted layout so silu+down+unpermute are
-                // unchanged.
+                // swizzled SFB + real per-expert scale2 (epilogue alpha). The token
+                // gather is FUSED into the kernel's per-group A-pack (lever 2): pass
+                // token-major expert_input + sorted_token_ids directly, no separate
+                // permute pass. Writes C_gate/C_up in the sorted layout so
+                // silu+down+unpermute are unchanged.
                 cutlass_eoff = Some(ops::moe_grouped_gate_up_cutlass(
                     ctx.gpu,
+                    self.cutlass_grouped_host.as_ref().expect("checked above"),
                     expert_input,
                     sorted_token_ids,
-                    self.gate_ptrs.packed_ptrs,
-                    self.gate_sfb_cutlass.expect("gate sfb checked above"),
-                    self.gate_ptrs.scale2_vals,
-                    self.up_ptrs.packed_ptrs,
-                    self.up_sfb_cutlass.expect("up sfb checked above"),
-                    self.up_ptrs.scale2_vals,
                     expert_gate_out,
                     expert_up_out,
                     expert_offsets,
-                    num_experts as usize,
                     inter,
                     h,
                     stream,
@@ -360,25 +351,26 @@ impl MoeLayer {
             // CUTLASS grouped down reads the ORIGINAL [N,K/2] table, so like
             // gate_up it must be reachable without down_ptrs_t.
             if grouped_cutlass_gate_up_enabled()
-                && self.down_sfb_cutlass.is_some()
+                && let Some(down_host) = self
+                    .cutlass_grouped_host
+                    .as_ref()
+                    .and_then(|t| t.down.as_ref())
                 && std::env::var("ATLAS_HOLO_MOE_GROUPED_DOWN").ok().as_deref() == Some("1")
             {
                 // ── CUTLASS grouped NVFP4 down (ATLAS_HOLO_MOE_GROUPED_CUTLASS
                 //    + ATLAS_HOLO_MOE_GROUPED_DOWN) ──
                 // A = post-SiLU expert_gate_out, already expert-contiguous (the grouped
-                // gate_up wrote it sorted), so NO gather. Weights = decode down_ptrs
-                // packed [N=hidden,K/2] + load-built swizzled SFB + real scale2. Writes
-                // expert_down_out in the sorted layout (unpermute downstream unchanged).
+                // gate_up wrote it sorted), so NO gather. Weights = the load-time host
+                // snapshot of decode down_ptrs packed [N=hidden,K/2] + swizzled SFB +
+                // real scale2. Writes expert_down_out in the sorted layout (unpermute
+                // downstream unchanged).
                 ops::moe_grouped_down_cutlass(
                     ctx.gpu,
                     cutlass_eoff.as_deref(),
+                    down_host,
                     expert_gate_out,
-                    self.down_ptrs.packed_ptrs,
-                    self.down_sfb_cutlass.expect("down sfb checked above"),
-                    self.down_ptrs.scale2_vals,
                     expert_down_out,
                     expert_offsets,
-                    num_experts as usize,
                     h,
                     inter,
                     stream,

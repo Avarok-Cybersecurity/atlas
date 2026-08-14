@@ -444,16 +444,14 @@ impl MoeLayer {
         let mut owned: Vec<DevicePtr> = Vec::new();
         // Swizzle each expert's [K/16,N] scale into the CUTLASS SFB atom. `n`/`k`
         // are the projection's GEMM dims: gate/up = (inter, hidden); down = (hidden, inter).
-        let mut build_one = |scale_ptrs_dev: DevicePtr, n: usize, k: usize| -> Result<DevicePtr> {
+        // Returns the HOST vector of per-expert SFB pointers: the grouped C entry
+        // consumes pointer values host-side, so no device copy of this table is
+        // ever made — the values go straight into the layer-owned snapshot below.
+        let mut build_one = |scale_ptrs_dev: DevicePtr, n: usize, k: usize| -> Result<Vec<u64>> {
             let len = sfb_len(n, k);
-            let mut sp = vec![0u8; num * 8];
-            gpu.copy_d2h(scale_ptrs_dev, &mut sp)?;
-            let scale_ptrs: Vec<u64> = sp
-                .chunks_exact(8)
-                .map(|c| u64::from_le_bytes(c.try_into().expect("8 bytes")))
-                .collect();
+            let sp = crate::layers::ops::read_expert_ptrs_u64(gpu, scale_ptrs_dev, num)?;
             let mut sfb_ptrs = vec![0u64; num];
-            for (e, &sptr) in scale_ptrs.iter().enumerate() {
+            for (e, &sptr) in sp.iter().enumerate() {
                 if sptr == 0 {
                     continue; // remote/placeholder expert
                 }
@@ -470,17 +468,29 @@ impl MoeLayer {
                 owned.push(sfb);
             }
             gpu.synchronize(stream)?;
-            let bytes: Vec<u8> = sfb_ptrs.iter().flat_map(|p| p.to_le_bytes()).collect();
-            let arr = gpu.alloc(bytes.len().max(8))?;
-            gpu.copy_h2d(&bytes, arr)?;
-            owned.push(arr);
-            Ok(arr)
+            Ok(sfb_ptrs)
         };
-        self.gate_sfb_cutlass = Some(build_one(gate_scale_dev, inter, h)?);
-        self.up_sfb_cutlass = Some(build_one(up_scale_dev, inter, h)?);
-        if let Some(ds) = down_scale_dev {
-            self.down_sfb_cutlass = Some(build_one(ds, h, inter)?);
-        }
+        let gate_sfb = build_one(gate_scale_dev, inter, h)?;
+        let up_sfb = build_one(up_scale_dev, inter, h)?;
+        let down = match down_scale_dev {
+            Some(ds) => Some((
+                self.down_ptrs.packed_ptrs,
+                build_one(ds, h, inter)?,
+                self.down_ptrs.scale2_vals,
+            )),
+            None => None,
+        };
+        self.cutlass_grouped_host = Some(crate::layers::ops::MoeCutlassHostTables::snapshot(
+            gpu,
+            num,
+            self.gate_ptrs.packed_ptrs,
+            gate_sfb,
+            self.gate_ptrs.scale2_vals,
+            self.up_ptrs.packed_ptrs,
+            up_sfb,
+            self.up_ptrs.scale2_vals,
+            down,
+        )?);
         self._cutlass_sfb_owned = owned;
         tracing::info!(
             "CUTLASS grouped SFB: built {num} experts gate/up (N={inter} K={h}) + down (N={h} K={inter})"

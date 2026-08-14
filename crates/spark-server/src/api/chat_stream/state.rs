@@ -155,6 +155,11 @@ pub(super) struct StreamState {
     /// thinking-phase tokens short-circuit with empty SSE output until
     /// the scheduler picks up the cancel_flag and finalises.
     pub(super) reasoning_xml_leak_detected: bool,
+    /// How many distinct tool-call openers the scanner has seen in this
+    /// stream's reasoning. Compared against
+    /// `ChatLevers::in_think_leak_openers` to decide when stripping
+    /// escalates to cancellation.
+    pub(super) reasoning_xml_opener_hits: u32,
     /// Streaming tool-call detector (`Some` iff `tools_active`).
     pub(super) detector: Option<tool_parser::StreamingToolDetector>,
     /// True iff the reasoning/`<think>` phase has finished. Starts
@@ -227,6 +232,7 @@ impl StreamState {
             cancel_flag,
             reasoning_xml_scan_buf: String::new(),
             reasoning_xml_leak_detected: false,
+            reasoning_xml_opener_hits: 0,
             detector: if tools_active {
                 Some(tool_parser::StreamingToolDetector::new_with_tools(
                     tool_defs,

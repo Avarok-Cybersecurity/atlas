@@ -136,6 +136,26 @@ pub enum ThinkingDirective {
     /// force-injects `</think>` mid-reasoning and wrecks tool
     /// selection).
     On { budget: Option<u32> },
+    /// Client asked for a QUALITATIVE effort level (OpenAI
+    /// `reasoning.effort` / `reasoning_effort`) rather than a token
+    /// budget. Carried symbolically so `api/chat/thinking.rs` can scale
+    /// it against the model's effective `max_thinking_budget` (MODEL.toml
+    /// or `--max-thinking-budget`) — mapping it to an absolute token
+    /// count at the wire edge is how "medium" became a hardcoded 256
+    /// that no server knob could reach (#328 family).
+    OnEffort(EffortLevel),
+}
+
+/// The OpenAI `reasoning_effort` ladder, kept symbolic until budget
+/// resolution. Distinct from [`ReasoningEffort`], which is the 3-level
+/// template-kwarg vocabulary some chat templates consume verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffortLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -446,3 +446,23 @@ fn forced_token_fastpath_enabled_by_falsy_or_junk() {
     assert!(parse_forced_token_fastpath(Some("")));
     assert!(parse_forced_token_fastpath(Some("yes")));
 }
+
+/// Lock the batch4 mid-think EOS block in `decode_logits_step.rs` inert by
+/// default: `honor_eos_inside_thinking` must stay FALSE (pre-p350
+/// behaviour — a mid-`<think>` EOS is discarded, never honored as an
+/// implicit close) and the think-loop watchdog must stay ENABLED unless a
+/// MODEL.toml `[behavior]` table opts out. Qwen3.6-35B-A3B measurably
+/// regresses when the close is honored (8/10 vs 10/10 agentic, #464), so a
+/// default flip here is a production behavior change, not a tweak.
+#[test]
+fn watchdog_defaults_keep_mid_think_eos_block_inert() {
+    let d = WatchdogParams::default();
+    assert!(
+        !d.honor_eos_inside_thinking,
+        "honor_eos_inside_thinking must default OFF (opt-in per model)"
+    );
+    assert!(
+        d.enable_think_loop_watchdog,
+        "think-loop watchdog must default ON (opt-out per model)"
+    );
+}

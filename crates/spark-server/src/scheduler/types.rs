@@ -135,6 +135,24 @@ pub(super) const GUARD_STOP_TOOL_RESPONSE: &str = "tool_response_hard_stop";
 /// — naming a guard THERE would reintroduce the opposite mislabel.
 pub(super) const GUARD_STOP_THINK_SKIP: &str = "think_skip_watchdog";
 
+/// The inter-tool prose budget ended the turn (#328). Both decode paths
+/// (non-MTP `decode_logits_content` fallback and MTP `emit_step`) must
+/// stamp this: unnamed, the non-MTP cut fell through every rung of
+/// `derive_finish_reason` and wired `"stop"` — the client banked a
+/// mid-sentence truncation as a finished answer, while its only clue was
+/// a server-side WARN line. Named, the wire reason is `"length"` and the
+/// guard name reaches `StreamEvent::Done.guard_stop` and the --dump body.
+pub(super) const GUARD_STOP_INTER_TOOL_PROSE: &str = "inter_tool_prose_budget";
+
+/// The content-loop watchdog hard-stopped (rollback declined or the MTP
+/// mirror, which cannot roll back). Same honesty contract as above: a
+/// degeneration cut is a SERVER truncation and must say so.
+pub(super) const GUARD_STOP_CONTENT_LOOP: &str = "content_loop_watchdog";
+
+/// The F1 post-`</think>` content cap ended a tool-active response.
+/// It is an early, smarter `max_tokens` — report it as one (`"length"`).
+pub(super) const GUARD_STOP_POST_THINK_CAP: &str = "post_think_content_cap";
+
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
     pub seq: SequenceState,
