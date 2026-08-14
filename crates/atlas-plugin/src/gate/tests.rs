@@ -107,6 +107,7 @@ pub(super) fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> Gat
             recipe: Some("qwen3.6/test-recipe".to_string()),
             note: "MLPerf floor".to_string(),
             metrics,
+            serve_overrides: BTreeMap::new(),
         },
     );
     let mut hardware = BTreeMap::new();

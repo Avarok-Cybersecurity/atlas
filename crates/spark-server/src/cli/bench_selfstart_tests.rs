@@ -30,6 +30,7 @@ fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
                 recipe: recipe.map(str::to_string),
                 note: String::new(),
                 metrics: BTreeMap::new(),
+                serve_overrides: BTreeMap::new(),
             },
         );
     }
@@ -327,4 +328,41 @@ fn a_repeated_key_takes_the_last_value() {
 #[test]
 fn no_overrides_is_empty_not_an_error() {
     assert!(parse_serve_overrides(&[]).unwrap().is_empty());
+}
+
+/// Baseline pins land on the resolved serve, and a CLI clash takes the operator.
+#[test]
+fn baseline_pins_are_applied_and_the_operator_wins_a_clash() {
+    let baseline = BTreeMap::from([
+        ("ssm_cache_slots".into(), "256".into()),
+        ("kv_cache_dtype".into(), "bf16".into()),
+    ]);
+    let requested = BTreeMap::from([("kv_cache_dtype".into(), "fp8".into())]);
+    let merged = atlas_plugin::gate::merge_serve_overrides(baseline, requested);
+    assert_eq!(
+        merged.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
+    assert_eq!(
+        merged.get("kv_cache_dtype").map(String::as_str),
+        Some("fp8")
+    );
+}
+
+#[test]
+fn resolve_carries_baseline_serve_overrides() {
+    let mut b = baseline(&[("gb10", "m", Some("r"))]);
+    b.hardware
+        .get_mut("gb10")
+        .unwrap()
+        .models
+        .get_mut("m")
+        .unwrap()
+        .serve_overrides
+        .insert("ssm_cache_slots".into(), "256".into());
+    let r = resolve(&b, "bfcl-subset", None).expect("resolved");
+    assert_eq!(
+        r.serve_overrides.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
 }

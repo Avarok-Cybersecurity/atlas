@@ -42,7 +42,12 @@ against these numbers — see bfcl-subset-echolp. History: 2026-07-13 prestack b
 de6153f3 87.34/88.59 (normalized high-water); 2026-08-03 PR #388 Gate D 87.74/89.43 n=995. \
 The draw is PINNED at n=995: a score from a different draw is not comparable to these \
 thresholds, and the sample count is the only thing that reveals it after the fact, so it is \
-gated exactly rather than merely recorded."""
+gated exactly rather than merely recorded. Self-start pins ssm_cache_slots=256 (same \
+override the poison gate already uses) so a 995-sample serial generate cannot evict its own \
+Marconi snapshots. That is capacity, not a score lever — the AST floors below are unchanged."""
+
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
 min = 88.59

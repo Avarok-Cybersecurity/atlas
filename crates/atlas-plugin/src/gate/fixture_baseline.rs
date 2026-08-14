@@ -53,6 +53,12 @@ pub(super) fn write_baseline(root: &Path, benchmark_id: &str, baseline: &GateBas
             }
             toml.push_str("status = \"measured\"\n");
             toml.push_str(&format!("note = {}\n", json_str(&model.note)));
+            if !model.serve_overrides.is_empty() {
+                toml.push_str("\n[benchmarks.serve_overrides]\n");
+                for (k, v) in &model.serve_overrides {
+                    toml.push_str(&format!("{k} = {}\n", json_str(v)));
+                }
+            }
             for (name, bound) in &model.metrics {
                 toml.push_str(&format!("\n[benchmarks.metrics.{name}]\n"));
                 if let Some(v) = bound.min {
