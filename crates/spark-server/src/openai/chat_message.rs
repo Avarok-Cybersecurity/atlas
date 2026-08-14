@@ -34,6 +34,11 @@ pub struct ParsedContent {
     pub text: String,
     /// Base64 data URIs: `"data:image/jpeg;base64,..."` or raw base64 strings.
     pub images: Vec<String>,
+    /// Video sources, same encoding as `images`. A SEPARATE list rather than a
+    /// tagged entry in one: the two render with different markers and carry
+    /// different pad-token counts, and every consumer needs one or the other,
+    /// never a mixed sequence it has to re-split.
+    pub videos: Vec<String>,
 }
 
 impl IncomingMessage {
@@ -45,6 +50,7 @@ impl IncomingMessage {
             content: ParsedContent {
                 text,
                 images: Vec::new(),
+                videos: Vec::new(),
             },
             tool_calls: None,
             tool_call_id: None,
@@ -61,6 +67,7 @@ impl IncomingMessage {
             content: ParsedContent {
                 text,
                 images: Vec::new(),
+                videos: Vec::new(),
             },
             tool_calls: None,
             tool_call_id: None,
@@ -100,6 +107,7 @@ impl IncomingMessage {
             content: ParsedContent {
                 text,
                 images: Vec::new(),
+                videos: Vec::new(),
             },
             tool_calls: None,
             tool_call_id: None,
@@ -183,6 +191,7 @@ impl IncomingMessage {
                     Some(serde_json::Value::String(s)) => ParsedContent {
                         text: s.clone(),
                         images: Vec::new(),
+                        videos: Vec::new(),
                     },
                     // Structured output parts (`output_text` / `input_image` /
                     // …): carry text AND images so a screenshot returned by a
@@ -193,10 +202,14 @@ impl IncomingMessage {
                     // behavior so out-of-spec payloads still reach the model.
                     Some(arr @ serde_json::Value::Array(_)) => {
                         let parsed = ParsedContent::from_responses_content(arr);
-                        if parsed.text.is_empty() && parsed.images.is_empty() {
+                        if parsed.text.is_empty()
+                            && parsed.images.is_empty()
+                            && parsed.videos.is_empty()
+                        {
                             ParsedContent {
                                 text: arr.to_string(),
                                 images: Vec::new(),
+                                videos: Vec::new(),
                             }
                         } else {
                             parsed
@@ -205,6 +218,7 @@ impl IncomingMessage {
                     Some(other) => ParsedContent {
                         text: other.to_string(),
                         images: Vec::new(),
+                        videos: Vec::new(),
                     },
                     None => ParsedContent::default(),
                 };
@@ -242,6 +256,7 @@ impl ParsedContent {
     fn from_responses_content(v: &serde_json::Value) -> Self {
         let mut text = String::new();
         let mut images: Vec<String> = Vec::new();
+        let mut videos: Vec<String> = Vec::new();
         match v {
             serde_json::Value::String(s) => text.push_str(s),
             serde_json::Value::Array(parts) => {
@@ -256,13 +271,21 @@ impl ParsedContent {
                             && let Some(url) = responses_image_url(po)
                         {
                             images.push(url);
+                        } else if matches!(part_kind, "input_video" | "video_url" | "video")
+                            && let Some(url) = responses_video_url(po)
+                        {
+                            videos.push(url);
                         }
                     }
                 }
             }
             _ => {}
         }
-        ParsedContent { text, images }
+        ParsedContent {
+            text,
+            images,
+            videos,
+        }
     }
 }
 
@@ -278,6 +301,24 @@ fn responses_image_url(po: &serde_json::Map<String, serde_json::Value>) -> Optio
         }
         _ => None,
     }
+}
+
+/// Extract the video URL / data-URI from a Responses `input_video` part.
+/// Accepts the flat string form and the nested object form, exactly like
+/// [`responses_image_url`] — the shapes are the same and clients reuse them.
+fn responses_video_url(po: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    for key in ["video_url", "video"] {
+        match po.get(key) {
+            Some(serde_json::Value::String(s)) => return Some(s.clone()),
+            Some(serde_json::Value::Object(o)) => {
+                if let Some(u) = o.get("url").and_then(|v| v.as_str()) {
+                    return Some(u.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn deserialize_message_content<'de, D>(d: D) -> Result<ParsedContent, D::Error>
@@ -298,11 +339,30 @@ where
         kind: String,
         text: Option<String>,
         image_url: Option<ImageUrl>,
+        /// `{"type": "video_url", "video_url": {"url": "..."}}` — the shape
+        /// vLLM and Qwen's own examples use. `Url` is reused because the
+        /// wire shape is identical to `image_url`.
+        video_url: Option<Url>,
+        /// `{"type": "video", "video": "..."}`, the flat spelling some
+        /// clients emit. Untagged so either form deserialises.
+        video: Option<UrlOrString>,
     }
 
     #[derive(Deserialize)]
     struct ImageUrl {
         url: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Url {
+        url: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum UrlOrString {
+        Obj { url: String },
+        Str(String),
     }
 
     let mut out = ParsedContent::default();
@@ -321,6 +381,21 @@ where
                     "image_url" => {
                         if let Some(iu) = p.image_url {
                             out.images.push(iu.url);
+                        }
+                    }
+                    // Both spellings, because both are in the wild: OpenAI-style
+                    // `video_url` objects and Qwen's flat `video`. Until this
+                    // existed, a video part matched the catch-all below and was
+                    // DROPPED without a word, so the model answered from the
+                    // surrounding text as though no video had been sent.
+                    "video_url" | "video" | "input_video" => {
+                        if let Some(v) = p.video_url {
+                            out.videos.push(v.url);
+                        } else if let Some(v) = p.video {
+                            out.videos.push(match v {
+                                UrlOrString::Obj { url } => url,
+                                UrlOrString::Str(s) => s,
+                            });
                         }
                     }
                     _ => {} // ignore unknown part types
@@ -361,3 +436,7 @@ mod tests {
         assert_eq!(m.reasoning_content, None);
     }
 }
+
+#[cfg(test)]
+#[path = "chat_message_video_tests.rs"]
+mod video_wire_tests;

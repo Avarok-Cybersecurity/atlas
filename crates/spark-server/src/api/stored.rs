@@ -65,6 +65,7 @@ pub(super) fn assistant_incoming_from_ir(
         content: crate::openai::ParsedContent {
             text: choice.content.clone().unwrap_or_default(),
             images: Vec::new(),
+            videos: Vec::new(),
         },
         tool_calls: if tool_calls.is_empty() {
             None

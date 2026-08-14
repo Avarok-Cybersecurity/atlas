@@ -113,6 +113,11 @@ ratatui = "ratatui"
 # fixture a paraphrase of the bug instead of the bug. Same rationale as the
 # `paramete`/`parame` close-tag ladder above.
 oints = "oints"
+# `numer` — the `image` crate's own API spelling: `Delay::from_numer_denom_ms`
+# and `Delay::numer_denom_ms`, its numerator/denominator frame-delay pair. A
+# third-party identifier we call, not prose we wrote, so it is spelled the way
+# the crate spells it.
+numer = "numer"
 # `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
 # (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.

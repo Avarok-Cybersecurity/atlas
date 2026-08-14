@@ -335,6 +335,32 @@ pub(super) fn build_msg_entries(
         );
     }
 
+    // ── Video: parsed, carried, and not yet placeable ────────────────────
+    //
+    // The IR now carries `ContentPart::Video` and both wire formats populate
+    // it, so a video part is no longer discarded on the way in. What is not
+    // ready is the far end: one video becomes `grid_t` encoder items but a
+    // SINGLE pad run, and the position builder still assigns MRoPE's T
+    // per-item rather than per temporal group (upload_meta.rs). Feeding
+    // frames through before that lands would produce a pad run whose length
+    // disagrees with the encoder rows behind it — a wrong answer, not an
+    // error.
+    //
+    // So this refuses, by name, with the state of the work. That is the
+    // whole point of doing it here rather than leaving the earlier silent
+    // drop in place: a 400 is recoverable and honest, whereas the model
+    // answering from the surrounding text as though no video had been sent
+    // is neither. See #515.
+    if input.iter().any(|m| m.video_count() > 0) {
+        return Err(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "video input is not supported by this build yet: frames decode and group \
+             correctly, but the position builder cannot place them in the token stream \
+             (Avarok-Cybersecurity/atlas#515). Send individual frames as images instead."
+                .to_string(),
+        ));
+    }
+
     // Preprocess images. One shared fail-fast point: if images were
     // supplied but the model has no vision encoder, reject the request
     // (issue #165) instead of silently dropping the user's input with a

@@ -26,6 +26,15 @@ impl From<&IncomingMessage> for Message {
                 data: ImageData::from_uri(img.clone()),
             }));
         }
+        // Videos after images, before text: the template renders vision
+        // markers ahead of the prose either way, and keeping images first
+        // preserves the historical ordering exactly for requests that carry
+        // no video.
+        for vid in &m.content.videos {
+            content.push(ContentPart::Video(crate::ir::VideoSource {
+                data: ImageData::from_uri(vid.clone()),
+            }));
+        }
         if !m.content.text.is_empty() {
             content.push(ContentPart::Text(m.content.text.clone()));
         }

@@ -135,14 +135,40 @@ impl Message {
             .filter(|p| matches!(p, ContentPart::Image(_)))
             .count()
     }
+
+    /// Number of video parts. Counted separately from images rather than
+    /// folded in: the template renders them with a different marker
+    /// (`<|video_pad|>`, plus a `Video N:` label) and they carry a different
+    /// number of pad tokens, so one combined count could not drive either.
+    pub fn video_count(&self) -> usize {
+        self.content
+            .iter()
+            .filter(|p| matches!(p, ContentPart::Video(_)))
+            .count()
+    }
 }
 
 /// A single piece of message content. Open for future modalities
-/// (audio, video, file).
+/// (audio, file).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentPart {
     Text(String),
     Image(ImageSource),
+    Video(VideoSource),
+}
+
+/// Where a video comes from.
+///
+/// Reuses [`ImageData`] rather than defining a parallel enum: the
+/// base64-or-URL distinction, the classification rule and the reason remote
+/// URLs are refused by default are all identical for both modalities, and a
+/// second copy would be a second place for the remote-fetch policy to drift.
+/// What differs between an image and a video is everything AFTER acquiring
+/// the bytes, which is why the wrapper type is distinct even though its
+/// payload is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoSource {
+    pub data: ImageData,
 }
 
 /// Where an image comes from. The encoder consumes the inner string
