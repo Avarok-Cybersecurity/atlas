@@ -138,6 +138,7 @@ function familyDisplay(fam) {
 const VENDOR_OF_FAMILY = {
   'qwen3.5': 'Qwen',
   'qwen3.6': 'Qwen',
+  'qwen3.8': 'Qwen',
   'qwen3-next': 'Qwen',
   'qwen3-coder-next': 'Qwen',
   'qwen3-vl': 'Qwen',
