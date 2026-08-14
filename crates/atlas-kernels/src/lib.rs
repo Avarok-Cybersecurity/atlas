@@ -22,7 +22,9 @@ use atlas_core::target::KernelTarget;
 // `build_parse_behavior.rs` so the build script's parse defaults cannot
 // drift from `ModelBehavior::default()` (the #328 failure mode).
 mod behavior_defaults;
-pub use behavior_defaults::DEFAULT_MAX_INTER_TOOL_PROSE;
+pub use behavior_defaults::{
+    DEFAULT_EFFORT_CAPPED_AT_CEILING, DEFAULT_MAX_INTER_TOOL_PROSE, DEFAULT_MAX_THINKING_BUDGET,
+};
 
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
@@ -156,8 +158,15 @@ impl Default for SamplingPresets {
 pub struct ModelBehavior {
     /// Allow thinking when tools are active. Default: true.
     pub thinking_in_tools: bool,
-    /// Maximum thinking budget (tokens). Default: 256.
+    /// Maximum thinking budget (tokens). Default:
+    /// [`DEFAULT_MAX_THINKING_BUDGET`].
     pub max_thinking_budget: u32,
+    /// Clamp qualitative `reasoning_effort` levels at the model's effective
+    /// ceiling (high/xhigh resolve to `max_thinking_budget` instead of
+    /// 2x/4x it). Default [`DEFAULT_EFFORT_CAPPED_AT_CEILING`] = `false`
+    /// (historical ladder shape). See `behavior_defaults.rs` for when a
+    /// model should set `true` (measured budget non-monotonicity).
+    pub effort_capped_at_ceiling: bool,
     /// Default thinking state for this model when the client request does not
     /// specify a reasoning_effort / thinking parameter. Typical values:
     /// - thinking-first models (Mistral Small 4, Qwen3.5, …): `true`
@@ -329,7 +338,8 @@ impl Default for ModelBehavior {
     fn default() -> Self {
         Self {
             thinking_in_tools: true,
-            max_thinking_budget: 256,
+            max_thinking_budget: DEFAULT_MAX_THINKING_BUDGET,
+            effort_capped_at_ceiling: DEFAULT_EFFORT_CAPPED_AT_CEILING,
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
             default_kv_dtype: "",

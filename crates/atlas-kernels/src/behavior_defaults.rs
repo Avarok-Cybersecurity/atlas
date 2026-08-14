@@ -25,3 +25,28 @@
 /// kernels/strix/qwen3.6-35b-a3b, 2026-06-10). 0 is reserved by the
 /// runtime resolver to mean "guard disabled".
 pub const DEFAULT_MAX_INTER_TOOL_PROSE: u32 = 3072;
+
+/// Default `[behavior].max_thinking_budget` — the effort-ladder anchor E and
+/// the budget for budgetless thinking-on requests. 256 is the historical
+/// built-in every model inherited before MODEL.toml could override it.
+/// Lifted here (2026-08-14, effort-ladder work) because it was three
+/// hand-synced literals (lib.rs default, build-parse default, build-parse
+/// `unwrap_or`) — the exact drift shape that shipped #328's 384-vs-3072 bug.
+pub const DEFAULT_MAX_THINKING_BUDGET: u32 = 256;
+
+/// Default `[behavior].effort_capped_at_ceiling` — whether qualitative
+/// `reasoning_effort` levels are clamped at the model's effective ceiling E
+/// (`max_thinking_budget` / `--max-thinking-budget`).
+///
+/// `false` preserves the historical ladder shape: high = 2E and xhigh = 4E
+/// EXCEED the ceiling, exactly as the pre-symbolic absolutes did (512/1024
+/// over the built-in 256). Parity at defaults is pinned by
+/// `effort_ladder_at_default_ceiling_matches_the_historical_absolutes`.
+///
+/// `true` is for models with MEASURED non-monotonic degradation above their
+/// ceiling — where a bigger thinking budget scores WORSE, so a client's
+/// boilerplate `reasoning_effort: high` must not double a deliberately small
+/// E (e.g. Qwen3.5-397B NVFP4, 2026-05-07 sweep: budget 256 is worse than
+/// 128). The clamp binds ONLY the server-policy effort ladder; an explicit
+/// client token budget (`thinking_token_budget` etc.) is never touched by it.
+pub const DEFAULT_EFFORT_CAPPED_AT_CEILING: bool = false;
