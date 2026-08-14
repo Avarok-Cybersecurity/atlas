@@ -163,27 +163,46 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(3, "gpu init");
     //
     // Each kernel target declares which (model_type, hidden_size) pairs it supports
-    // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over wildcards.
-    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
-        .with_context(|| {
-            format!(
-                "No compiled kernel target matches model_type '{}' / hidden_size={}. \
+    // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over
+    // wildcards. Config-identical checkpoints (Qwen3.6-27B vs Qwen3.8-27B both
+    // parse to (qwen3_5, 5120)) are disambiguated by matching each colliding
+    // target's declared `match_names` against these checkpoint references; a
+    // tie that does not break to exactly one target is a hard error here (never
+    // a build-order pick), and `--kernel-target` pins the choice explicitly.
+    let model_dir_str = model_dir.display().to_string();
+    let model_refs: Vec<&str> = [
+        args.model.as_deref(),
+        args.model_name.as_deref(),
+        Some(model_dir_str.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let ptx_set = atlas_kernels::ptx_for_config(
+        &config.model_type,
+        config.hidden_size,
+        &model_refs,
+        args.kernel_target.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?
+    .with_context(|| {
+        format!(
+            "No compiled kernel target matches model_type '{}' / hidden_size={}. \
              Available targets: {:?}",
-                config.model_type,
-                config.hidden_size,
-                atlas_kernels::available_targets()
-                    .iter()
-                    .map(|t| &t.target.model)
-                    .collect::<Vec<_>>(),
-            )
-        })?;
+            config.model_type,
+            config.hidden_size,
+            atlas_kernels::available_targets()
+                .iter()
+                .map(|t| &t.target.model)
+                .collect::<Vec<_>>(),
+        )
+    })?;
     let sampling_presets = ptx_set.sampling;
-    // The dashboard's kernel table re-resolves the live target through this
-    // same `ptx_for_config` call. It needs the config shape that selected the
-    // target, because the served-model name is an HF id, not a kernel-target
-    // directory name — and `atlas_kernels::ptx_modules()` (what the table used
-    // to read) is a plain alias of TARGET 0 in a multi-target build.
-    crate::tui::data::kernels::publish_loaded_shape(&config.model_type, config.hidden_size);
+    // Record the RESOLVED target identity for the dashboard's kernel table.
+    // It used to re-run resolution from (model_type, hidden_size), but that
+    // shape no longer identifies a target on its own (see the tie-break
+    // above) — publishing the outcome is exact and cannot disagree with it.
+    crate::tui::data::kernels::publish_loaded_target(ptx_set.target.model, ptx_set.target.quant);
 
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //

@@ -120,6 +120,21 @@ pub struct ServeArgs {
     #[arg(long, alias = "served-model-name", value_name = "NAME")]
     pub model_name: Option<String>,
 
+    /// Pin kernel-target resolution to this compiled target directory name
+    /// (e.g. "qwen3.8-27b").
+    ///
+    /// Normally resolution selects on the checkpoint's `(model_type,
+    /// hidden_size)`, breaking ties between config-identical checkpoints
+    /// (Qwen3.6-27B vs Qwen3.8-27B) by matching each target's declared
+    /// `match_names` against the model id/path. When the reference carries
+    /// no identity — `--model-from-path /model` — that tie cannot break and
+    /// startup refuses rather than guessing; this flag is the explicit
+    /// answer. The pinned target must still declare support for the
+    /// checkpoint's `(model_type, hidden_size)`: a pin can choose between
+    /// compatible targets, never force an incompatible one.
+    #[arg(long, value_name = "TARGET")]
+    pub kernel_target: Option<String>,
+
     /// Override HuggingFace cache directory
     /// (default: $HF_HUB_CACHE, $HF_HOME/hub, or ~/.cache/huggingface/hub).
     #[arg(long, value_name = "DIR")]

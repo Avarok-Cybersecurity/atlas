@@ -6,6 +6,15 @@ architecture = "hybrid_mamba2_latent_moe_attention_puzzle"
 parameters = "75B"
 active_parameters = "9B"
 
+# Kernel-target resolution needles (atlas-kernels/src/resolve.rs).
+# nemotron-super-120b-a12b also declares (nemotron_h_puzzle, 4096) so its
+# single-target build can serve Puzzle checkpoints; in the multi-target
+# build that is a collision, and build.rs requires both sides to declare
+# needles. Puzzle checkpoints (hf_id above) contain "puzzle-75b", so they
+# resolve HERE — the same outcome the old build-order .find() delivered,
+# now declared instead of accidental.
+match_names = ["puzzle-75b"]
+
 [[model_types]]
 model_type = "nemotron_h_puzzle"
 hidden_size = 4096

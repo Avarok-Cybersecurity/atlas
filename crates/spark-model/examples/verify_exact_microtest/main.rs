@@ -383,7 +383,11 @@ fn run_legacy_wy4(g: &dyn GpuBackend, ks: &Kernels, inp: &Inputs) -> Result<Vec<
 
 fn main() -> Result<()> {
     let set = atlas_kernels::ptx_for_model("qwen3.6-27b")
-        .or_else(|| atlas_kernels::ptx_for_config("qwen3_5_text", 5120))
+        .or_else(|| {
+            atlas_kernels::ptx_for_config("qwen3_5_text", 5120, &[], None)
+                .ok()
+                .flatten()
+        })
         .expect("no qwen3.6-27b ptx set");
     eprintln!("kernel set: {}", set.target.model);
     let gpu = AtlasCudaBackend::new(0, &set.modules)?;

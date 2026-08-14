@@ -109,6 +109,12 @@ struct Target {
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
+    /// `[model] match_names` — checkpoint-reference needles that break the
+    /// tie when several targets declare the same `(model_type, hidden_size)`
+    /// (Qwen3.6-27B vs Qwen3.8-27B have bit-identical configs).
+    /// `validate_collision_match_names` panics if a colliding target omits
+    /// them; non-colliding targets leave this empty.
+    match_names: Vec<String>,
     /// `[dflash]` section if present in MODEL.toml — drafter pairing for
     /// block-diffusion speculative decoding. `None` when the model has no
     /// associated DFlash drafter checkpoint.
@@ -1010,15 +1016,43 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             panic!("Model kernel directory not found: {}", model_dir.display());
         }
 
-        // Expand quant wildcard
+        // `[model] kernel_source` — this target compiles another target's
+        // kernel sources instead of shipping its own copies (SSOT for
+        // architecturally-identical checkpoints: qwen3.8-27b reuses
+        // qwen3.6-27b's .cu files verbatim rather than vendoring 26
+        // duplicates). MODEL.toml (sampling/behavior/model_types/…) still
+        // comes from THIS target's own directory; only the quant kernel
+        // dirs are redirected. Chains are refused — a source must own its
+        // sources.
+        let kernel_src_dir = match parse_kernel_source(&model_dir) {
+            Some(src) => {
+                let src_dir = hw_dir.join(&src);
+                assert!(
+                    src_dir.is_dir() && src_dir.join("MODEL.toml").exists(),
+                    "{model}/MODEL.toml: kernel_source = \"{src}\" does not name a kernel \
+                     target directory under {}",
+                    hw_dir.display()
+                );
+                assert!(
+                    parse_kernel_source(&src_dir).is_none(),
+                    "{model}/MODEL.toml: kernel_source = \"{src}\" itself redirects — \
+                     chains are not allowed; point at the target that owns the sources"
+                );
+                src_dir
+            }
+            None => model_dir.clone(),
+        };
+
+        // Expand quant wildcard (against the source dir, which owns the
+        // per-quant kernel subdirectories).
         let quants: Vec<String> = if quant_spec == "*" {
-            list_subdirs(&model_dir)
+            list_subdirs(&kernel_src_dir)
         } else {
             vec![quant_spec.clone()]
         };
 
         for quant in &quants {
-            let model_kernel_dir = model_dir.join(quant);
+            let model_kernel_dir = kernel_src_dir.join(quant);
             // Shared kernels live in `kernels/<hw>/common/` and apply to
             // every (model, quant) target on this hardware. Most kernels
             // here are dtype-agnostic (BF16 norms/embeds/attn) — the dir
@@ -1077,6 +1111,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
+            let match_names = parse_match_names(&model_dir);
             let dflash = parse_dflash(&model_dir);
             let expected_absent = parse_expected_absent(&model_dir);
 
@@ -1128,6 +1163,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_rom_head: pb.rom_head,
                 behavior_tool_retry: pb.tool_retry,
                 model_type_matches,
+                match_names,
                 dflash,
             });
         }
@@ -1135,7 +1171,53 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
 
     // Sort by (model, quant) for deterministic ordering
     targets.sort_by(|a, b| (&a.model, &a.quant).cmp(&(&b.model, &b.quant)));
+    validate_collision_match_names(&targets);
     targets
+}
+
+/// Fail the BUILD when differently-named targets collide on a
+/// `(model_type, hidden_size)` declaration without every participant
+/// declaring explicit `[model] match_names`.
+///
+/// Runtime resolution (`atlas_kernels::resolve`) breaks such a collision by
+/// matching the needles against the checkpoint reference and hard-errors
+/// when it cannot — but a colliding target with NO needles declared could
+/// never win that tie-break, which is a latent unserveable configuration
+/// nobody would notice until a serve fails. Config shape cannot distinguish
+/// e.g. Qwen3.6-27B from Qwen3.8-27B (bit-identical configs), so the
+/// disambiguation must be declared, and declared at build time.
+fn validate_collision_match_names(targets: &[Target]) {
+    let mut by_pair: HashMap<(&str, Option<usize>), Vec<&Target>> = HashMap::new();
+    for t in targets {
+        for m in &t.model_type_matches {
+            by_pair
+                .entry((m.model_type.as_str(), m.hidden_size))
+                .or_default()
+                .push(t);
+        }
+    }
+    for ((model_type, hidden), group) in by_pair {
+        let mut names: Vec<&str> = group.iter().map(|t| t.model.as_str()).collect();
+        names.sort();
+        names.dedup();
+        if names.len() < 2 {
+            continue; // no collision (multi-quant variants of one target are fine)
+        }
+        for t in &group {
+            assert!(
+                !t.match_names.is_empty(),
+                "kernel targets {names:?} all declare (model_type \"{model_type}\", \
+                 hidden_size {hidden:?}) in [[model_types]], but target \"{}\" has no \
+                 [model] match_names — runtime resolution could never select it \
+                 unambiguously. Add e.g. `match_names = [\"{}\"]` to \
+                 kernels/<hw>/{}/MODEL.toml (needles are case-insensitive substrings \
+                 of the checkpoint's HF id / --model-name / model dir).",
+                t.model,
+                t.model,
+                t.model,
+            );
+        }
+    }
 }
 
 /// List subdirectory names (not files) in a directory, sorted.
@@ -1166,8 +1248,8 @@ mod build_parse;
 #[path = "build_shadow.rs"]
 mod build_shadow;
 use build_parse::{
-    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_toml, parse_model_types,
-    parse_sampling_presets, parse_shadow_exempt,
+    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_source, parse_kernel_toml,
+    parse_match_names, parse_model_types, parse_sampling_presets, parse_shadow_exempt,
 };
 use build_shadow::shadowed_missing_symbols;
 

@@ -5,6 +5,17 @@ params = "27B"
 active_params = "27B"
 architecture = "Hybrid Attention + SSM (Dense FFN)"
 
+# Kernel-target resolution needles (atlas-kernels/src/resolve.rs). This
+# target collides with qwen3.6-27b on the belt-and-braces (qwen3_6_moe,
+# 5120) entry below, and build.rs requires every colliding target to
+# declare its needles explicitly. NOTE: in the standard multi-target build
+# a "qwen3.5-27b"-named checkpoint still resolves to qwen3.6-27b on the
+# (qwen3_5, 5120) EXACT tier before this target's wildcard is ever
+# consulted — qwen3.6-27b claims the same needle there on purpose (HANDOFF
+# §9a routing). These needles only decide tiers where THIS target actually
+# competes.
+match_names = ["qwen3.5-27b"]
+
 layers_total = 64
 layers_full_attention = 16
 layers_linear_attention = 48

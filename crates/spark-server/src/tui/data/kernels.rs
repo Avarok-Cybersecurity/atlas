@@ -4,8 +4,9 @@
 //! set joined with the runtime resolution audit — the same data
 //! `render_kernel_table` prints, as rows a real `Table` widget can sort/filter.
 //!
-//! The module set has to come from `ptx_for_config`, exactly as
-//! `super::library` does it. `atlas_kernels::ptx_modules()` is emitted as a
+//! The module set has to come from the target serve actually resolved
+//! (published here, looked up via `ptx_for_exact_target`).
+//! `atlas_kernels::ptx_modules()` is emitted as a
 //! plain alias of TARGET 0 in a multi-target build (`build_codegen.rs`), and
 //! targets are sorted by directory name — so on every model except
 //! `deepseek-v4-flash` it rendered another architecture's modules: phantom
@@ -59,23 +60,27 @@ pub struct KernelTableModel {
     pub missing_expected: Vec<MissingKernel>,
 }
 
-/// `(model_type, hidden_size)` of the model currently loaded.
+/// `(target model, quant)` of the kernel target the serve path RESOLVED for
+/// the model currently loaded.
 ///
-/// Published by the serve path at the moment it resolves the target, so the
-/// dashboard re-resolves the SAME `TargetPtxSet` the model was built against
-/// rather than guessing from the served-model name (which is an HF id, not a
-/// kernel-target directory name).
-static LOADED_SHAPE: Mutex<Option<(String, usize)>> = Mutex::new(None);
+/// Published at the moment resolution succeeds. This used to be the
+/// `(model_type, hidden_size)` config shape and the table re-ran resolution
+/// from it — but that shape no longer identifies a target on its own
+/// (Qwen3.6-27B and Qwen3.8-27B are config-identical and their tie is broken
+/// by checkpoint reference, which this module does not have). Publishing the
+/// resolved identity is exact: the table looks up the target by name+quant
+/// and cannot disagree with what serve selected.
+static LOADED_TARGET: Mutex<Option<(String, String)>> = Mutex::new(None);
 
-/// Record which model config the live target was resolved from.
-pub fn publish_loaded_shape(model_type: &str, hidden_size: usize) {
-    if let Ok(mut g) = LOADED_SHAPE.lock() {
-        *g = Some((model_type.to_string(), hidden_size));
+/// Record which kernel target the serve path resolved.
+pub fn publish_loaded_target(model: &str, quant: &str) {
+    if let Ok(mut g) = LOADED_TARGET.lock() {
+        *g = Some((model.to_string(), quant.to_string()));
     }
 }
 
-fn loaded_shape() -> Option<(String, usize)> {
-    let guard = LOADED_SHAPE.lock().ok()?;
+fn loaded_target() -> Option<(String, String)> {
+    let guard = LOADED_TARGET.lock().ok()?;
     guard.clone()
 }
 
@@ -97,8 +102,8 @@ pub fn build() -> KernelTableModel {
     // No model loaded yet, or this build has no matching compiled target: an
     // EMPTY table is the honest answer. Falling back to some other target's
     // module list is the bug this function was rewritten to fix.
-    let Some(ptx) = loaded_shape()
-        .and_then(|(model_type, hidden)| atlas_kernels::ptx_for_config(&model_type, hidden))
+    let Some(ptx) = loaded_target()
+        .and_then(|(model, quant)| atlas_kernels::ptx_for_exact_target(&model, &quant))
     else {
         return KernelTableModel::default();
     };
