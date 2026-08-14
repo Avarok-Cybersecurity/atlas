@@ -4,6 +4,12 @@
 // (500-LoC cap). Included as a child module of `build_parse`, so `super::`
 // reaches its items and `crate::` reaches build.rs types.
 
+// Shared with `src/lib.rs` (which `mod`s the same file) so the parse
+// default below and `ModelBehavior::default()` are one literal. A build
+// script cannot import the library it builds, and the hand-synced copies
+// this replaces drifted for a month (#328: 384 here vs 3072 lib-side).
+include!("src/behavior_defaults.rs");
+
 /// Parsed `[behavior]` table from a model's MODEL.toml. Field defaults
 /// match `ModelBehavior::default()` so an absent table / absent field is
 /// behavior-neutral.
@@ -89,7 +95,7 @@ impl Default for ParsedBehavior {
             confidence_early_stop: true,
             confidence_run_length: 30,
             fuzzy_repeat_tolerance_div: 12,
-            max_inter_tool_prose: 384,
+            max_inter_tool_prose: DEFAULT_MAX_INTER_TOOL_PROSE,
             max_post_think_content_tokens: 100_000,
             tscg: false,
             disable_tool_grammar: false,
@@ -216,7 +222,7 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("max_inter_tool_prose"))
         .and_then(|v| v.as_integer())
         .map(|v| v as u32)
-        .unwrap_or(384);
+        .unwrap_or(DEFAULT_MAX_INTER_TOOL_PROSE);
     let max_post_think_content_tokens = b
         .and_then(|v| v.get("max_post_think_content_tokens"))
         .and_then(|v| v.as_integer())

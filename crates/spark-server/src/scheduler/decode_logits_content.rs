@@ -88,6 +88,7 @@ pub fn handle_content_token(
             max = sched.watchdog.max_post_think_content_tokens,
             "post-think content cap exceeded in non-MTP decode path; ending response (tool-active request would otherwise burn to max_tokens)"
         );
+        a.guard_stop = Some(GUARD_STOP_POST_THINK_CAP);
         a.finished = true;
     }
     // think_just_ended is a one-shot: it was set when the prior
@@ -175,6 +176,9 @@ pub fn handle_content_token(
                     CONTENT_LOOP_PERIOD_MIN,
                     CONTENT_LOOP_PERIOD_MAX,
                 );
+                // #328 class: a server cut must name its guard, or
+                // `derive_finish_reason` sees budget left and wires "stop".
+                a.guard_stop = Some(GUARD_STOP_CONTENT_LOOP);
                 a.finished = true;
             }
         }
@@ -219,8 +223,13 @@ pub fn handle_content_token(
                         prose_tokens = a.prose_tokens_since_last_tool,
                         max = max_prose,
                         ?reason,
-                        "Inter-tool prose budget exhausted, ending response (rollback declined)"
+                        "Inter-tool prose budget exhausted, ending response (rollback declined); \
+                         raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                         MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                     );
+                    // #328: unnamed, this cut reached Pi.dev as a generic
+                    // max-tokens stop and the WARN above was the only clue.
+                    a.guard_stop = Some(GUARD_STOP_INTER_TOOL_PROSE);
                     a.finished = true;
                 }
             }

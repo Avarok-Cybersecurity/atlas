@@ -315,7 +315,9 @@ pub struct WatchdogParams {
     /// mismatches. Default 12 (~8%).
     pub fuzzy_repeat_tolerance_div: usize,
     /// Cap on free-text tokens between successive `<tool_call>` opens in
-    /// `tool_choice=auto`. Default 384 (`MAX_INTER_TOOL_PROSE`).
+    /// `tool_choice=auto`. Default [`MAX_INTER_TOOL_PROSE`]; `u32::MAX`
+    /// here means an operator disabled the guard (see
+    /// [`resolve_max_inter_tool_prose`]).
     pub max_inter_tool_prose: u32,
     /// Unconditional per-generation cap on post-`</think>` content tokens
     /// for tool-active requests. Default 100_000
@@ -381,7 +383,10 @@ impl WatchdogParams {
         DEFAULT_WATCHDOG_PARAMS.fuzzy_repeat_tolerance_div;
 
     /// Resolve this model's watchdog tunables from its MODEL.toml
-    /// `[behavior]` table, applying the one env override that outranks it.
+    /// `[behavior]` table, then the overrides that outrank it.
+    ///
+    /// `max_inter_tool_prose_cli` is `--max-inter-tool-prose` (#328); see
+    /// [`resolve_max_inter_tool_prose`] for the precedence chain.
     ///
     /// Was a `OnceLock` plus a `set_watchdog_params` installer. Two problems,
     /// both fixed by building the value where it is known and carrying it:
@@ -390,7 +395,10 @@ impl WatchdogParams {
     /// `log_behavior_audit`, which serve calls *after* it spawns the
     /// scheduler thread — the reader's `unwrap_or(&DEFAULT)` was the only
     /// reason that ordering was survivable.
-    pub fn from_behavior(b: &atlas_kernels::ModelBehavior) -> Self {
+    pub fn from_behavior(
+        b: &atlas_kernels::ModelBehavior,
+        max_inter_tool_prose_cli: Option<u32>,
+    ) -> Self {
         let mut p = Self {
             think_loop_min_repeats: b.think_loop_min_repeats as usize,
             think_loop_scan_window: b.think_loop_scan_window as usize,
@@ -411,15 +419,44 @@ impl WatchdogParams {
         // 6-turn session died writing an API plan at 385 tokens. The REPEATING
         // wander is already caught by the content-loop + SimHash watchdogs
         // independently; this budget's residual job is only the non-repeating
-        // dormant-opener burn. Env wins over MODEL.toml.
-        if let Some(v) = std::env::var("ATLAS_MAX_INTER_TOOL_PROSE")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-        {
-            p.max_inter_tool_prose = v;
-        }
+        // dormant-opener burn.
+        let env = match std::env::var("ATLAS_MAX_INTER_TOOL_PROSE") {
+            Ok(v) => match v.parse::<u32>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    // A set-but-unparseable override is a config error, not
+                    // an absent one — silently keeping the model default here
+                    // is how a truncation "fix" fails to apply (#328 class).
+                    tracing::warn!(
+                        value = %v,
+                        "ATLAS_MAX_INTER_TOOL_PROSE is set but not a u32; ignoring it"
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        p.max_inter_tool_prose =
+            resolve_max_inter_tool_prose(p.max_inter_tool_prose, env, max_inter_tool_prose_cli);
         p
     }
+}
+
+/// Resolve the effective inter-tool prose budget (#328).
+///
+/// Precedence, highest wins: `--max-inter-tool-prose` (CLI, typed per
+/// launch next to the model) → `ATLAS_MAX_INTER_TOOL_PROSE` (env) →
+/// MODEL.toml `[behavior].max_inter_tool_prose` → the shared default
+/// (`atlas_kernels::DEFAULT_MAX_INTER_TOOL_PROSE`, already folded into
+/// `toml` by the build-time parse).
+///
+/// 0 means "guard disabled" and maps to `u32::MAX`: the check sites fire
+/// on `prose_tokens > max`, so a literal 0 would end every tool-armed
+/// response at its FIRST content token — the exact opposite of what an
+/// operator writing 0 is asking for.
+pub fn resolve_max_inter_tool_prose(toml: u32, env: Option<u32>, cli: Option<u32>) -> u32 {
+    let v = cli.or(env).unwrap_or(toml);
+    if v == 0 { u32::MAX } else { v }
 }
 
 // The three vocabulary masks that lived here as `OnceLock<Arc<[bool]>>` plus a
@@ -436,12 +473,14 @@ impl WatchdogParams {
 /// in `auto` mode (grammar.rs:461-462) sets `at_least_one=false`
 /// and `stop_after_first=false`, so `is_terminated()` stays false
 /// forever after the first tool call — the model can emit
-/// prose↔tool↔prose↔tool indefinitely. 384 tokens is enough for
-/// three normal "I'll now do X" paragraphs of agentic narrative;
-/// anything beyond is the failure mode (re-narrating the plan
-/// rather than executing it). Counted across non-thinking,
+/// prose↔tool↔prose↔tool indefinitely. Counted across non-thinking,
 /// non-tool-body tokens only.
-pub const MAX_INTER_TOOL_PROSE: u32 = 3072;
+///
+/// Aliases the atlas-kernels default rather than restating it: P2-1
+/// raised this constant to 3072 while the kernels-side default (the one
+/// `from_behavior` actually reads for every model) stayed 384, so the
+/// "fixed" budget kept amputating agent narration for a month (#328).
+pub const MAX_INTER_TOOL_PROSE: u32 = atlas_kernels::DEFAULT_MAX_INTER_TOOL_PROSE;
 
 /// F1 (2026-06-02): unconditional per-generation cap on post-`</think>`
 /// content tokens for tool-active requests (`grammar_state.is_some()`).
@@ -739,6 +778,8 @@ mod thinking_loop_tests;
 
 #[cfg(test)]
 mod inter_tool_prose_tests {
+    use super::{WatchdogParams, resolve_max_inter_tool_prose};
+
     #[test]
     fn default_prose_budget_is_plan_friendly() {
         // Regression: 384 amputated legitimate plan turns (2026-07-09).
@@ -748,6 +789,48 @@ mod inter_tool_prose_tests {
                 "inter-tool prose budget must fit a typical plan/analysis turn"
             );
         };
+    }
+
+    #[test]
+    fn resolved_default_budget_is_plan_friendly() {
+        // #328: the const assert above was green for a month while every
+        // served model got 384 — production reads the KERNELS-side default
+        // through `from_behavior`, not the constant. Assert the RESOLVED
+        // value, i.e. what `handle_content_token` actually compares against.
+        let p = WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None);
+        assert!(
+            p.max_inter_tool_prose >= 2048,
+            "resolved inter-tool prose budget must fit a plan/analysis turn \
+             (got {}) — the build-time and lib defaults have drifted",
+            p.max_inter_tool_prose
+        );
+    }
+
+    #[test]
+    fn prose_budget_precedence_is_cli_env_toml() {
+        // MODEL.toml value stands alone.
+        assert_eq!(resolve_max_inter_tool_prose(384, None, None), 384);
+        // Env outranks MODEL.toml (P2-1 contract, unchanged).
+        assert_eq!(resolve_max_inter_tool_prose(384, Some(8192), None), 8192);
+        // CLI outranks both — it is typed per launch next to the model.
+        assert_eq!(
+            resolve_max_inter_tool_prose(384, Some(8192), Some(4096)),
+            4096
+        );
+        assert_eq!(resolve_max_inter_tool_prose(384, None, Some(4096)), 4096);
+    }
+
+    #[test]
+    fn prose_budget_zero_disables_instead_of_instant_firing() {
+        // The check sites fire on `prose_tokens > max`, so a literal 0 would
+        // truncate every tool-armed response at its first content token.
+        // 0 must mean "guard off" from every source.
+        assert_eq!(resolve_max_inter_tool_prose(0, None, None), u32::MAX);
+        assert_eq!(resolve_max_inter_tool_prose(384, Some(0), None), u32::MAX);
+        assert_eq!(
+            resolve_max_inter_tool_prose(384, Some(8192), Some(0)),
+            u32::MAX
+        );
     }
 }
 

@@ -309,6 +309,7 @@ pub fn emit_token(
                 max = sched.watchdog.max_post_think_content_tokens,
                 "post-think content cap exceeded in MTP/emit path; ending response (tool-active request would otherwise burn to max_tokens)"
             );
+            a.guard_stop = Some(GUARD_STOP_POST_THINK_CAP);
             a.finished = true;
         }
         if !sched.levers.disable_watchdogs
@@ -332,6 +333,8 @@ pub fn emit_token(
                 CONTENT_LOOP_PERIOD_MIN,
                 CONTENT_LOOP_PERIOD_MAX,
             );
+            // #328 class: name the cut or it wires "stop" (see types.rs).
+            a.guard_stop = Some(GUARD_STOP_CONTENT_LOOP);
             a.finished = true;
         }
 
@@ -365,9 +368,11 @@ pub fn emit_token(
                     max = max_prose,
                     output_len = a.output_tokens.len(),
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
-                     (no tool call after budget — would otherwise burn to max_tokens)."
+                     (no tool call after budget — would otherwise burn to max_tokens); \
+                     raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                     MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                 );
-                a.guard_stop = Some("inter_tool_prose_budget");
+                a.guard_stop = Some(GUARD_STOP_INTER_TOOL_PROSE);
                 a.finished = true;
             }
         }

@@ -758,7 +758,10 @@ pub(crate) fn load_model(
     // Per-model watchdog tunables. Built here, before the scheduler thread
     // spawns — the installer this replaces ran from `log_behavior_audit`,
     // which is called well after the spawn.
-    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(&ptx_set.behavior);
+    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
+        &ptx_set.behavior,
+        args.max_inter_tool_prose,
+    );
     // The run's levers. Shared with the dashboard so `/watchdog on|off`
     // toggles this run's flag; the MODEL.toml `[behavior]` value is its
     // starting position.

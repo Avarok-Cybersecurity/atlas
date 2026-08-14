@@ -343,6 +343,15 @@ pub struct ServeArgs {
     #[arg(long)]
     pub max_thinking_budget: Option<u32>,
 
+    /// Override MODEL.toml's `[behavior].max_inter_tool_prose` (tokens):
+    /// the cap on free-prose tokens between successive tool calls on a
+    /// tool-armed request, after which the scheduler ends the response
+    /// with finish_reason "length" (#328). 0 disables the guard entirely.
+    /// Precedence (highest wins): this flag → ATLAS_MAX_INTER_TOOL_PROSE
+    /// → MODEL.toml → built-in default (3072).
+    #[arg(long)]
+    pub max_inter_tool_prose: Option<u32>,
+
     /// Override MODEL.toml's `[behavior].disable_tool_grammar`.
     /// When true, the server skips XGrammar structural-tag enforcement on
     /// `tool_choice="auto"` requests; tools are still parsed from output

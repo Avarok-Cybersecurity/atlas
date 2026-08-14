@@ -204,7 +204,11 @@ fn every_finish_site_is_a_recorded_decision() {
     //
     // Named — decode_logits_step: `<tool_response>`, think-skip watchdog,
     // fuzzy_repetition. emit_step: `<tool_response>`, think-skip watchdog,
-    // inter_tool_prose_budget, tool_envelope_stuck.
+    // post_think_content_cap, content_loop_watchdog, inter_tool_prose_budget,
+    // tool_envelope_stuck. decode_logits_content (#328): post_think_content_cap,
+    // content_loop_watchdog (rollback-declined), inter_tool_prose_budget
+    // (rollback-declined — the cut Pi.dev received as a generic max-tokens
+    // stop while the only truthful record was a server-side WARN line).
     // Unnamed remainder (deliberate): natural stops — the model sampled EOS,
     // the token budget / context ceiling hit, the cooperative cancel flag,
     // and `<|im_start|>` (eos-registered; see INTENTIONAL_STOP above for
@@ -216,7 +220,13 @@ fn every_finish_site_is_a_recorded_decision() {
             11,
             3,
         ),
-        ("emit_step.rs", include_str!("emit_step.rs"), 11, 4),
+        ("emit_step.rs", include_str!("emit_step.rs"), 11, 6),
+        (
+            "decode_logits_content.rs",
+            include_str!("decode_logits_content.rs"),
+            3,
+            3,
+        ),
     ];
     for (name, src, want_total, want_named) in LEDGER {
         let (total, named) = scan_finish_ledger(src);

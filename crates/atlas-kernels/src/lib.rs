@@ -18,6 +18,12 @@
 
 use atlas_core::target::KernelTarget;
 
+// Build-time/run-time shared `[behavior]` defaults — also `include!`d by
+// `build_parse_behavior.rs` so the build script's parse defaults cannot
+// drift from `ModelBehavior::default()` (the #328 failure mode).
+mod behavior_defaults;
+pub use behavior_defaults::DEFAULT_MAX_INTER_TOOL_PROSE;
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
 // NOTE: cargo does NOT track this build-script-generated include! as a
@@ -241,7 +247,8 @@ pub struct ModelBehavior {
     /// mismatches. Default 12 (~8%).
     pub fuzzy_repeat_tolerance_div: u32,
     /// Cap on free-text tokens between successive `<tool_call>` opens in
-    /// `tool_choice=auto`. Default 384. Agentic coding may want larger.
+    /// `tool_choice=auto`. Default [`DEFAULT_MAX_INTER_TOOL_PROSE`]
+    /// (see `behavior_defaults.rs` for the tuning history — #328).
     pub max_inter_tool_prose: u32,
     /// Unconditional per-generation cap on post-`</think>` content tokens
     /// for tool-active requests (grammar attached). Bounds a runaway where
@@ -342,7 +349,7 @@ impl Default for ModelBehavior {
             confidence_early_stop: true,
             confidence_run_length: 30,
             fuzzy_repeat_tolerance_div: 12,
-            max_inter_tool_prose: 384,
+            max_inter_tool_prose: DEFAULT_MAX_INTER_TOOL_PROSE,
             max_post_think_content_tokens: 100_000,
             tscg: false,
             disable_tool_grammar: false,
