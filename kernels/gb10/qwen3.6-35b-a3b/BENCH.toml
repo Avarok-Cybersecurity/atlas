@@ -232,6 +232,51 @@ means unmeasured; thresholds follow the first run on main.\
 [[benchmarks]]
 quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "mlperf-agentic-subset"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "unmeasured"
+note = """\
+MLPerf Agentic Inference (datacenter) subset leg -- REGISTERED UNRUNNABLE, NEVER MEASURED. \
+The official dataset (613 trajectories, 500 Workato workflow + 113 DeepSWE coding) is \
+unpublished as of 2026-08-13: mlcommons/endpoints@7935df4 ships an empty datasets/ dir and \
+its README says "MLCommons storage (link TBD)". No run has ever happened, so there are NO \
+metrics here and none may be guessed in. The scorer is a Rust port of the upstream inline \
+scorer at that same commit, pinned by executed-upstream parity fixtures \
+(crates/atlas-plugin/assets/mlperf-agentic/parity_fixtures.json). || CHECKPOINT CAVEAT: \
+MLCommons specifies Qwen/Qwen3.6-35B-A3B (BF16). This entry serves the official FP8 \
+sibling -- rules-legal quantization under MLPerf closed-division 8.1, but NOT the named \
+checkpoint, and its accuracy validity is unproven until the official three-part gate is \
+cleared. || CONTEXT, NEVER FLOORS: MLPerf's own thresholds for this model are inline \
+accuracy >= 55.86 pct, OSL per-turn mean 355-434 tokens, SWE-bench Verified >= 67.5 pct \
+(200 instances). They are FULL-DATASET, temp-1.0, official-client numbers; this subset \
+draw on an FP8 checkpoint with a pinned seed is a different distribution, so writing any \
+of them as a floor here would gate against a number nobody measured. The first measured \
+run on frozen main becomes the baseline, exactly like the echolp gate's history. || \
+SAMPLING IS IMMUTABLE AND STOCHASTIC: official params are temp 1.0 / top_k 20 / top_p \
+0.95 / repetition 1.0 / presence 1.5 / max_new_tokens 8192 / preserve_thinking true, and \
+submitters may not add or remove any. Every other accuracy gate in this file runs temp 0; \
+this leg is therefore the repo's first stochastic gate candidate. The leg pins seed 42 \
+(MLPerf specifies no seed, so this adds no violation) but a seeded temp-1.0 run is still \
+not bitwise reproducible across engines -- the calibration protocol must quantify the \
+spread before any floor is written, and if the noise cannot fit the 5 pct schema cap the \
+draw is too small or the gate must average repeats. || BEFORE FIRST MEASUREMENT, in \
+order: (1) dataset ships -> record its full-file SHA256 as expected_sha256 here and in \
+the leg params; (2) calibration run on frozen main (generous draw) measures s/turn, OSL, \
+per-domain spread, and the context-exclusion set for the served max_seq_len; (3) freeze \
+the first-K draw + its draw fingerprint (recorded in the gate record's \
+dataset_fingerprint field); (4) >= 3 repeats size the noise; (5) only then write \
+status = "measured" floors. || NOT COVERED BY THIS LEG regardless of dataset: the \
+SWE-bench Verified leg (live mini-swe-agent + Docker service; a workflow, not a leg -- \
+without it no result is a valid official submission and every report must say "inline + \
+OSL only"); KV salting (enable_salt, blake2b -- needs a dep, wire at calibration); tool \
+delays; the official concurrency/Pareto scenario shape (per-user vs per-system tok/s \
+curve via the upstream client, which is the right tool for any official submission run).\
+"""
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
 gate = "ssm-state-poisoning-gate"
 recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
