@@ -24,25 +24,58 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
+    let all = atlas_plugin::registry::all();
+    let n = all.len();
     let block = panel("SUITE ─".into(), true);
     let inner = block.inner(area);
-    f.render_widget(block, area);
 
     // ★ Scroll offset, in ENTRIES rather than lines: each benchmark occupies
-    // ROWS_PER_ENTRY rows, so an 80x24 terminal shows about four of them.
+    // rows_per_entry rows, so an 80x24 terminal shows about four of them.
     // Without this the list always rendered from index 0 and `j` past the
     // fourth moved a cursor nobody could see -- the detail pane changing was
     // the only clue. Both sibling lists (bench/history.rs, library/list.rs)
     // already compute one.
-    const ROWS_PER_ENTRY: usize = 4;
-    let visible = (inner.height as usize / ROWS_PER_ENTRY).max(1);
-    let offset = app.bench.selected.saturating_sub(visible.saturating_sub(1));
+    //
+    // Density adapts before the list clips: the blank separator is the first
+    // row spent. At 160x48 the four-row layout holds ten entries, so the
+    // eleventh registered benchmark rendered nowhere at default selection —
+    // a leg that registered cleanly but never draws is indistinguishable
+    // from one that does not exist.
+    const ROOMY: usize = 4;
+    const COMPACT: usize = 3;
+    let rows_per_entry = if n * ROOMY <= inner.height as usize {
+        ROOMY
+    } else {
+        COMPACT
+    };
+    let visible = (inner.height as usize / rows_per_entry).max(1);
+    // Clamped to the last full page, not merely derived from the selection:
+    // an unclamped offset is the class the scroll audit kept finding.
+    let offset = app
+        .bench
+        .selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(n.saturating_sub(visible));
+    // Published for PgUp/PgDn — the `log_scroll_max` contract: only this
+    // function knows how many entries one page holds.
+    app.bench.suite_page.set(visible);
+
+    // Position indicator only when clipped, `library/modal.rs`'s
+    // bottom-border idiom. Plain dim text: the numbers are the signal, so
+    // NO_COLOR loses nothing.
+    let block = if n > visible {
+        let last = (offset + visible).min(n);
+        block.title_bottom(Span::styled(
+            format!("─ {}-{last} of {n} ─", offset + 1),
+            theme::dim(),
+        ))
+    } else {
+        block
+    };
+    f.render_widget(block, area);
+
     let mut lines: Vec<Line> = Vec::new();
-    for (i, descriptor) in atlas_plugin::registry::all()
-        .iter()
-        .enumerate()
-        .skip(offset)
-    {
+    for (i, descriptor) in all.iter().enumerate().skip(offset) {
         let selected = i == app.bench.selected;
         let running = app.bench.running_id == Some(descriptor.id) && app.bench.is_running();
         let marker = if running {
@@ -83,10 +116,16 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw("")
             },
         ]));
-        lines.push(Line::default());
+        if rows_per_entry == ROOMY {
+            lines.push(Line::default());
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
+
+#[cfg(test)]
+#[path = "list_tests.rs"]
+mod tests;
 
 fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     let Some(descriptor) = app.bench.descriptor() else {
