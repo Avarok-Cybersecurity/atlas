@@ -349,6 +349,13 @@ pub struct WatchdogParams {
     /// well-formed boundary and re-steer instead of hard-stopping.
     /// Default `true`. See [`super::rollback::rollback_to_boundary`].
     pub rollback_resteer: bool,
+    /// Operator override for the content-loop detector's repeat threshold
+    /// (`--content-loop-min-repeats` / `ATLAS_CONTENT_LOOP_MIN_REPEATS`).
+    /// `None` = the built-in [`CONTENT_LOOP_MIN_REPEATS`] (3). A
+    /// per-request `repetition_detection` object still outranks this.
+    /// Raising it loosens the guard for output whose legitimate shape is
+    /// short-period repetition (code: `}\n}\n`, `,\n` list tails).
+    pub content_loop_min_repeats: Option<u32>,
 }
 
 /// Historical-default watchdog tunables — the single source of truth.
@@ -368,6 +375,7 @@ const DEFAULT_WATCHDOG_PARAMS: WatchdogParams = WatchdogParams {
     // FALSE = pre-p350 behaviour: a mid-think EOS is discarded, not honored.
     honor_eos_inside_thinking: false,
     enable_think_loop_watchdog: true,
+    content_loop_min_repeats: None,
 };
 
 impl Default for WatchdogParams {
@@ -387,6 +395,9 @@ impl WatchdogParams {
     ///
     /// `max_inter_tool_prose_cli` is `--max-inter-tool-prose` (#328); see
     /// [`resolve_max_inter_tool_prose`] for the precedence chain.
+    /// `content_loop_min_repeats_cli` is `--content-loop-min-repeats`
+    /// (#328 family); precedence CLI → `ATLAS_CONTENT_LOOP_MIN_REPEATS` →
+    /// built-in [`CONTENT_LOOP_MIN_REPEATS`].
     ///
     /// Was a `OnceLock` plus a `set_watchdog_params` installer. Two problems,
     /// both fixed by building the value where it is known and carrying it:
@@ -398,6 +409,7 @@ impl WatchdogParams {
     pub fn from_behavior(
         b: &atlas_kernels::ModelBehavior,
         max_inter_tool_prose_cli: Option<u32>,
+        content_loop_min_repeats_cli: Option<u32>,
     ) -> Self {
         let mut p = Self {
             think_loop_min_repeats: b.think_loop_min_repeats as usize,
@@ -410,6 +422,7 @@ impl WatchdogParams {
             rollback_resteer: b.rollback_resteer,
             honor_eos_inside_thinking: b.honor_eos_inside_thinking,
             enable_think_loop_watchdog: b.enable_think_loop_watchdog,
+            content_loop_min_repeats: None,
         };
         // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
         // `<invoke>`-dormant-opener WANDER bound, but opencode arms tools on
@@ -438,7 +451,79 @@ impl WatchdogParams {
         };
         p.max_inter_tool_prose =
             resolve_max_inter_tool_prose(p.max_inter_tool_prose, env, max_inter_tool_prose_cli);
+        p.content_loop_min_repeats = content_loop_min_repeats_cli.or(parse_env_u32(
+            "ATLAS_CONTENT_LOOP_MIN_REPEATS",
+            std::env::var("ATLAS_CONTENT_LOOP_MIN_REPEATS")
+                .ok()
+                .as_deref(),
+        ));
         p
+    }
+
+    /// The content-loop detector params in force for one sequence: the
+    /// request's own `repetition_detection` object outranks the operator
+    /// override; `None` = the built-in constants. Periods stay at the
+    /// built-in range — only the repeat threshold is operator-tunable.
+    pub fn content_loop_params(
+        &self,
+        request: Option<crate::api::inference_types::RepetitionDetectionParams>,
+    ) -> Option<crate::api::inference_types::RepetitionDetectionParams> {
+        request.or_else(|| {
+            self.content_loop_min_repeats.map(|n| {
+                crate::api::inference_types::RepetitionDetectionParams {
+                    min_pattern_size: CONTENT_LOOP_PERIOD_MIN as u32,
+                    max_pattern_size: CONTENT_LOOP_PERIOD_MAX as u32,
+                    min_count: n,
+                }
+            })
+        })
+    }
+}
+
+/// Parse an optional numeric env override. A set-but-unparseable value is a
+/// config error, not an absent one (#328 class) — warn, never silently drop.
+fn parse_env_u32(name: &str, v: Option<&str>) -> Option<u32> {
+    let v = v?;
+    match v.trim().parse::<u32>() {
+        Ok(n) => Some(n),
+        Err(_) => {
+            tracing::warn!(value = %v, "{name} is set but not a u32; ignoring it");
+            None
+        }
+    }
+}
+
+/// Resolve whether the content-loop watchdog is armed for this run.
+///
+/// Precedence, highest wins: `--content-loop-watchdog` (CLI) →
+/// `ATLAS_CONTENT_LOOP_WATCHDOG` (env, `1`/`true`/`0`/`false`) → MODEL.toml
+/// `[behavior].enable_loop_watchdog`. Before this resolver the MODEL.toml
+/// value was FINAL on the shipped image (MODEL.toml is baked in at build
+/// time), so a model that opted in — e.g. the qwen3-next family, for its
+/// run-on incident — dragged every derivative checkpoint's operators along
+/// with no reachable off-switch short of `ATLAS_DISABLE_WATCHDOGS=1`
+/// (which disarms EVERY guard, not this one).
+pub fn resolve_content_loop_watchdog(toml: bool, env: Option<&str>, cli: Option<bool>) -> bool {
+    if let Some(cli) = cli {
+        return cli;
+    }
+    match env {
+        None => toml,
+        Some(v) => {
+            let v = v.trim();
+            if v == "1" || v.eq_ignore_ascii_case("true") {
+                true
+            } else if v == "0" || v.eq_ignore_ascii_case("false") {
+                false
+            } else {
+                tracing::warn!(
+                    value = %v,
+                    "ATLAS_CONTENT_LOOP_WATCHDOG is set but not 1/true/0/false; \
+                     keeping the MODEL.toml value"
+                );
+                toml
+            }
+        }
     }
 }
 
@@ -797,7 +882,7 @@ mod inter_tool_prose_tests {
         // served model got 384 — production reads the KERNELS-side default
         // through `from_behavior`, not the constant. Assert the RESOLVED
         // value, i.e. what `handle_content_token` actually compares against.
-        let p = WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None);
+        let p = WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None, None);
         assert!(
             p.max_inter_tool_prose >= 2048,
             "resolved inter-tool prose budget must fit a plan/analysis turn \
@@ -831,6 +916,87 @@ mod inter_tool_prose_tests {
             resolve_max_inter_tool_prose(384, Some(8192), Some(0)),
             u32::MAX
         );
+    }
+}
+
+#[cfg(test)]
+mod content_loop_override_tests {
+    use super::{
+        CONTENT_LOOP_MIN_REPEATS, CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN, WatchdogParams,
+        detect_content_token_loop_with, resolve_content_loop_watchdog,
+    };
+    use crate::api::inference_types::RepetitionDetectionParams;
+
+    #[test]
+    fn watchdog_arming_precedence_is_cli_env_toml() {
+        // MODEL.toml value stands alone (both polarities).
+        assert!(resolve_content_loop_watchdog(true, None, None));
+        assert!(!resolve_content_loop_watchdog(false, None, None));
+        // Env outranks MODEL.toml — the shipped image bakes MODEL.toml in,
+        // so without this rung an opted-in model has no reachable off-switch.
+        assert!(!resolve_content_loop_watchdog(true, Some("0"), None));
+        assert!(resolve_content_loop_watchdog(false, Some("true"), None));
+        // CLI outranks both.
+        assert!(!resolve_content_loop_watchdog(true, Some("1"), Some(false)));
+        assert!(resolve_content_loop_watchdog(false, Some("0"), Some(true)));
+        // Unparseable env keeps the MODEL.toml value (and warns at the site).
+        assert!(resolve_content_loop_watchdog(true, Some("banana"), None));
+    }
+
+    #[test]
+    fn min_repeats_cli_reaches_the_resolved_params() {
+        let p =
+            WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None, Some(5));
+        assert_eq!(p.content_loop_min_repeats, Some(5));
+        let eff = p.content_loop_params(None).expect("override present");
+        assert_eq!(eff.min_count, 5);
+        assert_eq!(eff.min_pattern_size as usize, CONTENT_LOOP_PERIOD_MIN);
+        assert_eq!(eff.max_pattern_size as usize, CONTENT_LOOP_PERIOD_MAX);
+    }
+
+    #[test]
+    fn request_params_outrank_the_operator_override() {
+        let p = WatchdogParams {
+            content_loop_min_repeats: Some(5),
+            ..WatchdogParams::default()
+        };
+        let req = RepetitionDetectionParams {
+            min_pattern_size: 4,
+            max_pattern_size: 8,
+            min_count: 2,
+        };
+        let eff = p.content_loop_params(Some(req)).expect("request present");
+        assert_eq!(eff.min_count, 2);
+        assert_eq!(eff.min_pattern_size, 4);
+    }
+
+    #[test]
+    fn unset_override_keeps_the_historical_constants() {
+        let p = WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None, None);
+        assert_eq!(p.content_loop_min_repeats, None);
+        assert!(p.content_loop_params(None).is_none());
+    }
+
+    #[test]
+    fn raised_min_repeats_passes_code_shaped_period_2_tails() {
+        // Daniel's firing shape (#328 follow-up): 48 content tokens ending in
+        // a period-2 pattern repeated 3 times — closing-brace/newline-class
+        // code tails. At the
+        // built-in threshold (3) the detector fires; an operator raising the
+        // threshold to 5 lets the same tail through while a genuine 5-repeat
+        // attractor still trips.
+        let mut toks: Vec<u32> = (0..48u32).collect();
+        toks.extend_from_slice(&[7, 8, 7, 8, 7, 8]); // 3 end-anchored repeats
+        assert!(detect_content_token_loop_with(&toks, None));
+        const { assert!(CONTENT_LOOP_MIN_REPEATS == 3) };
+        let relaxed = RepetitionDetectionParams {
+            min_pattern_size: CONTENT_LOOP_PERIOD_MIN as u32,
+            max_pattern_size: CONTENT_LOOP_PERIOD_MAX as u32,
+            min_count: 5,
+        };
+        assert!(!detect_content_token_loop_with(&toks, Some(relaxed)));
+        toks.extend_from_slice(&[7, 8, 7, 8]); // now 5 repeats
+        assert!(detect_content_token_loop_with(&toks, Some(relaxed)));
     }
 }
 

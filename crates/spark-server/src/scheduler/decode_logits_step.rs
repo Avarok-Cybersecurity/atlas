@@ -485,7 +485,16 @@ pub fn process_decode_logits(
                 {
                     a.force_end_thinking = true;
                     a.sentence_defer_count = 0;
+                    // Name the budget's SOURCE: a 256-class cut with a large
+                    // --max-thinking-budget in force means the CLIENT sent the
+                    // budget (explicit tokens or a reasoning_effort rung) —
+                    // the knob to turn is in the request, not the server.
                     tracing::info!(
+                        source = if a.enable_thinking {
+                            "request (client budget/effort; scaled by --max-thinking-budget)"
+                        } else {
+                            "spontaneous <think> (--max-thinking-budget / MODEL.toml)"
+                        },
                         "Thinking budget exhausted ({budget} tokens), arming </think>; \
                          deferring up to {MAX_SENTENCE_DEFER_TOKENS} tokens for sentence boundary"
                     );
