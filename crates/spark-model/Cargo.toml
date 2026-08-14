@@ -234,6 +234,10 @@ name = "w4a16_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "w4a16_batch2_dualissue_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "bf16_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
 

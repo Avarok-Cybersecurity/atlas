@@ -55,6 +55,8 @@ pub use model_stats::ModelStats;
 mod gemm_fp8_prefill;
 #[path = "ops/gemm_quant.rs"]
 mod gemm_quant;
+#[path = "ops/gemv_batch2_dualissue.rs"]
+mod gemv_batch2_dualissue;
 #[path = "ops/gemv_q2.rs"]
 mod gemv_q2;
 #[path = "ops/gemv_q2_vec.rs"]
