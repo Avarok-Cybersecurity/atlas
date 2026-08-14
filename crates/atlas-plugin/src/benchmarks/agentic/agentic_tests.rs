@@ -65,6 +65,47 @@ fn all_three_conditions_must_hold_to_pass() {
     assert!(slow.verdict().reason.contains("Σwall"));
 }
 
+/// The reference dense-27B tier (2026-08-14, dgx2, main 680b3a568, N=10):
+/// webserver_ok 10/10, followed_directions 10/10, per-run walls below,
+/// Σ 1925.1 s. Measured, it FAILED — but only the 35B-calibrated 1000 s
+/// budget, which is the miscomparison model variants exist to remove. Under
+/// the dense variant's own committed ceiling (2500 s, the value
+/// `--pull-request-gate`/the TUI derive from its BENCH.toml) the same tier is
+/// a PASS. Both directions pinned with the real numbers, so neither the
+/// budget nor the derivation can drift without this noticing.
+#[test]
+fn the_measured_dense_tier_passes_its_own_budget_and_fails_the_35bs() {
+    const DENSE_TIER_WALLS: [f64; 10] = [
+        156.0, 187.3, 274.2, 144.7, 230.5, 243.3, 205.2, 117.3, 185.2, 181.4,
+    ];
+    let rows = || {
+        DENSE_TIER_WALLS
+            .iter()
+            .map(|w| row(true, true, *w))
+            .collect::<Vec<IterationRow>>()
+    };
+
+    let under_35b_budget = with_rows(rows(), 1000.0);
+    let v = under_35b_budget.verdict();
+    assert_eq!(v.kind, crate::result::VerdictKind::Fail);
+    assert!(
+        v.reason.contains("Σwall 1925s > 1000s"),
+        "wall is the ONLY failure: {}",
+        v.reason
+    );
+    assert!(
+        !v.reason.contains("webserver_ok") && !v.reason.contains("followed_directions"),
+        "correctness was perfect: {}",
+        v.reason
+    );
+
+    let under_own_budget = with_rows(rows(), 2500.0);
+    assert_eq!(
+        under_own_budget.verdict().kind,
+        crate::result::VerdictKind::Pass
+    );
+}
+
 #[test]
 fn a_failing_verdict_lists_every_reason_not_just_the_first() {
     let bad = with_rows(vec![row(false, false, 9000.0)], 1300.0);

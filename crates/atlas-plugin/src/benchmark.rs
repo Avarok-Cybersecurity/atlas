@@ -61,6 +61,21 @@ pub struct BenchmarkDescriptor {
     /// `None` means the benchmark measures whatever it is pointed at — true of
     /// the latency sweeps, which have no baseline tied to a checkpoint.
     pub intended_for: Option<ModelExpectation>,
+    /// Parameters whose RUN-TIME value is defined by the gate baseline, as
+    /// `(param key, metric key)` pairs.
+    ///
+    /// Some benchmarks compute their own verdict against a knob that is also a
+    /// committed threshold — the agentic gate's `wall_budget_s` is the same
+    /// number as its `BENCH.toml` `sum_wall_s` ceiling. With one model per
+    /// benchmark the schema default could carry that number; with model
+    /// variants it cannot, because each variant carries its own bound (the
+    /// dense 27B's wall band is ~2× the 35B MoE's). Declaring the pairing here
+    /// lets a gate run and the TUI derive the param from the SELECTED variant's
+    /// baseline entry instead of duplicating the number — an explicit `--param`
+    /// still wins.
+    ///
+    /// Empty for every benchmark whose verdict reads no committed threshold.
+    pub threshold_params: &'static [(&'static str, &'static str)],
     pub ctor: fn() -> Box<dyn DynBenchmark>,
 }
 

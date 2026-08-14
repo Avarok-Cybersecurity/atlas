@@ -3,8 +3,10 @@
 //! Benchmarks-section state: what is selected, what the parameters are set to,
 //! and what the running benchmark has reported so far.
 //!
-//! The section is a three-step flow — **Suite → Parameters → Run** — plus a
-//! History pane over `~/.atlas/runs`. Nothing here awaits: the executor owns
+//! The section is a stepped flow — **Suite → Model variants → Parameters →
+//! Run**, the variant step appearing only for a benchmark whose baseline
+//! declares model variants (see [`super::bench_variants`]) — plus a History
+//! pane over `~/.atlas/runs`. Nothing here awaits: the executor owns
 //! the tokio side and this drains its channels once per tick, exactly like
 //! [`crate::tui::chat`].
 
@@ -24,6 +26,9 @@ const LOG_CAPACITY: usize = 500;
 pub enum View {
     #[default]
     List,
+    /// Which model variant of the selected benchmark — shown when its
+    /// baseline declares any; see [`super::bench_variants`].
+    Variants,
     Params,
     Run,
 }
@@ -59,6 +64,11 @@ pub struct BenchState {
     pub target_model_pinned: bool,
     /// Set for a benchmark whose descriptor demands confirmation.
     pub confirm_open: bool,
+    /// The selected benchmark's model variants, from its assembled baseline.
+    /// Empty when it has none (or there is no checkout to read them from).
+    pub variants: Vec<super::bench_variants::VariantRow>,
+    /// Cursor into `variants`.
+    pub variant_row: usize,
 
     executor: Option<atlas_plugin::BenchmarkExecutor>,
     run: Option<RunHandle>,
@@ -156,6 +166,9 @@ impl BenchState {
         self.errors.clear();
         self.row = 0;
         self.editing = false;
+        // Another benchmark's variants would adopt the wrong checkpoint.
+        self.variants.clear();
+        self.variant_row = 0;
     }
 
     /// Provenance of the selected benchmark.

@@ -28,6 +28,10 @@ impl BenchState {
         }
         match self.view {
             View::List => self.list_key(key),
+            View::Variants => {
+                self.variants_key(key);
+                Outcome::None
+            }
             View::Params => self.params_key(key),
             View::Run => self.run_key(key),
         }
@@ -43,15 +47,15 @@ impl BenchState {
                 self.select(self.selected.saturating_sub(1));
             }
             // Enter on the benchmark that is CURRENTLY RUNNING goes to its
-            // run, not to a form it cannot start from. Anything else opens the
-            // form.
+            // run, not to a form it cannot start from. Anything else goes
+            // through the variant step when the benchmark declares variants,
+            // and straight to the form when it does not.
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                self.view =
-                    if self.is_running() && self.running_id == self.descriptor().map(|d| d.id) {
-                        View::Run
-                    } else {
-                        View::Params
-                    };
+                if self.is_running() && self.running_id == self.descriptor().map(|d| d.id) {
+                    self.view = View::Run;
+                } else {
+                    self.enter_selected();
+                }
             }
             // A finished run stays reachable after you navigate away from it.
             KeyCode::Char('v') if self.frame.is_some() => self.view = View::Run,
@@ -80,7 +84,15 @@ impl BenchState {
             }
             KeyCode::Up | KeyCode::Char('k') => self.row = self.row.saturating_sub(1),
             KeyCode::Enter => self.editing = true,
-            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => self.view = View::List,
+            // Back retraces the way in: through the variant step when this
+            // benchmark has one, to the list when it does not.
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                self.view = if self.variants.is_empty() {
+                    View::List
+                } else {
+                    View::Variants
+                };
+            }
             // Reset the form to the schema's defaults.
             KeyCode::Char('d') => {
                 let selected = self.selected;

@@ -107,6 +107,7 @@ pub(super) fn bench_hints(app: &App) -> &'static str {
             "j/k select · ⏎ configure · v last run · ⇥ Suite↔History · ? help"
         }
         (View::List, _) => "j/k select · ⏎ configure · ⇥ Suite↔History · 1-7 jump · ? help",
+        (View::Variants, _) => "j/k variant · ⏎ choose model · Esc back · ? help",
         (View::Params, true) => "⏎ commit · Esc cancel",
         (View::Params, false) => "j/k move · ⏎ edit · d defaults · p probe · s START · Esc back",
         (View::Run, _) => "c cancel · j/k scroll · Esc back to suite",

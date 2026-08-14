@@ -11,6 +11,7 @@ mod history;
 mod list;
 mod params;
 mod run;
+mod variants;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -28,6 +29,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         BenchSub::History => history::draw(f, app, area),
         BenchSub::Suite => match app.bench.view {
             View::List => list::draw(f, app, area),
+            View::Variants => variants::draw(f, app, area),
             View::Params => params::draw(f, app, area),
             View::Run => run::draw(f, app, area),
         },

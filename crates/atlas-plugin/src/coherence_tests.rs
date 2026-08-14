@@ -239,7 +239,11 @@ fn a_gate_run_against_the_wrong_model_family_is_reported() {
     );
     assert!(
         !expect.accepts("unsloth/Qwen3.6-27B-NVFP4"),
-        "the dense 27B is a DIFFERENT gate"
+        "the dense Qwen3.6-27B has no agentic variant — it is a DIFFERENT gate (C2/D)"
+    );
+    assert!(
+        expect.accepts("unsloth/Qwen3.8-27B-NVFP4"),
+        "the dense Qwen3.8-27B is a declared variant with its own thresholds"
     );
 }
 

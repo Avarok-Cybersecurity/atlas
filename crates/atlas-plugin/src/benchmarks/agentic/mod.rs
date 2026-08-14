@@ -337,10 +337,12 @@ impl Benchmark for AgenticWebserver {
                 "wall_budget_s",
                 "Σ wall budget",
                 "Total agent seconds across all iterations before the gate fails. \
-                 1000 s, tightened from 1300 on 2026-08-09: measured tiers on the \
-                 35B flagship land at 600-800 s (734 and 783 back-to-back on one \
-                 binary), so 1300 left ~60% headroom above the observed range and \
-                 could not have caught anything short of a blowup.",
+                 The schema default is the 35B MoE flagship's ceiling (1000 s, \
+                 tightened from 1300 on 2026-08-09: measured tiers land at \
+                 600-800 s). Each model variant carries its OWN ceiling in its \
+                 BENCH.toml (the dense 27B's band is roughly 2x), and selecting a \
+                 variant — in the TUI or via --pull-request-gate — replaces this \
+                 default with that ceiling; see threshold_params.",
                 ParamKind::Float {
                     min: 1.0,
                     max: 100_000.0,
