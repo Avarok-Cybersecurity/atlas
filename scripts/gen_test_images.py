@@ -23,6 +23,15 @@ SPECS = [
     (1024, 576, "06_wide_1024x576"),
     (1280, 720, "07_hd_1280x720"),
     (480, 854, "08_portrait_480x854"),
+    # ABOVE the historical 1280px long-side clamp, and the only rung that is.
+    # Everything above it fits under the old cap unchanged, so a regression
+    # back to that cap would leave every other expectation untouched and pass.
+    # 1600x900 is 1.44M px -- far inside the 16.7M a Qwen3-VL checkpoint
+    # declares, so a correct engine does not resize it at all (1400 tokens),
+    # while the old clamp scales it to 1280x720 (920). Distinct enough that
+    # the two paths cannot be confused. Appended last on purpose: `idx` feeds
+    # the hue offset, so adding here leaves 01-08 byte-identical.
+    (1600, 900, "09_over_clamp_1600x900"),
 ]
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "images")
 

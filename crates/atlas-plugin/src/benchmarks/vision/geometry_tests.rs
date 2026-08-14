@@ -54,6 +54,9 @@ fn every_ladder_size_has_a_defined_expectation() {
         // clamp downscaled it to exactly this.
         (1280, 720, 920),
         (480, 854, 405),
+        // The only rung above the old clamp. See
+        // `the_ladder_can_actually_detect_a_regression_to_the_old_clamp`.
+        (1600, 900, 1400),
     ] {
         assert_eq!(
             expected_vision_tokens(w, h, 16, 2),
@@ -82,14 +85,51 @@ fn snap_never_returns_zero() {
     assert!(expected_vision_tokens(1, 1, 16, 2) >= 1);
 }
 
+/// ★ The test that justifies the ladder's shape.
+///
+/// A gate that cannot fail on the defect it was written for is decoration.
+/// This asserts the discriminating property directly: at least one fixture
+/// must produce a DIFFERENT token count under the old 1280px long-side clamp
+/// than under the checkpoint's declared area bound. Without the 1600x900 rung
+/// this test fails, which is exactly the guard wanted — someone trimming the
+/// ladder for runtime has to break this test to do it.
 #[test]
-fn the_bound_check_is_conservative_when_unknown() {
-    // Unknown bound must read as "cannot assert", never as "fits" — an
-    // expectation computed against a guessed bound would fail a correct
-    // engine, which is worse than reporting UNMEASURED.
-    assert!(within_bound(448, 448, Some(16_777_216)));
-    assert!(!within_bound(8192, 8192, Some(16_777_216)));
-    assert!(!within_bound(64, 64, None), "unknown must not read as fits");
+fn the_ladder_can_actually_detect_a_regression_to_the_old_clamp() {
+    /// What the retired unconditional clamp did: scale so the LONG side is
+    /// 1280, never upscaling.
+    fn under_old_clamp(w: u32, h: u32) -> u32 {
+        let long = w.max(h) as f32;
+        let s = (1280.0 / long).min(1.0);
+        expected_vision_tokens(
+            ((w as f32) * s).round() as u32,
+            ((h as f32) * s).round() as u32,
+            16,
+            2,
+        )
+    }
+
+    let ladder: Vec<(u32, u32)> = crate::benchmarks::vision::provision::FIXTURES
+        .iter()
+        .map(|&(_, _, w, h)| (w, h))
+        .collect();
+    let discriminating: Vec<(u32, u32)> = ladder
+        .iter()
+        .copied()
+        .filter(|&(w, h)| under_old_clamp(w, h) != expected_vision_tokens(w, h, 16, 2))
+        .collect();
+
+    assert!(
+        !discriminating.is_empty(),
+        "every fixture in the ladder sits at or under the 1280px clamp, so a \
+         regression to it would change no expectation and the geometry leg \
+         would pass on a broken engine. Add a fixture above 1280 on the long \
+         side."
+    );
+
+    // And name the numbers, so a future change to the fixture set that
+    // weakens the margin is visible rather than silent.
+    assert_eq!(under_old_clamp(1600, 900), 920);
+    assert_eq!(expected_vision_tokens(1600, 900, 16, 2), 1400);
 }
 
 #[test]

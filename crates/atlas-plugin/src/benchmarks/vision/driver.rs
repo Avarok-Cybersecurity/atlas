@@ -376,6 +376,20 @@ impl Benchmark for VisionFidelity {
                 ];
                 r.metrics
                     .insert("geometry_asserted".into(), asserted as f64);
+                // ASSERTED counts Match AND Mismatch — it answers "did the rung
+                // get measured", which is the guard against an encoder-capacity
+                // regression turning every cell UNMEASURED and reading as a
+                // pass. It is NOT a correctness count: a run where every cell
+                // reported the wrong number still scores full marks on it. The
+                // gate needs a threshold that moves when the ANSWER is wrong,
+                // so matched is emitted separately and is the one BENCH.toml
+                // bounds. Both are kept: they fail on different defects.
+                let matched = self
+                    .geom
+                    .iter()
+                    .filter(|c| matches!(c, GeomCell::Match { .. }))
+                    .count();
+                r.metrics.insert("geometry_matched".into(), matched as f64);
                 r.metrics
                     .insert("geometry_cells".into(), self.geom.len() as f64);
                 r.metrics.insert("probes_passed".into(), passed as f64);

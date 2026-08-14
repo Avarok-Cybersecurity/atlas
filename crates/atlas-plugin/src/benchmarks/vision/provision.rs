@@ -84,6 +84,23 @@ pub const FIXTURES: &[(&str, &[u8], u32, u32)] = &[
         480,
         854,
     ),
+    // ★ THE DISCRIMINATING RUNG, and the reason the ladder is nine and not
+    // eight. Every fixture above sits at or under the historical 1280px
+    // long-side clamp, so all eight produce IDENTICAL token counts whether
+    // the engine honours the checkpoint's declared area bound or silently
+    // falls back to that clamp — which is to say the ladder could not detect
+    // the very defect this benchmark was built for.
+    //
+    // 1600x900 is 1.44M px, far inside the 16.7M a Qwen3-VL checkpoint
+    // declares, so a correct engine leaves it alone: 1400 tokens. Under the
+    // old clamp it is scaled to 1280x720: 920. A mismatch here is unambiguous
+    // and cannot be produced by rounding.
+    (
+        "09_over_clamp_1600x900.png",
+        include_bytes!("../../../assets/vision/09_over_clamp_1600x900.png"),
+        1600,
+        900,
+    ),
 ];
 
 /// Bump when the fixture SET changes — a new image, a regenerated one, a

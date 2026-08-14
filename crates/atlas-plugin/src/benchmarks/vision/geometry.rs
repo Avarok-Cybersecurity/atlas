@@ -39,17 +39,16 @@ pub fn expected_vision_tokens(w: u32, h: u32, patch: u32, merge: u32) -> u32 {
     (sw / patch) * (sh / patch) / (merge * merge)
 }
 
-/// Area bound above which the preprocessor downscales, mirroring
-/// `target_size_with_max_pixels`. `None` means the caller could not determine
-/// the served checkpoint's bound, in which case the geometry leg reports
-/// UNMEASURED rather than guessing — an expectation computed against the wrong
-/// bound would fail on a correct engine.
-pub fn within_bound(w: u32, h: u32, max_pixels: Option<u64>) -> bool {
-    match max_pixels {
-        Some(mp) => (w as u64) * (h as u64) <= mp,
-        None => false,
-    }
-}
+// A `within_bound(w, h, max_pixels)` helper used to live here, documented as
+// letting the geometry leg report UNMEASURED when the served bound could not
+// be determined. Nothing ever called it — the driver asserts every rung
+// unconditionally — so the doc described behaviour the benchmark did not have.
+// Removed rather than wired up: the ladder is deliberately built so that every
+// fixture is inside any plausible bound, which makes the prediction independent
+// of the bound and the unconditional assertion correct. The one rung that
+// straddles the retired 1280px clamp is the point of the exercise (see
+// `provision::FIXTURES`), and it must be ASSERTED rather than skipped, or the
+// regression it exists to catch would be reported as "unmeasured" and pass.
 
 #[cfg(test)]
 #[path = "geometry_tests.rs"]

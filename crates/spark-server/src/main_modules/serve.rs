@@ -289,31 +289,73 @@ pub(super) fn resolve_vision_max_pixels(
     Ok(read_preprocessor_max_pixels(model_dir))
 }
 
-/// Pull the area bound out of `preprocessor_config.json`, if the checkpoint
+/// Pull the IMAGE area bound out of the checkpoint's processor config, if it
 /// ships one. `None` on any absence or malformation — a model without the
 /// file, or with one we cannot read, must keep the historical behaviour
 /// rather than fail to serve.
 ///
-/// Two spellings are accepted. HF's Qwen2VL/Qwen3VL processors write
-/// `size = {longest_edge, shortest_edge}`, where — despite the names — both
-/// are pixel COUNTS, not edge lengths (Qwen3.8-27B: 16777216 = 4096²,
-/// 65536 = 256²). Older/other processors write `max_pixels` directly.
+/// TWO FILENAMES, because the ecosystem uses both and a checkpoint ships one
+/// or the other, never both. HF's `save_pretrained` writes
+/// `preprocessor_config.json` with the image fields at the top level
+/// (`Qwen/Qwen3.6-35B-A3B-FP8`), while a combined processor writes
+/// `processor_config.json` with each modality under its own key
+/// (`unsloth/Qwen3.6-27B-NVFP4` → `image_processor.size.longest_edge`).
+/// Reading only the first is why the unsloth checkpoints — the ones actually
+/// being served — still ran the 1280px fallback after the area bound was
+/// supposedly honoured: they declare 16777216 and nothing looked in the file
+/// that says so.
+///
+/// The nested form is also why this cannot be a search for the first
+/// `longest_edge` in the document. `processor_config.json` carries a SECOND,
+/// LARGER bound under `video_processor` (25165824 vs the image 16777216);
+/// picking that one would over-admit every still image by half again its
+/// permitted area. The image bound is addressed explicitly.
+///
+/// Two spellings are accepted within whichever object we land on. HF's
+/// Qwen2VL/Qwen3VL processors write `size = {longest_edge, shortest_edge}`,
+/// where — despite the names — both are pixel COUNTS, not edge lengths
+/// (16777216 = 4096², 65536 = 256²). Older/other processors write
+/// `max_pixels` directly.
 pub(super) fn read_preprocessor_max_pixels(model_dir: &std::path::Path) -> Option<usize> {
-    let path = model_dir.join("preprocessor_config.json");
-    let text = std::fs::read_to_string(&path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let from_size = json
-        .get("size")
-        .and_then(|s| s.get("longest_edge"))
-        .and_then(serde_json::Value::as_u64);
-    let direct = json.get("max_pixels").and_then(serde_json::Value::as_u64);
-    let px = from_size.or(direct).filter(|&p| p > 0)? as usize;
-    tracing::info!(
-        "Vision area bound {} px from {} (was: hard-coded 1280px long side)",
-        px,
-        path.display()
-    );
-    Some(px)
+    // Ordered by precedence. `preprocessor_config.json` is the dedicated
+    // image-processor file, so it wins if a checkpoint somehow ships both.
+    const SOURCES: [(&str, Option<&str>); 3] = [
+        ("preprocessor_config.json", None),
+        ("preprocessor_config.json", Some("image_processor")),
+        ("processor_config.json", Some("image_processor")),
+    ];
+    for (file, nest) in SOURCES {
+        let path = model_dir.join(file);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let scope = match nest {
+            Some(key) => match json.get(key) {
+                Some(v) => v,
+                None => continue,
+            },
+            None => &json,
+        };
+        let from_size = scope
+            .get("size")
+            .and_then(|s| s.get("longest_edge"))
+            .and_then(serde_json::Value::as_u64);
+        let direct = scope.get("max_pixels").and_then(serde_json::Value::as_u64);
+        let Some(px) = from_size.or(direct).filter(|&p| p > 0) else {
+            continue;
+        };
+        tracing::info!(
+            "Vision area bound {} px from {}{} (was: hard-coded 1280px long side)",
+            px,
+            path.display(),
+            nest.map(|k| format!(" [{k}]")).unwrap_or_default(),
+        );
+        return Some(px as usize);
+    }
+    None
 }
 
 /// QV1 (2026-05-26): canonicalize the model's declared quantization to
@@ -416,31 +458,5 @@ pub(super) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
 }
 
 #[cfg(test)]
-mod qv1_tests {
-    use super::*;
-
-    // canonicalize_model_quant is exercised via integration through
-    // the server boot path; unit-testing it requires building
-    // ModelConfig which has no `Default` impl (it's intentionally
-    // bound to a loaded model). The pair-compatibility table is a
-    // pure function and worth a unit test.
-
-    #[test]
-    fn compat_self_pair() {
-        assert!(quant_pair_compatible("nvfp4", "nvfp4"));
-        assert!(quant_pair_compatible("fp8", "fp8"));
-        assert!(quant_pair_compatible("bf16", "bf16"));
-    }
-
-    #[test]
-    fn compat_nvfp4_handles_fp8_and_bf16() {
-        assert!(quant_pair_compatible("nvfp4", "fp8"));
-        assert!(quant_pair_compatible("nvfp4", "bf16"));
-    }
-
-    #[test]
-    fn incompat_unknown_rejected() {
-        assert!(!quant_pair_compatible("nvfp4", "gptq-4bit"));
-        assert!(!quant_pair_compatible("fp8", "nvfp4"));
-    }
-}
+#[path = "serve_tests.rs"]
+mod tests;

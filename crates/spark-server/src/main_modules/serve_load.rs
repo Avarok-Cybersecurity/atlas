@@ -158,7 +158,13 @@ pub(crate) fn load_model(
             if args.vision_max_pixels > 0 {
                 "--vision-max-pixels"
             } else {
-                "checkpoint preprocessor_config.json / ATLAS_VISION_MAX_PIXELS"
+                // Deliberately does not name a file: the bound comes from
+                // whichever of preprocessor_config.json /
+                // processor_config.json the checkpoint actually ships, and
+                // `read_preprocessor_max_pixels` logs the resolved path and
+                // key on its own line. Naming one here was wrong for every
+                // unsloth checkpoint, which ships only the other.
+                "checkpoint processor config / ATLAS_VISION_MAX_PIXELS"
             }
         ),
         None => tracing::info!(
