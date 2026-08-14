@@ -33,6 +33,12 @@ pub(crate) fn parse_vision_config(raw: &serde_json::Value) -> Option<VisionConfi
         .and_then(serde_json::Value::as_u64)
         .or_else(|| vc.get("image_token_id").and_then(serde_json::Value::as_u64))
         .unwrap_or(0) as u32;
+    // Same two-location dance as the image token, and the same fallback.
+    let video_pad_token_id = raw
+        .get("video_token_id")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| vc.get("video_token_id").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0) as u32;
     Some(VisionConfig {
         depth: get_usize("depth"),
         hidden_size: get_usize("hidden_size"),
@@ -44,6 +50,7 @@ pub(crate) fn parse_vision_config(raw: &serde_json::Value) -> Option<VisionConfi
         out_hidden_size: get_usize("out_hidden_size"),
         deepstack_visual_indexes,
         image_pad_token_id,
+        video_pad_token_id,
         // Not in config.json — it comes from preprocessor_config.json (or the
         // operator's flag), which this parser does not see. Resolved and
         // installed by the server right after config load, before the encoder
