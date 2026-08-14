@@ -1,0 +1,1012 @@
+{
+  "upstream_commit": "7935df4",
+  "upstream_file": "src/inference_endpoint/evaluation/scoring.py",
+  "upstream_class": "AgenticInferenceInlineScorer",
+  "intent_cases": [
+    {
+      "turn": {
+        "content": "intent: I042"
+      },
+      "expected": "I042"
+    },
+    {
+      "turn": {
+        "reasoning_content": "intent: I001",
+        "content": "intent: I002"
+      },
+      "expected": "I001"
+    },
+    {
+      "turn": {
+        "reasoning_content": "thinking about I111",
+        "content": "final intent: I222"
+      },
+      "expected": "I222"
+    },
+    {
+      "turn": {
+        "content": "Intent: i042"
+      },
+      "expected": "I042"
+    },
+    {
+      "turn": {
+        "content": "intent:\u00a0I042"
+      },
+      "expected": "I042"
+    },
+    {
+      "turn": {
+        "content": "intent : I042"
+      },
+      "expected": "I042"
+    },
+    {
+      "turn": {
+        "content": "reintent: I042"
+      },
+      "expected": "I042"
+    },
+    {
+      "turn": {
+        "content": "intent: I0425"
+      },
+      "expected": null
+    },
+    {
+      "turn": {
+        "content": "maybe I100, no, I200"
+      },
+      "expected": "I200"
+    },
+    {
+      "turn": {
+        "content": "maybe i123"
+      },
+      "expected": null
+    },
+    {
+      "turn": {
+        "content": "the AI123 model"
+      },
+      "expected": null
+    },
+    {
+      "turn": {
+        "content": "I12 and I1234"
+      },
+      "expected": null
+    },
+    {
+      "turn": {
+        "content": null
+      },
+      "expected": null
+    },
+    {
+      "turn": {},
+      "expected": null
+    },
+    {
+      "turn": {
+        "content": 7,
+        "reasoning_content": "intent: I300"
+      },
+      "expected": "I300"
+    }
+  ],
+  "gt_intent_cases": [
+    {
+      "turn": {
+        "intent_codes": [
+          "i001",
+          "I002",
+          null
+        ]
+      },
+      "expected": [
+        "I001",
+        "I002"
+      ]
+    },
+    {
+      "turn": {
+        "intent_codes": [
+          "",
+          "I003"
+        ]
+      },
+      "expected": [
+        "I003"
+      ]
+    },
+    {
+      "turn": {
+        "intent_codes": "I001"
+      },
+      "expected": []
+    },
+    {
+      "turn": {
+        "intent_codes": null
+      },
+      "expected": []
+    },
+    {
+      "turn": {},
+      "expected": []
+    }
+  ],
+  "bash_cases": [
+    {
+      "arguments": {
+        "cmd": "CUDA_VISIBLE_DEVICES=0 /usr/bin/python3 -m pytest"
+      },
+      "expected": [
+        "python"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "cat foo.py | grep bar | wc -l"
+      },
+      "expected": [
+        "cat",
+        "grep",
+        "wc"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "make build || make clean; ls\nfind . -name x"
+      },
+      "expected": [
+        "make",
+        "make",
+        "ls",
+        "find"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "echo \"done\" && grep -r pattern src"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "grep \"a | b\" file.txt"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "grep \"say \\\"hi\\\" | there\" f && ls"
+      },
+      "expected": [
+        "grep",
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "diff `ls` other"
+      },
+      "expected": [
+        "diff"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "grep 'unterminated && ls"
+      },
+      "expected": [
+        "grep",
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "sudo env FOO=1 time make test"
+      },
+      "expected": [
+        "make"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "FOO=1"
+      },
+      "expected": []
+    },
+    {
+      "arguments": {
+        "cmd": ". ./venv/bin/activate && ./run.sh"
+      },
+      "expected": [
+        "source"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "python3.11 setup.py"
+      },
+      "expected": [
+        "python"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "python3.1.2.3 x"
+      },
+      "expected": []
+    },
+    {
+      "arguments": {
+        "cmd": "sleep 5 & wait"
+      },
+      "expected": []
+    },
+    {
+      "arguments": {
+        "cmd": "GREP pattern file"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "command": "git status"
+      },
+      "expected": [
+        "git"
+      ]
+    },
+    {
+      "arguments": {
+        "command": "",
+        "cmd": "git diff"
+      },
+      "expected": [
+        "git"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "grep a f1; grep b f2; grep c f3"
+      },
+      "expected": [
+        "grep",
+        "grep",
+        "grep"
+      ]
+    }
+  ],
+  "alias_cases": [
+    {
+      "arguments": {
+        "cmd": "python --arg"
+      },
+      "expected": [
+        "python"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "python2 --arg"
+      },
+      "expected": [
+        "python"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "python3 --arg"
+      },
+      "expected": [
+        "python"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "py --arg"
+      },
+      "expected": [
+        "python"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "pip --arg"
+      },
+      "expected": [
+        "pip"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "pip3 --arg"
+      },
+      "expected": [
+        "pip"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "pytest --arg"
+      },
+      "expected": [
+        "pytest"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "pylint --arg"
+      },
+      "expected": [
+        "pylint"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "sphinx-build --arg"
+      },
+      "expected": [
+        "sphinx"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "sphinx-quickstart --arg"
+      },
+      "expected": [
+        "sphinx"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "cython --arg"
+      },
+      "expected": [
+        "cython"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "make --arg"
+      },
+      "expected": [
+        "make"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "conda --arg"
+      },
+      "expected": [
+        "conda"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "cat --arg"
+      },
+      "expected": [
+        "cat"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "head --arg"
+      },
+      "expected": [
+        "head"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "tail --arg"
+      },
+      "expected": [
+        "tail"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "less --arg"
+      },
+      "expected": [
+        "cat"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "more --arg"
+      },
+      "expected": [
+        "cat"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "wc --arg"
+      },
+      "expected": [
+        "wc"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "diff --arg"
+      },
+      "expected": [
+        "diff"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "grep --arg"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "egrep --arg"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "fgrep --arg"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "rg --arg"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "ag --arg"
+      },
+      "expected": [
+        "grep"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "sed --arg"
+      },
+      "expected": [
+        "sed"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "awk --arg"
+      },
+      "expected": [
+        "awk"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "gawk --arg"
+      },
+      "expected": [
+        "awk"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "tr --arg"
+      },
+      "expected": [
+        "tr"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "sort --arg"
+      },
+      "expected": [
+        "sort"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "uniq --arg"
+      },
+      "expected": [
+        "uniq"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "cut --arg"
+      },
+      "expected": [
+        "cut"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "find --arg"
+      },
+      "expected": [
+        "find"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "ls --arg"
+      },
+      "expected": [
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "locate --arg"
+      },
+      "expected": [
+        "find"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "xargs --arg"
+      },
+      "expected": [
+        "xargs"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "cp --arg"
+      },
+      "expected": [
+        "cp"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "mv --arg"
+      },
+      "expected": [
+        "mv"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "rm --arg"
+      },
+      "expected": [
+        "rm"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "mkdir --arg"
+      },
+      "expected": [
+        "mkdir"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "touch --arg"
+      },
+      "expected": [
+        "touch"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "tee --arg"
+      },
+      "expected": [
+        "tee"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "source --arg"
+      },
+      "expected": [
+        "source"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": ". --arg"
+      },
+      "expected": [
+        "source"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "which --arg"
+      },
+      "expected": [
+        "which"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "alias --arg"
+      },
+      "expected": [
+        "alias"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "unset --arg"
+      },
+      "expected": [
+        "unset"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "export --arg"
+      },
+      "expected": [
+        "export"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "git --arg"
+      },
+      "expected": [
+        "git"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "curl --arg"
+      },
+      "expected": [
+        "curl"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "wget --arg"
+      },
+      "expected": [
+        "curl"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "true --arg"
+      },
+      "expected": [
+        "true"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "false --arg"
+      },
+      "expected": [
+        "false"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "timeout --arg"
+      },
+      "expected": [
+        "timeout"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "date --arg"
+      },
+      "expected": [
+        "date"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "apt-get --arg"
+      },
+      "expected": [
+        "apt"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "apt --arg"
+      },
+      "expected": [
+        "apt"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "yum --arg"
+      },
+      "expected": [
+        "yum"
+      ]
+    }
+  ],
+  "wrapper_cases": [
+    {
+      "arguments": {
+        "cmd": "command ls -la"
+      },
+      "expected": [
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "env ls -la"
+      },
+      "expected": [
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "exec ls -la"
+      },
+      "expected": [
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "nice ls -la"
+      },
+      "expected": [
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "sudo ls -la"
+      },
+      "expected": [
+        "ls"
+      ]
+    },
+    {
+      "arguments": {
+        "cmd": "time ls -la"
+      },
+      "expected": [
+        "ls"
+      ]
+    }
+  ],
+  "turn_cases": [
+    {
+      "domain": "coding",
+      "gt": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": {
+                "cmd": "python x.py && pytest"
+              }
+            }
+          }
+        ]
+      },
+      "model": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": {
+                "cmd": "python y.py"
+              }
+            }
+          }
+        ]
+      },
+      "expected": 0.5
+    },
+    {
+      "domain": "coding",
+      "gt": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": {
+                "cmd": "grep a; grep b"
+              }
+            }
+          }
+        ]
+      },
+      "model": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": {
+                "cmd": "grep a"
+              }
+            }
+          }
+        ]
+      },
+      "expected": 0.5
+    },
+    {
+      "domain": "coding",
+      "gt": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": {
+                "cmd": "make"
+              }
+            }
+          }
+        ]
+      },
+      "model": {
+        "content": "I would run make here."
+      },
+      "expected": 0.0
+    },
+    {
+      "domain": "coding",
+      "gt": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": {
+                "cmd": "ls"
+              }
+            }
+          }
+        ]
+      },
+      "model": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "edit_file",
+              "arguments": {
+                "cmd": "ls"
+              }
+            }
+          }
+        ]
+      },
+      "expected": 0.0
+    },
+    {
+      "domain": "coding",
+      "gt": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": "{\"cmd\": \"git log\"}"
+            }
+          }
+        ]
+      },
+      "model": {
+        "tool_calls": [
+          {
+            "function": {
+              "name": "bash",
+              "arguments": "{not json"
+            }
+          },
+          {
+            "function": {
+              "name": "bash",
+              "arguments": "{\"cmd\": \"git show\"}"
+            }
+          }
+        ]
+      },
+      "expected": 1.0
+    },
+    {
+      "domain": "workflow",
+      "gt": {
+        "intent_codes": [
+          "i042"
+        ]
+      },
+      "model": {
+        "content": "intent: I042"
+      },
+      "expected": 1.0
+    },
+    {
+      "domain": "workflow",
+      "gt": {
+        "intent_codes": [
+          "I001",
+          "I002"
+        ]
+      },
+      "model": {
+        "content": "intent: I003"
+      },
+      "expected": 0.0
+    },
+    {
+      "domain": "workflow",
+      "gt": {
+        "intent_codes": [
+          "I001"
+        ]
+      },
+      "model": {
+        "content": "no code here"
+      },
+      "expected": 0.0
+    }
+  ],
+  "domain_cases": [
+    {
+      "conversation_id": "sim_001",
+      "workflow": true
+    },
+    {
+      "conversation_id": "sim_12345",
+      "workflow": true
+    },
+    {
+      "conversation_id": "sim_",
+      "workflow": false
+    },
+    {
+      "conversation_id": "sim_1x",
+      "workflow": false
+    },
+    {
+      "conversation_id": "Sim_001",
+      "workflow": false
+    },
+    {
+      "conversation_id": "xsim_001",
+      "workflow": false
+    },
+    {
+      "conversation_id": "django__django-12345",
+      "workflow": false
+    },
+    {
+      "conversation_id": "task_991",
+      "workflow": false
+    }
+  ]
+}
