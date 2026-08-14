@@ -139,7 +139,7 @@ nothing measured on Qwen3.6 transfers, and the calibration protocol runs again f
 # check passed throughout, because a downscaled picture is still recognisably
 # what it is.
 #
-#   integrity_passed  = 9   the INTEGRITY floor, and the legs a single
+#   integrity_passed  = 10  the INTEGRITY floor, and the legs a single
 #                           well-formed request cannot reach. Every one of
 #                           them fails as a FLUENT ANSWER TO THE WRONG INPUT
 #                           rather than an error, which is the class this
@@ -187,7 +187,13 @@ nothing measured on Qwen3.6 transfers, and the calibration protocol runs again f
 #                               on a role:"tool" message — the OTHER call
 #                               site of collect_message_images, and the case
 #                               #165 exists for.
-#   integrity_measured = 9  a skipped integrity leg is not a passed one.
+#                             thinking-on-vision         the DEFAULT config
+#                               for these checkpoints, which every other leg
+#                               turns off. Thinking lengthens the prompt and
+#                               so moves which prefill chunk the pad run lands
+#                               in. Asserted as a DIFFERENCE between two
+#                               images so the unknown <think> cost cancels.
+#   integrity_measured = 10 a skipped integrity leg is not a passed one.
 #   geometry_matched  = 14  the CORRECTNESS floor, and the one that moves when
 #                           preprocessing changes. Rung 09 (1600x900) is the
 #                           ONLY rung above the retired 1280px clamp: under the
@@ -217,7 +223,7 @@ default = false
 status = "measured"
 note = """\
 REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support @ 5a22d7ce: PASS, 14/14 geometry \
-cells matched, 3/3 probes, 9/9 integrity legs, control held, 29.3 s. Geometry was IDENTICAL across all \
+cells matched, 3/3 probes, 10/10 integrity legs, control held, 29.3 s. Geometry was IDENTICAL across all \
 three vision targets (49/121/192/220/576/576/920/405/1400/1/128/49/49/49 merged \
 tokens) -- token \
 count is a property of the preprocessor rather than the checkpoint, so agreement \
@@ -238,10 +244,10 @@ min = 14.0
 min = 14.0
 
 [benchmarks.metrics.integrity_passed]
-min = 9.0
+min = 10.0
 
 [benchmarks.metrics.integrity_measured]
-min = 9.0
+min = 10.0
 
 [benchmarks.metrics.probes_passed]
 min = 3.0

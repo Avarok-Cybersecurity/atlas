@@ -548,21 +548,51 @@ impl Benchmark for VisionFidelity {
                         .await
                     }
                     // 8. The Responses API — a separate parse path that
-                    //    nothing else in either benchmark drives.
+                    //    nothing else in either benchmark drives. Compared
+                    //    against ITSELF on two images, not against
+                    //    chat-completions: the two surfaces render different
+                    //    template branches, so a cross-surface token
+                    //    comparison cannot tell an envelope difference from a
+                    //    vision one.
                     7 => {
-                        let (_, img, _, _) = FIXTURES[0];
+                        let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
+                        let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
+                        let delta = (expected_vision_tokens(lw, lh, 16, 2)
+                            - expected_vision_tokens(sw, sh, 16, 2))
+                            as usize;
                         let q = "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.";
                         mi::responses_parity(
                             h,
-                            mi::image_request(&model, "image/png", img, q, 16),
-                            mi::responses_image_request(&model, "image/png", img, q),
+                            mi::responses_image_request(&model, "image/png", small, q),
+                            mi::responses_image_request(&model, "image/png", large, q),
+                            delta,
                             &|r: &str| r.to_uppercase().contains("YES"),
                             tmo,
                         )
                         .await
                     }
-                    // 9. EXIF orientation, PINNED rather than judged.
+                    // 9. Thinking ON — the configuration these checkpoints
+                    //    ship in, and the one every other leg turns off.
+                    8 => {
+                        let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
+                        let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
+                        let delta = (expected_vision_tokens(lw, lh, 16, 2)
+                            - expected_vision_tokens(sw, sh, 16, 2))
+                            as usize;
+                        let q = "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.";
+                        mi::thinking_parity(
+                            h,
+                            mi::thinking_image_request(&model, "image/png", small, q),
+                            mi::thinking_image_request(&model, "image/png", large, q),
+                            delta,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 10. EXIF orientation, PINNED rather than judged.
                     _ => {
                         let pair: Vec<(&str, &[u8])> = super::provision::EXIF_PAIR.to_vec();
                         let q = "The image is split into two halves of solid colour. Is the \
@@ -623,7 +653,7 @@ impl Benchmark for VisionFidelity {
                 };
                 self.integrity.push(cell);
                 self.cursor += 1;
-                if self.cursor >= 9 {
+                if self.cursor >= 10 {
                     self.cursor = 0;
                     self.phase = Phase::Concurrency;
                 }

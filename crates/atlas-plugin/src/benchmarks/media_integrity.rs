@@ -496,41 +496,46 @@ pub fn responses_image_request(model: &str, mime: &str, bytes: &[u8], prompt: &s
     })
 }
 
-/// ★ THE SAME IMAGE THROUGH BOTH API SURFACES.
+/// ★ THE RESPONSES API SEES THE IMAGE, AND SIZES IT THE SAME.
 ///
-/// `/v1/responses` has its own content-part vocabulary (`input_image`,
+/// `/v1/responses` has its own content vocabulary (`input_image`,
 /// `input_text`) and its own adapter into the IR — a genuinely separate parse
-/// path, not a rename. Every leg before this drove chat-completions only, so a
-/// regression in that adapter would have left the modern surface quietly
-/// blind while every benchmark stayed green.
+/// path that nothing else in either benchmark drives.
 ///
-/// Both must answer correctly AND report the same prompt size. The token
-/// counts are named differently on the two surfaces (`prompt_tokens` vs
-/// `input_tokens`), which is itself worth pinning: they must describe the same
-/// prompt.
+/// WHY THIS IS A DIFFERENCE AND NOT A COMPARISON WITH CHAT-COMPLETIONS. The
+/// obvious leg — same image both surfaces, assert equal prompt sizes — is
+/// WRONG, and measured wrong: it varies two things at once. The
+/// chat-completions legs send `chat_template_kwargs.enable_thinking = false`,
+/// which the Responses lowering drops, so that surface renders the template's
+/// THINKING branch instead. On qwen3.6 the two branches happen to differ by
+/// 2 tokens and the comparison looked fine; on qwen3.8 they differ by 28 and
+/// it reported a vision defect that was really a template branch. Comparing
+/// across surfaces cannot separate "the image is sized differently" from "the
+/// envelope is different".
+///
+/// So the assertion stays INSIDE one surface: two images whose vision-token
+/// counts differ by a known amount, both through Responses. Whatever envelope
+/// that surface renders, it renders the same one twice, so it cancels:
+///
+/// ```text
+///   (tokens_b - tokens_a)  ==  (vision_b - vision_a)
+/// ```
+///
+/// Both must also answer correctly, which is what proves the pixels arrived
+/// at all rather than merely being counted.
 pub async fn responses_parity(
     handle: &PluginHandle,
-    chat: Value,
-    responses: Value,
+    smaller: Value,
+    larger: Value,
+    expect_delta: usize,
     want: &(dyn Fn(&str) -> bool + Sync),
     timeout: Duration,
 ) -> Cell {
     const ID: &str = "responses-api-parity";
-    let c = match http::chat_stream(handle.target(), &chat, timeout).await {
-        Ok(o) => o,
-        Err(e) => {
-            return Cell::Error {
-                id: ID,
-                msg: crate::benchmarks::one_line(format!("chat: {e:#}")),
-            };
-        }
-    };
-    let r = match http::responses_blocking(handle.target(), &responses, timeout).await {
+    let a = match http::responses_blocking(handle.target(), &smaller, timeout).await {
         Ok(o) => o,
         Err(e) => {
             let msg = crate::benchmarks::one_line(format!("{e:#}"));
-            // A build without the Responses surface is a capability, not a
-            // defect.
             return if msg.contains("404") {
                 Cell::Skipped { id: ID, why: msg }
             } else {
@@ -538,45 +543,146 @@ pub async fn responses_parity(
             };
         }
     };
-    let r_text = r.choices.first().cloned().unwrap_or_default();
-    let c_ok = want(c.text.trim());
-    let r_ok = want(r_text.trim());
-    if !c_ok || !r_ok {
+    let b = match http::responses_blocking(handle.target(), &larger, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Cell::Error {
+                id: ID,
+                msg: crate::benchmarks::one_line(format!("{e:#}")),
+            };
+        }
+    };
+    let delta = b.prompt_tokens.abs_diff(a.prompt_tokens);
+    if delta != expect_delta {
         return Cell::Fail {
             id: ID,
             detail: format!(
-                "chat-completions {}, responses {} — the two surfaces disagree about the same \
-                 image (responses said \"{}\")",
-                if c_ok { "ok" } else { "WRONG" },
-                if r_ok { "ok" } else { "WRONG" },
-                crate::benchmarks::one_line(r_text.chars().take(60).collect::<String>())
+                "via /v1/responses the two images differ by {delta} prompt tokens, expected \
+                 {expect_delta} ({} and {}) — the image is sized differently on this surface",
+                a.prompt_tokens, b.prompt_tokens
             ),
         };
     }
-    // NOT exact equality. The two surfaces wrap a prompt slightly differently
-    // — measured 81 via chat-completions and 79 via responses for the same
-    // image — and that small, constant difference is the envelope, not the
-    // picture. What must not differ is the IMAGE's contribution, so the bound
-    // is set well below one image's worth of tokens (the smallest fixture is
-    // 1 token, the 224 square is 49): a surface that dropped or duplicated the
-    // image moves this by tens, an envelope difference by a few.
-    let delta = c.prompt_tokens.abs_diff(r.prompt_tokens);
-    if delta > 16 {
+    let a_text = a.choices.first().cloned().unwrap_or_default();
+    let b_text = b.choices.first().cloned().unwrap_or_default();
+    if !want(a_text.trim()) || !want(b_text.trim()) {
         return Cell::Fail {
             id: ID,
             detail: format!(
-                "both answered correctly but the surfaces built substantially different \
-                 prompts: {} tokens via chat-completions vs {} via responses ({delta} apart) — \
-                 too large to be envelope wrapping, so the image is contributing differently",
-                c.prompt_tokens, r.prompt_tokens
+                "sizing is right but the surface did not answer about the image: \"{}\"",
+                crate::benchmarks::one_line(a_text.chars().take(70).collect::<String>())
             ),
         };
     }
     Cell::Pass {
         id: ID,
         detail: format!(
-            "both surfaces correct; {} vs {} prompt tokens ({delta} apart, envelope only)",
-            c.prompt_tokens, r.prompt_tokens
+            "both images answered, and the image contributes exactly {expect_delta} tokens \
+             ({} vs {})",
+            a.prompt_tokens, b.prompt_tokens
+        ),
+    }
+}
+
+/// The same image request with thinking ON.
+pub fn thinking_image_request(model: &str, mime: &str, bytes: &[u8], prompt: &str) -> Value {
+    let mut v = image_request(model, mime, bytes, prompt, 600);
+    v["chat_template_kwargs"] = json!({"enable_thinking": true});
+    // Generous on purpose: a thinking-first checkpoint spends most of the
+    // budget reasoning, and a truncated reply reads as a vision failure when
+    // it is only a budget one.
+    v["max_tokens"] = json!(600);
+    v
+}
+
+/// ★ VISION WITH THINKING ON — the configuration these checkpoints ship in.
+///
+/// Every other leg disables thinking, deliberately: a reasoning block spends
+/// the token budget without changing whether the image was encoded correctly,
+/// and on a thinking-first model it can consume the whole of `max_tokens` and
+/// return empty content, which reads as a vision failure and is not one. But
+/// that leaves the DEFAULT configuration untested, and thinking is not inert
+/// here — it lengthens the prompt, which changes which prefill chunk the pad
+/// run lands in. That is the same boundary `long_prompt_path` guards,
+/// approached from the direction real traffic comes from.
+///
+/// THE ASSERTION IS A DIFFERENCE, so the unknown thinking overhead cancels.
+/// Two images whose vision-token counts differ by a known amount are sent,
+/// both with thinking on; the gap between their prompt sizes must equal that
+/// amount exactly:
+///
+/// ```text
+///   (tokens_b - tokens_a)  ==  (vision_b - vision_a)
+/// ```
+///
+/// Whatever the `<think>` block costs, it costs the same in both, so it
+/// vanishes from the subtraction. A thinking-on path that mis-sized, dropped
+/// or double-counted the image moves this; a template change does not.
+pub async fn thinking_parity(
+    handle: &PluginHandle,
+    smaller: Value,
+    larger: Value,
+    expect_delta: usize,
+    want: &(dyn Fn(&str) -> bool + Sync),
+    timeout: Duration,
+) -> Cell {
+    const ID: &str = "thinking-on-vision";
+    let a = match http::chat_stream(handle.target(), &smaller, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Cell::Error {
+                id: ID,
+                msg: crate::benchmarks::one_line(format!("{e:#}")),
+            };
+        }
+    };
+    let b = match http::chat_stream(handle.target(), &larger, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Cell::Error {
+                id: ID,
+                msg: crate::benchmarks::one_line(format!("{e:#}")),
+            };
+        }
+    };
+    let delta = b.prompt_tokens.abs_diff(a.prompt_tokens);
+    if delta != expect_delta {
+        return Cell::Fail {
+            id: ID,
+            detail: format!(
+                "with thinking ON the two images differ by {delta} prompt tokens, expected \
+                 {expect_delta} ({} and {} total) — the image's contribution changes when \
+                 thinking is enabled",
+                a.prompt_tokens, b.prompt_tokens
+            ),
+        };
+    }
+    // The model must still ANSWER. Thinking-first checkpoints put the answer
+    // after the block, so an empty reply here means the budget ran out before
+    // it got there — reported as its own thing rather than as a vision fault.
+    let answered = want(a.text.trim()) && want(b.text.trim());
+    if !answered {
+        let empty = a.text.trim().is_empty() || b.text.trim().is_empty();
+        return Cell::Fail {
+            id: ID,
+            detail: if empty {
+                "geometry is right but a reply came back EMPTY with thinking on — the \
+                 reasoning block consumed the whole token budget"
+                    .to_string()
+            } else {
+                format!(
+                    "geometry is right but the answer is wrong with thinking on: \"{}\"",
+                    crate::benchmarks::one_line(a.text.chars().take(60).collect::<String>())
+                )
+            },
+        };
+    }
+    Cell::Pass {
+        id: ID,
+        detail: format!(
+            "thinking on: both answered, and the image still contributes exactly \
+             {expect_delta} tokens ({} vs {})",
+            a.prompt_tokens, b.prompt_tokens
         ),
     }
 }
