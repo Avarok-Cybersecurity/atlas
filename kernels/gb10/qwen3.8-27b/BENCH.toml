@@ -87,3 +87,36 @@ max = 2500.0
 
 [benchmarks.metrics.webserver_ok]
 min = 10.0
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "bfcl-subset"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+# NOT the default: the bfcl-subset default subject stays Qwen3.6-27B
+# (qwen3.6-27b/BENCH.toml), whose recorded history and MLPerf floor are
+# untouched by this entry. Select with
+# `--checkpoint unsloth/Qwen3.8-27B-NVFP4`.
+default = false
+# UNMEASURED, and therefore carrying NO [benchmarks.metrics] table, per this
+# file's rule: a guessed threshold would report PASS for something nobody
+# measured. The first accepted run writes the floors.
+status = "unmeasured"
+note = """\
+The DENSE 3.8 leg of the BFCL gate. Exists so a Qwen3.8-27B score can be read \
+directly against the recorded Qwen3.6-27B results — same golden ST-995 draw \
+(62/10/10, floor 25, n=995, seed 42, temp 0), same scorer, and a serve recipe \
+whose defaults are byte-identical to the 3.6 sibling's (atlas-recipes#20; only \
+the checkpoint differs). That identity is load-bearing: BFCL's normalized \
+score moves with serve config as well as with the draw, so the two legs must \
+share a config or the generation-over-generation delta means nothing. \
+Thresholds are ABSENT until a run establishes them; until then a run here \
+BASELINES rather than gates. ★ Do NOT copy the 3.6 entry's floors \
+(87.44 / 88.59) or the MLPerf floor (83.64 / 85.32) into this entry: same \
+architecture and same draw, but DIFFERENT WEIGHTS, so neither transfers. The \
+MLPerf-edge submission rides on 3.6, and nothing here guards it. \
+★ One discontinuity vs the recorded 3.6 history: `num_drafts = 1` (K=2) was \
+silently discarded before the 2026-08-14 --num-drafts precedence fix, so those \
+3.6 numbers were measured at K=4. Speculative decode is lossless, so ACCURACY \
+is comparable across that boundary; wall and TPOT are not."""
