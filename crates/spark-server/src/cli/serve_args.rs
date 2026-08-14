@@ -361,7 +361,7 @@ pub struct ServeArgs {
     /// threshold (3 end-anchored repeats of a period-2..64 pattern) can
     /// false-positive on legitimately repetitive output such as code.
     /// Precedence (highest wins): this flag → ATLAS_CONTENT_LOOP_WATCHDOG
-    /// → MODEL.toml. Runtime-togglable from the TUI via `/watchdog on|off`.
+    /// → MODEL.toml. Runtime-toggleable from the TUI via `/watchdog on|off`.
     #[arg(long)]
     pub content_loop_watchdog: Option<bool>,
 
