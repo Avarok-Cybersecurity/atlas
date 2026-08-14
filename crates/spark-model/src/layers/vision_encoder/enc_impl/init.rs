@@ -244,7 +244,10 @@ mod derive_tests {
         // exactly what it always did — this change is not allowed to move
         // memory for models that declare nothing.
         assert_eq!(derive_max_patches(None, 16), (FALLBACK_MAX_PATCHES, None));
-        assert_eq!(derive_max_patches(Some(0), 16), (FALLBACK_MAX_PATCHES, None));
+        assert_eq!(
+            derive_max_patches(Some(0), 16),
+            (FALLBACK_MAX_PATCHES, None)
+        );
     }
 
     #[test]
@@ -255,7 +258,11 @@ mod derive_tests {
         // can say so out loud rather than silently ignoring the checkpoint.
         let (got, asked) = derive_max_patches(Some(Q38_BOUND), 16);
         assert_eq!(got, CEILING_MAX_PATCHES);
-        assert_eq!(asked, Some(65_536), "the caller must be able to report the ask");
+        assert_eq!(
+            asked,
+            Some(65_536),
+            "the caller must be able to report the ask"
+        );
     }
 
     #[test]
@@ -290,7 +297,10 @@ mod derive_tests {
         // patch-16 allocation.
         let (at16, _) = derive_max_patches(Some(1024 * 1024), 16);
         let (at14, _) = derive_max_patches(Some(1024 * 1024), 14);
-        assert!(at14 > at16, "finer patches need more rows: {at14} vs {at16}");
+        assert!(
+            at14 > at16,
+            "finer patches need more rows: {at14} vs {at16}"
+        );
     }
 
     #[test]
