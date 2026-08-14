@@ -31,6 +31,11 @@
 //! Registered in `registry.rs` and deliberately NOT added to the required set
 //! in `gate/required_tests.rs`: runnable and gate-able, gating nothing yet.
 
+pub mod driver;
 pub mod geometry;
 pub mod probes;
 pub mod provision;
+pub mod request;
+pub mod score;
+
+pub use driver::{DESCRIPTOR, METADATA};

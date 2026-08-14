@@ -165,6 +165,7 @@ dependencies = [
  "anyhow",
  "atlas-closure",
  "atlas-governance",
+ "base64 0.22.1",
  "futures",
  "parking_lot",
  "serde",

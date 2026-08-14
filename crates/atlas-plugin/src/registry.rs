@@ -4,7 +4,7 @@
 
 use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{
-    agentic, bfcl, concurrency, contamination, serve_matrix, ssm_poison, ttft,
+    agentic, bfcl, concurrency, contamination, serve_matrix, ssm_poison, ttft, vision,
 };
 
 /// Every benchmark, list order. Cheapest and most-run first.
@@ -18,6 +18,9 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
     &contamination::DESCRIPTOR,
+    // Cheap and endpoint-only. NOT in gate/required_tests.rs — registered so
+    // it is runnable and can become a gate later, gating nothing today.
+    &vision::DESCRIPTOR,
     // Cheaper than the agentic gate (~10 min vs ~17 min) and catches a
     // class the agentic run only surfaces by accident, so it is listed
     // before it.
