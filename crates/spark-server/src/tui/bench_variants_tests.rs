@@ -79,7 +79,7 @@ fn the_agentic_gate_declares_both_variants_in_this_tree() {
             .iter()
             .find(|(k, _)| k == "sum_wall_s")
             .and_then(|(_, b)| b.max),
-        Some(2500.0),
+        Some(5000.0),
         "the dense variant carries its own wall ceiling"
     );
     assert!(

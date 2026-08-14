@@ -89,22 +89,23 @@ effective_context = 24576
 #    stands until 3.8-specific evidence says otherwise. If premature-EOS /
 #    wandering shows up in non-thinking chat, drop to 0.0 and note the
 #    measurement here.
-# ── 2026-08-14: thinking temperature RETUNED 1.0 → 0.6 (card value overridden) ──
-# The 3.8 model card recommends temperature 1.0 for thinking mode, and this file
-# originally carried it. Measured on the agentic-webserver tier (N=10, dgx2,
-# same binary, only this value differing):
-#   temp 1.0 → Σwall  4090 s, per-run 163–695 s (4.3× spread)  [measured tier, 2026-08-14]
-#   temp 0.6 → Σwall  1925 s, per-run 117–274 s (2.3× spread)   [reference tier]
-# Both pass 10/10 on correctness; 1.0 is not broken, it is slower and far more
-# variable, because higher-temperature trajectories wander and take more turns.
-#
-# 0.6 is not a guess — it is the value the architecturally-IDENTICAL Qwen3.6-27B
-# arrived at by LIVE BISECTION (see that target's MODEL.toml: the card's values
-# drove announce/restart loops and verbatim-CSS repetition on long code-gen).
-# All 1968 tensors match between the two checkpoints, so the finding transfers.
-# Revisit only with a measured A/B on THIS checkpoint, not from the card.
+# ── 2026-08-14: thinking temperature stays at the card's 1.0 ──────────────────
+# It was briefly retuned to 0.6 (matching the architecturally-identical
+# Qwen3.6-27B, whose 0.6 came from a live bisect against degeneration) on the
+# hypothesis that temperature explained a 2x agentic wall-time increase.
+# MEASURED, N=10 each, same box, same binary, only this value differing:
+#   temp 1.0 -> Sigma-wall 4090 s   (10/10 webserver_ok, 10/10 followed_directions)
+#   temp 0.6 -> Sigma-wall 4182 s   (10/10, 10/10)
+# The retune bought NOTHING — 0.6 was marginally worse, inside noise. Both tiers
+# are tail-dominated (one run per tier runs 3x the median), so partial sums are
+# not predictive; an 8-run projection of 0.6 looked 20% better and the tenth run
+# erased it. The wall increase is per-turn decode cost (18 s/turn on the older
+# serve vs ~40 s/turn here, turn counts unchanged), not sampling.
+# Reverted to the card value. 3.6's degeneration failure mode was not observed
+# on 3.8: 20/20 runs across both tiers passed 6/6 with no loops. Revisit only
+# with a measured A/B on THESE weights.
 [sampling.thinking_text]
-temperature = 0.6
+temperature = 1.0
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
@@ -113,7 +114,7 @@ repetition_penalty = 1.0
 dry_multiplier = 0.0
 
 [sampling.thinking_coding]
-temperature = 0.6
+temperature = 1.0
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
