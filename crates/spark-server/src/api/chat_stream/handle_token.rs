@@ -291,14 +291,11 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                     let opener = ["<tool_call>", "<function=", "<parameter=", "<invoke "]
                         .iter()
                         .copied()
-                        .find(|m| state.reasoning_xml_scan_buf.contains(m));
-                    if let Some(op) = opener {
-                        state.reasoning_xml_leak_detected = true;
-                        state.tool_loop_capped = true;
-                        state.stop_string_triggered = true;
-                        state
-                            .cancel_flag
-                            .store(true, std::sync::atomic::Ordering::Release);
+                        .filter_map(|m| state.reasoning_xml_scan_buf.find(m).map(|at| (at, m)))
+                        .min_by_key(|&(at, _)| at);
+                    if let Some((at, op)) = opener {
+                        // Snapshot the log tail BEFORE consuming the match,
+                        // so the WARN still shows the opener in context.
                         let tail_start = state
                             .reasoning_xml_scan_buf
                             .char_indices()
@@ -306,15 +303,56 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                             .nth(63)
                             .map(|(i, _)| i)
                             .unwrap_or(0);
-                        let tail = &state.reasoning_xml_scan_buf[tail_start..];
+                        let tail = state.reasoning_xml_scan_buf[tail_start..].to_string();
+                        // Consume the buffer through this opener so ONE
+                        // occurrence is counted once, not on every
+                        // subsequent delta the rolling tail still contains
+                        // it in.
+                        state.reasoning_xml_scan_buf.drain(..at + op.len());
+                        state.reasoning_xml_opener_hits =
+                            state.reasoning_xml_opener_hits.saturating_add(1);
+                        let threshold = ctx.state.chat.in_think_leak_openers;
+                        if threshold != 0 && state.reasoning_xml_opener_hits >= threshold {
+                            state.reasoning_xml_leak_detected = true;
+                            // Name the cut for the --dump body / Done event;
+                            // `tool_loop_capped` wires finish_reason
+                            // "length" (the shipped doom-loop contract).
+                            state.guard_stop = Some("in_think_tool_leak");
+                            state.tool_loop_capped = true;
+                            state.stop_string_triggered = true;
+                            state
+                                .cancel_flag
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            tracing::warn!(
+                                model = %ctx.model,
+                                request_id = %ctx.id,
+                                opener = op,
+                                hits = state.reasoning_xml_opener_hits,
+                                threshold,
+                                tail = %tail,
+                                "in-think tool-call leak: opener threshold reached; cancelling \
+                                 sequence (finish_reason \"length\", guard in_think_tool_leak). \
+                                 Raise/disable via ATLAS_INTHINK_TOOL_LEAK_OPENERS (0 = strip-only)"
+                            );
+                            return deltas;
+                        }
+                        // Below threshold: keep streaming. A model whose
+                        // native tool syntax surfaces in legitimate
+                        // reasoning (qwen3_coder family) lands here instead
+                        // of losing the whole turn. Same-delta openers were
+                        // stripped by the cleanups above; an opener SPLIT
+                        // across deltas may have partially reached the
+                        // client's reasoning channel — cosmetic, and true
+                        // of the pre-knob code's one free delta too.
                         tracing::warn!(
                             model = %ctx.model,
                             request_id = %ctx.id,
                             opener = op,
-                            tail = %tail,
-                            "in-think tool-call leak detected; cancelling sequence (finish_reason will be \"length\")"
+                            hits = state.reasoning_xml_opener_hits,
+                            threshold,
+                            "in-think tool-call opener observed in reasoning; below \
+                             ATLAS_INTHINK_TOOL_LEAK_OPENERS threshold, not cancelling"
                         );
-                        return deltas;
                     }
                 }
                 // F19: final structured sanitisation pass catches

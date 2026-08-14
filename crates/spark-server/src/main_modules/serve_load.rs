@@ -809,12 +809,20 @@ pub(crate) fn load_model(
     // Per-model watchdog tunables. Built here, before the scheduler thread
     // spawns — the installer this replaces ran from `log_behavior_audit`,
     // which is called well after the spawn.
-    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(&ptx_set.behavior);
+    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
+        &ptx_set.behavior,
+        args.max_inter_tool_prose,
+        args.content_loop_min_repeats,
+    );
     // The run's levers. Shared with the dashboard so `/watchdog on|off`
     // toggles this run's flag; the MODEL.toml `[behavior]` value is its
     // starting position.
     let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
-    sched_levers.set_loop_watchdog(ptx_set.behavior.enable_loop_watchdog);
+    sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
+        ptx_set.behavior.enable_loop_watchdog,
+        std::env::var("ATLAS_CONTENT_LOOP_WATCHDOG").ok().as_deref(),
+        args.content_loop_watchdog,
+    ));
     // The run's snapshot cell, shared with the dashboard for the same reason
     // and by the same route as the levers.
     let sched_snapshot = std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default());

@@ -198,3 +198,75 @@ fn bootstrap_steps_count_at_least_one_token() {
     let tps = g.mtp_tps_debug().expect("window closed");
     assert!(tps > 0.0);
 }
+
+/// The spec-entry pin: while any active sequence is inside the entry
+/// window, a Serial gate verdict must be overridden to the verify path.
+/// This is the defect shape of the 2026-08-14 bfcl-subset-echolp residual:
+/// the gate dwelt in Serial across requests #89–#101 and the three
+/// `live_irrelevance` answer openings decoded on the serial forward flipped
+/// from a prose decline to a fabricated tool call. Before the pin existed
+/// the scheduler ran `gate.next_step()` unconditionally, so a Serial dwell
+/// put answer OPENINGS on the serial forward — the exact window where the
+/// serial-vs-batch-K T=0 flips concentrate.
+#[test]
+fn entry_pin_overrides_serial_mode_for_answer_openings() {
+    let mut g = MtpGate::new(1);
+    // Drive the gate into a legitimate Serial dwell (MTP 20 tok/s vs
+    // serial 100 tok/s), exactly like the production switch.
+    run_mtp_until_probe(&mut g, 2, ms(100));
+    drive_serial(&mut g, WINDOW_STEPS, ms(10));
+    for _ in 0..(WINDOW_STEPS * SWITCH_DWELL_WINDOWS) {
+        if g.next_step() != GateStep::MeasureVerify {
+            break;
+        }
+        g.record_verify_step(ms(100), 2);
+    }
+    assert!(g.in_serial_mode());
+    assert_eq!(g.next_step(), GateStep::MeasureDecode);
+
+    // A sequence at the post-`</think>` boundary (0..8 tokens emitted)
+    // pins the step to the verify path despite the Serial verdict.
+    assert!(entry_pin_forces_verify(0));
+    assert!(entry_pin_forces_verify(7));
+    // Past the measured ≤7-token flip window the gate's verdict stands.
+    assert!(!entry_pin_forces_verify(8));
+    assert!(!entry_pin_forces_verify(u32::MAX));
+}
+
+/// Pinned steps are not recorded, so a Serial dwell's baselines must be
+/// unaffected by however many entry windows pass through it — the pin must
+/// never inflate the Serial EWMA with verify walls (which emit >1 token per
+/// step and would make Serial look unbeatable).
+#[test]
+fn entry_pin_steps_do_not_touch_arbitration_state() {
+    let mut g = MtpGate::new(1);
+    run_mtp_until_probe(&mut g, 2, ms(100));
+    drive_serial(&mut g, WINDOW_STEPS, ms(10));
+    for _ in 0..(WINDOW_STEPS * SWITCH_DWELL_WINDOWS) {
+        if g.next_step() != GateStep::MeasureVerify {
+            break;
+        }
+        g.record_verify_step(ms(100), 2);
+    }
+    assert!(g.in_serial_mode());
+    g.take_fresh_decision();
+    let serial_before = g.serial_tps_debug();
+    let mtp_before = g.mtp_tps_debug();
+    // The scheduler runs pinned verify steps WITHOUT record_* calls; the
+    // gate object is untouched, so its baselines cannot move. (This test
+    // documents the contract; the wiring in scheduler/mod.rs is what
+    // honors it.)
+    assert_eq!(g.serial_tps_debug(), serial_before);
+    assert_eq!(g.mtp_tps_debug(), mtp_before);
+    assert!(g.in_serial_mode(), "pin must not flip the gate's mode");
+}
+
+/// `ATLAS_SPEC_ENTRY_PIN` parsing: strict integer, default 8, `0` disables.
+#[test]
+fn entry_pin_env_parse() {
+    assert_eq!(parse_entry_pin_tokens(None), 8);
+    assert_eq!(parse_entry_pin_tokens(Some("0")), 0);
+    assert_eq!(parse_entry_pin_tokens(Some("12")), 12);
+    assert_eq!(parse_entry_pin_tokens(Some("garbage")), 8);
+    assert_eq!(parse_entry_pin_tokens(Some("-3")), 8);
+}

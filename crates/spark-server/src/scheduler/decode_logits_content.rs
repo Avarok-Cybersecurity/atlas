@@ -23,16 +23,34 @@ use super::*;
 /// "Count" is reported as the configured min_repeats since vLLM's
 /// algorithm doesn't search past the minimum — once we've verified
 /// `min_repeats` consecutive end-anchored windows, we stop.
-fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
+/// `params` must be the SAME effective thresholds the detector matched with
+/// ([`WatchdogParams::content_loop_params`] output), or the re-scan reports a
+/// pattern the fired detector never saw (or none at all).
+fn describe_content_token_loop(
+    tokens: &[u32],
+    params: Option<crate::api::inference_types::RepetitionDetectionParams>,
+) -> Option<(usize, usize)> {
+    let (period_min, period_max, min_repeats) = match params {
+        Some(p) => (
+            p.min_pattern_size as usize,
+            p.max_pattern_size as usize,
+            p.min_count as usize,
+        ),
+        None => (
+            CONTENT_LOOP_PERIOD_MIN,
+            CONTENT_LOOP_PERIOD_MAX,
+            CONTENT_LOOP_MIN_REPEATS,
+        ),
+    };
     let n = tokens.len();
     if n < CONTENT_LOOP_MIN_TOKENS as usize {
         return None;
     }
-    if CONTENT_LOOP_MIN_REPEATS < 2 {
+    if min_repeats < 2 {
         return None;
     }
-    for pattern_len in CONTENT_LOOP_PERIOD_MIN..=CONTENT_LOOP_PERIOD_MAX {
-        if pattern_len * CONTENT_LOOP_MIN_REPEATS > n {
+    for pattern_len in period_min..=period_max {
+        if pattern_len * min_repeats > n {
             return None;
         }
         // Inline anchored check (mirrors helpers::has_repeating_pattern_anchored
@@ -40,7 +58,7 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
         let mut all_match = true;
         'outer: for offset_in_window in 1..=pattern_len {
             let target = tokens[n - offset_in_window];
-            for m in 1..CONTENT_LOOP_MIN_REPEATS {
+            for m in 1..min_repeats {
                 let idx = n - (pattern_len * m + offset_in_window);
                 if tokens[idx] != target {
                     all_match = false;
@@ -49,7 +67,7 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
             }
         }
         if all_match {
-            return Some((pattern_len, CONTENT_LOOP_MIN_REPEATS));
+            return Some((pattern_len, min_repeats));
         }
     }
     None
@@ -88,6 +106,7 @@ pub fn handle_content_token(
             max = sched.watchdog.max_post_think_content_tokens,
             "post-think content cap exceeded in non-MTP decode path; ending response (tool-active request would otherwise burn to max_tokens)"
         );
+        a.guard_stop = Some(GUARD_STOP_POST_THINK_CAP);
         a.finished = true;
     }
     // think_just_ended is a one-shot: it was set when the prior
@@ -124,18 +143,18 @@ pub fn handle_content_token(
     // real-loop case is still caught one tick AFTER the model exits
     // the tool body: its emission outside the body forms a tight
     // period-N tail that the outside-body watchdog will detect.
+    // Request `repetition_detection` outranks the operator's
+    // `--content-loop-min-repeats` / `ATLAS_CONTENT_LOOP_MIN_REPEATS`;
+    // both outrank the built-in constants.
+    let loop_params = sched.watchdog.content_loop_params(a.repetition_detection);
     if !sched.levers.disable_watchdogs
         && sched.levers.loop_watchdog()
         && !a.inside_tool_body
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-        && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
+        && (detect_content_token_loop_with(&a.output_tokens, loop_params)
             || sched.masks.numeric.as_deref().is_some_and(|m| {
-                detect_content_token_loop_normalized_with(
-                    &a.output_tokens,
-                    m,
-                    a.repetition_detection,
-                )
+                detect_content_token_loop_normalized_with(&a.output_tokens, m, loop_params)
             }))
     {
         // 2026-05-23 sweep: re-scan to report the matched
@@ -144,7 +163,7 @@ pub fn handle_content_token(
         // scan_window) once per watchdog fire. Logging this makes
         // future occurrences self-debuggable: a period-3 repeat is
         // an interjection collapse, a period-30+ is a sentence loop.
-        let pattern = describe_content_token_loop(&a.output_tokens);
+        let pattern = describe_content_token_loop(&a.output_tokens, loop_params);
         let (period, repeats) = pattern.unwrap_or((0, 0));
         // Phase-C: roll back to the last well-formed boundary
         // and re-steer instead of killing the response. `min_keep`
@@ -171,10 +190,16 @@ pub fn handle_content_token(
                     matched_period = period,
                     matched_repeats = repeats,
                     ?reason,
-                    "Content-loop watchdog fired (period-{}…{} repeat); ending response early (rollback declined).",
+                    "Content-loop watchdog fired (period-{}…{} repeat); ending response early (rollback declined). \
+                     Tune via --content-loop-min-repeats / ATLAS_CONTENT_LOOP_MIN_REPEATS, per-request \
+                     repetition_detection, or disarm via --content-loop-watchdog false / \
+                     ATLAS_CONTENT_LOOP_WATCHDOG=0",
                     CONTENT_LOOP_PERIOD_MIN,
                     CONTENT_LOOP_PERIOD_MAX,
                 );
+                // #328 class: a server cut must name its guard, or
+                // `derive_finish_reason` sees budget left and wires "stop".
+                a.guard_stop = Some(GUARD_STOP_CONTENT_LOOP);
                 a.finished = true;
             }
         }
@@ -219,8 +244,13 @@ pub fn handle_content_token(
                         prose_tokens = a.prose_tokens_since_last_tool,
                         max = max_prose,
                         ?reason,
-                        "Inter-tool prose budget exhausted, ending response (rollback declined)"
+                        "Inter-tool prose budget exhausted, ending response (rollback declined); \
+                         raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                         MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                     );
+                    // #328: unnamed, this cut reached Pi.dev as a generic
+                    // max-tokens stop and the WARN above was the only clue.
+                    a.guard_stop = Some(GUARD_STOP_INTER_TOOL_PROSE);
                     a.finished = true;
                 }
             }

@@ -367,11 +367,42 @@ pub struct ServeArgs {
     pub disable_thinking: bool,
 
     /// Override MODEL.toml's `[behavior].max_thinking_budget` (tokens).
-    /// Sets the per-request ceiling for thinking-block length. Per-request
-    /// `thinking.budget_tokens` (or `reasoning_effort`) still wins below
-    /// this ceiling; the (max_tokens * 9 / 10) safety cap is always enforced.
+    /// Sets the per-request ceiling for thinking-block length, and anchors
+    /// the client `reasoning_effort` ladder (minimal/low/medium/high/xhigh
+    /// = 1/4x, 1/2x, 1x, 2x, 4x of this value). An explicit client token
+    /// budget (`thinking.budget_tokens`, `thinking_token_budget`) still
+    /// wins outright; the (max_tokens * 9 / 10) safety cap is enforced
+    /// unless MODEL.toml sets `cap_thinking_at_max_tokens = false`.
     #[arg(long)]
     pub max_thinking_budget: Option<u32>,
+
+    /// Override MODEL.toml's `[behavior].max_inter_tool_prose` (tokens):
+    /// the cap on free-prose tokens between successive tool calls on a
+    /// tool-armed request, after which the scheduler ends the response
+    /// with finish_reason "length" (#328). 0 disables the guard entirely.
+    /// Precedence (highest wins): this flag → ATLAS_MAX_INTER_TOOL_PROSE
+    /// → MODEL.toml → built-in default (3072).
+    #[arg(long)]
+    pub max_inter_tool_prose: Option<u32>,
+
+    /// Arm or disarm the content-loop watchdog, overriding MODEL.toml's
+    /// `[behavior].enable_loop_watchdog`. The watchdog ends (or rolls back)
+    /// a response whose tail is a short-period token repeat; its built-in
+    /// threshold (3 end-anchored repeats of a period-2..64 pattern) can
+    /// false-positive on legitimately repetitive output such as code.
+    /// Precedence (highest wins): this flag → ATLAS_CONTENT_LOOP_WATCHDOG
+    /// → MODEL.toml. Runtime-toggleable from the TUI via `/watchdog on|off`.
+    #[arg(long)]
+    pub content_loop_watchdog: Option<bool>,
+
+    /// Override the content-loop watchdog's repeat threshold (end-anchored
+    /// consecutive repeats that constitute a loop; built-in default 3).
+    /// Raise it for models whose legitimate output is short-period
+    /// repetitive (code, tables). A per-request `repetition_detection`
+    /// object still outranks this. Precedence: this flag →
+    /// ATLAS_CONTENT_LOOP_MIN_REPEATS → built-in default.
+    #[arg(long)]
+    pub content_loop_min_repeats: Option<u32>,
 
     /// Override MODEL.toml's `[behavior].disable_tool_grammar`.
     /// When true, the server skips XGrammar structural-tag enforcement on

@@ -74,6 +74,48 @@ fn serial_refresh_tokens() -> usize {
     env_usize("ATLAS_MTP_GATE_REFRESH", 1024)
 }
 
+/// Spec-entry verify pin, in post-`</think>` tokens
+/// (`ATLAS_SPEC_ENTRY_PIN`; `0` disables). While a speculating sequence is
+/// within this window the scheduler runs the MTP verify path even when the
+/// gate's throughput arbitration says Serial.
+///
+/// Why the answer opening must not depend on the gate's mode: the serial
+/// (M=1) and verify (batch-K) forwards sit on the batch-K numerics floor —
+/// at T=0 every observed flip between them fires within ~7 tokens of spec
+/// ENTRY (2026-07-07/08 calibration, the same measurement behind
+/// `ATLAS_DFLASH_RESUME_GUARD`). The gate arbitrates on WALL-CLOCK
+/// throughput, so which path serves an answer opening otherwise depends on
+/// how fast the binary happens to be — measured 2026-08-14 (bfcl-subset
+/// echolp, 134 samples): one build's gate dwelt in Serial across requests
+/// #89–#101 and exactly the three `live_irrelevance` samples inside that
+/// window flipped from a prose decline to a fabricated weather tool call,
+/// while the reference build served the same requests in Mtp mode and
+/// declined. Pinning the entry window to the verify path makes the opening
+/// trajectory a property of the model, not of the gate's stopwatch.
+///
+/// Default 8: covers the measured ≤7-token flip window with one token of
+/// margin. Interaction with `ATLAS_DFLASH_RESUME_GUARD` (the serial-entry
+/// mirror of this pin): the resume guard is enforced UPSTREAM of the gate
+/// dispatch, so for post-think tokens `< guard` the sequence never reaches
+/// the gate arm and the pin is moot; a guard ≥ the pin disables it wholesale.
+pub(crate) fn parse_entry_pin_tokens(env: Option<&str>) -> u32 {
+    env.and_then(|v| v.parse().ok()).unwrap_or(8)
+}
+
+fn entry_pin_tokens() -> u32 {
+    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_entry_pin_tokens(std::env::var("ATLAS_SPEC_ENTRY_PIN").ok().as_deref())
+    })
+}
+
+/// Whether the spec-entry pin overrides a Serial gate decision for this
+/// step. `min_post_think_emitted` is the minimum over the active batch, so
+/// one entering sequence pins the whole (already spec-eligible) batch.
+pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
+    min_post_think_emitted < entry_pin_tokens()
+}
+
 /// What the gate wants the scheduler to run for the NEXT step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateStep {

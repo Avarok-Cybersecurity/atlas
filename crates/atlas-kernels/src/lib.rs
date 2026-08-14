@@ -21,6 +21,14 @@ use atlas_core::target::KernelTarget;
 pub mod resolve;
 pub use resolve::{ResolveCandidate, TargetResolveError, ptx_for_config, ptx_for_exact_target};
 
+// Build-time/run-time shared `[behavior]` defaults — also `include!`d by
+// `build_parse_behavior.rs` so the build script's parse defaults cannot
+// drift from `ModelBehavior::default()` (the #328 failure mode).
+mod behavior_defaults;
+pub use behavior_defaults::{
+    DEFAULT_EFFORT_CAPPED_AT_CEILING, DEFAULT_MAX_INTER_TOOL_PROSE, DEFAULT_MAX_THINKING_BUDGET,
+};
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
 // NOTE: cargo does NOT track this build-script-generated include! as a
@@ -170,8 +178,15 @@ impl Default for SamplingPresets {
 pub struct ModelBehavior {
     /// Allow thinking when tools are active. Default: true.
     pub thinking_in_tools: bool,
-    /// Maximum thinking budget (tokens). Default: 256.
+    /// Maximum thinking budget (tokens). Default:
+    /// [`DEFAULT_MAX_THINKING_BUDGET`].
     pub max_thinking_budget: u32,
+    /// Clamp qualitative `reasoning_effort` levels at the model's effective
+    /// ceiling (high/xhigh resolve to `max_thinking_budget` instead of
+    /// 2x/4x it). Default [`DEFAULT_EFFORT_CAPPED_AT_CEILING`] = `false`
+    /// (historical ladder shape). See `behavior_defaults.rs` for when a
+    /// model should set `true` (measured budget non-monotonicity).
+    pub effort_capped_at_ceiling: bool,
     /// Default thinking state for this model when the client request does not
     /// specify a reasoning_effort / thinking parameter. Typical values:
     /// - thinking-first models (Mistral Small 4, Qwen3.5, …): `true`
@@ -261,7 +276,8 @@ pub struct ModelBehavior {
     /// mismatches. Default 12 (~8%).
     pub fuzzy_repeat_tolerance_div: u32,
     /// Cap on free-text tokens between successive `<tool_call>` opens in
-    /// `tool_choice=auto`. Default 384. Agentic coding may want larger.
+    /// `tool_choice=auto`. Default [`DEFAULT_MAX_INTER_TOOL_PROSE`]
+    /// (see `behavior_defaults.rs` for the tuning history — #328).
     pub max_inter_tool_prose: u32,
     /// Unconditional per-generation cap on post-`</think>` content tokens
     /// for tool-active requests (grammar attached). Bounds a runaway where
@@ -353,7 +369,8 @@ impl Default for ModelBehavior {
     fn default() -> Self {
         Self {
             thinking_in_tools: true,
-            max_thinking_budget: 256,
+            max_thinking_budget: DEFAULT_MAX_THINKING_BUDGET,
+            effort_capped_at_ceiling: DEFAULT_EFFORT_CAPPED_AT_CEILING,
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
             default_kv_dtype: "",
@@ -373,7 +390,7 @@ impl Default for ModelBehavior {
             confidence_early_stop: true,
             confidence_run_length: 30,
             fuzzy_repeat_tolerance_div: 12,
-            max_inter_tool_prose: 384,
+            max_inter_tool_prose: DEFAULT_MAX_INTER_TOOL_PROSE,
             max_post_think_content_tokens: 100_000,
             tscg: false,
             disable_tool_grammar: false,

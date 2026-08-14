@@ -2,7 +2,7 @@
 
 //! Thinking directive tests: client channels → `ir::ThinkingDirective`.
 
-use crate::ir::ThinkingDirective;
+use crate::ir::{EffortLevel, ThinkingDirective};
 use crate::openai::*;
 
 fn chat_req(body: serde_json::Value) -> ChatCompletionRequest {
@@ -74,14 +74,14 @@ fn thinking_token_budget_channel() {
 fn reasoning_effort_channel() {
     for (effort, expect) in [
         ("none", ThinkingDirective::Off),
-        ("minimal", ThinkingDirective::On { budget: Some(64) }),
-        ("low", ThinkingDirective::On { budget: Some(128) }),
-        ("medium", ThinkingDirective::On { budget: Some(256) }),
-        ("high", ThinkingDirective::On { budget: Some(512) }),
-        ("xhigh", ThinkingDirective::On { budget: Some(1024) }),
-        ("max", ThinkingDirective::On { budget: Some(1024) }),
-        // Unknown efforts fall back to the conservative default budget.
-        ("bogus", ThinkingDirective::On { budget: Some(256) }),
+        ("minimal", ThinkingDirective::OnEffort(EffortLevel::Minimal)),
+        ("low", ThinkingDirective::OnEffort(EffortLevel::Low)),
+        ("medium", ThinkingDirective::OnEffort(EffortLevel::Medium)),
+        ("high", ThinkingDirective::OnEffort(EffortLevel::High)),
+        ("xhigh", ThinkingDirective::OnEffort(EffortLevel::XHigh)),
+        ("max", ThinkingDirective::OnEffort(EffortLevel::XHigh)),
+        // Unknown efforts ride the Medium rung, the historical 256 default.
+        ("bogus", ThinkingDirective::OnEffort(EffortLevel::Medium)),
     ] {
         let mut b = base_body();
         b["reasoning"] = serde_json::json!({"effort": effort});
@@ -100,10 +100,10 @@ fn top_level_reasoning_effort_channel() {
     // the nested object — `"none"` included, which forces thinking OFF.
     for (effort, expect) in [
         ("none", ThinkingDirective::Off),
-        ("minimal", ThinkingDirective::On { budget: Some(64) }),
-        ("low", ThinkingDirective::On { budget: Some(128) }),
-        ("medium", ThinkingDirective::On { budget: Some(256) }),
-        ("high", ThinkingDirective::On { budget: Some(512) }),
+        ("minimal", ThinkingDirective::OnEffort(EffortLevel::Minimal)),
+        ("low", ThinkingDirective::OnEffort(EffortLevel::Low)),
+        ("medium", ThinkingDirective::OnEffort(EffortLevel::Medium)),
+        ("high", ThinkingDirective::OnEffort(EffortLevel::High)),
     ] {
         let mut b = base_body();
         b["reasoning_effort"] = serde_json::json!(effort);
@@ -120,7 +120,7 @@ fn top_level_reasoning_effort_channel() {
     b["reasoning_effort"] = serde_json::json!("low");
     assert_eq!(
         chat_req(b).client_thinking_directive(),
-        ThinkingDirective::On { budget: Some(512) }
+        ThinkingDirective::OnEffort(EffortLevel::High)
     );
 }
 
@@ -159,7 +159,7 @@ fn top_level_reasoning_effort_channel_and_nested_priority() {
     let req = chat_req(top_level);
     assert_eq!(
         req.client_thinking_directive(),
-        ThinkingDirective::On { budget: Some(1024) }
+        ThinkingDirective::OnEffort(EffortLevel::XHigh)
     );
     assert_eq!(
         req.client_reasoning_effort(),
@@ -172,7 +172,7 @@ fn top_level_reasoning_effort_channel_and_nested_priority() {
     let req = chat_req(both);
     assert_eq!(
         req.client_thinking_directive(),
-        ThinkingDirective::On { budget: Some(512) }
+        ThinkingDirective::OnEffort(EffortLevel::High)
     );
     assert_eq!(
         req.client_reasoning_effort(),

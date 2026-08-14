@@ -34,7 +34,23 @@ pub(super) fn contain_unterminated_call_tail(rest: &str) -> &str {
 /// (JSON for hermes, XML for qwen3_coder).
 ///
 /// Returns `(content, tool_calls)` where content is text outside tags.
+///
+/// A bare identifier inside `<tool_call>` is treated as malformed output and
+/// dropped (the pre-2026-08-12 behaviour). Poolside v1 surfaces — where a
+/// bare name IS the zero-argument call encoding — must use
+/// [`parse_tool_calls_promoting_bare_names`]; the caller picks via
+/// `ToolCallParser::promotes_bare_call_names`.
 pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
+    parse_tool_calls_impl(text, false)
+}
+
+/// [`parse_tool_calls`] for formats whose zero-argument call is a bare tool
+/// name inside the envelope (Poolside v1).
+pub fn parse_tool_calls_promoting_bare_names(text: &str) -> (Option<String>, Vec<ToolCall>) {
+    parse_tool_calls_impl(text, true)
+}
+
+fn parse_tool_calls_impl(text: &str, promote_bare_names: bool) -> (Option<String>, Vec<ToolCall>) {
     // Strip <think>...</think> before parsing tool calls (matches vLLM behavior).
     // Tool calls inside thinking blocks are model deliberation, not real invocations.
     let text = if let Some(think_end) = text.find("</think>") {
@@ -129,7 +145,8 @@ pub fn parse_tool_calls(text: &str) -> (Option<String>, Vec<ToolCall>) {
                 rest = &rest[start + 11..];
                 match find_unescaped_tool_call_close(rest) {
                     Some(end) => {
-                        if let Some(tc) = parse_complete_call(&rest[..end], idx) {
+                        if let Some(tc) = parse_complete_call(&rest[..end], idx, promote_bare_names)
+                        {
                             calls.push(tc);
                             idx += 1;
                         }

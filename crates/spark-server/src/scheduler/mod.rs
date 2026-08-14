@@ -80,6 +80,7 @@ use decode_step::*;
 use emit_step::*;
 pub use helpers::WatchdogParams;
 pub(crate) use helpers::parse_disable_watchdogs;
+pub use helpers::resolve_content_loop_watchdog;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
 use lifecycle::*;
@@ -725,85 +726,115 @@ pub fn run(
                 if let Some(gate) = mtp_gate.as_mut() {
                     gate.maybe_remeasure(active[0].seq.seq_len);
                     gate.note_depth(active[0].seq.seq_len);
-                    match gate.next_step() {
-                        mtp_gate::GateStep::MeasureDecode => {
-                            let t0 = std::time::Instant::now();
-                            step_decode_only(
-                                &*model,
-                                &mut active,
-                                think_end_token,
-                                think_start_token,
-                                code_fence_token,
-                                tool_call_start_token,
-                                tool_call_end_token,
-                                adaptive_sampling,
-                                &sched,
-                            );
-                            gate.record_decode(t0.elapsed());
-                            // ATLAS_MTP_CATCHUP: ring the serially decoded
-                            // token's hidden so the next MTP re-probe can
-                            // batch-feed the drafter over the serial gap
-                            // (no-op when the feature is off).
-                            //
-                            // LABEL CONVENTION (off-by-one fixed 2026-07-21).
-                            // The reader feeds drafter pair key `k` from ring
-                            // label `k + 1`, because pair key k is
-                            // `(embed(t_{k+1}), hidden_k)` — so label n must
-                            // hold `hidden_{n-1}`, the hidden that PREDICTED
-                            // token n. `step_decode_only` forwards
-                            // `last_token` at the OLD `seq_len` and only then
-                            // pushes that input token and increments
-                            // (`decode_a2.rs` / `decode_b.rs`: `tokens.push`
-                            // + `seq_len += 1`). So the hidden now in row 0 is
-                            // `hidden_{seq_len - 1}` and its label is
-                            // `seq_len`, not `seq_len - 1`.
-                            //
-                            // This previously wrote `seq_len - 1`, which handed
-                            // every serially-fed pair key the hidden of the
-                            // NEXT position. It is the same quantity the K=3
-                            // re-feed labels `base + t + 1` for verify row t at
-                            // position `base + t` — that convention is verified
-                            // by dumped hidden fingerprints (93/93 cross-step,
-                            // see `speculative::mtp_refeed_accepted_enabled`),
-                            // so the serial hook was the side that disagreed.
-                            //
-                            // Multi-seq guard (batched-MTP E2): the catchup
-                            // ring is a SINGLE-sequence structure (one ring,
-                            // one label space). With n active sequences the
-                            // hidden in row 0 belongs to an arbitrary member
-                            // of the batch, so ringing it would interleave
-                            // unrelated hiddens under one label space.
-                            // (`mtp_catchup_enabled` is also force-off when
-                            // ATLAS_MTP_MAX_SEQS > 1 — this guard keeps the
-                            // save itself single-seq-only regardless.)
-                            if active.len() == 1
-                                && let Err(e) =
-                                    model.save_hidden_for_catchup(0, active[0].seq.seq_len)
-                            {
-                                tracing::warn!("save_hidden_for_catchup: {e:#}");
+                    // Spec-entry pin: the first N post-`</think>` tokens run
+                    // the verify path even when the gate's arbitration says
+                    // Serial, so the answer OPENING cannot flip between the
+                    // serial and batch-K forwards on wall-clock luck (see
+                    // `mtp_gate::entry_pin_forces_verify` for the measured
+                    // flip evidence). Pinned steps are deliberately NOT
+                    // recorded: charging verify walls to a Serial-mode
+                    // accumulator would corrupt the arbitration baselines,
+                    // and ≤N unmeasured steps per sequence merely delay the
+                    // reprobe cadence by the same handful of tokens.
+                    let min_post_think_emitted = active
+                        .iter()
+                        .map(|a| a.post_think_emitted)
+                        .min()
+                        .unwrap_or(u32::MAX);
+                    if mtp_gate::entry_pin_forces_verify(min_post_think_emitted)
+                        && gate.next_step() == mtp_gate::GateStep::MeasureDecode
+                    {
+                        step_mtp(
+                            &*model,
+                            &mut active,
+                            &sched,
+                            num_drafts,
+                            &verify_ctx,
+                            dflash_verify_raw_argmax,
+                        );
+                    } else {
+                        match gate.next_step() {
+                            mtp_gate::GateStep::MeasureDecode => {
+                                let t0 = std::time::Instant::now();
+                                step_decode_only(
+                                    &*model,
+                                    &mut active,
+                                    think_end_token,
+                                    think_start_token,
+                                    code_fence_token,
+                                    tool_call_start_token,
+                                    tool_call_end_token,
+                                    adaptive_sampling,
+                                    &sched,
+                                );
+                                gate.record_decode(t0.elapsed());
+                                // ATLAS_MTP_CATCHUP: ring the serially decoded
+                                // token's hidden so the next MTP re-probe can
+                                // batch-feed the drafter over the serial gap
+                                // (no-op when the feature is off).
+                                //
+                                // LABEL CONVENTION (off-by-one fixed 2026-07-21).
+                                // The reader feeds drafter pair key `k` from ring
+                                // label `k + 1`, because pair key k is
+                                // `(embed(t_{k+1}), hidden_k)` — so label n must
+                                // hold `hidden_{n-1}`, the hidden that PREDICTED
+                                // token n. `step_decode_only` forwards
+                                // `last_token` at the OLD `seq_len` and only then
+                                // pushes that input token and increments
+                                // (`decode_a2.rs` / `decode_b.rs`: `tokens.push`
+                                // + `seq_len += 1`). So the hidden now in row 0 is
+                                // `hidden_{seq_len - 1}` and its label is
+                                // `seq_len`, not `seq_len - 1`.
+                                //
+                                // This previously wrote `seq_len - 1`, which handed
+                                // every serially-fed pair key the hidden of the
+                                // NEXT position. It is the same quantity the K=3
+                                // re-feed labels `base + t + 1` for verify row t at
+                                // position `base + t` — that convention is verified
+                                // by dumped hidden fingerprints (93/93 cross-step,
+                                // see `speculative::mtp_refeed_accepted_enabled`),
+                                // so the serial hook was the side that disagreed.
+                                //
+                                // Multi-seq guard (batched-MTP E2): the catchup
+                                // ring is a SINGLE-sequence structure (one ring,
+                                // one label space). With n active sequences the
+                                // hidden in row 0 belongs to an arbitrary member
+                                // of the batch, so ringing it would interleave
+                                // unrelated hiddens under one label space.
+                                // (`mtp_catchup_enabled` is also force-off when
+                                // ATLAS_MTP_MAX_SEQS > 1 — this guard keeps the
+                                // save itself single-seq-only regardless.)
+                                if active.len() == 1
+                                    && let Err(e) =
+                                        model.save_hidden_for_catchup(0, active[0].seq.seq_len)
+                                {
+                                    tracing::warn!("save_hidden_for_catchup: {e:#}");
+                                }
                             }
-                        }
-                        mtp_gate::GateStep::MeasureVerify => {
-                            // A bootstrap-only step (no pending drafts) emits
-                            // 1 token and proposes; its cost is charged to the
-                            // MTP mode — proposing IS part of what MTP costs.
-                            // Sum over ALL speculating sequences: the gate arbitrates
-                            // on tokens-per-second, so counting only active[0]
-                            // under-reports MTP's throughput by a factor of n and
-                            // biases the gate toward serial decode.
-                            let seq_len_before: usize = active.iter().map(|a| a.seq.seq_len).sum();
-                            let t0 = std::time::Instant::now();
-                            step_mtp(
-                                &*model,
-                                &mut active,
-                                &sched,
-                                num_drafts,
-                                &verify_ctx,
-                                dflash_verify_raw_argmax,
-                            );
-                            let seq_len_after: usize = active.iter().map(|a| a.seq.seq_len).sum();
-                            let emitted = seq_len_after.saturating_sub(seq_len_before);
-                            gate.record_verify_step(t0.elapsed(), emitted);
+                            mtp_gate::GateStep::MeasureVerify => {
+                                // A bootstrap-only step (no pending drafts) emits
+                                // 1 token and proposes; its cost is charged to the
+                                // MTP mode — proposing IS part of what MTP costs.
+                                // Sum over ALL speculating sequences: the gate arbitrates
+                                // on tokens-per-second, so counting only active[0]
+                                // under-reports MTP's throughput by a factor of n and
+                                // biases the gate toward serial decode.
+                                let seq_len_before: usize =
+                                    active.iter().map(|a| a.seq.seq_len).sum();
+                                let t0 = std::time::Instant::now();
+                                step_mtp(
+                                    &*model,
+                                    &mut active,
+                                    &sched,
+                                    num_drafts,
+                                    &verify_ctx,
+                                    dflash_verify_raw_argmax,
+                                );
+                                let seq_len_after: usize =
+                                    active.iter().map(|a| a.seq.seq_len).sum();
+                                let emitted = seq_len_after.saturating_sub(seq_len_before);
+                                gate.record_verify_step(t0.elapsed(), emitted);
+                            }
                         }
                     }
                     // One-time transition work when the gate switches to

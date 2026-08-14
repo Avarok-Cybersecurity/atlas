@@ -246,7 +246,14 @@ pub fn emit_token(
             {
                 a.force_end_thinking = true;
                 a.sentence_defer_count = 0;
+                // Twin of the decode_logits_step site: name the source so a
+                // low client budget is distinguishable from a server cap.
                 tracing::info!(
+                    source = if a.enable_thinking {
+                        "request (client budget/effort; scaled by --max-thinking-budget)"
+                    } else {
+                        "spontaneous <think> (--max-thinking-budget / MODEL.toml)"
+                    },
                     "Thinking budget exhausted ({budget} tokens), arming </think>; \
                      deferring to next sentence boundary"
                 );
@@ -309,29 +316,35 @@ pub fn emit_token(
                 max = sched.watchdog.max_post_think_content_tokens,
                 "post-think content cap exceeded in MTP/emit path; ending response (tool-active request would otherwise burn to max_tokens)"
             );
+            a.guard_stop = Some(GUARD_STOP_POST_THINK_CAP);
             a.finished = true;
         }
+        // Same precedence as the non-MTP twin (decode_logits_content.rs):
+        // request `repetition_detection` → operator min-repeats override →
+        // built-in constants.
+        let loop_params = sched.watchdog.content_loop_params(a.repetition_detection);
         if !sched.levers.disable_watchdogs
             && sched.levers.loop_watchdog()
             && !a.inside_tool_body
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-            && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
+            && (detect_content_token_loop_with(&a.output_tokens, loop_params)
                 || sched.masks.numeric.as_deref().is_some_and(|m| {
-                    detect_content_token_loop_normalized_with(
-                        &a.output_tokens,
-                        m,
-                        a.repetition_detection,
-                    )
+                    detect_content_token_loop_normalized_with(&a.output_tokens, m, loop_params)
                 }))
         {
             tracing::warn!(
                 content_tokens = a.content_tokens,
                 output_len = a.output_tokens.len(),
-                "Content-loop watchdog fired in MTP/emit path (period-{}…{} repeat); ending response",
+                "Content-loop watchdog fired in MTP/emit path (period-{}…{} repeat); ending response. \
+                 Tune via --content-loop-min-repeats / ATLAS_CONTENT_LOOP_MIN_REPEATS, per-request \
+                 repetition_detection, or disarm via --content-loop-watchdog false / \
+                 ATLAS_CONTENT_LOOP_WATCHDOG=0",
                 CONTENT_LOOP_PERIOD_MIN,
                 CONTENT_LOOP_PERIOD_MAX,
             );
+            // #328 class: name the cut or it wires "stop" (see types.rs).
+            a.guard_stop = Some(GUARD_STOP_CONTENT_LOOP);
             a.finished = true;
         }
 
@@ -365,9 +378,11 @@ pub fn emit_token(
                     max = max_prose,
                     output_len = a.output_tokens.len(),
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
-                     (no tool call after budget — would otherwise burn to max_tokens)."
+                     (no tool call after budget — would otherwise burn to max_tokens); \
+                     raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                     MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                 );
-                a.guard_stop = Some("inter_tool_prose_budget");
+                a.guard_stop = Some(GUARD_STOP_INTER_TOOL_PROSE);
                 a.finished = true;
             }
         }
