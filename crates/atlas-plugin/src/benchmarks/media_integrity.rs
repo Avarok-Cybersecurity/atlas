@@ -330,6 +330,248 @@ pub async fn media_in_history(
     }
 }
 
+/// ★ THE SAME REQUEST STREAMED AND NOT STREAMED.
+///
+/// Every other leg in both benchmarks sets `stream: true`, so the blocking
+/// response path had never been exercised by any of them. It is not a thin
+/// wrapper around the streaming one — it assembles the response itself — and a
+/// server can stream correctly while assembling a blocking reply wrongly.
+///
+/// Both must answer correctly AND agree on `prompt_tokens`: the prompt is
+/// byte-identical, so a difference there means the two paths built different
+/// prompts from the same request, which is a preprocessing divergence rather
+/// than a sampling one.
+pub async fn stream_parity(
+    handle: &PluginHandle,
+    mut body: Value,
+    want: &(dyn Fn(&str) -> bool + Sync),
+    timeout: Duration,
+) -> Cell {
+    const ID: &str = "stream-blocking-parity";
+    body["stream"] = Value::Bool(true);
+    let streamed = match http::chat_stream(handle.target(), &body, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Cell::Error {
+                id: ID,
+                msg: crate::benchmarks::one_line(format!("streaming: {e:#}")),
+            };
+        }
+    };
+    body["stream"] = Value::Bool(false);
+    let blocking = match http::chat_blocking(handle.target(), &body, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Cell::Error {
+                id: ID,
+                msg: crate::benchmarks::one_line(format!("blocking: {e:#}")),
+            };
+        }
+    };
+    let b_text = blocking.choices.first().cloned().unwrap_or_default();
+    let s_ok = want(streamed.text.trim());
+    let b_ok = want(b_text.trim());
+    if !s_ok || !b_ok {
+        return Cell::Fail {
+            id: ID,
+            detail: format!(
+                "streaming {}, blocking {} — the two response paths disagree about the same \
+                 image",
+                if s_ok { "ok" } else { "WRONG" },
+                if b_ok { "ok" } else { "WRONG" }
+            ),
+        };
+    }
+    if streamed.prompt_tokens != blocking.prompt_tokens {
+        return Cell::Fail {
+            id: ID,
+            detail: format!(
+                "both answered correctly but built DIFFERENT prompts: {} tokens streaming vs {} \
+                 blocking, from a byte-identical request",
+                streamed.prompt_tokens, blocking.prompt_tokens
+            ),
+        };
+    }
+    Cell::Pass {
+        id: ID,
+        detail: format!(
+            "both paths correct and agree on {} prompt tokens",
+            streamed.prompt_tokens
+        ),
+    }
+}
+
+/// ★ `n > 1` WITH AN IMAGE.
+///
+/// The blocking path decides PER CHOICE whether that choice carries the
+/// request's image pixels — choice 0 takes them, the rest get an empty vector,
+/// because the encode is shared rather than repeated. That is correct and it
+/// is also index-conditional code that nothing ran. If the later choices lose
+/// the image rather than sharing it, they answer about nothing at all.
+///
+/// Every choice must be present and must answer about the picture.
+pub async fn multi_choice(
+    handle: &PluginHandle,
+    mut body: Value,
+    n: usize,
+    want: &(dyn Fn(&str) -> bool + Sync),
+    timeout: Duration,
+) -> Cell {
+    const ID: &str = "multi-choice-image";
+    body["stream"] = Value::Bool(false);
+    body["n"] = Value::from(n);
+    match http::chat_blocking(handle.target(), &body, timeout).await {
+        Ok(o) => {
+            if o.choices.len() != n {
+                return Cell::Fail {
+                    id: ID,
+                    detail: format!("asked for n={n}, got {} choices", o.choices.len()),
+                };
+            }
+            let bad: Vec<usize> = o
+                .choices
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !want(c.trim()))
+                .map(|(i, _)| i)
+                .collect();
+            if bad.is_empty() {
+                Cell::Pass {
+                    id: ID,
+                    detail: format!("all {n} choices answered about the image"),
+                }
+            } else {
+                Cell::Fail {
+                    id: ID,
+                    detail: format!(
+                        "choice(s) {bad:?} did not answer about the image — the later choices \
+                         are not seeing it"
+                    ),
+                }
+            }
+        }
+        // `n > 1` may simply not be supported; that is a capability, not a
+        // defect, so it is a skip rather than a failure.
+        Err(e) => {
+            let msg = crate::benchmarks::one_line(format!("{e:#}"));
+            let unsupported = msg.contains("400") || msg.to_lowercase().contains("not supported");
+            if unsupported {
+                Cell::Skipped { id: ID, why: msg }
+            } else {
+                Cell::Error { id: ID, msg }
+            }
+        }
+    }
+}
+
+/// A Responses-API request carrying one image.
+pub fn responses_image_request(model: &str, mime: &str, bytes: &[u8], prompt: &str) -> Value {
+    use base64::Engine;
+    let mut uri = format!("data:{mime};base64,");
+    base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut uri);
+    json!({
+        "model": model,
+        "stream": false,
+        "temperature": 0.0,
+        // Generous, and thinking OFF. Without the kwarg the model spends the
+        // whole budget reasoning and returns an EMPTY output_text — which
+        // reads as "the Responses surface cannot see images" and is nothing
+        // of the sort. Cost me a false failure before the reasoning trace
+        // showed it describing the picture perfectly well.
+        "max_output_tokens": 600,
+        "chat_template_kwargs": {"enable_thinking": false},
+        "input": [{"role": "user", "content": [
+            {"type": "input_image", "image_url": {"url": uri}},
+            {"type": "input_text", "text": prompt},
+        ]}],
+    })
+}
+
+/// ★ THE SAME IMAGE THROUGH BOTH API SURFACES.
+///
+/// `/v1/responses` has its own content-part vocabulary (`input_image`,
+/// `input_text`) and its own adapter into the IR — a genuinely separate parse
+/// path, not a rename. Every leg before this drove chat-completions only, so a
+/// regression in that adapter would have left the modern surface quietly
+/// blind while every benchmark stayed green.
+///
+/// Both must answer correctly AND report the same prompt size. The token
+/// counts are named differently on the two surfaces (`prompt_tokens` vs
+/// `input_tokens`), which is itself worth pinning: they must describe the same
+/// prompt.
+pub async fn responses_parity(
+    handle: &PluginHandle,
+    chat: Value,
+    responses: Value,
+    want: &(dyn Fn(&str) -> bool + Sync),
+    timeout: Duration,
+) -> Cell {
+    const ID: &str = "responses-api-parity";
+    let c = match http::chat_stream(handle.target(), &chat, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Cell::Error {
+                id: ID,
+                msg: crate::benchmarks::one_line(format!("chat: {e:#}")),
+            };
+        }
+    };
+    let r = match http::responses_blocking(handle.target(), &responses, timeout).await {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = crate::benchmarks::one_line(format!("{e:#}"));
+            // A build without the Responses surface is a capability, not a
+            // defect.
+            return if msg.contains("404") {
+                Cell::Skipped { id: ID, why: msg }
+            } else {
+                Cell::Error { id: ID, msg }
+            };
+        }
+    };
+    let r_text = r.choices.first().cloned().unwrap_or_default();
+    let c_ok = want(c.text.trim());
+    let r_ok = want(r_text.trim());
+    if !c_ok || !r_ok {
+        return Cell::Fail {
+            id: ID,
+            detail: format!(
+                "chat-completions {}, responses {} — the two surfaces disagree about the same \
+                 image (responses said \"{}\")",
+                if c_ok { "ok" } else { "WRONG" },
+                if r_ok { "ok" } else { "WRONG" },
+                crate::benchmarks::one_line(r_text.chars().take(60).collect::<String>())
+            ),
+        };
+    }
+    // NOT exact equality. The two surfaces wrap a prompt slightly differently
+    // — measured 81 via chat-completions and 79 via responses for the same
+    // image — and that small, constant difference is the envelope, not the
+    // picture. What must not differ is the IMAGE's contribution, so the bound
+    // is set well below one image's worth of tokens (the smallest fixture is
+    // 1 token, the 224 square is 49): a surface that dropped or duplicated the
+    // image moves this by tens, an envelope difference by a few.
+    let delta = c.prompt_tokens.abs_diff(r.prompt_tokens);
+    if delta > 16 {
+        return Cell::Fail {
+            id: ID,
+            detail: format!(
+                "both answered correctly but the surfaces built substantially different \
+                 prompts: {} tokens via chat-completions vs {} via responses ({delta} apart) — \
+                 too large to be envelope wrapping, so the image is contributing differently",
+                c.prompt_tokens, r.prompt_tokens
+            ),
+        };
+    }
+    Cell::Pass {
+        id: ID,
+        detail: format!(
+            "both surfaces correct; {} vs {} prompt tokens ({delta} apart, envelope only)",
+            c.prompt_tokens, r.prompt_tokens
+        ),
+    }
+}
+
 #[cfg(test)]
 #[path = "media_integrity_tests.rs"]
 mod media_integrity_tests;

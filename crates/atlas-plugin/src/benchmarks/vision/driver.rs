@@ -476,7 +476,93 @@ impl Benchmark for VisionFidelity {
                         )
                         .await
                     }
-                    // 5. EXIF orientation, PINNED rather than judged.
+                    // 5. Streamed vs not: two different response paths.
+                    4 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        mi::stream_parity(
+                            h,
+                            mi::image_request(
+                                &model,
+                                "image/png",
+                                img,
+                                "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.",
+                                16,
+                            ),
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 6. n>1, where only choice 0 carries the pixels.
+                    5 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        mi::multi_choice(
+                            h,
+                            mi::image_request(
+                                &model,
+                                "image/png",
+                                img,
+                                "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.",
+                                16,
+                            ),
+                            2,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 7. The image on a TOOL RESULT — the other call site of
+                    //    collect_message_images, and the case #165 exists for.
+                    //    An agent sees a screenshot come back from a tool and
+                    //    is asked about it afterwards.
+                    6 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        use base64::Engine;
+                        let mut uri = String::from("data:image/png;base64,");
+                        base64::engine::general_purpose::STANDARD.encode_string(img, &mut uri);
+                        let body = serde_json::json!({
+                            "model": model, "stream": true, "temperature": 0.0,
+                            "max_tokens": 16,
+                            "chat_template_kwargs": {"enable_thinking": false},
+                            "messages": [
+                                {"role": "user", "content": "Take a screenshot."},
+                                {"role": "assistant", "content": "",
+                                 "tool_calls": [{"id": "c1", "type": "function",
+                                   "function": {"name": "screenshot", "arguments": "{}"}}]},
+                                {"role": "tool", "tool_call_id": "c1", "content": [
+                                    {"type": "image_url", "image_url": {"url": uri}}]},
+                                {"role": "user", "content":
+                                    "Reply with exactly one word: YES if the screenshot \
+                                     contains a white rectangle, NO otherwise."},
+                            ],
+                        });
+                        mi::media_in_history(
+                            h,
+                            body,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            "image-on-tool-result",
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 8. The Responses API — a separate parse path that
+                    //    nothing else in either benchmark drives.
+                    7 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        let q = "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.";
+                        mi::responses_parity(
+                            h,
+                            mi::image_request(&model, "image/png", img, q, 16),
+                            mi::responses_image_request(&model, "image/png", img, q),
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 9. EXIF orientation, PINNED rather than judged.
                     _ => {
                         let pair: Vec<(&str, &[u8])> = super::provision::EXIF_PAIR.to_vec();
                         let q = "The image is split into two halves of solid colour. Is the \
@@ -537,7 +623,7 @@ impl Benchmark for VisionFidelity {
                 };
                 self.integrity.push(cell);
                 self.cursor += 1;
-                if self.cursor >= 5 {
+                if self.cursor >= 9 {
                     self.cursor = 0;
                     self.phase = Phase::Concurrency;
                 }
@@ -616,7 +702,16 @@ impl Benchmark for VisionFidelity {
             // ── Score ────────────────────────────────────────────────────
             Phase::Score => {
                 self.phase = Phase::Done;
-                let v = verdict(&self.geom, &self.probes, self.control_held);
+                // An integrity failure must FAIL THE RUN. These legs were
+                // added because they catch wrong answers that geometry and
+                // capability cannot see; leaving them as metrics only would
+                // mean the benchmark reports PASS while telling you, in its
+                // own log, that a request got another request's picture.
+                let integ_failed = self.integrity.iter().any(|c| c.measured() && !c.passed());
+                let v = match verdict(&self.geom, &self.probes, self.control_held) {
+                    VisionVerdict::Pass if integ_failed => VisionVerdict::Fail,
+                    other => other,
+                };
                 let asserted = asserted_cells(&self.geom);
                 let passed = self
                     .probes

@@ -175,7 +175,7 @@ noise = 0.4
 # check passed throughout, because a downscaled picture is still recognisably
 # what it is.
 #
-#   integrity_passed  = 5   the INTEGRITY floor, and the legs a single
+#   integrity_passed  = 9   the INTEGRITY floor, and the legs a single
 #                           well-formed request cannot reach. Every one of
 #                           them fails as a FLUENT ANSWER TO THE WRONG INPUT
 #                           rather than an error, which is the class this
@@ -206,7 +206,24 @@ noise = 0.4
 #                               sideways. Whether to honour the tag is a
 #                               product decision; that it must not change by
 #                               accident is not.
-#   integrity_measured = 5  a skipped integrity leg is not a passed one.
+#                             stream-blocking-parity     the SAME request
+#                               streamed and not. Every other leg sets
+#                               stream:true, so the blocking path — which
+#                               assembles its own response — was never run.
+#                               Both must answer correctly AND agree on
+#                               prompt_tokens; a difference means the two
+#                               paths built different prompts from identical
+#                               bytes.
+#                             multi-choice-image         n=2 with an image.
+#                               The blocking path gives only choice 0 the
+#                               pixels (the encode is shared), which is
+#                               correct and is also index-conditional code
+#                               nothing ran.
+#                             image-on-tool-result       the image arriving
+#                               on a role:"tool" message — the OTHER call
+#                               site of collect_message_images, and the case
+#                               #165 exists for.
+#   integrity_measured = 9  a skipped integrity leg is not a passed one.
 #   geometry_matched  = 14  the CORRECTNESS floor, and the one that moves when
 #                           preprocessing changes. Rung 09 (1600x900) is the
 #                           ONLY rung above the retired 1280px clamp: under the
@@ -236,7 +253,7 @@ default = false
 status = "measured"
 note = """\
 REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support @ 5a22d7ce: PASS, 14/14 geometry \
-cells matched, 3/3 probes, 5/5 integrity legs, control held, 26.5 s. Geometry was IDENTICAL across all \
+cells matched, 3/3 probes, 9/9 integrity legs, control held, 26.5 s. Geometry was IDENTICAL across all \
 three vision targets (49/121/192/220/576/576/920/405/1400/1/128/49/49/49 merged \
 tokens) -- token \
 count is a property of the preprocessor rather than the checkpoint, so agreement \
@@ -253,13 +270,84 @@ min = 14.0
 min = 14.0
 
 [benchmarks.metrics.integrity_passed]
-min = 5.0
+min = 9.0
 
 [benchmarks.metrics.integrity_measured]
-min = 5.0
+min = 9.0
 
 [benchmarks.metrics.probes_passed]
 min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0
+
+# --- video-fidelity --------------------------------------------------------
+# VIDEO MODELS ONLY, and narrower than the vision gate: declared here alone,
+# on the target this workstream validates video against. The other two vision
+# checkpoints also decode video correctly -- video-fidelity passes on
+# qwen3.6-27b with the same 13/13 -- so they can be added whenever someone
+# wants to pay for the runtime; nothing about the benchmark is 3.8-specific.
+#
+# ★ REQUIRES FFMPEG ON THE RUNNER for every container except GIF. Legs needing
+# it SKIP rather than fail when it is absent, so a runner without ffmpeg
+# degrades to the GIF-only subset instead of going red -- which is why the
+# floor below is on legs PASSED and legs MEASURED separately. A run where
+# everything skipped reports INCONCLUSIVE, never PASS.
+#
+# Bounds are absolute and take no noise term: every assertion is either
+# arithmetic over the patch grid or an exact color sequence, so there is no
+# run-to-run variance for a tolerance to absorb.
+#
+#   legs_passed   = 13  every leg. The ones that carry the weight:
+#                         order fwd + REVERSED -- the same clip both ways,
+#                           requiring the answer to reverse with it. The only
+#                           assertion separating "the frames arrived in order"
+#                           from "something arrived", and the one that caught
+#                           the splice defect where video pad tokens received
+#                           no encoder rows and the model described a gray
+#                           field with every token count perfect.
+#                         group-proportionality -- 1x/2x/4x durations, where
+#                           t4-t2 == 2*(t2-t1). Three points, not two: two
+#                           always fit a line because the implied template
+#                           overhead absorbs any error.
+#                         backend-parity -- MP4 and GIF of identical content
+#                           must agree, exercising the subprocess and
+#                           in-process decoders against each other.
+#                         two-videos / video-before-image -- grid bookkeeping
+#                           across several items when one has t_len > 1.
+#                         heterogeneous-concurrency -- two clips with OPPOSITE
+#                           color orders in flight at once; a crossed
+#                           per-request offset returns the other's sequence.
+#   legs_skipped  <= 0  on a runner WITH ffmpeg nothing should skip. Raise
+#                       this only for a runner that deliberately lacks it.
+#   control_held  = 1   the no-video control must not name the whole
+#                       sequence, or the readings are not evidence.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "video-fidelity"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+default = true
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \
+skipped, control held. group-proportionality 1s=67 2s=116 4s=214 tokens -> 1/2/4 \
+temporal groups at 49 tok/group with an 18-token template overhead; forward clip read \
+"red, green, blue, yellow" and the reversed clip "Yellow, Blue, Green, Red"; MP4 and \
+GIF both 214 prompt tokens; image+video 286; two-videos 437; video-before-image 288; \
+video-in-history 249; C=1/2/4 all correct on one geometry. || THE REVERSED CLIP IS THE \
+GATE. Identical geometry, identical prompt, frames in the opposite order -- no language \
+prior gets that right twice, which is what makes the other legs evidence rather than \
+plausible prose. || Requires ffmpeg; without it the MP4 legs SKIP and only the GIF \
+subset runs (measured: PASS 5/5, 4 skipped)."""
+
+[benchmarks.metrics.legs_passed]
+min = 13.0
+
+[benchmarks.metrics.legs_skipped]
+max = 0.0
 
 [benchmarks.metrics.control_held]
 min = 1.0

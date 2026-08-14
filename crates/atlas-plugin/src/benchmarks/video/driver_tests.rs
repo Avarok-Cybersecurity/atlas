@@ -27,19 +27,30 @@ fn the_descriptor_is_well_formed() {
     );
 }
 
-/// ★ Registered but NOT gated, and that is deliberate: it has no reference run
-/// on any target yet, and a gate without a measured baseline either passes
-/// vacuously or fails honest work. This test is what stops it being wired into
-/// the required set before those runs exist.
+/// ★ Registered AND required, but declared on exactly one target.
+///
+/// The per-model constraint lives in BENCH.toml, not here: gate coverage is
+/// path-based and has no model dimension, so a `gate = "video-fidelity"` entry
+/// exists only where video is validated. A target without one has nothing to
+/// run and nothing to satisfy — which is what makes requiring it safe for the
+/// text-only and untested targets alike.
 #[test]
-fn it_is_registered_but_not_yet_gated() {
+fn it_is_registered_and_required() {
     assert!(
         crate::registry::find("video-fidelity").is_some(),
         "must be runnable from the registry"
     );
     assert!(
-        !crate::gate::REQUIRED_GATES.contains(&"video-fidelity"),
-        "must stay ungated until it has reference runs per target"
+        crate::gate::REQUIRED_GATES.contains(&"video-fidelity"),
+        "promoted 2026-08-14 with a measured reference run"
+    );
+    // Required and excused are mutually exclusive; the coverage test enforces
+    // that globally, and this pins the side this benchmark is on.
+    assert!(
+        !crate::gate::coverage::NOT_REQUIRED
+            .iter()
+            .any(|(id, _)| *id == "video-fidelity"),
+        "must not be excused as well as required"
     );
 }
 
