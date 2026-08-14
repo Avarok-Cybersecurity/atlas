@@ -52,12 +52,16 @@ fn a_changed_percentage_changes_the_draw() {
 }
 
 fn scores(overall: f64, normalized: f64) -> Scores {
+    scores_n(overall, normalized, 995)
+}
+
+fn scores_n(overall: f64, normalized: f64, n: usize) -> Scores {
     Scores {
         overall_accuracy: overall,
         normalized_single_turn_score: normalized,
         category_scores: BTreeMap::new(),
         subset_scores: BTreeMap::new(),
-        total_samples: 995,
+        total_samples: n,
         unmatched_responses: 0,
     }
 }
@@ -168,4 +172,98 @@ fn the_mlperf_floors_are_the_recorded_thresholds() {
     // 86.23 / 87.96 × 0.97, the `mlperf-edge-current` numbers for qwen3.6-27b.
     assert!((MLPERF_FLOOR_OVERALL - 86.23 * 0.97).abs() < 0.01);
     assert!((MLPERF_FLOOR_NORMALIZED - 87.96 * 0.97).abs() < 0.01);
+}
+
+/// The 2026-08-14 35B echolp run: 84.66 / 85.19, n=1004.
+///
+/// That clears the echolp ratchet (84.66 / 83.32) and misses the golden
+/// MLPerf-edge normalized floor (85.32) by 0.13. Scoring echolp against
+/// 85.32 is the bug: the category mix moves normalized by ~1.8 points, so
+/// the two draws are not interchangeable. This test is the pin — a revert
+/// that puts MLPerf-edge floors back on every variant fails it.
+#[test]
+fn echolp_does_not_use_the_mlperf_edge_floors() {
+    let mut echolp = configured(Variant::SubsetEcholp);
+    echolp.scores = Some(scores_n(84.66, 85.19, 1004));
+    let v = echolp.verdict();
+    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
+    assert!(
+        v.reason.contains("84.66") && v.reason.contains("83.32"),
+        "{}",
+        v.reason
+    );
+    assert!(!v.reason.contains("MLPERF-EDGE"), "{}", v.reason);
+
+    // The same numbers on the golden draw still fail — we did not lower
+    // the 27B bar to make echolp pass.
+    let mut subset = configured(Variant::Subset);
+    subset.scores = Some(scores_n(84.66, 85.19, 995));
+    let v = subset.verdict();
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(
+        v.reason.contains("BELOW THE MLPERF-EDGE FLOOR"),
+        "{}",
+        v.reason
+    );
+}
+
+#[test]
+fn the_echolp_verdict_gates_on_both_echolp_floors() {
+    let mut b = configured(Variant::SubsetEcholp);
+
+    // Just under the overall floor.
+    b.scores = Some(scores_n(84.65, 90.0, 1004));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Fail);
+    assert!(v.reason.contains("BELOW THE ECHOLP FLOOR"), "{}", v.reason);
+    assert!(!v.reason.contains("MLPERF-EDGE"), "{}", v.reason);
+
+    // Overall fine, normalized under its own floor.
+    b.scores = Some(scores_n(90.0, 83.31, 1004));
+    assert_eq!(b.verdict().kind, VerdictKind::Fail);
+
+    // Exactly on both floors passes — the thresholds are inclusive.
+    b.scores = Some(scores_n(
+        ECHOLP_FLOOR_OVERALL,
+        ECHOLP_FLOOR_NORMALIZED,
+        1004,
+    ));
+    assert_eq!(b.verdict().kind, VerdictKind::Pass);
+}
+
+/// The runtime echolp floors are the BENCH.toml ratchet, not a second
+/// invented pair. A silent drift here is how the MLPerf-edge numbers
+/// ended up on the wrong draw.
+#[test]
+fn the_echolp_floors_are_the_committed_ratchet() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root is two levels above the crate");
+    let baseline = crate::gate::read_baseline(root, "bfcl-subset-echolp")
+        .expect("echolp baseline loads from BENCH.toml");
+    for (hw, entry) in &baseline.hardware {
+        for (model, mb) in &entry.models {
+            let overall = mb
+                .metrics
+                .get("overall_accuracy")
+                .unwrap_or_else(|| panic!("{hw}/{model}: echolp baseline has no overall_accuracy"));
+            let normalized = mb
+                .metrics
+                .get("normalized_single_turn_score")
+                .unwrap_or_else(|| {
+                    panic!("{hw}/{model}: echolp baseline has no normalized_single_turn_score")
+                });
+            assert_eq!(
+                overall.min,
+                Some(ECHOLP_FLOOR_OVERALL),
+                "{hw}/{model}: runtime overall floor drifted from BENCH.toml"
+            );
+            assert_eq!(
+                normalized.min,
+                Some(ECHOLP_FLOOR_NORMALIZED),
+                "{hw}/{model}: runtime normalized floor drifted from BENCH.toml"
+            );
+        }
+    }
 }

@@ -40,7 +40,9 @@ use crate::result::{BenchmarkResult, LogLine, RunStatus};
 
 use draw::DrawSpec;
 
-pub use report::{MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL};
+pub use report::{
+    ECHOLP_FLOOR_NORMALIZED, ECHOLP_FLOOR_OVERALL, MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL,
+};
 
 mod descriptors;
 pub use descriptors::{
