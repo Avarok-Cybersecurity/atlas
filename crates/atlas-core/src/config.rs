@@ -518,6 +518,22 @@ pub struct VisionConfig {
     /// into the text embedding stream. Qwen3-VL uses 151655; Qwen3.6 uses
     /// 248056. When 0 the runtime falls back to the legacy Qwen3-VL value.
     pub image_pad_token_id: u32,
+    /// Resolved vision AREA bound in pixels: the operator's
+    /// `--vision-max-pixels`, else the checkpoint's `preprocessor_config.json`,
+    /// else `None`.
+    ///
+    /// ★ THE SINGLE SOURCE OF TRUTH, and it exists because there used to be
+    /// two. The CPU preprocessor clamped every image to 1280px on the long
+    /// side while the GPU encoder allocated its buffers for 6400 patches —
+    /// exactly 1280×1280 — with nothing in the code connecting them. They
+    /// agreed only by coincidence, so raising one on 2026-08-14 made every
+    /// image above 1280px fail an H2D copy with `CUDA_ERROR_INVALID_VALUE`
+    /// from deep inside the scheduler.
+    ///
+    /// Both now derive from this field, resolved once at config load, before
+    /// the encoder is constructed. `None` keeps the historical behaviour on
+    /// both sides.
+    pub max_pixels: Option<usize>,
 }
 
 impl VisionConfig {

@@ -17,6 +17,7 @@ pub mod ssm_poison;
 pub mod stats;
 pub mod transcript;
 pub mod ttft;
+pub mod vision;
 
 /// Collapse a message onto one line and bound its length.
 ///

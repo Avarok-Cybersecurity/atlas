@@ -138,6 +138,34 @@ pub(crate) fn load_model(
     // whose TOP LEVEL is already the quantization block.
     serve_phases::merge_sidecar_quant_config(&model_dir, &mut config);
 
+    // Vision area bound, resolved ONCE and installed on the config before
+    // anything derived from it exists.
+    //
+    // Ordering is load-bearing: the vision encoder sizes every device buffer
+    // from this number, and it is constructed inside `build_model` below. This
+    // used to be resolved AFTER the model was built, which is how the CPU
+    // preprocessor and the GPU encoder came to hold two different ideas of the
+    // maximum image — the preprocessor clamped to 1280px, the encoder
+    // allocated for 6400 patches, and nothing connected them.
+    let vision_max_pixels = resolve_vision_max_pixels(&args, &model_dir)?;
+    if let Some(v) = config.vision.as_mut() {
+        v.max_pixels = vision_max_pixels;
+    }
+    match vision_max_pixels {
+        Some(px) => tracing::info!(
+            "Vision area bound: {} px ({})",
+            px,
+            if args.vision_max_pixels > 0 {
+                "--vision-max-pixels"
+            } else {
+                "checkpoint preprocessor_config.json / ATLAS_VISION_MAX_PIXELS"
+            }
+        ),
+        None => tracing::info!(
+            "Vision area bound: none declared — falling back to the 1280px long-side clamp"
+        ),
+    }
+
     if let Some(ref qc) = config.quantization_config {
         tracing::info!(
             "Quantization config: method={:?}, algo={:?}, format={:?}, {} module(s) in ignore list",
@@ -857,21 +885,6 @@ pub(crate) fn load_model(
     } = carried;
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
-    let vision_max_pixels = resolve_vision_max_pixels(&args, &model_dir)?;
-    match vision_max_pixels {
-        Some(max_pixels) => tracing::info!(
-            "Vision area bound: {} px ({})",
-            max_pixels,
-            if args.vision_max_pixels > 0 {
-                "--vision-max-pixels"
-            } else {
-                "checkpoint preprocessor_config.json / ATLAS_VISION_MAX_PIXELS"
-            }
-        ),
-        None => tracing::info!(
-            "Vision area bound: none declared — falling back to the 1280px long-side clamp"
-        ),
-    }
     // #27: build the STAGEABLE registry (name -> {peer_stage_id, peft}). The peer
     // WeightManifest carries no r/alpha, so the peft scaling is parsed from each
     // adapter's local CONFIG_DIR/adapter_config.json HERE (fail-fast at startup —

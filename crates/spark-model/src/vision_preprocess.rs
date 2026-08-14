@@ -288,6 +288,10 @@ mod tests {
             out_hidden_size: 2048,
             deepstack_visual_indexes: vec![8, 16, 24],
             image_pad_token_id: 151_655,
+            // These tests drive `preprocess_image_with_max_pixels` directly
+            // with an explicit bound, so the config-carried one is not the
+            // subject here.
+            max_pixels: None,
         }
     }
 
