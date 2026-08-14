@@ -479,22 +479,8 @@ pub struct TargetPtxSet {
     pub expected_absent: &'static [(&'static str, &'static str)],
 }
 
-/// All compiled kernel targets and their PTX module sets.
-///
-/// Returns one entry per target compiled at build time.
-/// Single-target builds return one entry; wildcard builds return all.
-pub fn available_targets() -> Vec<TargetPtxSet> {
-    all_ptx_sets()
-}
-
-/// Find the PTX module set for a target whose model name contains `needle`.
-///
-/// Returns `None` if no compiled target matches.
-pub fn ptx_for_model(needle: &str) -> Option<TargetPtxSet> {
-    all_ptx_sets()
-        .into_iter()
-        .find(|t| t.target.model.contains(needle))
-}
+mod query;
+pub use query::{available_targets, ptx_for_model};
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

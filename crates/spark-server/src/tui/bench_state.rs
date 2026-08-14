@@ -458,33 +458,6 @@ impl BenchState {
         // to keep an in-memory list in sync with the filesystem.
         self.history_loaded = false;
     }
-
-    /// Populate the History pane. Lazy and re-run after each persisted frame.
-    ///
-    /// Sorted newest-first across ALL benchmarks rather than grouped by
-    /// benchmark: every row already prints its own age and id, and a single
-    /// chronological list is what "what ran recently" actually asks for.
-    pub fn load_history(&mut self) {
-        if self.history_loaded {
-            return;
-        }
-        self.history_loaded = true;
-        self.history = match &self.executor {
-            Some(executor) => atlas_plugin::history::load_all(executor.artifacts()),
-            None => Vec::new(),
-        };
-        self.history_row = self.history_row.min(self.history.len().saturating_sub(1));
-    }
-
-    pub fn elapsed_text(&self) -> String {
-        let secs = self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0);
-        format!(
-            "{:02}:{:02}:{:02}",
-            secs / 3600,
-            (secs / 60) % 60,
-            secs % 60
-        )
-    }
 }
 
 /// Shown only before `attach` has selected anything.
@@ -494,6 +467,9 @@ impl BenchState {
 /// string table that happens to need a stable address to be borrowed from.
 const FALLBACK_METADATA: atlas_plugin::PluginMetadata =
     atlas_plugin::PluginMetadata::atlas("no benchmark selected");
+
+#[path = "bench_state_history.rs"]
+mod history;
 
 #[cfg(test)]
 #[path = "bench_state_tests.rs"]
