@@ -182,6 +182,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.id }}
+          # Restore always; SAVE only when the ref being built was not chosen
+          # by whoever started the run. `release.yml` takes an arbitrary `ref`
+          # as a workflow_dispatch input and passes it straight to the checkout
+          # above — so on that path this job executes a caller-selected commit's
+          # build scripts and would then write the cache that every later main
+          # build restores from. One dispatch would contaminate ordinary runs
+          # afterwards, which is what CodeQL's actions/cache-poisoning query
+          # flags here. Dispatch runs now read the cache without writing it;
+          # pull_request and workflow_run runs are unaffected and still save.
+          save-if: ${{ github.event_name != 'workflow_dispatch' }}
 
       - name: Free disk space (linux)
         if: matrix.os == 'linux'
