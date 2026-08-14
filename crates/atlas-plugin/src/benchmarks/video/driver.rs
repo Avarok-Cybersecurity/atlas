@@ -410,7 +410,15 @@ impl Benchmark for VideoFidelity {
                 let vid = clip("03_colors_fwd.gif").context("fixture 03 missing")?;
                 // The image comes from the vision benchmark's own ladder
                 // rather than a second copy of the same bytes.
-                let (_, png, _, _) = crate::benchmarks::vision::provision::FIXTURES[0];
+                // GRAYSCALE on purpose: the question asks for the VIDEO's
+                // colors, so a colored still lets a model answer from the
+                // wrong item and still look right. With a gray one, any
+                // palette color in the reply can only have come from the clip.
+                let png = crate::benchmarks::vision::provision::FIXTURES
+                    .iter()
+                    .find(|(n, _, _, _)| *n == "13_gray_224.jpg")
+                    .map(|(_, b, _, _)| *b)
+                    .context("grayscale fixture missing")?;
                 let body = request::mixed_body(
                     &h.target().model,
                     png,
@@ -563,7 +571,15 @@ impl Benchmark for VideoFidelity {
                     //    where the image's pad run follows a multi-group item
                     //    rather than preceding it.
                     1 => {
-                        let (_, png, _, _) = crate::benchmarks::vision::provision::FIXTURES[0];
+                        // GRAYSCALE on purpose: the question asks for the VIDEO's
+                        // colors, so a colored still lets a model answer from the
+                        // wrong item and still look right. With a gray one, any
+                        // palette color in the reply can only have come from the clip.
+                        let png = crate::benchmarks::vision::provision::FIXTURES
+                            .iter()
+                            .find(|(n, _, _, _)| *n == "13_gray_224.jpg")
+                            .map(|(_, b, _, _)| *b)
+                            .context("grayscale fixture missing")?;
                         let body = serde_json::json!({
                             "model": model, "stream": true, "temperature": 0.0,
                             "max_tokens": self.max_tokens,
@@ -572,7 +588,7 @@ impl Benchmark for VideoFidelity {
                                 {"type": "video_url", "video_url": {"url":
                                     request::data_uri(fwd.mime, fwd.bytes)}},
                                 {"type": "image_url", "image_url": {"url":
-                                    request::data_uri("image/png", png)}},
+                                    request::data_uri("image/jpeg", png)}},
                                 {"type": "text", "text":
                                     "A video came first, then a still image. List the colors of \
                                      the VIDEO in order, separated by commas. Only color names."},
