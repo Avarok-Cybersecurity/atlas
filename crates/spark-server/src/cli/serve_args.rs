@@ -874,6 +874,52 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub vision_remote_image_allow_private: bool,
 
+    /// Decode video content parts with ffmpeg.
+    ///
+    /// ★ VIDEO SUPPORT REQUIRES FFMPEG ON THE HOST for every container except
+    /// animated GIF. Atlas does not bundle a video decoder: GIF is decoded
+    /// in-process in pure Rust, and MP4/MOV, WebM/Matroska and AVI — that is,
+    /// H.264, H.265, VP9 and AV1 — are decoded by running `ffmpeg`. Without
+    /// this flag a video part is refused with a 400 naming the flag; with it
+    /// but no ffmpeg on PATH, the server WARNS loudly at startup and each
+    /// video request fails naming the binary.
+    ///
+    /// Install it with `apt install ffmpeg` (Debian/Ubuntu) or
+    /// `dnf install ffmpeg` (Fedora/RHEL).
+    ///
+    /// Off by default because it makes the server execute another program
+    /// per video request. The decode is bounded on every axis the caller
+    /// controls — no shell, no temp file, capped frames, capped output,
+    /// capped wall clock — but a deployment that does not want subprocess
+    /// execution must not acquire it by upgrading.
+    #[arg(long, default_value_t = false)]
+    pub video_allow_ffmpeg: bool,
+
+    /// Path to the ffmpeg binary. A bare name is resolved on PATH; an
+    /// absolute path is used as given, so a deployment can pin a known build
+    /// instead of inheriting whatever PATH offers. No effect unless
+    /// `--video-allow-ffmpeg` is set.
+    #[arg(long, default_value = "ffmpeg")]
+    pub video_ffmpeg_path: String,
+
+    /// Frames per second to sample a video at. The checkpoints' own
+    /// `video_processor` blocks declare 2, and the sampling is done BY the
+    /// decoder rather than by decoding everything and discarding most of it.
+    /// Raising this multiplies the vision tokens a clip costs.
+    #[arg(long, default_value_t = 2.0)]
+    pub video_fps: f32,
+
+    /// Hard cap on frames taken from one video, before temporal grouping.
+    /// Matches the checkpoints' `max_frames`. At the default 2 fps this is
+    /// just over six minutes of clip.
+    #[arg(long, default_value_t = 768)]
+    pub video_max_frames: usize,
+
+    /// Wall-clock budget for decoding one video. Bounds a decoder that hangs
+    /// on a malformed container; the child is killed when it expires.
+    #[arg(long, default_value_t = 120)]
+    pub video_decode_timeout_s: u64,
+
     /// Address to bind the HTTP listener to. Defaults to `127.0.0.1` so a
     /// fresh install is reachable only from the local machine; pass
     /// `0.0.0.0` to expose on all interfaces (the server logs a warning

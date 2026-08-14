@@ -203,6 +203,41 @@ pub(crate) fn load_model(
         );
     }
 
+    // Video decoding. Probed at BOOT, not on the first request: a deployment
+    // that enabled video and has no ffmpeg is misconfigured, and the operator
+    // should learn that from the startup log rather than from a user's failed
+    // request an hour later.
+    let video_ffmpeg = spark_model::video_decode_ffmpeg::FfmpegPolicy {
+        enabled: args.video_allow_ffmpeg,
+        binary: args.video_ffmpeg_path.clone(),
+        max_frames: args.video_max_frames,
+        timeout_secs: args.video_decode_timeout_s,
+        ..Default::default()
+    };
+    match spark_model::video_decode_ffmpeg::probe(&video_ffmpeg) {
+        spark_model::video_decode_ffmpeg::Availability::Ready(v) => tracing::info!(
+            "Video decoding ENABLED via {} ({}); sampling at {} fps, max {} frames",
+            args.video_ffmpeg_path,
+            v,
+            args.video_fps,
+            args.video_max_frames,
+        ),
+        // WARN, not a hard failure: the server still serves text and images
+        // perfectly well, and refusing to boot would turn a video
+        // misconfiguration into a total outage. Every video request will fail
+        // with the binary named, so the condition is not silent either way.
+        spark_model::video_decode_ffmpeg::Availability::Missing(why) => tracing::warn!(
+            "Video decoding was ENABLED (--video-allow-ffmpeg) but the decoder is NOT \
+             USABLE: {why}. Every video request will fail. Install ffmpeg (apt install \
+             ffmpeg) or point --video-ffmpeg-path at it. Animated GIF still decodes \
+             in-process; text and image serving are unaffected.",
+        ),
+        spark_model::video_decode_ffmpeg::Availability::Disabled => tracing::info!(
+            "Video decoding disabled (default). Animated GIF decodes in-process; every \
+             other container needs ffmpeg — pass --video-allow-ffmpeg to enable it."
+        ),
+    }
+
     if let Some(ref qc) = config.quantization_config {
         tracing::info!(
             "Quantization config: method={:?}, algo={:?}, format={:?}, {} module(s) in ignore list",
@@ -1075,6 +1110,8 @@ pub(crate) fn load_model(
         vision_config: config.vision.clone(),
         vision_max_pixels,
         remote_image_policy,
+        video_ffmpeg,
+        video_fps: args.video_fps,
         default_temperature,
         default_top_k,
         default_top_p,
