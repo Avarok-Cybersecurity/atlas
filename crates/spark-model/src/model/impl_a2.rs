@@ -39,12 +39,37 @@ impl TransformerModel {
     /// would resurrect the FIRST image's KV/SSM blocks for the SECOND
     /// image. Skip cache lookup AND insert whenever any `image_pad`
     /// token is present in the prefill window.
+    /// The two placeholder token ids vision input can occupy:
+    /// `(<|image_pad|>, <|video_pad|>)`, each falling back to the family
+    /// default when the checkpoint declares none.
+    pub(super) fn vision_pad_ids(&self) -> (u32, u32) {
+        let v = self.config.vision.as_ref();
+        let image = v
+            .map(|v| v.image_pad_token_id)
+            .filter(|id| *id != 0)
+            .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
+        let video = v
+            .map(|v| v.video_pad_token_id)
+            .filter(|id| *id != 0)
+            .unwrap_or(crate::layers::vision_encoder::VIDEO_PAD_TOKEN_ID);
+        (image, video)
+    }
+
+    /// Whether `tok` is a vision placeholder of EITHER modality.
+    ///
+    /// Every splice and every cache decision must use this rather than
+    /// comparing against the image token alone. A video's pad tokens are a
+    /// different id, and treating them as ordinary text is silent: the
+    /// prompt still tokenises, the counts still add up, and the model simply
+    /// never receives the pixels.
+    pub(super) fn is_vision_pad(&self, tok: u32) -> bool {
+        let (image, video) = self.vision_pad_ids();
+        tok == image || tok == video
+    }
+
     pub(super) fn tokens_have_vision_pad(&self, tokens: &[u32]) -> bool {
-        let pad_id = match self.config.vision.as_ref().map(|v| v.image_pad_token_id) {
-            Some(id) if id != 0 => id,
-            _ => crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID,
-        };
-        tokens.contains(&pad_id)
+        let (image, video) = self.vision_pad_ids();
+        tokens.iter().any(|&t| t == image || t == video)
     }
 
     /// Whether `--high-speed-swap` has slid this sequence's rolling window, so

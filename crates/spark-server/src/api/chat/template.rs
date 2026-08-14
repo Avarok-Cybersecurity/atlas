@@ -111,7 +111,7 @@ pub(super) fn render_template(
     let prompt_tokens = if image_pad_counts.iter().any(|&c| c > 1) {
         state
             .tokenizer
-            .expand_image_pads(prompt_tokens, image_pad_counts)
+            .expand_vision_pads(prompt_tokens, image_pad_counts)
     } else {
         prompt_tokens
     };
@@ -167,10 +167,18 @@ fn build_json_messages_for(
     messages
         .iter()
         .map(|m| {
-            let content_val = if m.image_count > 0 {
-                let mut items: Vec<serde_json::Value> = Vec::with_capacity(m.image_count + 1);
+            let content_val = if m.image_count > 0 || m.video_count > 0 {
+                let mut items: Vec<serde_json::Value> =
+                    Vec::with_capacity(m.image_count + m.video_count + 1);
                 for _ in 0..m.image_count {
                     items.push(serde_json::json!({"type": "image"}));
+                }
+                // Videos AFTER images, matching the order `collect_message_images`
+                // appended their pad counts. The bundled Qwen3-VL template already
+                // renders `{"type": "video"}` as
+                // `<|vision_start|><|video_pad|><|vision_end|>`.
+                for _ in 0..m.video_count {
+                    items.push(serde_json::json!({"type": "video"}));
                 }
                 if !m.content.is_empty() {
                     items.push(serde_json::json!({"type": "text", "text": m.content}));
@@ -216,6 +224,7 @@ mod json_message_tests {
             tool_calls: None,
             tool_call_id: None,
             image_count,
+            video_count: 0,
             reasoning_content: None,
         }
     }
@@ -279,6 +288,13 @@ mod json_message_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,

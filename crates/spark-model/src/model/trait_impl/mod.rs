@@ -62,12 +62,12 @@ impl Model for TransformerModel {
         }
     }
 
-    fn prepare_vision_embed(&self, images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
+    fn prepare_vision_embed(&self, images: &[crate::VisionItem]) -> Result<()> {
         self.prepare_vision_embed_dispatch(images)
     }
     fn prepare_vision_embed_batched(
         &self,
-        per_request: &[Vec<(Vec<f32>, usize, usize)>],
+        per_request: &[Vec<crate::VisionItem>],
     ) -> Result<Vec<(usize, usize, usize, usize)>> {
         self.prepare_vision_embed_batched_dispatch(per_request)
     }

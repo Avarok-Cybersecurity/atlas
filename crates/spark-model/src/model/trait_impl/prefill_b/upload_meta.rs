@@ -120,20 +120,11 @@ impl TransformerModel {
                 stg.positions_h.clear();
                 stg.positions_w.clear();
                 let grids = self.vision_image_grids.lock().clone();
-                let vcfg = self.config.vision.as_ref();
-                let pad_id = vcfg
-                    .map(|v| v.image_pad_token_id)
-                    .filter(|v| *v != 0)
-                    .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
-                // Videos mark their run with a DIFFERENT token. Both are
-                // consumed identically here — the item's t_len already says
-                // which it is — but the scan has to recognise both or a video
-                // run would be walked one text token at a time, handing every
-                // one of its thousands of pad tokens a distinct position.
-                let video_pad_id = vcfg
-                    .map(|v| v.video_pad_token_id)
-                    .filter(|v| *v != 0)
-                    .unwrap_or(crate::layers::vision_encoder::VIDEO_PAD_TOKEN_ID);
+                // Both pad tokens: consumed identically here — the item's
+                // t_len already says which it is — but the scan has to
+                // recognise both, or a video run would be walked one text
+                // token at a time.
+                let (pad_id, video_pad_id) = self.vision_pad_ids();
                 let is_pad = |tok: u32| tok == pad_id || tok == video_pad_id;
                 let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
                 let have_vision = !grids.is_empty() && chunk_tokens.iter().copied().any(is_pad);

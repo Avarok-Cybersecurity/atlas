@@ -74,7 +74,7 @@ pub(super) fn start_new_requests(
     let mut vision_slices: Vec<VisionSlice> = vec![VisionSlice::default(); new_reqs.len()];
     if vision_codispatch && chunked {
         let mut batched_idx: Vec<usize> = Vec::new();
-        let mut per_request_imgs: Vec<Vec<(Vec<f32>, usize, usize)>> = Vec::new();
+        let mut per_request_imgs: Vec<Vec<spark_model::VisionItem>> = Vec::new();
         let mut running_patches = 0usize;
         let mut overflow = false;
         for (k, req) in new_reqs.iter().enumerate() {
@@ -90,7 +90,13 @@ pub(super) fn start_new_requests(
                 continue; // self-encodes per-request (legacy single-image path)
             }
             let imgs = req.image_pixels_ref();
-            let req_patches: usize = imgs.iter().map(|(_, gh, gw)| gh * gw).sum();
+            // Patches across every TEMPORAL GROUP: a clip costs its grid once
+            // per group, so counting the grid alone would under-book a video by
+            // a factor of grid_t and overflow the shared encoder buffer.
+            let req_patches: usize = imgs
+                .iter()
+                .map(|it| it.t_len() * it.grid_h * it.grid_w)
+                .sum();
             if running_patches + req_patches > VISION_P_MAX {
                 overflow = true;
                 break;

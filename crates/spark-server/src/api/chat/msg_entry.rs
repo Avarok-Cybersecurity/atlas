@@ -17,6 +17,14 @@ use crate::ir::{ContentPart, ImageData, Message, Role};
 
 use super::super::compact::openai_error_response;
 
+/// What the request path needs to decode a video: the operator's subprocess
+/// policy and the sampling rate. Bundled so the signature does not grow two
+/// more positional parameters that are always passed together.
+pub(crate) struct VideoDecode<'a> {
+    pub(crate) ffmpeg: &'a spark_model::video_decode_ffmpeg::FfmpegPolicy,
+    pub(crate) fps: f32,
+}
+
 /// Per-message data: role, content text, optional structured
 /// `tool_calls`, and image-part count for the Jinja vision-marker
 /// expansion. `pub(super)` so `chat::chat_completions_inner` and
@@ -34,6 +42,11 @@ pub(crate) struct MsgEntry {
     /// so the Jinja template can render
     /// `<|vision_start|><|image_pad|><|vision_end|>` markers.
     pub(super) image_count: usize,
+    /// Number of video content parts on this message. Counted separately
+    /// from images because the template renders them with a different
+    /// marker (`<|video_pad|>`, plus a `Video N:` label) and they carry a
+    /// different pad-token count.
+    pub(super) video_count: usize,
     /// Historical reasoning trace from a prior assistant turn (the
     /// `<think>...</think>` body). Forwarded from `IncomingMessage`
     /// and passed to the Jinja template so the template can
@@ -49,7 +62,7 @@ pub(crate) struct MsgEntry {
 pub(super) struct BuildOut {
     pub(super) messages: Vec<MsgEntry>,
     pub(super) cwd_hint: Option<String>,
-    pub(super) image_pixels: Vec<(Vec<f32>, usize, usize)>,
+    pub(super) image_pixels: Vec<spark_model::VisionItem>,
     pub(super) image_pad_counts: Vec<usize>,
 }
 
@@ -62,9 +75,17 @@ pub(super) struct BuildOut {
 fn collect_message_images(
     m: &Message,
     all_images: &mut Vec<String>,
+    all_videos: &mut Vec<String>,
     image_pad_counts: &mut Vec<usize>,
     remote: &super::remote_image::RemoteImagePolicy,
 ) -> Result<(), Response> {
+    // ORDER IS A CONTRACT. The template emits this message's image markers
+    // and then its video markers, and `expand_vision_pads` walks pad tokens
+    // left to right consuming one count each. So the counts must be appended
+    // in that same order: every image on this message, then every video. A
+    // message-interleaved order would hand an image's token count to a video
+    // and produce a pad run of the wrong length — which the splice would then
+    // fill with the wrong embeddings, silently.
     for part in &m.content {
         if let ContentPart::Image(src) = part {
             let uri = match &src.data {
@@ -109,6 +130,41 @@ fn collect_message_images(
             image_pad_counts.push(0);
         }
     }
+    for part in &m.content {
+        if let ContentPart::Video(src) = part {
+            let uri = match &src.data {
+                ImageData::Base64(s) => s.clone(),
+                // Same policy as images, and the same reason: the decoder
+                // never fetches, so the URL is either resolved here or
+                // refused by name.
+                ImageData::Url(url) => {
+                    let shown: String = url.chars().take(120).collect();
+                    if !remote.enabled {
+                        return Err(openai_error_response(
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "video URLs are not fetched by this server (got '{shown}'); \
+                                 send the video as a base64 data: URI, or start the server \
+                                 with --vision-allow-remote-images to enable fetching"
+                            ),
+                        ));
+                    }
+                    match super::remote_image::fetch_as_data_uri(url, remote) {
+                        Ok(data_uri) => data_uri,
+                        Err(why) => {
+                            tracing::warn!("remote video fetch refused: {shown}: {why}");
+                            return Err(openai_error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("could not fetch video URL '{shown}': {why}"),
+                            ));
+                        }
+                    }
+                }
+            };
+            all_videos.push(uri);
+            image_pad_counts.push(0);
+        }
+    }
     Ok(())
 }
 
@@ -117,6 +173,7 @@ pub(super) fn build_msg_entries(
     vision_config: Option<&VisionConfig>,
     vision_max_pixels: Option<usize>,
     remote_images: &super::remote_image::RemoteImagePolicy,
+    video: &VideoDecode<'_>,
     input: &[Message],
     tools_active: bool,
     levers: &super::levers::ChatLevers,
@@ -124,6 +181,7 @@ pub(super) fn build_msg_entries(
 ) -> Result<BuildOut, Response> {
     let mut messages: Vec<MsgEntry> = Vec::with_capacity(input.len());
     let mut all_images: Vec<String> = Vec::new();
+    let mut all_videos: Vec<String> = Vec::new();
     let mut image_pad_counts: Vec<usize> = Vec::new();
     let mut consecutive_tool_errors: u32 = 0;
     // BW1 bash-wandering watchdog: tally tool-call productivity across the
@@ -211,13 +269,22 @@ pub(super) fn build_msg_entries(
                 tool_calls: None,
                 tool_call_id: m.tool_call_id.clone(),
                 image_count: m.image_count(),
+                video_count: m.video_count(),
                 reasoning_content: None,
             });
-            collect_message_images(m, &mut all_images, &mut image_pad_counts, remote_images)?;
+            collect_message_images(
+                m,
+                &mut all_images,
+                &mut all_videos,
+                &mut image_pad_counts,
+                remote_images,
+            )?;
             continue;
         }
 
         let image_count = m.image_count();
+
+        let video_count = m.video_count();
         // Wave 3 (2026-05-26): `ATLAS_STRIP_REASONING_HISTORY=1` drops
         // historical reasoning_content entirely. Matches MLC commit
         // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
@@ -245,6 +312,7 @@ pub(super) fn build_msg_entries(
             tool_calls: tool_calls_json,
             tool_call_id: m.tool_call_id.clone(),
             image_count,
+            video_count,
             // F1: forward reasoning_content for assistant messages only.
             // Wave 3: when strip_reasoning=true, drop it for ALL turns,
             // forcing the template back to the pre-F1 "clean content
@@ -261,7 +329,13 @@ pub(super) fn build_msg_entries(
                 None
             },
         });
-        collect_message_images(m, &mut all_images, &mut image_pad_counts, remote_images)?;
+        collect_message_images(
+            m,
+            &mut all_images,
+            &mut all_videos,
+            &mut image_pad_counts,
+            remote_images,
+        )?;
     }
 
     // P1-6 (2026-07-09): duplicate-error observation masking
@@ -335,42 +409,16 @@ pub(super) fn build_msg_entries(
         );
     }
 
-    // ── Video: parsed, carried, and not yet placeable ────────────────────
-    //
-    // The IR now carries `ContentPart::Video` and both wire formats populate
-    // it, so a video part is no longer discarded on the way in. What is not
-    // ready is the far end: one video becomes `grid_t` encoder items but a
-    // SINGLE pad run, and the position builder still assigns MRoPE's T
-    // per-item rather than per temporal group (upload_meta.rs). Feeding
-    // frames through before that lands would produce a pad run whose length
-    // disagrees with the encoder rows behind it — a wrong answer, not an
-    // error.
-    //
-    // So this refuses, by name, with the state of the work. That is the
-    // whole point of doing it here rather than leaving the earlier silent
-    // drop in place: a 400 is recoverable and honest, whereas the model
-    // answering from the surrounding text as though no video had been sent
-    // is neither. See #515.
-    if input.iter().any(|m| m.video_count() > 0) {
-        return Err(openai_error_response(
-            StatusCode::BAD_REQUEST,
-            "video input is not supported by this build yet: frames decode and group \
-             correctly, but the position builder cannot place them in the token stream \
-             (Avarok-Cybersecurity/atlas#515). Send individual frames as images instead."
-                .to_string(),
-        ));
-    }
-
     // Preprocess images. One shared fail-fast point: if images were
     // supplied but the model has no vision encoder, reject the request
     // (issue #165) instead of silently dropping the user's input with a
     // 200 — the old text-only behavior lost images without any signal.
-    let mut image_pixels: Vec<(Vec<f32>, usize, usize)> = Vec::new();
-    if !all_images.is_empty() {
+    let mut image_pixels: Vec<spark_model::VisionItem> = Vec::new();
+    if !all_images.is_empty() || !all_videos.is_empty() {
         let Some(vcfg) = vision_config else {
             return Err(openai_error_response(
                 StatusCode::BAD_REQUEST,
-                "this model does not accept image input (no vision config)".to_string(),
+                "this model does not accept image or video input (no vision config)".to_string(),
             ));
         };
         for (idx, uri) in all_images.iter().enumerate() {
@@ -380,17 +428,52 @@ pub(super) fn build_msg_entries(
                 vision_max_pixels,
             ) {
                 Ok((pixels, grid_h, grid_w)) => {
-                    image_pad_counts[idx] = spark_model::vision_preprocess::image_pad_count(
-                        grid_h,
-                        grid_w,
-                        vcfg.spatial_merge_size,
-                    );
-                    image_pixels.push((pixels, grid_h, grid_w));
+                    let item = spark_model::VisionItem::image(pixels, grid_h, grid_w);
+                    image_pad_counts[idx] = item.pad_count(vcfg.spatial_merge_size);
+                    image_pixels.push(item);
                 }
                 Err(e) => {
                     return Err(openai_error_response(
                         StatusCode::BAD_REQUEST,
                         format!("Image decode error: {e}"),
+                    ));
+                }
+            }
+        }
+
+        // Videos, whose pad counts continue the same vector — the offset is
+        // `all_images.len()` because collection appended every image before
+        // any video.
+        for (vidx, uri) in all_videos.iter().enumerate() {
+            match spark_model::video_preprocess::preprocess_video(
+                uri,
+                vcfg,
+                vision_max_pixels,
+                video.fps,
+                video.ffmpeg,
+            ) {
+                Ok(v) => {
+                    let item = spark_model::VisionItem {
+                        groups: v.groups,
+                        grid_h: v.grid_h,
+                        grid_w: v.grid_w,
+                    };
+                    image_pad_counts[all_images.len() + vidx] =
+                        item.pad_count(vcfg.spatial_merge_size);
+                    tracing::info!(
+                        "Video {}: {} temporal groups, {}x{} patches, {} vision tokens",
+                        vidx,
+                        item.t_len(),
+                        item.grid_h,
+                        item.grid_w,
+                        image_pad_counts[all_images.len() + vidx],
+                    );
+                    image_pixels.push(item);
+                }
+                Err(e) => {
+                    return Err(openai_error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("Video decode error: {e:#}"),
                     ));
                 }
             }
