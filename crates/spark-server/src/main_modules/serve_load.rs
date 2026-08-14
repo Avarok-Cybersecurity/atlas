@@ -240,7 +240,9 @@ pub(crate) fn load_model(
         config.vision = None;
     }
 
-    // Apply MODEL.toml [behavior].default_num_drafts unless user passed --num-drafts.
+    // Resolve num_drafts: explicit --num-drafts (any value) → MODEL.toml
+    // [behavior].default_num_drafts → engine default. After this call
+    // `args.num_drafts` is Some and `args.resolved_num_drafts()` is valid.
     serve_phases::apply_model_default_num_drafts(&mut args, &ptx_set);
 
     let (gpu, free_mem) = serve_phases::init_gpu_backend(&args, &ptx_set)?;
@@ -279,12 +281,14 @@ pub(crate) fn load_model(
         tp_rank: _tp_rank,
         ep_rank,
     } = serve_phases::resolve_topology(&args, &mut config)?;
-    // FP8 KV calibration: CLI flag overrides MODEL.toml default.
-    config.fp8_kv_calibration_tokens = if args.fp8_kv_calibration_tokens > 0 {
-        args.fp8_kv_calibration_tokens
-    } else {
-        ptx_set.behavior.fp8_kv_calibration_tokens
-    };
+    // FP8 KV calibration precedence (highest wins): an explicit
+    // --fp8-kv-calibration-tokens ALWAYS wins — including 0, which
+    // force-disables calibration on a model whose MODEL.toml enables it
+    // (the previous `> 0` sentinel could not express that). Omitted falls
+    // back to MODEL.toml [behavior].fp8_kv_calibration_tokens (0 if absent).
+    config.fp8_kv_calibration_tokens = args
+        .fp8_kv_calibration_tokens
+        .unwrap_or(ptx_set.behavior.fp8_kv_calibration_tokens);
     // Unconditional: the serde(skip) default is 0.0, and the CLI default (2.0)
     // is the real one. Validated ≥ 1.0 in `validate_serve_args`.
     config.fp8_kv_headroom = args.fp8_kv_headroom;
@@ -673,7 +677,7 @@ pub(crate) fn load_model(
     let num_drafts = if args.dflash {
         args.dflash_gamma.saturating_sub(1).max(1)
     } else {
-        args.num_drafts
+        args.resolved_num_drafts()
     };
 
     if args.dflash {

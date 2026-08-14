@@ -143,7 +143,7 @@ fn the_quant_chip_names_all_three_dtypes_that_can_differ() {
     // KV, LM head and MTP are quantized independently, and a run is only
     // comparable to another that matches on all three.
     let mut a = args(&[]);
-    a.kv_cache_dtype = "fp8".into();
+    a.kv_cache_dtype = Some("fp8".into());
     a.lm_head_dtype = "bf16".into();
     a.mtp_quantization = "nvfp4".into();
     let chip = badges(&a, false)

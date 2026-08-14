@@ -19,7 +19,7 @@ pub(crate) fn resolve_prefill_budget(
     ssm_prefill_chunk: usize,
 ) -> PrefillBudget {
     let spec_tokens = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.num_drafts + 2
+        args.resolved_num_drafts() + 2
     } else {
         1
     };
@@ -169,6 +169,40 @@ pub(crate) struct KvCacheConfig {
     pub(crate) hss_cache_blocks_per_seq: Option<u32>,
 }
 
+/// Where the effective KV cache dtype came from. The CLI → MODEL.toml →
+/// engine precedence is explicit (PCND); `resolve_kv_cache_config` logs per
+/// source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KvDtypeSource {
+    /// Explicit `--kv-cache-dtype`, silent (matches MODEL.toml or no
+    /// MODEL.toml default exists).
+    Cli,
+    /// Explicit `--kv-cache-dtype` that contradicts a non-empty MODEL.toml
+    /// default — respected, warned loudly.
+    CliMismatchingModelDefault,
+    ModelDefault,
+    EngineDefault,
+}
+
+/// Resolve the effective KV cache dtype. An explicitly passed
+/// `--kv-cache-dtype` ALWAYS wins — including the engine-default value
+/// "fp8" itself. An omitted flag falls back to MODEL.toml
+/// `[behavior].default_kv_dtype` when non-empty, else the engine default.
+pub(crate) fn resolve_kv_dtype_str(
+    cli_dtype: Option<&str>,
+    model_default: &str,
+) -> (String, KvDtypeSource) {
+    match (cli_dtype, model_default) {
+        (Some(user), md) if md.is_empty() || user == md => (user.to_string(), KvDtypeSource::Cli),
+        (Some(user), _) => (user.to_string(), KvDtypeSource::CliMismatchingModelDefault),
+        (None, "") => (
+            cli::DEFAULT_KV_CACHE_DTYPE.to_string(),
+            KvDtypeSource::EngineDefault,
+        ),
+        (None, md) => (md.to_string(), KvDtypeSource::ModelDefault),
+    }
+}
+
 pub(crate) fn resolve_kv_cache_config(
     args: &cli::ServeArgs,
     config: &ModelConfig,
@@ -177,37 +211,35 @@ pub(crate) fn resolve_kv_cache_config(
     // scales). Drives the FP8-KV guidance log below.
     fp8_kv_scale_count: usize,
 ) -> Result<KvCacheConfig> {
-    // Resolution rules:
-    //   1. No MODEL.toml override        → use args.kv_cache_dtype as-is.
-    //   2. User matches MODEL.toml       → silent (correct config).
-    //   3. User at CLI default ("fp8")   → apply MODEL.toml override + info log.
-    //   4. User explicitly mismatches    → respect user, warn loudly.
-    // Rule 4 catches the gemma/mistral collapse (NVFP4 KV → `<unused>` /
-    // `后汉书` token loop) and the FP8 KV mismatch on bf16-required attention
-    // paths. We respect the user's choice so experimentation isn't blocked,
-    // but the warning makes the cause traceable when decode goes degenerate.
-    let effective_kv_dtype_str: String = if behavior_default_kv_dtype.is_empty()
-        || args.kv_cache_dtype == behavior_default_kv_dtype
-    {
-        args.kv_cache_dtype.clone()
-    } else if args.kv_cache_dtype == "fp8" {
-        tracing::info!(
+    // Resolution (explicit precedence, highest wins — see resolve_kv_dtype_str):
+    //   1. --kv-cache-dtype: an explicit flag ALWAYS wins, including a value
+    //      equal to the engine default. (The previous `== "fp8"` sentinel
+    //      could not tell an explicit `--kv-cache-dtype fp8` from an omitted
+    //      flag and silently replaced it with the MODEL.toml value.)
+    //   2. MODEL.toml [behavior].default_kv_dtype (info log).
+    //   3. Engine default `cli::DEFAULT_KV_CACHE_DTYPE` ("fp8").
+    // A CLI value that mismatches a non-empty MODEL.toml default is respected
+    // but warned loudly: that catches the gemma/mistral collapse (NVFP4 KV →
+    // `<unused>` / `后汉书` token loop) and the FP8 KV mismatch on
+    // bf16-required attention paths, without blocking experimentation.
+    let (effective_kv_dtype_str, kv_dtype_source) =
+        resolve_kv_dtype_str(args.kv_cache_dtype.as_deref(), behavior_default_kv_dtype);
+    match kv_dtype_source {
+        KvDtypeSource::Cli | KvDtypeSource::EngineDefault => {}
+        KvDtypeSource::ModelDefault => tracing::info!(
             "KV cache dtype: {} (from MODEL.toml default_kv_dtype, override with --kv-cache-dtype)",
-            behavior_default_kv_dtype,
-        );
-        behavior_default_kv_dtype.to_string()
-    } else {
-        tracing::warn!(
+            effective_kv_dtype_str,
+        ),
+        KvDtypeSource::CliMismatchingModelDefault => tracing::warn!(
             "KV cache dtype: {} (user override). MODEL.toml recommends '{}' for this \
              model — mismatched KV dtype is a known cause of decode-path corruption \
              (e.g. gemma `<unused>` collapse, mistral character-token loops on NVFP4 KV). \
              Pass --kv-cache-dtype {} to use the recommended value.",
-            args.kv_cache_dtype,
+            effective_kv_dtype_str,
             behavior_default_kv_dtype,
             behavior_default_kv_dtype,
-        );
-        args.kv_cache_dtype.clone()
-    };
+        ),
+    }
     let kv_dtype: spark_runtime::kv_cache::KvCacheDtype = effective_kv_dtype_str.parse()?;
     if kv_dtype == spark_runtime::kv_cache::KvCacheDtype::Fp8 {
         let has_ckpt_scales = fp8_kv_scale_count > 0;
@@ -225,7 +257,7 @@ pub(crate) fn resolve_kv_cache_config(
                 tracing::info!(
                     "FP8 KV cache with online calibration (checkpoint ships no k/v scales): \
                      freezing per-tensor scales on the first observed tokens.{}",
-                    if args.fp8_kv_calibration_tokens == 0 {
+                    if args.fp8_kv_calibration_tokens.is_none() {
                         " (auto-enabled from MODEL.toml)"
                     } else {
                         ""
@@ -301,4 +333,55 @@ pub(crate) fn resolve_kv_cache_config(
         layer_dtypes,
         hss_cache_blocks_per_seq,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KvDtypeSource, resolve_kv_dtype_str};
+
+    /// The bug class fixed here: an explicit `--kv-cache-dtype fp8` on a
+    /// model whose MODEL.toml recommends bf16 must serve fp8 (with the
+    /// mismatch warning), not silently flip to bf16.
+    #[test]
+    fn explicit_cli_value_equal_to_engine_default_beats_model_default() {
+        assert_eq!(
+            resolve_kv_dtype_str(Some("fp8"), "bf16"),
+            ("fp8".to_string(), KvDtypeSource::CliMismatchingModelDefault)
+        );
+    }
+
+    #[test]
+    fn explicit_cli_value_matching_model_default_is_silent() {
+        assert_eq!(
+            resolve_kv_dtype_str(Some("bf16"), "bf16"),
+            ("bf16".to_string(), KvDtypeSource::Cli)
+        );
+    }
+
+    #[test]
+    fn explicit_cli_value_without_model_default_is_used_as_is() {
+        assert_eq!(
+            resolve_kv_dtype_str(Some("nvfp4"), ""),
+            ("nvfp4".to_string(), KvDtypeSource::Cli)
+        );
+    }
+
+    #[test]
+    fn omitted_flag_falls_back_to_model_default() {
+        assert_eq!(
+            resolve_kv_dtype_str(None, "bf16"),
+            ("bf16".to_string(), KvDtypeSource::ModelDefault)
+        );
+    }
+
+    #[test]
+    fn omitted_flag_without_model_default_uses_engine_default() {
+        assert_eq!(
+            resolve_kv_dtype_str(None, ""),
+            (
+                crate::cli::DEFAULT_KV_CACHE_DTYPE.to_string(),
+                KvDtypeSource::EngineDefault
+            )
+        );
+    }
 }

@@ -12,7 +12,7 @@ pub(crate) mod flag_values;
 mod serve_args;
 mod validate;
 pub use bench_args::BenchmarkArgs;
-pub use serve_args::ServeArgs;
+pub use serve_args::{DEFAULT_KV_CACHE_DTYPE, DEFAULT_NUM_DRAFTS, ServeArgs};
 pub use validate::validate_serve_args;
 
 /// The user-facing release string, e.g. `1.0.0-beta-preview`.

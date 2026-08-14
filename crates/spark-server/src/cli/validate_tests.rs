@@ -243,3 +243,32 @@ fn gpu_mem_util_range_enforced() {
     assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "0.0"])).is_err());
     assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "0.9"])).is_ok());
 }
+
+/// The dgx2 silent-flag bug class: a MODEL.toml-backed flag whose clap
+/// declaration carries a `default_value` makes an explicitly passed
+/// engine-default value ("--num-drafts 1", "--kv-cache-dtype fp8")
+/// indistinguishable from an omitted flag, so the MODEL.toml default silently
+/// wins over the user's pin. These flags must parse to `None` when omitted
+/// and `Some` when passed — re-adding a clap default resurrects the bug.
+#[test]
+fn model_toml_backed_flags_distinguish_omitted_from_explicit() {
+    let omitted = parse(&[]);
+    assert_eq!(omitted.num_drafts, None);
+    assert_eq!(omitted.kv_cache_dtype, None);
+    assert_eq!(omitted.fp8_kv_calibration_tokens, None);
+
+    let explicit = parse(&[
+        "--num-drafts",
+        "1",
+        "--kv-cache-dtype",
+        "fp8",
+        "--fp8-kv-calibration-tokens",
+        "0",
+    ]);
+    assert_eq!(explicit.num_drafts, Some(1));
+    assert_eq!(explicit.kv_cache_dtype.as_deref(), Some("fp8"));
+    // Explicit 0 must survive parsing: it force-disables calibration on a
+    // model whose MODEL.toml enables it, which the old `usize` field with
+    // `default_value_t = 0` could not express.
+    assert_eq!(explicit.fp8_kv_calibration_tokens, Some(0));
+}

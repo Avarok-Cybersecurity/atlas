@@ -106,19 +106,97 @@ pub(crate) fn cap_vocab_size_to_tokenizer(model_dir: &Path, config: &mut ModelCo
     }
 }
 
+/// Where the effective `num_drafts` came from. The CLI → MODEL.toml → engine
+/// precedence is explicit (PCND); `apply_model_default_num_drafts` logs per
+/// source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NumDraftsSource {
+    Cli,
+    ModelDefault,
+    EngineDefault,
+}
+
+/// Resolve the effective draft count. An explicitly passed `--num-drafts`
+/// ALWAYS wins — including `--num-drafts 1`: the previous sentinel test
+/// (`args.num_drafts == 1` against the clap default) could not tell an
+/// explicit 1 from an omitted flag and silently served the MODEL.toml
+/// default instead. An omitted flag falls back to MODEL.toml
+/// `[behavior].default_num_drafts` when set (> 0), else the engine default.
+pub(crate) fn resolve_num_drafts(
+    cli_num_drafts: Option<usize>,
+    model_default_num_drafts: u32,
+) -> (usize, NumDraftsSource) {
+    let model_default = (model_default_num_drafts > 0).then_some(model_default_num_drafts as usize);
+    match (cli_num_drafts, model_default) {
+        (Some(v), _) => (v, NumDraftsSource::Cli),
+        (None, Some(md)) => (md, NumDraftsSource::ModelDefault),
+        (None, None) => (cli::DEFAULT_NUM_DRAFTS, NumDraftsSource::EngineDefault),
+    }
+}
+
 pub(crate) fn apply_model_default_num_drafts(
     args: &mut cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,
 ) {
-    if ptx_set.behavior.default_num_drafts > 0 && args.num_drafts == 1 {
-        let model_default = ptx_set.behavior.default_num_drafts as usize;
-        if model_default != args.num_drafts {
+    let (effective, source) =
+        resolve_num_drafts(args.num_drafts, ptx_set.behavior.default_num_drafts);
+    match source {
+        NumDraftsSource::Cli => {
+            let model_default = ptx_set.behavior.default_num_drafts as usize;
+            if ptx_set.behavior.default_num_drafts > 0 && model_default != effective {
+                tracing::info!(
+                    "num_drafts: {} (K={}) from --num-drafts, overriding MODEL.toml default_num_drafts={}",
+                    effective,
+                    effective + 1,
+                    model_default,
+                );
+            }
+        }
+        NumDraftsSource::ModelDefault => {
             tracing::info!(
                 "num_drafts: using MODEL.toml default_num_drafts={} (K={}) — pass --num-drafts to override",
-                model_default,
-                model_default + 1,
+                effective,
+                effective + 1,
             );
-            args.num_drafts = model_default;
         }
+        NumDraftsSource::EngineDefault => {}
+    }
+    args.num_drafts = Some(effective);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NumDraftsSource, resolve_num_drafts};
+
+    /// The observed dgx2 bug: `--num-drafts 1` on a model with
+    /// `default_num_drafts = 3` must serve 1 (K=2), not 3 (K=4).
+    #[test]
+    fn explicit_cli_value_equal_to_engine_default_beats_model_default() {
+        assert_eq!(resolve_num_drafts(Some(1), 3), (1, NumDraftsSource::Cli));
+    }
+
+    #[test]
+    fn explicit_cli_value_beats_model_default() {
+        assert_eq!(resolve_num_drafts(Some(2), 3), (2, NumDraftsSource::Cli));
+        assert_eq!(resolve_num_drafts(Some(3), 1), (3, NumDraftsSource::Cli));
+    }
+
+    #[test]
+    fn omitted_flag_falls_back_to_model_default() {
+        assert_eq!(
+            resolve_num_drafts(None, 3),
+            (3, NumDraftsSource::ModelDefault)
+        );
+    }
+
+    #[test]
+    fn omitted_flag_without_model_default_uses_engine_default() {
+        assert_eq!(
+            resolve_num_drafts(None, 0),
+            (
+                crate::cli::DEFAULT_NUM_DRAFTS,
+                NumDraftsSource::EngineDefault
+            )
+        );
     }
 }

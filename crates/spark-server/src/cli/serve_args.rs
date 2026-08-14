@@ -13,6 +13,18 @@ use std::path::PathBuf;
 /// the single place it is defined.
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 300;
 
+/// Engine fallback for `--num-drafts` when neither the flag nor MODEL.toml
+/// `[behavior].default_num_drafts` provides a value. Named per PCND: the
+/// CLI → MODEL.toml → engine precedence is resolved explicitly in
+/// `serve_phases::config::resolve_num_drafts`, and this is the single place
+/// the engine fallback is defined.
+pub const DEFAULT_NUM_DRAFTS: usize = 1;
+
+/// Engine fallback for `--kv-cache-dtype` when neither the flag nor MODEL.toml
+/// `[behavior].default_kv_dtype` provides a value. Named per PCND; resolved
+/// explicitly in `serve_phases::kv_cache::resolve_kv_dtype_str`.
+pub const DEFAULT_KV_CACHE_DTYPE: &str = "fp8";
+
 /// Arguments for the `serve` subcommand.
 #[derive(Parser, Debug, Clone, PartialEq)]
 pub struct ServeArgs {
@@ -130,15 +142,18 @@ pub struct ServeArgs {
     pub block_size: usize,
 
     /// KV cache dtype (fp8, bf16, or nvfp4).
-    /// Default: fp8. NVFP4 uses less memory but may lose coherence at long context
-    /// without --kv-high-precision-layers. FP8 is the safe default.
+    /// Precedence (highest wins): this flag → MODEL.toml
+    /// `[behavior].default_kv_dtype` → fp8 (the safe engine default,
+    /// `DEFAULT_KV_CACHE_DTYPE`). An explicitly passed value always wins,
+    /// including `fp8` itself. NVFP4 uses less memory but may lose coherence
+    /// at long context without --kv-high-precision-layers.
     ///
     /// The `turbo2`/`turbo3`/`turbo4`/`turbo8` variants (and the asymmetric
     /// `*k_*v` pairs built from them) are EXPERIMENTAL: they are not built for
     /// every kernel target, and a target that lacks them fails the kv-cache
     /// kernel preflight at startup rather than serving on a fallback.
-    #[arg(long, default_value = "fp8")]
-    pub kv_cache_dtype: String,
+    #[arg(long)]
+    pub kv_cache_dtype: Option<String>,
 
     // ── GDN / SSM decode path ──
     //
@@ -420,8 +435,12 @@ pub struct ServeArgs {
 
     /// Number of draft tokens per speculative step (1=K=2, 2=K=3, 3=K=4 verify).
     /// Higher K verifies more drafts per step. Uses WY-chunkwise GDN kernels.
-    #[arg(long, default_value_t = 1)]
-    pub num_drafts: usize,
+    /// Precedence (highest wins): this flag → MODEL.toml
+    /// `[behavior].default_num_drafts` → 1 (`DEFAULT_NUM_DRAFTS`). An
+    /// explicitly passed value always wins, including `--num-drafts 1` on a
+    /// model whose MODEL.toml defaults higher.
+    #[arg(long)]
+    pub num_drafts: Option<usize>,
 
     /// Maximum concurrent sequences batched into one GPU decode step.
     #[arg(long, default_value_t = 8)]
@@ -683,8 +702,12 @@ pub struct ServeArgs {
     /// max/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
     /// 0 = disabled (use static scales from checkpoint, or uncalibrated 1.0).
     /// Only applies when --kv-cache-dtype is fp8.
-    #[arg(long, default_value_t = 0)]
-    pub fp8_kv_calibration_tokens: usize,
+    /// Precedence (highest wins): this flag → MODEL.toml
+    /// `[behavior].fp8_kv_calibration_tokens` → 0. An explicit value always
+    /// wins — passing 0 force-disables calibration even on a model whose
+    /// MODEL.toml enables it.
+    #[arg(long)]
+    pub fp8_kv_calibration_tokens: Option<usize>,
 
     /// Headroom multiplier applied to the first-observe absmax when the online
     /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
@@ -826,6 +849,20 @@ pub struct ServeArgs {
     /// headroom. Empty = today's behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
     pub lora_stageable_disk: Vec<(String, String)>,
+}
+
+impl ServeArgs {
+    /// Effective speculative draft count. Valid only AFTER
+    /// `serve_phases::apply_model_default_num_drafts` has resolved the
+    /// CLI → MODEL.toml → engine-default precedence into `num_drafts` (it
+    /// runs before any GPU/pool sizing in `serve_load`). Reading it earlier
+    /// is a startup-ordering bug: fail fast rather than size a pool off a
+    /// guessed value. Pre-resolution readers (CLI validation, TUI badges)
+    /// must match on the `Option` directly instead.
+    pub fn resolved_num_drafts(&self) -> usize {
+        self.num_drafts
+            .expect("num_drafts read before apply_model_default_num_drafts resolved it")
+    }
 }
 
 /// Value parser for `--lora-adapter NAME=PATH_OR_HF_ID`.

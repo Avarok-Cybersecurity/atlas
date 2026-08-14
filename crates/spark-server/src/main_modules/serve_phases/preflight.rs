@@ -41,11 +41,11 @@ pub(crate) fn preflight_reserve(
         args.max_batch_size,
         ssm_blob_bytes,
         spec_on_pool,
-        args.num_drafts,
+        args.resolved_num_drafts(),
         mtp_state_slots,
     );
     let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.num_drafts + 2
+        args.resolved_num_drafts() + 2
     } else {
         1
     };
@@ -203,7 +203,11 @@ pub(crate) fn preflight_reserve(
         ssm_pool_bytes / (1024 * 1024),
         args.max_batch_size,
         if spec_on_pool { mtp_state_slots } else { 0 },
-        if spec_on_pool { args.num_drafts + 2 } else { 0 },
+        if spec_on_pool {
+            args.resolved_num_drafts() + 2
+        } else {
+            0
+        },
         config.num_ssm_layers(),
         ssm_snapshot_bytes / (1024 * 1024),
         args.ssm_cache_slots,
@@ -212,7 +216,11 @@ pub(crate) fn preflight_reserve(
         cuda_headroom / (1024 * 1024),
         if spec_on { "spec/MTP on" } else { "no spec" },
         spec_on,
-        if spec_on { args.num_drafts as i64 } else { -1 },
+        if spec_on {
+            args.resolved_num_drafts() as i64
+        } else {
+            -1
+        },
     );
     Ok(ReservePreflight {
         inference_reserve,
@@ -393,12 +401,12 @@ fn ssm_h_fp16_preconditions(args: &cli::ServeArgs, config: &ModelConfig) -> Resu
              without --self-speculative/--ngram-speculative, or use --ssm-h-dtype f32."
         );
     }
-    if args.speculative && args.num_drafts > 3 {
+    if args.speculative && args.resolved_num_drafts() > 3 {
         anyhow::bail!(
             "--ssm-h-dtype f16 supports up to 3 drafts (K <= 4 verify rows); --num-drafts is \
              {}. Wider verify widths dispatch the wyN (K=5..8) / wy17 arms, which have no \
              FP16 h-state twin. Lower --num-drafts to 3, or use --ssm-h-dtype f32.",
-            args.num_drafts
+            args.resolved_num_drafts()
         );
     }
     if !spark_model::layers::qwen3_ssm::gdn_fused_norm_enabled() {
