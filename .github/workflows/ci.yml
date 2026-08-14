@@ -67,10 +67,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0
-        with:
-          config: .licenserc.yaml
-          mode: check
+      # Was `apache/skywalking-eyes/header`. That action is a composite that
+      # internally uses an UNPINNED `actions/setup-go@v5`, and this repo's
+      # SHA-pinning requirement applies TRANSITIVELY — so it cannot run here
+      # however carefully we pin the action itself. Checking a header is a
+      # grep; it does not justify a third-party action and a Go toolchain in
+      # CI. `.licenserc.yaml` is still the only place the paths and ignores
+      # live. Same replacement main already made; the script is taken from
+      # there unmodified so the two branches converge.
+      - run: pip install --quiet pyyaml
+      - run: python3 scripts/check_spdx.py
 
   typos:
     name: typos
