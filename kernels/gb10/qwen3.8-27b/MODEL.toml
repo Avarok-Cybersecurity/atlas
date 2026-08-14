@@ -89,8 +89,22 @@ effective_context = 24576
 #    stands until 3.8-specific evidence says otherwise. If premature-EOS /
 #    wandering shows up in non-thinking chat, drop to 0.0 and note the
 #    measurement here.
+# ── 2026-08-14: thinking temperature RETUNED 1.0 → 0.6 (card value overridden) ──
+# The 3.8 model card recommends temperature 1.0 for thinking mode, and this file
+# originally carried it. Measured on the agentic-webserver tier (N=10, dgx2,
+# same binary, only this value differing):
+#   temp 1.0 → Σwall  4090 s, per-run 163–695 s (4.3× spread)  [measured tier, 2026-08-14]
+#   temp 0.6 → Σwall  1925 s, per-run 117–274 s (2.3× spread)   [reference tier]
+# Both pass 10/10 on correctness; 1.0 is not broken, it is slower and far more
+# variable, because higher-temperature trajectories wander and take more turns.
+#
+# 0.6 is not a guess — it is the value the architecturally-IDENTICAL Qwen3.6-27B
+# arrived at by LIVE BISECTION (see that target's MODEL.toml: the card's values
+# drove announce/restart loops and verbatim-CSS repetition on long code-gen).
+# All 1968 tensors match between the two checkpoints, so the finding transfers.
+# Revisit only with a measured A/B on THIS checkpoint, not from the card.
 [sampling.thinking_text]
-temperature = 1.0
+temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
@@ -99,7 +113,7 @@ repetition_penalty = 1.0
 dry_multiplier = 0.0
 
 [sampling.thinking_coding]
-temperature = 1.0
+temperature = 0.6
 top_p = 0.95
 top_k = 20
 presence_penalty = 0.0
