@@ -34,6 +34,11 @@ on:
         required: false
         type: number
         default: 1
+      publishing:
+        description: "Caller will publish these artifacts; suppress the dry-run report"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -586,7 +591,13 @@ jobs:
           [ "$n" -gt 0 ] || { echo "::error::no artifacts were produced"; exit 1; }
           echo "verified $n artifact(s)"
 
+      # Skipped when the caller is actually going to publish (dev-release.yml).
+      # The checksum verification above still runs — that is the part worth
+      # having either way. Only the "nothing was tagged" narration is wrong in
+      # a publishing run, and a summary that contradicts what the run just did
+      # is worse than no summary.
       - name: Report what WOULD be published
+        if: ${{ !inputs.publishing }}
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_VERSION: ${{ inputs.version }}
