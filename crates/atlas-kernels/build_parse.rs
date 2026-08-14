@@ -204,6 +204,9 @@ pub(super) fn parse_sampling_presets(
                     .get("lz_penalty")
                     .and_then(|t| t.as_float())
                     .unwrap_or(0.0) as f32,
+                // NO unwrap_or: an absent min_p must stay None so the
+                // server's --default-min-p keeps owning the field.
+                min_p: v.get("min_p").and_then(|t| t.as_float()).map(|p| p as f32),
             },
             None => SamplingCat::default(),
         }

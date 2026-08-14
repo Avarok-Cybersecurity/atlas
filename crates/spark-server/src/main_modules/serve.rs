@@ -258,21 +258,104 @@ pub(super) fn build_auth_config(
     Ok(Some(Arc::new(cfg)))
 }
 
-pub(super) fn resolve_vision_max_pixels(args: &cli::ServeArgs) -> Result<Option<usize>> {
+/// Resolve the vision area bound: operator override, else the checkpoint's
+/// own `preprocessor_config.json`, else `None` (preprocessor falls back to
+/// its historical 1280px long-side clamp).
+///
+/// The checkpoint half is the point. `preprocessor_config.json` was in the
+/// download plan but nothing ever parsed it, so a model declaring
+/// `size = {longest_edge: 16777216}` — 4096² of permitted area — was still
+/// clamped to 1280 on the long side, about a tenth of that. The operator flag
+/// existed but only ever LOWERED the cap, so there was no way to serve a
+/// checkpoint at the resolution it was built for.
+pub(super) fn resolve_vision_max_pixels(
+    args: &cli::ServeArgs,
+    model_dir: &std::path::Path,
+) -> Result<Option<usize>> {
     if args.vision_max_pixels > 0 {
         return Ok(Some(args.vision_max_pixels));
     }
-    let Some(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS").ok() else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed == "0" {
-        return Ok(None);
+    if let Ok(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && trimmed != "0" {
+            let parsed = trimmed.parse::<usize>().with_context(|| {
+                format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
+            })?;
+            if parsed > 0 {
+                return Ok(Some(parsed));
+            }
+        }
     }
-    let parsed = trimmed.parse::<usize>().with_context(|| {
-        format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
-    })?;
-    Ok((parsed > 0).then_some(parsed))
+    Ok(read_preprocessor_max_pixels(model_dir))
+}
+
+/// Pull the IMAGE area bound out of the checkpoint's processor config, if it
+/// ships one. `None` on any absence or malformation — a model without the
+/// file, or with one we cannot read, must keep the historical behaviour
+/// rather than fail to serve.
+///
+/// TWO FILENAMES, because the ecosystem uses both and a checkpoint ships one
+/// or the other, never both. HF's `save_pretrained` writes
+/// `preprocessor_config.json` with the image fields at the top level
+/// (`Qwen/Qwen3.6-35B-A3B-FP8`), while a combined processor writes
+/// `processor_config.json` with each modality under its own key
+/// (`unsloth/Qwen3.6-27B-NVFP4` → `image_processor.size.longest_edge`).
+/// Reading only the first is why the unsloth checkpoints — the ones actually
+/// being served — still ran the 1280px fallback after the area bound was
+/// supposedly honoured: they declare 16777216 and nothing looked in the file
+/// that says so.
+///
+/// The nested form is also why this cannot be a search for the first
+/// `longest_edge` in the document. `processor_config.json` carries a SECOND,
+/// LARGER bound under `video_processor` (25165824 vs the image 16777216);
+/// picking that one would over-admit every still image by half again its
+/// permitted area. The image bound is addressed explicitly.
+///
+/// Two spellings are accepted within whichever object we land on. HF's
+/// Qwen2VL/Qwen3VL processors write `size = {longest_edge, shortest_edge}`,
+/// where — despite the names — both are pixel COUNTS, not edge lengths
+/// (16777216 = 4096², 65536 = 256²). Older/other processors write
+/// `max_pixels` directly.
+pub(super) fn read_preprocessor_max_pixels(model_dir: &std::path::Path) -> Option<usize> {
+    // Ordered by precedence. `preprocessor_config.json` is the dedicated
+    // image-processor file, so it wins if a checkpoint somehow ships both.
+    const SOURCES: [(&str, Option<&str>); 3] = [
+        ("preprocessor_config.json", None),
+        ("preprocessor_config.json", Some("image_processor")),
+        ("processor_config.json", Some("image_processor")),
+    ];
+    for (file, nest) in SOURCES {
+        let path = model_dir.join(file);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let scope = match nest {
+            Some(key) => match json.get(key) {
+                Some(v) => v,
+                None => continue,
+            },
+            None => &json,
+        };
+        let from_size = scope
+            .get("size")
+            .and_then(|s| s.get("longest_edge"))
+            .and_then(serde_json::Value::as_u64);
+        let direct = scope.get("max_pixels").and_then(serde_json::Value::as_u64);
+        let Some(px) = from_size.or(direct).filter(|&p| p > 0) else {
+            continue;
+        };
+        tracing::info!(
+            "Vision area bound {} px from {}{} (was: hard-coded 1280px long side)",
+            px,
+            path.display(),
+            nest.map(|k| format!(" [{k}]")).unwrap_or_default(),
+        );
+        return Some(px as usize);
+    }
+    None
 }
 
 /// QV1 (2026-05-26): canonicalize the model's declared quantization to
@@ -375,31 +458,5 @@ pub(super) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
 }
 
 #[cfg(test)]
-mod qv1_tests {
-    use super::*;
-
-    // canonicalize_model_quant is exercised via integration through
-    // the server boot path; unit-testing it requires building
-    // ModelConfig which has no `Default` impl (it's intentionally
-    // bound to a loaded model). The pair-compatibility table is a
-    // pure function and worth a unit test.
-
-    #[test]
-    fn compat_self_pair() {
-        assert!(quant_pair_compatible("nvfp4", "nvfp4"));
-        assert!(quant_pair_compatible("fp8", "fp8"));
-        assert!(quant_pair_compatible("bf16", "bf16"));
-    }
-
-    #[test]
-    fn compat_nvfp4_handles_fp8_and_bf16() {
-        assert!(quant_pair_compatible("nvfp4", "fp8"));
-        assert!(quant_pair_compatible("nvfp4", "bf16"));
-    }
-
-    #[test]
-    fn incompat_unknown_rejected() {
-        assert!(!quant_pair_compatible("nvfp4", "gptq-4bit"));
-        assert!(!quant_pair_compatible("fp8", "nvfp4"));
-    }
-}
+#[path = "serve_tests.rs"]
+mod tests;

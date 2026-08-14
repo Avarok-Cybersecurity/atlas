@@ -104,10 +104,24 @@ effective_context = 24576
 # Reverted to the card value. 3.6's degeneration failure mode was not observed
 # on 3.8: 20/20 runs across both tiers passed 6/6 with no loops. Revisit only
 # with a measured A/B on THESE weights.
+# min_p = 0.0 is the card's value for BOTH thinking and non-thinking, and is
+# only expressible since the [sampling.*] preset gained the field: the server
+# ships --default-min-p 0.08 and every request that does not name min_p takes
+# it, while [behavior].min_p_floor can only ever RAISE min_p. Without this the
+# checkpoint serves at 0.08 against a card that says 0, and min_p is
+# measurably live (Nemotron-3.5-Lightning, temp 1.6: min_p 0.95 collapsed 8
+# samples to 1 distinct output vs 8/8 at 0.0).
+#
+# NOT set on [sampling.tools]: the card has no tools preset, that one is
+# derived from the family recommendation rather than the card, and min_p
+# interacts with the grammar mask the same way the penalties documented above
+# do. Left at the server default pending a measurement on 3.8 weights.
+
 [sampling.thinking_text]
 temperature = 1.0
 top_p = 0.95
 top_k = 20
+min_p = 0.0
 presence_penalty = 0.0
 frequency_penalty = 0.0
 repetition_penalty = 1.0
@@ -117,6 +131,7 @@ dry_multiplier = 0.0
 temperature = 1.0
 top_p = 0.95
 top_k = 20
+min_p = 0.0
 presence_penalty = 0.0
 frequency_penalty = 0.0
 repetition_penalty = 1.0
@@ -126,6 +141,7 @@ dry_multiplier = 0.0
 temperature = 0.7
 top_p = 0.8
 top_k = 20
+min_p = 0.0
 presence_penalty = 1.5
 frequency_penalty = 0.0
 repetition_penalty = 1.0

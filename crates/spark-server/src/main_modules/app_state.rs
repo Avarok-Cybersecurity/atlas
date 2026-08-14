@@ -57,6 +57,10 @@ pub struct AppState {
     pub vision_config: Option<atlas_core::config::VisionConfig>,
     /// Optional vLLM-style image area cap applied before vision patching.
     pub vision_max_pixels: Option<usize>,
+    /// Whether (and how) to fetch `image_url` parts carrying an http(s) URL.
+    /// Default-disabled; see `api::chat::remote_image` for why this one
+    /// capability is opt-in rather than default-ON with a kill-switch.
+    pub remote_image_policy: crate::api::chat::remote_image::RemoteImagePolicy,
     /// Default sampling temperature from generation_config.json.
     pub default_temperature: f32,
     /// Default top-k from generation_config.json.

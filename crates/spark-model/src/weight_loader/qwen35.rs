@@ -259,6 +259,8 @@ impl ModelWeightLoader for Qwen35WeightLoader {
             vcfg.spatial_merge_size,
             vcfg.out_hidden_size,
             vcfg.intermediate_size,
+            vcfg.patch_size,
+            vcfg.max_pixels,
             gpu,
         )?;
         tracing::info!(

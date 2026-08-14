@@ -44,5 +44,10 @@ pub(crate) fn parse_vision_config(raw: &serde_json::Value) -> Option<VisionConfi
         out_hidden_size: get_usize("out_hidden_size"),
         deepstack_visual_indexes,
         image_pad_token_id,
+        // Not in config.json — it comes from preprocessor_config.json (or the
+        // operator's flag), which this parser does not see. Resolved and
+        // installed by the server right after config load, before the encoder
+        // is built. `None` here means "not yet resolved", never "unbounded".
+        max_pixels: None,
     })
 }

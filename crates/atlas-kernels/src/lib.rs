@@ -106,6 +106,21 @@ pub struct SamplingCategory {
     /// `presence_penalty` regression. 0.0 = disabled. SGLang reference
     /// strength = 0.2 (lossless on AIME/GPQA).
     pub lz_penalty: f32,
+    /// Model-declared min-p, or `None` when MODEL.toml is silent.
+    ///
+    /// `Option`, not `f32`, because absence and `0.0` mean opposite things
+    /// here. The server ships `--default-min-p 0.08` and every request that
+    /// does not name min_p takes it, so a model whose card specifies
+    /// `min_p = 0` had no way to say so: `[behavior].min_p_floor` only ever
+    /// RAISES min_p (`min_p.max(floor)`), and the preset did not carry the
+    /// value at all. A plain `f32` defaulting to 0.0 would silently strip the
+    /// 0.08 floor from every model that has a `[sampling.*]` table, which is
+    /// the opposite regression.
+    ///
+    /// `Some(x)` outranks the CLI default and is outranked by
+    /// `generation_config.json` — the same precedence temperature/top_k/top_p
+    /// already follow. `None` preserves the CLI-owned behaviour exactly.
+    pub min_p: Option<f32>,
 }
 
 /// Model-specific sampling presets loaded from MODEL.toml `[sampling.*]`.
@@ -134,6 +149,7 @@ impl Default for SamplingPresets {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            min_p: None,
         };
         let tools_cat = SamplingCategory {
             temperature: 0.6,
@@ -146,6 +162,7 @@ impl Default for SamplingPresets {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            min_p: None,
         };
         Self {
             thinking_text: default_cat,

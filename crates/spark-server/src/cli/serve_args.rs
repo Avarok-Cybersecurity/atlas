@@ -809,11 +809,70 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub fast_load_prefetch_shards: bool,
 
-    /// Cap decoded vision input area before patching. 0 preserves the
-    /// model/default image preprocessor cap. Also settable with
-    /// `ATLAS_VISION_MAX_PIXELS`.
+    /// Vision input AREA bound in pixels, applied before patching. Overrides
+    /// the checkpoint in BOTH directions — it may raise the bound as well as
+    /// lower it.
+    ///
+    /// 0 (the default) means "use the checkpoint's own bound", read from
+    /// `preprocessor_config.json` (`size.longest_edge`, or `max_pixels`;
+    /// despite the name both are pixel COUNTS). When the checkpoint declares
+    /// none, the preprocessor falls back to clamping the long side to 1280px.
+    ///
+    /// Until 2026-08-14 this flag could only ever LOWER the resolution: the
+    /// 1280px clamp was unconditional and the checkpoint's own bound was
+    /// never read, so a model built for 4096² was served at roughly a tenth
+    /// of its permitted area with nothing logged. Raising this raises the
+    /// vision token count per image quadratically — a 4096² image is ~16k
+    /// merged tokens — so it is charged against the context budget.
+    ///
+    /// Also settable with `ATLAS_VISION_MAX_PIXELS`.
     #[arg(long, default_value_t = 0)]
     pub vision_max_pixels: usize,
+
+    /// Fetch `image_url` parts that carry an http(s) URL, instead of
+    /// rejecting them.
+    ///
+    /// OFF by default, and deliberately not default-ON-with-a-kill-switch
+    /// like most Atlas features. Enabling it makes the inference server issue
+    /// outbound HTTP to addresses chosen by anyone who can send it a chat
+    /// request — a server-side request forgery primitive. A deployment that
+    /// never wanted that must not acquire it by upgrading. With the flag off,
+    /// a URL is refused with a 400 naming this flag, so the capability is
+    /// discoverable rather than silently missing; clients that cannot be
+    /// changed send a base64 `data:` URI instead.
+    ///
+    /// Switched on, the fetch is still bounded: loopback/private/link-local
+    /// destinations are refused (including across redirects), the body is
+    /// capped while being read rather than by trusting `Content-Length`, the
+    /// response must declare an image content type, and the whole request is
+    /// time-limited.
+    #[arg(long, default_value_t = false)]
+    pub vision_allow_remote_images: bool,
+
+    /// Cap, in MiB, on a single fetched remote image. Enforced against bytes
+    /// actually read, so a remote understating its `Content-Length` cannot
+    /// exceed it. No effect unless `--vision-allow-remote-images` is set.
+    #[arg(long, default_value_t = 20)]
+    pub vision_remote_image_max_mb: usize,
+
+    /// Wall-clock budget, in seconds, for fetching one remote image. Bounds a
+    /// slow-loris response, which would otherwise hold a thread from the
+    /// prepare pool for as long as the remote cared to keep the socket open.
+    /// No effect unless `--vision-allow-remote-images` is set.
+    #[arg(long, default_value_t = 10)]
+    pub vision_remote_image_timeout_s: u64,
+
+    /// Also permit remote images on loopback, private and link-local
+    /// addresses.
+    ///
+    /// A SECOND grant on top of `--vision-allow-remote-images`, because
+    /// "fetch from the public internet" and "fetch from inside my network"
+    /// have different blast radii. Only set this where the image host is
+    /// genuinely internal: it re-opens the path to link-local cloud instance
+    /// metadata (169.254.169.254), where a successful fetch returns
+    /// credentials as an ordinary HTTP body.
+    #[arg(long, default_value_t = false)]
+    pub vision_remote_image_allow_private: bool,
 
     /// Address to bind the HTTP listener to. Defaults to `127.0.0.1` so a
     /// fresh install is reachable only from the local machine; pass
