@@ -40,12 +40,15 @@ on:
   # Manual escape hatch, for the same reason ci.yml has one: during the
   # 2026-08-06 Actions incident webhook triggers were throttled and no runs
   # were created at all.
+  #
+  # Deliberately takes NO `ref` input. An arbitrary ref would flow into
+  # release-build.yml's checkout, which runs Swatinem/rust-cache in the
+  # default-branch context — letting anyone who can dispatch this workflow
+  # poison the cache that every later main build restores from. CodeQL
+  # (actions/cache-poisoning) flagged exactly that path when this workflow
+  # first had the input. This hatch only ever needs to build main, which is
+  # what it does.
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Ref to build and publish (defaults to main)"
-        required: false
-        default: main
 
 permissions:
   contents: read
@@ -80,7 +83,9 @@ jobs:
           # must build the commit CI actually validated, not whatever main
           # points at now — those differ as soon as a second PR merges while
           # this run is queued.
-          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.ref || 'main' }}
+          # workflow_run: the commit CI actually validated. Manual dispatch:
+          # main, and only ever main — see the trigger comment above.
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
           # rev-list --count needs real history. depth-1 would report 1.
           fetch-depth: 0
 
