@@ -59,6 +59,21 @@ impl BenchState {
             }
             // A finished run stays reachable after you navigate away from it.
             KeyCode::Char('v') if self.frame.is_some() => self.view = View::Run,
+            // The pair the help overlay advertises globally. The list scrolls
+            // by keeping the selection in view, so first/last ARE top/bottom.
+            KeyCode::Char('g') | KeyCode::Home if n > 0 => self.select(0),
+            KeyCode::Char('G') | KeyCode::End if n > 0 => self.select(n - 1),
+            // Paged by the renderer-published viewport and clamped at both
+            // ends; `select` re-clamps, so a stale page size from a resize
+            // cannot walk the selection off the registry.
+            KeyCode::PageDown if n > 0 => {
+                let page = self.suite_page.get().max(1);
+                self.select((self.selected + page).min(n - 1));
+            }
+            KeyCode::PageUp => {
+                let page = self.suite_page.get().max(1);
+                self.select(self.selected.saturating_sub(page));
+            }
             _ => {}
         }
         Outcome::None
@@ -275,3 +290,7 @@ impl BenchState {
 #[cfg(test)]
 #[path = "bench_keys_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_keys_more_tests.rs"]
+mod more_tests;
