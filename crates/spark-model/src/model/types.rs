@@ -356,11 +356,19 @@ pub struct TransformerModel {
     /// Number of patches encoded by the last prepare_vision_embed() call.
     /// 0 means no vision embeddings pending.
     pub(super) vision_embed_patches: Mutex<usize>,
-    /// Per-image `(grid_h_post_merge, grid_w_post_merge)` from the most
-    /// recent prepare_vision_embed() call. Used by MRoPE prefill to
-    /// assign correct (h, w) spatial position IDs to each image patch
-    /// token. Empty when no images are pending.
-    pub(super) vision_image_grids: Mutex<Vec<(usize, usize)>>,
+    /// Per-ITEM `(t_len, grid_h_post_merge, grid_w_post_merge)` from the most
+    /// recent prepare_vision_embed() call. Used by MRoPE prefill to assign
+    /// correct (t, h, w) position IDs to each vision pad token. Empty when no
+    /// vision input is pending.
+    ///
+    /// `t_len` is the number of TEMPORAL GROUPS the item spans: 1 for a still
+    /// image, `frames / temporal_patch_size` for a video. It is per item and
+    /// not per encoder row on purpose — a video feeds `t_len` rows to the ViT
+    /// but occupies ONE contiguous pad run, and the position builder has to
+    /// treat that run as a single item whose T advances rather than as
+    /// `t_len` unrelated images (which would restart T and mis-advance the
+    /// running position for everything after it).
+    pub(super) vision_image_grids: Mutex<Vec<(usize, usize, usize)>>,
     /// Co-dispatched batched-ViT slice base for the NEXT prefill_chunk. When a
     /// tick batches >=2 image requests into one buf_out, each request's chunk-0
     /// splice/MRoPE must read its OWN slice: `vision_row_base` = first buf_out

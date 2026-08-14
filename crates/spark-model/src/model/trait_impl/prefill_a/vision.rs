@@ -42,8 +42,10 @@ impl TransformerModel {
                 _vt0.elapsed().as_secs_f64() * 1000.0
             );
         }
-        let post_merge_grids: Vec<(usize, usize)> =
-            per_image.iter().map(|(h, w, _)| (*h, *w)).collect();
+        // t_len = 1: every item on this path is a still. A video will pass a
+        // group count > 1 here once the server side feeds one.
+        let post_merge_grids: Vec<(usize, usize, usize)> =
+            per_image.iter().map(|(h, w, _)| (1, *h, *w)).collect();
         let total_merged: usize = per_image.iter().map(|(_, _, mp)| *mp).sum();
         *self.vision_embed_patches.lock() = total_merged;
         *self.vision_image_grids.lock() = post_merge_grids;
@@ -82,7 +84,8 @@ impl TransformerModel {
             }
         }
         let per_image = ve.forward_batched(&flat, self.gpu.as_ref(), stream)?;
-        let grids: Vec<(usize, usize)> = per_image.iter().map(|(h, w, _)| (*h, *w)).collect();
+        let grids: Vec<(usize, usize, usize)> =
+            per_image.iter().map(|(h, w, _)| (1, *h, *w)).collect();
         let total_merged: usize = per_image.iter().map(|(_, _, mp)| *mp).sum();
         *self.vision_embed_patches.lock() = total_merged;
         *self.vision_image_grids.lock() = grids;

@@ -12,6 +12,12 @@ use spark_runtime::gpu::{DevicePtr, KernelHandle};
 pub(super) const IMAGE_PAD_TOKEN: u32 = 151_655;
 pub const IMAGE_PAD_TOKEN_ID: u32 = IMAGE_PAD_TOKEN;
 
+/// Fallback `<|video_pad|>` id, used when the checkpoint's config declares
+/// none. Qwen3-VL's video token sits directly after its image token, and the
+/// same holds for Qwen3.6/3.8 (248056 / 248057) — but a checkpoint that
+/// declares its own always wins, exactly as for the image token.
+pub const VIDEO_PAD_TOKEN_ID: u32 = IMAGE_PAD_TOKEN + 1;
+
 /// Flattened per-patch pixel dimension `C × temporal_patch_size × patch_size²`
 /// = 3 × 2 × 16 × 16 for this ViT. It is baked into the encoder, not read from
 /// config: `buf_f32` is allocated at `p_max × PATCH_DIM × 4` and the
