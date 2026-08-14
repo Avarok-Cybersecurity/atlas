@@ -18,6 +18,9 @@
 
 use atlas_core::target::KernelTarget;
 
+pub mod resolve;
+pub use resolve::{ResolveCandidate, TargetResolveError, ptx_for_config, ptx_for_exact_target};
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
 // NOTE: cargo does NOT track this build-script-generated include! as a
@@ -393,6 +396,15 @@ pub struct TargetPtxSet {
     pub sampling: SamplingPresets,
     pub behavior: ModelBehavior,
     pub model_type_matches: Vec<ModelTypeMatch>,
+    /// `[model] match_names` needles from MODEL.toml — case-insensitive
+    /// substrings of the checkpoint reference (HF id / `--model-name` /
+    /// resolved model dir) that identify checkpoints THIS target serves.
+    /// Consulted only to break a tie when several targets declare the same
+    /// `(model_type, hidden_size)` (e.g. qwen3.6-27b vs qwen3.8-27b, whose
+    /// configs are bit-identical); see [`resolve::resolve_target`]. Empty
+    /// for targets that never collide — `build.rs` panics if a colliding
+    /// target omits them.
+    pub match_names: &'static [&'static str],
     /// DFlash drafter pairing for this model. `None` when the MODEL.toml has
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
     /// set without an explicit `--draft-model` flag.
@@ -436,32 +448,6 @@ pub fn ptx_for_model(needle: &str) -> Option<TargetPtxSet> {
     all_ptx_sets()
         .into_iter()
         .find(|t| t.target.model.contains(needle))
-}
-
-/// Find the PTX module set matching a `(model_type, hidden_size)` pair.
-///
-/// Matching rules:
-/// 1. Exact match on `(model_type, Some(hidden_size))` wins
-/// 2. Wildcard match `(model_type, None)` is fallback
-/// 3. Returns `None` if no compiled target matches
-pub fn ptx_for_config(model_type: &str, hidden_size: usize) -> Option<TargetPtxSet> {
-    let targets = all_ptx_sets();
-    // Exact match first (specific hidden_size)
-    let exact = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size == Some(hidden_size))
-    });
-    if let Some(idx) = exact {
-        return targets.into_iter().nth(idx);
-    }
-    // Wildcard fallback (hidden_size == None)
-    let wildcard = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size.is_none())
-    });
-    wildcard.and_then(|idx| targets.into_iter().nth(idx))
 }
 
 #[cfg(test)]

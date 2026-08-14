@@ -41,7 +41,9 @@ fn main() -> Result<()> {
          value_dim={value_dim} conv_dim={conv_dim} h_numel={h_numel}"
     );
 
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048).expect("no ptx set");
+    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
+        .expect("unambiguous")
+        .expect("no ptx set");
     let backend = AtlasCudaBackend::new(0, &set.modules)?;
     let g: &dyn GpuBackend = &backend;
     let k: KernelHandle = g.kernel(

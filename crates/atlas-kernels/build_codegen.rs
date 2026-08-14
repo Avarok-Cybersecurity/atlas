@@ -185,6 +185,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20               tool_retry: {},\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
+             \x20           match_names: &[{}],\n\
              \x20           dflash: {},\n\
              \x20           shadowed_dropped: &[{}],\n\
              \x20           expected_absent: &[{}],\n\
@@ -229,6 +230,11 @@ pub(super) fn generate_target_ptx_rs(
                 };
                 format!("ModelTypeMatch {{ model_type: \"{}\", hidden_size: {hs} }}", m.model_type)
             }).collect::<Vec<_>>().join(", "),
+            target.match_names
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
             match &target.dflash {
                 None => "None".to_string(),
                 Some(d) => format!(
