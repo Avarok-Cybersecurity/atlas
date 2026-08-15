@@ -710,9 +710,10 @@ pub fn run(
                     })
                 )
             {
-                // Throughput-arbitrated MTP gate: EVERY single-sequence step
-                // is timed and reported, and the gate picks whichever mode
-                // (MTP verify vs plain decode) DELIVERS more tokens/sec —
+                // Throughput-arbitrated MTP gate: EVERY batch step is timed
+                // and reported at its real delivered token count, and the
+                // gate picks whichever mode (MTP verify vs plain decode)
+                // DELIVERS more tokens/sec —
                 // with hysteresis, dwell, and periodic probing of the other
                 // mode. Both step types emit real, correct tokens, so
                 // arbitration never wastes work. See mtp_gate module docs for
@@ -773,7 +774,13 @@ pub fn run(
                                     adaptive_sampling,
                                     &sched,
                                 );
-                                gate.record_decode(t0.elapsed());
+                                // A plain decode step emits ONE token PER
+                                // ACTIVE SEQUENCE. Charging 1 regardless of
+                                // width under-read the serial EWMA ~n× at
+                                // batch n (the verify arm below was already
+                                // multi-seq summed), biasing arbitration
+                                // toward Mtp exactly under concurrency.
+                                gate.record_decode(t0.elapsed(), active.len());
                                 for a in active.iter_mut() {
                                     a.mtp_acct.record_serial();
                                 }
@@ -844,7 +851,7 @@ pub fn run(
                                     .zip(lens_before.iter())
                                     .map(|(a, &b)| a.seq.seq_len.saturating_sub(b))
                                     .sum();
-                                gate.record_verify_step(t0.elapsed(), emitted);
+                                gate.record_verify_step(t0.elapsed(), emitted, active.len());
                                 for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
                                     a.mtp_acct
                                         .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
