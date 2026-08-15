@@ -3,7 +3,8 @@
   // GateChart per panel spec. The model chip is ALWAYS rendered — a 27B number
   // must never be readable as a 35B one.
   import GateChart from './GateChart.svelte';
-  import { panelsFor, colorFor, shortModel, fmtDate, sampleCount } from '$lib/gates.js';
+  import GateLadderChart from './GateLadderChart.svelte';
+  import { panelsFor, colorFor, shortModel, fmtDate, sampleCount, ladderPoints } from '$lib/gates.js';
 
   let { benchId, name, records, onselect } = $props();
 
@@ -26,6 +27,19 @@
         { label: 'median', value: `${Math.round(m.median_ms).toLocaleString('en-US')} ms` },
         { label: 'p90', value: `${Math.round(m.p90_ms).toLocaleString('en-US')} ms` }
       ];
+    if (benchId === 'concurrency-sweep') {
+      // Guarded per key: the tiles must survive a record that predates the
+      // metrics map (or one whose cells were all vacuous and published no
+      // comparable curve).
+      const tiles = [];
+      if (Number.isFinite(m.peak_aggregate_tok_s))
+        tiles.push({ label: 'peak', value: `${(+m.peak_aggregate_tok_s).toFixed(1)} tok/s` });
+      const rungs = ladderPoints(latest).length;
+      if (rungs > 0) tiles.push({ label: 'rungs', value: rungs });
+      if (Number.isFinite(m.vacuous_cells) && m.vacuous_cells > 0)
+        tiles.push({ label: 'vacuous cells', value: m.vacuous_cells });
+      return tiles;
+    }
     return [];
   });
 </script>
@@ -55,6 +69,10 @@
   </header>
 
   {#each panels as panel}
-    <GateChart {records} {panel} {onselect} />
+    {#if panel.kind === 'ladder'}
+      <GateLadderChart {records} {panel} {onselect} />
+    {:else}
+      <GateChart {records} {panel} {onselect} />
+    {/if}
   {/each}
 </article>
