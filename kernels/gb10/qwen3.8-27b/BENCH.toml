@@ -289,10 +289,23 @@ min = 1.0
 
 # --- video-fidelity --------------------------------------------------------
 # VIDEO MODELS ONLY. This target owns the gate's default serve; as of
-# 2026-08-15 all three vision checkpoints declare it and all three score
-# 13/13, so nothing about the benchmark is 3.8-specific. The 35B was the last
-# to be added, and only because it was the one target weak enough to expose
-# the media-ordering defect -- see its BENCH.toml entry.
+# 2026-08-15 all three vision checkpoints declare it, so nothing about the
+# benchmark is 3.8-specific. The 35B was the last to be added, and only
+# because it was the one target weak enough to expose the media-ordering
+# defect -- see its BENCH.toml entry.
+#
+# ⚠ THIS TARGET IS CURRENTLY RED AND THE THRESHOLDS BELOW ARE NOT LOWERED.
+# On 2026-08-15 it scored 4/13 here, dropping "green" from the FORWARD clip
+# (mp4 and gif alike) while reading the REVERSED clip perfectly 4/4, on
+# identical geometry -- 214 prompt tokens, 4 groups, 49 tok/group, the same
+# numbers the reference run recorded. That is a content-reading failure, not
+# an ordering or splice one. It is NOT from the media-ordering fix: the
+# parent commit c915f01d, rebuilt and served with the same flags, produced
+# the SAME 4/13 with the same colors leg for leg. Unexplained since the
+# 2026-08-14 reference PASS on this same box and serve config; the two other
+# vision targets scored 13/13 the same afternoon on the same binary. The
+# floor stays at 13 because lowering an unexplained red is how a gate stops
+# being evidence.
 #
 # ★ REQUIRES FFMPEG ON THE RUNNER for every container except GIF. Legs needing
 # it SKIP rather than fail when it is absent, so a runner without ffmpeg

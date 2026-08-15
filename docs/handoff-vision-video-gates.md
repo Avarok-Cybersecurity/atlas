@@ -1,6 +1,6 @@
 # Handoff — vision & video gates (branch `feat/video-support`, PR #516)
 
-Written 2026-08-14. Everything below is measured on dgx-00 unless it says otherwise.
+Written 2026-08-14, updated 2026-08-15 (ordering fix landed; a new video bug on qwen3.8-27b found and A/B'd). Everything below is measured on dgx-00 unless it says otherwise.
 
 ## State
 
@@ -43,25 +43,65 @@ No Jinja change was needed: the bundled template already walks the content array
 
 **Verification.** `video-fidelity` on `qwen3.6-35b-a3b`: **13/13, 0 skipped, control held** (was 12/13). `video-before-image` reports 288 prompt tokens — the same 288 the dense targets record, so the ordering moved and the geometry did not. `vision-fidelity` on the same server still 14/14 geometry, 3/3 probes, all integrity legs. Plus 10 unit tests pinning the order at each hop (wire, IR, collection, markers) — `cargo test -p spark-server --bin spark`, 2220 pass.
 
+## ★ NEW OPEN BUG — qwen3.8-27b drops a colour from the FORWARD clip
+
+Found while producing the gate records on 2026-08-15. **`video-fidelity` on `qwen3.8-27b` scores 4/13**, and it is *not* this branch's ordering fix:
+
+| | forward clip | reversed clip |
+|---|---|---|
+| expected | red, green, blue, yellow | yellow, blue, green, red |
+| got | **red, blue** | yellow, blue, green, red ✓ |
+
+* **Not ordering, not the splice.** Geometry is exactly the reference: 214 prompt tokens, 4 temporal groups, 49 tok/group, mp4 and gif agreeing. The *reversed* clip reads all four colours perfectly on the same server in the same run — so frames arrive, in order, with the right embeddings. The forward clip loses a middle colour, on both the mp4 and the GIF.
+* **Not the media-ordering fix.** A/B'd directly: parent commit `c915f01d` rebuilt from the same tree and served with the same flags produces **the same 4/13, leg for leg, with the same colours**. The only difference is that `video-before-image` returns `[]` on the parent and `[red, blue, yellow]` with the fix — i.e. the fix strictly improved that leg.
+* **Not the recipe.** Reproduces identically on the gate's self-served recipe (`qwen3.8/qwen3.8-27b-nvfp4-unsloth`, gpu-util 0.90) and on the handoff's manual serve (`--max-num-seqs 4`, util 0.70, `--video-fps 2`).
+* **Not a broadly degraded checkpoint.** `vision-fidelity` on the same checkpoint, same binary, same afternoon: **PASS**, 14/14 geometry, 3/3 probes, control held. It reads stills correctly; it reads a reversed clip correctly; it drops a colour from a forward clip.
+* **Unexplained against the 2026-08-14 reference PASS** on this same box and config. The other two vision targets scored 13/13 that same afternoon on the same binary, so it is specific to this checkpoint. Worth checking first whether the NFS snapshot under `models--unsloth--Qwen3.8-27B-NVFP4` changed since 08-14 — that is the one input nobody has pinned.
+
+The asymmetry is the lead worth pulling: forward loses a middle colour on two different containers, reversed is perfect, geometry identical across both. Whatever this is, it distinguishes the two clips' *content*, not their handling.
+
+Its `BENCH.toml` floor is deliberately **left at 13** and the target stays declared. Lowering an unexplained red is how a gate stops being evidence.
+
 ## Gate status
 
-| gate | declared on | result |
+Measured 2026-08-15 on dgx-00, binary at `7de59f26` (the ordering fix).
+
+| gate | target | result |
 |---|---|---|
-| `vision-fidelity` | qwen3.6-27b, qwen3.6-35b-a3b, qwen3.8-27b | **PASS** — 14/14 geometry, 3/3 probes, 10/10 integrity, control held |
-| `video-fidelity` | qwen3.8-27b (default), qwen3.6-27b, qwen3.6-35b-a3b | **PASS** — 13/13 legs, 0 skipped |
+| `vision-fidelity` | qwen3.6-35b-a3b | **PASS** — 14/14 geometry, 3/3 probes, control held |
+| `vision-fidelity` | qwen3.6-27b | **PASS** — 14/14 geometry, 3/3 probes, control held |
+| `vision-fidelity` | qwen3.8-27b | **PASS** — 14/14 geometry, 3/3 probes, control held |
+| `video-fidelity` | qwen3.6-35b-a3b | **PASS** — 13/13, 0 skipped (**was 12/13**) |
+| `video-fidelity` | qwen3.6-27b | **PASS** — 13/13, 0 skipped |
+| `video-fidelity` | qwen3.8-27b | **FAIL** — 4/13, pre-existing, see above |
 
-All three vision targets now declare both gates.
+All three vision targets declare both gates.
 
-### Outstanding: committed gate-proof records
+### Committed gate-proof records
 
-The owner asked for `.benchmarks/<id>/DATE-SHA.json` records for both gates. **Not yet generated.** Vision is green on all three targets and ready; video is green on two. Produce with:
+Five are in `.benchmarks/`, all PASS, all self-served by `--pull-request-gate` from their pinned recipe. The sixth (video on qwen3.8-27b) does not exist because that run is red — a failed run writes no record, by design.
 
 ```
-spark benchmark run vision-fidelity --pull-request-gate --hardware gb10 \
-  --url http://127.0.0.1:PORT --model NAME
+.benchmarks/vision-fidelity/2026-08-15-7de59f2636.json                          qwen3.6-35b-a3b
+.benchmarks/vision-fidelity/2026-08-15-7de59f2636-unsloth-qwen3.6-27b-nvfp4.json
+.benchmarks/vision-fidelity/2026-08-15-7de59f2636-unsloth-qwen3.8-27b-nvfp4.json
+.benchmarks/video-fidelity/2026-08-15-7de59f2636-qwen-qwen3.6-35b-a3b-fp8.json
+.benchmarks/video-fidelity/2026-08-15-7de59f2636-unsloth-qwen3.6-27b-nvfp4.json
 ```
 
-(dirty tree is refused; the operator commits the record.)
+Two things to know before producing more:
+
+* **The command in the previous handoff does not parse.** `--pull-request-gate` is mutually exclusive with `--url` / `--model` — the gate serves the benchmark's own recipe and refuses to be pointed at a server someone else started. The working form is:
+
+  ```bash
+  ./target/release/spark benchmark run video-fidelity --pull-request-gate \
+    --hardware gb10 --checkpoint Qwen/Qwen3.6-35B-A3B-FP8 \
+    --serve-override video_allow_ffmpeg=true
+  ```
+
+* **`video-fidelity` needs that `--serve-override`.** No serve recipe enables ffmpeg, so the gate's own server refuses every MP4, the run ends Failed and **no record is written at all**. The override is recorded in the record's provenance, which is honest but means these records do not measure the recipe as pinned. The real fix is `video_allow_ffmpeg: true` in the three vision recipes upstream in `Avarok-Cybersecurity/atlas-recipes` — that is a different repo, so it was not done here.
+* The qwen3.8 recipe was missing from the local recipe index (`~/.atlas/atlas-recipes/index.json`, 26 cached vs 28 upstream) and a refresh is only reachable through the interactive TUI Library. Rebuilt by hand from the tree sha; a backup of the old index is not in the repo.
+* Checkpoints on the NFS mount need `HF_HUB_CACHE=/mnt/gx10-hf-hub` — the gate self-serve resolves by HF id, not by path, and qwen3.8-27b is not in `~/.cache`.
 
 ## Running things
 
