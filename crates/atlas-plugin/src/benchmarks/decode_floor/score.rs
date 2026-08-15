@@ -86,7 +86,7 @@ pub(crate) enum Evaluation {
         /// MEDIAN server decode tok/s across the runs — THE metric.
         median_decode_tok_s: f64,
         /// Minimum `completion_tokens` across runs, so the BENCH.toml
-        /// `output_tokens >= 1200` bound means "every run", not "on average".
+        /// `output_tokens >= 800` bound means "every run", not "on average".
         min_output_tokens: usize,
         /// Mean of the per-run derived accept lengths.
         accept_len_mean: f64,
