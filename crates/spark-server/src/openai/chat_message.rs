@@ -2,6 +2,12 @@
 
 use serde::Deserialize;
 
+// The modality tag is the IR's, not a wire-local copy: the whole point of
+// carrying media as one tagged sequence is that the tag and the order
+// survive unchanged from the wire to the rendered prompt, and two parallel
+// enums would be two places for that meaning to drift.
+pub use crate::ir::MediaKind;
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct IncomingMessage {
     pub role: String,
@@ -28,12 +34,53 @@ pub struct IncomingMessage {
     pub reasoning_content: Option<String>,
 }
 
-/// Content extracted from a message — text and any base64-encoded images.
+/// Content extracted from a message — the flattened text, plus every media
+/// item **in the order the client sent it**.
 #[derive(Debug, Clone, Default)]
 pub struct ParsedContent {
     pub text: String,
-    /// Base64 data URIs: `"data:image/jpeg;base64,..."` or raw base64 strings.
-    pub images: Vec<String>,
+    /// Images and videos as ONE tagged sequence. They were previously two
+    /// lists, which silently discarded their relative order: a request
+    /// sending `video_url` then `image_url` reached the template as
+    /// image-then-video, so the model was shown the items in an order the
+    /// caller never wrote and any prompt referring to "the first" one
+    /// described something else. Nothing errored, because the pad runs and
+    /// the encoder rows still agreed with each other.
+    pub media: Vec<MediaRef>,
+}
+
+/// One media item from the wire: what it is, and where its bytes come from
+/// (a `data:` URI, a raw base64 string, or a remote URL resolved later).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaRef {
+    pub kind: MediaKind,
+    pub uri: String,
+}
+
+impl ParsedContent {
+    /// A message carrying only text — the shape every synthetic and
+    /// replayed message has.
+    pub fn text_only(text: String) -> Self {
+        ParsedContent {
+            text,
+            media: Vec::new(),
+        }
+    }
+
+    /// The image URIs, in order. The stored-conversation writers replay
+    /// images only (videos are not persisted), so they read this view
+    /// rather than filtering `media` themselves.
+    pub fn images(&self) -> impl Iterator<Item = &String> {
+        self.media
+            .iter()
+            .filter(|m| m.kind == MediaKind::Image)
+            .map(|m| &m.uri)
+    }
+
+    /// True when this message carries at least one image.
+    pub fn has_images(&self) -> bool {
+        self.images().next().is_some()
+    }
 }
 
 impl IncomingMessage {
@@ -42,10 +89,7 @@ impl IncomingMessage {
     pub fn synthetic_system(text: String) -> Self {
         Self {
             role: "system".to_string(),
-            content: ParsedContent {
-                text,
-                images: Vec::new(),
-            },
+            content: ParsedContent::text_only(text),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -58,10 +102,7 @@ impl IncomingMessage {
     pub fn synthetic_user_text(text: String) -> Self {
         Self {
             role: "user".to_string(),
-            content: ParsedContent {
-                text,
-                images: Vec::new(),
-            },
+            content: ParsedContent::text_only(text),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -97,10 +138,7 @@ impl IncomingMessage {
             .map(|s| s.to_string());
         Some(Self {
             role: role.to_string(),
-            content: ParsedContent {
-                text,
-                images: Vec::new(),
-            },
+            content: ParsedContent::text_only(text),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -180,10 +218,7 @@ impl IncomingMessage {
                     .unwrap_or("")
                     .to_string();
                 let output = match obj.get("output") {
-                    Some(serde_json::Value::String(s)) => ParsedContent {
-                        text: s.clone(),
-                        images: Vec::new(),
-                    },
+                    Some(serde_json::Value::String(s)) => ParsedContent::text_only(s.clone()),
                     // Structured output parts (`output_text` / `input_image` /
                     // …): carry text AND images so a screenshot returned by a
                     // tool reaches the vision encoder — parity with the
@@ -193,19 +228,13 @@ impl IncomingMessage {
                     // behavior so out-of-spec payloads still reach the model.
                     Some(arr @ serde_json::Value::Array(_)) => {
                         let parsed = ParsedContent::from_responses_content(arr);
-                        if parsed.text.is_empty() && parsed.images.is_empty() {
-                            ParsedContent {
-                                text: arr.to_string(),
-                                images: Vec::new(),
-                            }
+                        if parsed.text.is_empty() && parsed.media.is_empty() {
+                            ParsedContent::text_only(arr.to_string())
                         } else {
                             parsed
                         }
                     }
-                    Some(other) => ParsedContent {
-                        text: other.to_string(),
-                        images: Vec::new(),
-                    },
+                    Some(other) => ParsedContent::text_only(other.to_string()),
                     None => ParsedContent::default(),
                 };
                 let name = obj
@@ -235,13 +264,17 @@ impl IncomingMessage {
 
 impl ParsedContent {
     /// Flatten a Responses-API content value (string, or array of
-    /// `input_text`/`output_text`/`input_image`/… parts) into text +
-    /// image lists. Shared by `message` items and `function_call_output`
-    /// items so images are carried on both — the pipeline collects them
-    /// into the vision encoder.
+    /// `input_text`/`output_text`/`input_image`/… parts) into text + an
+    /// ordered media list. Shared by `message` items and
+    /// `function_call_output` items so images are carried on both — the
+    /// pipeline collects them into the vision encoder.
+    ///
+    /// Media parts append to ONE list in the order they appear, so a
+    /// video sent before an image stays before it all the way to the
+    /// rendered prompt.
     fn from_responses_content(v: &serde_json::Value) -> Self {
         let mut text = String::new();
-        let mut images: Vec<String> = Vec::new();
+        let mut media: Vec<MediaRef> = Vec::new();
         match v {
             serde_json::Value::String(s) => text.push_str(s),
             serde_json::Value::Array(parts) => {
@@ -255,14 +288,24 @@ impl ParsedContent {
                         } else if matches!(part_kind, "input_image" | "image_url" | "image")
                             && let Some(url) = responses_image_url(po)
                         {
-                            images.push(url);
+                            media.push(MediaRef {
+                                kind: MediaKind::Image,
+                                uri: url,
+                            });
+                        } else if matches!(part_kind, "input_video" | "video_url" | "video")
+                            && let Some(url) = responses_video_url(po)
+                        {
+                            media.push(MediaRef {
+                                kind: MediaKind::Video,
+                                uri: url,
+                            });
                         }
                     }
                 }
             }
             _ => {}
         }
-        ParsedContent { text, images }
+        ParsedContent { text, media }
     }
 }
 
@@ -278,6 +321,24 @@ fn responses_image_url(po: &serde_json::Map<String, serde_json::Value>) -> Optio
         }
         _ => None,
     }
+}
+
+/// Extract the video URL / data-URI from a Responses `input_video` part.
+/// Accepts the flat string form and the nested object form, exactly like
+/// [`responses_image_url`] — the shapes are the same and clients reuse them.
+fn responses_video_url(po: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    for key in ["video_url", "video"] {
+        match po.get(key) {
+            Some(serde_json::Value::String(s)) => return Some(s.clone()),
+            Some(serde_json::Value::Object(o)) => {
+                if let Some(u) = o.get("url").and_then(|v| v.as_str()) {
+                    return Some(u.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn deserialize_message_content<'de, D>(d: D) -> Result<ParsedContent, D::Error>
@@ -298,11 +359,30 @@ where
         kind: String,
         text: Option<String>,
         image_url: Option<ImageUrl>,
+        /// `{"type": "video_url", "video_url": {"url": "..."}}` — the shape
+        /// vLLM and Qwen's own examples use. `Url` is reused because the
+        /// wire shape is identical to `image_url`.
+        video_url: Option<Url>,
+        /// `{"type": "video", "video": "..."}`, the flat spelling some
+        /// clients emit. Untagged so either form deserialises.
+        video: Option<UrlOrString>,
     }
 
     #[derive(Deserialize)]
     struct ImageUrl {
         url: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Url {
+        url: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum UrlOrString {
+        Obj { url: String },
+        Str(String),
     }
 
     let mut out = ParsedContent::default();
@@ -320,7 +400,34 @@ where
                     }
                     "image_url" => {
                         if let Some(iu) = p.image_url {
-                            out.images.push(iu.url);
+                            out.media.push(MediaRef {
+                                kind: MediaKind::Image,
+                                uri: iu.url,
+                            });
+                        }
+                    }
+                    // Both spellings, because both are in the wild: OpenAI-style
+                    // `video_url` objects and Qwen's flat `video`. Until this
+                    // existed, a video part matched the catch-all below and was
+                    // DROPPED without a word, so the model answered from the
+                    // surrounding text as though no video had been sent.
+                    "video_url" | "video" | "input_video" => {
+                        let uri = if let Some(v) = p.video_url {
+                            Some(v.url)
+                        } else {
+                            p.video.map(|v| match v {
+                                UrlOrString::Obj { url } => url,
+                                UrlOrString::Str(s) => s,
+                            })
+                        };
+                        // Appended to the SAME list as images, at the
+                        // position it arrived in — the ordering the whole
+                        // vision path now preserves.
+                        if let Some(uri) = uri {
+                            out.media.push(MediaRef {
+                                kind: MediaKind::Video,
+                                uri,
+                            });
                         }
                     }
                     _ => {} // ignore unknown part types
@@ -361,3 +468,7 @@ mod tests {
         assert_eq!(m.reasoning_content, None);
     }
 }
+
+#[cfg(test)]
+#[path = "chat_message_video_tests.rs"]
+mod video_wire_tests;

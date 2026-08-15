@@ -51,7 +51,10 @@ serde_json = { workspace = true }
 tracing = "0.1"
 half = "2"
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# `gif` carries the video path: it is the one genuinely multi-frame container
+# decodable in pure Rust with no system dependency, so the whole temporal
+# pipeline can be proven before committing to an H.264 decoder.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }
 parking_lot = { workspace = true }
 
 # Used by the `metal_qwen35_inference` example only — gated by

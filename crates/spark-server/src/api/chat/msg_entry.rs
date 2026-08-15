@@ -13,9 +13,17 @@ use axum::response::Response;
 
 use atlas_core::config::VisionConfig;
 
-use crate::ir::{ContentPart, ImageData, Message, Role};
+use crate::ir::{ContentPart, ImageData, MediaKind, Message, Role};
 
 use super::super::compact::openai_error_response;
+
+/// What the request path needs to decode a video: the operator's subprocess
+/// policy and the sampling rate. Bundled so the signature does not grow two
+/// more positional parameters that are always passed together.
+pub(crate) struct VideoDecode<'a> {
+    pub(crate) ffmpeg: &'a spark_model::video_decode_ffmpeg::FfmpegPolicy,
+    pub(crate) fps: f32,
+}
 
 /// Per-message data: role, content text, optional structured
 /// `tool_calls`, and image-part count for the Jinja vision-marker
@@ -29,11 +37,16 @@ pub(crate) struct MsgEntry {
     pub(super) tool_calls: Option<Vec<serde_json::Value>>,
     /// Links a tool-result message to the assistant call it answers.
     pub(super) tool_call_id: Option<String>,
-    /// Number of image content parts on this message. When > 0
-    /// the json_messages builder emits a structured content array
-    /// so the Jinja template can render
-    /// `<|vision_start|><|image_pad|><|vision_end|>` markers.
-    pub(super) image_count: usize,
+    /// This message's media parts, tagged and in the order the client
+    /// sent them. When non-empty the json_messages builder emits a
+    /// structured content array so the Jinja template can render one
+    /// `<|vision_start|><|image_pad|><|vision_end|>` (or `<|video_pad|>`)
+    /// marker per entry, in this order.
+    ///
+    /// A `(image_count, video_count)` pair lived here before and could not
+    /// express order, so the markers came out grouped by modality — see
+    /// [`crate::ir::Message::media_kinds`].
+    pub(super) media: Vec<MediaKind>,
     /// Historical reasoning trace from a prior assistant turn (the
     /// `<think>...</think>` body). Forwarded from `IncomingMessage`
     /// and passed to the Jinja template so the template can
@@ -49,67 +62,105 @@ pub(crate) struct MsgEntry {
 pub(super) struct BuildOut {
     pub(super) messages: Vec<MsgEntry>,
     pub(super) cwd_hint: Option<String>,
-    pub(super) image_pixels: Vec<(Vec<f32>, usize, usize)>,
+    pub(super) image_pixels: Vec<spark_model::VisionItem>,
     pub(super) image_pad_counts: Vec<usize>,
 }
 
-/// Append the encoder-input string for every image part on `m` to
-/// `all_images`, growing `image_pad_counts` in lockstep (each pad count is
-/// filled in later by the vision preprocessor). Shared by the tool-message
-/// branch and the normal branch so images ride every role uniformly —
-/// including tool results, the motivating case for issue #165.
+/// One media item on its way to the vision path: what it is, and the
+/// encoder-input string it resolved to (always a data: URI or raw base64 by
+/// the time it is in here — remote URLs are fetched or refused at
+/// collection time).
+struct MediaInput {
+    kind: MediaKind,
+    uri: String,
+}
+
+/// Append every media part on `m` to `media` **in content order**, growing
+/// `image_pad_counts` in lockstep (each pad count is filled in later by the
+/// preprocessor). Shared by the tool-message branch and the normal branch so
+/// media rides every role uniformly — including tool results, the motivating
+/// case for issue #165.
 #[allow(clippy::result_large_err)]
-fn collect_message_images(
+fn collect_message_media(
     m: &Message,
-    all_images: &mut Vec<String>,
+    media: &mut Vec<MediaInput>,
     image_pad_counts: &mut Vec<usize>,
     remote: &super::remote_image::RemoteImagePolicy,
 ) -> Result<(), Response> {
+    // ORDER IS A CONTRACT, and the order is the CLIENT'S. The template emits
+    // one marker per media item in the order they appear in the content
+    // array, and `expand_vision_pads` walks pad tokens left to right
+    // consuming one count each — so this one pass, `MsgEntry::media` and the
+    // preprocessing loop below must all traverse `m.content` the same way.
+    // Grouping by modality anywhere in that chain shows the model the items
+    // in an order the caller never wrote, and does it silently: every count
+    // still agrees with every other one.
     for part in &m.content {
-        if let ContentPart::Image(src) = part {
-            let uri = match &src.data {
-                ImageData::Base64(s) => s.clone(),
-                // The encoder does not fetch remote URLs itself. Either the
-                // operator has granted this server the capability, in which
-                // case the URL is resolved to a data: URI here, or it has not,
-                // in which case this is a 400 naming the flag. What must not
-                // happen is feeding the URL string onward: it would reach the
-                // base64 decoder and fail with a confusing "base64 decode
-                // failed" (PCND: fail fast, with the real reason).
-                ImageData::Url(url) => {
-                    let shown: String = url.chars().take(120).collect();
-                    if !remote.enabled {
-                        return Err(openai_error_response(
-                            StatusCode::BAD_REQUEST,
-                            format!(
-                                "image URLs are not fetched by this server (got '{shown}'); \
-                                 send the image as a base64 data: URI, or start the server \
-                                 with --vision-allow-remote-images to enable fetching"
-                            ),
-                        ));
-                    }
-                    match super::remote_image::fetch_as_data_uri(url, remote) {
-                        Ok(data_uri) => data_uri,
-                        Err(why) => {
-                            // The reason is surfaced rather than flattened to
-                            // "could not fetch": the operator turned this on
-                            // deliberately, and "resolves to a private
-                            // address" and "exceeds the size cap" call for
-                            // different fixes.
-                            tracing::warn!("remote image fetch refused: {shown}: {why}");
-                            return Err(openai_error_response(
-                                StatusCode::BAD_REQUEST,
-                                format!("could not fetch image URL '{shown}': {why}"),
-                            ));
-                        }
-                    }
-                }
-            };
-            all_images.push(uri);
-            image_pad_counts.push(0);
-        }
+        let (kind, data) = match part {
+            ContentPart::Image(src) => (MediaKind::Image, &src.data),
+            ContentPart::Video(src) => (MediaKind::Video, &src.data),
+            ContentPart::Text(_) => continue,
+        };
+        media.push(MediaInput {
+            kind,
+            uri: resolve_media_uri(kind, data, remote)?,
+        });
+        image_pad_counts.push(0);
     }
     Ok(())
+}
+
+/// Resolve one media source to an encoder-input string, applying the
+/// operator's remote-fetch policy. Shared by both modalities because the
+/// policy and its failure modes are identical — only the noun in the message
+/// differs.
+#[allow(clippy::result_large_err)]
+fn resolve_media_uri(
+    kind: MediaKind,
+    data: &ImageData,
+    remote: &super::remote_image::RemoteImagePolicy,
+) -> Result<String, Response> {
+    let noun = match kind {
+        MediaKind::Image => "image",
+        MediaKind::Video => "video",
+    };
+    match data {
+        ImageData::Base64(s) => Ok(s.clone()),
+        // Neither the encoder nor the video decoder fetches remote URLs
+        // itself. Either the operator has granted this server the
+        // capability, in which case the URL is resolved to a data: URI here,
+        // or it has not, in which case this is a 400 naming the flag. What
+        // must not happen is feeding the URL string onward: it would reach
+        // the base64 decoder and fail with a confusing "base64 decode
+        // failed" (PCND: fail fast, with the real reason).
+        ImageData::Url(url) => {
+            let shown: String = url.chars().take(120).collect();
+            if !remote.enabled {
+                return Err(openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "{noun} URLs are not fetched by this server (got '{shown}'); \
+                         send the {noun} as a base64 data: URI, or start the server \
+                         with --vision-allow-remote-images to enable fetching"
+                    ),
+                ));
+            }
+            match super::remote_image::fetch_as_data_uri(url, remote) {
+                Ok(data_uri) => Ok(data_uri),
+                Err(why) => {
+                    // The reason is surfaced rather than flattened to "could
+                    // not fetch": the operator turned this on deliberately,
+                    // and "resolves to a private address" and "exceeds the
+                    // size cap" call for different fixes.
+                    tracing::warn!("remote {noun} fetch refused: {shown}: {why}");
+                    Err(openai_error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("could not fetch {noun} URL '{shown}': {why}"),
+                    ))
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -117,13 +168,14 @@ pub(super) fn build_msg_entries(
     vision_config: Option<&VisionConfig>,
     vision_max_pixels: Option<usize>,
     remote_images: &super::remote_image::RemoteImagePolicy,
+    video: &VideoDecode<'_>,
     input: &[Message],
     tools_active: bool,
     levers: &super::levers::ChatLevers,
     preserve_developer_role: bool,
 ) -> Result<BuildOut, Response> {
     let mut messages: Vec<MsgEntry> = Vec::with_capacity(input.len());
-    let mut all_images: Vec<String> = Vec::new();
+    let mut media: Vec<MediaInput> = Vec::new();
     let mut image_pad_counts: Vec<usize> = Vec::new();
     let mut consecutive_tool_errors: u32 = 0;
     // BW1 bash-wandering watchdog: tally tool-call productivity across the
@@ -210,14 +262,13 @@ pub(super) fn build_msg_entries(
                 content: text,
                 tool_calls: None,
                 tool_call_id: m.tool_call_id.clone(),
-                image_count: m.image_count(),
+                media: m.media_kinds(),
                 reasoning_content: None,
             });
-            collect_message_images(m, &mut all_images, &mut image_pad_counts, remote_images)?;
+            collect_message_media(m, &mut media, &mut image_pad_counts, remote_images)?;
             continue;
         }
 
-        let image_count = m.image_count();
         // Wave 3 (2026-05-26): `ATLAS_STRIP_REASONING_HISTORY=1` drops
         // historical reasoning_content entirely. Matches MLC commit
         // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
@@ -244,7 +295,7 @@ pub(super) fn build_msg_entries(
             content: text,
             tool_calls: tool_calls_json,
             tool_call_id: m.tool_call_id.clone(),
-            image_count,
+            media: m.media_kinds(),
             // F1: forward reasoning_content for assistant messages only.
             // Wave 3: when strip_reasoning=true, drop it for ALL turns,
             // forcing the template back to the pre-F1 "clean content
@@ -261,7 +312,7 @@ pub(super) fn build_msg_entries(
                 None
             },
         });
-        collect_message_images(m, &mut all_images, &mut image_pad_counts, remote_images)?;
+        collect_message_media(m, &mut media, &mut image_pad_counts, remote_images)?;
     }
 
     // P1-6 (2026-07-09): duplicate-error observation masking
@@ -335,39 +386,79 @@ pub(super) fn build_msg_entries(
         );
     }
 
-    // Preprocess images. One shared fail-fast point: if images were
+    // Preprocess the media. One shared fail-fast point: if media was
     // supplied but the model has no vision encoder, reject the request
     // (issue #165) instead of silently dropping the user's input with a
     // 200 — the old text-only behavior lost images without any signal.
-    let mut image_pixels: Vec<(Vec<f32>, usize, usize)> = Vec::new();
-    if !all_images.is_empty() {
+    //
+    // ONE loop over the collected sequence, dispatching per item, so
+    // `image_pixels[i]`, `image_pad_counts[i]` and the i-th rendered marker
+    // are the same item by construction. Preprocessing images and videos in
+    // separate passes would re-introduce the grouping this fix removed.
+    let mut image_pixels: Vec<spark_model::VisionItem> = Vec::new();
+    if !media.is_empty() {
         let Some(vcfg) = vision_config else {
             return Err(openai_error_response(
                 StatusCode::BAD_REQUEST,
-                "this model does not accept image input (no vision config)".to_string(),
+                "this model does not accept image or video input (no vision config)".to_string(),
             ));
         };
-        for (idx, uri) in all_images.iter().enumerate() {
-            match spark_model::vision_preprocess::preprocess_image_with_max_pixels(
-                uri,
-                vcfg,
-                vision_max_pixels,
-            ) {
-                Ok((pixels, grid_h, grid_w)) => {
-                    image_pad_counts[idx] = spark_model::vision_preprocess::image_pad_count(
-                        grid_h,
-                        grid_w,
-                        vcfg.spatial_merge_size,
-                    );
-                    image_pixels.push((pixels, grid_h, grid_w));
+        for (idx, input) in media.iter().enumerate() {
+            let item = match input.kind {
+                MediaKind::Image => {
+                    match spark_model::vision_preprocess::preprocess_image_with_max_pixels(
+                        &input.uri,
+                        vcfg,
+                        vision_max_pixels,
+                    ) {
+                        Ok((pixels, grid_h, grid_w)) => {
+                            spark_model::VisionItem::image(pixels, grid_h, grid_w)
+                        }
+                        Err(e) => {
+                            return Err(openai_error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("Image decode error: {e}"),
+                            ));
+                        }
+                    }
                 }
-                Err(e) => {
-                    return Err(openai_error_response(
-                        StatusCode::BAD_REQUEST,
-                        format!("Image decode error: {e}"),
-                    ));
+                MediaKind::Video => {
+                    match spark_model::video_preprocess::preprocess_video(
+                        &input.uri,
+                        vcfg,
+                        vision_max_pixels,
+                        video.fps,
+                        video.ffmpeg,
+                    ) {
+                        Ok(v) => spark_model::VisionItem {
+                            groups: v.groups,
+                            grid_h: v.grid_h,
+                            grid_w: v.grid_w,
+                        },
+                        Err(e) => {
+                            return Err(openai_error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("Video decode error: {e:#}"),
+                            ));
+                        }
+                    }
                 }
+            };
+            image_pad_counts[idx] = item.pad_count(vcfg.spatial_merge_size);
+            if input.kind == MediaKind::Video {
+                // Logged at the media index, not a video ordinal: the index
+                // is what lines the clip up with its pad run and its
+                // encoder rows.
+                tracing::info!(
+                    "Video (media item {}): {} temporal groups, {}x{} patches, {} vision tokens",
+                    idx,
+                    item.t_len(),
+                    item.grid_h,
+                    item.grid_w,
+                    image_pad_counts[idx],
+                );
             }
+            image_pixels.push(item);
         }
     }
 
@@ -485,3 +576,9 @@ fn duplicate_error_masks(tool_results: &[(usize, String)]) -> Vec<(usize, String
 #[cfg(test)]
 #[path = "msg_entry_tests.rs"]
 mod msg_entry_tests;
+
+// A sibling file rather than a module inside `msg_entry_tests.rs`: these cases
+// carried that file past the 500-LoC cap.
+#[cfg(test)]
+#[path = "msg_entry_media_order_tests.rs"]
+mod msg_entry_media_order_tests;

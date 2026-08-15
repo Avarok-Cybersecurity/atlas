@@ -61,6 +61,12 @@ pub struct AppState {
     /// Default-disabled; see `api::chat::remote_image` for why this one
     /// capability is opt-in rather than default-ON with a kill-switch.
     pub remote_image_policy: crate::api::chat::remote_image::RemoteImagePolicy,
+    /// Subprocess decoding policy for video parts. Disabled by default; see
+    /// `spark_model::video_decode_ffmpeg` for why video needs an external
+    /// decoder for everything except GIF.
+    pub video_ffmpeg: spark_model::video_decode_ffmpeg::FfmpegPolicy,
+    /// Frames per second a video is sampled at.
+    pub video_fps: f32,
     /// Default sampling temperature from generation_config.json.
     pub default_temperature: f32,
     /// Default top-k from generation_config.json.

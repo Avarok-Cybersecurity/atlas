@@ -56,7 +56,7 @@ impl InferenceRequest {
     }
 
     /// Preprocessed image data, consumed by the scheduler before prefill.
-    pub fn take_image_pixels(&mut self) -> Vec<(Vec<f32>, usize, usize)> {
+    pub fn take_image_pixels(&mut self) -> Vec<spark_model::VisionItem> {
         match self {
             InferenceRequest::Blocking { image_pixels, .. } => std::mem::take(image_pixels),
             InferenceRequest::Streaming { image_pixels, .. } => std::mem::take(image_pixels),
@@ -66,7 +66,7 @@ impl InferenceRequest {
     /// Borrow the preprocessed image data (non-consuming) — used by the vision
     /// co-dispatch pre-pass to batch-encode across requests before the admit
     /// loop consumes each request.
-    pub fn image_pixels_ref(&self) -> &[(Vec<f32>, usize, usize)] {
+    pub fn image_pixels_ref(&self) -> &[spark_model::VisionItem] {
         match self {
             InferenceRequest::Blocking { image_pixels, .. } => image_pixels.as_slice(),
             InferenceRequest::Streaming { image_pixels, .. } => image_pixels.as_slice(),

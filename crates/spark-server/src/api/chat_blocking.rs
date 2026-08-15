@@ -40,7 +40,7 @@ pub(super) struct BlockingPathArgs {
     pub length_penalty: f32,
     /// NLLB beam search: early stopping.
     pub early_stopping: bool,
-    pub image_pixels: Vec<(Vec<f32>, usize, usize)>,
+    pub image_pixels: Vec<spark_model::VisionItem>,
     pub max_tokens: usize,
     pub temperature: f32,
     pub top_k: u32,

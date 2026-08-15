@@ -215,6 +215,198 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
 /// difference between "something is listening" and "it is serving what you
 /// asked for". Atlas answers a completion regardless of the `model` field, so
 /// a wrong name is otherwise invisible until the numbers look strange.
+/// What a NON-STREAMING `/v1/chat/completions` returned.
+#[derive(Debug, Default, Clone)]
+pub struct BlockingOutcome {
+    /// One entry per `choices[]`, in order. A `Vec` rather than a single
+    /// string because `n > 1` is precisely the case worth checking: the
+    /// blocking path decides per choice whether that choice carries the
+    /// request's image pixels.
+    pub choices: Vec<String>,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+}
+
+/// POST a chat request and read a whole JSON response.
+///
+/// Deliberately separate from [`chat_stream`] rather than a flag on it: the
+/// two speak different wire protocols (one SSE, one a single JSON body) and
+/// conflating them would mean a parser that has to guess. What matters for a
+/// benchmark is that BOTH exist and both are exercised — a server can stream
+/// correctly and assemble a blocking response wrongly, and no streaming test
+/// would notice.
+pub async fn chat_blocking(
+    target: &TargetEndpoint,
+    body: &Value,
+    timeout: Duration,
+) -> Result<BlockingOutcome> {
+    tokio::time::timeout(timeout, chat_blocking_inner(target, body))
+        .await
+        .map_err(|_| anyhow!("request exceeded {:.0}s", timeout.as_secs_f64()))?
+}
+
+async fn chat_blocking_inner(target: &TargetEndpoint, body: &Value) -> Result<BlockingOutcome> {
+    post_json(target, "/v1/chat/completions", body).await
+}
+
+/// The Responses API (`/v1/responses`), non-streaming.
+///
+/// A DIFFERENT parse path from chat-completions all the way down — its own
+/// content-part shapes (`input_image`, `input_video`), its own adapter into
+/// the IR. Nothing in either benchmark drove it until now, so a regression in
+/// that adapter would have been invisible to every leg while the modern
+/// surface quietly stopped seeing pictures.
+pub async fn responses_blocking(
+    target: &TargetEndpoint,
+    body: &Value,
+    timeout: Duration,
+) -> Result<BlockingOutcome> {
+    tokio::time::timeout(timeout, post_json(target, "/v1/responses", body))
+        .await
+        .map_err(|_| anyhow!("request exceeded {:.0}s", timeout.as_secs_f64()))?
+}
+
+async fn post_json(target: &TargetEndpoint, path: &str, body: &Value) -> Result<BlockingOutcome> {
+    let (host, port) = target.host_port()?;
+    let payload = serde_json::to_string(body)?;
+    let mut sock = TcpStream::connect((host.as_str(), port))
+        .await
+        .with_context(|| format!("connecting to {}", target.base_url))?;
+    let _ = sock.set_nodelay(true);
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\n\
+         Content-Type: application/json\r\nAccept: application/json\r\n\
+         Connection: close\r\nContent-Length: {}\r\n\r\n{payload}",
+        payload.len()
+    );
+    sock.write_all(request.as_bytes()).await.context("write")?;
+
+    // Read to EOF: `Connection: close` means the server signals the end by
+    // closing, so no Content-Length parsing is needed.
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let n = sock.read(&mut buf).await.context("read")?;
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buf[..n]);
+    }
+
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .context("no header/body split in the response")?;
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let body_bytes = &raw[split + 4..];
+
+    let status = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("?")
+        .to_string();
+    if status != "200" {
+        let detail = error_message_from_response(body_bytes).unwrap_or_else(|| {
+            String::from_utf8_lossy(body_bytes)
+                .chars()
+                .take(200)
+                .collect()
+        });
+        bail!("endpoint returned HTTP {status}: {detail}");
+    }
+
+    // The body may be chunked; strip transfer encoding if present.
+    let text = if head.to_lowercase().contains("transfer-encoding: chunked") {
+        dechunk(body_bytes)
+    } else {
+        String::from_utf8_lossy(body_bytes).to_string()
+    };
+    let v: Value = serde_json::from_str(text.trim()).with_context(|| {
+        format!(
+            "response was not JSON: {}",
+            text.chars().take(200).collect::<String>()
+        )
+    })?;
+
+    // Chat-completions puts the reply in `choices[].message.content`;
+    // Responses puts it in `output[].content[].text`. Read whichever is
+    // present so one reader serves both surfaces.
+    if v.get("choices").is_none() && v.get("output").is_some() {
+        let mut texts = Vec::new();
+        if let Some(items) = v["output"].as_array() {
+            for item in items {
+                // `content[].text` is the answer; `summary[].text` is the
+                // reasoning. BOTH are collected, because on a thinking-first
+                // checkpoint the whole reply can arrive as reasoning with an
+                // empty `output_text` — measured 2026-08-14, where the summary
+                // read "I see..." while the answer was "". A reader taking only
+                // the answer would report "the Responses API cannot see images"
+                // for a model that plainly can.
+                //
+                // The lever is `reasoning.effort`, which IS the OpenAI-standard
+                // control and IS honored here. `chat_template_kwargs` is
+                // dropped by the Responses lowering, so the vLLM-style
+                // thinking-off switch the chat-completions path uses has no
+                // effect on this surface.
+                for key in ["content", "summary"] {
+                    if let Some(parts) = item[key].as_array() {
+                        for part in parts {
+                            if let Some(s) = part["text"].as_str() {
+                                texts.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(BlockingOutcome {
+            choices: vec![texts.join("")],
+            prompt_tokens: v["usage"]["input_tokens"].as_u64().unwrap_or(0) as usize,
+            completion_tokens: v["usage"]["output_tokens"].as_u64().unwrap_or(0) as usize,
+        });
+    }
+    let choices = v["choices"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| {
+                    c["message"]["content"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(BlockingOutcome {
+        choices,
+        prompt_tokens: v["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as usize,
+        completion_tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0) as usize,
+    })
+}
+
+/// Minimal chunked-transfer decoder: `<hex-len>\r\n<data>\r\n`, terminated by
+/// a zero-length chunk. Only what a JSON body needs — no trailers, no
+/// extensions.
+fn dechunk(mut b: &[u8]) -> String {
+    let mut out = Vec::new();
+    loop {
+        let Some(nl) = b.windows(2).position(|w| w == b"\r\n") else {
+            break;
+        };
+        let len = usize::from_str_radix(String::from_utf8_lossy(&b[..nl]).trim(), 16).unwrap_or(0);
+        if len == 0 {
+            break;
+        }
+        let start = nl + 2;
+        let end = (start + len).min(b.len());
+        out.extend_from_slice(&b[start..end]);
+        b = &b[(end + 2).min(b.len())..];
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
 pub async fn list_models(target: &TargetEndpoint, timeout: Duration) -> Result<Vec<String>> {
     let body = get_models(target, timeout).await?;
     let start = body

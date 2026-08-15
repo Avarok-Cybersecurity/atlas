@@ -36,7 +36,38 @@ fn text_concatenates_text_parts_in_order_ignoring_images() {
     };
     // Mirrors the historical `text_parts.join("")` flattening.
     assert_eq!(m.text(), "ab");
-    assert_eq!(m.image_count(), 1);
+    assert_eq!(m.media_kinds(), vec![MediaKind::Image]);
+}
+
+/// `media_kinds` reports the modalities in content order — the property the
+/// vision-marker rendering, the pad counts and the encoder items all read.
+#[test]
+fn media_kinds_follow_content_order_across_modalities() {
+    let m = Message {
+        role: Role::User,
+        content: vec![
+            ContentPart::Video(VideoSource {
+                data: ImageData::Base64("clip".into()),
+            }),
+            ContentPart::Text("compare".into()),
+            ContentPart::Image(ImageSource {
+                data: ImageData::Base64("still".into()),
+            }),
+            ContentPart::Video(VideoSource {
+                data: ImageData::Base64("clip2".into()),
+            }),
+        ],
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        name: None,
+        reasoning: None,
+        tool_error: false,
+    };
+    assert_eq!(
+        m.media_kinds(),
+        vec![MediaKind::Video, MediaKind::Image, MediaKind::Video],
+        "grouping by modality here is the reordering defect"
+    );
 }
 
 #[test]
@@ -60,7 +91,7 @@ fn assistant_tool_call_and_reasoning_are_first_class() {
     assert_eq!(m.tool_calls[0].name, "get_weather");
     assert_eq!(m.tool_calls[0].arguments["city"], "SF");
     assert_eq!(m.reasoning.as_ref().unwrap().text, "let me think");
-    assert_eq!(m.image_count(), 0);
+    assert!(m.media_kinds().is_empty());
 }
 
 #[test]

@@ -422,10 +422,7 @@ pub(super) async fn finalize_responses_stream(
         {
             transcript.push(crate::openai::IncomingMessage {
                 role: "assistant".to_string(),
-                content: crate::openai::ParsedContent {
-                    text: transcript_text.clone(),
-                    images: Vec::new(),
-                },
+                content: crate::openai::ParsedContent::text_only(transcript_text.clone()),
                 tool_calls: if stored_tool_calls.is_empty() {
                     None
                 } else {

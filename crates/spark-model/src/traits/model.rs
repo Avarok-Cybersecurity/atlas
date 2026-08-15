@@ -875,7 +875,7 @@ pub trait Model: Send + Sync {
     /// Must be called before `prefill_chunk` when the prompt contains `<|image_pad|>` tokens.
     ///
     /// Default: no-op (text-only models).
-    fn prepare_vision_embed(&self, _images: &[(Vec<f32>, usize, usize)]) -> Result<()> {
+    fn prepare_vision_embed(&self, _images: &[crate::VisionItem]) -> Result<()> {
         Ok(())
     }
 
@@ -886,7 +886,7 @@ pub trait Model: Send + Sync {
     /// its slice of the shared packed `buf_out`. Default: no-op (text models).
     fn prepare_vision_embed_batched(
         &self,
-        _per_request: &[Vec<(Vec<f32>, usize, usize)>],
+        _per_request: &[Vec<crate::VisionItem>],
     ) -> Result<Vec<(usize, usize, usize, usize)>> {
         Ok(Vec::new())
     }

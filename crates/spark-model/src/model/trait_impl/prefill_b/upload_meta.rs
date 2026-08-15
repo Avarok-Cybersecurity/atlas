@@ -100,31 +100,38 @@ impl TransformerModel {
             // Build (T, H, W) streams matching HF Qwen3-VL's
             // `get_rope_index`/`get_vision_position_ids`:
             //   - text token: T = H = W = current_pos, increment current_pos by 1.
-            //   - image-pad run (post-merge grid gh×gw at base = current_pos):
-            //       patch k ∈ [0, gh*gw): T = base, H = base + k/gw, W = base + k%gw.
-            //     After the run, current_pos += max(gh, gw).
+            //   - vision-pad run (item of t_len groups over a post-merge grid
+            //     gh×gw, at base = current_pos): token k of group g gets
+            //       T = base + g, H = base + k/gw, W = base + k%gw.
+            //     After the run, current_pos += max(t_len, gh, gw).
             // This matters because Qwen3-VL/3.6 was trained with T constant
             // across one image and subsequent text tokens shifted by the
             // image's max spatial extent — Atlas's previous "T=linear over
             // all tokens" scheme produced out-of-distribution position IDs
             // for every post-image token.
+            //
+            // An IMAGE is the t_len = 1 case: `base + g` collapses to `base`,
+            // and `max(1, gh, gw)` to `max(gh, gw)`, so the arithmetic below
+            // is byte-identical to the image-only version it replaces. A
+            // VIDEO is where the two diverge — its T advances once per
+            // temporal group, which is the whole reason the run cannot be
+            // treated as t_len separate images.
             if use_mrope {
                 stg.positions_h.clear();
                 stg.positions_w.clear();
                 let grids = self.vision_image_grids.lock().clone();
-                let pad_id = self
-                    .config
-                    .vision
-                    .as_ref()
-                    .map(|v| v.image_pad_token_id)
-                    .filter(|v| *v != 0)
-                    .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
+                // Both pad tokens: consumed identically here — the item's
+                // t_len already says which it is — but the scan has to
+                // recognize both, or a video run would be walked one text
+                // token at a time.
+                let (pad_id, video_pad_id) = self.vision_pad_ids();
+                let is_pad = |tok: u32| tok == pad_id || tok == video_pad_id;
                 let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
-                let have_vision = !grids.is_empty() && chunk_tokens.contains(&pad_id);
+                let have_vision = !grids.is_empty() && chunk_tokens.iter().copied().any(is_pad);
 
                 if have_vision {
                     stg.positions.clear();
-                    let mut current_pos: u32 = proc_start as u32;
+                    let current_pos: u32 = proc_start as u32;
                     // Co-dispatch: this request owns grids[grid_base .. grid_base+owned]
                     // of the shared packed vision_image_grids (0/all for legacy).
                     let grid_base = *self.vision_grid_base.lock();
@@ -134,31 +141,18 @@ impl TransformerModel {
                     } else {
                         grids.len()
                     };
-                    let mut img_idx = grid_base;
-                    let mut i = 0usize;
-                    while i < chunk_tokens.len() {
-                        if chunk_tokens[i] == pad_id && img_idx < grid_hi {
-                            let (gh, gw) = grids[img_idx];
-                            let run_len = gh * gw;
-                            let base = current_pos;
-                            for k in 0..run_len {
-                                let row = (k / gw.max(1)) as u32;
-                                let col = (k % gw.max(1)) as u32;
-                                stg.positions.push(base);
-                                stg.positions_h.push(base + row);
-                                stg.positions_w.push(base + col);
-                            }
-                            current_pos += gh.max(gw) as u32;
-                            i += run_len;
-                            img_idx += 1;
-                        } else {
-                            stg.positions.push(current_pos);
-                            stg.positions_h.push(current_pos);
-                            stg.positions_w.push(current_pos);
-                            current_pos += 1;
-                            i += 1;
-                        }
-                    }
+                    mrope_pos::build(
+                        chunk_tokens,
+                        &grids,
+                        grid_base,
+                        grid_hi,
+                        current_pos,
+                        pad_id,
+                        video_pad_id,
+                        &mut stg.positions,
+                        &mut stg.positions_h,
+                        &mut stg.positions_w,
+                    );
                 } else {
                     stg.positions_h.extend_from_slice(&stg.positions);
                     stg.positions_w.extend_from_slice(&stg.positions);
@@ -219,3 +213,6 @@ impl TransformerModel {
         })
     }
 }
+
+#[path = "mrope_pos.rs"]
+pub(crate) mod mrope_pos;

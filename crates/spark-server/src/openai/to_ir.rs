@@ -14,17 +14,24 @@ use crate::ir::message::{ContentPart, ImageData, ImageSource, Message, Reasoning
 
 impl From<&IncomingMessage> for Message {
     fn from(m: &IncomingMessage) -> Self {
-        // Images first (matching the template's historical `[image*N,
-        // text]` content-array shape), then a single text part. The
-        // original wire interleaving was already flattened away by
-        // `ParsedContent`, and `build_msg_entries`/the template read
-        // `text()` and `image_count()` independently, so part order here
-        // does not affect rendering.
+        // Media first — in the client's order — then a single text part.
+        // `ParsedContent` already carries images and videos as one ordered
+        // sequence, so this loop copies that order through rather than
+        // re-grouping by modality; the pad counts, the encoder items and
+        // the template markers are all built from it downstream, and they
+        // are only consistent with the caller's request if all three agree
+        // on this order.
+        //
+        // Text still lands last regardless of where the client put it: the
+        // wire parse flattens all text parts into one string, and the
+        // templates render vision markers ahead of the prose anyway.
         let mut content: Vec<ContentPart> = Vec::new();
-        for img in &m.content.images {
-            content.push(ContentPart::Image(ImageSource {
-                data: ImageData::from_uri(img.clone()),
-            }));
+        for item in &m.content.media {
+            let data = ImageData::from_uri(item.uri.clone());
+            content.push(match item.kind {
+                crate::ir::MediaKind::Image => ContentPart::Image(ImageSource { data }),
+                crate::ir::MediaKind::Video => ContentPart::Video(crate::ir::VideoSource { data }),
+            });
         }
         if !m.content.text.is_empty() {
             content.push(ContentPart::Text(m.content.text.clone()));
@@ -153,9 +160,24 @@ pub(crate) fn resolve_top_logprobs(logprobs: Option<bool>, top_logprobs: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::MediaKind;
     use crate::ir::message::{ContentPart, ImageData, ImageSource, Reasoning};
-    use crate::openai::{IncomingMessage, ParsedContent};
+    use crate::openai::{IncomingMessage, MediaRef, ParsedContent};
     use crate::tool_parser::{IncomingFunction, IncomingToolCall};
+
+    fn image(uri: &str) -> MediaRef {
+        MediaRef {
+            kind: MediaKind::Image,
+            uri: uri.to_string(),
+        }
+    }
+
+    fn video(uri: &str) -> MediaRef {
+        MediaRef {
+            kind: MediaKind::Video,
+            uri: uri.to_string(),
+        }
+    }
 
     fn msg(role: &str) -> IncomingMessage {
         IncomingMessage {
@@ -175,7 +197,7 @@ mod tests {
         let ir: Message = (&m).into();
         assert_eq!(ir.role, Role::User);
         assert_eq!(ir.content, vec![ContentPart::Text("hi".into())]);
-        assert_eq!(ir.image_count(), 0);
+        assert!(ir.media_kinds().is_empty());
         assert!(ir.tool_calls.is_empty());
         assert!(ir.reasoning.is_none());
         assert!(!ir.tool_error);
@@ -193,9 +215,9 @@ mod tests {
     fn images_precede_text_and_are_preserved_verbatim() {
         let mut m = msg("user");
         m.content.text = "see".into();
-        m.content.images = vec!["data:image/png;base64,AAA".into()];
+        m.content.media = vec![image("data:image/png;base64,AAA")];
         let ir: Message = (&m).into();
-        // Images first (matches the template's [image*N, text] order), then text.
+        // Media first (matches the template's [media*N, text] order), then text.
         assert_eq!(
             ir.content,
             vec![
@@ -205,7 +227,38 @@ mod tests {
                 ContentPart::Text("see".into()),
             ]
         );
-        assert_eq!(ir.image_count(), 1);
+        assert_eq!(ir.media_kinds(), vec![MediaKind::Image]);
+    }
+
+    /// ★ The reordering regression, at the wire→IR edge. The adapter used
+    /// to emit every image and then every video, so a request that sent a
+    /// video first described a different scene than the one it was shown.
+    #[test]
+    fn media_order_survives_the_ir_conversion() {
+        let mut m = msg("user");
+        m.content.text = "which came first?".into();
+        m.content.media = vec![video("vvv"), image("iii"), video("www")];
+        let ir: Message = (&m).into();
+        assert_eq!(
+            ir.content,
+            vec![
+                ContentPart::Video(crate::ir::VideoSource {
+                    data: ImageData::Base64("vvv".into()),
+                }),
+                ContentPart::Image(ImageSource {
+                    data: ImageData::Base64("iii".into()),
+                }),
+                ContentPart::Video(crate::ir::VideoSource {
+                    data: ImageData::Base64("www".into()),
+                }),
+                ContentPart::Text("which came first?".into()),
+            ]
+        );
+        assert_eq!(
+            ir.media_kinds(),
+            vec![MediaKind::Video, MediaKind::Image, MediaKind::Video],
+            "media_kinds is what drives the markers, the pad counts and the encoder items"
+        );
     }
 
     #[test]
@@ -214,9 +267,9 @@ mod tests {
         // reject them explicitly — mislabeling them Base64 produced a
         // confusing "base64 decode failed" from the vision preprocessor.
         let mut m = msg("user");
-        m.content.images = vec![
-            "https://example.com/cat.png".into(),
-            "data:image/png;base64,AAA".into(),
+        m.content.media = vec![
+            image("https://example.com/cat.png"),
+            image("data:image/png;base64,AAA"),
         ];
         let ir: Message = (&m).into();
         assert_eq!(

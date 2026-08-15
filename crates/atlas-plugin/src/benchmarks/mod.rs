@@ -12,11 +12,13 @@ pub mod baseline;
 pub mod bfcl;
 pub mod concurrency;
 pub mod contamination;
+pub mod media_integrity;
 pub mod serve_matrix;
 pub mod ssm_poison;
 pub mod stats;
 pub mod transcript;
 pub mod ttft;
+pub mod video;
 pub mod vision;
 
 /// Collapse a message onto one line and bound its length.

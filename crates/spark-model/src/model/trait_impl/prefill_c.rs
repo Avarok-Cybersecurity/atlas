@@ -137,16 +137,10 @@ impl TransformerModel {
             if pending > 0
                 && let Some(ve) = &self.vision_encoder
             {
-                let pad_id = self
-                    .config
-                    .vision
-                    .as_ref()
-                    .map(|v| v.image_pad_token_id)
-                    .filter(|v| *v != 0)
-                    .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
+                let (image_pad, video_pad) = self.vision_pad_ids();
                 let mut img_idx = 0usize;
                 for (i, &tok) in tokens.iter().enumerate() {
-                    if tok == pad_id {
+                    if tok == image_pad || tok == video_pad {
                         let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
                         let dst = hidden.offset(i * h * fp32);
                         self.gpu

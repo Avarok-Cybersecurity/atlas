@@ -401,6 +401,14 @@ impl ChatTokenizer {
             .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None })
     }
 
+    /// `<|video_pad|>`, the temporal sibling. `None` on a tokenizer without
+    /// it — every text-only model, and any VL model that predates video.
+    pub fn video_pad_token_id(&self) -> Option<u32> {
+        self.encode("<|video_pad|>")
+            .ok()
+            .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None })
+    }
+
     /// Post-process a rendered token sequence to expand `<|image_pad|>`
     /// placeholders. The Qwen3-VL / Qwen3.6 chat template emits exactly one
     /// `<|image_pad|>` per image, but the vision encoder produces
@@ -412,18 +420,21 @@ impl ChatTokenizer {
     /// `pad_counts[i]` is the number of patches the i-th image produces.
     /// Extra or missing `<|image_pad|>` occurrences (vs `pad_counts.len()`)
     /// pass through unchanged, matching counts are replicated in place.
-    pub fn expand_image_pads(&self, tokens: Vec<u32>, pad_counts: &[usize]) -> Vec<u32> {
+    pub fn expand_vision_pads(&self, tokens: Vec<u32>, pad_counts: &[usize]) -> Vec<u32> {
         if pad_counts.is_empty() || pad_counts.iter().all(|&c| c <= 1) {
             return tokens;
         }
-        let Some(pad_id) = self.image_pad_token_id() else {
+        let image_pad = self.image_pad_token_id();
+        let video_pad = self.video_pad_token_id();
+        if image_pad.is_none() && video_pad.is_none() {
             return tokens;
-        };
+        }
         let extra: usize = pad_counts.iter().map(|c| c.saturating_sub(1)).sum();
         let mut out = Vec::with_capacity(tokens.len() + extra);
         let mut img_idx = 0usize;
         for t in tokens {
-            if t == pad_id {
+            let pad_id = t;
+            if Some(t) == image_pad || Some(t) == video_pad {
                 let count = pad_counts.get(img_idx).copied().unwrap_or(1).max(1);
                 for _ in 0..count {
                     out.push(pad_id);

@@ -101,6 +101,87 @@ pub const FIXTURES: &[(&str, &[u8], u32, u32)] = &[
         1600,
         900,
     ),
+    // ── edge cases, measured 2026-08-14 on unsloth/Qwen3.6-27B-NVFP4 ────
+    //
+    // GEOMETRY EXTREMES. Two shapes the ladder above never reaches.
+    //
+    // 8x8 snaps UP to a single 32px grid unit -> exactly ONE merged token,
+    // the smallest output the preprocessor can produce. It is the rung where
+    // a rounding change becomes a 0x0 target and a division by zero rather
+    // than a wrong number, so it fails loudly instead of subtly.
+    (
+        "10_tiny_8x8.png",
+        include_bytes!("../../../assets/vision/10_tiny_8x8.png"),
+        8,
+        8,
+    ),
+    // 64x2048 is the aspect ratio the AREA bound alone cannot contain: a
+    // strip has few pixels but an enormous long side, so this is what
+    // exercises the absolute long-side ceiling. 128 tokens, measured.
+    (
+        "11_strip_64x2048.png",
+        include_bytes!("../../../assets/vision/11_strip_64x2048.png"),
+        64,
+        2048,
+    ),
+    // ── DECODE VARIANTS. Same 224x224 geometry as rung 01, so each asserts
+    // the SAME 49 tokens; what differs is only the pixel format reaching the
+    // decoder. Every one of these is something users actually send and the
+    // ladder above never did — a decoder regression on any of them either
+    // errors (visible) or silently produces the wrong pixels (not).
+    //
+    // RGBA with a real alpha gradient: `to_rgb8()` must drop alpha rather
+    // than fail or composite against an unexpected background.
+    (
+        "12_rgba_224.png",
+        include_bytes!("../../../assets/vision/12_rgba_224.png"),
+        224,
+        224,
+    ),
+    // Single-channel JPEG — one channel where the pipeline expects three.
+    (
+        "13_gray_224.jpg",
+        include_bytes!("../../../assets/vision/13_gray_224.jpg"),
+        224,
+        224,
+    ),
+    // 16 bits per channel. A decoder assuming 8 reads every other byte.
+    (
+        "14_png16_224.png",
+        include_bytes!("../../../assets/vision/14_png16_224.png"),
+        224,
+        224,
+    ),
+];
+
+/// The EXIF-orientation pair, kept OUT of the geometry ladder because they
+/// assert a behavior rather than a token count — their geometry is an
+/// unremarkable 49.
+///
+/// Both images are the same pixels — red on the top half, blue on the bottom.
+/// One carries `Orientation = 6` ("rotate 90 CW to display"), the other
+/// carries no EXIF at all.
+///
+/// ★ ATLAS APPLIES THE TAG, so the pair must DISAGREE: rotating 90 CW carries
+/// the stored top edge to the right, so the tagged image reads RIGHT and the
+/// untagged one reads TOP. Requiring them merely to differ would pass on any
+/// random rotation, so the leg names both expected answers.
+///
+/// This was measured as IGNORED on 2026-08-14 and then fixed, because every
+/// viewer a user compares against — phone, browser, file manager — honors the
+/// tag, and a camera very often stores a photo sideways with the tag as the
+/// only record of which way is up. Ignoring it meant "what the model saw" and
+/// "what the user saw" silently disagreed on a large share of real
+/// photographs, with nothing to indicate it.
+pub const EXIF_PAIR: &[(&str, &[u8])] = &[
+    (
+        "15_exif_rot90_224.jpg",
+        include_bytes!("../../../assets/vision/15_exif_rot90_224.jpg"),
+    ),
+    (
+        "16_exif_none_224.jpg",
+        include_bytes!("../../../assets/vision/16_exif_none_224.jpg"),
+    ),
 ];
 
 /// Bump when the fixture SET changes — a new image, a regenerated one, a
@@ -108,7 +189,11 @@ pub const FIXTURES: &[(&str, &[u8], u32, u32)] = &[
 /// version so a regenerated PNG re-provisions by itself.
 fn stamp_value() -> String {
     let mut acc: u64 = 1469598103934665603; // FNV-1a offset basis
-    for (name, bytes, _, _) in FIXTURES {
+    for (name, bytes) in FIXTURES
+        .iter()
+        .map(|(n, b, _, _)| (*n, *b))
+        .chain(EXIF_PAIR.iter().copied())
+    {
         for b in name.as_bytes().iter().chain(bytes.iter()) {
             acc ^= *b as u64;
             acc = acc.wrapping_mul(1099511628211);
@@ -128,6 +213,9 @@ pub fn provision(store: &ArtifactStore) -> Result<std::path::PathBuf> {
         return Ok(dir);
     }
     for (name, bytes, _, _) in FIXTURES {
+        write_asset_bytes(&dir, name, bytes)?;
+    }
+    for (name, bytes) in EXIF_PAIR {
         write_asset_bytes(&dir, name, bytes)?;
     }
     // LAST — a stamp written before the writes complete turns a partial

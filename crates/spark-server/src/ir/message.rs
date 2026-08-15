@@ -127,22 +127,61 @@ impl Message {
         out
     }
 
-    /// Number of image parts on this message (drives the Jinja
-    /// vision-marker expansion).
-    pub fn image_count(&self) -> usize {
+    /// The message's media parts, tagged and **in content order** — the
+    /// single source of truth for how many vision markers this message
+    /// renders and in which sequence.
+    ///
+    /// A pair of per-modality counts cannot express order, and using one
+    /// produced the reordering defect this replaced: a request sending a
+    /// video and then an image rendered the image first, so the model was
+    /// shown the items in a different order than the caller wrote them
+    /// while every count still agreed. Order is a property of the content,
+    /// so it is read off the content.
+    pub fn media_kinds(&self) -> Vec<MediaKind> {
         self.content
             .iter()
-            .filter(|p| matches!(p, ContentPart::Image(_)))
-            .count()
+            .filter_map(|p| match p {
+                ContentPart::Image(_) => Some(MediaKind::Image),
+                ContentPart::Video(_) => Some(MediaKind::Video),
+                ContentPart::Text(_) => None,
+            })
+            .collect()
     }
 }
 
+/// Which vision modality a media item is. Images and videos stay
+/// distinguishable end-to-end because they render with different markers
+/// (`<|image_pad|>` vs `<|video_pad|>`, and `Picture N:` vs `Video N:`) and
+/// carry different pad-token counts — what they must NOT lose is their
+/// relative order, which is why they travel as one tagged sequence rather
+/// than two lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Video,
+}
+
 /// A single piece of message content. Open for future modalities
-/// (audio, video, file).
+/// (audio, file).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentPart {
     Text(String),
     Image(ImageSource),
+    Video(VideoSource),
+}
+
+/// Where a video comes from.
+///
+/// Reuses [`ImageData`] rather than defining a parallel enum: the
+/// base64-or-URL distinction, the classification rule and the reason remote
+/// URLs are refused by default are all identical for both modalities, and a
+/// second copy would be a second place for the remote-fetch policy to drift.
+/// What differs between an image and a video is everything AFTER acquiring
+/// the bytes, which is why the wrapper type is distinct even though its
+/// payload is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoSource {
+    pub data: ImageData,
 }
 
 /// Where an image comes from. The encoder consumes the inner string

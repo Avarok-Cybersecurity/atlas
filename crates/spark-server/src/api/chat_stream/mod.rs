@@ -61,7 +61,7 @@ pub(crate) async fn run_chat_stream(
     num_beams: u32,
     length_penalty: f32,
     early_stopping: bool,
-    image_pixels: Vec<(Vec<f32>, usize, usize)>,
+    image_pixels: Vec<spark_model::VisionItem>,
     max_tokens: usize,
     min_tokens: usize,
     temperature: f32,

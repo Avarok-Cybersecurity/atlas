@@ -518,6 +518,14 @@ pub struct VisionConfig {
     /// into the text embedding stream. Qwen3-VL uses 151655; Qwen3.6 uses
     /// 248056. When 0 the runtime falls back to the legacy Qwen3-VL value.
     pub image_pad_token_id: u32,
+    /// Placeholder token ID for VIDEO frames, the temporal sibling of
+    /// [`Self::image_pad_token_id`]. Qwen3.6/3.8 use 248057. A distinct token
+    /// is what lets the position builder tell a video item from an image one
+    /// in the token stream, which matters because their MRoPE treatment
+    /// differs: an image holds T constant across its whole pad run, a video
+    /// advances T once per temporal group. When 0 the runtime falls back to
+    /// the family default.
+    pub video_pad_token_id: u32,
     /// Resolved vision AREA bound in pixels: the operator's
     /// `--vision-max-pixels`, else the checkpoint's `preprocessor_config.json`,
     /// else `None`.

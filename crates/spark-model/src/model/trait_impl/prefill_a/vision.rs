@@ -16,7 +16,7 @@ use super::super::super::types::TransformerModel;
 impl TransformerModel {
     pub(in crate::model) fn prepare_vision_embed_dispatch(
         &self,
-        images: &[(Vec<f32>, usize, usize)],
+        images: &[crate::VisionItem],
     ) -> Result<()> {
         let ve = match &self.vision_encoder {
             Some(ve) => ve,
@@ -28,10 +28,18 @@ impl TransformerModel {
         // overwrote buf_out row 0 every call, corrupting multi-image requests).
         // Each returned (post_h, post_w, merged_p) preserves image order, so the
         // packed buf_out matches the pad-token splice order downstream.
-        let img_refs: Vec<(&[f32], usize, usize)> = images
-            .iter()
-            .map(|(px, gh, gw)| (px.as_slice(), *gh, *gw))
-            .collect();
+        // FLATTEN to the encoder's unit: one row-block per temporal group.
+        // The ViT has no notion of time, so a clip's groups ride the same path
+        // as separate stills; `item_groups` remembers which belong together so
+        // the grids below can carry the item's temporal extent.
+        let mut img_refs: Vec<(&[f32], usize, usize)> = Vec::new();
+        let mut item_groups: Vec<usize> = Vec::with_capacity(images.len());
+        for it in images {
+            item_groups.push(it.t_len());
+            for g in &it.groups {
+                img_refs.push((g.as_slice(), it.grid_h, it.grid_w));
+            }
+        }
         let _vt0 = std::time::Instant::now();
         let per_image = ve.forward_batched(&img_refs, self.gpu.as_ref(), stream)?;
         if std::env::var("ATLAS_VISION_TIMING").is_ok() {
@@ -42,8 +50,19 @@ impl TransformerModel {
                 _vt0.elapsed().as_secs_f64() * 1000.0
             );
         }
-        let post_merge_grids: Vec<(usize, usize)> =
-            per_image.iter().map(|(h, w, _)| (*h, *w)).collect();
+        // Collapse the encoder's per-GROUP output back to per-ITEM grids,
+        // carrying each item's temporal extent. A still yields (1, h, w),
+        // which is what this produced before video existed.
+        let post_merge_grids: Vec<(usize, usize, usize)> = {
+            let mut out = Vec::with_capacity(item_groups.len());
+            let mut row = 0usize;
+            for t_len in &item_groups {
+                let (h, w, _) = per_image[row];
+                out.push((*t_len, h, w));
+                row += t_len;
+            }
+            out
+        };
         let total_merged: usize = per_image.iter().map(|(_, _, mp)| *mp).sum();
         *self.vision_embed_patches.lock() = total_merged;
         *self.vision_image_grids.lock() = post_merge_grids;
@@ -65,7 +84,7 @@ impl TransformerModel {
     /// its slice via `set_vision_slice_base`.
     pub(in crate::model) fn prepare_vision_embed_batched_dispatch(
         &self,
-        per_request: &[Vec<(Vec<f32>, usize, usize)>],
+        per_request: &[Vec<crate::VisionItem>],
     ) -> Result<Vec<(usize, usize, usize, usize)>> {
         let ve = match &self.vision_encoder {
             Some(ve) => ve,
@@ -75,28 +94,53 @@ impl TransformerModel {
         // Flatten all requests' images, recording each request's (start, count).
         let mut flat: Vec<(&[f32], usize, usize)> = Vec::new();
         let mut req_bounds: Vec<(usize, usize)> = Vec::with_capacity(per_request.len());
+        let mut per_req_groups: Vec<Vec<usize>> = Vec::with_capacity(per_request.len());
         for imgs in per_request {
-            req_bounds.push((flat.len(), imgs.len()));
-            for (px, gh, gw) in imgs {
-                flat.push((px.as_slice(), *gh, *gw));
+            let start = flat.len();
+            let mut groups = Vec::with_capacity(imgs.len());
+            for it in imgs {
+                groups.push(it.t_len());
+                for g in &it.groups {
+                    flat.push((g.as_slice(), it.grid_h, it.grid_w));
+                }
             }
+            // Bounds are in ENCODER ROWS, which is what buf_out is indexed by.
+            req_bounds.push((start, flat.len() - start));
+            per_req_groups.push(groups);
         }
         let per_image = ve.forward_batched(&flat, self.gpu.as_ref(), stream)?;
-        let grids: Vec<(usize, usize)> = per_image.iter().map(|(h, w, _)| (*h, *w)).collect();
+        let grids: Vec<(usize, usize, usize)> = {
+            let mut out = Vec::new();
+            let mut row = 0usize;
+            for groups in &per_req_groups {
+                for t_len in groups {
+                    let (h, w, _) = per_image[row];
+                    out.push((*t_len, h, w));
+                    row += t_len;
+                }
+            }
+            out
+        };
         let total_merged: usize = per_image.iter().map(|(_, _, mp)| *mp).sum();
         *self.vision_embed_patches.lock() = total_merged;
         *self.vision_image_grids.lock() = grids;
         // Per-request slice descriptors (request order matches the flatten order,
         // so row offsets accumulate Σ merged_p of earlier requests).
+        // (buf_out row offset, GRID index offset, grid count, merged rows).
+        // The grid offset/count are in ITEMS — `vision_image_grids` is now one
+        // entry per item, not per encoder row — while the row offset stays in
+        // merged rows, which is what the splice indexes.
         let mut out = Vec::with_capacity(per_request.len());
         let mut row_cursor = 0usize;
-        for (img_start, n_img) in req_bounds {
-            let row_count: usize = per_image[img_start..img_start + n_img]
+        let mut grid_cursor = 0usize;
+        for ((enc_start, n_rows), groups) in req_bounds.iter().zip(&per_req_groups) {
+            let row_count: usize = per_image[*enc_start..*enc_start + *n_rows]
                 .iter()
                 .map(|(_, _, mp)| *mp)
                 .sum();
-            out.push((row_cursor, img_start, n_img, row_count));
+            out.push((row_cursor, grid_cursor, groups.len(), row_count));
             row_cursor += row_count;
+            grid_cursor += groups.len();
         }
         tracing::info!(
             "Vision encoder (co-dispatch): {} requests, {} images, {} merged patches",

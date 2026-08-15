@@ -32,7 +32,12 @@ pub mod speculative;
 pub mod ssm_reserve;
 pub mod tp_shard;
 pub mod traits;
+pub mod video_decode_ffmpeg;
+pub mod video_preprocess;
+pub mod vision_item;
 pub mod vision_preprocess;
+pub use vision_item::VisionItem;
+
 pub mod weight_loader;
 pub mod weight_map;
 

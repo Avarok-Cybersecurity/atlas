@@ -111,7 +111,7 @@ pub(super) fn render_template(
     let prompt_tokens = if image_pad_counts.iter().any(|&c| c > 1) {
         state
             .tokenizer
-            .expand_image_pads(prompt_tokens, image_pad_counts)
+            .expand_vision_pads(prompt_tokens, image_pad_counts)
     } else {
         prompt_tokens
     };
@@ -149,9 +149,9 @@ pub(super) fn render_template(
 /// Build the Jinja-facing JSON message array from the processed
 /// [`MsgEntry`] vec. Pure (no tokenizer/state) so it can be
 /// characterization-tested directly:
-///   * `image_count == 0` → `content` is a plain string,
-///   * `image_count > 0`  → `content` is `[{type:image} * N, {type:text}]`
-///     (text part omitted when empty),
+///   * no media → `content` is a plain string,
+///   * media    → `content` is `[<one marker per media item, in the
+///     client's order>, {type:text}]` (text part omitted when empty),
 ///   * `tool_calls` / `reasoning_content` attached when present.
 ///
 /// Roles arrive canonical (`developer` → `system` normalization happens
@@ -167,10 +167,20 @@ fn build_json_messages_for(
     messages
         .iter()
         .map(|m| {
-            let content_val = if m.image_count > 0 {
-                let mut items: Vec<serde_json::Value> = Vec::with_capacity(m.image_count + 1);
-                for _ in 0..m.image_count {
-                    items.push(serde_json::json!({"type": "image"}));
+            let content_val = if !m.media.is_empty() {
+                let mut items: Vec<serde_json::Value> = Vec::with_capacity(m.media.len() + 1);
+                // One marker per media item, in the SAME order
+                // `collect_message_media` appended the pad counts and the
+                // encoder items — the template walks this array left to
+                // right and its `Picture N:` / `Video N:` counters follow
+                // from it. The bundled Qwen3-VL template renders
+                // `{"type": "video"}` as
+                // `<|vision_start|><|video_pad|><|vision_end|>`.
+                for kind in &m.media {
+                    items.push(match kind {
+                        crate::ir::MediaKind::Image => serde_json::json!({"type": "image"}),
+                        crate::ir::MediaKind::Video => serde_json::json!({"type": "video"}),
+                    });
                 }
                 if !m.content.is_empty() {
                     items.push(serde_json::json!({"type": "text", "text": m.content}));
@@ -215,7 +225,7 @@ mod json_message_tests {
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
-            image_count,
+            media: vec![crate::ir::MediaKind::Image; image_count],
             reasoning_content: None,
         }
     }
@@ -279,6 +289,13 @@ mod json_message_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -346,6 +363,36 @@ mod json_message_tests {
         assert_eq!(
             out,
             vec![serde_json::json!({"role": "user", "content": [{"type": "image"}]})]
+        );
+    }
+
+    /// ★ The reordering regression, at the rendering end. The builder used
+    /// to emit `image_count` image markers and then `video_count` video
+    /// markers, so a client that sent a video first had its still
+    /// described instead — silently, since the marker count, the pad runs
+    /// and the encoder rows all still matched.
+    ///
+    /// The bundled template walks this array left to right and numbers its
+    /// `Picture N:` / `Video N:` labels from it, so the array order IS the
+    /// order the model reads.
+    #[test]
+    fn media_markers_render_in_the_clients_order() {
+        use crate::ir::MediaKind;
+
+        let mut e = entry("user", "which came first?", 0);
+        e.media = vec![MediaKind::Video, MediaKind::Image, MediaKind::Video];
+        let out = build_json_messages(&[e]);
+        assert_eq!(
+            out,
+            vec![serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "video"},
+                    {"type": "image"},
+                    {"type": "video"},
+                    {"type": "text", "text": "which came first?"}
+                ]
+            })]
         );
     }
 

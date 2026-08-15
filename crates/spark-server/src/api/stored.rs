@@ -62,10 +62,9 @@ pub(super) fn assistant_incoming_from_ir(
         .collect();
     Some(crate::openai::IncomingMessage {
         role: "assistant".to_string(),
-        content: crate::openai::ParsedContent {
-            text: choice.content.clone().unwrap_or_default(),
-            images: Vec::new(),
-        },
+        content: crate::openai::ParsedContent::text_only(
+            choice.content.clone().unwrap_or_default(),
+        ),
         tool_calls: if tool_calls.is_empty() {
             None
         } else {
@@ -194,14 +193,14 @@ pub async fn list_response_input_items(
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let content = if m.content.images.is_empty() {
+            let content = if !m.content.has_images() {
                 serde_json::json!([{ "type": "input_text", "text": m.content.text }])
             } else {
                 let mut parts: Vec<serde_json::Value> = Vec::new();
                 if !m.content.text.is_empty() {
                     parts.push(serde_json::json!({ "type": "input_text", "text": m.content.text }));
                 }
-                for img in &m.content.images {
+                for img in m.content.images() {
                     parts.push(serde_json::json!({
                         "type": "input_image",
                         "image_url": img,

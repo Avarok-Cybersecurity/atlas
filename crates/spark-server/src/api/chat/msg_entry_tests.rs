@@ -120,6 +120,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             msgs,
             tools_active,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -166,6 +173,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -173,7 +187,7 @@ mod build_tests {
         )
         .expect("text-only ok");
         assert_eq!(out.messages.len(), 1);
-        assert_eq!(out.messages[0].image_count, 0);
+        assert!(out.messages[0].media.is_empty());
     }
 
     #[test]
@@ -200,6 +214,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -215,6 +236,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -236,6 +264,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &messages,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -269,6 +304,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &[url_msg],
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -292,6 +334,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             true,
             &ChatLevers::OFF,
@@ -309,6 +358,13 @@ mod build_tests {
             None,
             None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &crate::api::chat::msg_entry::VideoDecode {
+                ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                    enabled: false,
+                    ..Default::default()
+                },
+                fps: 2.0,
+            },
             &msgs,
             true,
             &disabled_levers,

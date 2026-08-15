@@ -34,7 +34,7 @@ use super::{msg_entry, template, thinking};
 pub(crate) struct PreparedChat {
     pub(crate) tools_active: bool,
     pub(crate) cwd_hint: Option<String>,
-    pub(crate) image_pixels: Vec<(Vec<f32>, usize, usize)>,
+    pub(crate) image_pixels: Vec<spark_model::VisionItem>,
     pub(crate) prompt_tokens: Vec<u32>,
     pub(crate) enable_thinking: bool,
     pub(crate) thinking_budget: Option<u32>,
@@ -93,6 +93,10 @@ pub(crate) fn prepare_chat_prompt(
         state.vision_config.as_ref(),
         state.vision_max_pixels,
         &state.remote_image_policy,
+        &msg_entry::VideoDecode {
+            ffmpeg: &state.video_ffmpeg,
+            fps: state.video_fps,
+        },
         &req.messages,
         tools_active,
         &state.chat,

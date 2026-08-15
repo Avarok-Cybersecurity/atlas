@@ -67,6 +67,13 @@ pub(crate) fn test_build_msg_entries(
         None,
         None,
         &remote_image::RemoteImagePolicy::default(),
+        &msg_entry::VideoDecode {
+            ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
+                enabled: false,
+                ..Default::default()
+            },
+            fps: 2.0,
+        },
         input,
         tools_active,
         &levers::ChatLevers::OFF,

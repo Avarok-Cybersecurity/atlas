@@ -63,6 +63,8 @@ enum Phase {
     Calibrate,
     Geometry,
     Probes,
+    Integrity,
+    Concurrency,
     Control,
     Score,
     Done,
@@ -83,6 +85,8 @@ pub struct VisionFidelity {
     probes: Vec<ProbeCell>,
     control_held: bool,
     cursor: usize,
+    conc_results: Vec<crate::benchmarks::video::concurrency::LevelResult>,
+    integrity: Vec<crate::benchmarks::media_integrity::Cell>,
     max_tokens: usize,
     request_timeout_s: u64,
 }
@@ -323,12 +327,393 @@ impl Benchmark for VisionFidelity {
                 self.probes.push(cell);
                 self.cursor += 1;
                 if self.cursor >= PROBES.len() {
-                    self.phase = Phase::Control;
+                    self.cursor = 0;
+                    self.phase = Phase::Integrity;
                 }
                 Ok(self.frame("probes", vec![line]))
             }
 
             // ── Control, LAST ────────────────────────────────────────────
+            // ── Integrity: the paths a single well-formed request misses ─
+            //
+            // Five checks, each aimed at machinery whose failure mode is a
+            // fluent answer to the WRONG input rather than an error. Run one
+            // per `next()` so the pane shows progress and a hang is
+            // attributable.
+            Phase::Integrity => {
+                use crate::benchmarks::media_integrity as mi;
+                let h = self.handle()?;
+                let model = h.target().model.clone();
+                let tmo = self.timeout();
+                // The flat red/blue split, used as the SECOND image of the cache
+                // probe: its dominant color cannot be confused with the gradient
+                // rungs. It lives in EXIF_PAIR, not the geometry ladder, so it is
+                // looked up there — `self.fixture` searches FIXTURES and would
+                // silently return None, turning the probe into a permanent skip.
+                let red = super::provision::EXIF_PAIR
+                    .iter()
+                    .find(|(n, _)| *n == "16_exif_none_224.jpg")
+                    .map(|(_, b)| *b);
+                let cell = match self.cursor {
+                    // 1. Different requests in flight, each scored against its
+                    //    own input. The identical-request sweep in the next
+                    //    phase cannot see a mis-sliced per-request offset.
+                    0 => {
+                        let (_, a, _, _) = FIXTURES[0]; // 224 square
+                        let (_, b, _, _) = FIXTURES[6]; // 1280x720 HD
+                        let (_, c, _, _) = FIXTURES[1]; // 336 square
+                        let q = "Reply with exactly one word: the number of white \
+                                 rectangles you can see, spelled out.";
+                        let subjects: Vec<mi::Subject> = vec![
+                            (
+                                mi::image_request(&model, "image/png", a, q, 24),
+                                Box::new(|r: &str| !r.trim().is_empty()),
+                                "224".to_string(),
+                            ),
+                            (
+                                mi::image_request(&model, "image/png", b, q, 24),
+                                Box::new(|r: &str| !r.trim().is_empty()),
+                                "1280x720".to_string(),
+                            ),
+                            (
+                                mi::image_request(&model, "image/png", c, q, 24),
+                                Box::new(|r: &str| !r.trim().is_empty()),
+                                "336".to_string(),
+                            ),
+                            // A TEXT-ONLY request in the same batch: it owns
+                            // zero grids, which is the offset arithmetic's
+                            // most awkward case.
+                            (
+                                serde_json::json!({
+                                    "model": model, "stream": true, "temperature": 0.0,
+                                    "max_tokens": 8,
+                                    "chat_template_kwargs": {"enable_thinking": false},
+                                    "messages": [{"role": "user",
+                                        "content": "Reply with exactly: BANANA"}],
+                                }),
+                                Box::new(|r: &str| r.to_uppercase().contains("BANANA")),
+                                "text-only".to_string(),
+                            ),
+                        ];
+                        mi::heterogeneous_concurrency(h, subjects, tmo).await
+                    }
+                    // 2. Same prompt text, different image, back to back.
+                    1 => {
+                        let (_, first, _, _) = FIXTURES[0];
+                        let Some(second) = red else {
+                            return Ok(self.frame(
+                                "integrity",
+                                vec![LogLine::warn(
+                                    "prefix-cache-isolation: fixture missing".to_string(),
+                                )],
+                            ));
+                        };
+                        let q = "What is the dominant colour in this image? One word.";
+                        // The second image is a flat red/blue split; the first
+                        // is the gradient ladder rung. "red" or "blue" can only
+                        // come from the second.
+                        mi::cache_leak(
+                            h,
+                            mi::image_request(&model, "image/png", first, q, 16),
+                            mi::image_request(&model, "image/jpeg", second, q, 16),
+                            &|r: &str| {
+                                let l = r.to_lowercase();
+                                l.contains("red") || l.contains("blue")
+                            },
+                            &|r: &str| {
+                                let l = r.to_lowercase();
+                                l.contains("purple") || l.contains("gradient")
+                            },
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 3. A prompt long enough to leave the single-chunk path.
+                    2 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        let q = "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.";
+                        // ~6k tokens of filler, comfortably past any sane
+                        // per-request chunk budget, and inert: it says nothing
+                        // that could change the answer.
+                        let filler = "The quick brown fox jumps over the lazy dog. ".repeat(700);
+                        let long_q = format!("{filler}\n\n{q}");
+                        mi::long_prompt_path(
+                            h,
+                            mi::image_request(&model, "image/png", img, q, 16),
+                            mi::image_request(&model, "image/png", img, &long_q, 16),
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 4. Media in an earlier turn and in a tool result.
+                    3 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        use base64::Engine;
+                        let mut uri = String::from("data:image/png;base64,");
+                        base64::engine::general_purpose::STANDARD.encode_string(img, &mut uri);
+                        let body = serde_json::json!({
+                            "model": model, "stream": true, "temperature": 0.0,
+                            "max_tokens": 24,
+                            "chat_template_kwargs": {"enable_thinking": false},
+                            "messages": [
+                                {"role": "user", "content": [
+                                    {"type": "image_url", "image_url": {"url": uri}},
+                                    {"type": "text", "text": "Here is a screenshot."}]},
+                                {"role": "assistant", "content": "Understood."},
+                                {"role": "user", "content":
+                                    "Reply with exactly one word: YES if the image I sent \
+                                     earlier contains a white rectangle, NO otherwise."},
+                            ],
+                        });
+                        mi::media_in_history(
+                            h,
+                            body,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            "media-in-history",
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 5. Streamed vs not: two different response paths.
+                    4 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        mi::stream_parity(
+                            h,
+                            mi::image_request(
+                                &model,
+                                "image/png",
+                                img,
+                                "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.",
+                                16,
+                            ),
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 6. n>1, where only choice 0 carries the pixels.
+                    5 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        mi::multi_choice(
+                            h,
+                            mi::image_request(
+                                &model,
+                                "image/png",
+                                img,
+                                "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.",
+                                16,
+                            ),
+                            2,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 7. The image on a TOOL RESULT — the other call site of
+                    //    collect_message_images, and the case #165 exists for.
+                    //    An agent sees a screenshot come back from a tool and
+                    //    is asked about it afterwards.
+                    6 => {
+                        let (_, img, _, _) = FIXTURES[0];
+                        use base64::Engine;
+                        let mut uri = String::from("data:image/png;base64,");
+                        base64::engine::general_purpose::STANDARD.encode_string(img, &mut uri);
+                        let body = serde_json::json!({
+                            "model": model, "stream": true, "temperature": 0.0,
+                            "max_tokens": 16,
+                            "chat_template_kwargs": {"enable_thinking": false},
+                            "messages": [
+                                {"role": "user", "content": "Take a screenshot."},
+                                {"role": "assistant", "content": "",
+                                 "tool_calls": [{"id": "c1", "type": "function",
+                                   "function": {"name": "screenshot", "arguments": "{}"}}]},
+                                {"role": "tool", "tool_call_id": "c1", "content": [
+                                    {"type": "image_url", "image_url": {"url": uri}}]},
+                                {"role": "user", "content":
+                                    "Reply with exactly one word: YES if the screenshot \
+                                     contains a white rectangle, NO otherwise."},
+                            ],
+                        });
+                        mi::media_in_history(
+                            h,
+                            body,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            "image-on-tool-result",
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 8. The Responses API — a separate parse path that
+                    //    nothing else in either benchmark drives. Compared
+                    //    against ITSELF on two images, not against
+                    //    chat-completions: the two surfaces render different
+                    //    template branches, so a cross-surface token
+                    //    comparison cannot tell an envelope difference from a
+                    //    vision one.
+                    7 => {
+                        let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
+                        let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
+                        let delta = (expected_vision_tokens(lw, lh, 16, 2)
+                            - expected_vision_tokens(sw, sh, 16, 2))
+                            as usize;
+                        let q = "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.";
+                        mi::responses_parity(
+                            h,
+                            mi::responses_image_request(&model, "image/png", small, q),
+                            mi::responses_image_request(&model, "image/png", large, q),
+                            delta,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 9. Thinking ON — the configuration these checkpoints
+                    //    ship in, and the one every other leg turns off.
+                    8 => {
+                        let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
+                        let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
+                        let delta = (expected_vision_tokens(lw, lh, 16, 2)
+                            - expected_vision_tokens(sw, sh, 16, 2))
+                            as usize;
+                        let q = "Reply with exactly one word: YES if this image contains a \
+                                 white rectangle, NO otherwise.";
+                        mi::thinking_parity(
+                            h,
+                            mi::thinking_image_request(&model, "image/png", small, q),
+                            mi::thinking_image_request(&model, "image/png", large, q),
+                            delta,
+                            &|r: &str| r.to_uppercase().contains("YES"),
+                            tmo,
+                        )
+                        .await
+                    }
+                    // 10. EXIF orientation, PINNED rather than judged.
+                    _ => {
+                        let pair: Vec<(&str, &[u8])> = super::provision::EXIF_PAIR.to_vec();
+                        let q = "The image is split into two halves of solid colour. Is the \
+                                 RED half on the top, bottom, left, or right? One word.";
+                        let mut answers = Vec::new();
+                        for (name, bytes) in &pair {
+                            let body = mi::image_request(&model, "image/jpeg", bytes, q, 12);
+                            match http::chat_stream(h.target(), &body, tmo).await {
+                                Ok(o) => answers.push((*name, o.text.trim().to_lowercase())),
+                                Err(e) => answers.push((
+                                    *name,
+                                    format!("error: {}", one_line(format!("{e:#}"))),
+                                )),
+                            }
+                        }
+                        // Orientation = 6 means "rotate 90 CW to display",
+                        // which carries the stored TOP edge to the RIGHT. So
+                        // the tagged image must read RIGHT and the untagged
+                        // one TOP — they must DIFFER, and differ in that
+                        // specific way. Requiring them merely to differ would
+                        // pass on any random rotation.
+                        let tagged = answers.first().map(|a| a.1.clone()).unwrap_or_default();
+                        let untagged = answers.get(1).map(|a| a.1.clone()).unwrap_or_default();
+                        if tagged.contains("right") && untagged.contains("top") {
+                            mi::Cell::Pass {
+                                id: "exif-orientation",
+                                detail: format!(
+                                    "tagged -> \"{tagged}\", untagged -> \"{untagged}\": EXIF \
+                                     orientation is APPLIED, so a rotated photo reaches the \
+                                     model the way its owner sees it"
+                                ),
+                            }
+                        } else if tagged == untagged {
+                            mi::Cell::Fail {
+                                id: "exif-orientation",
+                                detail: format!(
+                                    "both answered \"{tagged}\" — the EXIF tag is being IGNORED \
+                                     again. Every rotated phone photo is reaching the model a \
+                                     quarter turn from how the user saw it, and nothing errors"
+                                ),
+                            }
+                        } else {
+                            mi::Cell::Fail {
+                                id: "exif-orientation",
+                                detail: format!(
+                                    "unexpected orientation: tagged -> \"{tagged}\", untagged -> \
+                                     \"{untagged}\". Orientation=6 should put the red half on \
+                                     the RIGHT and the untagged one on TOP"
+                                ),
+                            }
+                        }
+                    }
+                };
+                let line = if cell.passed() {
+                    LogLine::info(cell.line())
+                } else {
+                    LogLine::warn(cell.line())
+                };
+                self.integrity.push(cell);
+                self.cursor += 1;
+                if self.cursor >= 10 {
+                    self.cursor = 0;
+                    self.phase = Phase::Concurrency;
+                }
+                Ok(self.frame("integrity", vec![line]))
+            }
+
+            // ── Concurrency: C = 1, 2, 4 of the same image request ───────
+            //
+            // Correctness under concurrency, not throughput. Several requests
+            // share one packed ViT output buffer and one grid vector, indexed
+            // by per-request base offsets, and a mistake there hands one
+            // request another's embeddings — a fluent answer about the wrong
+            // picture, with nothing logged. Identical requests must also agree
+            // on prompt_tokens; two different counts mean the shared buffers
+            // were sliced wrongly. Wall time is recorded, not asserted:
+            // vision prefill serializes today.
+            Phase::Concurrency => {
+                use crate::benchmarks::video::concurrency::{LEVELS, run_level};
+                let level = LEVELS[self.cursor];
+                let (_, png, _, _) = FIXTURES[0];
+                let body = request::body(
+                    &self.handle()?.target().model,
+                    &[png],
+                    "Reply with the single word OK.",
+                    16,
+                );
+                // The reply only has to be non-empty and consistent: the
+                // capability probes above already established the model reads
+                // the image, so this leg is about whether concurrency breaks
+                // that, not about re-proving it.
+                let is_correct = |reply: &str| !reply.trim().is_empty();
+                let r = run_level(self.handle()?, &body, level, self.timeout(), &is_correct).await;
+                let line = if r.ok() {
+                    LogLine::info(format!(
+                        "C={level}: {}/{} returned, one geometry, {} ms",
+                        r.returned, r.conc, r.wall_ms
+                    ))
+                } else {
+                    LogLine::warn(format!(
+                        "C={level}: {}/{} returned, {} distinct token counts, {} ms{}",
+                        r.returned,
+                        r.conc,
+                        r.distinct_token_counts,
+                        r.wall_ms,
+                        if r.errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", r.errors.join("; "))
+                        }
+                    ))
+                };
+                self.conc_results.push(r);
+                self.cursor += 1;
+                if self.cursor >= LEVELS.len() {
+                    self.cursor = 0;
+                    self.phase = Phase::Control;
+                }
+                Ok(self.frame("concurrency", vec![line]))
+            }
+
             Phase::Control => {
                 let cell = self.run_probe(&CONTROL).await;
                 self.control_held = matches!(cell, ProbeCell::Pass { .. });
@@ -347,7 +732,16 @@ impl Benchmark for VisionFidelity {
             // ── Score ────────────────────────────────────────────────────
             Phase::Score => {
                 self.phase = Phase::Done;
-                let v = verdict(&self.geom, &self.probes, self.control_held);
+                // An integrity failure must FAIL THE RUN. These legs were
+                // added because they catch wrong answers that geometry and
+                // capability cannot see; leaving them as metrics only would
+                // mean the benchmark reports PASS while telling you, in its
+                // own log, that a request got another request's picture.
+                let integ_failed = self.integrity.iter().any(|c| c.measured() && !c.passed());
+                let v = match verdict(&self.geom, &self.probes, self.control_held) {
+                    VisionVerdict::Pass if integ_failed => VisionVerdict::Fail,
+                    other => other,
+                };
                 let asserted = asserted_cells(&self.geom);
                 let passed = self
                     .probes
@@ -397,6 +791,21 @@ impl Benchmark for VisionFidelity {
                     .insert("probes_total".into(), self.probes.len() as f64);
                 r.metrics
                     .insert("control_held".into(), self.control_held as u8 as f64);
+                // Recorded so a run shows how vision behaves under a little
+                // load; NOT thresholded — see the Concurrency phase.
+                let conc_clean = self.conc_results.iter().filter(|r| r.ok()).count();
+                r.metrics
+                    .insert("concurrency_levels_clean".into(), conc_clean as f64);
+                let integ_passed = self.integrity.iter().filter(|c| c.passed()).count();
+                let integ_measured = self.integrity.iter().filter(|c| c.measured()).count();
+                r.metrics
+                    .insert("integrity_passed".into(), integ_passed as f64);
+                r.metrics
+                    .insert("integrity_measured".into(), integ_measured as f64);
+                for lr in &self.conc_results {
+                    r.metrics
+                        .insert(format!("conc_{}_wall_ms", lr.conc), lr.wall_ms as f64);
+                }
                 r.verdict = Some(match v {
                     VisionVerdict::Pass => RunVerdict::pass(format!(
                         "{asserted} geometry cells matched, {passed}/{} probes, control held",

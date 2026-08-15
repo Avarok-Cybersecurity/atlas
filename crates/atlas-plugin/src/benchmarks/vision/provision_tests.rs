@@ -16,10 +16,31 @@ fn is_png(b: &[u8]) -> bool {
     b.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
 }
 
+fn is_jpeg(b: &[u8]) -> bool {
+    b.starts_with(&[0xff, 0xd8, 0xff])
+}
+
+/// Magic bytes must agree with the extension. The ladder is no longer
+/// PNG-only: the decode-variant rungs deliberately include a JPEG, because a
+/// suite that only ever sends 8-bit RGB PNGs cannot notice a decoder that
+/// mishandles anything else. What must still hold is that each file IS what
+/// it claims — the server dispatches on content, so a mislabelled fixture
+/// would quietly test a different path than the one named.
 #[test]
-fn every_baked_fixture_is_a_real_png() {
+fn every_baked_fixture_matches_its_declared_format() {
     for (name, bytes, _, _) in FIXTURES {
-        assert!(is_png(bytes), "{name} is not a PNG");
+        if name.ends_with(".jpg") || name.ends_with(".jpeg") {
+            assert!(is_jpeg(bytes), "{name} is not a JPEG");
+        } else {
+            assert!(is_png(bytes), "{name} is not a PNG");
+        }
+        // The 8x8 rung is genuinely tiny — a valid PNG of it is ~120 bytes —
+        // so the truncation floor has to be below that or the smallest
+        // fixture in the ladder reads as damaged.
+        assert!(bytes.len() > 100, "{name} looks truncated");
+    }
+    for (name, bytes) in EXIF_PAIR {
+        assert!(is_jpeg(bytes), "{name} is not a JPEG");
         assert!(bytes.len() > 100, "{name} looks truncated");
     }
 }

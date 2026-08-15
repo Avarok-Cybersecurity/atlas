@@ -123,6 +123,34 @@ How it works:
 - The radix tree tracks `disk_block_id` and reads back on demand when a
   cold block is referenced again.
 
+### Image orientation
+
+EXIF orientation is **applied on decode**. A photo stored sideways with an
+`Orientation` tag — which is how most phone cameras write them — is rotated
+upright before it reaches the encoder, matching what every ordinary viewer
+shows the user. Files with no tag, including all PNGs, are unchanged.
+
+### Optional host dependency: `ffmpeg` (video input only)
+
+**Serving video requires `ffmpeg` on the host.** Text and image serving need
+nothing beyond the container. Animated GIF decodes in-process in pure Rust,
+but every other container — MP4/MOV, WebM/Matroska, AVI, covering H.264,
+H.265, VP9 and AV1 — is decoded by invoking `ffmpeg` as a subprocess.
+
+* Install: `apt install ffmpeg` (Debian/Ubuntu), `dnf install ffmpeg`
+  (Fedora/RHEL). The official image ships it.
+* Enable: `--video-allow-ffmpeg`. It is **off by default**, because it makes
+  the server execute another program per video request.
+* Pin a specific build with `--video-ffmpeg-path /usr/bin/ffmpeg`.
+* Verify: the startup log says `Video decoding ENABLED via … (ffmpeg version …)`.
+  If it says `Video decoding was ENABLED … but the decoder is NOT USABLE`, the
+  flag is set and the binary is missing — text and images still serve, every
+  video request fails.
+
+The decode is bounded on every axis a caller controls: no shell, no temp
+file, capped frame count (`--video-max-frames`), capped output size, and a
+wall-clock cap (`--video-decode-timeout-s`) that kills a hung decoder.
+
 Disk requirements:
 - **Sequential write bandwidth**: ≥3 GB/s (NVMe gen4 SSD).
 - **Free space**: `(num_seqs × max_seq_len × num_layers × kv_dim × 2)` bytes,

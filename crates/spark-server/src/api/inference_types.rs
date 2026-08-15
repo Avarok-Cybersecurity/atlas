@@ -101,7 +101,7 @@ pub enum InferenceRequest {
         /// `SequenceState.early_stopping`.
         early_stopping: bool,
         /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
-        image_pixels: Vec<(Vec<f32>, usize, usize)>,
+        image_pixels: Vec<spark_model::VisionItem>,
         max_tokens: usize,
         /// Minimum tokens before allowing EOS/stop (0 = no minimum).
         min_tokens: usize,
@@ -209,7 +209,7 @@ pub enum InferenceRequest {
         /// NLLB beam search: early stopping. See Blocking.
         early_stopping: bool,
         /// Preprocessed image data: (pixels `[P,1536]` f32, grid_h, grid_w) per image.
-        image_pixels: Vec<(Vec<f32>, usize, usize)>,
+        image_pixels: Vec<spark_model::VisionItem>,
         max_tokens: usize,
         /// Minimum tokens before allowing EOS/stop (0 = no minimum).
         min_tokens: usize,

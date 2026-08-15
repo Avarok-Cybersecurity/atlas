@@ -139,14 +139,69 @@ nothing measured on Qwen3.6 transfers, and the calibration protocol runs again f
 # check passed throughout, because a downscaled picture is still recognisably
 # what it is.
 #
-#   geometry_matched  = 9   the CORRECTNESS floor, and the one that moves when
+#   integrity_passed  = 10  the INTEGRITY floor, and the legs a single
+#                           well-formed request cannot reach. Every one of
+#                           them fails as a FLUENT ANSWER TO THE WRONG INPUT
+#                           rather than an error, which is the class this
+#                           repo keeps rediscovering:
+#                             heterogeneous-concurrency  four DIFFERENT
+#                               requests in flight (one text-only), each
+#                               scored against its own input. Identical
+#                               requests cannot test the per-request offsets
+#                               into the shared ViT output buffer, because
+#                               every offset is then interchangeable.
+#                             prefix-cache-isolation     same prompt text,
+#                               different image, back to back. Guards the
+#                               predicate that keeps vision prompts out of
+#                               the prefix cache — it silently missed the
+#                               VIDEO pad token until 2026-08-14.
+#                             long-prompt-splice         a prompt past the
+#                               single-chunk budget, which leaves the batched
+#                               co-dispatch encode for a second splice in a
+#                               different file. Measured 81 vs 7082 prompt
+#                               tokens, so it really does cross over.
+#                             media-in-history           the image in an
+#                               earlier turn, not in the message asking the
+#                               question. The #165 path.
+#                             exif-orientation-pinned    PINS current
+#                               behaviour rather than judging it: EXIF
+#                               orientation is IGNORED, measured 2026-08-14.
+#                               A rotated phone photo reaches the model
+#                               sideways. Whether to honour the tag is a
+#                               product decision; that it must not change by
+#                               accident is not.
+#                             stream-blocking-parity     the SAME request
+#                               streamed and not. Every other leg sets
+#                               stream:true, so the blocking path — which
+#                               assembles its own response — was never run.
+#                               Both must answer correctly AND agree on
+#                               prompt_tokens; a difference means the two
+#                               paths built different prompts from identical
+#                               bytes.
+#                             multi-choice-image         n=2 with an image.
+#                               The blocking path gives only choice 0 the
+#                               pixels (the encode is shared), which is
+#                               correct and is also index-conditional code
+#                               nothing ran.
+#                             image-on-tool-result       the image arriving
+#                               on a role:"tool" message — the OTHER call
+#                               site of collect_message_images, and the case
+#                               #165 exists for.
+#                             thinking-on-vision         the DEFAULT config
+#                               for these checkpoints, which every other leg
+#                               turns off. Thinking lengthens the prompt and
+#                               so moves which prefill chunk the pad run lands
+#                               in. Asserted as a DIFFERENCE between two
+#                               images so the unknown <think> cost cancels.
+#   integrity_measured = 10 a skipped integrity leg is not a passed one.
+#   geometry_matched  = 14  the CORRECTNESS floor, and the one that moves when
 #                           preprocessing changes. Rung 09 (1600x900) is the
 #                           ONLY rung above the retired 1280px clamp: under the
 #                           clamp it is 920 tokens, un-downscaled it is 1400.
 #                           The other eight fit under either regime and so
 #                           cannot tell the two apart -- without rung 09 this
 #                           gate could not fail on the defect it exists for.
-#   geometry_asserted = 9   the MEASUREMENT floor, which is a DIFFERENT failure.
+#   geometry_asserted = 14  the MEASUREMENT floor, which is a DIFFERENT failure.
 #                           A cell the server cannot serve reports UNMEASURED,
 #                           which is not a mismatch -- so without this floor an
 #                           encoder-capacity regression would turn every cell
@@ -167,9 +222,10 @@ label = "Qwen3.6-27B dense (NVFP4, unsloth)"
 default = false
 status = "measured"
 note = """\
-REFERENCE RUN 2026-08-14, dgx-00, binary vision/sprint @ 5e05465b: PASS, 9/9 geometry \
-cells matched, 3/3 probes, control held, 29.3 s. Geometry was IDENTICAL across all \
-three vision targets (49/121/192/220/576/576/920/405/1400 merged tokens) -- token \
+REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support @ 5a22d7ce: PASS, 14/14 geometry \
+cells matched, 3/3 probes, 10/10 integrity legs, control held, 29.3 s. Geometry was IDENTICAL across all \
+three vision targets (49/121/192/220/576/576/920/405/1400/1/128/49/49/49 merged \
+tokens) -- token \
 count is a property of the preprocessor rather than the checkpoint, so agreement \
 across a dense NVFP4, an unsloth NVFP4 and an FP8 MoE is evidence the arithmetic is \
 right rather than a coincidence. * THIS is the checkpoint that exposed the resolver \
@@ -182,13 +238,69 @@ reports 1400 where the fallback produced 920 -- the gate catching exactly the cl
 defect it was built for, on a real model rather than in a unit test."""
 
 [benchmarks.metrics.geometry_matched]
-min = 9.0
+min = 14.0
 
 [benchmarks.metrics.geometry_asserted]
-min = 9.0
+min = 14.0
+
+[benchmarks.metrics.integrity_passed]
+min = 10.0
+
+[benchmarks.metrics.integrity_measured]
+min = 10.0
 
 [benchmarks.metrics.probes_passed]
 min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0
+
+# --- video-fidelity --------------------------------------------------------
+# The second video target, added after a measured run rather than by analogy
+# with qwen3.8-27b. See that target's entry for what each leg asserts and why
+# the reversed clip is the one that matters.
+#
+# ★ REQUIRES FFMPEG for every container except GIF; legs needing it SKIP
+# rather than fail, so a runner without it degrades to the GIF subset instead
+# of going red.
+#
+# RESOLVED 2026-08-15, and the answer was the second one. On 2026-08-14 the
+# 35B scored 12/13, failing `video-before-image` with [yellow, green, blue]
+# where [red, green, blue, yellow] was expected, while reading the clip
+# correctly in every other arrangement — and the open question was whether
+# that was a model-capacity limit on the A3B MoE or an ordering defect that
+# only surfaces there. It was an ORDERING DEFECT, present on all three
+# targets: media travelled as one list per modality, so a video sent before an
+# image was rendered after it. The dense targets recovered from the
+# contradiction and the A3B did not, which is the only reason it looked
+# checkpoint-specific. Fixed, and the 35B now declares this gate itself.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "video-fidelity"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+label = "Qwen3.6-27B dense (NVFP4, unsloth)"
+# `default = true` since 2026-08-15 — this target is now the gate's required
+# subject, taking it from qwen3.8-27b. Reason in full in that target's entry:
+# its `video-before-image` result moves with serve config (13/13 manual,
+# 12/13 under its own recipe) while this target passes 13/13 solidly, so it
+# is the instrument that measures the video pipeline rather than a model's
+# edge. Thresholds on both entries are unchanged.
+default = true
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \
+skipped, control held. Confirms video is not specific to the Qwen3.8 checkpoint — all \
+three vision targets declare <|video_pad|> 248057 and share the Qwen3-VL temporal \
+geometry, and this one decodes, groups and orders a clip identically. `default = \
+false`: qwen3.8-27b owns this gate's default serve."""
+
+[benchmarks.metrics.legs_passed]
+min = 13.0
+
+[benchmarks.metrics.legs_skipped]
+max = 0.0
 
 [benchmarks.metrics.control_held]
 min = 1.0
