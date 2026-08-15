@@ -8,6 +8,12 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
     Option::<u32>::deserialize(d).map(|v| v.unwrap_or(0))
 }
 
+/// Deserialize a usize that may be JSON null (treat null as 0).
+/// Nemotron-3.5 Lightning ships `"moe_latent_size": null` for "absent".
+fn nullable_usize<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<usize, D::Error> {
+    Option::<usize>::deserialize(d).map(|v| v.unwrap_or(0))
+}
+
 /// Layer type in a hybrid transformer model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -194,8 +200,9 @@ pub struct ModelConfig {
     pub mlp_only_layers: Vec<usize>,
     /// LatentMoE: latent projection dimension for routed experts (Super 120B).
     /// When present, routed experts operate in latent space `[moe_latent_size]`
-    /// instead of full `[hidden_size]`. Absent for Nano 30B.
-    #[serde(default)]
+    /// instead of full `[hidden_size]`. Absent for Nano 30B; JSON null
+    /// (= absent) for Lightning 30B.
+    #[serde(default, deserialize_with = "nullable_usize")]
     pub moe_latent_size: usize,
     /// Per-layer MoE intermediate sizes (Nemotron-H Puzzle heterogeneous channel
     /// pruning). Length == `num_hidden_layers`; 0 for non-MoE layers. Empty =
@@ -382,6 +389,13 @@ pub struct ModelConfig {
     /// 0 = disabled (use static scales from checkpoint or uncalibrated 1.0).
     #[serde(skip)]
     pub fp8_kv_calibration_tokens: usize,
+    /// Suppress CUDA decode-graph capture (MODEL.toml
+    /// `[behavior].no_decode_graphs`, threaded through serve_load).
+    /// Nemotron-H models crash under graph replay (CUDA 700/716 at
+    /// specific prompt lengths); decode graphs are a measured no-op on
+    /// GB10, so the family serves eager. Not read from config.json.
+    #[serde(skip)]
+    pub no_decode_graphs: bool,
     /// Headroom multiplier on the first-observe absmax when freezing the online
     /// FP8 KV scale (`--fp8-kv-headroom`, default 2.0). The first observe sees
     /// only the first prefill chunk, so the frozen scale covers headroom× its

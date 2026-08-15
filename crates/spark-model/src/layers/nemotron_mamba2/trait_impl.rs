@@ -196,6 +196,48 @@ impl TransformerLayer for NemotronMamba2Layer {
         Ok(())
     }
 
+    /// Multi-sequence batched decode (Milestone A): batches the norm /
+    /// in_proj / gated-norm / out_proj / residual phases across all N rows
+    /// (one weight-DRAM pass) and loops only the stateful conv+scan inner.
+    /// See `trait_decode_multi_seq.rs` for the phase structure and hazards.
+    ///
+    /// Milestone B additionally batches the conv+scan inner via the strided
+    /// kernel twins (`decode_conv_scan.rs`) and splits the numeric gate off
+    /// into `proj_batch_min()`, so rungs 2 and 4 now take this body with
+    /// per-row projections instead of delegating wholesale.
+    ///
+    /// `num_seqs < MAMBA2_BATCH_DECODE_MIN_SEQS` (i.e. n < 2, nothing to
+    /// batch) still delegates to the canonical per-seq default loop — one
+    /// fallback loop in the codebase, not a private copy.
+    fn decode_multi_seq<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_seqs: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if num_seqs < super::MAMBA2_BATCH_DECODE_MIN_SEQS {
+            return crate::layer::default_loops::decode_multi_seq_default(
+                self,
+                hidden,
+                residual,
+                num_seqs,
+                states,
+                kv_cache,
+                seq_lens,
+                block_tables,
+                ctx,
+                stream,
+            );
+        }
+        self.decode_multi_seq_inner(hidden, residual, num_seqs, states, ctx, stream)
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,
@@ -212,6 +254,86 @@ impl TransformerLayer for NemotronMamba2Layer {
         stream: u64,
     ) -> Result<()> {
         self.prefill_ssm(hidden, residual, num_tokens, state, ctx, stream)
+    }
+
+    /// K-token verify body for MTP speculative decoding.
+    ///
+    /// Numerically identical to the default sequential loop (per-token
+    /// `decode`), PLUS the per-token state snapshots the verify rollback
+    /// contract requires: after processing verify token `t`, copy the live
+    /// `h_state`/`conv_state` into `*_intermediates[t]` so a partial accept
+    /// can rewind to "state after token `num_accepted`"
+    /// (`rollback_ssm_states` / `commit_accepted_prefix` read
+    /// `intermediates[num_accepted - 1]`). The GDN layers write these
+    /// snapshots inside their fused conv+WY kernels; Mamba-2 has no fused
+    /// K-token kernel, so plain D2D copies on the compute stream do the job
+    /// (~2 copies × ~MBs per SSM layer per verify step).
+    ///
+    /// The intermediates vectors are empty unless the model was built with
+    /// MTP verify pools (`has_mtp`) — snapshots are skipped then, matching
+    /// the old default-loop behavior exactly.
+    fn decode_batched(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_tokens: usize,
+        state: &mut dyn LayerState,
+        kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        // Milestone B: at K >= the projection rung, run the same phases with
+        // the row-independent ones batched over all K tokens — one weight
+        // sweep instead of K. Byte-identical to the loop below (see
+        // `decode_mtp_k.rs`), so acceptance is unchanged and only the verify
+        // cost moves.
+        if self.mtp_k_batching_ok(num_tokens) {
+            return self.decode_batched_k(hidden, residual, num_tokens, state, ctx, stream);
+        }
+        let h = ctx.config.hidden_size;
+        for t in 0..num_tokens {
+            let offset = t * h * 2; // BF16 rows
+            self.decode(
+                hidden.offset(offset),
+                residual.offset(offset),
+                state,
+                kv_cache,
+                seq_len + t,
+                block_table,
+                disk_block_ids,
+                disk_last_offloaded_per_layer,
+                ctx,
+                stream,
+            )?;
+
+            let ssm = state
+                .as_any_mut()
+                .downcast_mut::<SsmLayerState>()
+                .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+            if t < ssm.h_state_intermediates.len() {
+                // Full FP32-sized region: correct for both the FP32 h-state
+                // and the FP16-packed variant (which lives in its first half).
+                ctx.gpu.copy_d2d_async(
+                    ssm.h_state,
+                    ssm.h_state_intermediates[t],
+                    self.h_state_bytes,
+                    stream,
+                )?;
+            }
+            if t < ssm.conv_state_intermediates.len() {
+                ctx.gpu.copy_d2d_async(
+                    ssm.conv_state,
+                    ssm.conv_state_intermediates[t],
+                    self.conv_state_bytes,
+                    stream,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {

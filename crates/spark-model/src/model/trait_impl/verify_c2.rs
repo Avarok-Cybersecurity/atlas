@@ -181,7 +181,11 @@ impl TransformerModel {
         // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
         // byte-for-byte unchanged when the env is unset.
         let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager && !k4_diag;
+        let use_graphs = self.comm.is_none()
+            && !self.config.no_decode_graphs
+            && !hss_engaged
+            && !lora_eager
+            && !k4_diag;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

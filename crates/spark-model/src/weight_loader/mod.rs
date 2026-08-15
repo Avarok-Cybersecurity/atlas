@@ -19,7 +19,7 @@ pub mod dflash_loader;
 mod gemma4;
 mod laguna;
 mod minimax;
-mod nemotron;
+pub(crate) mod nemotron;
 mod nllb;
 mod qwen3;
 mod qwen35;

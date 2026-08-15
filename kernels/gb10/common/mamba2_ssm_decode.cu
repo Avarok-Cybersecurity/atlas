@@ -147,6 +147,156 @@ extern "C" __global__ void mamba2_ssm_decode(
 }
 
 // ============================================================
+// DECODE, STRIDED: one launch for N concurrent sequences
+// ============================================================
+// Identical recurrence to `mamba2_ssm_decode`; the ONLY difference is that the
+// four activation tensors carry an explicit per-sequence row stride instead of
+// the hardcoded dense strides (`num_heads*head_dim`, `n_groups*state_size`,
+// `num_heads`). The concurrent-decode path feeds x/B/C from the d_xbc-strided
+// conv output and dt from the in_proj-strided projection row, so a `batch=n`
+// launch of the plain kernel would read sequence b>=1 from `b*num_heads*head_dim`
+// instead of `b*x_stride` — landing inside a neighbouring sequence's data. That
+// is correct at n=1 and silently corrupt at n>=2, which is why the multi-seq
+// path had to loop at batch=1 with pre-offset pointers (one launch per row per
+// layer). With strides the whole batch goes in ONE launch.
+//
+// The stride names/order mirror `mamba2_ssm_prefill` below so the two read as
+// siblings (there the strides step over TOKENS, here over SEQUENCES).
+//
+// `h_state` is deliberately NOT strided: pool slots are dense
+// (num_heads*head_dim*state_size floats apart) and the caller must prove slot i
+// sits at `base + i*slot_bytes` in slice order before dispatching — same rule
+// the GDN strided family uses (only activations are strided).
+//
+// Bit-parity: one launch at batch_size=n is EXACTLY byte-identical to n launches
+// at batch_size=1 with pre-offset pointers. Each (b, head) block is fully
+// independent; strides move base addresses and never reorder an accumulation.
+//
+// Grid: (num_heads, batch_size, 1)  Block: (state_size, 1, 1)  Static smem 2560 B.
+extern "C" __global__ void mamba2_ssm_decode_strided(
+    // State (in/out): dense pool, slot stride num_heads*head_dim*state_size FP32
+    float* __restrict__ h_state,
+    // SSM input (after conv1d + SiLU): row b at x + b*x_stride, BF16
+    const __nv_bfloat16* __restrict__ x,
+    // B projection: row b at B_in + b*bc_stride, BF16
+    const __nv_bfloat16* __restrict__ B_in,
+    // C projection: row b at C_in + b*bc_stride, BF16
+    const __nv_bfloat16* __restrict__ C_in,
+    // Raw dt from in_proj: row b at dt_raw + b*dt_stride, BF16
+    const __nv_bfloat16* __restrict__ dt_raw,
+    // Learned parameters (static):
+    const float* __restrict__ A_log,     // [num_heads] FP32
+    const float* __restrict__ D_param,   // [num_heads] FP32
+    const float* __restrict__ dt_bias,   // [num_heads] FP32
+    // Output: row b at output + b*y_stride, BF16
+    __nv_bfloat16* __restrict__ output,
+    // Dimensions:
+    unsigned int batch_size,
+    unsigned int num_heads,
+    unsigned int head_dim,
+    unsigned int state_size,
+    unsigned int n_groups,
+    // dt clamping:
+    float dt_min,
+    float dt_max,
+    // Strides (BF16 elements) between consecutive SEQUENCES:
+    unsigned int x_stride,      // typically d_xbc (conv output row)
+    unsigned int bc_stride,     // typically d_xbc (B/C live in the same row)
+    unsigned int dt_stride,     // typically in_proj_size (dt lives in the proj row)
+    unsigned int y_stride       // output row stride (may differ from x_stride)
+) {
+    const unsigned int head = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (head >= num_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    if (tid >= state_size) return;
+
+    // Group index for shared B, C
+    const unsigned int heads_per_group = num_heads / n_groups;
+    const unsigned int group = head / heads_per_group;
+
+    // ── Compute dt (fused softplus + clamp) ──
+    float dt_val = (float)dt_raw[(unsigned long long)b * dt_stride + head] + dt_bias[head];
+    // softplus: log(1 + exp(x)), numerically stable
+    dt_val = (dt_val > 20.0f) ? dt_val : logf(1.0f + expf(dt_val));
+    // clamp
+    dt_val = fminf(fmaxf(dt_val, dt_min), dt_max);
+
+    // ── Compute dA = exp(-exp(A_log) * dt) ──
+    float neg_A = expf(A_log[head]);  // A_log stores log(-A), so exp gives |A|
+    float dA = expf(-neg_A * dt_val);
+
+    float D_val = D_param[head];
+
+    // ── Load B[group, tid] and C[group, tid] ──
+    float B_val = (float)B_in[(unsigned long long)b * bc_stride + group * state_size + tid];
+    float C_val = (float)C_in[(unsigned long long)b * bc_stride + group * state_size + tid];
+
+    // Pre-compute dt * B for the outer product: H += dt * x[hd] * B[s]
+    float dtB = dt_val * B_val;
+
+    // ── Pointers ──
+    // h_state stays dense (pool slot), see header note.
+    float* H = h_state + ((unsigned long long)(b * num_heads + head) * head_dim * state_size);
+    const __nv_bfloat16* x_ptr = x + (unsigned long long)b * x_stride + head * head_dim;
+
+    // Shared memory for cross-warp reduction: [4 warps][head_dim]
+    __shared__ float smem_warp[4][128];
+    __shared__ float smem_x[128];
+
+    // Load x[head_dim] into shared memory
+    if (tid < head_dim) {
+        smem_x[tid] = (float)x_ptr[tid];
+    }
+    __syncthreads();
+
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane = tid % 32;
+
+    // ── Main loop: update state + accumulate output ──
+    for (unsigned int hd = 0; hd < head_dim; hd++) {
+        float x_hd = smem_x[hd];
+
+        // State update: H[hd, tid] = dA * H[hd, tid] + dt * x[hd] * B[tid]
+        unsigned int idx = hd * state_size + tid;
+        float h_val = H[idx];
+        h_val = dA * h_val + x_hd * dtB;
+        // DECODE-ONLY clamp — the prefill kernels deliberately have none.
+        h_val = fminf(fmaxf(h_val, -200.0f), 200.0f);
+        H[idx] = h_val;
+
+        // Output contribution: y_partial = H[hd, tid] * C[tid]
+        float y_partial = h_val * C_val;
+
+        // Warp-level reduction (128 threads = 4 warps of 32)
+        for (int offset = 16; offset >= 1; offset >>= 1)
+            y_partial += __shfl_down_sync(0xFFFFFFFF, y_partial, offset);
+
+        // Lane 0 of each warp writes partial sum
+        if (lane == 0) smem_warp[warp_id][hd] = y_partial;
+    }
+
+    __syncthreads();
+
+    // ── Final cross-warp reduction + D skip connection + write output ──
+    // Only sum warps that cover state columns (Puzzle state_size=96 → 3 warps);
+    // a hard-coded 4 would sum unwritten smem garbage.
+    const unsigned int n_warps = (state_size + 31u) / 32u;
+    if (tid < head_dim) {
+        float y_val = 0.f;
+        #pragma unroll
+        for (unsigned int w = 0; w < 4; w++) {
+            if (w < n_warps) y_val += smem_warp[w][tid];
+        }
+        // D skip connection: y += D * x
+        y_val += D_val * smem_x[tid];
+        output[(unsigned long long)b * y_stride + head * head_dim + tid] =
+            __float2bfloat16(y_val);
+    }
+}
+
+// ============================================================
 // PREFILL: Sequential Mamba-2 (processes multiple tokens)
 // ============================================================
 // Same algorithm but loops over seq_len tokens.

@@ -189,8 +189,15 @@ impl TransformerModel {
         // main head (NVFP4 default) or the draft-only head built when the main
         // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
+        // `config.mtp_num_hidden_layers > 0` covers proposers installed AFTER
+        // construction via `set_dflash_proposer` (DeepSeek-V4, Nemotron-H
+        // Lightning) whose weights are not Qwen-shaped `MtpWeights` — without
+        // it the SSM verify pools (checkpoint + per-token intermediates) are
+        // never allocated and a hybrid-SSM model cannot rewind a rejected
+        // draft.
         let has_mtp = self_speculative
             || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+            || (use_speculative && config.mtp_num_hidden_layers > 0)
             || dflash_kgamma > 0;
         let num_intermediates = if has_mtp {
             (num_drafts + 1).max(dflash_kgamma)

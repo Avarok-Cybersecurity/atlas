@@ -282,6 +282,10 @@ fn check_mtp_consumability(config: &ModelConfig) -> Result<()> {
         "holo3_1_moe",
         "qwen3_vl_moe",
         "qwen3_coder_next",
+        // Nemotron-3.5 Lightning: DeepSeek-style 1-step head under
+        // `mtp.layers.*`, consumed by `weight_loader::nemotron::mtp` and
+        // served by the `NemotronMtpHead` proposer.
+        "nemotron_h",
     ];
     if MTP_SUPPORTED_MODEL_TYPES.contains(&config.model_type.as_str()) {
         return Ok(());

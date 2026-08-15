@@ -226,12 +226,58 @@ impl NemotronMoeLayer {
     }
 }
 
+/// Minimum `num_seqs` (the PADDED batch rung, `traits::padded_batch_n`) at
+/// which `decode_multi_seq` takes the batched sorted grouped-GEMM body
+/// instead of the canonical per-seq default loop; `None` = never.
+///
+/// Currently `None`, i.e. the batched body is disabled: it is a measured NET
+/// LOSS at every rung profiled.
+///
+/// **Re-measured 2026-08-12 on the milestone-B tip.** The previous table here
+/// was taken against a grouped GEMM that wrote only half its output columns
+/// (`N_TILE 64` under a `ceil(n_out/128)` launch — see
+/// `kernels/gb10/common/moe_w4a16_grouped_gemm.cu`), so it compared a correct
+/// per-seq loop against a batched arm doing half the work at full CTA cost.
+/// Those numbers were invalid in the direction that FLATTERED the batched
+/// arm, and the corrected kernel is worse, not better. GB10, Lightning-30B
+/// A3B NVFP4, 400-token story sweeps, sum-of-stream tok/s, best of 2 reps,
+/// mamba2 arm held at the milestone-B configuration:
+///
+///   rung 2  (C=2):  35.9 batched  vs   85.2 per-seq loop   (−58%)
+///   rung 4  (C=4):  49.7 batched  vs  103.8 per-seq loop   (−52%)
+///   rung 8  (C=8):  68.3 batched  vs  114.1 per-seq loop   (−40%)
+///
+/// At decode shapes the sorted dispatch expands n×top_k (≤ 48 at rung 8,
+/// top_k 6) rows across 128 experts — per-expert M is almost always 0 or 1,
+/// so the grouped GEMM degenerates to GEMV work plus sort/unpermute
+/// overhead, while `decode_inner`'s fused `moe_expert_gemv` already batches
+/// the top_k experts of a token in one launch. The batched body also
+/// reorders FP accumulation vs `decode_inner` (grouped-GEMM tiling +
+/// batched sigmoid routing), which flipped temp-0 answers from C=2 up
+/// (P&P 1813 → 1935/1950) — so enabling it below the C>=5 pre-existing
+/// divergence onset costs determinism too. The body and its kernels stay
+/// alive (mock-geometry-tested via `decode_multi_seq_inner`) for a future
+/// rung where a fused per-expert-M-aware dispatch measures as a win — set
+/// this to `Some(rung)` then.
+///
+/// No stride argument fixes this, which is why milestone B did not try: at
+/// rung 8, 48 expanded rows over 128 experts gives per-expert M in {0,1,2,3}
+/// against a hardcoded `M_TILE 64`, so most CTAs early-exit and the rest run
+/// at ~2% MMA utilisation. The lever is a different datapath — a GEMV-shaped
+/// kernel that holds the M activation rows in registers and reads each expert
+/// weight once — not a wider tile or a rung change.
+pub(crate) const MOE_BATCH_DECODE_MIN_SEQS: Option<usize> = None;
+
 mod decode_helpers;
+mod decode_multi_seq;
 mod prefill_fallback;
 mod prefill_shared_up;
 mod prefill_sorted;
 mod prefill_weights;
 mod ptr_tables;
+
+#[cfg(test)]
+mod tests_multi_seq;
 
 use prefill_sorted::SortedPrefillCtx;
 use ptr_tables::{build_ptr_table, build_ptr_table_from_weights};
@@ -251,6 +297,42 @@ impl TransformerLayer for NemotronMoeLayer {
         stream: u64,
     ) -> Result<()> {
         self.decode_inner(hidden, residual, ctx, stream)
+    }
+
+    /// Multi-sequence batched decode (Milestone A): run the prefill body —
+    /// batched gate GEMM + one shared-expert pass + sorted grouped-GEMM
+    /// expert dispatch — over the N decode rows so every weight matrix is
+    /// streamed once instead of N times. Declines to the canonical per-seq
+    /// default loop when any sorted-path kernel is missing or `num_seqs`
+    /// is below `MOE_BATCH_DECODE_MIN_SEQS` (currently `None` = every rung
+    /// — a measured net loss at decode shapes; see the constant's docs).
+    fn decode_multi_seq<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_seqs: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if MOE_BATCH_DECODE_MIN_SEQS.is_some_and(|min| num_seqs >= min) && self.can_batch_decode() {
+            return self.decode_multi_seq_inner(hidden, residual, num_seqs, ctx, stream);
+        }
+        crate::layer::default_loops::decode_multi_seq_default(
+            self,
+            hidden,
+            residual,
+            num_seqs,
+            states,
+            kv_cache,
+            seq_lens,
+            block_tables,
+            ctx,
+            stream,
+        )
     }
 
     /// Batched MoE prefill: uses GEMM for gate/fc1/fc2/shared, per-token for routing + experts.

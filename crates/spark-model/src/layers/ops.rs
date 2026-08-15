@@ -128,6 +128,8 @@ mod ssm_gdn_batched;
 mod ssm_gdn_snap;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
+#[path = "ops/ssm_mamba2_decode.rs"]
+mod ssm_mamba2_decode;
 #[path = "ops/ssm_preproc.rs"]
 mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
@@ -187,5 +189,6 @@ pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
 pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
+pub use ssm_mamba2_decode::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;

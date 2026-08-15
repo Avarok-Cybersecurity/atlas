@@ -106,6 +106,7 @@ struct Target {
     behavior_rollback_resteer: bool,
     behavior_rom_head: String,
     behavior_tool_retry: bool,
+    behavior_no_decode_graphs: bool,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -1127,6 +1128,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_rollback_resteer: pb.rollback_resteer,
                 behavior_rom_head: pb.rom_head,
                 behavior_tool_retry: pb.tool_retry,
+                behavior_no_decode_graphs: pb.no_decode_graphs,
                 model_type_matches,
                 dflash,
             });

@@ -6,7 +6,10 @@ use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
+pub mod mtp;
 mod ssm_layer;
+
+pub use mtp::{NemotronMtpModule, load_nemotron_mtp_module};
 
 use super::ModelWeightLoader;
 use crate::layer::TransformerLayer;

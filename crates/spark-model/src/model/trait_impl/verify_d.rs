@@ -178,6 +178,7 @@ impl TransformerModel {
         // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
+            && !self.config.no_decode_graphs
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)

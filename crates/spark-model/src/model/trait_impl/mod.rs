@@ -30,6 +30,7 @@ mod drafter_prefill;
 mod ep_misc;
 mod lm_head_batched;
 mod meta;
+mod mixed_layout;
 mod prefill_a;
 mod prefill_b;
 mod prefill_c;

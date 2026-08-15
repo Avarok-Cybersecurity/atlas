@@ -236,8 +236,15 @@ impl TransformerModel {
         let proc_start = prefill_chunk_start;
         let proc_count = n_prefill;
         let effective_seq_len_start = prefill_chunk_start;
-        let moe_scratch_bytes = proc_count * self.config.num_experts_per_tok * 4 * 2;
-        let meta_offset = (moe_scratch_bytes + 7) & !7;
+        // The prefill positions/slots must clear the batched-decode MoE
+        // routing writes at scratch[0..) (padded_n rows, run FIRST each
+        // layer), not just the prefill chunk's own (proc_count rows) — see
+        // `mixed_layout.rs` for the clobber this prevents.
+        let meta_offset = super::mixed_layout::mixed_prefill_meta_offset(
+            proc_count,
+            padded_n,
+            self.config.max_num_experts_per_tok(),
+        );
         let prefill_meta_base = self.buffers.scratch().offset(meta_offset);
         let slot_offset = (proc_count * 4 + 7) & !7;
         let needs_paged = effective_seq_len_start > 0;

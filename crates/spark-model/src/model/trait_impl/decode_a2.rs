@@ -257,7 +257,11 @@ impl TransformerModel {
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        let graph_key = if !ms_profile && !lora_eager && multiseq_graphs_enabled() {
+        let graph_key = if !ms_profile
+            && !lora_eager
+            && !self.config.no_decode_graphs
+            && multiseq_graphs_enabled()
+        {
             self.batch_decode_graph_key(&*seqs, padded_n)
         } else {
             None

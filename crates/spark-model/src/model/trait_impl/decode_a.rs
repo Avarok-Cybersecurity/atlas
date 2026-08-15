@@ -230,6 +230,7 @@ impl TransformerModel {
         // load-time-fixed). Folded in as one more suppressor.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
+            && !self.config.no_decode_graphs
             && !self.profile
             && !self
                 .suppress_graphs

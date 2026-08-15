@@ -293,6 +293,11 @@ pub struct ModelBehavior {
     /// specific model is known to ALWAYS get tool args right on the
     /// first attempt (extra inference round-trip cost is wasted there).
     pub tool_retry: bool,
+    /// Suppress CUDA decode-graph capture for this model family.
+    /// Nemotron-H models crash under graph replay (CUDA 700 on Puzzle at
+    /// 64 prompt tokens, CUDA 716 on Nano/Lightning) and decode graphs are
+    /// a measured no-op on GB10 — the family serves eager.
+    pub no_decode_graphs: bool,
 }
 
 /// Phase-C: maximum number of watchdog-triggered rollbacks a single
@@ -349,6 +354,7 @@ impl Default for ModelBehavior {
             rollback_resteer: true,
             rom_head: "",
             tool_retry: true,
+            no_decode_graphs: false,
         }
     }
 }

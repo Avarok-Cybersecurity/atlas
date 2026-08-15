@@ -277,15 +277,12 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                // Determine sizes from config
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let kd = self.config.linear_key_head_dim;
-                let h_bytes = nv * vd * kd * 4; // FP32
-                let conv_dim = nk * kd * 2 + nv * vd; // 8192
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4; // FP32
+                // State byte sizes from the SSM pool SSOT (covers BOTH GDN and
+                // Mamba-2). The old inline math read the GDN `linear_*` config
+                // fields, which are all 0 on Nemotron-H — every checkpoint copy
+                // was a silent 0-byte no-op and rollback restored nothing.
+                let h_bytes = self.ssm_pool.h_bytes;
+                let conv_bytes = self.ssm_pool.conv_bytes;
 
                 // Lazy alloc checkpoint buffers
                 if ssm.h_state_checkpoint.is_none() {
@@ -359,14 +356,9 @@ impl TransformerModel {
                     .downcast_mut::<SsmLayerState>()
                     .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState at layer {i}"))?;
 
-                let nv = self.config.linear_num_value_heads;
-                let vd = self.config.linear_value_head_dim;
-                let kd = self.config.linear_key_head_dim;
-                let nk = self.config.linear_num_key_heads;
-                let h_bytes = nv * vd * kd * 4;
-                let conv_dim = nk * kd * 2 + nv * vd; // 8192
-                let d_conv = self.config.linear_conv_kernel_dim;
-                let conv_bytes = conv_dim * d_conv * 4;
+                // SSM pool SSOT sizes — see checkpoint_ssm_states_dispatch.
+                let h_bytes = self.ssm_pool.h_bytes;
+                let conv_bytes = self.ssm_pool.conv_bytes;
 
                 if num_accepted == 0 {
                     // Restore to pre-verification checkpoint
