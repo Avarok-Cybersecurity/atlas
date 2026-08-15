@@ -44,7 +44,13 @@ export const shortModel = (model) => (model || '').split('/').pop() || model;
 const TAB_DEFS = [
   { id: 'agentic', label: 'Agentic', benches: ['agentic-webserver'] },
   { id: 'bfcl', label: 'BFCL', benches: ['bfcl-subset', 'bfcl-subset-echolp'] },
-  { id: 'ttft', label: 'TTFT', benches: ['ttft-warm-gate', 'ttft-cold-gate'] }
+  { id: 'ttft', label: 'TTFT', benches: ['ttft-warm-gate', 'ttft-cold-gate'] },
+  // Wired ahead of data: records for these land only after calibration on
+  // the fixed instrument (2026-08-15 concurrency re-scope). Until then the
+  // records-filter below keeps the tabs hidden and the ids show in the
+  // footer's "gated, not yet published" line — nothing renders empty.
+  { id: 'decode', label: 'Decode', benches: ['decode-floor'] },
+  { id: 'concurrency', label: 'Concurrency', benches: ['concurrency-sweep'] }
 ];
 export const tabs = TAB_DEFS.filter((t) =>
   t.benches.some((b) => (gates.benchmarks[b]?.records ?? []).length > 0)
@@ -113,11 +119,52 @@ export function panelsFor(benchId, records) {
       }
     ];
   }
+  if (benchId === 'decode-floor') {
+    // Single-value trend. The key is read from the records rather than
+    // pinned here: thresholds/records land after calibration, and wiring
+    // that invents a name the producer never emits would render an empty
+    // chart forever. Prefer a tok/s-shaped key, else the first numeric one.
+    const keys = Object.keys(latest.metrics ?? {});
+    const key = keys.find((k) => /tok_s/.test(k)) ?? keys.find((k) => k !== 'samples');
+    return key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
+  }
+  if (benchId === 'concurrency-sweep') {
+    // Two panels: the ladder curve (throughput vs C, latest runs overlaid —
+    // rendered by GateLadderChart via kind: 'ladder') and the peak's trend
+    // over time. Keys come from the sweep's metrics map
+    // (c{C}_aggregate_tok_s / peak_aggregate_tok_s); vacuous cells were
+    // already excluded by the producer, so every point here is comparable.
+    const panels = [];
+    if (records.some((r) => Object.keys(r.metrics ?? {}).some((k) => LADDER_KEY.test(k)))) {
+      panels.push({ kind: 'ladder', title: 'throughput vs concurrency', unit: 'tok/s' });
+    }
+    if (records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s))) {
+      panels.push({
+        title: 'peak aggregate throughput',
+        unit: 'tok/s',
+        metrics: [{ key: 'peak_aggregate_tok_s', label: 'peak' }]
+      });
+    }
+    return panels;
+  }
   // Unknown future benchmark: chart its first numeric metric so new suites
   // appear without a code change.
   const key = Object.keys(latest.metrics ?? {}).find((k) => k !== 'samples');
   return key ? [{ title: key, unit: '', metrics: [{ key, label: key }] }] : [];
 }
+
+// One rung of the concurrency ladder: c{C}_aggregate_tok_s from the sweep's
+// metrics map. Shared with GateLadderChart so the panel test and the renderer
+// cannot drift apart on the key shape.
+export const LADDER_KEY = /^c(\d+)_aggregate_tok_s$/;
+export const ladderPoints = (record) =>
+  Object.entries(record?.metrics ?? {})
+    .map(([k, v]) => {
+      const m = LADDER_KEY.exec(k);
+      return m ? { c: +m[1], v } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.c - b.c);
 
 export const recordsFor = (benchId) => gates.benchmarks[benchId]?.records ?? [];
 export const benchName = (benchId) => gates.benchmarks[benchId]?.name ?? benchId;
