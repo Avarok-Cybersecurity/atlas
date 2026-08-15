@@ -203,7 +203,9 @@ fn default_kwargs_fail_fast_on_typos() {
     // Unknown key (deny_unknown_fields): the old parser silently ignored
     // it, which is exactly how "--default-chat-template-kwargs
     // reasoning_effort=..." appeared to work while doing nothing.
-    assert!(parse_default_chat_template_kwargs(r#"{"reasoning_efort":"low"}"#).is_err());
+    // ("reasoning_efforts" — plural — is the unknown-key stand-in; a true
+    // misspelling here trips the typos CI lint.)
+    assert!(parse_default_chat_template_kwargs(r#"{"reasoning_efforts":"low"}"#).is_err());
     // Invalid JSON.
     assert!(parse_default_chat_template_kwargs("not json").is_err());
 }
