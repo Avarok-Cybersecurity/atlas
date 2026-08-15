@@ -43,28 +43,43 @@ No Jinja change was needed: the bundled template already walks the content array
 
 **Verification.** `video-fidelity` on `qwen3.6-35b-a3b`: **13/13, 0 skipped, control held** (was 12/13). `video-before-image` reports 288 prompt tokens — the same 288 the dense targets record, so the ordering moved and the geometry did not. `vision-fidelity` on the same server still 14/14 geometry, 3/3 probes, all integrity legs. Plus 10 unit tests pinning the order at each hop (wire, IR, collection, markers) — `cargo test -p spark-server --bin spark`, 2220 pass.
 
-## ★ NEW OPEN BUG — qwen3.8-27b drops a colour from the FORWARD clip
+## ✔ FIXED 2026-08-15 (second) — the fixture's green was half-bright
 
-Found while producing the gate records on 2026-08-15. **`video-fidelity` on `qwen3.8-27b` scores 4/13**, and it is *not* this branch's ordering fix:
+`video-fidelity` scored **4/13 on qwen3.8-27b**, the gate's declared subject: it dropped "green" from the FORWARD clip (mp4 and gif alike) while reading the REVERSED clip perfectly 4/4, on identical geometry. Each candidate cause was killed by measurement, not argument:
 
-| | forward clip | reversed clip |
-|---|---|---|
-| expected | red, green, blue, yellow | yellow, blue, green, red |
-| got | **red, blue** | yellow, blue, green, red ✓ |
+* **Not the media-ordering fix.** Parent commit `c915f01d`, rebuilt and served with the same flags: **the same 4/13, leg for leg**. The only difference was that `video-before-image` returned `[]` on the parent and `[red, blue, yellow]` with the fix — the fix strictly improved it.
+* **Not the pipeline.** `qwen3.6-27b` read all four colours through the identical code path, same 240 prompt tokens, and answered *"SECOND segment → GREEN"* where 3.8 said *"blue"*.
+* **Not the KV cache.** `--kv-cache-dtype bf16` changed nothing, byte for byte.
+* **Not the recipe, and not a broadly degraded checkpoint.** Reproduced on both the gate's self-served recipe and the manual serve; `vision-fidelity` passed 14/14 on that same checkpoint.
+* **Not this checkpoint's double-quantisation.** `Qwen/Qwen3.8-27B-FP8` — the same weights in the block-scaled FP8 format Atlas loads natively, with no requant — failed the same way.
 
-* **Not ordering, not the splice.** Geometry is exactly the reference: 214 prompt tokens, 4 temporal groups, 49 tok/group, mp4 and gif agreeing. The *reversed* clip reads all four colours perfectly on the same server in the same run — so frames arrive, in order, with the right embeddings. The forward clip loses a middle colour, on both the mp4 and the GIF.
-* **Not the media-ordering fix.** A/B'd directly: parent commit `c915f01d` rebuilt from the same tree and served with the same flags produces **the same 4/13, leg for leg, with the same colours**. The only difference is that `video-before-image` returns `[]` on the parent and `[red, blue, yellow]` with the fix — i.e. the fix strictly improved that leg.
-* **Not the recipe.** Reproduces identically on the gate's self-served recipe (`qwen3.8/qwen3.8-27b-nvfp4-unsloth`, gpu-util 0.90) and on the handoff's manual serve (`--max-num-seqs 4`, util 0.70, `--video-fps 2`).
-* **Not a broadly degraded checkpoint.** `vision-fidelity` on the same checkpoint, same binary, same afternoon: **PASS**, 14/14 geometry, 3/3 probes, control held. It reads stills correctly; it reads a reversed clip correctly; it drops a colour from a forward clip.
-* **Unexplained against the 2026-08-14 reference PASS** on this same box and config. The other two vision targets scored 13/13 that same afternoon on the same binary, so it is specific to this checkpoint. Worth checking first whether the NFS snapshot under `models--unsloth--Qwen3.8-27B-NVFP4` changed since 08-14 — that is the one input nobody has pinned.
+**The cause was the fixture.** Its green was HTML green `#008000`, the one half-bright colour among three full-bright ones, because ffmpeg resolves the *name* "green" that way. With the shade as the only variable, on the same server and the gate's own prompt:
 
-The asymmetry is the lead worth pulling: forward loses a middle colour on two different containers, reversed is perfect, geometry identical across both. Whatever this is, it distinguishes the two clips' *content*, not their handling.
+```
+#008000  ->  "Red, Blue, Yellow"          (2/2 runs)
+#00FF00  ->  "Red, Green, Blue, Yellow"   (2/2 runs)
+```
 
-Its `BENCH.toml` floor is deliberately **left at 13** and the target stays declared. Lowering an unexplained red is how a gate stops being evidence.
+Qwen3.6-27B read the dim band fine, so the difficulty stayed invisible until a weaker checkpoint became the subject. The gate was measuring colour sensitivity, not frame order.
+
+Fixtures regenerated full-bright via `scripts/gen_test_videos.py`. **All three targets now score 13/13**, geometry unchanged (67/116/214 tokens, 49 per group), and every assertion is intact — the reversed pair, the parity pair and the geometry ladder are untouched, and the expected word is still "green" (also a substring of "bright green" / "lime green").
+
+Two things the generator gained, both defects in their own right:
+
+* It wrote **only** `tests/fixtures/videos/`, which nothing reads. The compiled-in copy under `crates/atlas-plugin/assets/video/` was never regenerated by it — so a fixture fix would have silently changed nothing. It now writes both from one encode.
+* The MP4s took ffmpeg's colour **name** while the GIF took an RGB dict, so the two encoders agreed only by coincidence of CSS naming. Both now read the same dict.
+
+### ★ Separate finding, NOT fixed — qwen3.8-27b is double-quantised
+
+`unsloth/Qwen3.8-27B-NVFP4` is `format = mixed-precision`: attention q/k/v/o, the GDN projections and lm_head are **FP8 with a per-channel scale**; only the MLP is NVFP4. Atlas's native `w8a16` path needs a `[N/128, K/128]` block grid, so a per-row scale is deliberately refused (it would read another row's multiplier — "silently produces garbage logits") and those tensors are dequantised to BF16 and **re-quantised to NVFP4**. Visible as `quantize_to_nvfp4` lines in the serve log.
+
+Measured cost on the old fixture: this checkpoint answered `Red, Blue` where the natively-loaded `Qwen/Qwen3.8-27B-FP8` managed `Red, Blue, Yellow`. Both wrong, so it is not what the red was — but it is real, and the fix is a per-row-scale FP8 path (or keeping those projections BF16 rather than quantising down).
+
+`kernels/gb10/qwen3.8-27b/MODEL.toml` asserts the two 27B checkpoints' `quantization_config` "differs only in a tooling version string". That is **false** for the checkpoint on disk; corrected in place there.
 
 ## Gate status
 
-Measured 2026-08-15 on dgx-00, binary at `7de59f26` (the ordering fix).
+Measured 2026-08-15 on dgx-00, after both fixes.
 
 | gate | target | result |
 |---|---|---|
@@ -73,9 +88,9 @@ Measured 2026-08-15 on dgx-00, binary at `7de59f26` (the ordering fix).
 | `vision-fidelity` | qwen3.8-27b | **PASS** — 14/14 geometry, 3/3 probes, control held |
 | `video-fidelity` | qwen3.6-35b-a3b | **PASS** — 13/13, 0 skipped (**was 12/13**) |
 | `video-fidelity` | qwen3.6-27b | **PASS** — 13/13, 0 skipped |
-| `video-fidelity` | qwen3.8-27b | **FAIL** — 4/13, pre-existing, see above |
+| `video-fidelity` | qwen3.8-27b | **PASS** — 13/13, 0 skipped (**was 4/13**) |
 
-All three vision targets declare both gates.
+All three vision targets declare both gates, and all six combinations pass.
 
 ### Committed gate-proof records
 

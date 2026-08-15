@@ -294,18 +294,45 @@ min = 1.0
 # because it was the one target weak enough to expose the media-ordering
 # defect -- see its BENCH.toml entry.
 #
-# ⚠ THIS TARGET IS CURRENTLY RED AND THE THRESHOLDS BELOW ARE NOT LOWERED.
-# On 2026-08-15 it scored 4/13 here, dropping "green" from the FORWARD clip
-# (mp4 and gif alike) while reading the REVERSED clip perfectly 4/4, on
-# identical geometry -- 214 prompt tokens, 4 groups, 49 tok/group, the same
-# numbers the reference run recorded. That is a content-reading failure, not
-# an ordering or splice one. It is NOT from the media-ordering fix: the
-# parent commit c915f01d, rebuilt and served with the same flags, produced
-# the SAME 4/13 with the same colors leg for leg. Unexplained since the
-# 2026-08-14 reference PASS on this same box and serve config; the two other
-# vision targets scored 13/13 the same afternoon on the same binary. The
-# floor stays at 13 because lowering an unexplained red is how a gate stops
-# being evidence.
+# ── 2026-08-15: this target went red, and the FIXTURE was at fault ─────────
+# It scored 4/13, dropping "green" from the FORWARD clip (mp4 and gif alike)
+# while reading the REVERSED clip perfectly 4/4 on identical geometry. Ruled
+# out in order, each by measurement rather than argument:
+#
+#   * the media-ordering fix -- parent commit c915f01d, rebuilt and served
+#     with the same flags, produced the SAME 4/13 leg for leg;
+#   * the pipeline -- qwen3.6-27b read all four colours through the identical
+#     code path, same 240 prompt tokens, and answered "SECOND segment ->
+#     GREEN" where this target said "blue";
+#   * the KV cache -- --kv-cache-dtype bf16 changed nothing, byte for byte;
+#   * this checkpoint's double-quantisation (see the loader note below) --
+#     Qwen/Qwen3.8-27B-FP8, the same weights in the block-scaled FP8 format
+#     Atlas loads natively, failed the same way.
+#
+# The cause: the fixture's green was HTML green #008000, the one HALF-bright
+# colour among three full-bright ones, because ffmpeg resolves the NAME
+# "green" that way. Measured with the shade as the only variable:
+#     #008000 -> "Red, Blue, Yellow"          (2/2 runs)
+#     #00FF00 -> "Red, Green, Blue, Yellow"   (2/2 runs)
+# Qwen3.6-27B read the dim band fine, so the difficulty stayed invisible until
+# a weaker checkpoint became this gate's subject. The gate was measuring
+# colour sensitivity, not frame order. Fixtures regenerated full-bright
+# (scripts/gen_test_videos.py); all three targets now score 13/13 and the
+# geometry is unchanged (67/116/214 tokens, 49 per group).
+#
+# ★ SEPARATE FINDING, NOT FIXED: this checkpoint is `format = mixed-precision`
+# -- attention q/k/v/o, the GDN projections and lm_head are FP8 with a
+# PER-CHANNEL scale, and only the MLP is NVFP4. Atlas's native w8a16 path
+# needs a [N/128, K/128] block grid, so a per-row scale is deliberately
+# refused (it would read another row's multiplier and produce garbage
+# logits) and those tensors are dequantised to BF16 and RE-quantised to
+# NVFP4. Measured cost, gate prompt, dark-green fixture: this checkpoint
+# answered "Red, Blue" where the natively-loaded Qwen/Qwen3.8-27B-FP8
+# managed "Red, Blue, Yellow". Both were wrong, so this is not what the red
+# was -- but the double-quantisation is real and this target carries it.
+# MODEL.toml's claim that the two 27B checkpoints' quantization_config
+# "differs only in a tooling version string" is FALSE as of the checkpoint
+# on disk; see the note there.
 #
 # ★ REQUIRES FFMPEG ON THE RUNNER for every container except GIF. Legs needing
 # it SKIP rather than fail when it is absent, so a runner without ffmpeg

@@ -6,6 +6,34 @@ active_params = "27B"
 architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
 
 # ── Identity vs qwen3.6-27b ────────────────────────────────────────────────
+# ⚠ CORRECTION 2026-08-15: the claim below that the two quantization_configs
+# "differ only in a tooling version string" is FALSE for the checkpoint now on
+# disk (snapshot 9c73e2da, fetched 2026-08-14 11:18). Read from config.json:
+#
+#   unsloth/Qwen3.6-27B-NVFP4  format = nvfp4-pack-quantized
+#                              one group, all Linear, 4-bit tensor_group
+#   unsloth/Qwen3.8-27B-NVFP4  format = MIXED-PRECISION
+#                              group_0  FP8, strategy = CHANNEL (per-row):
+#                                       self_attn q/k/v/o, linear_attn
+#                                       in_proj_qkv/in_proj_z/out_proj,
+#                                       lm_head, layers 56-63 MLP
+#                              group_1  NVFP4: mlp gate/up/down
+#
+# The consequence is real and measured: a per-row FP8 scale cannot feed the
+# native w8a16 path (it indexes a [N/128, K/128] block grid), so those tensors
+# are dequantised to BF16 and RE-quantised to NVFP4 at load — visible as
+# `quantize_to_nvfp4` lines in the serve log. Against Qwen/Qwen3.8-27B-FP8,
+# the same weights in the block-scaled format Atlas loads natively, this
+# checkpoint measured WORSE on the video benchmark's hardest leg. Nothing here
+# is unsound — the fallback is deliberate and documented in
+# weight_loader/qwen35_dense.rs — but this target pays a double-quantisation
+# cost that the note below says it does not have.
+#
+# What the note gets RIGHT, and what the settings below still rest on, is the
+# ARCHITECTURE: same tensor names/shapes, same config fields, so `kernel_source`
+# reuse and `match_names` disambiguation are unaffected.
+#
+# ORIGINAL NOTE (2026-08-14), retained:
 # unsloth/Qwen3.8-27B-NVFP4 was diffed tensor-by-tensor against
 # unsloth/Qwen3.6-27B-NVFP4 (2026-08-14): all 1968 safetensors tensors have
 # identical names/shapes/dtypes, the quantization_config differs only in a
