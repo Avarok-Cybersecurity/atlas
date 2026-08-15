@@ -102,11 +102,11 @@ checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
 gate = "bfcl-subset"
 recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl"
 label = "Qwen3.8-27B dense (NVFP4, unsloth)"
-# NOT the default: the bfcl-subset default subject stays Qwen3.6-27B
-# (qwen3.6-27b/BENCH.toml), whose recorded history and MLPerf floor are
-# untouched by this entry. Select with
-# `--checkpoint unsloth/Qwen3.8-27B-NVFP4`.
-default = false
+# THE REQUIRED bfcl-subset SUBJECT as of 2026-08-15 (flipped from Qwen3.6-27B per
+# maintainer: 3.6 is no longer worth requiring on every PR). The 3.6 entry in
+# kernels/gb10/qwen3.6-27b/BENCH.toml is now default = false — see the consequence
+# note there re: the MLPerf submission no longer being gated.
+default = true
 # MEASURED 2026-08-14 (dgx1, this branch's binary, golden draw n=995 seed 42):
 # overall 84.22 / normalized 84.12. See the metrics table below and the sharp
 # caveat in the note.

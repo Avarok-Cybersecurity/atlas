@@ -20,7 +20,14 @@ quant = "nvfp4"
 checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
 gate = "bfcl-subset"
 recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
-default = true
+# NO LONGER THE REQUIRED bfcl-subset SUBJECT (flipped 2026-08-15). The required
+# gate model is now unsloth/Qwen3.8-27B-NVFP4 (kernels/gb10/qwen3.8-27b/BENCH.toml).
+# Retained as a non-default measured entry for historical provenance and so the
+# 3.6 leg can still be run on demand with `--checkpoint unsloth/Qwen3.6-27B-NVFP4`.
+# ★ CONSEQUENCE: the MLPerf-edge submission rides on THIS checkpoint, and with it
+# out of the required set nothing guards the submitted config on every PR — re-run
+# this leg by hand before any MLPerf-facing claim (accepted trade, 2026-08-15).
+default = false
 status = "measured"
 note = """\
 Gate D. Golden ST-995 draw (62/10/10, floor 25, n=995, seed 42, temp 0) on the DENSE 27B — \
