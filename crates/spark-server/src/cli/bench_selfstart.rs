@@ -148,8 +148,11 @@ impl Drop for SelfServed {
 /// box's config to serve.
 ///
 /// `overrides` are recipe keys the operator changed on the command line. They
-/// are returned in [`SelfServed::overrides`] so the gate record can name the
-/// config that actually ran rather than the recipe it started from.
+/// are merged on top of any `[benchmarks.serve_overrides]` pin the resolved
+/// baseline entry declares (the operator wins a clash) and the merged set is
+/// returned in [`SelfServed::overrides`], so the gate record names the config
+/// that actually ran rather than the recipe it started from — baseline pins
+/// included, since `check_record` demands them on the record.
 pub async fn serve_for(
     benchmark_id: &str,
     hardware: Option<&str>,
@@ -193,7 +196,7 @@ pub async fn serve_for(
     }
 
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
-    let requested = overrides;
+    let requested = gate::merge_serve_overrides(entry.serve_overrides.clone(), overrides);
     let mut overrides = requested.clone();
     overrides.insert("port".to_string(), port.to_string());
     let serve_args = recipe.serve_args(&overrides).with_context(|| {

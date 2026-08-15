@@ -76,6 +76,21 @@ pub fn check_record(record: &GateRecord, baseline: &GateBaseline) -> Option<Vec<
         )]);
     }
     let mut problems = Vec::new();
+    // Baseline-declared serve pins must be ON the record, at the pinned value.
+    // BENCH.toml is outside the closure hash, so a pin-only edit would
+    // otherwise leave an old record — measured under a different serve config —
+    // reading green for a config it never ran.
+    for (k, want) in &entry.serve_overrides {
+        match record.serve_overrides.get(k) {
+            Some(got) if got == want => {}
+            Some(got) => problems.push(format!(
+                "serve override {k}={got} does not match the baseline pin {k}={want}"
+            )),
+            None => problems.push(format!(
+                "serve override {k}={want} is pinned on the baseline but missing from the record"
+            )),
+        }
+    }
     for (name, bound) in &entry.metrics {
         let Some(value) = record.metrics.get(name) else {
             problems.push(format!("{name}: missing from the record"));

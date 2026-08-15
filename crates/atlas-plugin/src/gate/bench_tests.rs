@@ -281,3 +281,118 @@ min = 85.0
     let all = load_all(&root).unwrap();
     assert_eq!(all.len(), 1, "one entry, not one per quant dir: {all:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Baseline-declared serve pins ([benchmarks.serve_overrides])
+// ---------------------------------------------------------------------------
+
+/// A `[benchmarks.serve_overrides]` table is the SSOT for a gate-local pin.
+#[test]
+fn serve_overrides_are_assembled_into_the_baseline() {
+    let root = fixture(
+        "serve-overrides",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    let baseline = baseline_for(&root, "bfcl-subset").unwrap();
+    let (_, entry) = baseline.resolve("gb10", None).unwrap();
+    assert_eq!(
+        entry
+            .serve_overrides
+            .get("ssm_cache_slots")
+            .map(String::as_str),
+        Some("256")
+    );
+}
+
+/// `port` is owned by self-start. A pin here would name a listener that is not
+/// there, so it is refused at parse rather than dropped later.
+#[test]
+fn a_port_serve_override_is_refused() {
+    let root = fixture(
+        "port-pin",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+port = "8888"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    let err = load_all(&root).unwrap_err().to_string();
+    assert!(err.contains("cannot set `port`"), "{err}");
+}
+
+/// The committed tree's pins, exactly where the gates need them — and nowhere
+/// else. The echolp pin must not move the floors: those are the high-water
+/// ratchet, and this change is capacity (Marconi pool), not a score lever.
+#[test]
+fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
+    let root = repo_root();
+
+    // Gate B: the 35B echolp draw self-starts with the Marconi pool pinned, so
+    // a 1004-sample serial generate cannot evict its own snapshots — with the
+    // ratcheted floors untouched.
+    let echolp = baseline_for(&root, "bfcl-subset-echolp").unwrap();
+    let (_, e) = echolp.resolve("gb10", None).unwrap();
+    assert_eq!(e.metrics["overall_accuracy"].min, Some(86.50));
+    assert_eq!(e.metrics["normalized_single_turn_score"].min, Some(86.90));
+    assert_eq!(e.metrics["samples"].min, Some(1004.0));
+    assert_eq!(e.metrics["samples"].max, Some(1004.0));
+    assert_eq!(
+        e.serve_overrides.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
+    assert_eq!(e.serve_overrides.len(), 1, "{:?}", e.serve_overrides);
+
+    // The poison gate declares BOTH of its documented serve deltas, so a
+    // `--pull-request-gate` run needs no operator flags at all and still
+    // matches the config probe.rs documents as required.
+    let poison = baseline_for(&root, "ssm-state-poisoning-gate").unwrap();
+    let (_, p) = poison.resolve("gb10", None).unwrap();
+    assert_eq!(
+        p.serve_overrides.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
+    assert_eq!(
+        p.serve_overrides
+            .get("disable_thinking")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(p.serve_overrides.len(), 2, "{:?}", p.serve_overrides);
+
+    // Everything else keeps the recipe's own config. bfcl-subset in
+    // particular: its default subject's bars (Qwen3.8-27B, 2026-08-14) were
+    // measured WITHOUT a pin, and a pin added after the fact would desync the
+    // thresholds from the config that produced them.
+    for id in [
+        "bfcl-subset",
+        "ttft-warm-gate",
+        "ttft-cold-gate",
+        "agentic-webserver",
+    ] {
+        let b = baseline_for(&root, id).unwrap();
+        let (_, entry) = b.resolve("gb10", None).unwrap();
+        assert!(
+            entry.serve_overrides.is_empty(),
+            "{id} keeps the recipe's own config: {:?}",
+            entry.serve_overrides
+        );
+    }
+}

@@ -454,12 +454,7 @@ mod tests {
         // Caller hoists min(max_tokens, tool_max_tokens) before resolve
         // (#517). 90% of the real ceiling (256) is 230, not 90% of the
         // raw client max_tokens (2048 -> 1843).
-        let (et, tb) = resolve(
-            ThinkingDirective::On { budget: None },
-            policy(),
-            256,
-            true,
-        );
+        let (et, tb) = resolve(ThinkingDirective::On { budget: None }, policy(), 256, true);
         assert!(et);
         assert_eq!(tb, Some(230));
         assert!(tb.unwrap() < 256);

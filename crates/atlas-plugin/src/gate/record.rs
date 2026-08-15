@@ -119,6 +119,26 @@ pub struct ModelBaseline {
     pub note: String,
     #[serde(default)]
     pub metrics: BTreeMap<String, Bound>,
+    /// Recipe keys self-start applies for this gate. Empty (and omitted) means
+    /// the recipe serves exactly as pinned. See `bench::BenchEntry` for the
+    /// full contract (values are strings matching `--serve-override KEY=VALUE`;
+    /// `port` is refused at parse).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_overrides: BTreeMap<String, String>,
+}
+
+/// Baseline pins first; the operator's `--serve-override` wins on a clash.
+///
+/// Declaration under operator: the baseline states what the gate NEEDS to be
+/// meaningful, but an operator typing a key at the command line is stating
+/// intent for this run, and both end up disclosed in the record either way.
+pub fn merge_serve_overrides(
+    baseline: BTreeMap<String, String>,
+    requested: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut out = baseline;
+    out.extend(requested);
+    out
 }
 
 /// Every model measured on one box class, and which one to serve by default.

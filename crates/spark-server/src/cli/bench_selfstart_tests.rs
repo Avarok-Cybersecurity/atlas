@@ -148,3 +148,29 @@ fn a_torn_down_server_is_not_torn_down_twice() {
         assert!(matches!(waited, Ok(Err(_))), "{waited:?}");
     });
 }
+
+// ── Baseline-declared serve pins ──
+
+/// Baseline pins land on the resolved serve, and a CLI clash takes the
+/// operator: `[benchmarks.serve_overrides]` states what the gate needs, but an
+/// operator typing `--serve-override` is stating intent for THIS run. Both end
+/// up disclosed in the record either way, so precedence never hides anything.
+#[test]
+fn baseline_pins_are_applied_and_the_operator_wins_a_clash() {
+    let baseline = BTreeMap::from([
+        ("ssm_cache_slots".to_string(), "256".to_string()),
+        ("kv_cache_dtype".to_string(), "bf16".to_string()),
+    ]);
+    let requested = BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]);
+    let merged = atlas_plugin::gate::merge_serve_overrides(baseline, requested);
+    assert_eq!(
+        merged.get("ssm_cache_slots").map(String::as_str),
+        Some("256"),
+        "an unclashed pin survives the merge"
+    );
+    assert_eq!(
+        merged.get("kv_cache_dtype").map(String::as_str),
+        Some("fp8"),
+        "the operator's value wins the clash"
+    );
+}

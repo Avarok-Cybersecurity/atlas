@@ -26,6 +26,7 @@ fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
                 label: String::new(),
                 note: String::new(),
                 metrics: BTreeMap::new(),
+                serve_overrides: BTreeMap::new(),
             },
         );
     }
@@ -150,6 +151,7 @@ fn two_variant_baseline() -> GateBaseline {
             label: "35B MoE flagship".to_string(),
             note: String::new(),
             metrics: BTreeMap::from([("sum_wall_s".to_string(), max_bound(1000.0))]),
+            serve_overrides: BTreeMap::new(),
         },
     );
     models.insert(
@@ -159,6 +161,7 @@ fn two_variant_baseline() -> GateBaseline {
             label: "dense 27B".to_string(),
             note: String::new(),
             metrics: BTreeMap::from([("sum_wall_s".to_string(), max_bound(2500.0))]),
+            serve_overrides: BTreeMap::new(),
         },
     );
     GateBaseline {
@@ -313,4 +316,28 @@ fn a_repeated_key_takes_the_last_value() {
 #[test]
 fn no_overrides_is_empty_not_an_error() {
     assert!(parse_serve_overrides(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn resolve_carries_baseline_serve_overrides() {
+    // The pin travels inside the resolved entry, verbatim — `serve_for` reads
+    // it from there, so a dropped clone here would silently serve the recipe's
+    // default pool while the record claimed the pinned one.
+    let mut b = baseline(&[("gb10", "m", Some("r"))]);
+    b.hardware
+        .get_mut("gb10")
+        .unwrap()
+        .models
+        .get_mut("m")
+        .unwrap()
+        .serve_overrides
+        .insert("ssm_cache_slots".to_string(), "256".to_string());
+    let r = resolve(&b, "bfcl-subset", None, None).expect("resolved");
+    assert_eq!(
+        r.entry
+            .serve_overrides
+            .get("ssm_cache_slots")
+            .map(String::as_str),
+        Some("256")
+    );
 }

@@ -62,6 +62,17 @@ pub struct BenchEntry {
     pub status: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// Recipe keys self-start applies on every `--pull-request-gate` run.
+    ///
+    /// Empty (and omitted from the TOML) is the normal case: the recipe serves
+    /// exactly as pinned. Non-empty is a gate-local pin the recipe itself
+    /// must not carry — e.g. `ssm_cache_slots = "256"` on BFCL, so a 1004-
+    /// sample serial generate cannot evict its own Marconi snapshots. Values
+    /// are strings, matching `--serve-override KEY=VALUE`. `port` is refused:
+    /// self-start binds a free port and a second opinion would name a listener
+    /// that is not there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_overrides: BTreeMap<String, String>,
     /// Thresholds. Absent for `unmeasured` — see the module docs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<BTreeMap<String, super::record::Bound>>,
@@ -111,6 +122,15 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
             if entry.status == "measured" && entry.metrics.is_none() {
                 bail!(
                     "{}: {} / {} claims to be measured but declares no metrics",
+                    path.display(),
+                    entry.gate,
+                    entry.checkpoint
+                );
+            }
+            if entry.serve_overrides.contains_key("port") {
+                bail!(
+                    "{}: {} / {} serve_overrides cannot set `port`: self-start binds \
+                     a free port itself, so a pin here would name a listener that is not there",
                     path.display(),
                     entry.gate,
                     entry.checkpoint
@@ -216,6 +236,7 @@ pub fn baseline_for(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
                     label: entry.label.clone(),
                     note: entry.note.clone(),
                     metrics,
+                    serve_overrides: entry.serve_overrides.clone(),
                 },
             )
             .is_some()

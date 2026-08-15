@@ -251,11 +251,8 @@ pub(super) fn build_sampling(
 
     // max_tokens cap when tools are active. Same ceiling as thinking
     // resolution (#517) — do not recompute min() here.
-    let max_tokens = thinking::generation_max_tokens(
-        req.max_tokens,
-        tools_active,
-        state.tool_max_tokens,
-    );
+    let max_tokens =
+        thinking::generation_max_tokens(req.max_tokens, tools_active, state.tool_max_tokens);
     if tools_active && max_tokens < req.max_tokens {
         tracing::info!(
             "Tool max_tokens cap: {} → {} (tool_max_tokens={})",
