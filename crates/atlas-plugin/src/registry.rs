@@ -4,7 +4,8 @@
 
 use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{
-    agentic, bfcl, concurrency, contamination, serve_matrix, ssm_poison, ttft, video, vision,
+    agentic, bfcl, concurrency, contamination, quick_speed, serve_matrix, ssm_poison, ttft, video,
+    vision,
 };
 
 /// Every benchmark, list order. Cheapest and most-run first.
@@ -14,6 +15,10 @@ use crate::benchmarks::{
 /// or a run; it needs a stable address only so `all()` can hand out slices
 /// of it. Registration is a compile-time decision, not a runtime one.
 const ALL: &[&BenchmarkDescriptor] = &[
+    // The cheapest probe in the suite (~1–3 min) and a measurement tool by
+    // design: no baseline, no thresholds, excused from the PR gate set in
+    // `gate::coverage::NOT_REQUIRED`.
+    &quick_speed::DESCRIPTOR,
     &concurrency::DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,

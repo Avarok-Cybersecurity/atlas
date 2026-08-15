@@ -467,7 +467,13 @@ pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
     },
 ];
 
-pub const NOT_REQUIRED: [(&str, &str); 4] = [
+pub const NOT_REQUIRED: [(&str, &str); 5] = [
+    (
+        "quick-speed-bench",
+        "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
+         deliberately never a gate: the seven required gates already cost ~4.5 h per PR, and \
+         its warm-path numbers (primed prefix cache + SSM snapshot) are not regression evidence",
+    ),
     (
         "bfcl-full",
         "the unsampled ~3600-sample draw; the two subset gates cover the same code at a \

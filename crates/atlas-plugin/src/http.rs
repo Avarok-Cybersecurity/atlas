@@ -54,6 +54,15 @@ pub struct ChatOutcome {
     pub completion_tokens: usize,
     pub prompt_tokens: usize,
     pub cached_prompt_tokens: usize,
+    /// Server-reported prefill time (`usage.time_to_first_token_ms`), measured
+    /// by the server's own clock — free of client buffering and network time.
+    pub server_ttft_ms: Option<f64>,
+    /// Server-reported DECODE-ONLY rate (`usage."response_token/s"`). The
+    /// server computes it as `(completion_tokens − 1) / decode_time` (see
+    /// `spark-server::api::chat_blocking`), so unlike any client-side rate it
+    /// excludes prefill, buffering and the network — it is the number a
+    /// per-token latency claim can be defended with.
+    pub server_tps: Option<f64>,
 }
 
 /// POST `/v1/chat/completions` with `"stream": true` and measure it.
@@ -149,6 +158,12 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
             .and_then(Value::as_u64)
         {
             out.cached_prompt_tokens = c as usize;
+        }
+        if let Some(v) = usage.get("time_to_first_token_ms").and_then(Value::as_f64) {
+            out.server_ttft_ms = Some(v);
+        }
+        if let Some(v) = usage.get("response_token/s").and_then(Value::as_f64) {
+            out.server_tps = Some(v);
         }
     }
     let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {

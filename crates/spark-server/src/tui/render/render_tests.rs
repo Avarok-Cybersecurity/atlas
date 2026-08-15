@@ -145,7 +145,10 @@ fn the_glow_ring_is_titled_only_while_a_benchmark_runs() {
         running.contains("⏱"),
         "the run signal must follow you out of the Benchmarks section"
     );
-    assert!(running.contains("Concurrency Sweep"));
+    // The ring names the SELECTED benchmark (the one that is running), not a
+    // fixed suite position — registry order may change under it.
+    let name = a.bench.descriptor().expect("a benchmark is selected").name;
+    assert!(running.contains(name), "ring title must carry {name:?}");
 }
 
 #[test]

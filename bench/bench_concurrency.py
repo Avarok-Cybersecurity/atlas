@@ -31,8 +31,9 @@ TTFT measurement notes (session-scoped SSM snapshots, 2026-03-27):
   SSM state must be recomputed from scratch. To measure this, vary the prompt
   text between warmup and timed runs.
 
-  See quick_bench.py docstring for full explanation of the session isolation
-  mechanism and its impact on TTFT.
+  See the quick-speed-bench module docs
+  (crates/atlas-plugin/src/benchmarks/quick_speed.rs) for the full explanation
+  of the session isolation mechanism and its impact on TTFT.
 
 Usage:
   python bench_concurrency.py [--url URL] [--model MODEL] [--osl N] [--warmup N]

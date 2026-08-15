@@ -146,6 +146,29 @@ fn server_usage_overrides_the_streamed_delta_count() {
     assert_eq!(out.cached_prompt_tokens, 8);
 }
 
+/// The server's timing extensions ride in `usage` and must survive intact —
+/// `quick-speed-bench` reports them in place of any client-side decode rate.
+/// Absent extensions stay `None` rather than becoming a fabricated 0.
+#[test]
+fn server_timing_extensions_are_captured_and_absent_ones_stay_none() {
+    let mut out = ChatOutcome::default();
+    apply_chunk(
+        &sse(r#"{"usage":{"completion_tokens":49,"prompt_tokens":12,
+                "time_to_first_token_ms":1451.2,"response_token/s":59.9},"choices":[]}"#),
+        &mut out,
+    );
+    assert_eq!(out.server_ttft_ms, Some(1451.2));
+    assert_eq!(out.server_tps, Some(59.9));
+
+    let mut bare = ChatOutcome::default();
+    apply_chunk(
+        &sse(r#"{"usage":{"completion_tokens":3,"prompt_tokens":2},"choices":[]}"#),
+        &mut bare,
+    );
+    assert_eq!(bare.server_ttft_ms, None);
+    assert_eq!(bare.server_tps, None);
+}
+
 #[test]
 fn finish_reason_is_captured() {
     let mut out = ChatOutcome::default();
