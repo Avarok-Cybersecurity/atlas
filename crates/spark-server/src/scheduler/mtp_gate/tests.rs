@@ -173,7 +173,8 @@ fn depth_change_schedules_early_probe_without_state_wipe() {
     let tps_before = g.mtp_tps_debug();
     assert!(tps_before.is_some());
     // Depth doubles: baselines stale, probe due immediately, EWMA retained.
-    g.maybe_remeasure(1300);
+    assert!(g.maybe_remeasure(1300));
+    assert_eq!(g.regime_reprobe_count(), 1);
     assert_eq!(
         g.mtp_tps_debug(),
         tps_before,
@@ -186,6 +187,39 @@ fn depth_change_schedules_early_probe_without_state_wipe() {
         GateStep::MeasureDecode,
         "stale regime must probe soon"
     );
+    // Extend: the early probe is ONE window. A 300–1000 token think
+    // (3.8 budget / #517-shaped length) must not be dominated by serial.
+    // Probe serial at 20 tok/s vs MTP 40 — stay MTP after the window.
+    drive_serial(&mut g, WINDOW_STEPS, ms(50));
+    assert_eq!(g.next_step(), GateStep::MeasureVerify);
+    assert!(!g.in_serial_mode());
+    let mut serial_steps = WINDOW_STEPS;
+    let mut mtp_steps = WINDOW_STEPS * 2 + 1;
+    let mut tokens = (WINDOW_STEPS * 2 + 1) * 2 + WINDOW_STEPS;
+    while tokens < 1000 {
+        match g.next_step() {
+            GateStep::MeasureVerify => {
+                g.record_verify_step(ms(50), 2);
+                mtp_steps += 1;
+                tokens += 2;
+            }
+            GateStep::MeasureDecode => {
+                g.record_decode(ms(50));
+                serial_steps += 1;
+                tokens += 1;
+            }
+        }
+    }
+    let serial_frac = serial_steps as f64 / (serial_steps + mtp_steps) as f64;
+    assert!(
+        serial_steps <= WINDOW_STEPS,
+        "regime change must not add serial beyond the one-window probe ({serial_steps})"
+    );
+    assert!(
+        serial_frac < 0.05,
+        "serial must not dominate a 1000-token turn (frac={serial_frac:.3})"
+    );
+    assert!(!g.in_serial_mode());
 }
 
 #[test]
@@ -269,4 +303,96 @@ fn entry_pin_env_parse() {
     assert_eq!(parse_entry_pin_tokens(Some("12")), 12);
     assert_eq!(parse_entry_pin_tokens(Some("garbage")), 8);
     assert_eq!(parse_entry_pin_tokens(Some("-3")), 8);
+}
+
+#[test]
+fn stale_other_baseline_cannot_steal_mode() {
+    let mut g = MtpGate::new(1);
+    run_mtp_until_probe(&mut g, 2, ms(50));
+    drive_serial(&mut g, WINDOW_STEPS, ms(40));
+    assert!(!g.in_serial_mode());
+    assert!(g.serial_tps_debug().is_some());
+    // Regime change: serial EWMA is stale. Degrade MTP to 10 tok/s —
+    // faster than switching onto the stale 25 tok/s serial baseline.
+    assert!(g.maybe_remeasure(2000));
+    for _ in 0..(WINDOW_STEPS * SWITCH_DWELL_WINDOWS * 2) {
+        if g.next_step() != GateStep::MeasureVerify {
+            break;
+        }
+        g.record_verify_step(ms(200), 2);
+    }
+    assert!(
+        !g.in_serial_mode(),
+        "a stale serial baseline must not win a switch after a depth-regime change"
+    );
+    assert_eq!(g.take_fresh_decision(), None);
+}
+
+#[test]
+fn standard_mtp_thinks() {
+    assert!(spec_dispatch_eligible(
+        true, 0, 0, false, false, false, 0, false
+    ));
+    assert!(spec_dispatch_eligible(
+        true, 0, 50, false, false, false, 0, false
+    ));
+}
+
+#[test]
+fn dflash_raw_argmax_stays_serial_in_think() {
+    assert!(!spec_dispatch_eligible(
+        true, 0, 50, false, false, false, 0, true
+    ));
+    assert!(spec_dispatch_eligible(
+        false, 0, 50, false, false, false, 0, true
+    ));
+}
+
+#[test]
+fn dflash_spec_think_opts_in() {
+    assert!(spec_dispatch_eligible(
+        true, 0, 0, false, false, true, 0, true
+    ));
+}
+
+/// 3.8 `max_thinking_budget = 2048` can cross the floor twice.
+/// Each crossing may open the shipped one-window probe. Serial must
+/// stay a measurement phase, not the mode.
+#[test]
+fn think_budget_2048_two_crossings_do_not_dump_serial() {
+    let mut g = MtpGate::new(1);
+    let mut depth = 64usize;
+    g.note_depth(depth);
+    let mut serial_steps = 0usize;
+    let mut mtp_steps = 0usize;
+    let mut tokens = 0usize;
+    while tokens < 2048 {
+        g.note_depth(depth);
+        let _ = g.maybe_remeasure(depth);
+        match g.next_step() {
+            GateStep::MeasureVerify => {
+                g.record_verify_step(ms(50), 2);
+                mtp_steps += 1;
+                tokens += 2;
+                depth += 2;
+            }
+            GateStep::MeasureDecode => {
+                g.record_decode(ms(50));
+                serial_steps += 1;
+                tokens += 1;
+                depth += 1;
+            }
+        }
+    }
+    let serial_frac = serial_steps as f64 / (serial_steps + mtp_steps) as f64;
+    assert_eq!(g.regime_reprobe_count(), 2);
+    assert!(
+        serial_steps <= WINDOW_STEPS * 3,
+        "at most one-window probe per crossing plus shipped refresh, got {serial_steps}"
+    );
+    assert!(
+        serial_frac < 0.08,
+        "serial must not dominate a 2048-token think (frac={serial_frac:.3})"
+    );
+    assert!(!g.in_serial_mode());
 }
