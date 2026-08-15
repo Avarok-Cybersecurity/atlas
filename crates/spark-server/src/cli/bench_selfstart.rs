@@ -138,6 +138,8 @@ impl Drop for SelfServed {
 pub(super) struct Resolved {
     pub model: String,
     pub recipe_id: String,
+    /// Gate-local recipe pins from `BENCH.toml` (`[benchmarks.serve_overrides]`).
+    pub serve_overrides: BTreeMap<String, String>,
 }
 
 /// Pick the (model, recipe) a gate run should serve.
@@ -183,7 +185,11 @@ pub(super) fn resolve(
              --url/--model and no --pull-request-gate."
         )
     })?;
-    Ok(Resolved { model, recipe_id })
+    Ok(Resolved {
+        model,
+        recipe_id,
+        serve_overrides: entry.serve_overrides.clone(),
+    })
 }
 
 /// Parse `--serve-override KEY=VALUE` pairs into recipe overrides.
@@ -226,8 +232,9 @@ pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String,
 /// box's config to serve.
 ///
 /// `overrides` are recipe keys the operator changed on the command line. They
-/// are returned in [`SelfServed::overrides`] so the gate record can name the
-/// config that actually ran rather than the recipe it started from.
+/// are merged on top of any `[benchmarks.serve_overrides]` pin from the
+/// baseline (operator wins a clash) and returned in [`SelfServed::overrides`]
+/// so the gate record names the config that actually ran.
 pub async fn serve_for(
     benchmark_id: &str,
     hardware: Option<&str>,
@@ -235,7 +242,11 @@ pub async fn serve_for(
 ) -> Result<SelfServed> {
     let root = super::bench_run::repo_root()?;
     let baseline = gate::read_baseline(&root, benchmark_id)?;
-    let Resolved { model, recipe_id } = resolve(&baseline, benchmark_id, hardware)?;
+    let Resolved {
+        model,
+        recipe_id,
+        serve_overrides: baseline_overrides,
+    } = resolve(&baseline, benchmark_id, hardware)?;
 
     let store = atlas_plugin::ArtifactStore::discover()?;
     let index = crate::recipe::fetch::cached(store.root());
@@ -266,7 +277,7 @@ pub async fn serve_for(
     }
 
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
-    let requested = overrides;
+    let requested = gate::merge_serve_overrides(baseline_overrides, overrides);
     let mut overrides = requested.clone();
     overrides.insert("port".to_string(), port.to_string());
     let serve_args = recipe.serve_args(&overrides).with_context(|| {

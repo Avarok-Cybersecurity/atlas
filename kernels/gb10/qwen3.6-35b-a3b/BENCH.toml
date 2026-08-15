@@ -100,7 +100,13 @@ purely from category mix. History: 2026-07-10 main-438ed09 84.66/83.32 (high-wat
 pr369 de6153f3 83.96/81.96; 2026-08-03 PR #388 Gate B 84.26/82.15 n=1004. The draw is PINNED \
 at n=1004: a score from a different draw is not comparable to these thresholds, and the \
 sample count is the only thing that reveals it after the fact, so it is gated exactly rather \
-than merely recorded."""
+than merely recorded. Self-start pins ssm_cache_slots=256 (same override the poison gate \
+already uses) so a 1004-sample serial generate cannot evict its own Marconi snapshots. The \
+flagship recipe leaves the pool at its default 16; that is capacity, not a score lever — \
+the AST floors below are unchanged."""
+
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
 min = 83.32
@@ -197,19 +203,22 @@ so the gate carries margin past that.
 not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
 the first recorded run; ratchet after measurement, never to the best.
 
-Serves with `--serve-override ssm_cache_slots=256` (the flagship recipe's \
-pinned value; recorded in the gate record's serve_overrides). The bf16head \
-recipe leaves the Marconi snapshot pool at its default 16, which evicts \
-under this multi-turn load — replays then restore from DRIFTING anchors \
-(different replay geometry, legitimately different output), which is \
-pool-churn noise, not the poisoned-restore-content class this gate polices. \
-Pinning the pool tests restore CONTENT without the noise. Same footing as \
-the agentic gate's norm.rs: normalize known bookkeeping variance so the \
-measurement is repeatable, never hide signal. The first unpinned run on \
-main (2026-08-12, sha 7dd4cc33bc) proved the churn: replays 2-12 diverged \
-with restore anchors drifting 992→1040→1088→1152 and 33 'no SSM snapshot — \
-recomputing' events in the serve log.\
+Self-start applies `[benchmarks.serve_overrides] ssm_cache_slots = "256"` \
+(the flagship recipe's pinned value; recorded in the gate record's \
+serve_overrides). The bf16head recipe leaves the Marconi snapshot pool at \
+its default 16, which evicts under this multi-turn load — replays then \
+restore from DRIFTING anchors (different replay geometry, legitimately \
+different output), which is pool-churn noise, not the poisoned-restore-content \
+class this gate polices. Pinning the pool tests restore CONTENT without the \
+noise. Same footing as the agentic gate's norm.rs: normalize known bookkeeping \
+variance so the measurement is repeatable, never hide signal. The first \
+unpinned run on main (2026-08-12, sha 7dd4cc33bc) proved the churn: replays \
+2-12 diverged with restore anchors drifting 992→1040→1088→1152 and 33 \
+'no SSM snapshot — recomputing' events in the serve log.\
 """
+
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
 
 [benchmarks.metrics.rounds]
 min = 12.0

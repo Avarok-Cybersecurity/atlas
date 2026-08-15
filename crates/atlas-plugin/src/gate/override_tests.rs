@@ -69,3 +69,113 @@ fn a_run_without_overrides_carries_no_override_provenance() {
     let json = serde_json::to_string(&gate).unwrap();
     assert!(!json.contains("serve_overrides"), "{json}");
 }
+
+/// A copied 16-slot BFCL record cannot cover a 256-slot pin.
+///
+/// BENCH.toml is outside the closure hash, so a pin-only edit would otherwise
+/// leave an old record green. `check_record` demands the pin on the record.
+#[test]
+fn a_record_missing_a_baseline_serve_pin_fails() {
+    let mut baseline = super::tests::bfcl_baseline();
+    let entry = baseline
+        .hardware
+        .get_mut(TEST_HW)
+        .unwrap()
+        .models
+        .get_mut(MODEL)
+        .unwrap();
+    entry
+        .serve_overrides
+        .insert("ssm_cache_slots".into(), "256".into());
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    metrics.insert("normalized_single_turn_score".into(), 90.0);
+    metrics.insert("samples".into(), 995.0);
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".into()),
+        Default::default(),
+    )
+    .unwrap();
+    let problems = check_record(&gate, &baseline).expect("must fail");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("ssm_cache_slots=256") && p.contains("missing")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_record_with_the_baseline_serve_pin_still_scores_metrics() {
+    let mut baseline = super::tests::bfcl_baseline();
+    let entry = baseline
+        .hardware
+        .get_mut(TEST_HW)
+        .unwrap()
+        .models
+        .get_mut(MODEL)
+        .unwrap();
+    entry
+        .serve_overrides
+        .insert("ssm_cache_slots".into(), "256".into());
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    metrics.insert("normalized_single_turn_score".into(), 90.0);
+    metrics.insert("samples".into(), 995.0);
+    let mut overrides = BTreeMap::new();
+    overrides.insert("ssm_cache_slots".into(), "256".into());
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".into()),
+        overrides,
+    )
+    .unwrap();
+    assert_eq!(check_record(&gate, &baseline), None);
+}
+
+#[test]
+fn a_record_with_a_different_pin_value_fails() {
+    let mut baseline = super::tests::bfcl_baseline();
+    let entry = baseline
+        .hardware
+        .get_mut(TEST_HW)
+        .unwrap()
+        .models
+        .get_mut(MODEL)
+        .unwrap();
+    entry
+        .serve_overrides
+        .insert("ssm_cache_slots".into(), "256".into());
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    metrics.insert("normalized_single_turn_score".into(), 90.0);
+    metrics.insert("samples".into(), 995.0);
+    let mut overrides = BTreeMap::new();
+    overrides.insert("ssm_cache_slots".into(), "16".into());
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".into()),
+        overrides,
+    )
+    .unwrap();
+    let problems = check_record(&gate, &baseline).expect("must fail");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("ssm_cache_slots=16") && p.contains("256")),
+        "{problems:?}"
+    );
+}

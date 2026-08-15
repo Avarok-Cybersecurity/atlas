@@ -281,3 +281,100 @@ min = 85.0
     let all = load_all(&root).unwrap();
     assert_eq!(all.len(), 1, "one entry, not one per quant dir: {all:?}");
 }
+
+/// A `[benchmarks.serve_overrides]` table is the SSOT for a gate-local pin.
+#[test]
+fn serve_overrides_are_assembled_into_the_baseline() {
+    let root = fixture(
+        "serve-overrides",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    let baseline = baseline_for(&root, "bfcl-subset").unwrap();
+    let (_, entry) = baseline.resolve("gb10", None).unwrap();
+    assert_eq!(
+        entry
+            .serve_overrides
+            .get("ssm_cache_slots")
+            .map(String::as_str),
+        Some("256")
+    );
+}
+
+/// `port` is owned by self-start. A pin here would name a listener that is not
+/// there, so it is refused at parse rather than dropped later.
+#[test]
+fn a_port_serve_override_is_refused() {
+    let root = fixture(
+        "port-pin",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+port = "8888"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    let err = load_all(&root).unwrap_err().to_string();
+    assert!(err.contains("cannot set `port`"), "{err}");
+}
+
+/// The pin must not move the AST floors. Those are the high-water ratchet;
+/// this change is capacity (Marconi pool), not a score lever.
+#[test]
+fn bfcl_self_start_pins_ssm_slots_without_moving_ast_floors() {
+    let root = repo_root();
+    let echolp = baseline_for(&root, "bfcl-subset-echolp").unwrap();
+    let (_, e) = echolp.resolve("gb10", None).unwrap();
+    assert_eq!(e.metrics["overall_accuracy"].min, Some(84.66));
+    assert_eq!(e.metrics["normalized_single_turn_score"].min, Some(83.32));
+    assert_eq!(e.metrics["samples"].min, Some(1004.0));
+    assert_eq!(e.metrics["samples"].max, Some(1004.0));
+    assert_eq!(
+        e.serve_overrides.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
+
+    let subset = baseline_for(&root, "bfcl-subset").unwrap();
+    let (_, s) = subset.resolve("gb10", None).unwrap();
+    assert_eq!(s.metrics["overall_accuracy"].min, Some(87.44));
+    assert_eq!(s.metrics["normalized_single_turn_score"].min, Some(88.59));
+    assert_eq!(s.metrics["samples"].min, Some(995.0));
+    assert_eq!(s.metrics["samples"].max, Some(995.0));
+    assert_eq!(
+        s.serve_overrides.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
+
+    let poison = baseline_for(&root, "ssm-state-poisoning-gate").unwrap();
+    let (_, p) = poison.resolve("gb10", None).unwrap();
+    assert_eq!(
+        p.serve_overrides.get("ssm_cache_slots").map(String::as_str),
+        Some("256")
+    );
+
+    for id in ["ttft-warm-gate", "ttft-cold-gate", "agentic-webserver"] {
+        let b = baseline_for(&root, id).unwrap();
+        let (_, e) = b.resolve("gb10", None).unwrap();
+        assert!(
+            e.serve_overrides.is_empty(),
+            "{id} keeps the recipe's default pool: {:?}",
+            e.serve_overrides
+        );
+    }
+}
