@@ -54,6 +54,31 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
+        // PER-ROW FP8 straight from a mixed-precision checkpoint
+        // (`ATLAS_FP8_ROWWISE=1`). Ahead of every arm below because it is the
+        // only one that does NO conversion at all: the checkpoint ships
+        // (fp8 weight, [N] f32 scale) and that is exactly what the row-wise
+        // GEMM consumes, so `rowwise_pair_passthrough` hands the bytes over
+        // untouched. Every alternative here either dequantises to BF16 or
+        // re-quantises to NVFP4 first — the 8-bit-served-at-4-bit fallback
+        // this arm exists to skip. `force_bf16` still wins, so the BF16 A/B
+        // lever keeps working.
+        if !force_bf16 && let Some(ref fp8w) = self.qkvz_fp8w_rowwise {
+            ops::cublas_fp8_rowwise_proj(
+                ctx.gpu,
+                ctx.derived,
+                normed,
+                ctx.buffers.fp8_act(),
+                ctx.buffers.fp8_act_scale(),
+                fp8w,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+            return Ok(());
+        }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
         // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
         // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS

@@ -196,13 +196,44 @@ pub fn cublas_fp8_rowwise_proj(
         .arg_u32(m)
         .arg_u32(k)
         .launch(stream)?;
+    // ── M must be padded, exactly as the block-scaled sibling pads it ────
+    //
+    // Both scale vectors are declared `SCALE_MODE_OUTER_VEC_32F`, and
+    // cuBLASLt will not serve an outer-vector extent that is not a multiple
+    // of 4; `AlgoGetHeuristic` returns status 15 (NOT_SUPPORTED) rather than
+    // failing at launch. Unpadded, this path worked only for callers whose M
+    // happened to be aligned — a 23-token prompt through the row-wise GDN
+    // prefill arm is what surfaced it, since a chunk size is whatever the
+    // prompt is.
+    //
+    // Pad to 16 like `cublas_fp8_proj` (TC-friendly), and zero BOTH the
+    // padding scales and the padding activation rows: with a zero scale the
+    // phantom rows contribute nothing, and zeroed bytes cannot carry a NaN
+    // into an accumulator. The phantom output rows are ignored by the
+    // caller, same contract as the block-scaled path.
+    let m_pad = m.div_ceil(16) * 16;
+    if m_pad > m {
+        let pad_rows = (m_pad - m) as usize;
+        gpu.memset_async(
+            act_scale_scratch.offset(m as usize * 4),
+            0,
+            pad_rows * 4,
+            stream,
+        )?;
+        gpu.memset_async(
+            act_fp8_scratch.offset(m as usize * k as usize),
+            0,
+            pad_rows * k as usize,
+            stream,
+        )?;
+    }
     spark_runtime::cublaslt::fp8_gemm_act_weight_t_rowwise(
         act_fp8_scratch.0,
         act_scale_scratch.0,
         w_fp8,
         w_scale,
         out.0,
-        m,
+        m_pad,
         n,
         k,
         stream,
