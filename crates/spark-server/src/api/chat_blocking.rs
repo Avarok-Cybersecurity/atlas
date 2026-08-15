@@ -116,6 +116,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
     let mut last_decode_time_ms = 0.0f64;
     let mut total_reasoning_tokens = 0u32;
     let mut total_cached_prompt_tokens = 0u32;
+    let mut total_accepted_prediction_tokens = 0usize;
 
     // Arc-wrap the prompt tokens ONCE. Per-choice scheduler requests
     // and the Tier 5c retry path all share the same Arc — no Vec<u32>
@@ -201,6 +202,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         let num_completion = response.output_tokens.len();
         total_completion_tokens += num_completion;
         total_reasoning_tokens += response.reasoning_tokens;
+        total_accepted_prediction_tokens += response.accepted_prediction_tokens;
         // cached_prompt_tokens is a per-request prefix-cache hit count; for
         // n>1 we only charge once (same prompt reused).
         total_cached_prompt_tokens = total_cached_prompt_tokens.max(response.cached_prompt_tokens);
@@ -237,6 +239,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         last_decode_time_ms,
         total_reasoning_tokens,
         total_cached_prompt_tokens,
+        total_accepted_prediction_tokens,
         prompt_len,
     )
 }
@@ -383,6 +386,7 @@ fn finalize_response(
     last_decode_time_ms: f64,
     total_reasoning_tokens: u32,
     total_cached_prompt_tokens: u32,
+    total_accepted_prediction_tokens: usize,
     prompt_len: usize,
 ) -> super::chat::ChatOutcome {
     let tokens_per_second = if last_decode_time_ms > 0.0 && total_completion_tokens > 0 {
@@ -395,6 +399,7 @@ fn finalize_response(
         completion_tokens: total_completion_tokens,
         cached_prompt_tokens: total_cached_prompt_tokens as usize,
         reasoning_tokens: total_reasoning_tokens as usize,
+        accepted_prediction_tokens: total_accepted_prediction_tokens,
         time_to_first_token_ms: first_ttft,
         response_tokens_per_second: tokens_per_second,
     };

@@ -167,6 +167,14 @@ impl RequestAccept {
         }
     }
 
+    /// Total draft tokens ACCEPTED for this request — the per-request quantity
+    /// `usage.completion_tokens_details.accepted_prediction_tokens` reports.
+    /// Raw count, not a rate: the wire field's meaning is "predicted tokens
+    /// that matched generation", and `na` is exactly that sum.
+    pub fn accepted_total(&self) -> u64 {
+        self.na
+    }
+
     pub fn note_regime_reprobe(&mut self) {
         self.regime_reprobes = self.regime_reprobes.saturating_add(1);
     }
@@ -271,6 +279,9 @@ mod tests {
         assert!((a.mtp_frac() - 1.0).abs() < 1e-9);
         assert!((a.p1() - 0.7).abs() < 1e-9);
         assert!((a.mean_na() - 0.7).abs() < 1e-9);
+        // 7 verifies each accepting 1 draft: the per-request total the usage
+        // field reports is the raw sum, not a rate.
+        assert_eq!(a.accepted_total(), 7);
         assert!((a.tok_step() - 1.7).abs() < 1e-9);
         a.note_regime_reprobe();
         assert!(a.done_suffix().contains("mean_na=0.700"));
