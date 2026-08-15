@@ -50,7 +50,7 @@ mod tests {
         assert_eq!(
             m.paired_ssm_tokens(16),
             None,
-            "serve path must report a miss when KV hits without SSM"
+            "serve path must report a miss when KV hits without SSM (#472 / #512)"
         );
     }
 

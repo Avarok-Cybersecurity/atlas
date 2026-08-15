@@ -5,6 +5,31 @@
 use crate::prefix_cache::PrefixCache;
 use crate::radix_tree::RadixTree;
 
+/// #472: BFCL single-turn traffic shares a short system prefix (the report
+/// logged a 32-token / 2-block KV walk). `compute_session_hash` covers the
+/// first 1024 tokens, so each request has its own hash and
+/// `session_has_history` is false. Midchunk then uses `cached_prefix_tokens
+/// > 0` as the only "warm continuation" signal and captures during the
+/// full recompute — the empty 1-token completion path. A paired miss keeps
+/// `cached_prefix_tokens == 0`, so that gate stays off.
+#[test]
+fn lookup_paired_bfcl_shared_prefix_without_ssm_is_a_miss() {
+    let tree = RadixTree::new();
+    let tokens: Vec<u32> = (0..32).collect();
+    tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
+
+    let raw = tree.lookup(&tokens, 16, 0, 0);
+    assert_eq!(raw.matched_tokens, 32);
+    assert_eq!(raw.ssm_snapshot, None);
+    tree.release(&tokens, 16, 0);
+
+    let paired = tree.lookup_paired(&tokens, 16, 0, 0);
+    assert_eq!(
+        paired.matched_tokens, 0,
+        "#472: 32-token KV-only walk must not become cached_prefix_tokens"
+    );
+}
+
 #[test]
 fn lookup_paired_kv_without_ssm_is_a_miss() {
     let tree = RadixTree::new();
@@ -131,5 +156,28 @@ fn lookup_paired_tail_stays_session_gated() {
     assert_eq!(same.matched_tokens, 32);
     assert_eq!(same.ssm_snapshot, Some(5));
     assert!(same.ssm_snapshot_is_tail);
+    tree.release(&tokens, 16, 0);
+}
+
+/// #512: a 16-slot Marconi pool evicts intermediates under BFCL serial
+/// generate. The KV radix can still hash-hit; the SSM slot is gone. That
+/// is a miss, not a lying hit. This PR does not change slot counts.
+#[test]
+fn lookup_paired_evicted_ssm_slot_is_a_miss() {
+    let tree = RadixTree::new();
+    let tokens: Vec<u32> = (0..64).collect();
+    tree.insert_with_snapshot(&tokens, &[10, 20, 30, 40], &[], 16, 42, 7, 0, 0);
+    assert_eq!(tree.evict_snapshot_lru(), Some(42));
+    assert_eq!(tree.snapshot_count(), 0);
+
+    let paired = tree.lookup_paired(&tokens, 16, 7, 0);
+    assert!(
+        paired.is_empty(),
+        "#512: KV still present after SSM eviction must be a miss: {paired:?}"
+    );
+
+    let raw = tree.lookup(&tokens, 16, 7, 0);
+    assert_eq!(raw.matched_tokens, 64, "KV radix is unchanged");
+    assert_eq!(raw.ssm_snapshot, None);
     tree.release(&tokens, 16, 0);
 }
