@@ -243,6 +243,60 @@ deliberate (they all read the NVFP4 copy), but it now warns once when it
 shadows an enabled flag, so an operator whose CUTLASS setting silently did
 nothing finds out.
 
+## ★ The dispatch flags dwarf all of it (qwen3.8-27b, 2026-08-15)
+
+Prefill throughput, cold prompts, `scripts/prefill_probe.py`, 3 reps, median.
+Same box, same binary, same serve; only the env differs.
+
+| leg | C=1 | C=4 | pre-KV | dark-green probe |
+|---|---|---|---|---|
+| baseline (no flags) | 507 | 740 | 60.7 GB | `Red, Blue` |
+| GDN stack | 561 (+10.7%) | 860 (+16.2%) | 59.1 GB | `red, blue` |
+| CUTLASS NVFP4 | 633 (+24.9%) | 1039 (+40.4%) | 60.1 GB | `red, blue, yellow` |
+| **GDN + CUTLASS** | **717 (+41.4%)** | **1295 (+75.0%)** | 59.4 GB | `RED, BLUE, YELLOW` |
+
+Legs:
+
+* GDN — `ATLAS_GDN_FLASHINFER=1`, `ATLAS_GDN_REGRESIDENT=1`, `ATLAS_GDN_LIB=…/libatlasgdn.so`,
+  and the CUTLASS DSL lib dir on `LD_LIBRARY_PATH`. **Verified engaged** from the
+  boot log — `ATLAS_GDN_FLASHINFER: FlashInfer GDN kernel loaded (opt-in)` — not
+  the silent fallback, which is the whole hazard with this flag.
+* CUTLASS — `ATLAS_CUTLASS_NVFP4_GEMM=1` plus `ATLAS_CUTLASS_NVFP4_SSM_OUT=1`,
+  which the umbrella deliberately does NOT imply.
+
+Three things follow.
+
+**These flags are worth several times the weight-precision work.** +75% at C=4
+against +11.9% (BF16+cuBLASLt) and +15.5% (row-wise FP8), and they compose
+almost additively with each other. Nothing in the repo sets them — not the
+serving recipes, not the gates.
+
+**Memory is not the trade here.** CUTLASS repacks the existing NVFP4 weights
+into its own layout rather than adding a copy, so pre-KV moves by about a
+gigabyte in either direction across all four legs — noise at this scale, and
+nothing like the +19 GB the row-wise fold costs.
+
+**The sensitivity probe IMPROVED under CUTLASS**, from `Red, Blue` to
+`red, blue, yellow`, even though it consumes the same double-quantised NVFP4
+weights. That was not expected and is not explained; the probe is a coarse
+oracle and this wants the real gates before anyone reads a quality claim into
+it.
+
+Agentic smoke, run from the TUI on the GDN+CUTLASS serve: **PASS** — 1/1
+webserver_ok, 1/1 followed_directions, Σwall 195 s, 6/6 steps over 11 turns and
+13 tool calls. That is `iterations = 1`, so it is a smoke test and NOT the gate,
+which pins exactly 10. Per-iteration wall is in line with the recipe's 2026-08-14
+reference (1925 s over 10 = ~192 s), so the flags cost nothing agentically.
+
+### Still unmeasured
+
+* **Decode under CUTLASS.** The run was killed mid-flight to free the box; no
+  number, and none is guessed here.
+* **vision-fidelity / video-fidelity on the combined stack.** Needed before the
+  probe's apparent quality gain means anything.
+* **The full agentic gate** at the pinned 10 iterations.
+* Everything above is qwen3.8-27b only. qwen3.6-27b is untested with these flags.
+
 ## Next steps, in order
 
 1. **Fix the stale `Fp8PerRow` doc comment** and add a `scale_format.expect(...)` at
