@@ -42,6 +42,33 @@ impl Qwen3SsmLayer {
         self.out_proj_fp8w = out_proj;
     }
 
+    /// Install PER-ROW FP8 weights for the row-wise cuBLASLt PREFILL arm
+    /// (`ATLAS_FP8_ROWWISE=1`, mixed-precision compressed-tensors
+    /// checkpoints). Decode is untouched and keeps the NVFP4 copy.
+    ///
+    /// The `Fp8PerRow` assertion is the mirror of `set_fp8_decode_weights`'s
+    /// `Fp8BlockScaled` one: each setter refuses the other's layout, so the
+    /// two FP8 shapes cannot cross into each other's kernels. That crossing
+    /// does not fault — the smaller buffer is read in-bounds — so an assert
+    /// is the only thing that catches it.
+    pub fn set_fp8_rowwise_prefill_weights(
+        &mut self,
+        qkvz: Option<Fp8Weight>,
+        out_proj: Option<Fp8Weight>,
+    ) {
+        for (w, what) in [(&qkvz, "qkvz"), (&out_proj, "out_proj")] {
+            if let Some(w) = w {
+                w.scale_format.expect(
+                    crate::weight_map::WeightQuantFormat::Fp8PerRow,
+                    "set_fp8_rowwise_prefill_weights (cuBLASLt row-wise expects [N] f32)",
+                );
+                let _ = what;
+            }
+        }
+        self.qkvz_fp8w_rowwise = qkvz;
+        self.out_proj_fp8w_rowwise = out_proj;
+    }
+
     /// Set raw FP8 DevicePtrs for the prefill GEMM path ONLY (no decode GEMV
     /// scale fields). Used by the Qwen3.6-27B-FP8 native-FP8 SSM prefill path:
     /// the FP8 buffer here is a single-scale FP8 (BF16 → FP8 truncation; values
