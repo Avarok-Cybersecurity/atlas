@@ -54,6 +54,55 @@ impl Qwen3SsmLayer {
             std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
+        // PER-ROW FP8 straight from a mixed-precision checkpoint
+        // (`ATLAS_FP8_ROWWISE=1`), dequantised ONCE to BF16 and multiplied by
+        // cuBLASLt. Ahead of every arm below because it is the only one that
+        // never re-quantises: FP8 E4M3 is exactly representable in BF16, so
+        // the checkpoint's precision survives, where the default path
+        // dequantises to BF16 and then throws half of it away again by
+        // quantising to NVFP4.
+        //
+        // NOT the row-wise FP8 GEMM this was first written against —
+        // `cublaslt::fp8_gemm_act_weight_t_rowwise` returns NOT_SUPPORTED on
+        // sm_121 (measured 2026-08-15, and reproduced through the
+        // block-scaled path with `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and
+        // not the weights). Keeping FP8 all the way needs a kernel that works
+        // on this hardware; until then BF16 is what buys the precision back.
+        //
+        // `force_bf16` still wins, so the `ATLAS_GDN_BF16_WEIGHTS` A/B lever
+        // keeps working.
+        if !force_bf16 && let Some(ref fp8w) = self.qkvz_fp8w_rowwise {
+            // This arm returns EARLY, so it shadows the CUTLASS / cuBLAS arms
+            // below. That is deliberate — its whole point is precision, and
+            // every arm it shadows consumes the NVFP4 copy, i.e. the
+            // double-quantised weights this exists to avoid — but an operator
+            // who set a CUTLASS flag and silently did not get it would have no
+            // way to tell. Say so, once.
+            if ctx.dispatch.cutlass_nvfp4_qkvz || ctx.dispatch.cutlass_gemm {
+                static SHADOW_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !SHADOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "ATLAS_FP8_ROWWISE is shadowing an enabled CUTLASS/cuBLAS QKVZ \
+                         prefill arm: the row-wise arm keeps the checkpoint's precision, \
+                         the shadowed arms would consume the re-quantised NVFP4 copy. \
+                         Unset ATLAS_FP8_ROWWISE to get the CUTLASS path back."
+                    );
+                }
+            }
+            ops::cublas_bf16_proj(
+                ctx.gpu,
+                ctx.derived,
+                normed,
+                fp8w,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+            return Ok(());
+        }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
         // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
         // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS
@@ -139,11 +188,19 @@ impl Qwen3SsmLayer {
                 stream,
             )?;
         } else if force_bf16 {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
+            // cuBLASLt, NOT the hand-written `dense_gemm`. The weights are
+            // already BF16 [N,K] on this path, so there is no dequant step and
+            // nothing to cache — `cublas_bf16_proj_dense` exists for exactly
+            // this shape.
+            //
+            // MEASURED 2026-08-15 on unsloth/Qwen3.8-27B-NVFP4: this lever
+            // through `dense_gemm` cost 72.9% of prefill (507 -> 137 tok/s),
+            // which is what made "keep the GDN weights BF16" look like a
+            // quality-for-speed trade. It was never the precision — it was
+            // the GEMM.
+            ops::cublas_bf16_proj_dense(
                 normed,
-                &self.ssm.in_proj_qkvz,
+                self.ssm.in_proj_qkvz.weight,
                 proj_dst,
                 k,
                 qkvz_size as u32,
@@ -152,7 +209,7 @@ impl Qwen3SsmLayer {
             )
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "ssm prefill: QKVZ BF16 dense GEMM failed (M={k}, N={qkvz_size}): {e}"
+                    "ssm prefill: QKVZ BF16 cuBLASLt GEMM failed (M={k}, N={qkvz_size}): {e}"
                 )
             })?;
         } else if force_w8a8

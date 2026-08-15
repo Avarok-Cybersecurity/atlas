@@ -21,6 +21,9 @@ mod dispatch_config;
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
 mod dispatch_proj;
+// Row-wise FP8 routing, split out when it took dispatch_proj.rs over the cap.
+#[path = "ops/dispatch_proj_rowwise.rs"]
+mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
 #[path = "ops/fp8_gemv_batch.rs"]
@@ -139,6 +142,7 @@ pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::GemmDispatch;
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
+pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;

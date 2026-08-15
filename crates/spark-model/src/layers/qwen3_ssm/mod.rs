@@ -45,6 +45,18 @@ pub struct Qwen3SsmLayer {
     // FP8 E4M3 checkpoint weights for native FP8 serving (w8a16_gemv LUT kernel)
     qkvz_fp8w: Option<Fp8Weight>,
     out_proj_fp8w: Option<Fp8Weight>,
+    /// PER-ROW FP8 (`Fp8PerRow`) for PREFILL ONLY, from mixed-precision
+    /// compressed-tensors checkpoints (`ATLAS_FP8_ROWWISE=1`).
+    ///
+    /// Separate fields rather than reusing `qkvz_fp8w`/`out_proj_fp8w`, and
+    /// that separation is the safety property: those two are read by
+    /// `w8a16_gemv` in `ssm_forward.rs` and `trait_decode_batched.rs`, which
+    /// index the scale as a `[N/128, K/128]` block grid. A per-row buffer is
+    /// SMALLER than that index space, so it would not fault — it would return
+    /// plausible garbage. Only the row-wise cuBLASLt prefill arm reads these;
+    /// decode keeps the NVFP4 copy.
+    qkvz_fp8w_rowwise: Option<Fp8Weight>,
+    out_proj_fp8w_rowwise: Option<Fp8Weight>,
     /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`ATLAS_GGUF_NATIVE_Q2`).
     /// [Q|K|V|Z] rows byte-concatenated from packed `in_proj_qkv` (V-region
     /// row-permuted) + `in_proj_z` (row-permuted) at load, so the 2-bit weight is

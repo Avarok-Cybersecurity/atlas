@@ -168,6 +168,7 @@ fn dense_fp8_enabled() -> bool {
 }
 
 mod loaders_b;
+mod rowwise_fp8;
 
 pub struct Qwen35DenseWeightLoader;
 
@@ -1104,6 +1105,36 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         continue;
                     }
 
+                    // PER-ROW FP8 for the row-wise cuBLASLt PREFILL arm
+                    // (`ATLAS_FP8_ROWWISE=1`). Read from the store BEFORE the
+                    // dequant below, though the bytes are store-owned either
+                    // way; the NVFP4 build continues underneath because decode
+                    // still needs it — `w8a16_gemv` cannot index a per-row
+                    // scale. See weight_loader/qwen35_dense/rowwise_fp8.rs.
+                    let rowwise_gdn = rowwise_fp8::rowwise_fp8_enabled()
+                        && rowwise_fp8::proj_is_fp8_per_row(store, &format!("{la}.in_proj_qkv"))
+                        && rowwise_fp8::proj_is_fp8_per_row(store, &format!("{la}.in_proj_z"))
+                        && rowwise_fp8::proj_is_fp8_per_row(store, &format!("{la}.out_proj"));
+                    let (qkvz_rowwise, out_proj_rowwise) = if rowwise_gdn && tp_size == 1 {
+                        let qkv_r = rowwise_fp8::load_fp8_per_row(
+                            store,
+                            &format!("{la}.in_proj_qkv"),
+                            gpu,
+                        )?;
+                        let z_r =
+                            rowwise_fp8::load_fp8_per_row(store, &format!("{la}.in_proj_z"), gpu)?;
+                        let out_r =
+                            rowwise_fp8::load_fp8_per_row(store, &format!("{la}.out_proj"), gpu)?;
+                        let qkvz_r = rowwise_fp8::concat_fp8_per_row(&qkv_r, &z_r, h, gpu)?;
+                        // The concat copied both scale vectors; free the
+                        // per-projection allocs. Weight bytes are store-owned.
+                        gpu.free(qkv_r.row_scale)?;
+                        gpu.free(z_r.row_scale)?;
+                        (Some(qkvz_r), Some(out_r))
+                    } else {
+                        (None, None)
+                    };
+
                     let qkv_dense = load_ssm_proj(&format!("{la}.in_proj_qkv"), qkv_rows, h)?;
                     let z_dense = load_ssm_proj(&format!("{la}.in_proj_z"), z_rows, h)?;
                     let out_proj_dense =
@@ -1361,6 +1392,19 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // fallback (the `qkvz_nvfp4*` fields above).
                     if qkvz_fp8_prefill.is_some() || out_proj_fp8_prefill.is_some() {
                         layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
+                    }
+                    // …and LAST, so it wins over both of the prefill installs
+                    // above: the checkpoint's own per-row FP8, which reaches
+                    // the GEMM with no conversion at all. Decode is untouched.
+                    if qkvz_rowwise.is_some() {
+                        layer.set_fp8_rowwise_prefill_weights(qkvz_rowwise, out_proj_rowwise);
+                        if i == 0 {
+                            tracing::info!(
+                                "SSM[{lp}] ATLAS_FP8_ROWWISE: qkvz + out_proj prefill via \
+                                 native per-row FP8 (no BF16 dequant, no NVFP4 requant); \
+                                 decode keeps NVFP4"
+                            );
+                        }
                     }
                     layers.push(Box::new(layer));
                 }

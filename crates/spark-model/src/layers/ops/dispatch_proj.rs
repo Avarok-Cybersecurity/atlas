@@ -64,112 +64,6 @@ pub fn cublas_fp8_proj(
     )
 }
 
-/// Re-quantize a block-scaled FP8 weight `[N,K]` → ROW-WISE FP8 (E4M3 + per-row
-/// FP32 scale `[N]`) on-GPU once, cached by the FP8 weight pointer. Path:
-/// block-fp8 → BF16 (transient) → row-wise fp8. Backs the GB10-supported
-/// `cublas_fp8_rowwise_proj`. Returns `(fp8_weight_ptr, per_row_scale_ptr)`.
-fn requant_weight_rowwise_fp8_cached(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    derived: &super::DerivedWeights,
-    fp8w: &crate::weight_map::Fp8Weight,
-    stream: u64,
-) -> anyhow::Result<(u64, u64)> {
-    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
-    let cache_key = fp8w.weight.0;
-    if let Some(hit) = derived.get_pair(super::Derivation::RowwiseFp8, cache_key) {
-        return Ok(hit);
-    }
-    let (n, k) = (fp8w.n, fp8w.k);
-    // 1. block-fp8 → BF16 (transient scratch, freed after re-quant).
-    let bf16 = gpu.alloc(n as usize * k as usize * 2)?;
-    let block = 128u32;
-    let sk = k / block;
-    let dq = gpu.kernel(
-        "dequant_fp8_blockscaled_bf16",
-        "dequant_fp8_blockscaled_bf16",
-    )?;
-    KernelLaunch::new(gpu, dq)
-        .grid([div_ceil(k, 64), div_ceil(n, 4), 1])
-        .block([64, 4, 1])
-        .arg_ptr(fp8w.weight)
-        .arg_ptr(fp8w.row_scale)
-        .arg_ptr(bf16)
-        .arg_u32(n)
-        .arg_u32(k)
-        .arg_u32(block)
-        .arg_u32(block)
-        .arg_u32(sk)
-        .arg_u32(1)
-        .launch(stream)?;
-    // 2. BF16 → row-wise fp8 [N,K] + per-row scale [N].
-    let w_fp8 = gpu.alloc(n as usize * k as usize)?;
-    let w_scale = gpu.alloc(n as usize * 4)?;
-    let qk = gpu.kernel("quant_rowwise_fp8", "quant_rowwise_fp8")?;
-    KernelLaunch::new(gpu, qk)
-        .grid([n, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(bf16)
-        .arg_ptr(w_fp8)
-        .arg_ptr(w_scale)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)?;
-    gpu.synchronize(stream)?; // re-quant must finish before the transient bf16 is freed
-    gpu.free(bf16)?;
-    derived.insert_pair(
-        super::Derivation::RowwiseFp8,
-        cache_key,
-        (w_fp8.0, w_scale.0),
-    );
-    Ok((w_fp8.0, w_scale.0))
-}
-
-/// Route a projection through ROW-WISE native-FP8 cuBLASLt (the fp8 path GB10
-/// supports). Weight is re-quantized once to per-row fp8 (cached); the activation
-/// is quantized per-token each call. ~1.8× the bf16 path (152 vs 85 TF), and
-/// frees the bf16-dequant memory the bf16 path holds.
-/// `act_fp8_scratch` ≥ m*k fp8 bytes; `act_scale_scratch` ≥ m f32 (e.g. the
-/// `buffers.fp8_act` / `fp8_act_scale` arena buffers).
-#[allow(clippy::too_many_arguments)]
-pub fn cublas_fp8_rowwise_proj(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    derived: &super::DerivedWeights,
-    act_bf16: spark_runtime::gpu::DevicePtr,
-    act_fp8_scratch: spark_runtime::gpu::DevicePtr,
-    act_scale_scratch: spark_runtime::gpu::DevicePtr,
-    fp8w: &crate::weight_map::Fp8Weight,
-    out: spark_runtime::gpu::DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> anyhow::Result<()> {
-    use spark_runtime::kernel_args::KernelLaunch;
-    let (w_fp8, w_scale) = requant_weight_rowwise_fp8_cached(gpu, derived, fp8w, stream)?;
-    // Per-token row-wise quant of the activation → fp8 [M,K] + scale [M].
-    let qk = gpu.kernel("quant_rowwise_fp8", "quant_rowwise_fp8")?;
-    KernelLaunch::new(gpu, qk)
-        .grid([m, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(act_bf16)
-        .arg_ptr(act_fp8_scratch)
-        .arg_ptr(act_scale_scratch)
-        .arg_u32(m)
-        .arg_u32(k)
-        .launch(stream)?;
-    spark_runtime::cublaslt::fp8_gemm_act_weight_t_rowwise(
-        act_fp8_scratch.0,
-        act_scale_scratch.0,
-        w_fp8,
-        w_scale,
-        out.0,
-        m,
-        n,
-        k,
-        stream,
-    )
-}
-
 /// Dequantize a block-scaled FP8 weight `[N,K]` → BF16 on-GPU once, cached by the
 /// FP8 weight pointer (weights are immutable after load). 128×128 blocks + FP32
 /// scales (the holo layout). Backs [`cublas_bf16_proj`].
@@ -186,8 +80,24 @@ fn dequant_fp8_bf16_cached(
     }
     let (n, kk) = (fp8w.n, fp8w.k);
     let out = gpu.alloc(n as usize * kk as usize * 2)?; // BF16 [N,K]
-    let block = 128u32;
-    let sk = kk / block;
+    // The kernel reads `scale[(n / block_n) * sk + (k / block_k)]`, so the
+    // SAME kernel serves both layouts — the block geometry is what selects
+    // between them, not a second kernel:
+    //
+    //   block-scaled   block_n = block_k = 128, sk = K/128
+    //   PER-ROW        block_n = 1, block_k = K, sk = 1
+    //                  -> offset = n * 1 + 0 = n, one multiplier per row
+    //
+    // That per-row case is what a mixed-precision compressed-tensors
+    // checkpoint ships, and dequantising it here is lossless: every FP8 E4M3
+    // value is exactly representable in BF16, so this is the fold's
+    // no-double-quant path even though the GEMM downstream is BF16.
+    let per_row = fp8w.scale_format == crate::weight_map::WeightQuantFormat::Fp8PerRow;
+    let (block_n, block_k, sk) = if per_row {
+        (1u32, kk, 1u32)
+    } else {
+        (128u32, 128u32, kk / 128)
+    };
     let kernel = gpu.kernel(
         "dequant_fp8_blockscaled_bf16",
         "dequant_fp8_blockscaled_bf16",
@@ -200,8 +110,8 @@ fn dequant_fp8_bf16_cached(
         .arg_ptr(out)
         .arg_u32(n)
         .arg_u32(kk)
-        .arg_u32(block)
-        .arg_u32(block)
+        .arg_u32(block_n)
+        .arg_u32(block_k)
         .arg_u32(sk)
         .arg_u32(1) // scale_is_fp32
         .launch(stream)?;
