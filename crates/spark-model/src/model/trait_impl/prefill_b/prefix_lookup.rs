@@ -325,11 +325,14 @@ impl TransformerModel {
                     matched,
                     prefix_match.matched_blocks.len(),
                 );
-            } else if matched > 0 && !skip {
-                // F82 (2026-04-30): non-SSM cache-hit skip path.
+            } else if matched > 0 && !skip && !has_ssm {
+                // F82 (2026-04-30): attention-only cache-hit skip.
+                // Hybrid/GDN must not take this path: a paired snapshot that
+                // we chose not to restore (exact-leaf bypass) still needs a
+                // full prefill. KV-only skip + unrestored SSM is fast-and-wrong.
                 skip = true;
                 tracing::info!(
-                    "Prefix cache hit: {} tokens ({} blocks) reused (F82+F83: non-SSM cache-hit skip)",
+                    "Prefix cache hit: {} tokens ({} blocks) reused (F82+F83: attention-only skip)",
                     matched,
                     prefix_match.matched_blocks.len(),
                 );
