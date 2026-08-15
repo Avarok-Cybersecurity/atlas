@@ -271,7 +271,7 @@ fn messages_to_disk_json(msgs: &[IncomingMessage]) -> serde_json::Value {
             .map(|m| {
                 let mut obj = serde_json::Map::new();
                 obj.insert("role".into(), serde_json::Value::String(m.role.clone()));
-                if m.content.images.is_empty() {
+                if !m.content.has_images() {
                     obj.insert(
                         "content".into(),
                         serde_json::Value::String(m.content.text.clone()),
@@ -287,7 +287,7 @@ fn messages_to_disk_json(msgs: &[IncomingMessage]) -> serde_json::Value {
                             "text": m.content.text,
                         }));
                     }
-                    for img in &m.content.images {
+                    for img in m.content.images() {
                         parts.push(serde_json::json!({
                             "type": "image_url",
                             "image_url": { "url": img },

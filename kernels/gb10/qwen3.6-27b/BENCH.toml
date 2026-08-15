@@ -264,14 +264,16 @@ min = 1.0
 # rather than fail, so a runner without it degrades to the GIF subset instead
 # of going red.
 #
-# NOT declared on qwen3.6-35b-a3b, and that is a MEASUREMENT, not an
-# oversight: on 2026-08-14 the 35B scored 12/13, failing `video-before-image`
-# with [yellow, green, blue] where [red, green, blue, yellow] was expected —
-# it read the clip correctly in every other arrangement, including the
-# reversed pair and two clips in one request. Whether that is a model-capacity
-# limit on the A3B MoE or an ordering defect that only surfaces there is
-# unresolved, and gating it before that is answered would either block honest
-# work or bake in a lowered floor.
+# RESOLVED 2026-08-15, and the answer was the second one. On 2026-08-14 the
+# 35B scored 12/13, failing `video-before-image` with [yellow, green, blue]
+# where [red, green, blue, yellow] was expected, while reading the clip
+# correctly in every other arrangement — and the open question was whether
+# that was a model-capacity limit on the A3B MoE or an ordering defect that
+# only surfaces there. It was an ORDERING DEFECT, present on all three
+# targets: media travelled as one list per modality, so a video sent before an
+# image was rendered after it. The dense targets recovered from the
+# contradiction and the A3B did not, which is the only reason it looked
+# checkpoint-specific. Fixed, and the 35B now declares this gate itself.
 
 [[benchmarks]]
 quant = "nvfp4"

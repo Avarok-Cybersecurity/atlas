@@ -288,11 +288,11 @@ min = 3.0
 min = 1.0
 
 # --- video-fidelity --------------------------------------------------------
-# VIDEO MODELS ONLY, and narrower than the vision gate: declared here alone,
-# on the target this workstream validates video against. The other two vision
-# checkpoints also decode video correctly -- video-fidelity passes on
-# qwen3.6-27b with the same 13/13 -- so they can be added whenever someone
-# wants to pay for the runtime; nothing about the benchmark is 3.8-specific.
+# VIDEO MODELS ONLY. This target owns the gate's default serve; as of
+# 2026-08-15 all three vision checkpoints declare it and all three score
+# 13/13, so nothing about the benchmark is 3.8-specific. The 35B was the last
+# to be added, and only because it was the one target weak enough to expose
+# the media-ordering defect -- see its BENCH.toml entry.
 #
 # ★ REQUIRES FFMPEG ON THE RUNNER for every container except GIF. Legs needing
 # it SKIP rather than fail when it is absent, so a runner without ffmpeg

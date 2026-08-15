@@ -13,6 +13,12 @@ fn parse_chat(content: serde_json::Value) -> ParsedContent {
     m.content
 }
 
+/// The parsed media as `(kind, uri)` pairs — both what each item is and
+/// where it sits in the sequence, which is the property these tests pin.
+fn media(c: &ParsedContent) -> Vec<(MediaKind, &str)> {
+    c.media.iter().map(|m| (m.kind, m.uri.as_str())).collect()
+}
+
 /// The OpenAI-shaped spelling, and the one vLLM documents.
 #[test]
 fn chat_completions_carries_a_video_url_object() {
@@ -20,12 +26,12 @@ fn chat_completions_carries_a_video_url_object() {
         {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAA"}},
         {"type": "text", "text": "what happens?"}
     ]));
-    assert_eq!(c.videos, vec!["data:video/mp4;base64,AAA"]);
-    assert_eq!(c.text, "what happens?");
-    assert!(
-        c.images.is_empty(),
+    assert_eq!(
+        media(&c),
+        vec![(MediaKind::Video, "data:video/mp4;base64,AAA")],
         "a video must not be counted as an image"
     );
+    assert_eq!(c.text, "what happens?");
 }
 
 /// Qwen's own examples use a flat `video` key, so both are accepted.
@@ -34,7 +40,10 @@ fn chat_completions_carries_the_flat_video_spelling() {
     let c = parse_chat(serde_json::json!([
         {"type": "video", "video": "data:image/gif;base64,BBB"}
     ]));
-    assert_eq!(c.videos, vec!["data:image/gif;base64,BBB"]);
+    assert_eq!(
+        media(&c),
+        vec![(MediaKind::Video, "data:image/gif;base64,BBB")]
+    );
 }
 
 #[test]
@@ -44,8 +53,54 @@ fn chat_completions_carries_images_and_videos_together() {
         {"type": "video_url", "video_url": {"url": "data:image/gif;base64,VVV"}},
         {"type": "text", "text": "compare"}
     ]));
-    assert_eq!(c.images, vec!["data:image/png;base64,III"]);
-    assert_eq!(c.videos, vec!["data:image/gif;base64,VVV"]);
+    assert_eq!(
+        media(&c),
+        vec![
+            (MediaKind::Image, "data:image/png;base64,III"),
+            (MediaKind::Video, "data:image/gif;base64,VVV"),
+        ]
+    );
+}
+
+/// ★ The reordering regression. Media used to be parsed into two lists,
+/// one per modality, so a video sent FIRST arrived behind the image no
+/// matter what the client wrote — and nothing errored, because the pad
+/// runs and the encoder rows still agreed with each other. Only the model
+/// saw it, as an answer about the wrong item.
+#[test]
+fn a_video_sent_before_an_image_stays_before_it() {
+    let c = parse_chat(serde_json::json!([
+        {"type": "video_url", "video_url": {"url": "data:image/gif;base64,VVV"}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,III"}},
+        {"type": "text", "text": "which came first?"}
+    ]));
+    assert_eq!(
+        media(&c),
+        vec![
+            (MediaKind::Video, "data:image/gif;base64,VVV"),
+            (MediaKind::Image, "data:image/png;base64,III"),
+        ],
+        "the client's order must survive the wire parse"
+    );
+}
+
+/// Interleaving beyond a single pair — three items alternating, so a fix
+/// that merely swapped the two groups would not pass.
+#[test]
+fn alternating_media_keeps_every_position() {
+    let c = parse_chat(serde_json::json!([
+        {"type": "video_url", "video_url": {"url": "v1"}},
+        {"type": "image_url", "image_url": {"url": "i1"}},
+        {"type": "video_url", "video_url": {"url": "v2"}},
+    ]));
+    assert_eq!(
+        media(&c),
+        vec![
+            (MediaKind::Video, "v1"),
+            (MediaKind::Image, "i1"),
+            (MediaKind::Video, "v2"),
+        ]
+    );
 }
 
 /// ★ The regression this slice exists to prevent. Before it, a video part
@@ -58,7 +113,7 @@ fn a_video_part_is_no_longer_silently_dropped() {
         {"type": "video_url", "video_url": {"url": "data:image/gif;base64,ZZZ"}}
     ]));
     assert!(
-        !c.videos.is_empty(),
+        c.media.iter().any(|m| m.kind == MediaKind::Video),
         "the video was dropped on the floor again"
     );
 }
@@ -74,7 +129,10 @@ fn responses_api_carries_input_video() {
         ]
     });
     let m = IncomingMessage::from_responses_input_item(&item).expect("message item");
-    assert_eq!(m.content.videos, vec!["data:image/gif;base64,RRR"]);
+    assert_eq!(
+        media(&m.content),
+        vec![(MediaKind::Video, "data:image/gif;base64,RRR")]
+    );
     assert_eq!(m.content.text, "describe");
 }
 
@@ -86,7 +144,29 @@ fn responses_api_accepts_the_flat_video_url_string() {
         "content": [{"type": "video_url", "video_url": "data:image/gif;base64,SSS"}]
     });
     let m = IncomingMessage::from_responses_input_item(&item).expect("message item");
-    assert_eq!(m.content.videos, vec!["data:image/gif;base64,SSS"]);
+    assert_eq!(
+        media(&m.content),
+        vec![(MediaKind::Video, "data:image/gif;base64,SSS")]
+    );
+}
+
+/// The same ordering contract on `/v1/responses` — a separate parser, so a
+/// separate case.
+#[test]
+fn responses_api_preserves_media_order() {
+    let item = serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": [
+            {"type": "input_video", "video_url": {"url": "vvv"}},
+            {"type": "input_image", "image_url": "iii"},
+        ]
+    });
+    let m = IncomingMessage::from_responses_input_item(&item).expect("message item");
+    assert_eq!(
+        media(&m.content),
+        vec![(MediaKind::Video, "vvv"), (MediaKind::Image, "iii")]
+    );
 }
 
 /// Text-only content must be untouched by any of this — the overwhelming
@@ -95,7 +175,7 @@ fn responses_api_accepts_the_flat_video_url_string() {
 fn text_only_content_gains_no_videos() {
     let c = parse_chat(serde_json::json!("just a string"));
     assert_eq!(c.text, "just a string");
-    assert!(c.videos.is_empty() && c.images.is_empty());
+    assert!(c.media.is_empty());
 }
 
 #[test]
@@ -105,5 +185,5 @@ fn an_unknown_part_type_is_still_ignored() {
         {"type": "text", "text": "hi"}
     ]));
     assert_eq!(c.text, "hi");
-    assert!(c.videos.is_empty(), "audio must not be read as video");
+    assert!(c.media.is_empty(), "audio must not be read as video");
 }

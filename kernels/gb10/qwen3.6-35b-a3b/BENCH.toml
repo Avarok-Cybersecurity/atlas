@@ -388,3 +388,53 @@ min = 3.0
 
 [benchmarks.metrics.control_held]
 min = 1.0
+
+# --- video-fidelity --------------------------------------------------------
+# The third video target. Declared on 2026-08-15, after the reordering defect
+# that had held it back was ROOT-CAUSED AND FIXED rather than after a re-run
+# that happened to come out green.
+#
+# What was wrong: the request path carried media as two lists, one per
+# modality, from the wire parse all the way to the rendered markers. A request
+# sending `video_url` then `image_url` was therefore shown the IMAGE first,
+# and nothing errored -- the marker count, the pad runs and the encoder rows
+# all still agreed with each other, just about a different order than the
+# caller wrote. Media is now one tagged, ordered sequence end to end.
+#
+# Why this target and not the other two: `video-before-image` is the only leg
+# that arranges the items in that order, and the stronger dense checkpoints
+# recovered from being told "the video came first" while seeing the still
+# first. The A3B (~3B active) did not, and answered with the image's palette.
+# The weakest target was the only honest witness -- which is the argument for
+# declaring the gate here rather than only where it was comfortable.
+#
+# ★ REQUIRES FFMPEG for every container except GIF; legs needing it SKIP
+# rather than fail. See qwen3.8-27b's entry for what each leg asserts.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "video-fidelity"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+label = "Qwen3.6-35B-A3B (FP8, bf16 head)"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-15, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \
+skipped, control held. The same gate scored 12/13 before the media-ordering fix, \
+failing `video-before-image` with the still's palette; it now reports "video read \
+correctly when it precedes the image (288 prompt tokens)" -- the same 288 the dense \
+targets record, so the fix reordered the items without moving the geometry. \
+group-proportionality 1s=67 2s=116 4s=214 tokens (49 tok/group, 18 overhead), MP4 and \
+GIF both 214, image+video 286, two-videos 437, video-in-history 249, C=1/2/4 all \
+correct on one geometry. `default = false`: qwen3.8-27b owns this gate's default \
+serve."""
+
+[benchmarks.metrics.legs_passed]
+min = 13.0
+
+[benchmarks.metrics.legs_skipped]
+max = 0.0
+
+[benchmarks.metrics.control_held]
+min = 1.0

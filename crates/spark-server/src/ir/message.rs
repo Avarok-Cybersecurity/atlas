@@ -127,25 +127,38 @@ impl Message {
         out
     }
 
-    /// Number of image parts on this message (drives the Jinja
-    /// vision-marker expansion).
-    pub fn image_count(&self) -> usize {
+    /// The message's media parts, tagged and **in content order** — the
+    /// single source of truth for how many vision markers this message
+    /// renders and in which sequence.
+    ///
+    /// A pair of per-modality counts cannot express order, and using one
+    /// produced the reordering defect this replaced: a request sending a
+    /// video and then an image rendered the image first, so the model was
+    /// shown the items in a different order than the caller wrote them
+    /// while every count still agreed. Order is a property of the content,
+    /// so it is read off the content.
+    pub fn media_kinds(&self) -> Vec<MediaKind> {
         self.content
             .iter()
-            .filter(|p| matches!(p, ContentPart::Image(_)))
-            .count()
+            .filter_map(|p| match p {
+                ContentPart::Image(_) => Some(MediaKind::Image),
+                ContentPart::Video(_) => Some(MediaKind::Video),
+                ContentPart::Text(_) => None,
+            })
+            .collect()
     }
+}
 
-    /// Number of video parts. Counted separately from images rather than
-    /// folded in: the template renders them with a different marker
-    /// (`<|video_pad|>`, plus a `Video N:` label) and they carry a different
-    /// number of pad tokens, so one combined count could not drive either.
-    pub fn video_count(&self) -> usize {
-        self.content
-            .iter()
-            .filter(|p| matches!(p, ContentPart::Video(_)))
-            .count()
-    }
+/// Which vision modality a media item is. Images and videos stay
+/// distinguishable end-to-end because they render with different markers
+/// (`<|image_pad|>` vs `<|video_pad|>`, and `Picture N:` vs `Video N:`) and
+/// carry different pad-token counts — what they must NOT lose is their
+/// relative order, which is why they travel as one tagged sequence rather
+/// than two lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Video,
 }
 
 /// A single piece of message content. Open for future modalities

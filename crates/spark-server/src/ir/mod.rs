@@ -12,7 +12,7 @@ pub mod request;
 pub mod response;
 pub mod stream;
 
-pub use message::{ContentPart, ImageData, Message, Role, VideoSource};
+pub use message::{ContentPart, ImageData, MediaKind, Message, Role, VideoSource};
 pub use request::{
     ChatRequest, EffortLevel, ReasoningEffort, ResponseFormat, SamplingParams, ThinkingDirective,
 };

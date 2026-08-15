@@ -92,7 +92,7 @@ fn responses_string_tool_choice_accepted() {
 #[test]
 fn responses_input_image_string_url_is_carried() {
     // Regression: the Responses adapter used to drop images entirely
-    // (`images: Vec::new()`), silently losing multimodal input.
+    // (no media at all), silently losing multimodal input.
     let item = serde_json::json!({
         "type": "message",
         "role": "user",
@@ -104,8 +104,8 @@ fn responses_input_image_string_url_is_carried() {
     let m = IncomingMessage::from_responses_input_item(&item).expect("message");
     assert_eq!(m.content.text, "what is this?");
     assert_eq!(
-        m.content.images,
-        vec!["data:image/png;base64,AAA".to_string()]
+        m.content.images().collect::<Vec<_>>(),
+        vec!["data:image/png;base64,AAA"]
     );
 }
 
@@ -121,8 +121,8 @@ fn responses_input_image_object_url_is_carried() {
     });
     let m = IncomingMessage::from_responses_input_item(&item).expect("message");
     assert_eq!(
-        m.content.images,
-        vec!["https://example.com/a.png".to_string()]
+        m.content.images().collect::<Vec<_>>(),
+        vec!["https://example.com/a.png"]
     );
     assert_eq!(m.content.text, "");
 }
@@ -146,8 +146,8 @@ fn responses_function_call_output_image_is_carried() {
     assert_eq!(m.tool_call_id.as_deref(), Some("call_1"));
     assert_eq!(m.content.text, "screenshot follows");
     assert_eq!(
-        m.content.images,
-        vec!["data:image/png;base64,BBB".to_string()]
+        m.content.images().collect::<Vec<_>>(),
+        vec!["data:image/png;base64,BBB"]
     );
 }
 
@@ -160,7 +160,7 @@ fn responses_function_call_output_string_unchanged() {
     });
     let m = IncomingMessage::from_responses_input_item(&item).expect("tool message");
     assert_eq!(m.content.text, "plain result");
-    assert!(m.content.images.is_empty());
+    assert!(!m.content.has_images());
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn responses_function_call_output_opaque_array_stringified() {
     });
     let m = IncomingMessage::from_responses_input_item(&item).expect("tool message");
     assert_eq!(m.content.text, opaque.to_string());
-    assert!(m.content.images.is_empty());
+    assert!(!m.content.has_images());
 }
 
 #[test]
