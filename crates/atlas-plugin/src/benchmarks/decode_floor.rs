@@ -13,7 +13,7 @@
 //!
 //! # The pins (the benchmark's definition, not parameters)
 //!
-//! * **Prompt**: one MinHeap-class code prompt ([`MINHEAP_PROMPT`], committed
+//! * **Prompt**: one MinHeap-class code prompt (`MINHEAP_PROMPT`, committed
 //!   below). Prompt class moves the accept rate — counting prompts accept
 //!   drafts near ceiling and inflate tok/s, natural code text accepts ~2–2.5
 //!   per verify — so the class is part of the metric's identity.
