@@ -70,9 +70,7 @@ pub fn cublas_fp8_proj(
 /// Pure, and split out from the GPU path so the invariant is testable on a
 /// CPU-only runner: the whole claim is "a row-wise checkpoint is passed
 /// through untouched", and that is a decision about a tag, not about a device.
-pub(super) fn rowwise_pair_passthrough(
-    fp8w: &crate::weight_map::Fp8Weight,
-) -> Option<(u64, u64)> {
+pub(super) fn rowwise_pair_passthrough(fp8w: &crate::weight_map::Fp8Weight) -> Option<(u64, u64)> {
     use crate::weight_map::WeightQuantFormat;
     (fp8w.scale_format == WeightQuantFormat::Fp8PerRow).then_some((fp8w.weight.0, fp8w.row_scale.0))
 }
