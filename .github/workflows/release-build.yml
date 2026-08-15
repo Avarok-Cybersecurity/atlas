@@ -34,6 +34,11 @@ on:
         required: false
         type: number
         default: 1
+      publishing:
+        description: "Caller will publish these artifacts; suppress the dry-run report"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -177,6 +182,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.id }}
+          # Restore always; SAVE only when the ref being built was not chosen
+          # by whoever started the run. `release.yml` takes an arbitrary `ref`
+          # as a workflow_dispatch input and passes it straight to the checkout
+          # above — so on that path this job executes a caller-selected commit's
+          # build scripts and would then write the cache that every later main
+          # build restores from. One dispatch would contaminate ordinary runs
+          # afterwards, which is what CodeQL's actions/cache-poisoning query
+          # flags here. Dispatch runs now read the cache without writing it;
+          # pull_request and workflow_run runs are unaffected and still save.
+          save-if: ${{ github.event_name != 'workflow_dispatch' }}
 
       - name: Free disk space (linux)
         if: matrix.os == 'linux'
@@ -586,7 +601,13 @@ jobs:
           [ "$n" -gt 0 ] || { echo "::error::no artifacts were produced"; exit 1; }
           echo "verified $n artifact(s)"
 
+      # Skipped when the caller is actually going to publish (dev-release.yml).
+      # The checksum verification above still runs — that is the part worth
+      # having either way. Only the "nothing was tagged" narration is wrong in
+      # a publishing run, and a summary that contradicts what the run just did
+      # is worse than no summary.
       - name: Report what WOULD be published
+        if: ${{ !inputs.publishing }}
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_VERSION: ${{ inputs.version }}
