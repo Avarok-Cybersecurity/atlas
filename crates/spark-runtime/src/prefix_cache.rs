@@ -12,6 +12,7 @@
 
 use std::sync::atomic::Ordering;
 
+mod hybrid_hit;
 mod no_caching;
 mod tier_evict;
 pub use no_caching::NoPrefixCaching;
@@ -192,6 +193,21 @@ pub trait PrefixCache: Send + Sync {
         session_hash: u64,
         adapter_id: u64,
     ) -> PrefixMatch;
+
+    /// Hybrid/GDN lookup: a hit is KV blocks **and** a restorable SSM
+    /// snapshot at the same token count. A KV-only walk is released and
+    /// returned as empty (a miss). Pure-attention callers keep [`Self::lookup`].
+    ///
+    /// Default: same as [`Self::lookup`] (no-op caches have nothing to pair).
+    fn lookup_paired(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> PrefixMatch {
+        self.lookup(tokens, block_size, session_hash, adapter_id)
+    }
 
     /// Read-only longest-prefix probe: number of tokens (block-aligned)
     /// `lookup` would match, WITHOUT taking refs, touching LRU state, or

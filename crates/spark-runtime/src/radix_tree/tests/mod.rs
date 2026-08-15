@@ -5,5 +5,6 @@
 
 mod adapter;
 mod basic;
+mod hybrid_hit;
 mod snapshot;
 mod snapshot_reap;
