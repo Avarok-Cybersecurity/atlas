@@ -42,6 +42,31 @@ __device__ __constant__ float E2M1_LUT_FUSED_W4[16] = {
     0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
+// ── HIP / SCALE portability ──────────────────────────────────────────────────
+// This file is SYMLINKED into kernels/strix-hip/common/ and kernels/strix/common/,
+// so hipcc compiles it verbatim. `__syncwarp()` is a CUDA intrinsic that target
+// does not accept: the strix-hip fork of w4a16_gemm.cu contains zero
+// `__syncwarp` and the tree carries no shim. Introducing it unguarded broke the
+// windows-x86_64-amd-hip release build (#519).
+//
+// NOTE the block-wide staging elsewhere in this file (`__shared__ s_lut` +
+// `__syncthreads()`, 9 pre-existing sites) is FINE on HIP and is untouched.
+// Only the WARP-scoped publish is CUDA-only.
+//
+// On AMD the warp-scoped path keeps the PRE-EXISTING behaviour: no staging, the
+// partial indexes `__constant__ E2M1_LUT` directly, exactly as shipped before
+// this change. Provably compilable (it is the shipped code) and provably
+// correct; it forgoes the staging win on a target we cannot measure. Doing
+// better needs a wave-scoped publish (`__builtin_amdgcn_wave_barrier()` plus
+// the right fence) VALIDATED on gfx1151 — no such box exists here, so it is not
+// guessed at, for the same reason the strix-hip batched-prefill argument shift
+// was left to someone with the hardware.
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+#define ATLAS_WARP_LUT_STAGED 0
+#else
+#define ATLAS_WARP_LUT_STAGED 1
+#endif
+
 
 // Stage the E2M1 table in SHARED memory before the decode inner loop. Indexing
 // __constant__ memory with a data-dependent weight nibble serializes the warp
@@ -54,8 +79,12 @@ __device__ __constant__ float E2M1_LUT_FUSED_W4[16] = {
 // `n >= N`, so __syncthreads() here would be a divergent barrier. Their
 // reduction stays barrier-free, as documented.
 __device__ __forceinline__ void stage_e2m1_lut_fused_warp(float* s_lut, unsigned int lane) {
+#if ATLAS_WARP_LUT_STAGED
     if (lane < 16u) s_lut[lane] = E2M1_LUT_FUSED_W4[lane];
     __syncwarp();
+#else
+    (void)s_lut; (void)lane;   // AMD: nothing staged; callers pass the constant LUT
+#endif
 }
 
 // One orig-lane's pipelined K16 partial. Shared by `w4a16_gemv_dual` and
@@ -313,9 +342,14 @@ extern "C" __global__ void w4a16_gemv_dual_sw(
     // One private copy per warp (8 x 16 floats = 512 B/block); no block barrier.
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_fused_warp(s_lut[local_out], lane);
+#if ATLAS_WARP_LUT_STAGED
+    const float* __restrict__ warp_lut = s_lut[local_out];
+#else
+    const float* __restrict__ warp_lut = E2M1_LUT_FUSED_W4;
+#endif
 
-    float acc_a = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane, s_lut[local_out]);
-    float acc_b = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane + 32u, s_lut[local_out]);
+    float acc_a = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane, warp_lut);
+    float acc_b = w4a16_dual_partial(A, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane + 32u, warp_lut);
 
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
@@ -399,9 +433,14 @@ extern "C" __global__ void w4a16_gemv_silu_input_sw(
     // One private copy per warp (8 x 16 floats = 512 B/block); no block barrier.
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_fused_warp(s_lut[local_out], lane);
+#if ATLAS_WARP_LUT_STAGED
+    const float* __restrict__ warp_lut = s_lut[local_out];
+#else
+    const float* __restrict__ warp_lut = E2M1_LUT_FUSED_W4;
+#endif
 
-    float acc_a = w4a16_silu_partial(gate_out, up_out, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane, s_lut[local_out]);
-    float acc_b = w4a16_silu_partial(gate_out, up_out, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane + 32u, s_lut[local_out]);
+    float acc_a = w4a16_silu_partial(gate_out, up_out, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane, warp_lut);
+    float acc_b = w4a16_silu_partial(gate_out, up_out, B_packed, B_scale, scale2, n, half_K, num_groups, K8, lane + 32u, warp_lut);
 
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
