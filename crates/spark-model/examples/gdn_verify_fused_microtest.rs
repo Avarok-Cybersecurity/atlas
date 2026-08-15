@@ -219,6 +219,7 @@ fn launch_wy2(
         .arg_u32(CONV_DIM as u32) // qk_stride
         .arg_u32(CONV_DIM as u32) // v_stride
         .arg_u32((NV * 2) as u32) // gb_stride
+        .arg_u32(0) // state_is_table=0 (contiguous, batch_size==1)
         .launch(0)
 }
 
