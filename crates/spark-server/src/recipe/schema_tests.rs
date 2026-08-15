@@ -35,6 +35,14 @@ fn a_presence_only_boolean_is_a_bare_flag_and_a_false_one_is_omitted() {
     // gives it SetTrue despite its `num_args = 0..=1` — clap, not the field
     // syntax, is the authority the presence-only set is read from.
     assert_eq!(argv_for("enable_prefix_caching", "false"), None);
+    // `video_allow_ffmpeg` is the key the video-fidelity gate recipes pin
+    // (2026-08-15: the certified self-start 400'd every MP4 leg without it).
+    // It must render as the bare flag, or the recipe's serve fails to parse
+    // and the gate never comes up with the subprocess decoder enabled.
+    assert_eq!(
+        argv_for("video_allow_ffmpeg", "true"),
+        Some(vec!["--video-allow-ffmpeg".to_string()])
+    );
 }
 
 #[test]

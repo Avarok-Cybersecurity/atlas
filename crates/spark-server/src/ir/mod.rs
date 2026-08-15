@@ -15,6 +15,7 @@ pub mod stream;
 pub use message::{ContentPart, ImageData, MediaKind, Message, Role, VideoSource};
 pub use request::{
     ChatRequest, EffortLevel, ReasoningEffort, ResponseFormat, SamplingParams, ThinkingDirective,
+    parse_wire_effort,
 };
 pub use response::{
     ChatResponse, Choice, ChoiceLogprobs, FINISH_REASON_TIMEOUT, FinishReason, TokenLogprob, Usage,

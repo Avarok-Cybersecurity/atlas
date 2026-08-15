@@ -40,6 +40,13 @@
 
 {#- Model settings definition #}
 {%- set reasoning_effort = reasoning_effort if reasoning_effort is defined and reasoning_effort is not none else 'high' %}
+{#- Atlas's cross-template unset default is 'medium' (tokenizer/chat_render.rs).
+    Mistral's ladder is binary (none|high), so the neutral tier maps to its
+    standard thinking mode 'high' — byte-identical to the pre-2026-08 render.
+    Explicit low/xhigh stay rejected: this model has no such tiers. #}
+{%- if reasoning_effort == 'medium' %}
+    {%- set reasoning_effort = 'high' %}
+{%- endif %}
 {%- if reasoning_effort not in ['none', 'high'] %}
     {{- raise_exception('reasoning_effort must be either "none" or "high"') }}
 {%- endif %}

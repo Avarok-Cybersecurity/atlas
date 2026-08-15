@@ -334,11 +334,15 @@ min = 1.0
 # "differs only in a tooling version string" is FALSE as of the checkpoint
 # on disk; see the note there.
 #
-# ★ REQUIRES FFMPEG ON THE RUNNER for every container except GIF. Legs needing
-# it SKIP rather than fail when it is absent, so a runner without ffmpeg
-# degrades to the GIF-only subset instead of going red -- which is why the
-# floor below is on legs PASSED and legs MEASURED separately. A run where
-# everything skipped reports INCONCLUSIVE, never PASS.
+# ★ REQUIRES FFMPEG ON THE SERVER for every container except GIF, and the
+# serve must carry `--video-allow-ffmpeg` — the subprocess decoder is gated
+# behind that flag, so the recipe this entry names pins
+# `video_allow_ffmpeg: true` (added 2026-08-15; without it the certified
+# self-start 400'd every MP4 leg). When the flag or binary is absent those
+# legs SKIP rather than fail at the benchmark level, but only a MANUAL run
+# degrades to the GIF-only subset — this GATE's thresholds demand all 13 legs
+# and 0 skips, so a certified run without ffmpeg is red by design. A run
+# where everything skipped reports INCONCLUSIVE, never PASS.
 #
 # Bounds are absolute and take no noise term: every assertion is either
 # arithmetic over the patch grid or an exact color sequence, so there is no

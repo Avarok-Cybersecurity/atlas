@@ -132,6 +132,21 @@ pub const TURNS: [&str; 4] = [
 /// `completion_tokens` and the `cached_tokens` attestation the vacuity
 /// check reads are an Atlas-specific courtesy, and running the gate against
 /// a contract-faithful server would silently zero both.
+///
+/// `enable_thinking` is pinned OFF, same footing as temperature and seed.
+/// The flagship recipe serves thinking-on by default (MODEL.toml
+/// `thinking_default = true`, budget 768), and under that mode the script's
+/// contract is unanchoreable by construction: the budget forces `</think>`
+/// mid-reasoning and the derailed answer misses "reply with exactly one
+/// line" / "numbered 1 to 3" (measured 2026-08-15 — the reference round
+/// failed both anchors), while `max_tokens` was sized counting only the
+/// short answers, so a full think plus turn 4's paragraph runs into the
+/// budget the anchors reject. Nothing under test is lost: the gate polices
+/// the PREFILL restore of the shared document prefix, and thinking tokens
+/// are post-prefill output that never re-enters the replayed prefix (the
+/// template strips prior `<think>` blocks from history). The pin rides the
+/// request rather than the recipe so the serve stays byte-identical to the
+/// flagship config every other gate certifies.
 pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -> Value {
     json!({
         "model": model,
@@ -140,6 +155,7 @@ pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -
         "temperature": 0.0,
         "seed": 0,
         "max_tokens": max_tokens,
+        "chat_template_kwargs": {"enable_thinking": false},
         "messages": messages,
     })
 }

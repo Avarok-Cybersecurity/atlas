@@ -17,12 +17,18 @@ use super::chat_impl::preprocess_for_render;
 pub(crate) struct RenderFlags<'a> {
     pub enable_thinking: bool,
     pub disable_tool_steering: bool,
-    /// Explicit client reasoning-effort string. `None` falls back to the
-    /// cross-template convention: `"high"` when thinking is on, `"none"`
-    /// when off. Every template maps/validates from there — Mistral accepts
-    /// exactly `none|high`; Qwen3.8 remaps `high`→`xhigh` and only evaluates
-    /// the value when thinking is on, so the `"none"` fallback can never
-    /// reach its validator; Qwen3.5/3.6 ignore the variable entirely.
+    /// Explicit client/server reasoning-effort string. `None` falls back
+    /// to the cross-template convention: `"medium"` when thinking is on
+    /// (the NEUTRAL tier — no steering sentence, budget = the model's
+    /// `max_thinking_budget` rung), `"none"` when off. Every template
+    /// maps/validates from there — Qwen3.8 accepts `medium` verbatim and
+    /// injects no directive; Mistral has no medium tier, so its
+    /// Atlas-owned override maps `medium`→`high` (its standard thinking
+    /// mode) and only ever sees `none` when thinking is off; Qwen3.5/3.6
+    /// ignore the variable entirely. Until 2026-08-15 the thinking-on
+    /// fallback was `"high"`, which Qwen3.8's template remaps to `xhigh`
+    /// — every effort-silent client silently bought the MOST expensive
+    /// directive tier.
     pub reasoning_effort: Option<&'a str>,
     /// Tri-state `preserve_thinking` (Qwen3.6+ dense templates). `None` =
     /// the variable is left UNDEFINED in the Jinja context so the model
@@ -79,10 +85,22 @@ pub(crate) fn render_chat(
     // The api.rs layer controls enable_thinking based on thinking_in_tools MODEL.toml.
     // Mistral's template defaults `reasoning_effort` to "high" when
     // undefined, so we must explicitly pass "none" to disable thinking.
+    //
+    // Unset + thinking on ⇒ "medium": the neutral tier — no steering
+    // sentence on Qwen3.8, budget = the model's own max_thinking_budget
+    // rung — so a client that never heard of reasoning_effort gets the
+    // model's natural behavior, not the most expensive directive. This is
+    // ALSO why Qwen3.8's in-template `default('xhigh')` can never fire
+    // from Atlas: we always pass an explicit string, never UNDEFINED, so
+    // the template's own (most-expensive) default is unreachable and the
+    // effective unset default lives in exactly one place — here.
+    // Operators override per-serve via
+    // `--default-chat-template-kwargs '{"reasoning_effort":"..."}'`
+    // (resolved in api/chat/prepare.rs before this fallback).
     let reasoning_effort: minijinja::Value = if let Some(effort) = flags.reasoning_effort {
         effort.into()
     } else if enable_thinking {
-        "high".into()
+        "medium".into()
     } else {
         "none".into()
     };

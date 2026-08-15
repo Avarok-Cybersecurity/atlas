@@ -187,6 +187,53 @@ impl ReasoningEffort {
     }
 }
 
+/// SSOT for the wire `reasoning_effort` vocabulary
+/// (`none|minimal|low|medium|high|xhigh|max`). ONE match produces both
+/// consumers' views — the template-facing [`ReasoningEffort`] string and
+/// the budget-facing [`ThinkingDirective`] — so the directive sentence a
+/// request renders and the thinking budget it resolves can never disagree
+/// about which tier the client asked for.
+///
+/// Returns `None` for an unknown spelling. Callers MUST treat that as
+/// fail-fast (the OpenAI edge 400s in `api/chat/mod.rs`, the CLI edge
+/// aborts startup in `main_modules/serve.rs`); infallible paths behave
+/// exactly as if the field were ABSENT (→ the unset default). The
+/// pre-2026-08 behavior — unknown → template fallback = Qwen3.8's most
+/// expensive `xhigh` directive, while the budget path resolved the
+/// `medium` rung — was both silent and self-inconsistent.
+///
+/// `high` intentionally stays its own budget rung (2E) even though the
+/// Qwen3.8 template remaps its directive sentence to `xhigh`'s: the
+/// sentence is checkpoint-template-owned (forking it is what the 2026-08
+/// override retirement removed), but the budget — the actual cost
+/// control — keeps high < xhigh (2E vs 4E).
+pub fn parse_wire_effort(s: &str) -> Option<(Option<ReasoningEffort>, ThinkingDirective)> {
+    Some(match s {
+        "none" => (None, ThinkingDirective::Off),
+        "minimal" => (
+            Some(ReasoningEffort::Low),
+            ThinkingDirective::OnEffort(EffortLevel::Minimal),
+        ),
+        "low" => (
+            Some(ReasoningEffort::Low),
+            ThinkingDirective::OnEffort(EffortLevel::Low),
+        ),
+        "medium" => (
+            Some(ReasoningEffort::Medium),
+            ThinkingDirective::OnEffort(EffortLevel::Medium),
+        ),
+        "high" => (
+            Some(ReasoningEffort::High),
+            ThinkingDirective::OnEffort(EffortLevel::High),
+        ),
+        "xhigh" | "max" => (
+            Some(ReasoningEffort::Max),
+            ThinkingDirective::OnEffort(EffortLevel::XHigh),
+        ),
+        _ => return None,
+    })
+}
+
 impl ThinkingDirective {
     /// True when the client stated any explicit thinking intent —
     /// enabled OR disabled. Server-side policies (e.g. MODEL.toml

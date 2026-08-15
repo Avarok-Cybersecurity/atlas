@@ -80,8 +80,12 @@ fn reasoning_effort_channel() {
         ("high", ThinkingDirective::OnEffort(EffortLevel::High)),
         ("xhigh", ThinkingDirective::OnEffort(EffortLevel::XHigh)),
         ("max", ThinkingDirective::OnEffort(EffortLevel::XHigh)),
-        // Unknown efforts ride the Medium rung, the historical 256 default.
-        ("bogus", ThinkingDirective::OnEffort(EffortLevel::Medium)),
+        // CONTRACT CHANGE 2026-08-15: an unknown effort no longer rides a
+        // rung silently (it used to force thinking ON at Medium while the
+        // template side rendered the xhigh directive — Trap C). It behaves
+        // as if the field were ABSENT here, and the HTTP edge 400s it
+        // first (see `unknown_effort_fails_validation`).
+        ("bogus", ThinkingDirective::Unspecified),
     ] {
         let mut b = base_body();
         b["reasoning"] = serde_json::json!({"effort": effort});
@@ -236,6 +240,91 @@ fn chat_template_kwargs_channel() {
         chat_req(b).client_thinking_directive(),
         ThinkingDirective::Unspecified
     );
+}
+
+/// `chat_template_kwargs.reasoning_effort` (the key vLLM passes straight
+/// into the template) was silently DROPPED by serde until 2026-08-15 —
+/// Trap B: the request parsed fine and served the default tier. It now
+/// reaches BOTH halves: the directive ladder and the template string.
+#[test]
+fn chat_template_kwargs_reasoning_effort_channel() {
+    use crate::ir::ReasoningEffort;
+
+    let mut b = base_body();
+    b["chat_template_kwargs"] = serde_json::json!({"reasoning_effort": "low"});
+    let req = chat_req(b);
+    assert_eq!(
+        req.client_thinking_directive(),
+        ThinkingDirective::OnEffort(EffortLevel::Low)
+    );
+    assert_eq!(req.client_reasoning_effort(), Some(ReasoningEffort::Low));
+
+    // "none" through kwargs forces thinking OFF like the other channels.
+    let mut b = base_body();
+    b["chat_template_kwargs"] = serde_json::json!({"reasoning_effort": "none"});
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::Off
+    );
+
+    // Within the kwargs object, enable_thinking outranks the effort
+    // string (vLLM's template gates the effort block on enable_thinking).
+    // The template-string side is gated on the RESOLVED enable_thinking
+    // in api/chat/prepare.rs, so no effort directive leaks into an
+    // off-render.
+    let mut b = base_body();
+    b["chat_template_kwargs"] =
+        serde_json::json!({"enable_thinking": false, "reasoning_effort": "low"});
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::Off
+    );
+
+    // The dedicated effort channels outrank the kwargs spelling.
+    let mut b = base_body();
+    b["reasoning_effort"] = serde_json::json!("xhigh");
+    b["chat_template_kwargs"] = serde_json::json!({"reasoning_effort": "low"});
+    let req = chat_req(b);
+    assert_eq!(
+        req.client_thinking_directive(),
+        ThinkingDirective::OnEffort(EffortLevel::XHigh)
+    );
+    assert_eq!(req.client_reasoning_effort(), Some(ReasoningEffort::Max));
+}
+
+/// Trap C fix: a typo'd effort must FAIL, not silently resolve — on any
+/// channel, even one shadowed by a valid higher-priority value. The
+/// handler turns this into a 400 before wire→IR lowering (the raw string
+/// does not survive it).
+#[test]
+fn unknown_effort_fails_validation() {
+    for body in [
+        serde_json::json!({"reasoning": {"effort": "hgih"}}),
+        serde_json::json!({"reasoning_effort": "hgih"}),
+        serde_json::json!({"chat_template_kwargs": {"reasoning_effort": "hgih"}}),
+    ] {
+        let mut b = base_body();
+        for (k, v) in body.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        let err = chat_req(b).validate_reasoning_effort().unwrap_err();
+        assert!(err.contains("hgih"), "message names the bad value: {err}");
+    }
+
+    // Shadowed-but-present invalid value still fails (PCND: nothing in
+    // the request is silently ignored).
+    let mut b = base_body();
+    b["reasoning_effort"] = serde_json::json!("low");
+    b["chat_template_kwargs"] = serde_json::json!({"reasoning_effort": "hgih"});
+    assert!(chat_req(b).validate_reasoning_effort().is_err());
+
+    // Every accepted spelling passes on every channel.
+    for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        let mut b = base_body();
+        b["reasoning_effort"] = serde_json::json!(effort);
+        assert!(chat_req(b).validate_reasoning_effort().is_ok());
+    }
+    assert!(chat_req(base_body()).validate_reasoning_effort().is_ok());
 }
 
 #[test]

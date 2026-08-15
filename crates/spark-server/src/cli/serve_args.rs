@@ -415,10 +415,15 @@ pub struct ServeArgs {
     /// Default chat template kwargs applied when the client sends no
     /// thinking parameters (no `reasoning.effort`, `chat_template_kwargs`,
     /// or `enable_thinking` in the request body). A JSON object with
-    /// optional keys: `enable_thinking` (bool), `thinking_budget` (u32).
+    /// optional keys: `enable_thinking` (bool), `thinking_budget` (u32),
+    /// `reasoning_effort` (none|minimal|low|medium|high|xhigh|max — the
+    /// served default effort tier when clients are silent; unset = the
+    /// neutral "medium"), `preserve_thinking` (bool). Unknown keys or an
+    /// unknown `reasoning_effort` value abort startup (fail-fast; they
+    /// were silently ignored before 2026-08-15).
     ///
     /// Precedence (highest wins): request body → this flag → MODEL.toml.
-    /// Example: `--default-chat-template-kwargs '{"enable_thinking":true}'`
+    /// Example: `--default-chat-template-kwargs '{"reasoning_effort":"xhigh"}'`
     #[arg(long, value_name = "JSON")]
     pub default_chat_template_kwargs: Option<String>,
 

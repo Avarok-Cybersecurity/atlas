@@ -291,25 +291,76 @@ pub struct ChatTemplateKwargs {
     /// MODEL.toml `[behavior].preserve_thinking` override, then to the
     /// model template's own default.
     pub preserve_thinking: Option<bool>,
+    /// Qwen3.8 template kwarg (vLLM passes it straight into Jinja).
+    /// Was silently DROPPED by serde before 2026-08-15 — a client
+    /// sending `chat_template_kwargs.reasoning_effort` got the server
+    /// default instead, with no error. Ranks below `reasoning.effort`
+    /// and the top-level `reasoning_effort` shorthand, and below the
+    /// other `chat_template_kwargs` keys in the directive ladder
+    /// (vLLM's template gates the effort block on `enable_thinking`).
+    pub reasoning_effort: Option<String>,
 }
 
 impl ChatCompletionRequest {
-    fn requested_reasoning_effort(&self) -> Option<&str> {
+    /// The dedicated effort channels: nested `reasoning.effort` wins
+    /// over the top-level `reasoning_effort` shorthand.
+    fn body_reasoning_effort(&self) -> Option<&str> {
         self.reasoning
             .as_ref()
             .and_then(|reasoning| reasoning.effort.as_deref())
             .or(self.reasoning_effort.as_deref())
     }
 
-    pub fn client_reasoning_effort(&self) -> Option<crate::ir::ReasoningEffort> {
-        match self.requested_reasoning_effort()? {
-            "none" => None,
-            "minimal" | "low" => Some(crate::ir::ReasoningEffort::Low),
-            "medium" => Some(crate::ir::ReasoningEffort::Medium),
-            "high" => Some(crate::ir::ReasoningEffort::High),
-            "xhigh" | "max" => Some(crate::ir::ReasoningEffort::Max),
-            _ => None,
+    /// Every channel an effort string can arrive on, in priority order
+    /// (`chat_template_kwargs.reasoning_effort` last). This is the
+    /// string the TEMPLATE side consumes and the one `validate` checks.
+    fn requested_reasoning_effort(&self) -> Option<&str> {
+        self.body_reasoning_effort().or_else(|| {
+            self.chat_template_kwargs
+                .as_ref()
+                .and_then(|kw| kw.reasoning_effort.as_deref())
+        })
+    }
+
+    /// Fail-fast check for the wire-only effort vocabulary, which is
+    /// lowered LOSSILY into the IR (the raw string does not survive
+    /// `From<ChatCompletionRequest>`), so the handler must reject it
+    /// BEFORE lowering. Without this, a typo'd effort (`"hgih"`)
+    /// silently resolved to the template's unset default — on Qwen3.8
+    /// historically the most expensive `xhigh` directive — while the
+    /// budget path resolved a DIFFERENT rung. Covers every channel:
+    /// `reasoning.effort`, the top-level shorthand, and
+    /// `chat_template_kwargs.reasoning_effort`.
+    /// Every present channel is checked — even one shadowed by a
+    /// higher-priority valid value — so a bad string never parses clean.
+    pub fn validate_reasoning_effort(&self) -> Result<(), String> {
+        let channels = [
+            self.reasoning.as_ref().and_then(|r| r.effort.as_deref()),
+            self.reasoning_effort.as_deref(),
+            self.chat_template_kwargs
+                .as_ref()
+                .and_then(|kw| kw.reasoning_effort.as_deref()),
+        ];
+        match channels
+            .into_iter()
+            .flatten()
+            .find(|s| crate::ir::parse_wire_effort(s).is_none())
+        {
+            None => Ok(()),
+            Some(bad) => Err(format!(
+                "invalid reasoning_effort {bad:?}: expected one of \
+                 none, minimal, low, medium, high, xhigh, max"
+            )),
         }
+    }
+
+    /// The template-facing effort. Unknown spellings resolve to `None`
+    /// (= the unset default) — never to a maximal tier — and are already
+    /// rejected with a 400 by `invalid_reasoning_effort` on the HTTP
+    /// path, so this branch is reachable only from internal callers.
+    pub fn client_reasoning_effort(&self) -> Option<crate::ir::ReasoningEffort> {
+        crate::ir::parse_wire_effort(self.requested_reasoning_effort()?)
+            .and_then(|(template_effort, _)| template_effort)
     }
 
     /// Resolve the client's thinking intent from all supported
@@ -370,8 +421,7 @@ impl ChatCompletionRequest {
         // Dropping the shorthand silently demoted every effort-level
         // request to the server/model default — including `"none"`,
         // which must force thinking OFF.
-        if let Some(effort) = self.requested_reasoning_effort() {
-            use crate::ir::EffortLevel;
+        if let Some(effort) = self.body_reasoning_effort() {
             // Kept SYMBOLIC: the token budget for an effort level is
             // server policy, resolved in `api/chat/thinking.rs` against
             // the model's effective `max_thinking_budget` so MODEL.toml
@@ -379,19 +429,24 @@ impl ChatCompletionRequest {
             // ladder here (64/128/256/512/1024) silently capped every
             // effort-sending client at 256-class budgets no matter what
             // the operator configured.
-            return match effort {
-                "none" => ThinkingDirective::Off,
-                "minimal" => ThinkingDirective::OnEffort(EffortLevel::Minimal),
-                "low" => ThinkingDirective::OnEffort(EffortLevel::Low),
-                "high" => ThinkingDirective::OnEffort(EffortLevel::High),
-                "xhigh" | "max" => ThinkingDirective::OnEffort(EffortLevel::XHigh),
-                // "medium" and unknown strings both resolved to 256 —
-                // exactly the Medium rung — before the symbolic switch.
-                _ => ThinkingDirective::OnEffort(EffortLevel::Medium),
-            };
+            //
+            // SSOT with the template path (`client_reasoning_effort`):
+            // one `parse_wire_effort` match feeds both, so directive
+            // and budget can never disagree. Unknown spellings fall
+            // through as if ABSENT (they 400 earlier on the HTTP path);
+            // the old `_ => Medium` arm silently forced thinking ON at
+            // the Medium budget while the template rendered the xhigh
+            // directive — the two halves of Trap C.
+            if let Some((_, directive)) = crate::ir::parse_wire_effort(effort) {
+                return directive;
+            }
         }
 
-        // 4. vLLM stable: chat_template_kwargs
+        // 4. vLLM stable: chat_template_kwargs. Rung order inside the
+        // object: thinking_budget > enable_thinking > reasoning_effort —
+        // vLLM's own template gates the effort block on enable_thinking,
+        // so an explicit `enable_thinking: false` wins over an effort
+        // string in the same object.
         if let Some(ref kwargs) = self.chat_template_kwargs {
             if let Some(budget) = kwargs.thinking_budget {
                 return if budget > 0 {
@@ -414,6 +469,14 @@ impl ChatCompletionRequest {
                 } else {
                     ThinkingDirective::Off
                 };
+            }
+            if let Some(effort) = kwargs.reasoning_effort.as_deref()
+                && let Some((_, directive)) = crate::ir::parse_wire_effort(effort)
+            {
+                // Previously this key was silently DROPPED by serde
+                // (Trap B): the request parsed fine and rendered with
+                // the server default instead of the asked-for tier.
+                return directive;
             }
         }
 

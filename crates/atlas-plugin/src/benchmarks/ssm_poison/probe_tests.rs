@@ -58,6 +58,13 @@ fn request_body_is_greedy_pinned_seed_stream() {
     // The replay invariant only holds when the sampler cannot vary: if the
     // temperature were > 0 the gate would measure sampling noise, not state.
     assert_eq!(body["temperature"].as_f64(), Some(0.0));
+    // Thinking pinned OFF per request: the flagship serve defaults thinking
+    // ON with a 768-token budget, whose forced mid-reasoning `</think>`
+    // derails the terse exact-format answers the reference anchors demand
+    // (observed 2026-08-15: turn 1 lost the ACK, turn 2 lost its 3 lines).
+    // Pinning here keeps the serve identical to the certified flagship
+    // recipe while making the script contract satisfiable.
+    assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
 }
 
 // ---- reference anchors (B4) ----------------------------------------------

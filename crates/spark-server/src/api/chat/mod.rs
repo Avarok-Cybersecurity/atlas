@@ -115,6 +115,13 @@ pub async fn chat_completions(
         }
     };
 
+    // Unknown reasoning_effort spellings 400 here — the raw string does
+    // not survive wire→IR lowering, and a typo must never silently buy a
+    // default tier (see `chat_request::validate_reasoning_effort`).
+    if let Err(msg) = req.validate_reasoning_effort() {
+        return openai_error_response(StatusCode::BAD_REQUEST, msg);
+    }
+
     // Ollama-style: a request naming a different KNOWN model loads it first.
     // Off unless `--auto-swap`, and `--no-auto-swap` overrides that; every
     // other case (absent, unknown, already live) falls through untouched, which

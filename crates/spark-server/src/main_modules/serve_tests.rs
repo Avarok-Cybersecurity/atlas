@@ -142,3 +142,68 @@ fn incompat_unknown_rejected() {
     assert!(!quant_pair_compatible("nvfp4", "gptq-4bit"));
     assert!(!quant_pair_compatible("fp8", "nvfp4"));
 }
+
+// ── --default-chat-template-kwargs parsing ─────────────────────────────
+// The operator knob for the served default reasoning_effort (2026-08-15).
+// Fail-fast contract: bad JSON, unknown keys, and unknown effort values
+// abort startup — a typo'd operator default must never boot a server
+// that silently serves a different tier (the pre-change parser warned
+// and IGNORED).
+
+#[test]
+fn default_kwargs_reasoning_effort_sets_both_halves() {
+    use crate::ir::{EffortLevel, ReasoningEffort, ThinkingDirective};
+    let kw = parse_default_chat_template_kwargs(r#"{"reasoning_effort":"xhigh"}"#).unwrap();
+    // The template string AND the budget directive come from one parse,
+    // so effort-silent requests get the same tier on both paths.
+    assert_eq!(kw.reasoning_effort, Some(ReasoningEffort::Max));
+    assert_eq!(kw.thinking, ThinkingDirective::OnEffort(EffortLevel::XHigh));
+    assert_eq!(kw.preserve_thinking, None);
+
+    // "none" as the server default = thinking off by default.
+    let kw = parse_default_chat_template_kwargs(r#"{"reasoning_effort":"none"}"#).unwrap();
+    assert_eq!(kw.reasoning_effort, None);
+    assert_eq!(kw.thinking, ThinkingDirective::Off);
+}
+
+#[test]
+fn default_kwargs_explicit_thinking_keys_outrank_effort_directive() {
+    use crate::ir::{ReasoningEffort, ThinkingDirective};
+    let kw =
+        parse_default_chat_template_kwargs(r#"{"thinking_budget":512,"reasoning_effort":"low"}"#)
+            .unwrap();
+    // Budget rung wins for the directive; the effort string still sets
+    // the template default.
+    assert_eq!(kw.thinking, ThinkingDirective::On { budget: Some(512) });
+    assert_eq!(kw.reasoning_effort, Some(ReasoningEffort::Low));
+}
+
+#[test]
+fn default_kwargs_legacy_shapes_still_parse() {
+    use crate::ir::ThinkingDirective;
+    let kw = parse_default_chat_template_kwargs(r#"{"enable_thinking":true}"#).unwrap();
+    assert_eq!(kw.thinking, ThinkingDirective::On { budget: None });
+    let kw = parse_default_chat_template_kwargs(r#"{"enable_thinking":false}"#).unwrap();
+    assert_eq!(kw.thinking, ThinkingDirective::Off);
+    let kw = parse_default_chat_template_kwargs("").unwrap();
+    assert_eq!(kw, DefaultChatTemplateKwargs::default());
+    let kw = parse_default_chat_template_kwargs(r#"{"preserve_thinking":false}"#).unwrap();
+    assert_eq!(kw.preserve_thinking, Some(false));
+}
+
+#[test]
+fn default_kwargs_fail_fast_on_typos() {
+    // Unknown effort value.
+    assert!(
+        parse_default_chat_template_kwargs(r#"{"reasoning_effort":"hgih"}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("hgih")
+    );
+    // Unknown key (deny_unknown_fields): the old parser silently ignored
+    // it, which is exactly how "--default-chat-template-kwargs
+    // reasoning_effort=..." appeared to work while doing nothing.
+    assert!(parse_default_chat_template_kwargs(r#"{"reasoning_efort":"low"}"#).is_err());
+    // Invalid JSON.
+    assert!(parse_default_chat_template_kwargs("not json").is_err());
+}

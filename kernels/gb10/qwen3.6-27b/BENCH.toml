@@ -267,9 +267,16 @@ min = 1.0
 # with qwen3.8-27b. See that target's entry for what each leg asserts and why
 # the reversed clip is the one that matters.
 #
-# ★ REQUIRES FFMPEG for every container except GIF; legs needing it SKIP
-# rather than fail, so a runner without it degrades to the GIF subset instead
-# of going red.
+# ★ REQUIRES FFMPEG ON THE SERVER for every container except GIF — and the
+# serve must be started with `--video-allow-ffmpeg`, which the subprocess
+# decoder is gated behind. The recipe above pins `video_allow_ffmpeg: true`
+# (added 2026-08-15) so the certified self-start gets it; without that pin
+# every MP4 leg 400'd and the gate went red, and `--serve-override` could not
+# rescue it because it refuses keys absent from the recipe's defaults.
+# Without the flag the MP4 legs SKIP at the benchmark level (never fail), but
+# a skip can only degrade a MANUAL run gracefully — this GATE still goes red,
+# because the thresholds below demand all 13 legs and 0 skips. That is
+# deliberate: a certified record must exercise the MP4 path.
 #
 # RESOLVED 2026-08-15, and the answer was the second one. On 2026-08-14 the
 # 35B scored 12/13, failing `video-before-image` with [yellow, green, blue]

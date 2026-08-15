@@ -119,6 +119,11 @@ pub(crate) fn prepare_chat_prompt(
         req.max_tokens as u32,
         tools_active,
     );
+    let reasoning_effort = effective_reasoning_effort(
+        req.reasoning_effort,
+        state.default_reasoning_effort,
+        enable_thinking,
+    );
     let us_thinking = _t_phase.elapsed().as_micros() - us_msg_entry;
 
     // ── Phase 5: render Jinja template + image-pad expansion ────
@@ -133,7 +138,7 @@ pub(crate) fn prepare_chat_prompt(
         &image_pad_counts,
         enable_thinking,
         thinking_budget,
-        req.reasoning_effort,
+        reasoning_effort,
         // Per-request chat_template_kwargs.preserve_thinking wins; the
         // MODEL.toml [behavior] override is the fallback; both unset
         // leaves the Jinja variable undefined (template default).
@@ -159,6 +164,29 @@ pub(crate) fn prepare_chat_prompt(
     })
 }
 
+/// The effort string handed to the template: the per-request value
+/// wins, then the server-level default (`--default-chat-template-kwargs`
+/// `{"reasoning_effort":...}`), and only while thinking is ON — a
+/// thinking-off resolution (client "none", `--disable-thinking`,
+/// `thinking_in_tools=false`, ...) must never carry an effort directive
+/// into the render (Qwen3.8 gates its effort block on `enable_thinking`;
+/// Mistral's validator raises on any effort other than `none` when the
+/// settings line is emitted). `None` with thinking on falls through to
+/// the cross-template `"medium"` fallback in `tokenizer/chat_render.rs`
+/// — the neutral tier, NOT the pre-2026-08 `"high"` that Qwen3.8
+/// escalated to its most expensive `xhigh` directive.
+fn effective_reasoning_effort(
+    request: Option<crate::ir::ReasoningEffort>,
+    server_default: Option<crate::ir::ReasoningEffort>,
+    enable_thinking: bool,
+) -> Option<crate::ir::ReasoningEffort> {
+    if enable_thinking {
+        request.or(server_default)
+    } else {
+        None
+    }
+}
+
 /// Inject a parser's behavioral prompt without changing requests for parsers
 /// whose native chat template already owns tool instructions.
 fn inject_tool_system_prompt(messages: &mut Vec<crate::ir::Message>, tool_prompt: String) {
@@ -178,8 +206,30 @@ fn inject_tool_system_prompt(messages: &mut Vec<crate::ir::Message>, tool_prompt
 
 #[cfg(test)]
 mod tests {
-    use super::inject_tool_system_prompt;
-    use crate::ir::{Message, Role};
+    use super::{effective_reasoning_effort, inject_tool_system_prompt};
+    use crate::ir::{Message, ReasoningEffort, Role};
+
+    /// The four-way contract of the template-effort resolution: request
+    /// beats server default, the server default fills silence, and a
+    /// thinking-off resolution suppresses BOTH — `disable_thinking` (and
+    /// every other off-path) must fully bypass the effort directive
+    /// (Qwen3.8's template gates on it; the BFCL gate serves
+    /// thinking-off and depends on the bypass).
+    #[test]
+    fn effort_resolution_contract() {
+        let low = Some(ReasoningEffort::Low);
+        let max = Some(ReasoningEffort::Max);
+        // Request wins over the server default.
+        assert_eq!(effective_reasoning_effort(low, max, true), low);
+        // Server default fills a silent request.
+        assert_eq!(effective_reasoning_effort(None, max, true), max);
+        // Fully unset: None → the "medium" chat_render fallback (the
+        // neutral tier), asserted byte-level in tokenizer/tests/qwen_dense.rs.
+        assert_eq!(effective_reasoning_effort(None, None, true), None);
+        // Thinking off suppresses both sources.
+        assert_eq!(effective_reasoning_effort(low, max, false), None);
+        assert_eq!(effective_reasoning_effort(None, max, false), None);
+    }
 
     #[test]
     fn empty_tool_prompt_does_not_change_existing_system_message() {

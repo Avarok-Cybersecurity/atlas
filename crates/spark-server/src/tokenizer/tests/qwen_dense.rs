@@ -100,8 +100,13 @@ pub(crate) fn thinking_on() -> RenderFlags<'static> {
 /// template default when `preserve_thinking` is undefined).
 const Q36_GOLDEN: &str = "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get current weather for a location\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}},\"required\":[\"location\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nCheck the weather in Paris, then summarize.<|im_end|>\n<|im_start|>assistant\n<tool_call>\n<function=get_weather>\n<parameter=location>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n18C, sunny\n</tool_response><|im_end|>\n<|im_start|>assistant\nIt is 18C and sunny in Paris.<|im_end|>\n<|im_start|>user\nThanks - now in one word?<|im_end|>\n<|im_start|>assistant\n<think>\n";
 
-/// Qwen3.8's injected instruction for the default effort (`high` remapped to
-/// `xhigh` by the template — the Atlas fallback string stays "high").
+/// Qwen3.8's injected instruction for the `xhigh` tier. Reached by explicit
+/// `xhigh`/`max`, and by explicit `high` (the template remaps `high`→`xhigh`
+/// — checkpoint-owned, so `high` shares this sentence while keeping its own
+/// smaller 2E budget rung in `api/chat/thinking.rs`). NOT reached by an
+/// effort-silent request: since 2026-08-15 the unset fallback is the neutral
+/// `"medium"` (no sentence), not `"high"` — the old fallback silently bought
+/// every silent client this most-expensive directive.
 const XHIGH_SENTENCE: &str = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
 const LOW_SENTENCE: &str = "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.";
 
@@ -142,10 +147,22 @@ fn with_closed_think_tail(base: &str) -> String {
     )
 }
 
-/// Qwen3.8 default = Qwen3.6 baseline + xhigh instruction sentence +
-/// historical `<think>` blocks KEPT (3.8 inverts the preserve default).
+/// Qwen3.8 render at the XHIGH tier (explicit `xhigh`/`max`/`high`):
+/// Qwen3.6 baseline + xhigh instruction sentence + historical `<think>`
+/// blocks KEPT (3.8 inverts the preserve default). Before 2026-08-15 this
+/// was ALSO the unset-default render; see [`q38_unset_golden`].
 fn q38_golden() -> String {
     with_history_think(&with_effort_sentence(Q36_GOLDEN, XHIGH_SENTENCE))
+}
+
+/// Qwen3.8 render for an effort-SILENT request (the unset default):
+/// the `"medium"` fallback injects NO instruction sentence, so the system
+/// block is byte-identical to the Qwen3.6-era prompt shape; only the
+/// preserve-thinking default (history `<think>` kept) differs. This is
+/// the 2026-08-15 contract change: unset must buy the NEUTRAL tier, not
+/// the most expensive directive (`high`→`xhigh` under the old fallback).
+fn q38_unset_golden() -> String {
+    with_history_think(Q36_GOLDEN)
 }
 
 #[test]
@@ -213,7 +230,7 @@ fn q36_thinking_off_closes_think_tail_only() {
 }
 
 #[test]
-fn q38_default_keeps_history_think_and_injects_xhigh() {
+fn q38_default_keeps_history_think_and_injects_no_effort_sentence() {
     let r = render_fixture(
         "qwen3.8-27b-unsloth",
         &fixture_messages(),
@@ -221,10 +238,37 @@ fn q38_default_keeps_history_think_and_injects_xhigh() {
         thinking_on(),
     )
     .unwrap();
-    // The Atlas fallback effort string "high" must be remapped to xhigh by
-    // the template (no exception), and `preserve_thinking` unset must leave
-    // the variable UNDEFINED — Jinja `none` would flip the default to strip.
-    assert_eq!(r, q38_golden());
+    // CONTRACT CHANGE 2026-08-15: an effort-silent request renders the
+    // NEUTRAL "medium" fallback — no instruction sentence — instead of the
+    // old "high" fallback that the template escalated to the most expensive
+    // xhigh directive. The template's own `default('xhigh')` must stay
+    // unreachable (Atlas always passes an explicit string), and
+    // `preserve_thinking` unset must leave the variable UNDEFINED — Jinja
+    // `none` would flip the default to strip.
+    assert_eq!(r, q38_unset_golden());
+}
+
+/// The unset default IS the medium tier: an effort-silent render and an
+/// explicit `"medium"` render must be byte-identical, matching the budget
+/// side where unset and medium both resolve to `max_thinking_budget` (E).
+/// If these ever diverge, the directive and budget paths have split.
+#[test]
+fn q38_unset_equals_explicit_medium() {
+    let msgs = fixture_messages();
+    let tools = fixture_tools();
+    let unset = render_fixture("qwen3.8-27b-unsloth", &msgs, Some(&tools), thinking_on()).unwrap();
+    let medium = render_fixture(
+        "qwen3.8-27b-unsloth",
+        &msgs,
+        Some(&tools),
+        RenderFlags {
+            enable_thinking: true,
+            reasoning_effort: Some("medium"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(unset, medium);
 }
 
 #[test]
@@ -241,8 +285,9 @@ fn q38_preserve_thinking_false_strips_history_think() {
     )
     .unwrap();
     // preserve=false restores the Qwen3.6-shaped history (prefix-cache
-    // friendly); the effort sentence is independent of preserve.
-    assert_eq!(r, with_effort_sentence(Q36_GOLDEN, XHIGH_SENTENCE));
+    // friendly). Effort-silent since 2026-08-15 means the neutral medium
+    // fallback (no sentence), so this render is exactly the Q36 baseline.
+    assert_eq!(r, Q36_GOLDEN);
 }
 
 #[test]
@@ -271,9 +316,18 @@ fn q38_explicit_efforts_render_their_sentences() {
         reasoning_effort: Some(effort),
         ..Default::default()
     };
-    // "xhigh" is what ir::ReasoningEffort::Max renders as — same bytes as
-    // the default ("high" remaps to xhigh in-template).
+    // "xhigh" is what ir::ReasoningEffort::Max renders as. Since the
+    // 2026-08-15 default change this sentence appears ONLY on explicit
+    // request — never for an effort-silent client.
     let r = render_fixture("qwen3.8-27b-unsloth", &msgs, Some(&tools), flags("xhigh")).unwrap();
+    assert_eq!(r, q38_golden());
+    // Explicit "high": the checkpoint template remaps high→xhigh, so the
+    // DIRECTIVE bytes equal xhigh's. This escalation is deliberate and
+    // documented (not silent): the sentence is template-owned, while the
+    // budget side keeps high its own smaller rung (2E vs xhigh's 4E in
+    // api/chat/thinking.rs::effort_budget) — "high" = xhigh's steering
+    // text with half the thinking allowance.
+    let r = render_fixture("qwen3.8-27b-unsloth", &msgs, Some(&tools), flags("high")).unwrap();
     assert_eq!(r, q38_golden());
     let r = render_fixture("qwen3.8-27b-unsloth", &msgs, Some(&tools), flags("low")).unwrap();
     assert_eq!(
@@ -324,5 +378,6 @@ fn q38_string_tool_args_are_normalized_before_strict_validation() {
         thinking_on(),
     )
     .unwrap();
-    assert_eq!(r, q38_golden());
+    // Effort-silent render, so the 2026-08-15 unset golden (no sentence).
+    assert_eq!(r, q38_unset_golden());
 }

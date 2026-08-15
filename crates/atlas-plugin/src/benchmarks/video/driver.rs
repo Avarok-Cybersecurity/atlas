@@ -97,6 +97,28 @@ pub struct VideoFidelity {
 /// mentioning "the screen" or "background" cannot accidentally count.
 const PALETTE: &[&str] = &["red", "green", "blue", "yellow"];
 
+/// Reclassify a transport-level `Error` cell as `Skipped` when the message is
+/// the server refusing a container it has no decoder for.
+///
+/// Every other leg makes the `is_decoder_unavailable` call at its own error
+/// site; the heterogeneous-concurrency leg gets its cell from the shared
+/// `media_integrity` helper, which is modality-agnostic and cannot know about
+/// video decoders — so the call is made here, on the way back. Without it a
+/// serve without `--video-allow-ffmpeg` FAILED the whole run at this one leg
+/// while the other twelve skipped, contradicting the descriptor's "skipped,
+/// never failed" contract (observed 2026-08-15 under `--pull-request-gate`).
+fn skip_if_decoder_unavailable(
+    cell: crate::benchmarks::media_integrity::Cell,
+) -> crate::benchmarks::media_integrity::Cell {
+    use crate::benchmarks::media_integrity::Cell;
+    match cell {
+        Cell::Error { id, msg } if request::is_decoder_unavailable(&msg) => {
+            Cell::Skipped { id, why: msg }
+        }
+        other => other,
+    }
+}
+
 impl VideoFidelity {
     fn handle(&self) -> Result<&PluginHandle> {
         self.handle.as_ref().context("benchmark was not loaded")
@@ -664,7 +686,9 @@ impl Benchmark for VideoFidelity {
                                 "reversed".to_string(),
                             ),
                         ];
-                        mi::heterogeneous_concurrency(h, subjects, tmo).await
+                        skip_if_decoder_unavailable(
+                            mi::heterogeneous_concurrency(h, subjects, tmo).await,
+                        )
                     }
                     // 4. VIDEO IN AN EARLIER TURN.
                     _ => {

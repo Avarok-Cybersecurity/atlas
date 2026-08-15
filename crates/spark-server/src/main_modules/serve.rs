@@ -182,39 +182,82 @@ fn startup(
     }
 }
 
+/// Parsed `--default-chat-template-kwargs`: the server-level defaults
+/// applied when the client request carries no thinking parameters.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct DefaultChatTemplateKwargs {
+    /// Neutral thinking directive (budget side). `Unspecified` when the
+    /// flag sets none of the thinking keys.
+    pub thinking: crate::ir::ThinkingDirective,
+    /// Template-side default effort string, injected in
+    /// `api/chat/prepare.rs` when the request carries none and thinking
+    /// is on. `None` = the cross-template `"medium"` fallback in
+    /// `tokenizer/chat_render.rs` applies.
+    pub reasoning_effort: Option<crate::ir::ReasoningEffort>,
+    /// Server-level `preserve_thinking` pin; overrides the MODEL.toml
+    /// `[behavior]` value, is overridden per-request.
+    pub preserve_thinking: Option<bool>,
+}
+
 /// Parse the vLLM-style `--default-chat-template-kwargs` JSON
-/// (`{"enable_thinking":bool,"thinking_budget":u32}`) into the neutral
-/// thinking directive. The CLI is its own edge: the JSON shape is parsed
-/// here, not in the openai wire module. Mapping matches the
-/// `chat_template_kwargs` rung of the request-body ladder: an explicit
-/// budget wins, then the enable flag; unknown/empty JSON → Unspecified
-/// (with a warning — the old code ignored bad JSON silently).
-pub(super) fn parse_default_thinking(s: &str) -> crate::ir::ThinkingDirective {
+/// (`{"enable_thinking":bool,"thinking_budget":u32,
+/// "reasoning_effort":str,"preserve_thinking":bool}`). The CLI is its
+/// own edge: the JSON shape is parsed here, not in the openai wire
+/// module. Thinking-directive mapping matches the `chat_template_kwargs`
+/// rung of the request-body ladder: an explicit budget wins, then the
+/// enable flag, then the effort ladder.
+///
+/// FAIL-FAST (PCND, changed 2026-08-15): invalid JSON, an unknown KEY,
+/// or an unknown `reasoning_effort` VALUE abort startup instead of being
+/// warned about and ignored — a typo'd operator default must never boot
+/// a server that silently serves a different tier.
+pub(super) fn parse_default_chat_template_kwargs(
+    s: &str,
+) -> anyhow::Result<DefaultChatTemplateKwargs> {
     use crate::ir::ThinkingDirective;
 
     #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Kwargs {
         enable_thinking: Option<bool>,
         thinking_budget: Option<u32>,
+        reasoning_effort: Option<String>,
+        preserve_thinking: Option<bool>,
     }
 
     if s.trim().is_empty() {
-        return ThinkingDirective::Unspecified;
+        return Ok(DefaultChatTemplateKwargs::default());
     }
-    let kw: Kwargs = match serde_json::from_str(s) {
-        Ok(kw) => kw,
-        Err(e) => {
-            tracing::warn!("--default-chat-template-kwargs is not valid JSON ({e}); ignoring");
-            return ThinkingDirective::Unspecified;
-        }
+    let kw: Kwargs = serde_json::from_str(s)
+        .map_err(|e| anyhow::anyhow!("--default-chat-template-kwargs is not valid JSON: {e}"))?;
+    // One vocabulary (ir::parse_wire_effort) for CLI and request body, so
+    // the operator default can never mean something a request couldn't.
+    let (reasoning_effort, effort_directive) = match kw.reasoning_effort.as_deref() {
+        None => (None, None),
+        Some(v) => match crate::ir::parse_wire_effort(v) {
+            Some((template_effort, directive)) => (template_effort, Some(directive)),
+            None => anyhow::bail!(
+                "--default-chat-template-kwargs reasoning_effort {v:?}: expected one of \
+                 none, minimal, low, medium, high, xhigh, max"
+            ),
+        },
     };
-    match (kw.thinking_budget, kw.enable_thinking) {
+    let thinking = match (kw.thinking_budget, kw.enable_thinking) {
         (Some(b), _) if b > 0 => ThinkingDirective::On { budget: Some(b) },
         (Some(_), _) => ThinkingDirective::Off,
         (None, Some(true)) => ThinkingDirective::On { budget: None },
         (None, Some(false)) => ThinkingDirective::Off,
-        (None, None) => ThinkingDirective::Unspecified,
-    }
+        // No explicit thinking keys: an effort default carries the same
+        // directive a client-sent effort would, so the budget rung and
+        // the template directive stay in lockstep for effort-silent
+        // requests.
+        (None, None) => effort_directive.unwrap_or(ThinkingDirective::Unspecified),
+    };
+    Ok(DefaultChatTemplateKwargs {
+        thinking,
+        reasoning_effort,
+        preserve_thinking: kw.preserve_thinking,
+    })
 }
 
 /// Resolve `--require-auth` / `--auth-tokens-file` / `--auth-token` into an

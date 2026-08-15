@@ -8,6 +8,7 @@ mod deepseek_v4;
 use serde_json::json;
 
 mod laguna;
+mod mistral_effort;
 mod qwen_dense;
 mod qwen_dense_parity;
 

@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 
 use super::serve::{
-    Prepared, canonicalize_model_quant, describe_quant_source, parse_default_thinking,
+    Prepared, canonicalize_model_quant, describe_quant_source, parse_default_chat_template_kwargs,
     quant_pair_compatible, resolve_vision_max_pixels,
 };
 use crate::api::InferenceRequest;
@@ -1082,6 +1082,16 @@ pub(crate) fn load_model(
         );
     }
 
+    // Fail-fast at startup: a typo'd operator default (unknown key or
+    // unknown reasoning_effort value) must abort the boot, not warn and
+    // serve a different tier.
+    let default_kwargs = args
+        .default_chat_template_kwargs
+        .as_deref()
+        .map(parse_default_chat_template_kwargs)
+        .transpose()?
+        .unwrap_or_default();
+
     let state = Arc::new(AppState {
         tokenizer,
         model_name,
@@ -1136,14 +1146,18 @@ pub(crate) fn load_model(
             if let Some(cli_disable) = args.disable_tool_grammar {
                 b.disable_tool_grammar = cli_disable;
             }
+            // Server-level preserve_thinking pin outranks the MODEL.toml
+            // [behavior] value (request-body kwargs still win in
+            // api/chat/prepare.rs). Previously this key was silently
+            // ignored by the CLI parser.
+            if let Some(p) = default_kwargs.preserve_thinking {
+                b.preserve_thinking = Some(p);
+            }
             b
         },
         disable_thinking: args.disable_thinking,
-        default_thinking: args
-            .default_chat_template_kwargs
-            .as_deref()
-            .map(parse_default_thinking)
-            .unwrap_or_default(),
+        default_thinking: default_kwargs.thinking,
+        default_reasoning_effort: default_kwargs.reasoning_effort,
         response_store,
         rate_limiter,
         conversation_store,

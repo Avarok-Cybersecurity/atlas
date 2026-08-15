@@ -223,7 +223,22 @@ the agentic gate's norm.rs: normalize known bookkeeping variance so the \
 measurement is repeatable, never hide signal. The first unpinned run on \
 main (2026-08-12, sha 7dd4cc33bc) proved the churn: replays 2-12 diverged \
 with restore anchors drifting 992→1040→1088→1152 and 33 'no SSM snapshot — \
-recomputing' events in the serve log.\
+recomputing' events in the serve log.
+
+★ THINKING IS PINNED OFF PER REQUEST (probe.rs `chat_template_kwargs.\
+enable_thinking: false`, added 2026-08-15). This recipe serves thinking-on \
+(MODEL.toml thinking_default=true, budget 768), under which the #513 \
+reference anchors are unsatisfiable by construction: the budget forces \
+`</think>` mid-reasoning and the derailed answer misses 'exactly one line' \
+/ '3 numbered lines' (measured 2026-08-15, sha 62a89527fb — the first \
+post-#513 run; every pre-#513 PASS predates the anchors and compared \
+thinking bytes against a truncated, anchor-less reference). The pre-#513 \
+records' max_tokens=256 is superseded by the driver's 1024 default for the \
+same reason (collapse-ratio headroom). Pinning per request rather than in \
+the recipe keeps the serve byte-identical to the flagship config the other \
+five gates certify, and loses nothing under test: the gate polices the \
+PREFILL restore of the shared document prefix, and thinking tokens are \
+post-prefill output the template strips from replayed history anyway.\
 """
 
 [benchmarks.metrics.rounds]
@@ -408,8 +423,11 @@ min = 1.0
 # The weakest target was the only honest witness -- which is the argument for
 # declaring the gate here rather than only where it was comfortable.
 #
-# ★ REQUIRES FFMPEG for every container except GIF; legs needing it SKIP
-# rather than fail. See qwen3.8-27b's entry for what each leg asserts.
+# ★ REQUIRES FFMPEG ON THE SERVER for every container except GIF, and the
+# serve must carry `--video-allow-ffmpeg` — the recipe this entry names pins
+# `video_allow_ffmpeg: true` (added 2026-08-15). Legs needing it SKIP rather
+# than fail at the benchmark level, but the gate thresholds demand all 13
+# legs. See qwen3.8-27b's entry for what each leg asserts.
 
 [[benchmarks]]
 quant = "nvfp4"
