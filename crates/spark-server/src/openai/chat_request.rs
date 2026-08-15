@@ -467,17 +467,26 @@ impl ChatCompletionRequest {
                 };
             }
             if let Some(enabled) = kwargs.enable_thinking {
-                // enable_thinking via chat_template_kwargs: defer the budget
-                // to the per-model max_thinking_budget (None) rather than a
-                // conservative hardcoded 256 — same rationale as the
-                // legacy branch below. Without this, a server default of
-                // '{"enable_thinking":true}' silently capped EVERY request's
-                // thinking at 256.
-                return if enabled {
-                    ThinkingDirective::On { budget: None }
-                } else {
-                    ThinkingDirective::Off
-                };
+                if !enabled {
+                    // An explicit `enable_thinking: false` beats an effort
+                    // string in the same object (vLLM's template gates the
+                    // effort block on enable_thinking).
+                    return ThinkingDirective::Off;
+                }
+                // `enable_thinking: true` is only load-bearing when it is the
+                // ONLY signal. If an effort string rides in the same object,
+                // fall through to the effort rung: previously the redundant
+                // `true` returned `On{budget: None}` here, silently cutting an
+                // `"xhigh"` request's budget 4E -> E while the template still
+                // rendered the xhigh sentence — the tier divergence the
+                // parse_wire_effort SSOT exists to prevent (review finding F1).
+                if kwargs.reasoning_effort.is_none() {
+                    // Defer the budget to the per-model max_thinking_budget
+                    // (None) rather than a conservative hardcoded 256. Without
+                    // this, a server default of '{"enable_thinking":true}'
+                    // silently capped EVERY request's thinking at 256.
+                    return ThinkingDirective::On { budget: None };
+                }
             }
             if let Some(effort) = kwargs.reasoning_effort.as_deref()
                 && let Some((_, directive)) = crate::ir::parse_wire_effort(effort)

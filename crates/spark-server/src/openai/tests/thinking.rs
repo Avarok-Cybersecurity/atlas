@@ -267,6 +267,18 @@ fn chat_template_kwargs_reasoning_effort_channel() {
         ThinkingDirective::Off
     );
 
+    // A redundant `enable_thinking: true` beside an effort string must NOT
+    // swallow the effort's budget tier: before the F1 fix this returned
+    // On{budget: None} (resolves to E) while the template rendered xhigh —
+    // a 4E->E silent cut with a lying directive sentence.
+    let mut b = base_body();
+    b["chat_template_kwargs"] =
+        serde_json::json!({"enable_thinking": true, "reasoning_effort": "xhigh"});
+    assert_eq!(
+        chat_req(b).client_thinking_directive(),
+        ThinkingDirective::OnEffort(EffortLevel::XHigh)
+    );
+
     // Within the kwargs object, enable_thinking outranks the effort
     // string (vLLM's template gates the effort block on enable_thinking).
     // The template-string side is gated on the RESOLVED enable_thinking
