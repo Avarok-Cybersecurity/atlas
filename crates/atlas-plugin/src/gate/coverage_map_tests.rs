@@ -262,14 +262,20 @@ fn benchmark_drivers_do_not_import_each_other() {
                 .filter(|p| p.extension().is_some_and(|e| e == "rs"))
                 .collect()
         } else {
-            // Single-file driver: the file itself (must exist) plus an
-            // optional `_tests` sibling.
+            // Single-file driver: the file itself (must exist) plus optional
+            // `_tests` and `_verdict` siblings (the concurrency driver keeps
+            // its pure self-verdict in a `_verdict` file for the 500-LoC cap,
+            // and that file must obey the same no-cross-import rule).
             let main = root.join(format!("{driver}.rs"));
             assert!(main.exists(), "driver file {} is missing", main.display());
-            [main, root.join(format!("{driver}_tests.rs"))]
-                .into_iter()
-                .filter(|p| p.exists())
-                .collect()
+            [
+                main,
+                root.join(format!("{driver}_tests.rs")),
+                root.join(format!("{driver}_verdict.rs")),
+            ]
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect()
         };
         for path in sources {
             let src = std::fs::read_to_string(&path).unwrap_or_default();

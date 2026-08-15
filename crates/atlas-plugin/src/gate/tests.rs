@@ -109,6 +109,7 @@ pub(super) fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> Gat
             note: "MLPerf floor".to_string(),
             metrics,
             serve_overrides: BTreeMap::new(),
+            param_overrides: BTreeMap::new(),
         },
     );
     let mut hardware = BTreeMap::new();

@@ -20,9 +20,9 @@ const ALL: &[&BenchmarkDescriptor] = &[
     // `gate::coverage::NOT_REQUIRED`.
     &quick_speed::DESCRIPTOR,
     // The gate-shaped counterpart of the probe above: same cost class
-    // (~3–6 min), every knob pinned, judged against a BENCH.toml floor. A
-    // promotion candidate (`gate::coverage::PROMOTION_CANDIDATES`), so it
-    // accrues debt rather than being required while the floor calibrates.
+    // (~3–6 min), every knob pinned, judged against a BENCH.toml floor.
+    // REQUIRED (`gate::coverage::REQUIRED`) since 2026-08-15, promoted on
+    // the 12-run sigma calibration of the floor.
     &decode_floor::DESCRIPTOR,
     &concurrency::DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,

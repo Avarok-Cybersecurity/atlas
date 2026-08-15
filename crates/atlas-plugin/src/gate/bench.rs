@@ -73,6 +73,23 @@ pub struct BenchEntry {
     /// that is not there.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub serve_overrides: BTreeMap<String, String>,
+    /// Benchmark PARAMETER pins the gate applies on every `--pull-request-gate`
+    /// run — `serve_overrides`' sibling on the request side.
+    ///
+    /// Empty (and omitted from the TOML) is the normal case: the benchmark's
+    /// schema defaults are the gate's shape. Non-empty means this entry's
+    /// thresholds were calibrated on a NON-default instrument (a different
+    /// concurrency ladder, prompt size or output budget), and the gate must
+    /// reproduce it: values are strings routed through each parameter's own
+    /// `ParamKind::parse`, exactly like a typed `--param KEY=VALUE`, and an
+    /// explicit `--param` still wins. A key that names a `threshold_params`-
+    /// coupled parameter is refused at apply time — those values come from
+    /// the paired metric's bound, and a second source would fight it. Every
+    /// applied value lands in the record's `params`, and `check_record`
+    /// demands the pin on the record, so a record measured on the schema
+    /// default cannot read green against a pinned-instrument threshold.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub param_overrides: BTreeMap<String, String>,
     /// Thresholds. Absent for `unmeasured` — see the module docs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<BTreeMap<String, super::record::Bound>>,
@@ -237,6 +254,7 @@ pub fn baseline_for(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
                     note: entry.note.clone(),
                     metrics,
                     serve_overrides: entry.serve_overrides.clone(),
+                    param_overrides: entry.param_overrides.clone(),
                 },
             )
             .is_some()

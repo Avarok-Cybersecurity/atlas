@@ -101,33 +101,48 @@ fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
     );
 }
 
-/// ★ The decode-floor candidate: engine and kernel paths accrue debt, its own
-/// single-FILE driver accrues debt (the pins are the benchmark), and the
-/// usage-plumbing its accept pin reads is engine code under `crates`, so it
-/// accrues too. Another driver's directory owes nothing — pinned for the
-/// file-driver shape specifically, since the other candidates' own-driver
-/// tests all use directory drivers.
+/// ★ PROMOTED 2026-08-15: `decode-floor` and `concurrency-sweep` graduated
+/// from this list to [`coverage::REQUIRED`] once their calibration
+/// preconditions were met (12-run sigma set for the floor; a measured n=3
+/// ladder on the pinned instrument for the sweep). Promotion must not have
+/// weakened anything: what used to accrue DEBT now INVALIDATES — engine and
+/// kernel paths, each gate's own driver (the pins are the benchmark, and the
+/// decode-floor driver is a directory since the C1 split), and the usage
+/// plumbing the accept pin reads. Another driver's file still owes neither.
 #[test]
-fn the_decode_floor_candidate_accrues_debt_like_a_gate() {
-    assert!(
-        coverage::PROMOTION_CANDIDATES
-            .iter()
-            .any(|g| g.id == "decode-floor"),
-        "the decode-floor candidate must be registered"
-    );
+fn the_promoted_gates_invalidate_where_they_used_to_accrue_debt() {
+    for id in ["decode-floor", "concurrency-sweep"] {
+        assert!(
+            coverage::REQUIRED.iter().any(|g| g.id == id),
+            "{id} must be REQUIRED after promotion"
+        );
+        assert!(
+            !coverage::PROMOTION_CANDIDATES.iter().any(|g| g.id == id),
+            "{id} must have left the candidate list — owed and excused at once is a contradiction"
+        );
+        assert!(
+            !coverage::NOT_REQUIRED.iter().any(|(n, _)| *n == id),
+            "{id} must not be excused any more"
+        );
+    }
     for path in [
         "crates/spark-server/src/scheduler/mod.rs",
         "kernels/gb10/common/paged_decode_attn_fp8.cu",
         "crates/spark-server/src/openai/encode_stream.rs",
-        "crates/atlas-plugin/src/benchmarks/decode_floor.rs",
+        "crates/atlas-plugin/src/benchmarks/decode_floor/mod.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
     ] {
-        let owed = coverage::promotion_debt([path]);
-        assert!(owed.contains(&"decode-floor"), "{path} must owe: {owed:?}");
+        let hit = coverage::invalidated_by([path]);
+        assert!(
+            hit.contains(&"decode-floor") && hit.contains(&"concurrency-sweep"),
+            "{path} must invalidate both promoted gates: {hit:?}"
+        );
     }
+    let hit = coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"]);
     assert!(
-        !coverage::promotion_debt(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"])
-            .contains(&"decode-floor"),
-        "the BFCL driver cannot change the decode rate"
+        !hit.contains(&"decode-floor") && !hit.contains(&"concurrency-sweep"),
+        "the BFCL driver can change neither the decode rate nor the ladder: {hit:?}"
     );
 }
 

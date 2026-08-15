@@ -149,6 +149,71 @@ pub(super) fn apply_threshold_params(
     Ok(applied)
 }
 
+/// Apply the selected variant's `[benchmarks.param_overrides]` pins — the
+/// request-side sibling of `serve_overrides`, and the mechanism that lets a
+/// gate's thresholds be calibrated on a NON-default instrument.
+///
+/// The concurrency gate is the motivating case: its committed floors were
+/// measured on the C=1/4/8/16 ladder at isl 512 / osl 320, while the schema
+/// defaults sweep C=1..32 at osl 128 — a gate run on the defaults would score
+/// a different instrument against these thresholds. So the baseline entry pins
+/// the parameters, and self-start applies them here. Precedence mirrors
+/// [`apply_threshold_params`]: an operator's `--param KEY=…` wins untouched;
+/// otherwise the pin replaces the schema default, routed through the spec's
+/// own parser so the kind's bounds cannot be bypassed.
+///
+/// Two loud refusals rather than guesses:
+/// * a pin naming a `threshold_params`-coupled parameter — that value comes
+///   from the paired metric's bound, and a second source here would silently
+///   fight it;
+/// * a pin naming no schema parameter at all — the BENCH.toml and the driver
+///   have drifted, and a silently-dropped pin runs the wrong instrument.
+///
+/// Returns what was applied so the caller can PRINT it; every applied value
+/// also lands in the record's `params` (defaults included), and
+/// `check_record` demands the pin on the record — so a record measured
+/// without the pin cannot read green against the pinned thresholds.
+pub(super) fn apply_param_overrides(
+    descriptor: &atlas_plugin::BenchmarkDescriptor,
+    specs: &[atlas_plugin::ParamSpec],
+    values: &mut atlas_plugin::ParamValues,
+    entry: &gate::ModelBaseline,
+    explicit: &[(String, String)],
+) -> Result<Vec<(String, String)>> {
+    let mut applied = Vec::new();
+    for (key, raw) in &entry.param_overrides {
+        if descriptor.threshold_params.iter().any(|(p, _)| p == key) {
+            bail!(
+                "{}: baseline param override {key:?} names a threshold-coupled parameter — \
+                 its value is derived from the paired metric's bound, and a second source \
+                 here would fight it. Move the number into the metric's bound instead.",
+                descriptor.id
+            );
+        }
+        if explicit.iter().any(|(k, _)| k == key) {
+            continue; // stated intent wins, exactly as for threshold params
+        }
+        let spec = specs
+            .iter()
+            .find(|s| s.key == key.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}: baseline param override {key:?} names no parameter in the schema — \
+                 the BENCH.toml pin and the driver have drifted, and running without it \
+                 would measure a different instrument than the thresholds describe",
+                    descriptor.id
+                )
+            })?;
+        let value = spec
+            .kind
+            .parse(raw)
+            .with_context(|| format!("applying the baseline's param override {key}={raw}"))?;
+        values.set(key.clone(), value);
+        applied.push((key.clone(), raw.clone()));
+    }
+    Ok(applied)
+}
+
 /// Parse `--serve-override KEY=VALUE` pairs into recipe overrides.
 ///
 /// Only splits and validates — whether the KEY exists is `Recipe::argv`'s
@@ -185,3 +250,7 @@ pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String,
 #[cfg(test)]
 #[path = "bench_resolve_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_resolve_params_tests.rs"]
+mod params_tests;

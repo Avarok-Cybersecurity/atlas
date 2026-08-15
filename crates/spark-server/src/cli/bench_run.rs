@@ -279,8 +279,24 @@ async fn run(args: RunArgs) -> Result<i32> {
     };
     // The served VARIANT defines any baseline-coupled parameters the run's own
     // verdict reads (an explicit --param still wins) — see
-    // `apply_threshold_params` for the precedence and why.
+    // `apply_threshold_params` for the precedence and why. Its
+    // `[benchmarks.param_overrides]` pins go first: they shape the INSTRUMENT
+    // (which ladder, which budget), the threshold params shape the VERDICT,
+    // and the two are refused from naming the same key.
     if let Some(s) = &served {
+        for (param, value) in super::bench_resolve::apply_param_overrides(
+            descriptor,
+            &specs,
+            &mut values,
+            &s.baseline_entry,
+            &args.params,
+        )? {
+            eprintln!(
+                "gate: {param} = {value} pinned by the {} variant's baseline \
+                 [benchmarks.param_overrides] (not the schema default)",
+                target.model
+            );
+        }
         for (param, bound) in super::bench_resolve::apply_threshold_params(
             descriptor,
             &specs,

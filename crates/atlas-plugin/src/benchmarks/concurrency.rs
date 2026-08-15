@@ -32,7 +32,7 @@ use crate::metadata::PluginMetadata;
 use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
 use crate::result::{
-    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat, Verdict,
+    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat,
 };
 
 const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 32";
@@ -49,16 +49,38 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              time-to-answer starts inverting in Atlas's favour. Requests pin temperature 0.0 / \
              seed 0 and send reasoning_effort \"none\" so the ladder measures decode, not \
              thinking. A cell where any request delivers under 80% of the output budget is \
-             flagged vacuous and its tok/s marked non-comparable.",
+             flagged vacuous and its tok/s marked non-comparable. REQUIRED gate since \
+             2026-08-15: under --pull-request-gate the run serves the calibrated instrument \
+             (C=1/4/8/16, isl 512, osl 320 via the variant's param_overrides) and \
+             self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
+             cell or request error never passes, whatever the floors say.",
     duration_hint: "~15–45 min",
     updated: "2026-08-15",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
     // no threshold here tied to a checkpoint.
     intended_for: None,
-    threshold_params: &[],
+    // Under --pull-request-gate each floor is auto-filled from the selected
+    // variant's BENCH.toml `min` bound, so a run that clears its committed
+    // ladder self-verdicts PASS — which gate machinery requires now that this
+    // gate is REQUIRED (`gate::coverage::REQUIRED`). The gated ladder's SHAPE
+    // (C=1/4/8/16, isl 512, osl 320) arrives via the same entry's
+    // `[benchmarks.param_overrides]`, not from these schema defaults.
+    threshold_params: GATE_THRESHOLD_PARAMS,
     ctor: || Box::new(ConcurrencySweep::default()),
 };
+
+/// The baseline-coupled verdict params: each is paired to the metric the
+/// BENCH.toml floor is written on (`min` bounds; see `bench_resolve::
+/// apply_threshold_params`). Float, default 0.0 = non-gating, so a standalone
+/// run keeps its info verdict.
+const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &[
+    ("min_c1", "c1_aggregate_tok_s"),
+    ("min_c4", "c4_aggregate_tok_s"),
+    ("min_c8", "c8_aggregate_tok_s"),
+    ("min_c16", "c16_aggregate_tok_s"),
+    ("min_peak", "peak_aggregate_tok_s"),
+];
 
 /// Natural code-generation fixture (own constant — no cross-driver imports).
 /// Appended after the ISL padding so the filler reads as context and this
@@ -133,11 +155,33 @@ pub struct ConcurrencySweep {
     rows: Vec<CellRow>,
     started: Option<Instant>,
     probed: bool,
+    /// Verdict floors (tok/s); all 0.0 = info verdict. Gate-filled per
+    /// variant via `GATE_THRESHOLD_PARAMS`.
+    floors: verdict::Floors,
 }
 
 impl ConcurrencySweep {
     fn handle(&self) -> Result<&PluginHandle> {
         self.handle.as_ref().context("benchmark was not loaded")
+    }
+
+    /// One verdict-floor spec. The generation/sweep knobs are the benchmark;
+    /// these are the gate's bars and cannot move a measured number.
+    fn floor_spec(key: &'static str, label: &'static str) -> ParamSpec {
+        ParamSpec::new(
+            key,
+            label,
+            "Run-verdict floor on this rung's aggregate tok/s (comparable cells only). 0 \
+             disables (a standalone run reports an info verdict); under --pull-request-gate \
+             it is auto-filled from the variant's BENCH.toml `min` bound. Vacuous or errored \
+             sweeps never PASS regardless.",
+            ParamKind::Float {
+                min: 0.0,
+                max: 100_000.0,
+            },
+            // 0.0 is the documented OFF state, not an implicit bar (PCND).
+            ParamValue::Float(0.0),
+        )
     }
 
     fn elapsed(&self) -> Duration {
@@ -500,6 +544,11 @@ impl Benchmark for ConcurrencySweep {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
+            Self::floor_spec("min_c1", "C=1 aggregate floor"),
+            Self::floor_spec("min_c4", "C=4 aggregate floor"),
+            Self::floor_spec("min_c8", "C=8 aggregate floor"),
+            Self::floor_spec("min_c16", "C=16 aggregate floor"),
+            Self::floor_spec("min_peak", "Peak aggregate floor"),
         ]
     }
 
@@ -523,6 +572,15 @@ impl Benchmark for ConcurrencySweep {
         self.mode = PromptMode::parse(values.text("prompt_mode")?)
             .context("prompt_mode must be natural or count")?;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.floors = verdict::Floors {
+            per_c: vec![
+                (1, values.float("min_c1")?),
+                (4, values.float("min_c4")?),
+                (8, values.float("min_c8")?),
+                (16, values.float("min_c16")?),
+            ],
+            peak: values.float("min_peak")?,
+        };
         self.cursor = 0;
         self.rows.clear();
         Ok(())
@@ -555,25 +613,19 @@ impl Benchmark for ConcurrencySweep {
         if self.cursor >= self.cells.len() {
             let errors: usize = self.rows.iter().map(|r| r.errors).sum();
             let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
-            let verdict = if errors > 0 {
-                // Errors do not fail the sweep — they invalidate the cells
-                // they landed in, and saying so is more useful than a FAIL.
-                Verdict::fail(format!(
-                    "{errors} request(s) failed — affected rows are not comparable"
-                ))
-            } else if vacuous > 0 {
-                Verdict::info(format!(
-                    "{} cells, {vacuous} below the vacuity floor ({:.0}% of osl) — flagged \
-                     rows' tok/s are not comparable",
-                    self.rows.len(),
-                    VACUITY_FLOOR * 100.0
-                ))
-            } else {
-                Verdict::info(format!(
-                    "{} cells, no request errors, all above the vacuity floor",
-                    self.rows.len()
-                ))
-            };
+            // The verdict is computed over the SAME metrics map the gate
+            // record carries (see `verdict::sweep_verdict`), so the two can
+            // never disagree about a rung's value. Floors all-zero keeps the
+            // pre-gate info verdicts verbatim.
+            let metrics = self.metrics();
+            let verdict = verdict::sweep_verdict(
+                &metrics,
+                self.rows.len(),
+                errors,
+                vacuous,
+                VACUITY_FLOOR * 100.0,
+                &self.floors,
+            );
             let mut frame = BenchmarkResult {
                 status: RunStatus::Completed,
                 ..BenchmarkResult::running("done", self.elapsed())
@@ -581,7 +633,7 @@ impl Benchmark for ConcurrencySweep {
             .with_progress(self.cells.len() as u64, self.cells.len() as u64)
             .with_summary(self.summary())
             .with_table(self.table())
-            .with_metrics(self.metrics())
+            .with_metrics(metrics)
             .with_verdict(verdict);
             // A "—" in the TPOT column is a measurement limit, not a broken
             // number, and it is worth saying which: the endpoint delivered the
@@ -620,6 +672,9 @@ impl Benchmark for ConcurrencySweep {
         )
     }
 }
+
+#[path = "concurrency_verdict.rs"]
+mod verdict;
 
 #[cfg(test)]
 #[path = "concurrency_tests.rs"]

@@ -125,6 +125,18 @@ pub struct ModelBaseline {
     /// `port` is refused at parse).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub serve_overrides: BTreeMap<String, String>,
+    /// Benchmark PARAMETER keys the gate pins for this entry — the request
+    /// side of what `serve_overrides` is for the serve side. Empty (and
+    /// omitted) means the benchmark's schema defaults ARE the gate's shape.
+    /// Non-empty means the thresholds were calibrated on a different
+    /// instrument than the schema default (the concurrency gate's ladder is
+    /// C=1/4/8/16 at isl 512 / osl 320, where the schema sweeps 1..32 at
+    /// osl 128), and a gate run must reproduce that instrument or its
+    /// numbers are comparable to nothing. Values are strings routed through
+    /// each parameter's own `ParamKind::parse`, exactly like a typed
+    /// `--param`; an explicit `--param` still wins. See `bench::BenchEntry`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub param_overrides: BTreeMap<String, String>,
 }
 
 /// Baseline pins first; the operator's `--serve-override` wins on a clash.

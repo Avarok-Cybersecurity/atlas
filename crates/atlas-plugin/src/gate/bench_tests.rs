@@ -396,3 +396,50 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         );
     }
 }
+
+/// ★ Every committed `[benchmarks.param_overrides]` pin in the REAL tree must
+/// hold against its gate's actual schema: name a registered benchmark, name a
+/// parameter that exists, parse through that parameter's own kind, and never
+/// name a `threshold_params`-coupled key (whose value comes from the paired
+/// metric's bound). A pin that fails any of these is discovered here in
+/// milliseconds instead of at serve time on a gate run.
+#[test]
+fn every_committed_param_override_parses_against_its_gates_schema() {
+    let root = repo_root();
+    for (target, entry) in load_all(&root).expect("tree loads") {
+        if entry.param_overrides.is_empty() {
+            continue;
+        }
+        let descriptor = crate::registry::find(&entry.gate).unwrap_or_else(|| {
+            panic!(
+                "{}/{}: param_overrides on unregistered benchmark {:?}",
+                target.hardware, target.model, entry.gate
+            )
+        });
+        let specs = descriptor.build().parameters();
+        for (key, raw) in &entry.param_overrides {
+            assert!(
+                !descriptor.threshold_params.iter().any(|(p, _)| p == key),
+                "{}/{}/{}: pin {key:?} names a threshold-coupled param",
+                target.hardware,
+                target.model,
+                entry.gate
+            );
+            let spec = specs
+                .iter()
+                .find(|s| s.key == key.as_str())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}/{}/{}: pin {key:?} names no schema parameter",
+                        target.hardware, target.model, entry.gate
+                    )
+                });
+            spec.kind.parse(raw).unwrap_or_else(|e| {
+                panic!(
+                    "{}/{}/{}: pin {key}={raw} does not parse: {e:#}",
+                    target.hardware, target.model, entry.gate
+                )
+            });
+        }
+    }
+}

@@ -7,9 +7,11 @@
 //! generation knob is PINNED so that two runs are comparable by construction,
 //! and the one number it reports — the MEDIAN server decode rate across three
 //! runs — is judged against a committed BENCH.toml threshold under
-//! `--pull-request-gate`. A promotion candidate (`gate::coverage::
-//! PROMOTION_CANDIDATES`), not REQUIRED: promotion waits on a >=10-run sigma
-//! calibration of the floor.
+//! `--pull-request-gate`. REQUIRED (`gate::coverage::REQUIRED`) since
+//! 2026-08-15: the promotion precondition — a >=10-run sigma calibration of
+//! the floor on the gate's own instrument — was met by the 12-run set (mean
+//! 28.03 tok/s, sigma ~0.05, every run 28.0-28.1), and the BENCH.toml floor
+//! is set from it.
 //!
 //! # The pins (the benchmark's definition, not parameters)
 //!
@@ -34,7 +36,8 @@
 //! makes the run INCONCLUSIVE (rendered as a failing verdict, like the video
 //! gate's — a run that measured nothing must not read as green):
 //!
-//! * every run's `completion_tokens >= 1200` (of the 1500 cap);
+//! * every run's `completion_tokens >= 800` (of the 1500 cap — the calibrated
+//!   instrument's deterministic natural stop is 915, see `MIN_OUTPUT_TOKENS`);
 //! * every run reports the server decode rate (`usage."response_token/s"`);
 //! * `accept_len_mean >= 1.5`, derived from
 //!   `usage.completion_tokens_details.accepted_prediction_tokens` — the
@@ -76,12 +79,12 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              MEDIAN server decode rate (usage.\"response_token/s\"), judged against the \
              BENCH.toml floor under --pull-request-gate. Vacuity pins make the run \
              INCONCLUSIVE rather than PASS when it measured nothing: every run must emit \
-             >=1200 of the 1500-token budget, report the server rate, and show \
-             accept_len_mean >= 1.5 derived from \
-             usage.completion_tokens_details.accepted_prediction_tokens (requires the \
-             accept-stats instrumentation; a serve that is not speculating cannot pass this \
-             gate's floor honestly). A PROMOTION CANDIDATE: runs as debt on release cuts; \
-             REQUIRED status waits on a >=10-run sigma calibration.",
+             >=800 of the 1500-token budget (the calibrated instrument's natural stop is a \
+             deterministic 915), report the server rate, and show accept_len_mean >= 1.5 \
+             derived from usage.completion_tokens_details.accepted_prediction_tokens \
+             (requires the accept-stats instrumentation; a serve that is not speculating \
+             cannot pass this gate's floor honestly). REQUIRED since 2026-08-15, promoted \
+             on the 12-run sigma calibration (mean 28.03 tok/s, sigma ~0.05).",
     duration_hint: "~3–6 min",
     updated: "2026-08-15",
     // The floor in BENCH.toml is measured on the dense Qwen3.8-27B NVFP4
@@ -89,14 +92,14 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // that family has a committed baseline to judge against.
     intended_for: Some(ModelExpectation {
         families: &["qwen3.8-27b"],
-        note: "The decode floor is recorded for unsloth/Qwen3.8-27B-NVFP4 (n=3 basis, \
-               2026-08-15). Other checkpoints run fine but have no committed floor to be \
-               judged against — a number with no baseline gates nothing.",
+        note: "The decode floor is recorded for unsloth/Qwen3.8-27B-NVFP4 (12-run sigma \
+               calibration, 2026-08-15). Other checkpoints run fine but have no committed \
+               floor to be judged against — a number with no baseline gates nothing.",
     }),
     // Under --pull-request-gate `min_tok_s` is auto-filled from the variant's
     // BENCH.toml floor, so a Measured run self-verdicts PASS/FAIL (see
-    // `verdict_for`) — required the day this gate is promoted to REQUIRED,
-    // since gate machinery accepts nothing short of a PASS run verdict.
+    // `verdict_for`) — load-bearing now that this gate is REQUIRED, since
+    // gate machinery accepts nothing short of a PASS run verdict.
     threshold_params: &[("min_tok_s", "server_decode_tok_s")],
     needs_confirmation: false,
     ctor: || Box::new(DecodeFloor::default()),

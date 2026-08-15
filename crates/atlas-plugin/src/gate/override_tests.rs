@@ -174,3 +174,97 @@ fn a_record_with_a_different_pin_value_fails() {
         "{problems:?}"
     );
 }
+
+// ── Baseline PARAM pins on the record (param_overrides) ─────────────────────
+
+fn baseline_with_param_pin(key: &str, value: &str) -> crate::gate::GateBaseline {
+    let mut baseline = bfcl_baseline();
+    baseline
+        .hardware
+        .get_mut(TEST_HW)
+        .unwrap()
+        .models
+        .get_mut(MODEL)
+        .unwrap()
+        .param_overrides
+        .insert(key.into(), value.into());
+    baseline
+}
+
+/// A record measured WITHOUT a baseline-pinned parameter cannot cover the
+/// pinned instrument. BENCH.toml is outside the closure hash, so pinning the
+/// gate's ladder must not leave an old schema-default record reading green
+/// for an instrument it never ran — the same argument as the serve pins.
+#[test]
+fn a_record_missing_a_baseline_param_pin_fails() {
+    let baseline = baseline_with_param_pin("osl", "320");
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    let gate = GateRecord::from_run(
+        &run_record(metrics, Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    let problems = check_record(&gate, &baseline).expect("must fail");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("osl=320") && p.contains("missing")),
+        "{problems:?}"
+    );
+}
+
+/// A record carrying the pin at the pinned value scores its metrics exactly
+/// as before — and the comparison is whitespace-insensitive, because records
+/// render int lists as "1, 4, 8, 16" while pins are typed "1,4,8,16".
+#[test]
+fn a_record_with_the_baseline_param_pin_scores_and_list_rendering_matches() {
+    let baseline = baseline_with_param_pin("concurrencies", "1,4,8,16");
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    let mut record = run_record(metrics, Verdict::pass("ok"));
+    record
+        .params
+        .insert("concurrencies".into(), "1, 4, 8, 16".into());
+    let gate = GateRecord::from_run(
+        &record,
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    assert!(check_record(&gate, &baseline).is_none());
+}
+
+/// A record measured at some OTHER value fails naming both numbers — it ran
+/// a different instrument than the one the thresholds describe.
+#[test]
+fn a_record_with_a_different_param_pin_value_fails() {
+    let baseline = baseline_with_param_pin("osl", "320");
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".into(), 90.0);
+    let mut record = run_record(metrics, Verdict::pass("ok"));
+    record.params.insert("osl".into(), "128".into());
+    let gate = GateRecord::from_run(
+        &record,
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
+    let problems = check_record(&gate, &baseline).expect("must fail");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("osl=128") && p.contains("320")),
+        "{problems:?}"
+    );
+}

@@ -15,7 +15,18 @@ pub(crate) const RUNS: usize = 3;
 /// Output budget. PINNED at the measured basis (MinHeap 1500).
 pub(crate) const MAX_TOKENS: usize = 1500;
 /// Vacuity floor on every run's `completion_tokens`.
-pub(crate) const MIN_OUTPUT_TOKENS: usize = 1200;
+///
+/// ★ 800, not 1200 — recalibrated to the gate's own instrument at promotion
+/// (2026-08-15). The 12-run calibration (temp 0 / seed 0, this fixture)
+/// completes at a DETERMINISTIC 915 tokens of the 1500 budget: the model's
+/// natural stop for the MinHeap task, identical every run. The original 1200
+/// floor predated that measurement and would have made the calibrated
+/// instrument INCONCLUSIVE by construction — a gate that fails its own
+/// reference behaviour deterministically gates nothing. 800 keeps the pin's
+/// purpose (a 49-token burst can never read as a decode measurement) while
+/// sitting safely under the instrument's natural 915 with margin for small
+/// completion-length drift.
+pub(crate) const MIN_OUTPUT_TOKENS: usize = 800;
 /// Vacuity floor on the derived tokens-per-decode-step.
 pub(crate) const MIN_ACCEPT_LEN: f64 = 1.5;
 

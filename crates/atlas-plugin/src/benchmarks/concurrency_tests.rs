@@ -230,3 +230,165 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
     assert_eq!(m.get("min_completion_tokens"), Some(&0.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
 }
+
+// ---- self-verdict (C1 pattern, gate promotion 2026-08-15) -------------------
+
+use super::verdict::{Floors, sweep_verdict};
+use crate::result::VerdictKind;
+
+fn floors(c1: f64, c4: f64, c8: f64, c16: f64, peak: f64) -> Floors {
+    Floors {
+        per_c: vec![(1, c1), (4, c4), (8, c8), (16, c16)],
+        peak,
+    }
+}
+
+fn ladder(entries: &[(&str, f64)]) -> BTreeMap<String, f64> {
+    entries.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+}
+
+/// The calibrated ladder against its committed floors — the PASS the gate
+/// machinery requires now that the sweep is REQUIRED. The reason names every
+/// gated rung so the record reads as evidence, not a bare verdict.
+#[test]
+fn a_clean_sweep_that_clears_every_floor_passes() {
+    let m = ladder(&[
+        ("c1_aggregate_tok_s", 25.5),
+        ("c4_aggregate_tok_s", 47.5),
+        ("c8_aggregate_tok_s", 67.6),
+        ("c16_aggregate_tok_s", 98.9),
+        ("peak_aggregate_tok_s", 98.9),
+    ]);
+    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
+    for rung in ["C1", "C4", "C8", "C16", "peak"] {
+        assert!(v.reason.contains(rung), "{}", v.reason);
+    }
+}
+
+/// FAIL names the violating cell — and the comparison is the raw value
+/// against the floor, deliberately stricter than gate scoring's
+/// value + noise >= min.
+#[test]
+fn a_sweep_below_one_floor_fails_naming_the_cell() {
+    let m = ladder(&[
+        ("c1_aggregate_tok_s", 25.5),
+        ("c4_aggregate_tok_s", 47.5),
+        ("c8_aggregate_tok_s", 61.2),
+        ("c16_aggregate_tok_s", 98.9),
+        ("peak_aggregate_tok_s", 98.9),
+    ]);
+    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(v.reason.contains("C=8"), "{}", v.reason);
+    assert!(
+        v.reason.contains("61.2") && v.reason.contains("63.0"),
+        "{}",
+        v.reason
+    );
+    // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
+    let m = ladder(&[("c8_aggregate_tok_s", 63.0)]);
+    let v = sweep_verdict(&m, 1, 0, 0, 80.0, &floors(0.0, 0.0, 63.0, 0.0, 0.0));
+    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
+}
+
+/// Floors all zero (the schema default) keep the pre-gate info verdicts, both
+/// arms verbatim: a standalone sweep has no committed ladder to be judged
+/// against.
+#[test]
+fn all_floors_zero_keeps_the_info_verdicts() {
+    let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
+    let clean = sweep_verdict(&m, 4, 0, 0, 80.0, &Floors::default());
+    assert_eq!(clean.kind, VerdictKind::Info, "{}", clean.reason);
+    assert!(
+        clean.reason.contains("no request errors"),
+        "{}",
+        clean.reason
+    );
+    let vac = sweep_verdict(&m, 4, 0, 2, 80.0, &Floors::default());
+    assert_eq!(vac.kind, VerdictKind::Info, "{}", vac.reason);
+    assert!(vac.reason.contains("not comparable"), "{}", vac.reason);
+}
+
+/// ★ Vacuous cells can NEVER pass a gating sweep, whatever the numbers say:
+/// the aggregate divides undelivered tokens' wall time into real tokens. This
+/// is the rule the floors cannot override.
+#[test]
+fn vacuous_cells_fail_a_gating_sweep_regardless_of_the_floors() {
+    let m = ladder(&[
+        ("c1_aggregate_tok_s", 999.0),
+        ("c4_aggregate_tok_s", 999.0),
+        ("c8_aggregate_tok_s", 999.0),
+        ("c16_aggregate_tok_s", 999.0),
+        ("peak_aggregate_tok_s", 999.0),
+    ]);
+    let v = sweep_verdict(&m, 4, 0, 1, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
+    assert!(v.reason.contains("vacuity floor"), "{}", v.reason);
+}
+
+/// A gated rung the sweep never measured comparably must not pass by
+/// omission: the floor demands the measurement itself.
+#[test]
+fn a_gated_rung_with_no_comparable_cell_fails_as_inconclusive() {
+    // C=16 gated but absent from the metrics (its only cell was excluded).
+    let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
+    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 94.0, 0.0));
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(v.reason.contains("C=16"), "{}", v.reason);
+    assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
+    // Same for the peak floor.
+    let v = sweep_verdict(&m, 4, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 0.0, 94.0));
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(v.reason.contains("peak"), "{}", v.reason);
+}
+
+/// Request errors fail the sweep gating or not — an errored cell's numbers
+/// are not comparable, and the floors cannot buy them back.
+#[test]
+fn request_errors_fail_the_sweep_in_both_modes() {
+    let m = ladder(&[("c1_aggregate_tok_s", 999.0)]);
+    for f in [Floors::default(), floors(24.0, 43.0, 63.0, 94.0, 94.0)] {
+        let v = sweep_verdict(&m, 4, 2, 0, 80.0, &f);
+        assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+        assert!(v.reason.contains("2 request(s) failed"), "{}", v.reason);
+    }
+}
+
+/// The descriptor couples each floor param to the metric its BENCH.toml bound
+/// is written on, every param exists in the schema with the documented OFF
+/// default, and `configure` carries the values into the verdict floors.
+#[test]
+fn the_floor_params_are_wired_to_the_gate() {
+    assert_eq!(
+        DESCRIPTOR.threshold_params,
+        [
+            ("min_c1", "c1_aggregate_tok_s"),
+            ("min_c4", "c4_aggregate_tok_s"),
+            ("min_c8", "c8_aggregate_tok_s"),
+            ("min_c16", "c16_aggregate_tok_s"),
+            ("min_peak", "peak_aggregate_tok_s"),
+        ]
+    );
+    let mut b = ConcurrencySweep::default();
+    let specs = b.parameters();
+    for (param, _) in DESCRIPTOR.threshold_params {
+        assert!(
+            specs.iter().any(|s| s.key == *param),
+            "{param} declared but missing from the schema"
+        );
+    }
+    let mut v = ParamValues::defaults(&specs);
+    b.configure(&v).unwrap();
+    assert!(!b.floors.gating(), "defaults must not gate");
+    v.set("min_c8", ParamValue::Float(63.0));
+    v.set("min_peak", ParamValue::Float(94.0));
+    b.configure(&v).unwrap();
+    assert!(b.floors.gating());
+    assert_eq!(
+        b.floors.per_c,
+        vec![(1, 0.0), (4, 0.0), (8, 63.0), (16, 0.0)]
+    );
+    assert_eq!(b.floors.peak, 94.0);
+}

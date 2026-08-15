@@ -44,11 +44,11 @@ fn three_healthy_runs_measure_the_median() {
 #[test]
 fn min_output_tokens_is_the_worst_run_not_the_mean() {
     let mut samples = [healthy(30.0), healthy(30.0), healthy(30.0)];
-    samples[1].completion_tokens = 1200; // exactly at the floor: still valid
+    samples[1].completion_tokens = MIN_OUTPUT_TOKENS; // exactly at the floor: still valid
     match evaluate(&samples) {
         Evaluation::Measured {
             min_output_tokens, ..
-        } => assert_eq!(min_output_tokens, 1200),
+        } => assert_eq!(min_output_tokens, MIN_OUTPUT_TOKENS),
         other => panic!("expected Measured, got {other:?}"),
     }
 }
@@ -58,13 +58,40 @@ fn min_output_tokens_is_the_worst_run_not_the_mean() {
 #[test]
 fn output_floor_is_inclusive_and_one_below_is_inconclusive() {
     let mut samples = [healthy(30.0), healthy(30.0), healthy(30.0)];
-    samples[2].completion_tokens = MIN_OUTPUT_TOKENS - 1; // 1199
+    samples[2].completion_tokens = MIN_OUTPUT_TOKENS - 1; // 799
     match evaluate(&samples) {
         Evaluation::Inconclusive(why) => {
             assert!(why.contains("run 3"), "{why}");
-            assert!(why.contains("1199"), "{why}");
+            assert!(why.contains(&(MIN_OUTPUT_TOKENS - 1).to_string()), "{why}");
         }
-        other => panic!("a 1199-token run must be inconclusive, got {other:?}"),
+        other => panic!("a one-below-the-floor run must be inconclusive, got {other:?}"),
+    }
+}
+
+/// ★ The calibrated instrument itself must MEASURE, never INCONCLUSIVE: the
+/// 12-run promotion basis completes at a deterministic 915 tokens (natural
+/// stop of the MinHeap task at temp 0 / seed 0), and the pre-calibration
+/// 1200 floor failed exactly that. A vacuity pin that deterministically
+/// rejects the gate's own reference behaviour gates nothing.
+#[test]
+fn the_calibration_instruments_915_token_stop_is_a_measurement() {
+    let run = RunObs {
+        completion_tokens: 915,
+        server_tps: Some(28.0),
+        accepted_prediction_tokens: Some(569),
+        e2e_ms: 33_000.0,
+    };
+    let samples = [run.clone(), run.clone(), run];
+    match evaluate(&samples) {
+        Evaluation::Measured {
+            median_decode_tok_s,
+            min_output_tokens,
+            ..
+        } => {
+            assert_eq!(median_decode_tok_s, 28.0);
+            assert_eq!(min_output_tokens, 915);
+        }
+        other => panic!("the calibration fingerprint must measure, got {other:?}"),
     }
 }
 
@@ -246,7 +273,9 @@ fn the_floor_param_is_wired_to_the_gate() {
 fn the_pins_are_the_documented_fingerprint() {
     assert_eq!(RUNS, 3);
     assert_eq!(MAX_TOKENS, 1500);
-    assert_eq!(MIN_OUTPUT_TOKENS, 1200);
+    // 800 since the 2026-08-15 promotion calibration: the instrument's
+    // deterministic natural stop is 915, and the pin must sit under it.
+    assert_eq!(MIN_OUTPUT_TOKENS, 800);
     assert_eq!(MIN_ACCEPT_LEN, 1.5);
     assert!(MINHEAP_PROMPT.contains("MinHeap"));
 }
