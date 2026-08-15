@@ -133,21 +133,28 @@ pub const TURNS: [&str; 4] = [
 /// check reads are an Atlas-specific courtesy, and running the gate against
 /// a contract-faithful server would silently zero both.
 ///
-/// Plain greedy body — thinking is LEFT ON (the flagship recipe's default);
-/// nothing about thinking needs overriding here.
-///
-/// The reference round failing its anchors on 2026-08-15 ("missing ACK 7741-C",
-/// "got 1 line not 3") looked like a thinking-budget artifact, and two thinking
-/// -off attempts were tried and both failed — because thinking was never the
-/// cause. The real bug was in the STREAMING content path: `strip_orphan_tool
-/// _markup` ran `.trim_end()` per delta, deleting any delta that was entirely
-/// trailing whitespace — including Qwen's standalone space token before a digit
-/// (" 7" -> "") and the `\n\n` between numbered lines. So the model's correct
-/// "ACK 7741-C ... 7" streamed as "ACK7741-C ... 7" and "1\n2\n3" collapsed to
-/// one line, exactly the two anchors that failed. Fixed in
-/// `api/strip.rs` (trim only when an opener is actually cut); this probe needs
-/// no thinking change. Regression from #473 (680b3a568), exposed by #513's
-/// strict anchors.
+/// Plain greedy body. The gate run pins TWO things via the serve config, both
+/// required, established empirically 2026-08-15 (12/12 replays byte-identical
+/// only with both):
+///   1. the STREAMING content bug fixed in `api/strip.rs` — `strip_orphan_tool
+///      _markup` ran `.trim_end()` per delta, deleting any delta that was
+///      entirely trailing whitespace: Qwen's standalone space token before a
+///      digit (" 7" -> "") and the `\n\n` between numbered lines. The model's
+///      correct "ACK 7741-C … 7" streamed as "ACK7741-C … 7" and "1\n2\n3"
+///      collapsed to one line — turns 1-2's anchors. (#473/680b3a568 regression,
+///      exposed by #513's strict anchors.)
+///   2. thinking OFF via `--serve-override disable_thinking=true`. Even with the
+///      streaming bug fixed, thinking-ON burns the 768-token budget then
+///      truncates turns 2-3 (finish_reason=length) and over-produces (turn 2
+///      gave 5 numbered lines, not 3). The gate wants deterministic terse
+///      replies, so it disables thinking through the serve-flag path BFCL uses
+///      (NOT the per-request `chat_template_kwargs.enable_thinking:false`, which
+///      degenerates to a 2-token stop on qwen3_6_moe). The shared bf16head
+///      recipe carries `disable_thinking: false` in its defaults precisely so
+///      this override is accepted; the other gates sharing it keep thinking on.
+/// Nothing under test is lost by thinking-off: the gate polices the PREFILL
+/// restore of the shared document prefix; thinking tokens are post-prefill
+/// output the template strips from replayed history.
 pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -> Value {
     json!({
         "model": model,
