@@ -164,6 +164,9 @@ pub struct Bfcl {
     /// floor rides on the Qwen3.6-27B submission checkpoints and does not
     /// transfer to other weights (BENCH.toml doctrine).
     target_model: Option<String>,
+    /// Baseline floors for non-MLPerf checkpoints (`report::BaselineMins`) —
+    /// gate-filled from the variant's BENCH.toml; both 0.0 = info verdict.
+    baseline_mins: report::BaselineMins,
 }
 
 impl Bfcl {
@@ -185,6 +188,7 @@ impl Bfcl {
             started: None,
             tool_call_samples: 0,
             target_model: None,
+            baseline_mins: report::BaselineMins::default(),
         }
     }
 
@@ -296,7 +300,7 @@ impl Benchmark for Bfcl {
 
     fn parameters(&self) -> Vec<ParamSpec> {
         let v = self.variant;
-        vec![
+        let mut specs = vec![
             ParamSpec::new(
                 "non_live_pct",
                 "non_live %",
@@ -361,7 +365,9 @@ impl Benchmark for Bfcl {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
-        ]
+        ];
+        specs.extend(report::BaselineMins::specs());
+        specs
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
@@ -385,6 +391,7 @@ impl Benchmark for Bfcl {
         self.max_new_tokens = values.usize("max_new_tokens")?;
         self.temperature = values.float("temperature")?;
         self.request_timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        self.baseline_mins = report::BaselineMins::from_values(values)?;
         self.phase = Phase::Provision;
         self.cursor = 0;
         self.responses.clear();

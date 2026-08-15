@@ -22,6 +22,20 @@ pub const SUBSET_METADATA: PluginMetadata = PluginMetadata::atlas(SUBSET_SUMMARY
 pub const FULL_METADATA: PluginMetadata = PluginMetadata::atlas(FULL_SUMMARY);
 pub const ECHOLP_METADATA: PluginMetadata = PluginMetadata::atlas(ECHOLP_SUMMARY);
 
+/// The baseline-coupled verdict params both GATED draws share: under
+/// `--pull-request-gate` each is auto-filled from the selected variant's own
+/// BENCH.toml `min` bound (`bench_resolve::apply_threshold_params`), so a
+/// non-MLPerf checkpoint that clears its committed bars gets a PASS verdict —
+/// which the gate machinery requires (`GateRecord::verdict_passes`) — instead
+/// of the info verdict that used to read red. Both draws gate on the same two
+/// metric names; their BARS differ per variant, which is exactly why these are
+/// threshold params and not schema constants. `bfcl-full` is not a gate and
+/// deliberately declares none.
+const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &[
+    ("min_overall", "overall_accuracy"),
+    ("min_normalized", "normalized_single_turn_score"),
+];
+
 pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "bfcl-subset",
     name: "BFCL (subset)",
@@ -52,7 +66,10 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                and inherits neither 3.6's floors nor the MLPerf floor). Scores on any \
                other checkpoint have no recorded baseline to beat.",
     }),
-    threshold_params: &[],
+    // Under --pull-request-gate the run's own verdict is judged against the
+    // selected variant's committed BENCH.toml floors (min bounds), not the
+    // MLPerf floor — which gates only the submission checkpoints (report.rs).
+    threshold_params: GATE_THRESHOLD_PARAMS,
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
@@ -106,6 +123,8 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                high-water). The dense 27B is gated on the golden n=995 draw instead — do not \
                cross the two, the category mix alone moves normalized by ~1.8 points.",
     }),
-    threshold_params: &[],
+    // Same two gating metrics as the golden draw (its BENCH.toml entry bounds
+    // overall_accuracy and normalized_single_turn_score), different bars.
+    threshold_params: GATE_THRESHOLD_PARAMS,
     ctor: || Box::new(Bfcl::new(Variant::SubsetEcholp)),
 };

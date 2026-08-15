@@ -4,6 +4,7 @@
 //! is provable without an endpoint — which is the point: the vacuity pins are
 //! the gate's honesty, and each one gets a test that fails if it is removed.
 
+use super::score::*;
 use super::*;
 
 /// A healthy run at the measured basis: full-ish budget, server rate present,
@@ -162,6 +163,81 @@ fn a_missing_server_rate_is_inconclusive() {
         }
         other => panic!("expected Inconclusive, got {other:?}"),
     }
+}
+
+// ── The run verdict vs the baseline floor (review C1) ───────────────────────
+
+fn measured(median: f64) -> Evaluation {
+    Evaluation::Measured {
+        median_decode_tok_s: median,
+        min_output_tokens: 1450,
+        accept_len_mean: 1.93,
+    }
+}
+
+/// With the gate-filled floor set, a Measured run self-verdicts PASS/FAIL —
+/// the PASS the gate machinery requires the day this gate is promoted to
+/// REQUIRED. The comparison is the raw median >= min, deliberately stricter
+/// than gate scoring's value + noise >= min (see `verdict_for`).
+#[test]
+fn a_measured_run_self_verdicts_against_the_floor_param() {
+    use crate::result::VerdictKind;
+    let v = verdict_for(&measured(30.5), 29.0);
+    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
+    assert!(
+        v.reason.contains("30.5") && v.reason.contains("29.0"),
+        "{}",
+        v.reason
+    );
+
+    let v = verdict_for(&measured(28.5), 29.0);
+    assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+    assert!(v.reason.contains("BELOW THE DECODE FLOOR"), "{}", v.reason);
+    assert!(
+        v.reason.contains("28.5") && v.reason.contains("29.0"),
+        "{}",
+        v.reason
+    );
+
+    // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
+    assert_eq!(verdict_for(&measured(29.0), 29.0).kind, VerdictKind::Pass);
+}
+
+/// Floor 0 (the schema default) keeps today's info verdict: a standalone run
+/// has no committed floor to be judged against.
+#[test]
+fn no_floor_param_keeps_the_info_verdict() {
+    use crate::result::VerdictKind;
+    let v = verdict_for(&measured(30.5), 0.0);
+    assert_eq!(v.kind, VerdictKind::Info, "{}", v.reason);
+    assert!(v.reason.contains("--pull-request-gate"), "{}", v.reason);
+}
+
+/// Vacuity stays INCONCLUSIVE (a failing verdict) no matter what the floor
+/// param says — a run that measured nothing must never PASS, even one whose
+/// pins failed on a healthy-looking median.
+#[test]
+fn vacuous_runs_stay_inconclusive_regardless_of_the_floor_param() {
+    use crate::result::VerdictKind;
+    let eval = Evaluation::Inconclusive("accept_len_mean 1.10 < 1.5".to_string());
+    for floor in [0.0, 29.0] {
+        let v = verdict_for(&eval, floor);
+        assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
+        assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
+    }
+}
+
+/// The descriptor couples the floor param to the metric the BENCH.toml bound
+/// is written on, and the schema default is the documented OFF state.
+#[test]
+fn the_floor_param_is_wired_to_the_gate() {
+    assert_eq!(
+        DESCRIPTOR.threshold_params,
+        [("min_tok_s", "server_decode_tok_s")]
+    );
+    let b = DecodeFloor::default();
+    let v = ParamValues::defaults(&b.parameters());
+    assert_eq!(v.float("min_tok_s").unwrap(), 0.0);
 }
 
 // ── The pinned request and the plumbing around it ───────────────────────────

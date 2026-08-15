@@ -127,6 +127,59 @@ fn choosing_the_dense_variant_adopts_model_and_wall_budget() {
     assert_eq!(s.edit[model_row], "unsloth/Qwen3.8-27B-NVFP4");
 }
 
+/// The `min` arm of the bound selection, mirrored from
+/// `bench_resolve::apply_threshold_params`: BFCL's verdict floors pair with
+/// metrics whose baselines declare `min` bounds, and choosing a variant
+/// adopts them exactly like the agentic ceiling adopts its `max`.
+#[test]
+fn choosing_a_bfcl_variant_adopts_its_baseline_floors() {
+    let bound = |min, max| gate::Bound {
+        min,
+        max,
+        noise: None,
+    };
+    let state_with = |overall: gate::Bound| {
+        let mut s = BenchState::default();
+        s.target = atlas_plugin::TargetEndpoint::local(8888, "test-model");
+        let index = atlas_plugin::registry::all()
+            .iter()
+            .position(|d| d.id == "bfcl-subset")
+            .expect("registered");
+        s.select(index);
+        s.variants = vec![VariantRow {
+            hardware: "gb10".into(),
+            checkpoint: "unsloth/Qwen3.8-27B-NVFP4".into(),
+            title: "dense 3.8".into(),
+            recipe: Some("qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl".into()),
+            is_default: true,
+            note: String::new(),
+            metrics: vec![
+                ("overall_accuracy".into(), overall),
+                (
+                    "normalized_single_turn_score".into(),
+                    bound(Some(83.72), None),
+                ),
+            ],
+        }];
+        s.choose_variant(0);
+        s
+    };
+
+    let s = state_with(bound(Some(83.82), None));
+    assert_eq!(s.values.float("min_overall").unwrap(), 83.82);
+    assert_eq!(s.values.float("min_normalized").unwrap(), 83.72);
+
+    // A metric declaring BOTH bounds is ambiguous: adopt neither, keep the
+    // schema default (0 = non-gating) rather than guessing a direction.
+    let s = state_with(bound(Some(83.82), Some(90.0)));
+    assert_eq!(
+        s.values.float("min_overall").unwrap(),
+        0.0,
+        "ambiguous bound adopts nothing"
+    );
+    assert_eq!(s.values.float("min_normalized").unwrap(), 83.72);
+}
+
 /// The default variant keeps the schema default — 1000 is both, so choosing it
 /// must not perturb the recorded 35B behaviour.
 #[test]

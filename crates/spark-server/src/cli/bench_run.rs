@@ -281,7 +281,7 @@ async fn run(args: RunArgs) -> Result<i32> {
     // verdict reads (an explicit --param still wins) — see
     // `apply_threshold_params` for the precedence and why.
     if let Some(s) = &served {
-        for (param, max) in super::bench_resolve::apply_threshold_params(
+        for (param, bound) in super::bench_resolve::apply_threshold_params(
             descriptor,
             &specs,
             &mut values,
@@ -289,7 +289,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             &args.params,
         )? {
             eprintln!(
-                "gate: {param} = {max} from the {} variant's baseline (not the schema default)",
+                "gate: {param} = {bound} from the {} variant's baseline (not the schema default)",
                 target.model
             );
         }

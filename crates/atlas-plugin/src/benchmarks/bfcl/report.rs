@@ -8,8 +8,11 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::Result;
+
 use super::Bfcl;
 use crate::benchmarks::bfcl::draw;
+use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::result::{Cell, CellStyle, Column, ResultTable, Stat, Verdict};
 
 /// MLPerf-edge `qwen3.6-27b` thresholds: the golden llama.cpp Q4_K_M reference
@@ -40,6 +43,64 @@ pub fn is_mlperf_submission_checkpoint(model: &str) -> bool {
     MLPERF_FLOOR_CHECKPOINTS
         .iter()
         .any(|c| c.eq_ignore_ascii_case(model))
+}
+
+/// The baseline floors a NON-MLPerf checkpoint's run verdict self-judges
+/// against — the `threshold_params` pair the gate auto-fills from the served
+/// variant's own BENCH.toml `min` bounds (descriptors.rs). 0.0 on both means
+/// not gating: a standalone run keeps the info verdict, because inventing a
+/// bar for weights with no committed baseline is the miscomparison the MLPerf
+/// scoping removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct BaselineMins {
+    pub overall: f64,
+    pub normalized: f64,
+}
+
+impl BaselineMins {
+    /// The two schema params, appended to the driver's `parameters()`.
+    // 0.0 default is the documented OFF state, not an implicit bar (PCND):
+    // standalone runs must stay info-verdicted, and the gate substitutes the
+    // real floors per variant.
+    pub(super) fn specs() -> [ParamSpec; 2] {
+        const PCT: ParamKind = ParamKind::Float {
+            min: 0.0,
+            max: 100.0,
+        };
+        [
+            ParamSpec::new(
+                "min_overall",
+                "Overall floor",
+                "Run-verdict floor on overall_accuracy. 0 disables (a standalone run reports \
+                 an info verdict); under --pull-request-gate this is auto-filled from the \
+                 selected variant's BENCH.toml `min` bound. Ignored on the MLPerf submission \
+                 checkpoints, which keep the MLPerf floor verdict.",
+                PCT,
+                ParamValue::Float(0.0),
+            ),
+            ParamSpec::new(
+                "min_normalized",
+                "Normalized floor",
+                "Run-verdict floor on normalized_single_turn_score. 0 disables (a standalone \
+                 run reports an info verdict); under --pull-request-gate this is auto-filled \
+                 from the selected variant's BENCH.toml `min` bound. Ignored on the MLPerf \
+                 submission checkpoints, which keep the MLPerf floor verdict.",
+                PCT,
+                ParamValue::Float(0.0),
+            ),
+        ]
+    }
+
+    pub(super) fn from_values(values: &ParamValues) -> Result<Self> {
+        Ok(Self {
+            overall: values.float("min_overall")?,
+            normalized: values.float("min_normalized")?,
+        })
+    }
+
+    fn gating(self) -> bool {
+        self.overall > 0.0 || self.normalized > 0.0
+    }
 }
 
 impl Bfcl {
@@ -131,21 +192,24 @@ impl Bfcl {
         let Some(s) = &self.scores else {
             return Verdict::info("not scored");
         };
-        floor_verdict(self.target_model.as_deref(), s)
+        floor_verdict(self.target_model.as_deref(), s, self.baseline_mins)
     }
 }
 
 /// The run-level verdict, scoped by served model.
 ///
 /// The MLPerf floor FAILS a run only on the submission checkpoints it was
-/// derived for. Any other checkpoint gets an INFO verdict that names its real
-/// judge — its own BENCH.toml thresholds under `--pull-request-gate` — instead
-/// of failing on an alien floor. An unknown model (no `load()` happened) is
-/// treated the same way: applying the floor to weights nobody identified is
-/// exactly the miscomparison this scoping removes.
+/// derived for. Any other checkpoint is judged against ITS OWN committed bars
+/// when the gate (or an operator) supplied them via `mins` — a PASS/FAIL the
+/// gate machinery can consume, since `GateRecord::verdict_passes` accepts
+/// nothing short of PASS. Without bars it gets an INFO verdict that names its
+/// real judge instead of failing on an alien floor. An unknown model (no
+/// `load()` happened) is treated the same way: applying the MLPerf floor to
+/// weights nobody identified is exactly the miscomparison this scoping
+/// removes.
 ///
 /// Pure so the scoping is unit-testable without a live endpoint.
-fn floor_verdict(target_model: Option<&str>, s: &super::Scores) -> Verdict {
+fn floor_verdict(target_model: Option<&str>, s: &super::Scores, mins: BaselineMins) -> Verdict {
     let detail = format!(
         "overall {:.2} (floor {MLPERF_FLOOR_OVERALL}) · normalized {:.2} (floor \
          {MLPERF_FLOOR_NORMALIZED}) · n={}",
@@ -159,6 +223,30 @@ fn floor_verdict(target_model: Option<&str>, s: &super::Scores) -> Verdict {
                 Verdict::pass(detail)
             } else {
                 Verdict::fail(format!("BELOW THE MLPERF-EDGE FLOOR — {detail}"))
+            }
+        }
+        // ★ Deliberately STRICTER than gate scoring: this compares the raw
+        // value >= min, while `gate::scoring` allows value + noise >= min. A
+        // sub-noise dip therefore fails the run verdict even though scoring
+        // would have passed it — safe conservatism (it can only re-run a
+        // healthy build, never green-light a regression), and it keeps the
+        // driver free of a second copy of the noise model.
+        _ if mins.gating() => {
+            let bars = format!(
+                "overall {:.2} (baseline min {:.2}) · normalized {:.2} (baseline min {:.2}) \
+                 · n={}",
+                s.overall_accuracy,
+                mins.overall,
+                s.normalized_single_turn_score,
+                mins.normalized,
+                s.total_samples
+            );
+            if s.overall_accuracy >= mins.overall
+                && s.normalized_single_turn_score >= mins.normalized
+            {
+                Verdict::pass(format!("{bars} — clears this checkpoint's committed bars"))
+            } else {
+                Verdict::fail(format!("BELOW THE BASELINE THRESHOLDS — {bars}"))
             }
         }
         Some(m) => Verdict::info(format!(

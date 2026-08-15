@@ -118,24 +118,41 @@ impl BenchState {
         self.variant_pinned = true;
         if let Some(descriptor) = self.descriptor() {
             for (param, metric) in descriptor.threshold_params {
-                let Some(max) = row
+                let Some(bound) = row
                     .metrics
                     .iter()
                     .find(|(k, _)| k == metric)
-                    .and_then(|(_, b)| b.max)
+                    .map(|(_, b)| b)
                 else {
                     continue;
+                };
+                // `max` if declared (a ceiling), else `min` (a floor); both at
+                // once is ambiguous and adopts nothing. ★ Textually parallel
+                // to `bench_resolve::apply_threshold_params` (CLI) — keep the
+                // two in step.
+                let derived = match (bound.min, bound.max) {
+                    (Some(min), Some(max)) => {
+                        tracing::warn!(
+                            "variant {}: metric {metric} declares BOTH min ({min}) and max \
+                             ({max}) — ambiguous for {param}, adopting neither",
+                            row.title
+                        );
+                        continue;
+                    }
+                    (None, Some(max)) => max,
+                    (Some(min), None) => min,
+                    (None, None) => continue,
                 };
                 let Some(pos) = self.specs.iter().position(|s| s.key == *param) else {
                     continue;
                 };
                 // Through the spec's own parser, exactly like a typed value —
                 // a derived number must not bypass the kind's bounds.
-                match self.specs[pos].kind.parse(&format!("{max}")) {
+                match self.specs[pos].kind.parse(&format!("{derived}")) {
                     Ok(value) => {
                         self.values.set(param.to_string(), value);
                         if let Some(buf) = self.edit.get_mut(pos) {
-                            *buf = format!("{max}");
+                            *buf = format!("{derived}");
                         }
                         self.errors.remove(*param);
                     }

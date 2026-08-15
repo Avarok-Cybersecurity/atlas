@@ -90,13 +90,21 @@ pub(super) fn resolve(
 /// `BENCH.toml` bound. Precedence is explicit and narrow:
 ///
 /// 1. an operator's `--param KEY=…` wins untouched — stated intent;
-/// 2. otherwise a `max` bound on the paired metric replaces the default;
+/// 2. otherwise the paired metric's bound replaces the default: `max` if the
+///    baseline declares one (a ceiling like the agentic Σ-wall), else `min`
+///    (a floor like the BFCL accuracies or the decode-rate floor). A paired
+///    metric carrying BOTH bounds is ambiguous — which one the driver should
+///    self-verdict against cannot be inferred — so that is a loud error, not
+///    a guess;
 /// 3. a variant with no such bound leaves the schema default standing.
 ///
 /// Returns what was applied so the caller can PRINT it — a run whose effective
 /// budget differs from the schema default must say where the number came from.
 /// Every applied value still lands in the record's `params`, so the record
 /// stays self-describing.
+///
+/// ★ `bench_variants::BenchState::choose_variant` (TUI) carries a textually
+/// parallel copy of this bound selection — keep the two in step.
 pub(super) fn apply_threshold_params(
     descriptor: &atlas_plugin::BenchmarkDescriptor,
     specs: &[atlas_plugin::ParamSpec],
@@ -109,8 +117,19 @@ pub(super) fn apply_threshold_params(
         if explicit.iter().any(|(k, _)| k == param) {
             continue;
         }
-        let Some(max) = entry.metrics.get(*metric).and_then(|b| b.max) else {
+        let Some(bound) = entry.metrics.get(*metric) else {
             continue;
+        };
+        let derived = match (bound.min, bound.max) {
+            (Some(min), Some(max)) => bail!(
+                "{} couples param {param:?} to metric {metric:?}, whose baseline bound \
+                 declares BOTH min ({min}) and max ({max}) — ambiguous: the driver cannot \
+                 tell which one to self-verdict against. Split the metric or drop a bound.",
+                descriptor.id
+            ),
+            (None, Some(max)) => max,
+            (Some(min), None) => min,
+            (None, None) => continue,
         };
         let spec = specs.iter().find(|s| s.key == *param).ok_or_else(|| {
             anyhow::anyhow!(
@@ -121,11 +140,11 @@ pub(super) fn apply_threshold_params(
         })?;
         // Through the spec's own parser, so the kind (and its bounds) cannot
         // be bypassed by this path any more than by a typed --param.
-        let value = spec.kind.parse(&format!("{max}")).with_context(|| {
-            format!("deriving --param {param} from the baseline's {metric} bound {max}")
+        let value = spec.kind.parse(&format!("{derived}")).with_context(|| {
+            format!("deriving --param {param} from the baseline's {metric} bound {derived}")
         })?;
         values.set(param.to_string(), value);
-        applied.push((param.to_string(), max));
+        applied.push((param.to_string(), derived));
     }
     Ok(applied)
 }

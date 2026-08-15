@@ -221,6 +221,76 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
     assert_eq!(values.float("wall_budget_s").unwrap(), 1000.0);
 }
 
+/// The `min` arm, through the REAL bfcl-subset wiring: a floor metric (BFCL's
+/// accuracies carry `min` bounds, no `max`) substitutes the variant's floor
+/// into the paired verdict param — this is what lets a non-MLPerf checkpoint
+/// that clears its own BENCH.toml bars get the PASS run verdict the gate
+/// machinery requires (review C1).
+#[test]
+fn threshold_params_substitute_a_min_bound_when_the_metric_is_a_floor() {
+    let descriptor = atlas_plugin::registry::find("bfcl-subset").expect("registered");
+    let specs = descriptor.build().parameters();
+    let mut entry =
+        two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
+    entry.metrics = BTreeMap::from([
+        ("overall_accuracy".to_string(), min_bound(83.82)),
+        ("normalized_single_turn_score".to_string(), min_bound(83.72)),
+    ]);
+    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let applied =
+        apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
+    assert_eq!(
+        applied,
+        vec![
+            ("min_overall".to_string(), 83.82),
+            ("min_normalized".to_string(), 83.72),
+        ]
+    );
+    assert_eq!(values.float("min_overall").unwrap(), 83.82);
+    assert_eq!(values.float("min_normalized").unwrap(), 83.72);
+}
+
+/// A paired metric declaring BOTH bounds is ambiguous — which one the driver
+/// should self-verdict against cannot be inferred — so the substitution errors
+/// loudly instead of guessing a direction.
+#[test]
+fn a_paired_metric_with_both_bounds_is_a_loud_error_not_a_guess() {
+    let descriptor = atlas_plugin::registry::find("agentic-webserver").expect("registered");
+    let specs = descriptor.build().parameters();
+    let mut entry =
+        two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
+    entry.metrics = BTreeMap::from([(
+        "sum_wall_s".to_string(),
+        Bound {
+            min: Some(900.0),
+            max: Some(2500.0),
+            noise: None,
+        },
+    )]);
+    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let err = apply_threshold_params(descriptor, &specs, &mut values, &entry, &[])
+        .expect_err("ambiguous bounds must not be resolved silently");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("BOTH min"), "{msg}");
+    assert!(msg.contains("sum_wall_s"), "{msg}");
+    // An explicit --param still wins over the ambiguity — stated intent needs
+    // no bound at all.
+    let explicit = vec![("wall_budget_s".to_string(), "1234".to_string())];
+    let mut values =
+        atlas_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")]).unwrap();
+    let applied = apply_threshold_params(descriptor, &specs, &mut values, &entry, &explicit)
+        .expect("explicit param sidesteps the ambiguous bound");
+    assert!(applied.is_empty());
+}
+
+fn min_bound(min: f64) -> Bound {
+    Bound {
+        min: Some(min),
+        max: None,
+        noise: None,
+    }
+}
+
 /// The ordinary case: KEY=VALUE reaches the recipe as an override.
 ///
 /// The motivating one, specifically — every gate recipe pins `kv_cache_dtype:
