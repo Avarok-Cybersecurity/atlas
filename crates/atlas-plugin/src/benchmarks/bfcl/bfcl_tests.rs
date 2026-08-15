@@ -62,9 +62,17 @@ fn scores(overall: f64, normalized: f64) -> Scores {
     }
 }
 
+/// The submission checkpoint, as `configured` cannot know it: verdict scoping
+/// reads the model captured at `load()`, which unit tests set directly.
+fn on_model(variant: Variant, model: &str) -> Bfcl {
+    let mut b = configured(variant);
+    b.target_model = Some(model.to_string());
+    b
+}
+
 #[test]
 fn the_verdict_gates_on_both_mlperf_floors() {
-    let mut b = configured(Variant::Subset);
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.6-27B-NVFP4");
 
     b.scores = Some(scores(87.44, 88.53));
     assert_eq!(b.verdict().kind, VerdictKind::Pass);
@@ -90,7 +98,7 @@ fn the_verdict_gates_on_both_mlperf_floors() {
 
 #[test]
 fn the_verdict_always_states_the_measured_values_and_the_floor() {
-    let mut b = configured(Variant::Subset);
+    let mut b = on_model(Variant::Subset, "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf");
     b.scores = Some(scores(87.44, 88.53));
     let reason = b.verdict().reason;
     assert!(reason.contains("87.44") && reason.contains("83.64"));
@@ -101,6 +109,86 @@ fn the_verdict_always_states_the_measured_values_and_the_floor() {
 fn an_unscored_run_is_info_not_a_pass() {
     let b = configured(Variant::Subset);
     assert_eq!(b.verdict().kind, VerdictKind::Info);
+}
+
+/// ★ The miscomparison the floor scoping removes: a healthy Qwen3.8 run at
+/// 84.22/84.12 — below the 3.6 floor, above nothing that applies to it — must
+/// NOT be verdicted FAIL on a floor derived for different weights. It is
+/// judged by its own BENCH.toml thresholds under --pull-request-gate, and the
+/// run verdict says so.
+#[test]
+fn a_qwen38_run_below_the_36_floor_is_not_failed_by_it() {
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.8-27B-NVFP4");
+    b.scores = Some(scores(84.22, 84.12));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Info, "{}", v.reason);
+    assert!(
+        v.reason.contains("judged by baseline thresholds"),
+        "{}",
+        v.reason
+    );
+    assert!(
+        !v.reason.contains("BELOW THE MLPERF-EDGE FLOOR"),
+        "{}",
+        v.reason
+    );
+    // The measured values and the reference floor still read out.
+    assert!(
+        v.reason.contains("84.22") && v.reason.contains("85.32"),
+        "{}",
+        v.reason
+    );
+}
+
+/// The scoping must not weaken the floor where it DOES apply: both submission
+/// checkpoints, either spelling case, still fail below 85.32 normalized.
+#[test]
+fn a_36_submission_run_below_the_floor_still_fails() {
+    for model in [
+        "unsloth/Qwen3.6-27B-NVFP4",
+        "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf",
+        "UNSLOTH/QWEN3.6-27B-NVFP4",
+    ] {
+        let mut b = on_model(Variant::Subset, model);
+        b.scores = Some(scores(90.0, 85.31));
+        let v = b.verdict();
+        assert_eq!(v.kind, VerdictKind::Fail, "{model}: {}", v.reason);
+        assert!(
+            v.reason.contains("BELOW THE MLPERF-EDGE FLOOR"),
+            "{}",
+            v.reason
+        );
+    }
+}
+
+/// An UNKNOWN served model is not silently floored either — failing weights
+/// nobody identified is the same miscomparison with less information.
+#[test]
+fn an_unknown_model_is_not_failed_by_the_floor() {
+    let mut b = configured(Variant::Subset);
+    b.scores = Some(scores(80.0, 80.0));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Info, "{}", v.reason);
+    assert!(
+        v.reason.contains("judged by baseline thresholds"),
+        "{}",
+        v.reason
+    );
+}
+
+/// The floor STYLING stays for every model — the summary tile styles against
+/// the floor as a visual reference even where the verdict no longer gates on
+/// it. Below-floor renders Bad, above-floor Good, on 3.8 exactly as on 3.6.
+#[test]
+fn floor_styling_is_kept_for_non_submission_checkpoints() {
+    use crate::result::CellStyle;
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.8-27B-NVFP4");
+    b.scores = Some(scores(84.22, 84.12));
+    let stats = b.summary();
+    let overall = &stats[0];
+    let normalized = &stats[1];
+    assert_eq!(overall.style, CellStyle::Good, "84.22 >= floor 83.64");
+    assert_eq!(normalized.style, CellStyle::Bad, "84.12 < floor 85.32");
 }
 
 #[test]
