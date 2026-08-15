@@ -576,3 +576,9 @@ fn duplicate_error_masks(tool_results: &[(usize, String)]) -> Vec<(usize, String
 #[cfg(test)]
 #[path = "msg_entry_tests.rs"]
 mod msg_entry_tests;
+
+// A sibling file rather than a module inside `msg_entry_tests.rs`: these cases
+// carried that file past the 500-LoC cap.
+#[cfg(test)]
+#[path = "msg_entry_media_order_tests.rs"]
+mod msg_entry_media_order_tests;
