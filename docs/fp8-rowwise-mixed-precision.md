@@ -193,6 +193,56 @@ microtest in the shape of PR #474's. Upside, not a blocker.
 Decode is still NVFP4 (unchanged tok/s above). A decode-side fold needs the
 per-row `w8a16_gemv` variant.
 
+## Measured decode, and the dispatch flags nobody sets
+
+**Decode**, 3 reps x 400 forced tokens (`ignore_eos`), spread ±0.02 tok/s:
+
+| config | decode |
+|---|---|
+| baseline (NVFP4 decode) | 5.26 tok/s |
+| `ATLAS_GDN_BF16_WEIGHTS=1` + cuBLASLt | 5.08 tok/s (−3.4%) |
+| `ATLAS_FP8_ROWWISE=1` (NVFP4 decode kept) | ~5.3, unchanged |
+
+The −3.4% is not the GEMM change: under the BF16 lever the DECODE weights are
+BF16 too, 4× NVFP4's bytes, and decode is bandwidth-bound. The row-wise fold
+keeps NVFP4 for decode and so keeps the decode rate — the one axis where it
+still wins, bought with +19 GB.
+
+An earlier 5.1-vs-5.3 figure in this doc came from a 49-token sample (the
+"count to 200" prompt stopped early); that was too small to separate from
+noise and is superseded by the table above.
+
+### Every CUTLASS / cuBLAS dispatch flag is OFF in all of these runs
+
+`GemmDispatch::from_env` turns each on only with `ATLAS_*=1`, and none were
+set — so `cublas_gemm`, `cutlass_gemm` and the whole `cutlass_nvfp4_*` family
+were false throughout. `fp8_blockscaled_prefill` is the one inverted default
+(on unless `ATLAS_FP8_SINGLE_SCALE=1`).
+
+That is not a flaw in the A/B: **the qwen3.6-27b and qwen3.8-27b serving
+recipes set no `ATLAS_*` either**, so this is exactly the config the gates and
+production run. The numbers are like-for-like.
+
+It does mean the absolute figures are the unflagged floor, and two things are
+worth measuring separately:
+
+* **The documented prefill stack for this family is GDN, not CUTLASS.** The
+  `qwen3.6/qwen3.6-27b-nvfp4-prefill-record` recipe pins
+  `ATLAS_FFN_NVFP4_MMQ=1`, `ATLAS_GDN_REGRESIDENT=1`, `ATLAS_GDN_FLASHINFER=1`
+  and `ATLAS_GDN_LIB=…/libatlasgdn.so`. FlashInfer-GDN is worth +17-20% there,
+  and it FAILS OPEN — without `ATLAS_GDN_LIB` and the CUTLASS DSL on
+  `LD_LIBRARY_PATH` it silently falls back, costing 40-50% of prefill at
+  concurrency, which C=1 cannot see.
+* **`cutlass_nvfp4_qkvz` is unmeasured on this target.** It would consume the
+  NVFP4 copy — i.e. the double-quantised weights — so it trades the precision
+  this branch is about for whatever the tuned kernel buys. Worth an A/B before
+  anyone assumes either way.
+
+The row-wise arm returns early and therefore SHADOWS those arms. That is
+deliberate (they all read the NVFP4 copy), but it now warns once when it
+shadows an enabled flag, so an operator whose CUTLASS setting silently did
+nothing finds out.
+
 ## Next steps, in order
 
 1. **Fix the stale `Fp8PerRow` doc comment** and add a `scale_format.expect(...)` at

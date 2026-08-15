@@ -72,6 +72,24 @@ impl Qwen3SsmLayer {
         // `force_bf16` still wins, so the `ATLAS_GDN_BF16_WEIGHTS` A/B lever
         // keeps working.
         if !force_bf16 && let Some(ref fp8w) = self.qkvz_fp8w_rowwise {
+            // This arm returns EARLY, so it shadows the CUTLASS / cuBLAS arms
+            // below. That is deliberate — its whole point is precision, and
+            // every arm it shadows consumes the NVFP4 copy, i.e. the
+            // double-quantised weights this exists to avoid — but an operator
+            // who set a CUTLASS flag and silently did not get it would have no
+            // way to tell. Say so, once.
+            if ctx.dispatch.cutlass_nvfp4_qkvz || ctx.dispatch.cutlass_gemm {
+                static SHADOW_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !SHADOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "ATLAS_FP8_ROWWISE is shadowing an enabled CUTLASS/cuBLAS QKVZ \
+                         prefill arm: the row-wise arm keeps the checkpoint's precision, \
+                         the shadowed arms would consume the re-quantised NVFP4 copy. \
+                         Unset ATLAS_FP8_ROWWISE to get the CUTLASS path back."
+                    );
+                }
+            }
             ops::cublas_bf16_proj(
                 ctx.gpu,
                 ctx.derived,
