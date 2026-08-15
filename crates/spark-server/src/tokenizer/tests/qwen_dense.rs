@@ -11,6 +11,10 @@
 //!     (md5 a7f294a5f0be5f1903214304f259f87f)
 //!   * `qwen3.8-27b-unsloth.jinja` — unsloth/Qwen3.8-27B-NVFP4
 //!     (md5 2a79880b328d0e0387c8ecb62c4c0c80)
+//!   * `qwen3.8-27b-official.jinja` — Qwen/Qwen3.8-27B-FP8
+//!     (md5 519239a4908bb1f805bbce5fa8c8a242). NOT a duplicate of the
+//!     unsloth one: it lacks the `high` -> `xhigh` effort remap, which is
+//!     the difference that 400s a thinking request on the official weights.
 //!   * `retired-qwen3_5-override-2026-04.jinja` — the byte-frozen
 //!     `jinja-templates/qwen3_5.jinja` override retired 2026-08-14, kept
 //!     only as the parity reference for the MLPerf-edge prompt bytes.
@@ -284,6 +288,87 @@ fn q38_explicit_efforts_render_their_sentences() {
     // Medium must not be demoted to "low" (different bytes).
     let r = render_fixture("qwen3.8-27b-unsloth", &msgs, Some(&tools), flags("medium")).unwrap();
     assert_eq!(r, with_history_think(Q36_GOLDEN));
+}
+
+/// ★ `reasoning_effort: "high"` on the UNSLOTH template — what
+/// `ir::ReasoningEffort::High` emits, and what an OpenAI-compatible client
+/// sends by default. Passes because unsloth's template remaps it.
+#[test]
+fn q38_unsloth_template_accepts_high_effort() {
+    let r = render_fixture(
+        "qwen3.8-27b-unsloth",
+        &fixture_messages(),
+        Some(&fixture_tools()),
+        RenderFlags {
+            enable_thinking: true,
+            reasoning_effort: Some("high"),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        r.expect("unsloth remaps high -> xhigh in-template"),
+        q38_golden(),
+        "high must render as xhigh does"
+    );
+}
+
+/// ★ THE OFFICIAL Qwen3.8 CHECKPOINT HAS NO `high` REMAP — the live 400
+/// reported 2026-08-15 from a chat UI with thinking on:
+///
+///   Tokenization error: Failed to render Jinja chat template: invalid
+///   operation: Unexpected reasoning effort high. Supported types are
+///   xhigh (default), medium, and low. (in chat:49)
+///
+/// The two 3.8 checkpoints ship DIFFERENT templates:
+///
+///   unsloth/Qwen3.8-27B-NVFP4  remaps 'high' -> 'xhigh' before validating
+///   Qwen/Qwen3.8-27B-FP8       validates ('xhigh','medium','low') directly
+///                              and raises — at line 49, matching the report
+///
+/// `ir::ReasoningEffort::High` renders as "high" and its doc asserts the
+/// template remaps it. That is true of unsloth's and FALSE of Qwen's own, so
+/// a client asking for high effort 400s on the official weights.
+///
+/// The mapping cannot simply become `High -> "xhigh"` globally: the Mistral
+/// template accepts `['none','high']` and rejects "xhigh". Effort resolution
+/// has to be per-model, which is why this is a red test rather than a
+/// one-line change — it pins the defect until that lands.
+#[test]
+fn q38_official_template_rejects_high_effort() {
+    let err = render_fixture(
+        "qwen3.8-27b-official",
+        &fixture_messages(),
+        Some(&fixture_tools()),
+        RenderFlags {
+            enable_thinking: true,
+            reasoning_effort: Some("high"),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Unexpected reasoning effort"),
+        "expected the official template's effort validator to fire, got: {err:#}"
+    );
+}
+
+/// …and the spellings it DOES accept render. This is the workaround until
+/// effort resolution is per-model: ask for xhigh / medium / low.
+#[test]
+fn q38_official_template_accepts_xhigh_medium_low() {
+    for effort in ["xhigh", "medium", "low"] {
+        let r = render_fixture(
+            "qwen3.8-27b-official",
+            &fixture_messages(),
+            Some(&fixture_tools()),
+            RenderFlags {
+                enable_thinking: true,
+                reasoning_effort: Some(effort),
+                ..Default::default()
+            },
+        );
+        assert!(r.is_ok(), "{effort} must render on the official template");
+    }
 }
 
 /// Negative test: the raw string "max" (the OLD `ReasoningEffort::Max`
