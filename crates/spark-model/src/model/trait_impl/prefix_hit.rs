@@ -83,6 +83,10 @@ mod tests {
                 !src.contains(LYING_HIT),
                 "{name} still logs a prefix-cache hit when SSM cannot restore"
             );
+            assert!(
+                src.contains("lookup_prefill_prefix"),
+                "{name} must go through the hybrid-aware lookup seam"
+            );
         }
     }
 }
