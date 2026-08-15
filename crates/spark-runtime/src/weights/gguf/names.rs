@@ -66,6 +66,11 @@ fn arch_override(gguf_name: &str, arch: &str) -> Option<GgufName> {
         // `post_attention_norm`; everything else (attn_q/k/v/output, q/k norms,
         // ffn_*, top-level tensors) matches the default translation.
         "qwen35" | "qwen3_5" => translate_qwen35_layer(gguf_name),
+        // Laguna-S-2.1 (`general.architecture = laguna`) — Qwen3-style hybrid
+        // full/sliding-attention MoE. Reuses the default attn/norm/ffn/router/
+        // expert-stack names; only the shared expert, the score-correction bias,
+        // and the attention output gate need special handling.
+        "laguna" => translate_laguna_layer(gguf_name),
         // NLLB-200 / M2M-100 encoder-decoder translation family. Names diverge
         // wholesale from the decoder-only default (two stacks `enc/dec.blk.N.*`,
         // tied `token_embd` → `model.shared`, cross-attention), so this arch is
@@ -277,6 +282,46 @@ fn translate_qwen35_layer(gguf_name: &str) -> Option<GgufName> {
     Some(GgufName::Direct(hf))
 }
 
+/// Laguna-S-2.1-specific per-layer overrides (`general.architecture = laguna`).
+///
+/// Laguna is a Qwen3-style hybrid full/sliding-attention MoE with a fused shared
+/// expert and a sigmoid router. Its attention (`attn_q/k/v/output`, per-head
+/// `attn_q/k_norm`), norms (`attn_norm`, `ffn_norm`), dense layer-0 FFN
+/// (`ffn_gate/up/down`), router (`ffn_gate_inp`) and stacked routed experts
+/// (`ffn_{gate,up,down}_exps`) all match the default translation, so only three
+/// tensors need an override; the rest return `None` and fall through.
+fn translate_laguna_layer(gguf_name: &str) -> Option<GgufName> {
+    let rest = gguf_name.strip_prefix("blk.")?;
+    let (n_str, sub) = rest.split_once('.')?;
+    let layer: usize = n_str.parse().ok()?;
+    let hf_sub = match sub {
+        // Per-head attention output gate. Atlas reads it as `self_attn.g_proj`
+        // (shape [n_heads, hidden]); `LagunaWeightLoader::load_attention`
+        // `validate_matrix`s it as REQUIRED, so it must map (not drop). The
+        // `Qwen3AttentionLayer::new_ungated` constructor name is about the norm
+        // path — the g_proj output gate is applied separately.
+        "attn_gate.weight" => "self_attn.g_proj",
+        // Fused shared expert (present on every MoE layer). Atlas keys it under
+        // `mlp.shared_expert.{gate,up,down}_proj`.
+        "ffn_gate_shexp.weight" => "mlp.shared_expert.gate_proj",
+        "ffn_up_shexp.weight" => "mlp.shared_expert.up_proj",
+        "ffn_down_shexp.weight" => "mlp.shared_expert.down_proj",
+        // Sigmoid-router score-correction bias. llama.cpp names it
+        // `exp_probs_b.bias`; Atlas keys it bare (no `.weight`/`.bias`) under
+        // `mlp.experts.e_score_correction_bias`.
+        "exp_probs_b.bias" => {
+            return Some(GgufName::Direct(format!(
+                "{HF_PREFIX}.layers.{layer}.mlp.experts.e_score_correction_bias"
+            )));
+        }
+        // Everything else falls through to the default translator.
+        _ => return None,
+    };
+    Some(GgufName::Direct(format!(
+        "{HF_PREFIX}.layers.{layer}.{hf_sub}.weight"
+    )))
+}
+
 /// The default (llama/qwen2/qwen3/gemma-family) name translation.
 fn translate_default(gguf_name: &str) -> Option<GgufName> {
     // ── Top-level (non-layer) tensors ──
@@ -399,3 +444,5 @@ pub fn expert_name(layer: usize, proj: &str, e: usize) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_laguna;

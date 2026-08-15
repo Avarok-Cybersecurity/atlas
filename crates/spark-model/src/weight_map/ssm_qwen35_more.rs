@@ -217,6 +217,7 @@ pub(crate) fn load_moe_minimax(
         experts,
         router_pre_norm: None,
         correction_bias: Some(correction_bias),
+        packed_experts: None,
     })
 }
 
@@ -391,5 +392,6 @@ pub(crate) fn load_moe_gemma4(
         experts,
         router_pre_norm,
         correction_bias: None,
+        packed_experts: None,
     })
 }

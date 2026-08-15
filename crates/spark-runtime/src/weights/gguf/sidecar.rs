@@ -58,15 +58,48 @@ pub fn open_gguf(path: &Path) -> Result<(std::fs::File, memmap2::Mmap, container
         std::fs::File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
     // SAFETY: same mmap contract as the safetensors loader.
     let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+    // NFS prefetch — the same mechanism the fast safetensors loader uses
+    // (`fast_weights::advise_prefetch_shard`): SEQUENTIAL (grow the readahead
+    // window + drop pages behind the read cursor) + WILLNEED (KICK OFF async
+    // readahead of the whole file NOW, rather than waiting for per-page demand
+    // faults). SEQUENTIAL alone only widens the window on faults — it does not
+    // trigger prefetch, so it barely moves NFS latency-bound loading (~300MB/s);
+    // WILLNEED streams at NFS bandwidth (~2GB/s). Memory stays bounded even for a
+    // single 71GB file: once WILLNEED warms the cache the consumer reads warm
+    // pages + copies to GPU faster than NFS delivers, so it PACES with the
+    // readahead (the cache gap stays small) while SEQUENTIAL drops pages behind
+    // the cursor. Best-effort: a failed advise never blocks the load.
+    advise_prefetch(&mmap);
     let gguf = container::GgufFile::parse(&mmap)
         .with_context(|| format!("Failed to parse GGUF container: {}", path.display()))?;
     Ok((file, mmap, gguf))
 }
 
+/// `madvise(SEQUENTIAL) + madvise(WILLNEED)` on a GGUF mmap, or nothing where
+/// the platform has no such call.
+///
+/// `memmap2::Advice` and `Mmap::advise` are `#[cfg(unix)]` in memmap2, so
+/// naming them unconditionally does not merely no-op on Windows — it fails to
+/// compile (E0433/E0599 on the `windows-x86_64-*` release-matrix targets).
+/// Two arms, the same shape as `fast_weights::advise_prefetch_shard`.
+#[cfg(unix)]
+fn advise_prefetch(mmap: &memmap2::Mmap) {
+    // Best-effort: a failed advise never blocks the load.
+    if let Err(e) = mmap.advise(memmap2::Advice::Sequential) {
+        tracing::debug!("madvise(SEQUENTIAL) on GGUF mmap failed (non-fatal): {e}");
+    }
+    if let Err(e) = mmap.advise(memmap2::Advice::WillNeed) {
+        tracing::debug!("madvise(WILLNEED) on GGUF mmap failed (non-fatal): {e}");
+    }
+}
+
+#[cfg(not(unix))]
+fn advise_prefetch(_mmap: &memmap2::Mmap) {}
+
 /// Sum the BF16 footprint of every tensor a pass will actually keep (i.e. that
 /// `names::translate` maps to a stored tensor, plus the clip patch-embed frames
 /// that are fused rather than name-mapped), for the pre-flight OOM estimate.
-pub fn est_bf16(gguf: &container::GgufFile, arch: &str) -> usize {
+pub fn est_bf16(gguf: &container::GgufFile, arch: &str, keep_packed_experts: bool) -> usize {
     let is_clip = value_transform::is_clip(arch);
     gguf.tensors
         .iter()
@@ -77,7 +110,24 @@ pub fn est_bf16(gguf: &container::GgufFile, arch: &str) -> usize {
                     None | Some(names::GgufName::Drop)
                 )
         })
-        .map(|t| t.num_elements() * WeightDtype::BF16.byte_size())
+        .map(|t| {
+            // Keep-packed MoE experts stay PACKED in VRAM, so size them at their
+            // real (block) footprint — otherwise the pre-flight sees the full
+            // ~219GB BF16 expansion and bails before the keep-packed path runs.
+            let id = t.ggml_type.id();
+            if keep_packed_experts
+                && (id == 12 || id == 14)
+                && matches!(
+                    names::translate(&t.name, arch),
+                    Some(names::GgufName::ExpertStack { .. })
+                )
+            {
+                let n_blocks = t.num_elements() / 256;
+                n_blocks * if id == 12 { 144 } else { 210 }
+            } else {
+                t.num_elements() * WeightDtype::BF16.byte_size()
+            }
+        })
         .sum()
 }
 
@@ -104,6 +154,12 @@ pub fn load_pass(
     native_q2: bool,
     q2_group: usize,
     q2_variant: container::Q2Group,
+    keep_packed_experts: bool,
+    // When `Some`, tensor DATA is read through the fast loader's shared O_DIRECT
+    // reader (`fast_weights::direct_io`) instead of demand-faulting mmap pages —
+    // the mmap is then used only for the (already-parsed) metadata. `None` keeps
+    // the pure-mmap path (mmproj sidecar, non-unix).
+    data_file: Option<&std::fs::File>,
     weights: &mut HashMap<String, WeightTensor>,
     skipped: &mut usize,
 ) -> Result<()> {
@@ -121,9 +177,39 @@ pub fn load_pass(
             .tensor_byte_size(tensor, q2_variant)
             .with_context(|| format!("byte-len for tensor {}", tensor.name))?;
         let start = gguf.tensor_abs_offset(tensor);
-        let raw = mmap
-            .get(start..start + raw_len)
-            .with_context(|| format!("tensor {} out of bounds in GGUF", tensor.name))?;
+        // Read this tensor's bytes: via the shared O_DIRECT reader when a data
+        // file is provided (fast on NFS), else borrow the mmap slice. The
+        // O_DIRECT read lands in an owned aligned buffer that must outlive `raw`,
+        // so it is held in `_direct` for the rest of the iteration.
+        #[cfg(unix)]
+        let _direct = match data_file {
+            Some(f) => {
+                use std::os::unix::io::AsRawFd;
+                Some(
+                    crate::fast_weights::direct_io::read_tensor_aligned(
+                        f.as_raw_fd(),
+                        start as u64,
+                        raw_len,
+                        true,
+                    )
+                    .with_context(|| format!("O_DIRECT read tensor {}", tensor.name))?,
+                )
+            }
+            None => None,
+        };
+        #[cfg(unix)]
+        let raw: &[u8] = match &_direct {
+            Some((buf, off)) => &buf.as_slice()[*off..*off + raw_len],
+            None => mmap
+                .get(start..start + raw_len)
+                .with_context(|| format!("tensor {} out of bounds in GGUF", tensor.name))?,
+        };
+        #[cfg(not(unix))]
+        let raw: &[u8] = {
+            let _ = data_file;
+            mmap.get(start..start + raw_len)
+                .with_context(|| format!("tensor {} out of bounds in GGUF", tensor.name))?
+        };
         let id = tensor.ggml_type.id();
 
         // Patch-embed temporal frames fan IN (many GGUF tensors → one HF tensor,
@@ -151,6 +237,23 @@ pub fn load_pass(
 
         // GGUF dims are ggml-order; Atlas/HF shape is the reverse.
         let hf_shape: Vec<usize> = tensor.dims.iter().rev().copied().collect();
+
+        // ── Keep-packed MoE expert stacks (Q4_K id 12 / Q6_K id 14) ──
+        // The routed experts ARE the whole 219GB-of-BF16 mass of Laguna-S-2.1
+        // Q4_K_M (48 layers × 256 × {gate,up,down}). Upload the raw stacked
+        // block buffer UNCHANGED and emit per-expert PACKED views at
+        // block-aligned offsets (144B/256 Q4_K, 210B/256 Q6_K) — no BF16
+        // expansion. This is what lets a 117B model fit on one 128GB GB10.
+        // `raw` is already the packed byte range (tensor_byte_size).
+        if keep_packed_experts
+            && (id == 12 || id == 14)
+            && let names::GgufName::ExpertStack { layer, proj } = &target
+        {
+            let ptr = gpu.alloc(raw.len())?;
+            gpu.copy_h2d(raw, ptr)?;
+            loader.emit_experts_packed(weights, ptr, &hf_shape, *layer, proj, id, skipped)?;
+            continue;
+        }
 
         // ── Native keep-packed Q2_0 short-circuit ──
         // When `ATLAS_GGUF_NATIVE_Q2=1`, upload the raw `block_q2_0` bytes for

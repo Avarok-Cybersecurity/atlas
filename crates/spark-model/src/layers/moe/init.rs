@@ -65,6 +65,19 @@ impl MoeLayer {
 
         let _ = num_experts;
         let rms_norm_k = gpu.kernel("norm", "rms_norm")?;
+        // Keep-packed Q4_K_M probes are issued only for layers that actually
+        // hold packed experts (see the field initializers below): the fail-
+        // closed kernel audit records every issued lookup, so probing on a
+        // non-packed model would demand [expected_absent] declarations on
+        // every MoE target for kernels its dispatch can never reach.
+        let packed_kernels = weights.packed_experts.is_some();
+        let q4k_probe = |module: &str, func: &str| -> KernelHandle {
+            if packed_kernels {
+                super::super::try_kernel(gpu, module, func)
+            } else {
+                KernelHandle(0)
+            }
+        };
         Ok(Self {
             weights,
             // Default: standard NVFP4 (FP8-E4M3 per-16 + f32 global). The
@@ -423,6 +436,24 @@ impl MoeLayer {
                 "moe_w4a16_down_t_k64_fp4",
             ),
             moe_permute_tokens_k: super::super::try_kernel(gpu, "moe", "moe_permute_tokens"),
+            // Keep-packed Q4_K_M expert kernels (Laguna GGUF). Probed ONLY when
+            // the layer actually holds packed experts, so a model that never
+            // installs packed weights issues no q4k lookups at all — the
+            // post-#388 fail-closed audit records every issued lookup, and an
+            // unconditional probe here would owe [expected_absent] entries on
+            // every MoE target (the #457 route-1 lesson). try_kernel: images
+            // without the modules stay at handle 0 and the packed arm is
+            // additionally handle-gated.
+            q4k_quant_act_k: q4k_probe("q4k_mmq", "atlas_q8_1_quantize_ds4_bf16"),
+            q4k_grouped_nc_k: q4k_probe("q4k_mmq", "atlas_q4k_mmq128_grouped_nc"),
+            q4k_grouped_wc_k: q4k_probe("q4k_mmq", "atlas_q4k_mmq128_grouped_wc"),
+            q6k_grouped_nc_k: q4k_probe("q4k_mmq", "atlas_q6k_mmq128_grouped_nc"),
+            q6k_grouped_wc_k: q4k_probe("q4k_mmq", "atlas_q6k_mmq128_grouped_wc"),
+            q4k_grouped_gate_up_nc_k: q4k_probe("q4k_mmq", "atlas_q4k_mmq128_grouped_gate_up_nc"),
+            q4k_grouped_gate_up_wc_k: q4k_probe("q4k_mmq", "atlas_q4k_mmq128_grouped_gate_up_wc"),
+            q4k_decode_gate_up_k: q4k_probe("moe_q4k_decode_fused", "atlas_moe_q4k_decode_gate_up"),
+            q4k_decode_down_k: q4k_probe("moe_q4k_decode_fused", "atlas_moe_q4k_decode_down"),
+            q4k_quant_act_d4_k: q4k_probe("q4k_mmq", "atlas_q8_1_quantize_d4_bf16"),
             // Phase 2.7 Tier C — set by loader after construction (qwen35.rs).
             is_dflash_capture_layer: false,
             lora: None,

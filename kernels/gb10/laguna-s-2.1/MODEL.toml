@@ -196,14 +196,8 @@ w4a4_gemm_mfast = """
 Shipped only in nemotron-labs-3-puzzle-75b-a9b. qwen3_attention::init
 probes it; opt-in, handle-gated. UNMEASURED."""
 
-[expected_absent.q4k_mmq]
-atlas_q4k_mmq128_nc = """
-Q4_K keep-packed MMQ (dense-FFN prefill for GGUF Q4_K checkpoints).
-DenseFfnLayer probes the family and gates every dispatch on handle != 0;
-a safetensors NVFP4 checkpoint never installs packed-Q4K weights, so the
-arm is unreachable here."""
-atlas_q4k_mmq128_wc = "Same family — unreachable without packed-Q4K weights."
-atlas_q8_1_quantize_ds4_bf16 = "MMQ-family activation quantizer; only reached from the Q4K MMQ arms above."
-
-[expected_absent.q4k_quantize]
-q4k_quantize = "Q4_K runtime quantizer probed by dense_ffn for GGUF paths; handle-gated, unreachable here."
+# The q4k_mmq / q4k_quantize [expected_absent] entries that used to live here
+# are gone on purpose: the Q4_K kernels moved to kernels/gb10/common/ (the
+# keep-packed GGUF Q4_K_M serving path needs them on THIS target), so the
+# lookups now RESOLVE here — a declaration would describe kernels as absent
+# that the build ships.

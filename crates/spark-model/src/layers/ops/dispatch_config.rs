@@ -50,6 +50,12 @@ pub struct GemmDispatch {
     pub cutlass_nvfp4_attn_kv: bool,
     pub cutlass_nvfp4_attn_o: bool,
     pub cutlass_nvfp4_ssm_out: bool,
+    /// Fused n=1 decode GEMV arm of the keep-packed GGUF MoE (Laguna Q4_K_M).
+    /// Default ON — it is the measured-fastest decode arm (14 → ~16.5 tok/s vs
+    /// the grouped MMQ at n=1) — with `ATLAS_PACKED_DECODE_FUSED=0` as the
+    /// kill-switch. Resolved once here so the per-layer dispatch branch is
+    /// stable for CUDA-graph capture (no env read in the forward pass).
+    pub packed_decode_fused: bool,
     /// `ATLAS_W4A16_VARIANT` — 1/2/3 pin a kernel variant, 0 = auto (v2).
     /// A dispatch decision like every other field here, so it belongs on the
     /// struct the forward pass already carries rather than in a `OnceLock`
@@ -76,6 +82,9 @@ impl GemmDispatch {
             },
             // Note the inverted sense: this one is on unless opted out.
             fp8_blockscaled_prefill: !on("ATLAS_FP8_SINGLE_SCALE"),
+            // Inverted sense too: default-on kill-switch (=0 disables).
+            packed_decode_fused: std::env::var("ATLAS_PACKED_DECODE_FUSED").ok().as_deref()
+                != Some("0"),
             cublas_gemm: on("ATLAS_CUBLAS_GEMM"),
             cublas_fp8: on("ATLAS_CUBLAS_FP8"),
             cutlass_gemm: on("ATLAS_CUTLASS_GEMM"),
@@ -97,6 +106,7 @@ impl GemmDispatch {
         Self {
             w4a16_variant: 0,
             fp8_blockscaled_prefill: true,
+            packed_decode_fused: true,
             cublas_gemm: false,
             cublas_fp8: false,
             cutlass_gemm: false,
@@ -133,6 +143,7 @@ mod tests {
     fn defaults_have_only_blockscaled_prefill_on() {
         let d = GemmDispatch::defaults();
         assert!(d.fp8_blockscaled_prefill, "on unless opted out");
+        assert!(d.packed_decode_fused, "default-on kill-switch");
         assert!(!d.cublas_gemm && !d.cutlass_gemm && !d.cutlass_nvfp4_gemm);
     }
 
