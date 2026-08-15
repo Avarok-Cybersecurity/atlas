@@ -421,7 +421,19 @@ impl ChatCompletionRequest {
         // Dropping the shorthand silently demoted every effort-level
         // request to the server/model default — including `"none"`,
         // which must force thinking OFF.
-        if let Some(effort) = self.body_reasoning_effort() {
+        if let Some(effort) = self.requested_reasoning_effort() {
+            // Best-of-both after the #514 merge: `requested_reasoning_effort`
+            // is the widest channel set (body + chat_template_kwargs), and the
+            // body below is the SSOT `parse_wire_effort` match that feeds BOTH
+            // the template directive and the budget directive, so the two
+            // halves can never disagree. Unknown spellings fall through as if
+            // ABSENT (they 400 earlier on the HTTP path); #514's parallel
+            // `_ => Medium` arm — which silently forced thinking ON at the
+            // Medium budget while the template rendered the xhigh directive
+            // (Trap C) — is superseded by that 400.
+            if let Some((_, directive)) = crate::ir::parse_wire_effort(effort) {
+                return directive;
+            }
             // Kept SYMBOLIC: the token budget for an effort level is
             // server policy, resolved in `api/chat/thinking.rs` against
             // the model's effective `max_thinking_budget` so MODEL.toml
