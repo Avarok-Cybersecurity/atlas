@@ -133,20 +133,21 @@ pub const TURNS: [&str; 4] = [
 /// check reads are an Atlas-specific courtesy, and running the gate against
 /// a contract-faithful server would silently zero both.
 ///
-/// `enable_thinking` is pinned OFF, same footing as temperature and seed.
-/// The flagship recipe serves thinking-on by default (MODEL.toml
-/// `thinking_default = true`, budget 768), and under that mode the script's
-/// contract is unanchoreable by construction: the budget forces `</think>`
-/// mid-reasoning and the derailed answer misses "reply with exactly one
-/// line" / "numbered 1 to 3" (measured 2026-08-15 — the reference round
-/// failed both anchors), while `max_tokens` was sized counting only the
-/// short answers, so a full think plus turn 4's paragraph runs into the
-/// budget the anchors reject. Nothing under test is lost: the gate polices
-/// the PREFILL restore of the shared document prefix, and thinking tokens
-/// are post-prefill output that never re-enters the replayed prefix (the
-/// template strips prior `<think>` blocks from history). The pin rides the
-/// request rather than the recipe so the serve stays byte-identical to the
-/// flagship config every other gate certifies.
+/// Plain greedy body — thinking is LEFT ON (the flagship recipe's default);
+/// nothing about thinking needs overriding here.
+///
+/// The reference round failing its anchors on 2026-08-15 ("missing ACK 7741-C",
+/// "got 1 line not 3") looked like a thinking-budget artifact, and two thinking
+/// -off attempts were tried and both failed — because thinking was never the
+/// cause. The real bug was in the STREAMING content path: `strip_orphan_tool
+/// _markup` ran `.trim_end()` per delta, deleting any delta that was entirely
+/// trailing whitespace — including Qwen's standalone space token before a digit
+/// (" 7" -> "") and the `\n\n` between numbered lines. So the model's correct
+/// "ACK 7741-C ... 7" streamed as "ACK7741-C ... 7" and "1\n2\n3" collapsed to
+/// one line, exactly the two anchors that failed. Fixed in
+/// `api/strip.rs` (trim only when an opener is actually cut); this probe needs
+/// no thinking change. Regression from #473 (680b3a568), exposed by #513's
+/// strict anchors.
 pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -> Value {
     json!({
         "model": model,
@@ -155,7 +156,6 @@ pub(super) fn request_body(model: &str, messages: &[Value], max_tokens: usize) -
         "temperature": 0.0,
         "seed": 0,
         "max_tokens": max_tokens,
-        "chat_template_kwargs": {"enable_thinking": false},
         "messages": messages,
     })
 }

@@ -130,12 +130,19 @@ mod scrub_think_tests {
 /// the content).
 pub(crate) fn strip_orphan_tool_markup(text: &str) -> String {
     const OPENERS: [&str; 2] = ["<tool_call>", "<function="];
-    let cut = OPENERS
-        .iter()
-        .filter_map(|op| text.find(op))
-        .min()
-        .unwrap_or(text.len());
-    text[..cut].trim_end().to_string()
+    // Trim ONLY when an orphan opener was actually found and cut. The no-match
+    // path must pass the text through byte-identical: this function runs
+    // per-delta on the streaming content path (handle_token.rs), and a bare
+    // `.trim_end()` there silently deletes any delta that is entirely trailing
+    // whitespace — e.g. Qwen's standalone `Ġ` space token before a digit
+    // (" 7" -> ""), collapsing "ACK 7741-C" to "ACK7741-C" and "1.\n2.\n3." to
+    // one line. The blocking path calls this once over the whole message where
+    // the trim was harmless; per-delta it is destructive. Regression from
+    // #473 (680b3a568). Pinned by orphan_tool_tests below.
+    match OPENERS.iter().filter_map(|op| text.find(op)).min() {
+        Some(cut) => text[..cut].trim_end().to_string(),
+        None => text.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +178,30 @@ mod orphan_tool_tests {
         // Only the control markers "<tool_call>" / "<function=" cut; prose is safe.
         let s = "You can call a function to do that.";
         assert_eq!(strip_orphan_tool_markup(s), s);
+    }
+
+    /// PINS the streaming-detok space-drop bug (wt/repair-479).
+    ///
+    /// `chat_stream/handle_token.rs` applies this function PER STREAM DELTA
+    /// on no-tools requests. Qwen's ByteLevel BPE pretokenizer (`\p{N}` with
+    /// no leading-space alternative) emits the space before any digit as a
+    /// standalone `Ġ` token, so the whole delta is `" "`. The unconditional
+    /// `trim_end()` on the no-opener path deletes it, streaming
+    /// `"ACK7741-C and7 sections"` where non-streaming decode yields
+    /// `"ACK 7741-C and 7 sections"` (reproduced live 2026-08-15,
+    /// Qwen3.6-35B-A3B-FP8, temp 0). Same mechanism eats standalone `ĊĊ`
+    /// paragraph-break deltas and CJK inter-word `Ġ` deltas. When no opener
+    /// is present the input must pass through byte-identical.
+    ///
+    /// EXPECTED TO FAIL until the no-match arm stops trimming.
+    #[test]
+    fn no_opener_passes_through_byte_identical_including_whitespace() {
+        // The standalone space token before a digit — the live repro.
+        assert_eq!(strip_orphan_tool_markup(" "), " ");
+        // Standalone paragraph-break token (`ĊĊ`).
+        assert_eq!(strip_orphan_tool_markup("\n\n"), "\n\n");
+        // A delta that merely ENDS in whitespace must keep it: the next
+        // delta ("7", "3", …) concatenates directly after these bytes.
+        assert_eq!(strip_orphan_tool_markup("found "), "found ");
     }
 }
