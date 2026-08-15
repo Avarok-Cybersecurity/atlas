@@ -389,6 +389,25 @@ pub struct MoeLayer {
     /// path fuses the gather into its A-pack — kept for potential reuse.
     #[allow(dead_code)]
     pub(crate) moe_permute_tokens_k: KernelHandle,
+    // ── Keep-packed GGUF Q4_K_M experts (Laguna) ──
+    // Native per-expert W4A8 Q4_K MMQ (gate/up) + q8_1 activation quantizer +
+    // Q6_K dequant-scratch (down). Only probed (and only non-zero) when the
+    // layer is keep-packed (`weights.packed_experts.is_some()`); the packed MoE
+    // prefill arm uses them.
+    pub(crate) q4k_quant_act_k: KernelHandle,
+    /// Device-side grouped MoE MMQ (reads expert_offsets on-device; graph-safe).
+    pub(crate) q4k_grouped_nc_k: KernelHandle,
+    pub(crate) q4k_grouped_wc_k: KernelHandle,
+    pub(crate) q6k_grouped_nc_k: KernelHandle,
+    pub(crate) q6k_grouped_wc_k: KernelHandle,
+    /// Fused gate+up grouped Q4_K MoE MMQ (one launch/CTA -> both projections).
+    pub(crate) q4k_grouped_gate_up_nc_k: KernelHandle,
+    pub(crate) q4k_grouped_gate_up_wc_k: KernelHandle,
+    /// Fused n=1 decode MoE GEMV (gather+dequant, output-tiled): gate+up+silu, down.
+    pub(crate) q4k_decode_gate_up_k: KernelHandle,
+    pub(crate) q4k_decode_down_k: KernelHandle,
+    /// D4-layout q8_1 activation quantizer (Q6_K MMQ input).
+    pub(crate) q4k_quant_act_d4_k: KernelHandle,
     // Phase 2.7 Tier C — Frankenstein dispatch flag.
     // True when this layer's index is in `config.dflash_capture_layers`.
     // When the env var `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1` is set,
@@ -451,6 +470,7 @@ mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_bf16;
 mod forward_prefill_fp8;
+mod forward_prefill_packed;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
 mod forward_token_major;

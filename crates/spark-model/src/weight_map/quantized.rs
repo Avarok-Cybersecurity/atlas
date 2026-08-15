@@ -62,6 +62,12 @@ pub enum WeightQuantFormat {
     /// native `q2_0_gemv` decode GEMV. Consumed only by that kernel — feeding
     /// these bytes through any other GEMV/GEMM is silent garbage.
     PackedQ2_0,
+    /// Keep-packed GGUF Q4_K (ggml id 12): raw `block_q4_K` super-blocks (144B /
+    /// 256 elems, inline 6-bit scales/mins), consumed by the Q4_K MMQ GEMM.
+    PackedQ4K,
+    /// Keep-packed GGUF Q6_K (ggml id 14): raw `block_q6_K` super-blocks (210B /
+    /// 256 elems). Consumed by a Q6_K keep-packed GEMM, or dequant-scratch.
+    PackedQ6K,
 }
 
 impl WeightQuantFormat {
@@ -105,6 +111,68 @@ impl PackedQ2Weight {
     /// True if the backing buffer is NULL (unset placeholder).
     pub fn is_null(&self) -> bool {
         self.weight == DevicePtr::NULL
+    }
+}
+
+/// Keep-packed GGUF Q4_K weight: a contiguous buffer of raw `block_q4_K`
+/// super-blocks (144 bytes / 256 elements: fp16 d, fp16 dmin, 12B of packed
+/// 6-bit scales+mins, 128B of 4-bit codes), row-major over `[n, k]`. Scales are
+/// INLINE per super-block (no companion scale tensor). Consumed by the Q4_K MMQ
+/// GEMM (weights fed directly; activations quantized to q8_1). Built from a
+/// `WeightDtype::PackedQ4K` store tensor; borrows the store's buffer (no free).
+#[derive(Debug, Clone, Copy)]
+pub struct PackedQ4Weight {
+    /// Raw packed `block_q4_K` bytes, `n * (k/256) * 144` long.
+    pub weight: DevicePtr,
+    /// Output rows (weight is `[n, k]`).
+    pub n: u32,
+    /// Input columns (contraction dim, multiple of 256).
+    pub k: u32,
+}
+
+impl PackedQ4Weight {
+    /// True if the backing buffer is NULL (unset placeholder).
+    pub fn is_null(&self) -> bool {
+        self.weight == DevicePtr::NULL
+    }
+
+    /// NULL placeholder (remote EP expert or unused slot).
+    pub fn null_view() -> Self {
+        Self {
+            weight: DevicePtr::NULL,
+            n: 0,
+            k: 0,
+        }
+    }
+}
+
+/// Keep-packed GGUF Q6_K weight: raw `block_q6_K` super-blocks (210 bytes / 256
+/// elements). Same keep-packed contract as [`PackedQ4Weight`]; used for the
+/// Q4_K_M `ffn_down_exps`. Consumed by a Q6_K keep-packed GEMM or a per-expert
+/// dequant-to-BF16 scratch followed by a dense GEMM.
+#[derive(Debug, Clone, Copy)]
+pub struct PackedQ6Weight {
+    /// Raw packed `block_q6_K` bytes, `n * (k/256) * 210` long.
+    pub weight: DevicePtr,
+    /// Output rows (weight is `[n, k]`).
+    pub n: u32,
+    /// Input columns (contraction dim, multiple of 256).
+    pub k: u32,
+}
+
+impl PackedQ6Weight {
+    /// True if the backing buffer is NULL (unset placeholder).
+    pub fn is_null(&self) -> bool {
+        self.weight == DevicePtr::NULL
+    }
+
+    /// NULL placeholder (remote EP expert or unused slot).
+    pub fn null_view() -> Self {
+        Self {
+            weight: DevicePtr::NULL,
+            n: 0,
+            k: 0,
+        }
     }
 }
 

@@ -297,6 +297,7 @@ pub(crate) fn load_moe_qwen35(
         experts,
         router_pre_norm: None,
         correction_bias: None,
+        packed_experts: None,
     })
 }
 
@@ -464,5 +465,6 @@ pub(crate) fn load_moe_no_shared(
         experts,
         router_pre_norm: None,
         correction_bias: None,
+        packed_experts: None,
     })
 }

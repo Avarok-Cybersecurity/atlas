@@ -70,6 +70,17 @@ fn native_q2_enabled() -> bool {
     std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
 }
 
+/// When true, stacked MoE expert tensors quantized Q4_K (id 12) / Q6_K (id 14)
+/// are uploaded as raw K-quant blocks and tagged `PackedQ4K`/`PackedQ6K`
+/// (per-expert views), instead of dequant→BF16. Automatic for `arch = laguna`:
+/// its 256 routed experts are the whole ~219GB-as-BF16 mass that would
+/// otherwise OOM a 128GB GB10, so keep-packed is the ONLY way the checkpoint
+/// serves at all — no lever needed. Other MoE GGUFs keep the default
+/// dequant→BF16 path until their loaders grow a keep-packed arm.
+fn keep_packed_experts_enabled(arch: &str) -> bool {
+    arch == "laguna"
+}
+
 /// The id-42 PrismML group size, from `ATLAS_GGUF_Q2_GROUP` (default 128).
 fn q2_group_usize() -> usize {
     match std::env::var("ATLAS_GGUF_Q2_GROUP").ok().as_deref() {
@@ -181,6 +192,56 @@ impl GgufLoader {
         }
         Ok(())
     }
+
+    /// Split a KEEP-PACKED stacked expert blob (raw GGUF K-quant blocks, uploaded
+    /// unchanged) into per-expert `WeightTensor`s aliasing block-aligned offsets
+    /// into the single packed device allocation. `shape[0]` is the expert count;
+    /// each expert is `shape[1..]` with a block footprint of `per_elems/256 *
+    /// {144 (Q4_K id 12) | 210 (Q6_K id 14)}` bytes. No BF16 expansion.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_experts_packed(
+        &self,
+        weights: &mut HashMap<String, WeightTensor>,
+        base_ptr: DevicePtr,
+        shape: &[usize],
+        layer: usize,
+        proj: &str,
+        id: u32,
+        skipped: &mut usize,
+    ) -> Result<()> {
+        let count = *shape
+            .first()
+            .context("stacked expert tensor has no leading expert dimension")?;
+        let per_elems: usize = shape[1..].iter().product();
+        let (block_bytes, dtype) = match id {
+            12 => (144usize, WeightDtype::PackedQ4K),
+            14 => (210usize, WeightDtype::PackedQ6K),
+            other => bail!("emit_experts_packed: unexpected ggml id {other} (want 12 or 14)"),
+        };
+        anyhow::ensure!(
+            per_elems.is_multiple_of(256),
+            "keep-packed expert per_elems {per_elems} not a multiple of 256 (K-quant super-block)"
+        );
+        let per_bytes = (per_elems / 256) * block_bytes;
+        let expert_shape: Vec<usize> = shape[1..].to_vec();
+        for e in 0..count {
+            if self.should_skip_expert(e) {
+                *skipped += 1;
+                continue;
+            }
+            let ptr = base_ptr.offset(e * per_bytes);
+            let name = names::expert_name(layer, proj, e);
+            weights.insert(
+                name,
+                WeightTensor {
+                    ptr,
+                    shape: expert_shape.clone(),
+                    dtype,
+                },
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Dequant one tensor's raw block bytes to a BF16 device buffer. Prefer-GPU /
@@ -281,6 +342,13 @@ impl super::WeightLoader for GgufLoader {
         // kernels expect (norm +1 offset, `A_log = ln(-ssm_a)`, and a value-head
         // reorder). Read the GDN head geometry once so `load_pass` can invert
         // them per tensor (see `value_transform`).
+        let keep_packed_experts = keep_packed_experts_enabled(&arch);
+        if keep_packed_experts {
+            tracing::info!(
+                "GGUF keep-packed MoE experts (arch={arch}): routed Q4_K/Q6_K experts stay \
+                 packed in VRAM (no BF16 expansion)"
+            );
+        }
         let is_qwen35 = value_transform::is_qwen35(&arch);
         let gdn = if is_qwen35 {
             value_transform::gdn_dims(&bb_gguf, &arch)
@@ -312,14 +380,26 @@ impl super::WeightLoader for GgufLoader {
         });
 
         // Pre-flight: combined BF16 footprint of both files.
-        let mut est = sidecar::est_bf16(&bb_gguf, &arch);
+        let mut est = sidecar::est_bf16(&bb_gguf, &arch, keep_packed_experts);
         if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref()) {
-            est += sidecar::est_bf16(mm_gguf, mm_arch);
+            est += sidecar::est_bf16(mm_gguf, mm_arch, false);
         }
         preflight_oom(gpu, est, oom_reserve_bytes, self.peak_memory_multiplier)?;
 
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
         let mut skipped = 0usize;
+
+        // Read tensor DATA through the fast safetensors loader's shared O_DIRECT
+        // + pipelined reader (`fast_weights::direct_io`) instead of demand-
+        // faulting mmap pages — the mmap path is NFS-latency-bound (~150MB/s),
+        // O_DIRECT streams at ~link bandwidth. The mmap stays for cheap metadata
+        // parsing only. `open_direct` falls back to a plain fd if O_DIRECT is
+        // unavailable (macOS / unsupported fs), so this is always safe.
+        #[cfg(unix)]
+        let data_file: Option<std::fs::File> =
+            crate::fast_weights::direct_io::open_direct(&path).ok();
+        #[cfg(not(unix))]
+        let data_file: Option<std::fs::File> = None;
 
         // Pass 1: backbone → weights.
         sidecar::load_pass(
@@ -333,6 +413,8 @@ impl super::WeightLoader for GgufLoader {
             native_q2,
             q2_group,
             q2_variant,
+            keep_packed_experts,
+            data_file.as_ref(),
             &mut weights,
             &mut skipped,
         )?;
@@ -347,6 +429,7 @@ impl super::WeightLoader for GgufLoader {
             let before = weights.len();
             // mmproj is a `clip` tower — no qwen35 FFN names, so native_q2 is
             // irrelevant there; pass false to keep it on the plain BF16 path.
+            // Small sidecar → mmap read path (no O_DIRECT file).
             sidecar::load_pass(
                 self,
                 gpu,
@@ -358,6 +441,8 @@ impl super::WeightLoader for GgufLoader {
                 false,
                 q2_group,
                 q2_variant,
+                false,
+                None,
                 &mut weights,
                 &mut skipped,
             )?;

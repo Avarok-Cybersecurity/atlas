@@ -127,6 +127,14 @@ pub enum QuantWeight {
     /// 2-bit resident. Decode dispatches `q2_0_gemv_vec`; prefill transient-
     /// dequants to BF16 then runs `dense_gemm`. Tier-1c attention path.
     PackedQ2(PackedQ2Weight),
+
+    /// Keep-packed GGUF Q4_K (id 12): raw `block_q4_K` bytes. Consumed by the
+    /// per-expert Q4_K MMQ GEMM (routed MoE gate/up, Laguna-S-2.1 Q4_K_M).
+    PackedQ4(PackedQ4Weight),
+
+    /// Keep-packed GGUF Q6_K (id 14): raw `block_q6_K` bytes. Routed MoE
+    /// `down_proj`; dequant-scratch to BF16 per expert then dense GEMM.
+    PackedQ6(PackedQ6Weight),
 }
 
 impl QuantWeight {
@@ -142,6 +150,8 @@ impl QuantWeight {
             Self::Fp8(w) => w.weight.is_null(),
             Self::Dense(w) => w.weight.is_null(),
             Self::PackedQ2(w) => w.is_null(),
+            Self::PackedQ4(w) => w.is_null(),
+            Self::PackedQ6(w) => w.is_null(),
         }
     }
 
@@ -149,6 +159,22 @@ impl QuantWeight {
     pub fn as_packed_q2(&self) -> Option<&PackedQ2Weight> {
         match self {
             Self::PackedQ2(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// Extract as keep-packed Q4_K, if this weight is that variant.
+    pub fn as_packed_q4(&self) -> Option<&PackedQ4Weight> {
+        match self {
+            Self::PackedQ4(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// Extract as keep-packed Q6_K, if this weight is that variant.
+    pub fn as_packed_q6(&self) -> Option<&PackedQ6Weight> {
+        match self {
+            Self::PackedQ6(w) => Some(w),
             _ => None,
         }
     }
@@ -200,6 +226,35 @@ impl From<PackedQ2Weight> for QuantWeight {
     fn from(w: PackedQ2Weight) -> Self {
         Self::PackedQ2(w)
     }
+}
+
+impl From<PackedQ4Weight> for QuantWeight {
+    fn from(w: PackedQ4Weight) -> Self {
+        Self::PackedQ4(w)
+    }
+}
+
+impl From<PackedQ6Weight> for QuantWeight {
+    fn from(w: PackedQ6Weight) -> Self {
+        Self::PackedQ6(w)
+    }
+}
+
+/// A single routed MoE expert kept PACKED (GGUF K-quant, no dequant at load):
+/// `gate`/`up` are Q4_K (144B/256-elem super-blocks), `down` is Q6_K (210B).
+/// Built by the Laguna GGUF loader from `WeightDtype::PackedQ4K`/`PackedQ6K`
+/// store tensors; the pointers alias the store's block buffers. Consumed by the
+/// MoE keep-packed prefill arm (per-expert dequant-scratch → dense GEMM), which
+/// runs whenever [`MoeWeights::packed_experts`] is `Some`.
+#[derive(Debug, Clone, Copy)]
+pub struct PackedExpertWeights {
+    pub gate: PackedQ4Weight,
+    pub up: PackedQ4Weight,
+    /// `down_proj` — Q4_K_M uses MIXED precision here: Q6_K on some layers,
+    /// Q4_K on others (llama.cpp's per-layer rule). So `down` carries either a
+    /// [`QuantWeight::PackedQ4`] or [`QuantWeight::PackedQ6`]; the MoE arm
+    /// dispatches per variant (Q4_K → q4k_mmq, Q6_K → dequant-scratch + GEMM).
+    pub down: QuantWeight,
 }
 
 /// Per-expert weights in any supported quant format.

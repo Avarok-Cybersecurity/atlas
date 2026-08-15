@@ -85,6 +85,11 @@ impl BufferArena {
     pub fn expert_down_out(&self) -> DevicePtr {
         self.expert_down_out
     }
+    /// q8_1 activation scratch for the keep-packed GGUF grouped MoE (graph-safe;
+    /// quantize-once per gate/up/down). Sized in `sizes::moe_grouped_q8`.
+    pub fn moe_grouped_q8(&self) -> DevicePtr {
+        self.moe_grouped_q8
+    }
     /// Split-K decode attention workspace (F32 partials).
     /// GDN FLA chunked-prefill scratch base (W|U|S|uc sub-divided by the caller).
     /// `DevicePtr::NULL` unless this is a 128-dim-linear-head GDN model.
