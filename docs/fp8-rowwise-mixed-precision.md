@@ -83,6 +83,57 @@ kernels index a block grid. Nothing currently produces an `Fp8PerRow` weight, so
 live path misindexes today — but `quant_dispatch` asserts nothing, so the first caller
 to produce one would silently get garbage.
 
+## Prior art — this is the FOURTH instance of one family
+
+Swept all 45 open PRs plus the merged history. The defect family is *"the
+checkpoint ships a module at higher precision and the loader quantises it down
+to NVFP4 anyway"*, and it keeps recurring in different modules:
+
+| | module | checkpoint | status |
+|---|---|---|---|
+| **#257** | GDN `in_proj_qkv` / `in_proj_z` / `out_proj` | nvidia Qwen3.6-27B-NVFP4 (`Nvfp4Variant::Standard`) | **MERGED** 2026-07-10 |
+| **#484** | MoE shared expert | Laguna-XS-2.1 | open |
+| **#406** | MLP (native BF16 on disk, `Bf16Raw`) | gemma-4-E2B | open |
+| *this* | attention q/k/v/o + GDN + lm_head, **per-channel FP8** | unsloth Qwen3.8-27B-NVFP4 (`CompressedTensors`, `mixed-precision`) | — |
+
+**#257 is the closest, and it is already in this tree.** Its cherry-pick onto
+the Strix branch (`38c9dea`, carried by the still-open **#336**) states the
+cost in the same terms this branch found: *"fixes the double-quant that
+regressed non_live to ~76"*, on a checkpoint that is mixed-precision because
+"modelopt keeps the SSM projections high-precision". #336 also names the lever
+and the expected evidence — serve with `ATLAS_NO_GDN_FP8=0` and look for
+`SSM in_proj_qkv ... native`, "no lossy FP8→BF16→NVFP4 double-quant".
+
+So the native-FP8 GDN path exists and works — for **block-scaled and
+per-tensor** scales. It is the **per-channel `[N,1]`** form that is still
+refused, which is exactly this checkpoint's form. That is the remaining gap,
+and no open PR claims it.
+
+The remedy every sibling chose is the same one this branch is taking: **load
+what the checkpoint ships, in its own format, rather than down-converting.**
+#484 adds a native packed-NVFP4 loader arm; #406 keeps the BF16 on disk. Given
+three one-off arms already exist, a reviewer may reasonably ask for the
+general form instead of a fourth — worth raising before building more arms.
+
+### Open PRs that touch the same code (conflict watch)
+
+* **#400** `feat(fp8): load F8_E8M0 block scales` — `weight_map/loaders_fp8.rs`
+  + `gemm_quant.rs`. Same file, and architecturally the same shape as this
+  work: accept a scale representation the checkpoint ships and adapt it once at
+  load. Closest thing to a template.
+* **#404** SSM batched NVFP4 decode (`ssm_batched.rs`) — the QKVZ/out_proj
+  decode arm any decode-side wiring here would touch.
+* **#474** `w8a16_gemv_batch4` accumulation order + a bit-parity microtest —
+  the w8a16 family, and the microtest is the pattern a new per-row GEMV would
+  need to copy.
+* **#475** Nemotron milestone B — flags a `proj_batch_min()` hazard where FP8
+  returns 2 without checking `w8a16_gemv_batch4/16` actually resolved.
+* **#519** decode-GEMV LUT staging (w4a16) — adjacent decode-GEMV work.
+
+For the accuracy bar, **#514 / #495** show the house standard: BFCL with
+ratcheted floors and a measured ±0.40 noise band. The KL harness here sizes a
+change; it does not replace that.
+
 ## Next steps, in order
 
 1. **Fix the stale `Fp8PerRow` doc comment** and add a `scale_format.expect(...)` at
