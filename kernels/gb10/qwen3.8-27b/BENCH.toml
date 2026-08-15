@@ -161,6 +161,64 @@ noise = 0.4
 # is correct.
 min = 83.72
 noise = 0.4
+# --- decode-floor ----------------------------------------------------------
+# The pinned single-user decode-rate floor. A PROMOTION CANDIDATE
+# (gate::coverage::PROMOTION_CANDIDATES), not REQUIRED: engine changes accrue
+# a visible debt row, and promotion to REQUIRED is gated on a >=10-run sigma
+# calibration so the bar comes from measured run-to-run noise, not from three
+# points.
+#
+# The driver pins the whole request (MinHeap code prompt, temperature 0,
+# seed 0, max_tokens 1500, runs = 3) and reports the MEDIAN server decode
+# rate. Its vacuity pins (>=1200 output tokens per run, server rate present,
+# accept_len_mean >= 1.5 from usage.completion_tokens_details.
+# accepted_prediction_tokens) make a run that measured nothing INCONCLUSIVE
+# rather than PASS — a thinking-on or non-speculating serve measures the
+# serial floor, and that number must never be recorded as this gate's.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "decode-floor"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+default = true
+status = "measured"
+note = """\
+MEASURED BASIS n=3 (per-run 31.5/29.6/30.5 tok/s, median 30.5), 2026-08-15, \
+dgx1. Fingerprint: K4 num_drafts=3 (the recipe pins num_drafts: 3), thinking \
+OFF via per-request reasoning_effort "none", MinHeap code prompt, max_tokens \
+1500, temperature 0. ★ Three runs are a BASIS, not a calibration: the 29.0 \
+floor is min-run minus the ~1 tok/s spread seen in that basis, and REQUIRED \
+promotion is gated on a >=10-run sigma calibration — ratchet the floor from \
+that calibration, never from a best run. ★ The gate serve needs NO operator \
+flags for thinking: thinking-off arrives per-request (reasoning_effort \
+"none" in the body — honored since the medium-default change), NOT from the \
+recipe, so the stock recipe serve is the correct subject. ★ The accept pin \
+depends on the accept-stats instrumentation (real \
+accepted_prediction_tokens in usage); a binary without it reports \
+INCONCLUSIVE by name, which is correct — a floor measured without proof of \
+speculative engagement is the 2026-08-15 decode flip-flop all over again."""
+
+[benchmarks.metrics.server_decode_tok_s]
+# Median-of-3 server decode rate. Floor = the basis' worst run (29.6) rounded
+# down; noise 1.0 covers the basis' spread (29.6-31.5) and is within the 5%
+# validate_noise cap. Recalibrate BOTH from the >=10-run set at promotion.
+min = 29.0
+noise = 1.0
+
+[benchmarks.metrics.output_tokens]
+# The driver emits the MINIMUM completion_tokens across the 3 runs, so this
+# floor means "every run decoded at least 1200 of the 1500 budget" — the same
+# vacuity pin the driver enforces, restated where the gate can see it.
+min = 1200.0
+
+[benchmarks.metrics.runs]
+# EXACT pin, like the BFCL draw size: a different run count is a different
+# benchmark, and a median over a different n is not comparable to this floor.
+min = 3.0
+max = 3.0
+
 # --- vision-fidelity -------------------------------------------------------
 # Vision models only. This gate is declared on the three targets that ship a
 # vision tower and have a BENCH.toml; a text-only target has no entry and the

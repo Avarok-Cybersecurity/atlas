@@ -63,6 +63,13 @@ pub struct ChatOutcome {
     /// excludes prefill, buffering and the network — it is the number a
     /// per-token latency claim can be defended with.
     pub server_tps: Option<f64>,
+    /// Server-reported accepted speculative draft tokens
+    /// (`usage.completion_tokens_details.accepted_prediction_tokens`).
+    /// `None` when the server does not report the details object at all — a
+    /// consumer that needs to distinguish "no speculation" (Some(0)) from "no
+    /// instrumentation" (None) can, which is exactly the distinction the
+    /// decode-floor gate's vacuity pin makes.
+    pub accepted_prediction_tokens: Option<usize>,
 }
 
 /// POST `/v1/chat/completions` with `"stream": true` and measure it.
@@ -164,6 +171,13 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
         }
         if let Some(v) = usage.get("response_token/s").and_then(Value::as_f64) {
             out.server_tps = Some(v);
+        }
+        if let Some(v) = usage
+            .get("completion_tokens_details")
+            .and_then(|d| d.get("accepted_prediction_tokens"))
+            .and_then(Value::as_u64)
+        {
+            out.accepted_prediction_tokens = Some(v as usize);
         }
     }
     let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {

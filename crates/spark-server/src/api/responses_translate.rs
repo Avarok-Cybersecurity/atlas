@@ -153,7 +153,7 @@ pub(super) async fn translate_chat_response_to_responses(
         output_tokens_details: Some(crate::openai::CompletionTokensDetails {
             reasoning_tokens: chat.usage.reasoning_tokens,
             audio_tokens: 0,
-            accepted_prediction_tokens: 0,
+            accepted_prediction_tokens: chat.usage.accepted_prediction_tokens,
             rejected_prediction_tokens: 0,
         }),
         total_tokens: chat.usage.prompt_tokens + chat.usage.completion_tokens,

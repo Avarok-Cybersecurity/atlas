@@ -29,10 +29,13 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     detail: "Berkeley Function Calling Leaderboard v4, single-turn, on the golden MLPerf-edge \
              draw: categories non_live/live/hallucination at 62/10/10 with a 25-sample floor, \
              which is exactly 995 samples. Reports overall_accuracy and \
-             normalized_single_turn_score against the MLPerf-edge floor (83.64 / 85.32). \
+             normalized_single_turn_score against the MLPerf-edge floor (83.64 / 85.32); \
+             the floor VERDICT applies only to the Qwen3.6-27B submission checkpoints — \
+             every other checkpoint is judged by its own BENCH.toml thresholds, with the \
+             floor kept as table styling for reference. \
              Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
     duration_hint: "~3.5 h",
-    updated: "2026-07-31",
+    updated: "2026-08-15",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
     // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
@@ -62,7 +65,7 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              stays comparable — it just removes the sampling noise, at roughly 3.6× the wall \
              time.",
     duration_hint: "~12 h",
-    updated: "2026-07-31",
+    updated: "2026-08-15",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
     // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
@@ -95,7 +98,7 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              draw's, and it carries its own baseline. It exists because the 35B's only recorded \
              BFCL history is on this draw.",
     duration_hint: "~3.5 h",
-    updated: "2026-08-06",
+    updated: "2026-08-15",
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
         families: &["qwen3.6-35b-a3b"],

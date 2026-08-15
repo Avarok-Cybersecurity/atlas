@@ -16,6 +16,7 @@ fn usage(prompt: usize, completion: usize) -> Usage {
         completion_tokens: completion,
         cached_prompt_tokens: 0,
         reasoning_tokens: 0,
+        accepted_prediction_tokens: 0,
         time_to_first_token_ms: 0.0,
         response_tokens_per_second: 0.0,
     }

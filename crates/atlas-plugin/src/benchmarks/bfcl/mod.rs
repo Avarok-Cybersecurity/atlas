@@ -40,7 +40,10 @@ use crate::result::{BenchmarkResult, LogLine, RunStatus};
 
 use draw::DrawSpec;
 
-pub use report::{MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL};
+pub use report::{
+    MLPERF_FLOOR_CHECKPOINTS, MLPERF_FLOOR_NORMALIZED, MLPERF_FLOOR_OVERALL,
+    is_mlperf_submission_checkpoint,
+};
 
 mod descriptors;
 pub use descriptors::{
@@ -156,6 +159,11 @@ pub struct Bfcl {
     request_timeout: Duration,
     started: Option<Instant>,
     tool_call_samples: usize,
+    /// The served model, captured at `load()` from the target endpoint.
+    /// Decides whether the MLPerf floor VERDICT applies (`report.rs`) — the
+    /// floor rides on the Qwen3.6-27B submission checkpoints and does not
+    /// transfer to other weights (BENCH.toml doctrine).
+    target_model: Option<String>,
 }
 
 impl Bfcl {
@@ -176,6 +184,7 @@ impl Bfcl {
             request_timeout: Duration::from_secs(600),
             started: None,
             tool_call_samples: 0,
+            target_model: None,
         }
     }
 
@@ -270,6 +279,7 @@ impl Plugin for Bfcl {
 
     fn load(&mut self, handle: PluginHandle) -> impl Future<Output = Result<()>> + Send {
         self.started = Some(Instant::now());
+        self.target_model = Some(handle.target().model.clone());
         self.handle = Some(handle.clone());
         async move {
             let artifacts = provision::ensure(handle.artifacts(), &handle).await?;

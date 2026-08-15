@@ -27,6 +27,7 @@ pub(super) fn handle_done(
     decode_time_ms: f64,
     reasoning_tokens: u32,
     cached_prompt_tokens: u32,
+    accepted_prediction_tokens: usize,
 ) -> DeltaVec {
     let mut deltas: DeltaVec = Vec::new();
 
@@ -182,6 +183,7 @@ pub(super) fn handle_done(
         completion_tokens,
         cached_prompt_tokens: cached_prompt_tokens as usize,
         reasoning_tokens: reasoning_tokens as usize,
+        accepted_prediction_tokens,
         time_to_first_token_ms,
         response_tokens_per_second: tps,
     };
@@ -251,7 +253,7 @@ pub(super) fn handle_done(
             completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
                 reasoning_tokens: usage.reasoning_tokens,
                 audio_tokens: 0,
-                accepted_prediction_tokens: 0,
+                accepted_prediction_tokens: usage.accepted_prediction_tokens,
                 rejected_prediction_tokens: 0,
             }),
             time_to_first_token_ms: usage.time_to_first_token_ms,

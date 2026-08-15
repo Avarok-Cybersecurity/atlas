@@ -238,6 +238,12 @@ fn every_exclusion_is_actually_on_the_boundary() {
 fn benchmark_drivers_do_not_import_each_other() {
     let root = repo_root();
     let drivers = ["ttft", "bfcl", "agentic", "contamination", "ssm_poison"];
+    // Single-FILE drivers, checked under the same rule. `decode_floor` in
+    // particular must not borrow quick-speed's fixtures or helpers: its
+    // exclusion lists (and quick-speed's excusal) assume the two are
+    // independent, and its pinned prompt is part of its metric's identity.
+    let file_drivers = ["decode_floor", "quick_speed", "concurrency"];
+    let all_names: Vec<&str> = drivers.iter().chain(file_drivers.iter()).copied().collect();
     for driver in drivers {
         let dir = root.join("crates/atlas-plugin/src/benchmarks").join(driver);
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -249,7 +255,31 @@ fn benchmark_drivers_do_not_import_each_other() {
                 continue;
             }
             let src = std::fs::read_to_string(&path).unwrap_or_default();
-            for other in drivers.iter().filter(|o| **o != driver) {
+            for other in all_names.iter().filter(|o| **o != driver) {
+                let needle = format!("benchmarks::{other}");
+                assert!(
+                    !src.contains(&needle),
+                    "{} imports {other}; the per-driver exclusions assume they are independent",
+                    path.display()
+                );
+            }
+        }
+    }
+    for driver in file_drivers {
+        for suffix in ["", "_tests"] {
+            let path = root
+                .join("crates/atlas-plugin/src/benchmarks")
+                .join(format!("{driver}{suffix}.rs"));
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                // Not every file driver has a sibling tests file.
+                assert!(
+                    suffix == "_tests",
+                    "driver file {} is missing",
+                    path.display()
+                );
+                continue;
+            };
+            for other in all_names.iter().filter(|o| **o != driver) {
                 let needle = format!("benchmarks::{other}");
                 assert!(
                     !src.contains(&needle),

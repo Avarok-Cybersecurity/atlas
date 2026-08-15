@@ -309,6 +309,37 @@ const CONCURRENCY_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
+/// The decode-floor candidate measures single-user DECODE throughput of the
+/// serving path, so — like the concurrency curve — nothing in the engine is
+/// excusable: kernels, scheduler, batching, KV, sampling and the MTP verify
+/// path all move it, and so does the usage plumbing its accept pin reads.
+/// Only the other benchmark DRIVERS are excluded: client-side request-issuing
+/// code cannot change how fast the server decodes. Its own driver file is
+/// deliberately NOT here — a change to the pins re-opens the pins.
+const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change the server's single-user decode rate",
+    ),
+];
+
 const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
     GATE_MACHINERY,
     other_driver(
@@ -465,9 +496,20 @@ pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
         id: "concurrency-sweep",
         excludes: CONCURRENCY_EXCLUDES,
     },
+    // Added 2026-08-15 with an n=3 measured basis (median 30.5 tok/s on the
+    // dense Qwen3.8-27B NVFP4 target — see its BENCH.toml entry). Candidate
+    // rather than REQUIRED per the promotion ruling: the floor is real but
+    // three runs do not bound its sigma, and a fresh gate calibrated on the
+    // best guess of its own noise fails honest work. Promotion to REQUIRED is
+    // gated on a >=10-run sigma calibration; until then, engine changes that
+    // could move the decode rate accrue a visible debt row.
+    GateCoverage {
+        id: "decode-floor",
+        excludes: DECODE_FLOOR_EXCLUDES,
+    },
 ];
 
-pub const NOT_REQUIRED: [(&str, &str); 5] = [
+pub const NOT_REQUIRED: [(&str, &str); 6] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
@@ -485,6 +527,13 @@ pub const NOT_REQUIRED: [(&str, &str); 5] = [
          REQUIRED until it has measured thresholds — check_record refuses to let a \
          thresholds-less entry read as PASS, so requiring it today would be a gate no PR \
          could clear",
+    ),
+    (
+        "decode-floor",
+        "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) with an n=3 \
+         measured basis; REQUIRED status is gated on a >=10-run sigma calibration of the \
+         floor, so that the bar is set from measured run-to-run noise rather than from \
+         three points",
     ),
     (
         "serve-matrix",
