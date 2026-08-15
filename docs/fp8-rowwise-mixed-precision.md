@@ -134,52 +134,64 @@ For the accuracy bar, **#514 / #495** show the house standard: BFCL with
 ratcheted floors and a measured ±0.40 noise band. The KL harness here sizes a
 change; it does not replace that.
 
-## ⚠ STOP — the GEMM this was built on does not work on GB10
+## ✔ LANDED — via BF16, because the FP8 GEMM is dead on GB10
 
-Measured 2026-08-15, after the loader half was wired and tested.
+`ATLAS_FP8_ROWWISE=1` works and is measured. Getting there killed the
+assumption the plan rested on.
 
-`ATLAS_FP8_ROWWISE=1` makes prefill fail: `cuBLASLt AlgoGetHeuristic failed:
-status 15` (NOT_SUPPORTED) at layer 0. The row-wise GEMM
-(`cublaslt::fp8_gemm_act_weight_t_rowwise`) declares both scales
-`SCALE_MODE_OUTER_VEC_32F`, and sm_121 will not serve it. Padding M to a
-multiple of 16 — which that call needed anyway, and now does — does not change
-the verdict.
+### The FP8 GEMM does not work on this hardware
 
-**Control**, which turns this from a guess into a statement about the GEMM:
-serve the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8` with `ATLAS_CUBLAS_FP8=1`, this
-branch's flag unset and its loader arm inert. The requant path reaches the same
-call and fails identically. Per-row weights are not the problem.
+`cublas_fp8_rowwise_proj` ends in `cublaslt::fp8_gemm_act_weight_t_rowwise`,
+which declares both scales `SCALE_MODE_OUTER_VEC_32F`. On sm_121
+`cublasLtMatmulAlgoGetHeuristic` returns **status 15 (NOT_SUPPORTED)** and
+prefill 400s. Padding M to 16 — which that call also needed, and now does —
+does not change it.
 
-**Its sibling is worse.** `ATLAS_FP8_W8A8=1` (block-scaled cuBLASLt,
-`fp8_gemm_act_weight_t_blkscaled`) passes the heuristic and returns degenerate
-output — `"kililililil…"` to "In one sentence, what does a KV cache store?".
+**Control**: the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8` with `ATLAS_CUBLAS_FP8=1`,
+this branch's arm inert, reaches the same call through the requant path and
+fails identically. It is the GEMM, not per-row weights.
 
-So the cuBLASLt FP8 prefill family is **dead code on this box**: one arm
-errors, the other is silently wrong. Both are behind default-off flags nothing
-in the repo sets — `ATLAS_CUBLAS_FP8` appears exactly once, in its own
-definition — which is why it had never surfaced. Its docstring's "~1.8× the
-bf16 path (152 vs 85 TF)" does not reproduce here.
+**Its sibling is worse**: `ATLAS_FP8_W8A8=1` (block-scaled cuBLASLt) passes the
+heuristic and returns `"kililililil…"` to a plain prompt.
 
-### What that means for this fold
+So the cuBLASLt FP8 prefill family is dead code on GB10 — one arm errors, one
+is silently wrong — behind default-off flags nothing in the repo sets
+(`ATLAS_CUBLAS_FP8` appears exactly once, its own definition). Its docstring's
+"~1.8× the bf16 path (152 vs 85 TF)" does not reproduce here.
 
-The loader half is done, tested and correct, and it is what a working GEMM
-plugs into — so it stays, opt-in and default-off. What it cannot do is stand
-on `cublas_fp8_rowwise_proj`. Two ways forward, in cost order:
+### So: dequantise once to BF16, multiply with cuBLASLt BF16
 
-1. **Dequantise per-row FP8 → BF16 once, then cuBLASLt BF16.** Still no
-   double-quant (BF16 holds every FP8 value exactly), and no new kernel:
-   `dequant_fp8_blockscaled_to_bf16` already reads a `[N,1]` scale correctly
-   when handed `block_n = 1`, and `cublas_bf16_proj` is a functional path. The
-   open question is speed — this is the same precision the BF16 lever buys,
-   and that lever cost 72.9% of prefill through the hand-written `dense_gemm`.
-   cuBLASLt BF16 is the arm that might not.
-2. **A per-row FP8 GEMM that works on sm_121**, with a bit-parity microtest in
-   the shape of PR #474's. Best endpoint — FP8 memory and FP8 speed — but it
-   is kernel work, and the cuBLASLt evidence above says do not assume the
-   vendor path will do it.
+Still no re-quantisation — FP8 E4M3 is exactly representable in BF16 — and no
+new kernel. The same `dequant_fp8_blockscaled_bf16` serves both layouts:
+`block_n = 1, block_k = K, sk = 1` makes its index `scale[n]`.
 
-Either way the next measurement is throughput, not quality: the quality case
-is already made (the dark-green probe, and #257's 7-point BFCL history).
+Measured on `unsloth/Qwen3.8-27B-NVFP4`, same box and flags, vs the NVFP4
+baseline:
+
+| | baseline | `ATLAS_FP8_ROWWISE=1` | `ATLAS_GDN_BF16_WEIGHTS=1` |
+|---|---|---|---|
+| prefill | 507 tok/s | **585 tok/s (+15.5%)** | 137 tok/s (−72.9%) |
+| decode | 5.3 tok/s | 5.3 tok/s | 5.0 tok/s |
+| dark-green probe | `red, blue` | `red, blue, yellow` | `red, blue, yellow` |
+
+Drift vs baseline: token match 82.5%, mean KL 0.0054, p99 0.039 (shared
+prefix). Gates with the flag on: **vision-fidelity 14/14 + 3/3, video-fidelity
+13/13**, both control held.
+
+The BF16 lever buys the *same* precision back and costs three quarters of
+prefill; this buys it and gains 15%. The GEMM is the difference, not the
+precision — which is also why the earlier "BF16 is not the answer" conclusion
+was about `dense_gemm`, not about BF16.
+
+### What is still on the table
+
+FP8 *memory* as well as FP8 precision — this holds a BF16 copy of the GDN
+projections, which is why the win is speed and quality rather than footprint.
+That needs a per-row FP8 GEMM that works on sm_121, with a bit-parity
+microtest in the shape of PR #474's. Upside, not a blocker.
+
+Decode is still NVFP4 (unchanged tok/s above). A decode-side fold needs the
+per-row `w8a16_gemv` variant.
 
 ## Next steps, in order
 

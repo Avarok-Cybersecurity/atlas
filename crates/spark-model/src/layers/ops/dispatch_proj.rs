@@ -256,8 +256,24 @@ fn dequant_fp8_bf16_cached(
     }
     let (n, kk) = (fp8w.n, fp8w.k);
     let out = gpu.alloc(n as usize * kk as usize * 2)?; // BF16 [N,K]
-    let block = 128u32;
-    let sk = kk / block;
+    // The kernel reads `scale[(n / block_n) * sk + (k / block_k)]`, so the
+    // SAME kernel serves both layouts — the block geometry is what selects
+    // between them, not a second kernel:
+    //
+    //   block-scaled   block_n = block_k = 128, sk = K/128
+    //   PER-ROW        block_n = 1, block_k = K, sk = 1
+    //                  -> offset = n * 1 + 0 = n, one multiplier per row
+    //
+    // That per-row case is what a mixed-precision compressed-tensors
+    // checkpoint ships, and dequantising it here is lossless: every FP8 E4M3
+    // value is exactly representable in BF16, so this is the fold's
+    // no-double-quant path even though the GEMM downstream is BF16.
+    let per_row = fp8w.scale_format == crate::weight_map::WeightQuantFormat::Fp8PerRow;
+    let (block_n, block_k, sk) = if per_row {
+        (1u32, kk, 1u32)
+    } else {
+        (128u32, 128u32, kk / 128)
+    };
     let kernel = gpu.kernel(
         "dequant_fp8_blockscaled_bf16",
         "dequant_fp8_blockscaled_bf16",
@@ -270,8 +286,8 @@ fn dequant_fp8_bf16_cached(
         .arg_ptr(out)
         .arg_u32(n)
         .arg_u32(kk)
-        .arg_u32(block)
-        .arg_u32(block)
+        .arg_u32(block_n)
+        .arg_u32(block_k)
         .arg_u32(sk)
         .arg_u32(1) // scale_is_fp32
         .launch(stream)?;

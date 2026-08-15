@@ -25,12 +25,15 @@
 //!
 //! ## What this does instead
 //!
-//! cuBLASLt has a row-wise FP8 GEMM, and Atlas already routes SSM prefill
-//! through it (`ops::cublas_fp8_rowwise_proj`). It normally *manufactures* its
-//! operand by converting a block-scaled weight — fp8 → bf16 → row-wise fp8.
-//! A per-channel checkpoint is ALREADY that operand, so with the passthrough
-//! in `dispatch_proj::rowwise_pair_passthrough` the conversion disappears and
-//! the checkpoint's own bytes go straight to the GEMM.
+//! Loads the checkpoint's per-row FP8 as-is, dequantises it ONCE to BF16, and
+//! multiplies with cuBLASLt BF16. No re-quantisation anywhere: every FP8 E4M3
+//! value is exactly representable in BF16, so the checkpoint's precision
+//! survives intact, where the default path dequantises to BF16 and then
+//! throws half of it away again by quantising to NVFP4.
+//!
+//! It was first written to keep FP8 all the way into a row-wise FP8 GEMM, and
+//! that GEMM turns out not to work on this hardware — see the section below,
+//! which is worth reading before trying it again.
 //!
 //! ## Prefill only, on purpose
 //!
@@ -46,37 +49,47 @@
 //! A decode-side fix needs a per-row `w8a16_gemv` variant, which does not
 //! exist yet; see `docs/fp8-rowwise-mixed-precision.md`.
 //!
-//! ## ⚠ THE GEMM THIS DEPENDS ON DOES NOT WORK ON GB10 (measured 2026-08-15)
+//! ## The FP8 GEMM is dead on GB10 — so the fold lands via BF16
 //!
-//! `ATLAS_FP8_ROWWISE=1` currently makes prefill FAIL, and the fault is not
-//! in this file. `cublas_fp8_rowwise_proj` ends in
-//! `cublaslt::fp8_gemm_act_weight_t_rowwise`, which declares both scales
-//! `SCALE_MODE_OUTER_VEC_32F`; on sm_121 `cublasLtMatmulAlgoGetHeuristic`
-//! returns status 15 (NOT_SUPPORTED) and the request 400s. Padding M to 16
-//! (which that call also needed, and now does) does not change it.
+//! This was first written against `cublas_fp8_rowwise_proj`, keeping FP8 all
+//! the way into the GEMM. That does not work on sm_121:
+//! `cublaslt::fp8_gemm_act_weight_t_rowwise` declares both scales
+//! `SCALE_MODE_OUTER_VEC_32F` and `cublasLtMatmulAlgoGetHeuristic` returns
+//! status 15 (NOT_SUPPORTED). Padding M to 16 — which that call also needed,
+//! and now does — does not change it.
 //!
-//! CONTROL, which is what makes this a statement about the GEMM rather than
-//! about per-row weights: serving the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8`
-//! with `ATLAS_CUBLAS_FP8=1` — this module inert, its own opt-in flag unset —
-//! reaches the same call through the requant path and fails identically.
+//! CONTROL, which makes that a statement about the GEMM and not about per-row
+//! weights: the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8` served with
+//! `ATLAS_CUBLAS_FP8=1`, this module inert, reaches the same call through the
+//! requant path and fails identically. Its sibling is worse —
+//! `ATLAS_FP8_W8A8=1` passes the heuristic and returns "kililililil…". Both
+//! sit behind default-off flags nothing in the repo sets, which is why the
+//! whole cuBLASLt FP8 prefill family had never been noticed as dead code.
 //!
-//! Its sibling is no better. `ATLAS_FP8_W8A8=1` (block-scaled cuBLASLt,
-//! `fp8_gemm_act_weight_t_blkscaled`) is ACCEPTED by the heuristic and then
-//! returns degenerate output — "kililililil…" on a plain prompt.
+//! So the weights are dequantised ONCE to BF16 and multiplied by cuBLASLt
+//! BF16 instead. That is still the point of the fold: every FP8 E4M3 value is
+//! exactly representable in BF16, so nothing is lost, where the default path
+//! dequantises to BF16 and then throws half of it away again by quantising to
+//! NVFP4. The same `dequant_fp8_blockscaled_bf16` kernel serves both layouts
+//! — `block_n = 1, block_k = K, sk = 1` makes its index `scale[n]`.
 //!
-//! So the whole cuBLASLt FP8 prefill family is dead code on this box: one arm
-//! errors, the other is silently wrong, and both sit behind default-off flags
-//! that nothing in the repo sets (`ATLAS_CUBLAS_FP8` appears exactly once —
-//! its own definition). That is why nobody had noticed.
+//! MEASURED on unsloth/Qwen3.8-27B-NVFP4, 2026-08-15, against the NVFP4
+//! baseline on the same box and flags:
 //!
-//! This module is kept, and kept OPT-IN, because the loader half is correct
-//! and tested and it is what a working GEMM would plug into. Making the fold
-//! real needs one of:
-//!   * a per-row FP8 GEMM that works on sm_121 (own kernel, own bit-parity
-//!     test in the shape of PR #474's microtest), or
-//!   * dequantising the per-row FP8 to BF16 ONCE and using the cuBLASLt BF16
-//!     GEMM — still no double-quant, and `dequant_fp8_blockscaled_to_bf16`
-//!     already reads a `[N,1]` scale correctly when handed `block_n = 1`.
+//!   prefill      507 -> 585 tok/s   +15.5%
+//!   decode       5.3 -> 5.3 tok/s    unchanged (decode is still NVFP4)
+//!   dark-green probe   [red, blue] -> [red, blue, yellow]
+//!   token match 82.5%, mean KL 0.0054, p99 0.039
+//!   vision-fidelity 14/14 + 3/3, video-fidelity 13/13, both control held
+//!
+//! For contrast, `ATLAS_GDN_BF16_WEIGHTS=1` buys the same precision back
+//! through the hand-written `dense_gemm` and costs 72.9% of prefill. The GEMM
+//! is what separates them, not the precision.
+//!
+//! Keeping FP8 all the way — FP8 memory as well as FP8 precision — still
+//! wants a per-row FP8 GEMM that works on this hardware, with a bit-parity
+//! microtest in the shape of PR #474's. That is the remaining upside, not a
+//! blocker.
 
 use anyhow::Result;
 use spark_runtime::gpu::GpuBackend;
