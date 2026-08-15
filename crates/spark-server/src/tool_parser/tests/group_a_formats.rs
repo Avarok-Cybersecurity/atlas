@@ -95,21 +95,23 @@ fn parse_qwen3_coder_empty_body_then_backfill() {
     // command"). The non-streaming path always ran backfill, so the
     // two code paths diverged.
     //
-    // This test verifies the recovery semantics: parse → empty
-    // args → backfill adds the required string field with empty
-    // value (mirroring path A). The chat_stream::tool_handlers fix
-    // calls this same chain inside handle_tool_call_delta so
-    // streaming behaviour matches.
+    // This test verifies the recovery semantics and, above all, the
+    // path-A/path-B PARITY that motivated the fix: both paths run the
+    // same parse → backfill → validate chain (`chat_stream::
+    // tool_handlers::handle_tool_call_delta` calls it too), so both
+    // reach the client with the same arguments and the same verdict.
     //
-    // The validator then REJECTS the backfilled-empty `exec`: the
-    // SHELL_FAMILY rule in validation.rs mirrors F78 for shell
-    // tools, because opencode's bash handler answers an empty
-    // command with "The argument 'file' cannot be empty" and the
-    // model burns to max_tokens retrying it. Rejecting turns the
-    // call into a no-op so the reply falls through to text.
-    // (This assertion once expected `is_ok()` on the theory that
-    // only WRITE_FAMILY rejects empty values — that predates
-    // SHELL_FAMILY, which covers `exec`.)
+    // 2026-08-13: what "the same arguments" means changed. Backfill used
+    // to insert `command: ""` here; it no longer authors a value it
+    // cannot derive (see `group_i_no_fabrication`), so `command` stays
+    // ABSENT and the verdict moves from `EmptyRequired` (the F78 /
+    // SHELL_FAMILY empty-string rule) to `MissingParam`. Both are
+    // rejections that name `command`, and the new one is the honest
+    // one: the model never wrote an argument, so Atlas does not claim
+    // it did. It is also exactly the error the original OpenClaw report
+    // quoted — "must have required properties command" — which the
+    // model can act on, unlike an empty command string that reaches the
+    // shell and comes back as "The argument 'file' cannot be empty".
     let input = "<tool_call>\n\
             <function=exec>\n\
             </function>\n\
@@ -140,14 +142,14 @@ fn parse_qwen3_coder_empty_body_then_backfill() {
     };
     backfill_required_params(&mut calls, std::slice::from_ref(&tool));
     let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
-    assert_eq!(
-        args["command"], "",
-        "backfill must add the required string key with an empty default"
+    assert!(
+        args.get("command").is_none(),
+        "backfill must not author a `command` the model never wrote; got {args}"
     );
     let err = validate_single_tool_call(&calls[0], std::slice::from_ref(&tool))
-        .expect_err("SHELL_FAMILY rejects `exec` with an empty command");
+        .expect_err("a call with no `command` cannot satisfy its required schema");
     assert!(
-        err.contains("non-empty 'command'"),
+        err.contains("'command'"),
         "rejection must name the offending key so the model can recover; got {err:?}"
     );
 }

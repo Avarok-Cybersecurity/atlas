@@ -317,7 +317,13 @@ fn time_arm<F: FnMut() -> Result<()>>(g: &dyn GpuBackend, mut f: F) -> Result<f6
 
 fn main() -> Result<()> {
     let set = atlas_kernels::ptx_for_model("qwen3.6-27b")
-        .or_else(|| atlas_kernels::ptx_for_config("qwen3_5_text", 5120))
+        .or_else(|| {
+            atlas_kernels::ptx_for_shape(atlas_kernels::ModelShape {
+                model_type: "qwen3_5_text",
+                hidden_size: 5120,
+                mtp_layers: 0,
+            })
+        })
         .expect("no qwen3.6-27b ptx set");
     eprintln!("kernel set: {}", set.target.model);
     let g0 = AtlasCudaBackend::new(0, &set.modules)?;

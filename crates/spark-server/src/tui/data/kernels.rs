@@ -4,7 +4,7 @@
 //! set joined with the runtime resolution audit — the same data
 //! `render_kernel_table` prints, as rows a real `Table` widget can sort/filter.
 //!
-//! The module set has to come from `ptx_for_config`, exactly as
+//! The module set has to come from `ptx_for_shape`, exactly as
 //! `super::library` does it. `atlas_kernels::ptx_modules()` is emitted as a
 //! plain alias of TARGET 0 in a multi-target build (`build_codegen.rs`), and
 //! targets are sorted by directory name — so on every model except
@@ -59,22 +59,24 @@ pub struct KernelTableModel {
     pub missing_expected: Vec<MissingKernel>,
 }
 
-/// `(model_type, hidden_size)` of the model currently loaded.
+/// `(model_type, hidden_size, mtp_layers)` of the model currently loaded.
 ///
 /// Published by the serve path at the moment it resolves the target, so the
 /// dashboard re-resolves the SAME `TargetPtxSet` the model was built against
 /// rather than guessing from the served-model name (which is an HF id, not a
-/// kernel-target directory name).
-static LOADED_SHAPE: Mutex<Option<(String, usize)>> = Mutex::new(None);
+/// kernel-target directory name). `mtp_layers` is part of the key because it
+/// is part of the selection: drop it and the table shows the sibling
+/// target's modules for two models that share `(model_type, hidden_size)`.
+static LOADED_SHAPE: Mutex<Option<(String, usize, usize)>> = Mutex::new(None);
 
 /// Record which model config the live target was resolved from.
-pub fn publish_loaded_shape(model_type: &str, hidden_size: usize) {
+pub fn publish_loaded_shape(model_type: &str, hidden_size: usize, mtp_layers: usize) {
     if let Ok(mut g) = LOADED_SHAPE.lock() {
-        *g = Some((model_type.to_string(), hidden_size));
+        *g = Some((model_type.to_string(), hidden_size, mtp_layers));
     }
 }
 
-fn loaded_shape() -> Option<(String, usize)> {
+fn loaded_shape() -> Option<(String, usize, usize)> {
     let guard = LOADED_SHAPE.lock().ok()?;
     guard.clone()
 }
@@ -97,9 +99,13 @@ pub fn build() -> KernelTableModel {
     // No model loaded yet, or this build has no matching compiled target: an
     // EMPTY table is the honest answer. Falling back to some other target's
     // module list is the bug this function was rewritten to fix.
-    let Some(ptx) = loaded_shape()
-        .and_then(|(model_type, hidden)| atlas_kernels::ptx_for_config(&model_type, hidden))
-    else {
+    let Some(ptx) = loaded_shape().and_then(|(model_type, hidden_size, mtp_layers)| {
+        atlas_kernels::ptx_for_shape(atlas_kernels::ModelShape {
+            model_type: &model_type,
+            hidden_size,
+            mtp_layers,
+        })
+    }) else {
         return KernelTableModel::default();
     };
     let mut rows: Vec<KernelRow> = ptx

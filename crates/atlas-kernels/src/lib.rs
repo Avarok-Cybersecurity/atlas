@@ -18,6 +18,11 @@
 
 use atlas_core::target::KernelTarget;
 
+/// MODEL.toml sampling presets. Split to a sibling module for the
+/// 500-LoC cap; re-exported so every existing path keeps working.
+mod sampling;
+pub use sampling::{SamplingCategory, SamplingPresets};
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
 // NOTE: cargo does NOT track this build-script-generated include! as a
@@ -57,93 +62,6 @@ pub const TARGET_CLOSURES: &str = match option_env!("ATLAS_TARGET_CLOSURES") {
 // ═══════════════════════════════════════════════════════════════════
 // Target-aware PTX grouping
 // ═══════════════════════════════════════════════════════════════════
-
-/// Per-category sampling defaults from MODEL.toml.
-#[derive(Debug, Clone, Copy)]
-pub struct SamplingCategory {
-    pub temperature: f32,
-    pub top_p: f32,
-    pub top_k: u32,
-    pub presence_penalty: f32,
-    pub frequency_penalty: f32,
-    /// Multiplicative penalty on already-seen tokens (1.0 = disabled).
-    /// Populated from MODEL.toml `[sampling.*].repetition_penalty` via build.rs.
-    pub repetition_penalty: f32,
-    /// DRY (Don't-Repeat-Yourself) sampler parameters. Penalises tokens
-    /// that extend repeated n-grams past `dry_allowed_length` with an
-    /// exponential `dry_multiplier * dry_base^(match_len - allowed)` —
-    /// the targeted fix for phrase-level attractors (e.g. the
-    /// ```` ```bash cd … cargo test ``` ```` fence-narration loop
-    /// observed in Qwen3.5-35B-A3B-FP8 opencode sessions at turn ≥ 8).
-    ///
-    /// `presence_penalty` on its own is a FLAT per-unique-token hit
-    /// (does not scale with repetition count), so it can't break a
-    /// phrase attractor where individual tokens already paid their
-    /// penalty once. DRY scales with the repeat-length and is the
-    /// published remedy (oobabooga/text-generation-webui#5677, used in
-    /// llama.cpp / Aphrodite / TabbyAPI).
-    ///
-    /// `dry_multiplier = 0.0` disables DRY for this category (default
-    /// for every preset unless MODEL.toml sets it explicitly).
-    pub dry_multiplier: f32,
-    pub dry_base: f32,
-    pub dry_allowed_length: u32,
-    /// LZ penalty (arXiv:2504.20131). Per-extension n-gram penalty
-    /// over a 256-token rolling window. Frequency-weighted and length-
-    /// scaled, so it correctly distinguishes "phrase loop" from
-    /// "legitimate vocabulary reuse" without the flat-per-token
-    /// `presence_penalty` regression. 0.0 = disabled. SGLang reference
-    /// strength = 0.2 (lossless on AIME/GPQA).
-    pub lz_penalty: f32,
-}
-
-/// Model-specific sampling presets loaded from MODEL.toml `[sampling.*]`.
-#[derive(Debug, Clone, Copy)]
-pub struct SamplingPresets {
-    pub thinking_text: SamplingCategory,
-    pub thinking_coding: SamplingCategory,
-    pub non_thinking: SamplingCategory,
-    /// Tool-calling preset: model-recommended sampling for agentic tasks.
-    /// Qwen3.5 recommends temperature=0.6 (NOT greedy) to avoid repetition loops.
-    pub tools: SamplingCategory,
-}
-
-impl Default for SamplingPresets {
-    fn default() -> Self {
-        let default_cat = SamplingCategory {
-            temperature: 0.7,
-            top_p: 0.95,
-            top_k: 20,
-            presence_penalty: 0.0,
-            frequency_penalty: 0.0,
-            repetition_penalty: 1.0,
-            // DRY defaults = disabled (multiplier 0.0). Per-MODEL.toml
-            // tools presets opt in when the model needs it.
-            dry_multiplier: 0.0,
-            dry_base: 1.75,
-            dry_allowed_length: 2,
-            lz_penalty: 0.0,
-        };
-        let tools_cat = SamplingCategory {
-            temperature: 0.6,
-            top_p: 0.95,
-            top_k: 20,
-            presence_penalty: 0.0,
-            frequency_penalty: 0.0,
-            repetition_penalty: 1.0,
-            dry_multiplier: 0.0,
-            dry_base: 1.75,
-            dry_allowed_length: 2,
-            lz_penalty: 0.0,
-        };
-        Self {
-            thinking_text: default_cat,
-            thinking_coding: default_cat,
-            non_thinking: default_cat,
-            tools: tools_cat,
-        }
-    }
-}
 
 /// Model-specific behavior flags from MODEL.toml `[behavior]`.
 #[derive(Debug, Clone)]
@@ -359,6 +277,54 @@ pub struct ModelTypeMatch {
     pub model_type: &'static str,
     /// `None` = wildcard (matches any hidden_size not caught by a more specific entry).
     pub hidden_size: Option<usize>,
+    /// `num_nextn_predict_layers` (HF) / `mtp_num_hidden_layers` (Atlas)
+    /// this entry claims.
+    ///
+    /// `None` = the entry does not discriminate on MTP depth (every target
+    /// predating the discriminator). `Some(n)` matches ONLY checkpoints
+    /// whose MTP depth is exactly `n` — including `Some(0)`, which is how a
+    /// target says "the variant of this family that ships NO draft head",
+    /// the half of the split that would otherwise be a catch-all.
+    pub mtp_layers: Option<usize>,
+}
+
+/// The model shape a kernel target is selected for.
+///
+/// Every field is an explicit discriminator read off the checkpoint's
+/// `config.json`; there is no defaulting here on purpose. Two Nemotron-H
+/// 30B checkpoints (Nano and 3.5 Lightning) are identical in
+/// `(model_type, hidden_size)` and differ only in `mtp_layers`, and they
+/// need OPPOSITE `[behavior]` policy — so a caller that guesses this
+/// silently serves the other model's policy.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelShape<'a> {
+    pub model_type: &'a str,
+    pub hidden_size: usize,
+    /// `ModelConfig::mtp_num_hidden_layers`. 0 = no MTP draft module.
+    pub mtp_layers: usize,
+}
+
+impl ModelTypeMatch {
+    /// Specificity of this entry against `shape`, or `None` if it does not
+    /// match at all. Higher wins: an entry that pins BOTH hidden_size and
+    /// MTP depth (3) outranks one pinning only hidden_size (2), which
+    /// outranks a bare `model_type` wildcard (0).
+    fn specificity(&self, shape: &ModelShape<'_>) -> Option<u8> {
+        if self.model_type != shape.model_type {
+            return None;
+        }
+        let hs = match self.hidden_size {
+            Some(h) if h == shape.hidden_size => 2,
+            Some(_) => return None,
+            None => 0,
+        };
+        let mtp = match self.mtp_layers {
+            Some(m) if m == shape.mtp_layers => 1,
+            Some(_) => return None,
+            None => 0,
+        };
+        Some(hs + mtp)
+    }
 }
 
 /// DFlash speculative-decoding pairing for a target model.
@@ -444,24 +410,23 @@ pub fn ptx_for_model(needle: &str) -> Option<TargetPtxSet> {
 /// 1. Exact match on `(model_type, Some(hidden_size))` wins
 /// 2. Wildcard match `(model_type, None)` is fallback
 /// 3. Returns `None` if no compiled target matches
-pub fn ptx_for_config(model_type: &str, hidden_size: usize) -> Option<TargetPtxSet> {
+pub fn ptx_for_shape(shape: ModelShape<'_>) -> Option<TargetPtxSet> {
     let targets = all_ptx_sets();
-    // Exact match first (specific hidden_size)
-    let exact = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size == Some(hidden_size))
-    });
-    if let Some(idx) = exact {
-        return targets.into_iter().nth(idx);
-    }
-    // Wildcard fallback (hidden_size == None)
-    let wildcard = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size.is_none())
-    });
-    wildcard.and_then(|idx| targets.into_iter().nth(idx))
+    // Most specific entry wins; ties go to the earliest target so the
+    // registry order (alphabetical by model dir) stays the tie-break it
+    // has always been.
+    let best = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, t)| {
+            t.model_type_matches
+                .iter()
+                .filter_map(|m| m.specificity(&shape))
+                .max()
+                .map(|score| (score, std::cmp::Reverse(idx)))
+        })
+        .max();
+    best.and_then(|(_, std::cmp::Reverse(idx))| targets.into_iter().nth(idx))
 }
 
 #[cfg(test)]

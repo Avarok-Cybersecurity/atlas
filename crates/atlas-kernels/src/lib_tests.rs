@@ -156,3 +156,98 @@ fn ptx_for_model_lookup() {
         "ptx_for_model('qwen3-next-80b') should find the default target"
     );
 }
+
+// ── Model-shape selection ─────────────────────────────────────────
+// `ptx_for_shape` picks the MOST SPECIFIC declaring entry. These are
+// build-dependent (they need the real compiled registry), hence the
+// same `#[ignore]` gate as `ptx_for_model_lookup` above.
+
+/// Specificity ordering is a pure function of the declarations, so it
+/// is testable without a compiled registry.
+#[test]
+fn specificity_prefers_the_entry_that_pins_mtp_depth() {
+    let shape = ModelShape {
+        model_type: "nemotron_h",
+        hidden_size: 2688,
+        mtp_layers: 1,
+    };
+    let wildcard = ModelTypeMatch {
+        model_type: "nemotron_h",
+        hidden_size: None,
+        mtp_layers: None,
+    };
+    let hidden_only = ModelTypeMatch {
+        model_type: "nemotron_h",
+        hidden_size: Some(2688),
+        mtp_layers: None,
+    };
+    let both = ModelTypeMatch {
+        model_type: "nemotron_h",
+        hidden_size: Some(2688),
+        mtp_layers: Some(1),
+    };
+    assert!(both.specificity(&shape) > hidden_only.specificity(&shape));
+    assert!(hidden_only.specificity(&shape) > wildcard.specificity(&shape));
+}
+
+#[test]
+fn a_pinned_mtp_depth_excludes_the_other_variant() {
+    // The split itself: Nano declares 0, Lightning declares 1, and
+    // neither may absorb the other's checkpoint. Before the
+    // discriminator existed BOTH shapes matched Nano's single
+    // (nemotron_h, 2688) entry.
+    let nano_entry = ModelTypeMatch {
+        model_type: "nemotron_h",
+        hidden_size: Some(2688),
+        mtp_layers: Some(0),
+    };
+    let lightning_entry = ModelTypeMatch {
+        model_type: "nemotron_h",
+        hidden_size: Some(2688),
+        mtp_layers: Some(1),
+    };
+    let nano_shape = ModelShape {
+        model_type: "nemotron_h",
+        hidden_size: 2688,
+        mtp_layers: 0,
+    };
+    let lightning_shape = ModelShape {
+        model_type: "nemotron_h",
+        hidden_size: 2688,
+        mtp_layers: 1,
+    };
+    assert!(nano_entry.specificity(&nano_shape).is_some());
+    assert!(nano_entry.specificity(&lightning_shape).is_none());
+    assert!(lightning_entry.specificity(&lightning_shape).is_some());
+    assert!(lightning_entry.specificity(&nano_shape).is_none());
+}
+
+#[test]
+fn mismatched_model_type_or_hidden_size_never_matches() {
+    let entry = ModelTypeMatch {
+        model_type: "nemotron_h",
+        hidden_size: Some(2688),
+        mtp_layers: Some(1),
+    };
+    for shape in [
+        ModelShape {
+            model_type: "qwen3_6_moe",
+            hidden_size: 2688,
+            mtp_layers: 1,
+        },
+        ModelShape {
+            model_type: "nemotron_h",
+            hidden_size: 4096,
+            mtp_layers: 1,
+        },
+    ] {
+        assert!(entry.specificity(&shape).is_none());
+    }
+}
+
+// The registry-level counterpart of the two tests above — resolving a
+// (nemotron_h, 2688, mtp_layers) shape to two DISTINCT compiled targets —
+// lands with the PR that creates the second target
+// (`nemotron-3.5-lightning-30b-a3b`). Until then the only nemotron_h/2688
+// target declares `mtp_layers = None`, so both depths correctly resolve to
+// it and there is nothing for such a test to discriminate.

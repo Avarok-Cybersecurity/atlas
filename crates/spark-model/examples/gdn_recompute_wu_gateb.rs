@@ -64,7 +64,12 @@ fn compare(a: &[f32], b: &[f32]) -> (f32, f64) {
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048).expect("no ptx set");
+    let set = atlas_kernels::ptx_for_shape(atlas_kernels::ModelShape {
+        model_type: "qwen3_6_moe",
+        hidden_size: 2048,
+        mtp_layers: 0,
+    })
+    .expect("no ptx set");
     let backend = AtlasCudaBackend::new(0, &set.modules)?;
     let gpu: &dyn GpuBackend = &backend;
     let k = gpu.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;

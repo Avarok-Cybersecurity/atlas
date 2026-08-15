@@ -83,12 +83,18 @@ fn refuse_if_shutting_down(shutting_down: bool) -> Result<()> {
 fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
     let model_dir = super::serve_phases::resolve_model_dir(args)?;
     let (config, _) = super::serve_phases::load_model_config(&model_dir)?;
-    if atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size).is_none() {
+    let shape = atlas_kernels::ModelShape {
+        model_type: &config.model_type,
+        hidden_size: config.hidden_size,
+        mtp_layers: config.mtp_num_hidden_layers,
+    };
+    if atlas_kernels::ptx_for_shape(shape).is_none() {
         anyhow::bail!(
-            "this build has no compiled kernels for model_type '{}' / hidden_size={} \
-             (available: {:?}) — the running model is untouched",
+            "this build has no compiled kernels for model_type '{}' / hidden_size={} / \
+             num_nextn_predict_layers={} (available: {:?}) — the running model is untouched",
             config.model_type,
             config.hidden_size,
+            config.mtp_num_hidden_layers,
             atlas_kernels::available_targets()
                 .iter()
                 .map(|t| &t.target.model)

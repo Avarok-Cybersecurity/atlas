@@ -227,7 +227,14 @@ pub(super) fn generate_target_ptx_rs(
                     Some(v) => format!("Some({v})"),
                     None => "None".to_string(),
                 };
-                format!("ModelTypeMatch {{ model_type: \"{}\", hidden_size: {hs} }}", m.model_type)
+                let mtp = match m.mtp_layers {
+                    Some(v) => format!("Some({v})"),
+                    None => "None".to_string(),
+                };
+                format!(
+                    "ModelTypeMatch {{ model_type: \"{}\", hidden_size: {hs}, mtp_layers: {mtp} }}",
+                    m.model_type
+                )
             }).collect::<Vec<_>>().join(", "),
             match &target.dflash {
                 None => "None".to_string(),

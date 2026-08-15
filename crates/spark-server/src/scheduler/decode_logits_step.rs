@@ -931,17 +931,11 @@ pub fn process_decode_logits(
             // (<parameter=..>...</parameter>) that triggers false positives.
             // Use last occurrence positions — completed tool calls shouldn't
             // disable the detector for subsequent text generation.
-            let last_tc_start = a
-                .tool_call_start_token
-                .and_then(|t| a.output_tokens.iter().rposition(|&tok| tok == t));
-            let last_tc_end = a
-                .tool_call_end_token
-                .and_then(|t| a.output_tokens.iter().rposition(|&tok| tok == t));
-            let inside_tool_call = match (last_tc_start, last_tc_end) {
-                (Some(start), Some(end)) => start > end,
-                (Some(_), None) => true,
-                _ => false,
-            };
+            let inside_tool_call = tool_call_open_in_tail(
+                &a.output_tokens,
+                a.tool_call_start_token,
+                a.tool_call_end_token,
+            );
             if sched.levers.loop_watchdog()
                 && !a.finished
                 && !a.inside_thinking
