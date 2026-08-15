@@ -112,17 +112,20 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         check_enum(&mut v, "--tool-call-parser", parser, TOOL_CALL_PARSERS);
     }
     // `kv_cache_dtype` has a large TurboQuant-Plus variant set — validate via
-    // the runtime's own `FromStr` so this stays in sync automatically.
-    if args
-        .kv_cache_dtype
-        .parse::<spark_runtime::kv_cache::KvCacheDtype>()
-        .is_err()
+    // the runtime's own `FromStr` so this stays in sync automatically. Only an
+    // explicitly passed value can be checked here: an omitted flag resolves
+    // later against MODEL.toml (`resolve_kv_dtype_str`). NOTE the MODEL.toml
+    // value is NOT build-validated — `build_parse_behavior.rs` embeds
+    // `default_kv_dtype` verbatim (`as_str().unwrap_or("")`), so a typo there
+    // surfaces only at load time when the effective string hits this same
+    // `FromStr` in `serve_phases/kv_cache.rs`, after GPU init.
+    if let Some(kv_dtype) = args.kv_cache_dtype.as_deref()
+        && kv_dtype
+            .parse::<spark_runtime::kv_cache::KvCacheDtype>()
+            .is_err()
     {
         v.push(Violation::new(
-            format!(
-                "--kv-cache-dtype '{}' is not a known KV cache dtype.",
-                args.kv_cache_dtype
-            ),
+            format!("--kv-cache-dtype '{kv_dtype}' is not a known KV cache dtype."),
             "the value does not parse to any supported KV cache format.",
             "use one of: fp8, bf16, nvfp4 (or a turbo* TurboQuant-Plus variant).",
         ));
@@ -140,11 +143,18 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     }
 
     // ── FP8 KV calibration only applies to an FP8 KV cache (issue #288 example). ──
-    if args.fp8_kv_calibration_tokens > 0 && args.kv_cache_dtype != "fp8" {
+    // Both flags must be explicit to flag the combination here: an omitted
+    // --kv-cache-dtype resolves against MODEL.toml only later, so its
+    // effective value is unknown at CLI-validation time.
+    if let (Some(calib), Some(kv_dtype)) = (
+        args.fp8_kv_calibration_tokens,
+        args.kv_cache_dtype.as_deref(),
+    ) && calib > 0
+        && kv_dtype != "fp8"
+    {
         v.push(Violation::new(
             format!(
-                "--fp8-kv-calibration-tokens {} has no effect with --kv-cache-dtype {}.",
-                args.fp8_kv_calibration_tokens, args.kv_cache_dtype
+                "--fp8-kv-calibration-tokens {calib} has no effect with --kv-cache-dtype {kv_dtype}.",
             ),
             "online FP8 KV-scale calibration only feeds an FP8 KV cache; with a \
              bf16/nvfp4 cache the calibrated scales are never read.",
@@ -166,13 +176,16 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     }
 
     // ── Speculative-decode draft count needs a speculative method. ──
+    // Only an explicit flag is checked: an omitted --num-drafts resolves
+    // against MODEL.toml later, and a model default is inert without a
+    // speculative method rather than a user error.
     let any_spec = args.speculative || args.self_speculative || args.ngram_speculative;
-    if args.num_drafts > 1 && !any_spec {
+    if let Some(num_drafts) = args.num_drafts
+        && num_drafts > 1
+        && !any_spec
+    {
         v.push(Violation::new(
-            format!(
-                "--num-drafts {} is set but no speculative method is enabled.",
-                args.num_drafts
-            ),
+            format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
             "the draft count only applies when speculative decoding proposes drafts; \
              without it the flag is ignored.",
             "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \

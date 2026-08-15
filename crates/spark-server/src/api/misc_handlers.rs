@@ -254,11 +254,16 @@ pub async fn tokenize(
             .iter()
             .map(|m| serde_json::json!({"role": m.role, "content": m.content.text}))
             .collect();
-        match state.tokenizer.apply_chat_template_jinja(
+        match state.tokenizer.apply_chat_template_jinja_with_effort(
             &json_messages,
             None,
             false,
             state.behavior.disable_tool_steering,
+            None,
+            // Honor the MODEL.toml preserve_thinking override so the counted
+            // bytes match what serving renders (Qwen3.8 emits think markers
+            // on historical assistant turns unless this is false).
+            state.behavior.preserve_thinking,
         ) {
             Ok(t) => t,
             Err(e) => {

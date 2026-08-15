@@ -131,7 +131,7 @@ pub(super) fn generate_target_ptx_rs(
         };
         let fmt_cat = |c: &SamplingCat| -> String {
             format!(
-                "SamplingCategory {{ temperature: {:.2}, top_p: {:.2}, top_k: {}, presence_penalty: {:.2}, frequency_penalty: {:.2}, repetition_penalty: {:.2}, dry_multiplier: {:.2}, dry_base: {:.2}, dry_allowed_length: {}, lz_penalty: {:.2} }}",
+                "SamplingCategory {{ temperature: {:.2}, top_p: {:.2}, top_k: {}, presence_penalty: {:.2}, frequency_penalty: {:.2}, repetition_penalty: {:.2}, dry_multiplier: {:.2}, dry_base: {:.2}, dry_allowed_length: {}, lz_penalty: {:.2}, min_p: {} }}",
                 c.temperature,
                 c.top_p,
                 c.top_k,
@@ -142,6 +142,10 @@ pub(super) fn generate_target_ptx_rs(
                 c.dry_base,
                 c.dry_allowed_length,
                 c.lz_penalty,
+                match c.min_p {
+                    Some(v) => format!("Some({v:.4})"),
+                    None => "None".to_string(),
+                },
             )
         };
         g.push_str(&format!(
@@ -157,6 +161,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20           behavior: ModelBehavior {{\n\
              \x20               thinking_in_tools: {},\n\
              \x20               max_thinking_budget: {},\n\
+             \x20               effort_capped_at_ceiling: {},\n\
              \x20               thinking_default: {},\n\
              \x20               fp8_kv_calibration_tokens: {},\n\
              \x20               default_kv_dtype: \"{}\",\n\
@@ -183,8 +188,10 @@ pub(super) fn generate_target_ptx_rs(
              \x20               rollback_resteer: {},\n\
              \x20               rom_head: \"{}\",\n\
              \x20               tool_retry: {},\n\
+             \x20               preserve_thinking: {:?},\n\
              \x20           }},\n\
              \x20           model_type_matches: vec![{}],\n\
+             \x20           match_names: &[{}],\n\
              \x20           dflash: {},\n\
              \x20           shadowed_dropped: &[{}],\n\
              \x20           expected_absent: &[{}],\n\
@@ -196,6 +203,7 @@ pub(super) fn generate_target_ptx_rs(
             fmt_cat(&target.sampling_tools),
             target.behavior_thinking_in_tools,
             target.behavior_max_thinking_budget,
+            target.behavior_effort_capped_at_ceiling,
             target.behavior_thinking_default,
             target.behavior_fp8_kv_calibration_tokens,
             target.behavior_default_kv_dtype,
@@ -222,6 +230,7 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_rollback_resteer,
             target.behavior_rom_head,
             target.behavior_tool_retry,
+            target.behavior_preserve_thinking,
             target.model_type_matches.iter().map(|m| {
                 let hs = match m.hidden_size {
                     Some(v) => format!("Some({v})"),
@@ -229,6 +238,11 @@ pub(super) fn generate_target_ptx_rs(
                 };
                 format!("ModelTypeMatch {{ model_type: \"{}\", hidden_size: {hs} }}", m.model_type)
             }).collect::<Vec<_>>().join(", "),
+            target.match_names
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
             match &target.dflash {
                 None => "None".to_string(),
                 Some(d) => format!(

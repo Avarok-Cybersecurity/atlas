@@ -104,6 +104,12 @@ frequency_penalty = 0.0
 thinking_default = false
 thinking_in_tools = false
 max_thinking_budget = 128
+# Same sweep, applied to the reasoning_effort ladder: without this, a client's
+# boilerplate `reasoning_effort: "high"` resolves to 2E = 256 — the budget the
+# sweep measured as WORSE than 128 — and `xhigh` to 512. Clamp every effort
+# level at E so qualitative effort can never exceed the measured sweet spot.
+# Explicit client token budgets (`thinking_token_budget`) are unaffected.
+effort_capped_at_ceiling = true
 # A10B/A17B-class MoE finishes cleanly on long prompts (no period-N loops);
 # the content-loop watchdog is only needed on the dense Qwen 27B variants.
 enable_loop_watchdog = false

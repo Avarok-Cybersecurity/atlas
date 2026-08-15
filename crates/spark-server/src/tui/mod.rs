@@ -95,6 +95,7 @@ pub mod bench_host;
 pub mod bench_keys;
 pub mod bench_preflight;
 pub mod bench_state;
+pub mod bench_variants;
 pub mod commands;
 pub mod download_state;
 pub mod events;

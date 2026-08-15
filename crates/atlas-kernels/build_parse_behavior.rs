@@ -4,6 +4,12 @@
 // (500-LoC cap). Included as a child module of `build_parse`, so `super::`
 // reaches its items and `crate::` reaches build.rs types.
 
+// Shared with `src/lib.rs` (which `mod`s the same file) so the parse
+// default below and `ModelBehavior::default()` are one literal. A build
+// script cannot import the library it builds, and the hand-synced copies
+// this replaces drifted for a month (#328: 384 here vs 3072 lib-side).
+include!("src/behavior_defaults.rs");
+
 /// Parsed `[behavior]` table from a model's MODEL.toml. Field defaults
 /// match `ModelBehavior::default()` so an absent table / absent field is
 /// behavior-neutral.
@@ -11,6 +17,8 @@
 pub(crate) struct ParsedBehavior {
     pub thinking_in_tools: bool,
     pub max_thinking_budget: u32,
+    /// See `behavior_defaults.rs`: clamp effort levels at the ceiling.
+    pub effort_capped_at_ceiling: bool,
     pub thinking_default: bool,
     pub fp8_kv_calibration_tokens: usize,
     pub default_kv_dtype: String,
@@ -63,13 +71,18 @@ pub(crate) struct ParsedBehavior {
     pub rollback_resteer: bool,
     pub rom_head: String,
     pub tool_retry: bool,
+    /// Tri-state `preserve_thinking` chat-template flag. `None` (key absent)
+    /// = do not inject the Jinja variable; the model template's own default
+    /// applies. See `ModelBehavior::preserve_thinking`.
+    pub preserve_thinking: Option<bool>,
 }
 
 impl Default for ParsedBehavior {
     fn default() -> Self {
         Self {
             thinking_in_tools: true,
-            max_thinking_budget: 256,
+            max_thinking_budget: DEFAULT_MAX_THINKING_BUDGET,
+            effort_capped_at_ceiling: DEFAULT_EFFORT_CAPPED_AT_CEILING,
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
             default_kv_dtype: String::new(),
@@ -89,13 +102,14 @@ impl Default for ParsedBehavior {
             confidence_early_stop: true,
             confidence_run_length: 30,
             fuzzy_repeat_tolerance_div: 12,
-            max_inter_tool_prose: 384,
+            max_inter_tool_prose: DEFAULT_MAX_INTER_TOOL_PROSE,
             max_post_think_content_tokens: 100_000,
             tscg: false,
             disable_tool_grammar: false,
             rollback_resteer: true,
             rom_head: String::new(),
             tool_retry: true,
+            preserve_thinking: None,
         }
     }
 }
@@ -121,7 +135,11 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("max_thinking_budget"))
         .and_then(|v| v.as_integer())
         .map(|v| v as u32)
-        .unwrap_or(256);
+        .unwrap_or(DEFAULT_MAX_THINKING_BUDGET);
+    let effort_capped_at_ceiling = b
+        .and_then(|v| v.get("effort_capped_at_ceiling"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(DEFAULT_EFFORT_CAPPED_AT_CEILING);
     let thinking_default = b
         .and_then(|v| v.get("thinking_default"))
         .and_then(|v| v.as_bool())
@@ -216,7 +234,7 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("max_inter_tool_prose"))
         .and_then(|v| v.as_integer())
         .map(|v| v as u32)
-        .unwrap_or(384);
+        .unwrap_or(DEFAULT_MAX_INTER_TOOL_PROSE);
     let max_post_think_content_tokens = b
         .and_then(|v| v.get("max_post_think_content_tokens"))
         .and_then(|v| v.as_integer())
@@ -243,9 +261,14 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    // Tri-state: absent key stays `None` (template default), no unwrap_or.
+    let preserve_thinking = b
+        .and_then(|v| v.get("preserve_thinking"))
+        .and_then(|v| v.as_bool());
     ParsedBehavior {
         thinking_in_tools,
         max_thinking_budget,
+        effort_capped_at_ceiling,
         thinking_default,
         fp8_kv_calibration_tokens,
         default_kv_dtype,
@@ -272,5 +295,6 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         rollback_resteer,
         rom_head,
         tool_retry,
+        preserve_thinking,
     }
 }

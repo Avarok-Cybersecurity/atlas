@@ -219,15 +219,20 @@ fn a_server_serving_the_requested_model_is_clean() {
     assert!(report.is_clean());
 }
 
-/// Gate A's thresholds were measured on the 35B MoE. Pointing it at the dense
-/// 27B — a perfectly healthy server, serving exactly the model that was
-/// requested — must still say something, because the numbers would compare to
-/// nothing.
+/// Gate A's thresholds were measured on the 35B MoE, which stays the DEFAULT
+/// subject. Both dense 27Bs are registered non-default variants and are
+/// accepted, for different reasons: Qwen3.6-27B is UNMEASURED
+/// (kernels/gb10/qwen3.6-27b/BENCH.toml) so a run there baselines rather than
+/// gates, while Qwen3.8-27B is MEASURED with its own thresholds
+/// (kernels/gb10/qwen3.8-27b/BENCH.toml) and gates against them. That is the
+/// point of per-variant baselines — neither is compared against the 35B's
+/// numbers. A model outside every declared family must still be reported,
+/// because its numbers would compare to nothing.
 #[test]
 fn a_gate_run_against_the_wrong_model_family_is_reported() {
     use crate::registry;
     let agentic = registry::find("agentic-webserver").expect("registered");
-    let expect = agentic.intended_for.expect("gate A names its model");
+    let expect = agentic.intended_for.expect("gate A names its models");
 
     assert!(
         expect.accepts("Qwen/Qwen3.6-35B-A3B-FP8"),
@@ -238,8 +243,16 @@ fn a_gate_run_against_the_wrong_model_family_is_reported() {
         "and the NVFP4 variant of the same family"
     );
     assert!(
-        !expect.accepts("unsloth/Qwen3.6-27B-NVFP4"),
-        "the dense 27B is a DIFFERENT gate"
+        expect.accepts("unsloth/Qwen3.6-27B-NVFP4"),
+        "the dense Qwen3.6-27B is a registered UNMEASURED baselining variant"
+    );
+    assert!(
+        expect.accepts("unsloth/Qwen3.8-27B-NVFP4"),
+        "the dense Qwen3.8-27B is a MEASURED variant with its own thresholds"
+    );
+    assert!(
+        !expect.accepts("meta-llama/Llama-3.1-8B"),
+        "an unrelated model still compares to nothing"
     );
 }
 

@@ -119,6 +119,11 @@ oints = "oints"
 sxl = "sxl"
 
 [default.extend-identifiers]
+# `PNGs` — the plural of PNG, in the vision-fixture provisioning commentary.
+# The checker splits an uppercase run followed by a lowercase tail, so it sees
+# `PN` + `Gs` and reports `PN` as a typo of `ON`. The word is correct English
+# and the alternative is writing "PNG files" everywhere to appease a splitter.
+PNGs = "PNGs"
 # Pattern compounds the checker doesn't handle via the default list.
 wht_bf16 = "wht_bf16"
 wht_dim = "wht_dim"

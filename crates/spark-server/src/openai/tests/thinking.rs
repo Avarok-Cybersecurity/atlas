@@ -2,7 +2,7 @@
 
 //! Thinking directive tests: client channels → `ir::ThinkingDirective`.
 
-use crate::ir::ThinkingDirective;
+use crate::ir::{EffortLevel, ThinkingDirective};
 use crate::openai::*;
 
 fn chat_req(body: serde_json::Value) -> ChatCompletionRequest {
@@ -74,14 +74,14 @@ fn thinking_token_budget_channel() {
 fn reasoning_effort_channel() {
     for (effort, expect) in [
         ("none", ThinkingDirective::Off),
-        ("minimal", ThinkingDirective::On { budget: Some(64) }),
-        ("low", ThinkingDirective::On { budget: Some(128) }),
-        ("medium", ThinkingDirective::On { budget: Some(256) }),
-        ("high", ThinkingDirective::On { budget: Some(512) }),
-        ("xhigh", ThinkingDirective::On { budget: Some(1024) }),
-        ("max", ThinkingDirective::On { budget: Some(1024) }),
-        // Unknown efforts fall back to the conservative default budget.
-        ("bogus", ThinkingDirective::On { budget: Some(256) }),
+        ("minimal", ThinkingDirective::OnEffort(EffortLevel::Minimal)),
+        ("low", ThinkingDirective::OnEffort(EffortLevel::Low)),
+        ("medium", ThinkingDirective::OnEffort(EffortLevel::Medium)),
+        ("high", ThinkingDirective::OnEffort(EffortLevel::High)),
+        ("xhigh", ThinkingDirective::OnEffort(EffortLevel::XHigh)),
+        ("max", ThinkingDirective::OnEffort(EffortLevel::XHigh)),
+        // Unknown efforts ride the Medium rung, the historical 256 default.
+        ("bogus", ThinkingDirective::OnEffort(EffortLevel::Medium)),
     ] {
         let mut b = base_body();
         b["reasoning"] = serde_json::json!({"effort": effort});
@@ -100,10 +100,10 @@ fn top_level_reasoning_effort_channel() {
     // the nested object — `"none"` included, which forces thinking OFF.
     for (effort, expect) in [
         ("none", ThinkingDirective::Off),
-        ("minimal", ThinkingDirective::On { budget: Some(64) }),
-        ("low", ThinkingDirective::On { budget: Some(128) }),
-        ("medium", ThinkingDirective::On { budget: Some(256) }),
-        ("high", ThinkingDirective::On { budget: Some(512) }),
+        ("minimal", ThinkingDirective::OnEffort(EffortLevel::Minimal)),
+        ("low", ThinkingDirective::OnEffort(EffortLevel::Low)),
+        ("medium", ThinkingDirective::OnEffort(EffortLevel::Medium)),
+        ("high", ThinkingDirective::OnEffort(EffortLevel::High)),
     ] {
         let mut b = base_body();
         b["reasoning_effort"] = serde_json::json!(effort);
@@ -120,7 +120,7 @@ fn top_level_reasoning_effort_channel() {
     b["reasoning_effort"] = serde_json::json!("low");
     assert_eq!(
         chat_req(b).client_thinking_directive(),
-        ThinkingDirective::On { budget: Some(512) }
+        ThinkingDirective::OnEffort(EffortLevel::High)
     );
 }
 
@@ -159,7 +159,7 @@ fn top_level_reasoning_effort_channel_and_nested_priority() {
     let req = chat_req(top_level);
     assert_eq!(
         req.client_thinking_directive(),
-        ThinkingDirective::On { budget: Some(1024) }
+        ThinkingDirective::OnEffort(EffortLevel::XHigh)
     );
     assert_eq!(
         req.client_reasoning_effort(),
@@ -172,7 +172,7 @@ fn top_level_reasoning_effort_channel_and_nested_priority() {
     let req = chat_req(both);
     assert_eq!(
         req.client_thinking_directive(),
-        ThinkingDirective::On { budget: Some(512) }
+        ThinkingDirective::OnEffort(EffortLevel::High)
     );
     assert_eq!(
         req.client_reasoning_effort(),
@@ -188,6 +188,12 @@ fn chat_template_kwargs_channel() {
             .expect("should parse");
     assert_eq!(kw.enable_thinking, Some(true));
     assert_eq!(kw.thinking_budget, Some(1024));
+    // preserve_thinking is tri-state: absent must stay None (template
+    // default), never a fabricated bool.
+    assert_eq!(kw.preserve_thinking, None);
+    let kw: ChatTemplateKwargs =
+        serde_json::from_str(r#"{"preserve_thinking":false}"#).expect("should parse");
+    assert_eq!(kw.preserve_thinking, Some(false));
 
     // Budget rung wins over the enable flag.
     let mut b = base_body();
@@ -256,5 +262,46 @@ fn legacy_enable_thinking_channel() {
     assert_eq!(
         chat_req(b).client_thinking_directive(),
         ThinkingDirective::Unspecified
+    );
+}
+
+#[test]
+fn preserve_thinking_lowers_to_ir_tri_state() {
+    // Per-request chat_template_kwargs.preserve_thinking reaches the IR
+    // envelope; a silent client stays None so the MODEL.toml
+    // [behavior].preserve_thinking override (then the template default)
+    // applies downstream in api/chat/prepare.rs.
+    let mut b = base_body();
+    b["chat_template_kwargs"] = serde_json::json!({"preserve_thinking": true});
+    let ir: crate::ir::ChatRequest = chat_req(b).into();
+    assert_eq!(ir.preserve_thinking, Some(true));
+
+    let mut b = base_body();
+    b["chat_template_kwargs"] = serde_json::json!({"preserve_thinking": false});
+    let ir: crate::ir::ChatRequest = chat_req(b).into();
+    assert_eq!(ir.preserve_thinking, Some(false));
+
+    let ir: crate::ir::ChatRequest = chat_req(base_body()).into();
+    assert_eq!(ir.preserve_thinking, None);
+}
+
+#[test]
+fn reasoning_effort_strings_render_template_safe() {
+    // The as_str spellings are consumed by template validators:
+    // Qwen3.8 accepts only xhigh/medium/low after remapping high->xhigh,
+    // so Max MUST NOT surface as "max" (the template raises and the
+    // request 400s). "medium" keeps its own level instead of demoting to
+    // low (different Qwen3.8 instruction bytes).
+    use crate::ir::ReasoningEffort;
+    assert_eq!(ReasoningEffort::Max.as_str(), "xhigh");
+    assert_eq!(ReasoningEffort::Medium.as_str(), "medium");
+    assert_eq!(ReasoningEffort::High.as_str(), "high");
+    assert_eq!(ReasoningEffort::Low.as_str(), "low");
+
+    let mut b = base_body();
+    b["reasoning_effort"] = serde_json::json!("medium");
+    assert_eq!(
+        chat_req(b).client_reasoning_effort(),
+        Some(ReasoningEffort::Medium)
     );
 }

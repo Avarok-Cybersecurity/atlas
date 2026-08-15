@@ -5,6 +5,17 @@ params = "27B"
 active_params = "27B"
 architecture = "Hybrid Attention + SSM (Dense FFN)"
 
+# Kernel-target resolution needles (atlas-kernels/src/resolve.rs). This
+# target collides with qwen3.6-27b on the belt-and-braces (qwen3_6_moe,
+# 5120) entry below, and build.rs requires every colliding target to
+# declare its needles explicitly. NOTE: in the standard multi-target build
+# a "qwen3.5-27b"-named checkpoint still resolves to qwen3.6-27b on the
+# (qwen3_5, 5120) EXACT tier before this target's wildcard is ever
+# consulted — qwen3.6-27b claims the same needle there on purpose (HANDOFF
+# §9a routing). These needles only decide tiers where THIS target actually
+# competes.
+match_names = ["qwen3.5-27b"]
+
 layers_total = 64
 layers_full_attention = 16
 layers_linear_attention = 48
@@ -31,14 +42,21 @@ model_type = "qwen3_5"
 # (mrope_interleaved + mrope_section=[11,11,10]) in text_config.rope_parameters.
 # The dispatch rewrite to "qwen3_6_moe" is GATED on is_moe (top model_type
 # qwen3_5_moe/qwen3_vl_moe), so this DENSE hybrid keeps model_type "qwen3_5"
-# and routes here via the wildcard entry (the qwen3_6_moe/5120 entry below is
-# belt-and-braces). hidden_size=5120 distinguishes this hybrid 27B from the
-# 35B variant (hidden_size=2048) under the same model_type. NOTE: in the
-# standard multi-target build the EXACT (qwen3_5, 5120) entry on qwen3.6-27b
-# wins over this wildcard — see HANDOFF §9a; both legs are checked.
-[[model_types]]
-model_type = "qwen3_6_moe"
-hidden_size = 5120
+# and routes here via the wildcard entry. hidden_size=5120 distinguishes this
+# hybrid 27B from the 35B variant (hidden_size=2048) under the same
+# model_type. NOTE: in the standard multi-target build the EXACT
+# (qwen3_5, 5120) entry on qwen3.6-27b wins over this wildcard — see HANDOFF
+# §9a; both legs are checked.
+#
+# A belt-and-braces (qwen3_6_moe, 5120) entry used to sit here too. It was
+# removed 2026-08-14: qwen3.6-27b also declares that exact pair and claims
+# the "qwen3.5-27b" needle for the needle tie-break, so this target's needle
+# set (a strict subset) could NEVER win the tie — the entry's only reachable
+# effect was turning the hypothetical qwen3_6_moe/5120 re-upload it existed
+# for into a hard Ambiguous startup error. That tier now resolves uncontested
+# to qwen3.6-27b, the same place the documented Kbenkhaled routing already
+# goes; build.rs's `validate_collision_match_names` rejects the dominated-
+# needle shape outright.
 
 # Qwen3.5 recommended sampling (from model card).
 # 2026-05-24 empirical band-aid (matches Qwen3.6-35B-A3B post-revert).

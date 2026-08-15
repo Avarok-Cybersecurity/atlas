@@ -83,7 +83,26 @@ fn refuse_if_shutting_down(shutting_down: bool) -> Result<()> {
 fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
     let model_dir = super::serve_phases::resolve_model_dir(args)?;
     let (config, _) = super::serve_phases::load_model_config(&model_dir)?;
-    if atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size).is_none() {
+    // Same resolution (references + optional pin) the load itself runs at
+    // phase 3 — including the ambiguity hard-error, which must ALSO be
+    // discovered here, before the outgoing model is torn down.
+    let model_dir_str = model_dir.display().to_string();
+    let model_refs: Vec<&str> = [
+        args.model.as_deref(),
+        args.model_name.as_deref(),
+        Some(model_dir_str.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let resolved = atlas_kernels::ptx_for_config(
+        &config.model_type,
+        config.hidden_size,
+        &model_refs,
+        args.kernel_target.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e} — the running model is untouched"))?;
+    if resolved.is_none() {
         anyhow::bail!(
             "this build has no compiled kernels for model_type '{}' / hidden_size={} \
              (available: {:?}) — the running model is untouched",

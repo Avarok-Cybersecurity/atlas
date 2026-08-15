@@ -243,6 +243,18 @@ pub(crate) async fn run_chat_stream(
         cancel_flag.clone(),
         ctx.tool_defs_for_backfill.clone(),
     );
+    if let Some(detector) = stream_state.detector.as_mut() {
+        // Poolside v1 is the only format whose zero-argument call is a bare
+        // name inside `<tool_call>`; everywhere else that shape is malformed
+        // output and must NOT become a call (bfcl-subset-echolp residual,
+        // 2026-08: phantom zero-arg calls on irrelevance-class samples).
+        detector.set_promote_bare_names(
+            state
+                .tool_call_parser
+                .as_ref()
+                .is_some_and(|p| p.promotes_bare_call_names()),
+        );
+    }
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         use futures::StreamExt;

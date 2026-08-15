@@ -13,6 +13,18 @@ use std::path::PathBuf;
 /// the single place it is defined.
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u32 = 300;
 
+/// Engine fallback for `--num-drafts` when neither the flag nor MODEL.toml
+/// `[behavior].default_num_drafts` provides a value. Named per PCND: the
+/// CLI → MODEL.toml → engine precedence is resolved explicitly in
+/// `serve_phases::config::resolve_num_drafts`, and this is the single place
+/// the engine fallback is defined.
+pub const DEFAULT_NUM_DRAFTS: usize = 1;
+
+/// Engine fallback for `--kv-cache-dtype` when neither the flag nor MODEL.toml
+/// `[behavior].default_kv_dtype` provides a value. Named per PCND; resolved
+/// explicitly in `serve_phases::kv_cache::resolve_kv_dtype_str`.
+pub const DEFAULT_KV_CACHE_DTYPE: &str = "fp8";
+
 /// Arguments for the `serve` subcommand.
 #[derive(Parser, Debug, Clone, PartialEq)]
 pub struct ServeArgs {
@@ -108,6 +120,21 @@ pub struct ServeArgs {
     #[arg(long, alias = "served-model-name", value_name = "NAME")]
     pub model_name: Option<String>,
 
+    /// Pin kernel-target resolution to this compiled target directory name
+    /// (e.g. "qwen3.8-27b").
+    ///
+    /// Normally resolution selects on the checkpoint's `(model_type,
+    /// hidden_size)`, breaking ties between config-identical checkpoints
+    /// (Qwen3.6-27B vs Qwen3.8-27B) by matching each target's declared
+    /// `match_names` against the model id/path. When the reference carries
+    /// no identity — `--model-from-path /model` — that tie cannot break and
+    /// startup refuses rather than guessing; this flag is the explicit
+    /// answer. The pinned target must still declare support for the
+    /// checkpoint's `(model_type, hidden_size)`: a pin can choose between
+    /// compatible targets, never force an incompatible one.
+    #[arg(long, value_name = "TARGET")]
+    pub kernel_target: Option<String>,
+
     /// Override HuggingFace cache directory
     /// (default: $HF_HUB_CACHE, $HF_HOME/hub, or ~/.cache/huggingface/hub).
     #[arg(long, value_name = "DIR")]
@@ -130,15 +157,18 @@ pub struct ServeArgs {
     pub block_size: usize,
 
     /// KV cache dtype (fp8, bf16, or nvfp4).
-    /// Default: fp8. NVFP4 uses less memory but may lose coherence at long context
-    /// without --kv-high-precision-layers. FP8 is the safe default.
+    /// Precedence (highest wins): this flag → MODEL.toml
+    /// `[behavior].default_kv_dtype` → fp8 (the safe engine default,
+    /// `DEFAULT_KV_CACHE_DTYPE`). An explicitly passed value always wins,
+    /// including `fp8` itself. NVFP4 uses less memory but may lose coherence
+    /// at long context without --kv-high-precision-layers.
     ///
     /// The `turbo2`/`turbo3`/`turbo4`/`turbo8` variants (and the asymmetric
     /// `*k_*v` pairs built from them) are EXPERIMENTAL: they are not built for
     /// every kernel target, and a target that lacks them fails the kv-cache
     /// kernel preflight at startup rather than serving on a fallback.
-    #[arg(long, default_value = "fp8")]
-    pub kv_cache_dtype: String,
+    #[arg(long)]
+    pub kv_cache_dtype: Option<String>,
 
     // ── GDN / SSM decode path ──
     //
@@ -337,11 +367,42 @@ pub struct ServeArgs {
     pub disable_thinking: bool,
 
     /// Override MODEL.toml's `[behavior].max_thinking_budget` (tokens).
-    /// Sets the per-request ceiling for thinking-block length. Per-request
-    /// `thinking.budget_tokens` (or `reasoning_effort`) still wins below
-    /// this ceiling; the (max_tokens * 9 / 10) safety cap is always enforced.
+    /// Sets the per-request ceiling for thinking-block length, and anchors
+    /// the client `reasoning_effort` ladder (minimal/low/medium/high/xhigh
+    /// = 1/4x, 1/2x, 1x, 2x, 4x of this value). An explicit client token
+    /// budget (`thinking.budget_tokens`, `thinking_token_budget`) still
+    /// wins outright; the (max_tokens * 9 / 10) safety cap is enforced
+    /// unless MODEL.toml sets `cap_thinking_at_max_tokens = false`.
     #[arg(long)]
     pub max_thinking_budget: Option<u32>,
+
+    /// Override MODEL.toml's `[behavior].max_inter_tool_prose` (tokens):
+    /// the cap on free-prose tokens between successive tool calls on a
+    /// tool-armed request, after which the scheduler ends the response
+    /// with finish_reason "length" (#328). 0 disables the guard entirely.
+    /// Precedence (highest wins): this flag → ATLAS_MAX_INTER_TOOL_PROSE
+    /// → MODEL.toml → built-in default (3072).
+    #[arg(long)]
+    pub max_inter_tool_prose: Option<u32>,
+
+    /// Arm or disarm the content-loop watchdog, overriding MODEL.toml's
+    /// `[behavior].enable_loop_watchdog`. The watchdog ends (or rolls back)
+    /// a response whose tail is a short-period token repeat; its built-in
+    /// threshold (3 end-anchored repeats of a period-2..64 pattern) can
+    /// false-positive on legitimately repetitive output such as code.
+    /// Precedence (highest wins): this flag → ATLAS_CONTENT_LOOP_WATCHDOG
+    /// → MODEL.toml. Runtime-toggleable from the TUI via `/watchdog on|off`.
+    #[arg(long)]
+    pub content_loop_watchdog: Option<bool>,
+
+    /// Override the content-loop watchdog's repeat threshold (end-anchored
+    /// consecutive repeats that constitute a loop; built-in default 3).
+    /// Raise it for models whose legitimate output is short-period
+    /// repetitive (code, tables). A per-request `repetition_detection`
+    /// object still outranks this. Precedence: this flag →
+    /// ATLAS_CONTENT_LOOP_MIN_REPEATS → built-in default.
+    #[arg(long)]
+    pub content_loop_min_repeats: Option<u32>,
 
     /// Override MODEL.toml's `[behavior].disable_tool_grammar`.
     /// When true, the server skips XGrammar structural-tag enforcement on
@@ -403,10 +464,17 @@ pub struct ServeArgs {
     #[arg(long)]
     pub draft_model: Option<String>,
 
-    /// DFlash block size γ (parallel draft tokens per step). Defaults to
-    /// the drafter's `block_size` from `config.json` (16 for the published
-    /// Qwen3.6-DFlash drafters); override only for ablation. Higher γ
-    /// increases per-step verify cost but raises peak speedup.
+    /// DFlash block size γ (parallel draft tokens per step). Default 16 —
+    /// the `block_size` of every published Qwen3.6-DFlash drafter; override
+    /// only for ablation. Higher γ increases per-step verify cost but
+    /// raises peak speedup.
+    ///
+    /// NOTE: because of this clap default the drafter-`config.json`
+    /// `block_size` fallback downstream (`DflashBuildArgs.gamma: None`) is
+    /// currently unreachable — the served γ is always this flag. Fine while
+    /// every published drafter uses 16; a drafter with a different
+    /// block_size needs this flag made `Option` first (same resolution
+    /// pattern as `--num-drafts`).
     #[arg(long, default_value_t = 16)]
     pub dflash_gamma: usize,
 
@@ -420,8 +488,12 @@ pub struct ServeArgs {
 
     /// Number of draft tokens per speculative step (1=K=2, 2=K=3, 3=K=4 verify).
     /// Higher K verifies more drafts per step. Uses WY-chunkwise GDN kernels.
-    #[arg(long, default_value_t = 1)]
-    pub num_drafts: usize,
+    /// Precedence (highest wins): this flag → MODEL.toml
+    /// `[behavior].default_num_drafts` → 1 (`DEFAULT_NUM_DRAFTS`). An
+    /// explicitly passed value always wins, including `--num-drafts 1` on a
+    /// model whose MODEL.toml defaults higher.
+    #[arg(long)]
+    pub num_drafts: Option<usize>,
 
     /// Maximum concurrent sequences batched into one GPU decode step.
     #[arg(long, default_value_t = 8)]
@@ -683,8 +755,12 @@ pub struct ServeArgs {
     /// max/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
     /// 0 = disabled (use static scales from checkpoint, or uncalibrated 1.0).
     /// Only applies when --kv-cache-dtype is fp8.
-    #[arg(long, default_value_t = 0)]
-    pub fp8_kv_calibration_tokens: usize,
+    /// Precedence (highest wins): this flag → MODEL.toml
+    /// `[behavior].fp8_kv_calibration_tokens` → 0. An explicit value always
+    /// wins — passing 0 force-disables calibration even on a model whose
+    /// MODEL.toml enables it.
+    #[arg(long)]
+    pub fp8_kv_calibration_tokens: Option<usize>,
 
     /// Headroom multiplier applied to the first-observe absmax when the online
     /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
@@ -733,11 +809,70 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub fast_load_prefetch_shards: bool,
 
-    /// Cap decoded vision input area before patching. 0 preserves the
-    /// model/default image preprocessor cap. Also settable with
-    /// `ATLAS_VISION_MAX_PIXELS`.
+    /// Vision input AREA bound in pixels, applied before patching. Overrides
+    /// the checkpoint in BOTH directions — it may raise the bound as well as
+    /// lower it.
+    ///
+    /// 0 (the default) means "use the checkpoint's own bound", read from
+    /// `preprocessor_config.json` (`size.longest_edge`, or `max_pixels`;
+    /// despite the name both are pixel COUNTS). When the checkpoint declares
+    /// none, the preprocessor falls back to clamping the long side to 1280px.
+    ///
+    /// Until 2026-08-14 this flag could only ever LOWER the resolution: the
+    /// 1280px clamp was unconditional and the checkpoint's own bound was
+    /// never read, so a model built for 4096² was served at roughly a tenth
+    /// of its permitted area with nothing logged. Raising this raises the
+    /// vision token count per image quadratically — a 4096² image is ~16k
+    /// merged tokens — so it is charged against the context budget.
+    ///
+    /// Also settable with `ATLAS_VISION_MAX_PIXELS`.
     #[arg(long, default_value_t = 0)]
     pub vision_max_pixels: usize,
+
+    /// Fetch `image_url` parts that carry an http(s) URL, instead of
+    /// rejecting them.
+    ///
+    /// OFF by default, and deliberately not default-ON-with-a-kill-switch
+    /// like most Atlas features. Enabling it makes the inference server issue
+    /// outbound HTTP to addresses chosen by anyone who can send it a chat
+    /// request — a server-side request forgery primitive. A deployment that
+    /// never wanted that must not acquire it by upgrading. With the flag off,
+    /// a URL is refused with a 400 naming this flag, so the capability is
+    /// discoverable rather than silently missing; clients that cannot be
+    /// changed send a base64 `data:` URI instead.
+    ///
+    /// Switched on, the fetch is still bounded: loopback/private/link-local
+    /// destinations are refused (including across redirects), the body is
+    /// capped while being read rather than by trusting `Content-Length`, the
+    /// response must declare an image content type, and the whole request is
+    /// time-limited.
+    #[arg(long, default_value_t = false)]
+    pub vision_allow_remote_images: bool,
+
+    /// Cap, in MiB, on a single fetched remote image. Enforced against bytes
+    /// actually read, so a remote understating its `Content-Length` cannot
+    /// exceed it. No effect unless `--vision-allow-remote-images` is set.
+    #[arg(long, default_value_t = 20)]
+    pub vision_remote_image_max_mb: usize,
+
+    /// Wall-clock budget, in seconds, for fetching one remote image. Bounds a
+    /// slow-loris response, which would otherwise hold a thread from the
+    /// prepare pool for as long as the remote cared to keep the socket open.
+    /// No effect unless `--vision-allow-remote-images` is set.
+    #[arg(long, default_value_t = 10)]
+    pub vision_remote_image_timeout_s: u64,
+
+    /// Also permit remote images on loopback, private and link-local
+    /// addresses.
+    ///
+    /// A SECOND grant on top of `--vision-allow-remote-images`, because
+    /// "fetch from the public internet" and "fetch from inside my network"
+    /// have different blast radii. Only set this where the image host is
+    /// genuinely internal: it re-opens the path to link-local cloud instance
+    /// metadata (169.254.169.254), where a successful fetch returns
+    /// credentials as an ordinary HTTP body.
+    #[arg(long, default_value_t = false)]
+    pub vision_remote_image_allow_private: bool,
 
     /// Address to bind the HTTP listener to. Defaults to `127.0.0.1` so a
     /// fresh install is reachable only from the local machine; pass
@@ -826,6 +961,20 @@ pub struct ServeArgs {
     /// headroom. Empty = today's behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
     pub lora_stageable_disk: Vec<(String, String)>,
+}
+
+impl ServeArgs {
+    /// Effective speculative draft count. Valid only AFTER
+    /// `serve_phases::apply_model_default_num_drafts` has resolved the
+    /// CLI → MODEL.toml → engine-default precedence into `num_drafts` (it
+    /// runs before any GPU/pool sizing in `serve_load`). Reading it earlier
+    /// is a startup-ordering bug: fail fast rather than size a pool off a
+    /// guessed value. Pre-resolution readers (CLI validation, TUI badges)
+    /// must match on the `Option` directly instead.
+    pub fn resolved_num_drafts(&self) -> usize {
+        self.num_drafts
+            .expect("num_drafts read before apply_model_default_num_drafts resolved it")
+    }
 }
 
 /// Value parser for `--lora-adapter NAME=PATH_OR_HF_ID`.

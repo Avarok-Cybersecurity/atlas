@@ -67,7 +67,15 @@ pub(super) fn build_choice_message(
             );
             reasoning_content = hoisted_reasoning;
         }
-        let (content, parsed_tool_calls) = tool_parser::parse_tool_calls(&output_text_i);
+        let promote_bare_names = state
+            .tool_call_parser
+            .as_ref()
+            .is_some_and(|p| p.promotes_bare_call_names());
+        let (content, parsed_tool_calls) = if promote_bare_names {
+            tool_parser::parse_tool_calls_promoting_bare_names(&output_text_i)
+        } else {
+            tool_parser::parse_tool_calls(&output_text_i)
+        };
         let mut tool_calls_i = merge_hoisted_tool_calls(hoisted_tool_calls, parsed_tool_calls);
         if !tool_calls_i.is_empty() {
             let tools_ref = req.tools.clone();

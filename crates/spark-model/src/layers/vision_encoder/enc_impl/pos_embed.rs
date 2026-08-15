@@ -40,6 +40,25 @@ impl VisionEncoder {
         let h = self.hidden_size;
         let n = self.num_grid_per_side;
         let p = grid_h * grid_w;
+
+        // Capacity guard. THIS upload runs BEFORE the guarded pixel upload in
+        // `patch_embed_batched`, so it is the first thing an oversized image
+        // touches — and until 2026-08-14 it was unchecked, which is why an
+        // image past the encoder's capacity surfaced as
+        // `cuMemcpyHtoDAsync_v2 failed: status 1` (CUDA_ERROR_INVALID_VALUE)
+        // from inside the scheduler, naming neither vision nor a size.
+        //
+        // `check_pixel_len` already guards the pixel path with a good message;
+        // this is its missing counterpart on the pos-embed path.
+        anyhow::ensure!(
+            p <= self.p_max,
+            "vision: image is {grid_h}x{grid_w} patches ({p} total) but this encoder holds \
+             {} — raise the area bound (--vision-max-pixels) only if the encoder was built \
+             for it, since its buffers are sized from that same bound and the ViT score \
+             matrix is O(patches^2)",
+            self.p_max
+        );
+
         let mut out_bf16 = vec![0u16; p * h];
 
         // HF uses torch.linspace(0, n-1, grid_dim), so endpoints hit the

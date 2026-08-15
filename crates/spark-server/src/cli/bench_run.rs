@@ -29,8 +29,11 @@ pub fn find(id: &str) -> Result<&'static BenchmarkDescriptor> {
 }
 
 pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
+    if let Err(msg) = args.reject_orphan_pr() {
+        bail!("{msg}");
+    }
     if args.pull_request_gate_check {
-        let code = gate_check_cmd(args.pr)?;
+        let code = super::bench_gate_check::gate_check_cmd(args.pr)?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -62,7 +65,7 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
 }
 
 /// The repo root this checkout lives in — where `.benchmarks/` sits.
-pub(super) fn repo_root() -> Result<std::path::PathBuf> {
+pub(crate) fn repo_root() -> Result<std::path::PathBuf> {
     let out = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .stdin(std::process::Stdio::null())
@@ -76,104 +79,6 @@ pub(super) fn repo_root() -> Result<std::path::PathBuf> {
         bail!("git rev-parse --show-toplevel printed nothing");
     }
     Ok(std::path::PathBuf::from(path))
-}
-
-/// `--pull-request-gate-check`: does THIS commit have a passing record for
-/// every required gate? Prints a line per bench and exits 1 until they all
-/// pass. Pure filesystem reads — fast enough to run on every PR in CI.
-fn gate_check_cmd(pr: Option<u64>) -> Result<i32> {
-    let root = repo_root()?;
-    let sha = gate::git_sha(&root)?;
-    let gates = gate::check_gates(&root, &sha);
-    println!("gate check for {sha} ({})", root.display());
-    let mut open = Vec::new();
-    for id in gate::REQUIRED_GATES {
-        let status = &gates[id];
-        match status {
-            gate::GateStatus::Pass => println!("  PASS  {id}"),
-            gate::GateStatus::Fail(reasons) => {
-                println!("  FAIL  {id}");
-                for reason in reasons {
-                    println!("        - {reason}");
-                }
-                open.push(id);
-            }
-            gate::GateStatus::Missing(reason) => {
-                println!("  NONE  {id} — {reason}");
-                open.push(id);
-            }
-        }
-    }
-    // ── ADVISORY: what the classified intent would have asked for ──
-    //
-    // ★ Printed AFTER the verdict and consulted by nothing. `gate::exit_code`
-    // takes only the statuses, by signature, so this cannot reach the exit code
-    // without a visible change to that function. The owner's decision is that
-    // intent stays advisory until it is proven stable; this is the reporting
-    // half of it.
-    //
-    // `atlas-governance`'s own doctrine says the ledger is advisory
-    // "permanently — adding a ledger read would make [the gate] depend on a
-    // file any job can append to". Reading it to PRINT is not that; reading it
-    // to DECIDE would be, and would need that paragraph rewritten first.
-    let roots = gate::pr_taxonomy::load(&root);
-    let source = gate::required::intent_source(&root, pr);
-    println!();
-    match (&source, &roots) {
-        (gate::required::IntentSource::NotRequested, _) => {
-            println!("intent: not evaluated (no --pr)");
-        }
-        (gate::required::IntentSource::NotRecorded { ledger }, _) => {
-            println!("intent: nothing recorded ({})", ledger.display());
-        }
-        (gate::required::IntentSource::Degraded { reason }, _) => {
-            println!("intent: DEGRADED — {reason}");
-        }
-        (_, Err(e)) => println!("intent: taxonomy unreadable — {e:#}"),
-        (
-            gate::required::IntentSource::Recorded {
-                categories,
-                skipped,
-            },
-            Ok(roots),
-        ) => {
-            let report = gate::required::report(&[], source.clone(), roots);
-            println!(
-                "intent: {} classification(s){}",
-                categories.len(),
-                if *skipped > 0 {
-                    format!(", {skipped} abstained/errored (not counted)")
-                } else {
-                    String::new()
-                }
-            );
-            for c in categories {
-                println!("        {}", c.join("/"));
-            }
-            let implied = report.set.by_intent;
-            println!(
-                "        implies: {}",
-                if implied.is_empty() {
-                    "(nothing)".to_string()
-                } else {
-                    implied.iter().cloned().collect::<Vec<_>>().join(", ")
-                }
-            );
-            println!("        advisory — does not change the verdict above or the exit code");
-        }
-    }
-
-    if open.is_empty() {
-        println!("all {} required gates pass", gate::REQUIRED_GATES.len());
-        Ok(0)
-    } else {
-        println!(
-            "{} bench(es) still need a passing gate record: {}",
-            open.len(),
-            open.join(", ")
-        );
-        Ok(1)
-    }
 }
 
 /// The commit and the uncommitted invalidation-set files, both read BEFORE the
@@ -318,6 +223,9 @@ fn history_cmd(args: HistoryArgs) -> Result<()> {
 }
 
 async fn run(args: RunArgs) -> Result<i32> {
+    if let Err(msg) = args.reject_orphan_checkpoint() {
+        bail!("{msg}");
+    }
     let descriptor = find(&args.id)?;
     if descriptor.needs_confirmation && !args.yes {
         bail!(
@@ -333,7 +241,7 @@ async fn run(args: RunArgs) -> Result<i32> {
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect::<Vec<_>>();
-    let values = ParamValues::from_overrides(&specs, pairs)?;
+    let mut values = ParamValues::from_overrides(&specs, pairs)?;
 
     // With --pull-request-gate the suite provisions its own server from the
     // benchmark's recipe, so the record describes a config nobody typed. Without
@@ -357,7 +265,8 @@ async fn run(args: RunArgs) -> Result<i32> {
             super::bench_selfstart::serve_for(
                 &args.id,
                 args.hardware.as_deref(),
-                super::bench_selfstart::parse_serve_overrides(&args.serve_override)?,
+                args.checkpoint.as_deref(),
+                super::bench_resolve::parse_serve_overrides(&args.serve_override)?,
             )
             .await?,
         )
@@ -368,6 +277,23 @@ async fn run(args: RunArgs) -> Result<i32> {
         Some(s) => s.target.clone(),
         None => TargetEndpoint::new(&args.url, args.model.as_deref().unwrap_or_default()),
     };
+    // The served VARIANT defines any baseline-coupled parameters the run's own
+    // verdict reads (an explicit --param still wins) — see
+    // `apply_threshold_params` for the precedence and why.
+    if let Some(s) = &served {
+        for (param, max) in super::bench_resolve::apply_threshold_params(
+            descriptor,
+            &specs,
+            &mut values,
+            &s.baseline_entry,
+            &args.params,
+        )? {
+            eprintln!(
+                "gate: {param} = {max} from the {} variant's baseline (not the schema default)",
+                target.model
+            );
+        }
+    }
 
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
     let request = RunRequest {

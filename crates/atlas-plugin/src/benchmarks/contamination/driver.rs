@@ -59,6 +59,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // Determinism under concurrency is a property of the ENGINE, not of a
     // checkpoint; any served model is a valid subject.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(CrossContamination::default()),
 };
 

@@ -69,7 +69,9 @@ fn cmp(a: &[f32], b: &[f32]) -> (f32, f64) {
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048).expect("no ptx set");
+    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
+        .expect("unambiguous")
+        .expect("no ptx set");
     let backend = AtlasCudaBackend::new(0, &set.modules)?;
     let g: &dyn GpuBackend = &backend;
     let k_wu: KernelHandle = g.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;

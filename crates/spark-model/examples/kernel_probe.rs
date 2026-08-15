@@ -8,9 +8,11 @@ use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 
 fn main() -> anyhow::Result<()> {
-    // Server path: serve.rs uses ptx_for_config(model_type, hidden_size).
+    // Server path: serve_load.rs uses ptx_for_config(model_type, hidden_size,
+    // refs, pin); (qwen3_6_moe, 2048) is uncontested so refs stay empty.
     // Qwen3.6-35B-A3B → model_type "qwen3_6_moe", hidden_size 2048.
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048)
+    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
+        .expect("unambiguous")
         .expect("no ptx set for (qwen3_6_moe, 2048)");
     eprintln!(
         "target.model={} quant={} modules={}",

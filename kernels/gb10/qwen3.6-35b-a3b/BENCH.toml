@@ -20,6 +20,9 @@ quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
 gate = "agentic-webserver"
 recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+# The human name the TUI's variant list shows; additive only, thresholds and
+# default are unchanged. The dense sibling lives in qwen3.8-27b/BENCH.toml.
+label = "Qwen3.6-35B-A3B MoE flagship (FP8)"
 default = true
 status = "measured"
 note = """\
@@ -84,30 +87,37 @@ note = """\
 Gate B. Echolp draw (46/23/12, floor 25, n=1004, seed 42, temp 0) on the 35B MoE. THIS BENCH \
 EXISTS BECAUSE THE 35B HAS NEVER BEEN RUN ON THE GOLDEN n=995 DRAW — every 35B BFCL number \
 on record is this draw, so gating it on the golden one would have meant inventing a \
-threshold. THRESHOLDS ARE THE HIGH-WATER RATCHET, NOT THE LIVE BASELINE: 84.66 / 83.32 is \
-the best ever recorded (2026-07-10 main-438ed09, re-confirmed identically on all 12 subsets \
-2026-07-13 d77bdf84). The live baseline sits lower at 84.06 / 82.06 (2026-07-26 same-box \
-control) and that -0.60/-1.26 gap is UNEXPLAINED — image, box or harness drift, not \
-attributable to any PR. Gating on the high-water rather than the live number is deliberate \
-per owner directive: enforce the best we have ever achieved so the gate cannot silently \
-ratchet downward. CONSEQUENCE TO EXPECT: a run reproducing today's live behaviour will FAIL \
-this gate by ~0.6/1.3 until that drift is explained or the ratchet is consciously lowered \
-with a recorded reason. That is the intended pressure, not a bug — but do not lower it \
-silently. `noise` is the measured +/-0.4 MTP-nondeterminism band. Do NOT score this against \
-the golden draw's numbers: same overall (~87.44 vs 87.45) but normalized differs ~1.8 points \
-purely from category mix. History: 2026-07-10 main-438ed09 84.66/83.32 (high-water); \
-2026-07-13 d77bdf84 84.66/83.32; 2026-07-26 main 22adb23e control 84.06/82.06; 2026-07-26 \
-pr369 de6153f3 83.96/81.96; 2026-08-03 PR #388 Gate B 84.26/82.15 n=1004. The draw is PINNED \
+threshold. THRESHOLDS ARE THE HIGH-WATER RATCHET, NOT THE LIVE BASELINE. RATCHETED 2026-08-13 \
+(owner instruction): overall 84.66 -> 86.50, normalized 83.32 -> 86.90. The old floors were \
+set from the 2026-07-10 high-water (84.66/83.32) and were never re-raised after the gate \
+started reproducing 86.95/86.55 bit-identically across many shas (2026-08-07..08-12, engine \
+bitwise-deterministic at batch 1). Consequence: the 2026-08-12 batch4 stack shipped a \
+-1.61/-1.79 deterministic regression (85.34/84.76, reproduced to the hundredth at 03a74eac19 \
+and cb9f8ecab4 — the rerouted MoE router GEMM, see router_gate_gemm_dense) and PASSED with \
+0.10 to spare. The new floors are best-ever minus 0.05: the gate compares value + noise >= \
+min with noise = 0.4, so 86.50/86.90 fail anything below 86.10/86.50 — 0.45 under the \
+86.55/86.95 best, outside the +/-0.4 MTP-nondeterminism band — while a healthy build \
+reproducing the best-ever state passes with the full noise margin. Do not lower these \
+silently; a conscious lowering needs a recorded reason here. The pre-2026-08 note recorded a \
+then-unexplained -0.60/-1.26 live-baseline gap (2026-07-26, 84.06/82.06); the deterministic \
+86.95/86.55 record since 2026-08-07 supersedes it. `noise` is the measured +/-0.4 \
+MTP-nondeterminism band. Do NOT score this against the golden draw's numbers: same overall \
+(~87.44 vs 87.45) but normalized differs ~1.8 points purely from category mix. History: \
+2026-07-10 main-438ed09 84.66/83.32 (old high-water); 2026-07-13 d77bdf84 84.66/83.32; \
+2026-07-26 main 22adb23e control 84.06/82.06; 2026-07-26 pr369 de6153f3 83.96/81.96; \
+2026-08-03 PR #388 Gate B 84.26/82.15 n=1004; 2026-08-07..08-12 main 86.95/86.55 \
+bit-reproduced (new high-water); 2026-08-12 03a74eac19 85.34/84.76 REGRESSION (batch4 \
+stack); 2026-08-13 cb9f8ecab4 85.34/84.76 (identical — deterministic). The draw is PINNED \
 at n=1004: a score from a different draw is not comparable to these thresholds, and the \
 sample count is the only thing that reveals it after the fact, so it is gated exactly rather \
 than merely recorded."""
 
 [benchmarks.metrics.normalized_single_turn_score]
-min = 83.32
+min = 86.90
 noise = 0.4
 
 [benchmarks.metrics.overall_accuracy]
-min = 84.66
+min = 86.50
 noise = 0.4
 
 [benchmarks.metrics.samples]
@@ -186,12 +196,17 @@ agentic gate into early-EOS). It is REQUIRED, not a promotion candidate, \
 because the bug it exists to catch already landed once.
 
 The zero-tolerance thresholds are DEFINITIONS of the invariant, not measured \
-performance: `diverged` and `unmeasured` must be 0 and `invariant` must equal \
-`rounds` — same footing as the agentic gate's exact `iterations` pin. They are \
-belt-and-suspenders with the run verdict (which itself fails on any divergence), \
-enforcing the invariant at the record level too. `rounds` is pinned at exactly \
-12, the N the invariant was written for: the incident poisoned rounds 8-9 of 10, \
-so the gate carries margin past that.
+performance: `collapsed` and `unmeasured` must be 0 — same footing as the \
+agentic gate's exact `iterations` pin. (`invariant` is deliberately NOT pinned \
+to `rounds`: healthy restore jitter means most rounds are Jittered, not \
+Invariant, and a note claiming otherwise once contradicted the gate's own \
+verdict rule.) They are belt-and-suspenders with the run verdict (which itself \
+fails on any collapse, any unmeasured round, any zero-cache replay, and any \
+reference round that misses the script's semantic anchors), enforcing the \
+invariant at the record level too. `rounds` is pinned at exactly 12, the N the \
+invariant was written for: the incident poisoned rounds 8-9 of 10, so the gate \
+carries margin past that. `min_cached_prompt_tokens` is the vacuity \
+attestation — see its own comment below.
 
 `sum_wall_s` is the only genuinely measured-style number — a BLOWUP DETECTOR, \
 not a perf gate (identical philosophy to the agentic Σwall). Generous pending \
@@ -232,5 +247,82 @@ max = 0.0
 # 2026-08-12, sha a1c8000d44), and bounding it would fail healthy builds.
 # It is recorded for the record, not gated.
 
+# The vacuity attestation: the minimum turn-1 `cached_tokens` the server
+# reported across the replay rounds. Every replay's first turn is a
+# cross-round restore of the shared ~1.5K-token prefix, so on a caching
+# server this is far above zero (the 2026-08-12 run on sha 7dd4cc33bc
+# restored from anchors 992-1152). The floor of 1 is a DEFINITION, not a
+# measurement: it distinguishes "the restore path ran" from "prefix caching
+# was off and the gate replayed against a cold engine" — the configuration
+# under which this gate once returned a green PASS proving nothing. Ratchet
+# toward the observed anchor scale (~992 on this checkpoint) after the first
+# recorded run that carries this metric; do not guess a higher floor before
+# then.
+[benchmarks.metrics.min_cached_prompt_tokens]
+min = 1.0
+
 [benchmarks.metrics.sum_wall_s]
 max = 1200.0
+
+# --- vision-fidelity -------------------------------------------------------
+# Vision models only. This gate is declared on the three targets that ship a
+# vision tower and have a BENCH.toml; a text-only target has no entry and the
+# gate simply does not apply to it.
+#
+# The bounds are ABSOLUTE and take no noise term, like the cross-contamination
+# gate's. Vision-token count is arithmetic over the patch grid -- there is no
+# run-to-run variance for a tolerance to absorb, so any movement is a real
+# change in preprocessing. That is the property that makes this gate worth
+# requiring: the 2026-08-14 resolution-cap defect silently reduced every image
+# above 1280px to about a tenth of its permitted area, and every capability
+# check passed throughout, because a downscaled picture is still recognisably
+# what it is.
+#
+#   geometry_matched  = 9   the CORRECTNESS floor, and the one that moves when
+#                           preprocessing changes. Rung 09 (1600x900) is the
+#                           ONLY rung above the retired 1280px clamp: under the
+#                           clamp it is 920 tokens, un-downscaled it is 1400.
+#                           The other eight fit under either regime and so
+#                           cannot tell the two apart -- without rung 09 this
+#                           gate could not fail on the defect it exists for.
+#   geometry_asserted = 9   the MEASUREMENT floor, which is a DIFFERENT failure.
+#                           A cell the server cannot serve reports UNMEASURED,
+#                           which is not a mismatch -- so without this floor an
+#                           encoder-capacity regression would turn every cell
+#                           UNMEASURED and still read as PASS. Both are kept
+#                           because neither implies the other.
+#   probes_passed     = 3   capability, all three.
+#   control_held      = 1   the no-image control MUST hold. The non-vacuity
+#                           requirement expressed as a threshold: if the control
+#                           answers as though it saw a picture, the probes are
+#                           not evidence and the run is VACUOUS.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "vision-fidelity"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+label = "Qwen3.6-35B-A3B (FP8, bf16 head)"
+default = true
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary vision/sprint @ 5e05465b: PASS, 9/9 geometry \
+cells matched, 3/3 probes, control held, 14.7 s. Geometry was IDENTICAL across all \
+three vision targets (49/121/192/220/576/576/920/405/1400 merged tokens) -- token \
+count is a property of the preprocessor rather than the checkpoint, so agreement \
+across a dense NVFP4, an unsloth NVFP4 and an FP8 MoE is evidence the arithmetic is \
+right rather than a coincidence. Ships preprocessor_config.json, so it resolved 16.7M \
+px before the resolver fix as well; clamped to the encoder's 16384-patch ceiling, and \
+the boot log says so rather than silently ignoring the checkpoint."""
+
+[benchmarks.metrics.geometry_matched]
+min = 9.0
+
+[benchmarks.metrics.geometry_asserted]
+min = 9.0
+
+[benchmarks.metrics.probes_passed]
+min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0

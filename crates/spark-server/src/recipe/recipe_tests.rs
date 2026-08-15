@@ -171,8 +171,8 @@ fn a_setting_the_recipe_does_not_list_can_be_added() {
         ("fp8_kv_calibration_tokens".to_string(), "512".to_string()),
     ]);
     let args = r.serve_args(&overrides).expect("validates");
-    assert_eq!(args.kv_cache_dtype, "fp8");
-    assert_eq!(args.fp8_kv_calibration_tokens, 512);
+    assert_eq!(args.kv_cache_dtype.as_deref(), Some("fp8"));
+    assert_eq!(args.fp8_kv_calibration_tokens, Some(512));
 }
 
 /// A key that maps to NO flag is refused here rather than dropped.

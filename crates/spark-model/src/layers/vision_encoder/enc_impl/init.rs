@@ -7,7 +7,54 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::super::{MergerLayer, PATCH_DIM, ViTBlock, VisionEncoder};
 
+/// Encoder capacity, in patches, when nothing bounds the image.
+///
+/// 6400 = 80×80, i.e. 1280×1280 at patch 16 — the value this was hard-coded to
+/// until 2026-08-14, kept as the fallback so a checkpoint that declares no
+/// bound behaves exactly as before.
+pub const FALLBACK_MAX_PATCHES: usize = 6400;
+
+/// Ceiling on the derived capacity, in patches. 16384 = 128×128 = 2048×2048.
+///
+/// A ceiling exists because the ViT attention materialises a full `[seq, seq]`
+/// score matrix, so allocation is **O(patches²)**. Measured on GB10 at
+/// Qwen3.8's vision geometry:
+///
+/// | patches | image  | encoder alloc | pre-KV  | max KV tokens |
+/// |---------|--------|---------------|---------|---------------|
+/// |  6 400  | 1280²  |    502 MB     | 57.3 GB |   457 328     |
+/// | 16 384  | 2048²  |   2 221 MB    | 59.8 GB |   375 184     |
+/// | 65 536  | 4096²  |  26 680 MB    |    —    |      —        |
+///
+/// 16384 is the last rung that is affordable: it costs +2.5 GB and ~18% of KV
+/// capacity at util 0.70. Qwen3.8-27B *declares* 4096² (`size.longest_edge =
+/// 16777216`), which would need 26.7 GB of scratch — 69% of it in those two
+/// quadratic buffers — so honouring it needs tiled/flash attention in the ViT,
+/// not a bigger number here. Raising this without that work will OOM the box.
+pub const CEILING_MAX_PATCHES: usize = 16384;
+
+/// Patches the encoder must hold to serve an area bound, clamped to what is
+/// affordable.
+///
+/// `max_pixels` is an AREA, so patches = area / patch². Returns the clamp
+/// decision alongside the value so the caller can say out loud when a
+/// checkpoint asked for more than it got — silently ignoring the checkpoint is
+/// the failure mode this whole change exists to remove.
+pub fn derive_max_patches(max_pixels: Option<usize>, patch_size: usize) -> (usize, Option<usize>) {
+    let Some(area) = max_pixels.filter(|&a| a > 0) else {
+        return (FALLBACK_MAX_PATCHES, None);
+    };
+    let per_patch = patch_size.max(1) * patch_size.max(1);
+    let wanted = (area / per_patch).max(1);
+    if wanted > CEILING_MAX_PATCHES {
+        (CEILING_MAX_PATCHES, Some(wanted))
+    } else {
+        (wanted.max(FALLBACK_MAX_PATCHES.min(wanted)), None)
+    }
+}
+
 impl VisionEncoder {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         patch_embed_w: DevicePtr,
         patch_embed_b: DevicePtr,
@@ -22,10 +69,35 @@ impl VisionEncoder {
         spatial_merge_size: usize,
         out_hidden_size: usize,
         intermediate_size: usize,
+        patch_size: usize,
+        max_pixels: Option<usize>,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let head_dim = hidden_size / num_heads;
-        let p_max = 6400usize; // 80×80 patches for 1280×1280 image
+        // Derived from the SAME resolved bound the CPU preprocessor uses, so
+        // the two can no longer disagree. See `derive_max_patches`.
+        let (p_max, asked_for) = derive_max_patches(max_pixels, patch_size);
+        match asked_for {
+            Some(wanted) => tracing::warn!(
+                "Vision encoder capacity {p_max} patches ({}x{} px) — the resolved area bound \
+                 wanted {wanted} patches, clamped: the ViT score matrix is O(patches^2) and \
+                 {wanted} would need ~{:.1} GB of scratch. Lower --vision-max-pixels to reclaim \
+                 memory, or raise CEILING_MAX_PATCHES only alongside tiled ViT attention.",
+                (p_max as f64).sqrt() as usize * patch_size,
+                (p_max as f64).sqrt() as usize * patch_size,
+                ((wanted * wanted * 6) as f64) / (1024.0 * 1024.0 * 1024.0),
+            ),
+            None => tracing::info!(
+                "Vision encoder capacity {p_max} patches ({}x{} px){}",
+                (p_max as f64).sqrt() as usize * patch_size,
+                (p_max as f64).sqrt() as usize * patch_size,
+                if max_pixels.is_some() {
+                    " from the resolved area bound"
+                } else {
+                    " (no bound declared — historical fallback)"
+                }
+            ),
+        }
         let merger_in_dim = spatial_merge_size * spatial_merge_size * hidden_size; // 4608
 
         // num_grid_per_side is the side length of the square pos_embed grid
@@ -156,5 +228,98 @@ impl VisionEncoder {
             pos_embed_host_f32,
             rope_inv_freq,
         })
+    }
+}
+
+#[cfg(test)]
+mod derive_tests {
+    use super::*;
+
+    /// Qwen3.8-27B: `size.longest_edge = 16777216` (4096²) at patch 16.
+    const Q38_BOUND: usize = 16_777_216;
+
+    #[test]
+    fn no_bound_keeps_the_historical_capacity() {
+        // A checkpoint shipping no preprocessor_config.json must allocate
+        // exactly what it always did — this change is not allowed to move
+        // memory for models that declare nothing.
+        assert_eq!(derive_max_patches(None, 16), (FALLBACK_MAX_PATCHES, None));
+        assert_eq!(
+            derive_max_patches(Some(0), 16),
+            (FALLBACK_MAX_PATCHES, None)
+        );
+    }
+
+    #[test]
+    fn a_declared_bound_over_the_ceiling_is_clamped_and_reported() {
+        // THE case that motivated the ceiling. Qwen3.8 asks for 65536 patches
+        // (26.7 GB of scratch, 69% of it in the O(p^2) score matrix); it gets
+        // the ceiling, and the amount it asked for comes back so the caller
+        // can say so out loud rather than silently ignoring the checkpoint.
+        let (got, asked) = derive_max_patches(Some(Q38_BOUND), 16);
+        assert_eq!(got, CEILING_MAX_PATCHES);
+        assert_eq!(
+            asked,
+            Some(65_536),
+            "the caller must be able to report the ask"
+        );
+    }
+
+    #[test]
+    fn a_low_operator_bound_shrinks_the_allocation() {
+        // The direction that did not exist before: --vision-max-pixels used to
+        // be a quality knob only, because p_max was a literal. A deployment
+        // serving thumbnails should not pay for 1280x1280 buffers.
+        let (got, asked) = derive_max_patches(Some(512 * 512), 16);
+        assert_eq!(asked, None, "under the ceiling, nothing was clamped");
+        assert_eq!(got, 1024, "512x512 at patch 16 is 32x32 = 1024 patches");
+        assert!(
+            got < FALLBACK_MAX_PATCHES,
+            "a low bound must allocate LESS than the historical default"
+        );
+    }
+
+    #[test]
+    fn the_ceiling_is_never_exceeded_whatever_is_declared() {
+        for area in [Q38_BOUND, 100_000_000, usize::MAX / 4] {
+            let (got, _) = derive_max_patches(Some(area), 16);
+            assert!(
+                got <= CEILING_MAX_PATCHES,
+                "area {area} produced {got} patches, past the ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn capacity_tracks_patch_size() {
+        // patches = area / patch^2, so a finer grid needs MORE rows for the
+        // same pixel area. A checkpoint at patch 14 must not silently get a
+        // patch-16 allocation.
+        let (at16, _) = derive_max_patches(Some(1024 * 1024), 16);
+        let (at14, _) = derive_max_patches(Some(1024 * 1024), 14);
+        assert!(
+            at14 > at16,
+            "finer patches need more rows: {at14} vs {at16}"
+        );
+    }
+
+    #[test]
+    fn the_ceiling_matches_the_measured_affordable_rung() {
+        // 16384 patches = 2048x2048, measured on GB10 at +2.5 GB pre-KV and
+        // -18% KV tokens. Pinned so raising it is a deliberate act with a
+        // measurement behind it, not a passing edit.
+        assert_eq!(CEILING_MAX_PATCHES, 16_384);
+        let side = (CEILING_MAX_PATCHES as f64).sqrt() as usize * 16;
+        assert_eq!(side, 2048, "the ceiling should be a clean square image");
+    }
+
+    #[test]
+    fn degenerate_inputs_do_not_produce_a_zero_allocation() {
+        // A zero-row allocation would make every buffer empty and turn the
+        // first upload into the same opaque CUDA error this work removed.
+        let (got, _) = derive_max_patches(Some(1), 16);
+        assert!(got >= 1, "derived capacity must never be zero");
+        let (got0, _) = derive_max_patches(Some(1024), 0);
+        assert!(got0 >= 1, "patch_size 0 must not divide by zero");
     }
 }

@@ -136,7 +136,11 @@ pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
     out.push(Badge {
         text: format!(
             "kv {} · lm {} · mtp {}",
-            a.kv_cache_dtype, a.lm_head_dtype, a.mtp_quantization
+            // Pre-resolution args: an omitted --kv-cache-dtype is decided
+            // later against MODEL.toml, so "auto" is the honest label here.
+            a.kv_cache_dtype.as_deref().unwrap_or("auto"),
+            a.lm_head_dtype,
+            a.mtp_quantization
         ),
         tint: BadgeTint::Quant,
     });
@@ -147,7 +151,12 @@ pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
         });
     } else if a.speculative || a.self_speculative || a.ngram_speculative {
         out.push(Badge {
-            text: format!("MTP k={}", a.num_drafts + 1),
+            // Pre-resolution args: an omitted --num-drafts is decided later
+            // against MODEL.toml, so the verify width is not yet known.
+            text: match a.num_drafts {
+                Some(n) => format!("MTP k={}", n + 1),
+                None => "MTP k=auto".to_string(),
+            },
             tint: BadgeTint::Quant,
         });
     } else {

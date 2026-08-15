@@ -18,6 +18,17 @@
 
 use atlas_core::target::KernelTarget;
 
+pub mod resolve;
+pub use resolve::{ResolveCandidate, TargetResolveError, ptx_for_config, ptx_for_exact_target};
+
+// Build-time/run-time shared `[behavior]` defaults — also `include!`d by
+// `build_parse_behavior.rs` so the build script's parse defaults cannot
+// drift from `ModelBehavior::default()` (the #328 failure mode).
+mod behavior_defaults;
+pub use behavior_defaults::{
+    DEFAULT_EFFORT_CAPPED_AT_CEILING, DEFAULT_MAX_INTER_TOOL_PROSE, DEFAULT_MAX_THINKING_BUDGET,
+};
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
 // NOTE: cargo does NOT track this build-script-generated include! as a
@@ -95,6 +106,21 @@ pub struct SamplingCategory {
     /// `presence_penalty` regression. 0.0 = disabled. SGLang reference
     /// strength = 0.2 (lossless on AIME/GPQA).
     pub lz_penalty: f32,
+    /// Model-declared min-p, or `None` when MODEL.toml is silent.
+    ///
+    /// `Option`, not `f32`, because absence and `0.0` mean opposite things
+    /// here. The server ships `--default-min-p 0.08` and every request that
+    /// does not name min_p takes it, so a model whose card specifies
+    /// `min_p = 0` had no way to say so: `[behavior].min_p_floor` only ever
+    /// RAISES min_p (`min_p.max(floor)`), and the preset did not carry the
+    /// value at all. A plain `f32` defaulting to 0.0 would silently strip the
+    /// 0.08 floor from every model that has a `[sampling.*]` table, which is
+    /// the opposite regression.
+    ///
+    /// `Some(x)` outranks the CLI default and is outranked by
+    /// `generation_config.json` — the same precedence temperature/top_k/top_p
+    /// already follow. `None` preserves the CLI-owned behaviour exactly.
+    pub min_p: Option<f32>,
 }
 
 /// Model-specific sampling presets loaded from MODEL.toml `[sampling.*]`.
@@ -123,6 +149,7 @@ impl Default for SamplingPresets {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            min_p: None,
         };
         let tools_cat = SamplingCategory {
             temperature: 0.6,
@@ -135,6 +162,7 @@ impl Default for SamplingPresets {
             dry_base: 1.75,
             dry_allowed_length: 2,
             lz_penalty: 0.0,
+            min_p: None,
         };
         Self {
             thinking_text: default_cat,
@@ -150,8 +178,15 @@ impl Default for SamplingPresets {
 pub struct ModelBehavior {
     /// Allow thinking when tools are active. Default: true.
     pub thinking_in_tools: bool,
-    /// Maximum thinking budget (tokens). Default: 256.
+    /// Maximum thinking budget (tokens). Default:
+    /// [`DEFAULT_MAX_THINKING_BUDGET`].
     pub max_thinking_budget: u32,
+    /// Clamp qualitative `reasoning_effort` levels at the model's effective
+    /// ceiling (high/xhigh resolve to `max_thinking_budget` instead of
+    /// 2x/4x it). Default [`DEFAULT_EFFORT_CAPPED_AT_CEILING`] = `false`
+    /// (historical ladder shape). See `behavior_defaults.rs` for when a
+    /// model should set `true` (measured budget non-monotonicity).
+    pub effort_capped_at_ceiling: bool,
     /// Default thinking state for this model when the client request does not
     /// specify a reasoning_effort / thinking parameter. Typical values:
     /// - thinking-first models (Mistral Small 4, Qwen3.5, …): `true`
@@ -241,7 +276,8 @@ pub struct ModelBehavior {
     /// mismatches. Default 12 (~8%).
     pub fuzzy_repeat_tolerance_div: u32,
     /// Cap on free-text tokens between successive `<tool_call>` opens in
-    /// `tool_choice=auto`. Default 384. Agentic coding may want larger.
+    /// `tool_choice=auto`. Default [`DEFAULT_MAX_INTER_TOOL_PROSE`]
+    /// (see `behavior_defaults.rs` for the tuning history — #328).
     pub max_inter_tool_prose: u32,
     /// Unconditional per-generation cap on post-`</think>` content tokens
     /// for tool-active requests (grammar attached). Bounds a runaway where
@@ -293,6 +329,17 @@ pub struct ModelBehavior {
     /// specific model is known to ALWAYS get tool args right on the
     /// first attempt (extra inference round-trip cost is wasted there).
     pub tool_retry: bool,
+    /// Jinja `preserve_thinking` chat-template flag (Qwen3.6+ dense family):
+    /// keep historical `<think>` blocks in re-rendered assistant turns
+    /// instead of stripping them before the last user query.
+    ///
+    /// Tri-state on purpose (SSOT): `None` = do NOT inject the variable —
+    /// the model's own template default applies (Qwen3.6 strips unless
+    /// `preserve_thinking` is true; Qwen3.8 KEEPS unless it is explicitly
+    /// false). `Some(_)` pins the value for this target, changing
+    /// multi-turn prompt bytes and therefore prefix-cache hit rate.
+    /// Per-request `chat_template_kwargs.preserve_thinking` still wins.
+    pub preserve_thinking: Option<bool>,
 }
 
 /// Phase-C: maximum number of watchdog-triggered rollbacks a single
@@ -322,7 +369,8 @@ impl Default for ModelBehavior {
     fn default() -> Self {
         Self {
             thinking_in_tools: true,
-            max_thinking_budget: 256,
+            max_thinking_budget: DEFAULT_MAX_THINKING_BUDGET,
+            effort_capped_at_ceiling: DEFAULT_EFFORT_CAPPED_AT_CEILING,
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
             default_kv_dtype: "",
@@ -342,13 +390,14 @@ impl Default for ModelBehavior {
             confidence_early_stop: true,
             confidence_run_length: 30,
             fuzzy_repeat_tolerance_div: 12,
-            max_inter_tool_prose: 384,
+            max_inter_tool_prose: DEFAULT_MAX_INTER_TOOL_PROSE,
             max_post_think_content_tokens: 100_000,
             tscg: false,
             disable_tool_grammar: false,
             rollback_resteer: true,
             rom_head: "",
             tool_retry: true,
+            preserve_thinking: None,
         }
     }
 }
@@ -393,6 +442,15 @@ pub struct TargetPtxSet {
     pub sampling: SamplingPresets,
     pub behavior: ModelBehavior,
     pub model_type_matches: Vec<ModelTypeMatch>,
+    /// `[model] match_names` needles from MODEL.toml — case-insensitive
+    /// substrings of the checkpoint reference (HF id / `--model-name` /
+    /// resolved model dir) that identify checkpoints THIS target serves.
+    /// Consulted only to break a tie when several targets declare the same
+    /// `(model_type, hidden_size)` (e.g. qwen3.6-27b vs qwen3.8-27b, whose
+    /// configs are bit-identical); see [`resolve::resolve_target`]. Empty
+    /// for targets that never collide — `build.rs` panics if a colliding
+    /// target omits them.
+    pub match_names: &'static [&'static str],
     /// DFlash drafter pairing for this model. `None` when the MODEL.toml has
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
     /// set without an explicit `--draft-model` flag.
@@ -421,48 +479,8 @@ pub struct TargetPtxSet {
     pub expected_absent: &'static [(&'static str, &'static str)],
 }
 
-/// All compiled kernel targets and their PTX module sets.
-///
-/// Returns one entry per target compiled at build time.
-/// Single-target builds return one entry; wildcard builds return all.
-pub fn available_targets() -> Vec<TargetPtxSet> {
-    all_ptx_sets()
-}
-
-/// Find the PTX module set for a target whose model name contains `needle`.
-///
-/// Returns `None` if no compiled target matches.
-pub fn ptx_for_model(needle: &str) -> Option<TargetPtxSet> {
-    all_ptx_sets()
-        .into_iter()
-        .find(|t| t.target.model.contains(needle))
-}
-
-/// Find the PTX module set matching a `(model_type, hidden_size)` pair.
-///
-/// Matching rules:
-/// 1. Exact match on `(model_type, Some(hidden_size))` wins
-/// 2. Wildcard match `(model_type, None)` is fallback
-/// 3. Returns `None` if no compiled target matches
-pub fn ptx_for_config(model_type: &str, hidden_size: usize) -> Option<TargetPtxSet> {
-    let targets = all_ptx_sets();
-    // Exact match first (specific hidden_size)
-    let exact = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size == Some(hidden_size))
-    });
-    if let Some(idx) = exact {
-        return targets.into_iter().nth(idx);
-    }
-    // Wildcard fallback (hidden_size == None)
-    let wildcard = targets.iter().position(|t| {
-        t.model_type_matches
-            .iter()
-            .any(|m| m.model_type == model_type && m.hidden_size.is_none())
-    });
-    wildcard.and_then(|idx| targets.into_iter().nth(idx))
-}
+mod query;
+pub use query::{available_targets, ptx_for_model};
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 7] = [
+pub const BOUNDARY_FILES: [&str; 8] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -110,9 +110,15 @@ pub const BOUNDARY_FILES: [&str; 7] = [
     // line silently reduces coverage with nothing to notice — and a cheap edit
     // that quietly weakens the gate is worse than an expensive one that cannot.
     ".github/pr-taxonomy.json",
-    // `record_covers` / `invalidating_paths` / `check_record` / `compare`:
-    // decides whether a record stands and whether its numbers pass.
+    // `record_covers` / `invalidating_paths`: decides whether a record
+    // stands against the changed paths.
     "crates/atlas-plugin/src/gate/check.rs",
+    // `check_record` / `compare`: decides whether a record's numbers pass.
+    // Split out of check.rs at the 500-line boundary — the verdict logic
+    // moved, so the boundary moves with it (a `hardening_tests` test walks
+    // the defining files by symbol so the next split cannot silently drop
+    // one out of the boundary again).
+    "crates/atlas-plugin/src/gate/scoring.rs",
     // `excuses` / `changed_targets`: decides which invalidating paths are
     // forgiven by the closure hash.
     "crates/atlas-plugin/src/gate/closure.rs",
@@ -319,11 +325,52 @@ const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
+/// The vision gate answers one question — does the served model see the image
+/// it was sent, at the resolution its checkpoint permits — so anything that
+/// cannot change the pixels reaching the encoder or the tokens they become is
+/// excluded. The other benchmark drivers are the clear case: none of them can
+/// alter vision preprocessing.
+const VISION_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/bfcl",
+        "the BFCL driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change how an image is patched or how many tokens it becomes",
+    ),
+];
+
 /// The gates whose records must pass, and what each one ignores.
-pub const REQUIRED: [GateCoverage; 6] = [
+pub const REQUIRED: [GateCoverage; 7] = [
     GateCoverage {
         id: "agentic-webserver",
         excludes: AGENTIC_EXCLUDES,
+    },
+    // Vision models only, and that constraint lives in BENCH.toml rather than
+    // here: coverage is path-based with no per-model dimension, while a
+    // `[[benchmarks]] gate = "vision-fidelity"` entry exists on exactly the
+    // three targets that ship a vision tower. A text-only target has no entry,
+    // so the gate has nothing to run and nothing to satisfy.
+    //
+    // REQUIRED rather than a promotion candidate because it is measured: all
+    // three targets ran it on 2026-08-14 and passed 8/8 geometry, 3/3 probes,
+    // control held, with IDENTICAL token counts across a dense NVFP4, an
+    // unsloth NVFP4 and an FP8 MoE. Its bounds are absolute and carry no noise
+    // term, so unlike `concurrency-sweep` there is no thresholds-less entry
+    // problem to solve first.
+    GateCoverage {
+        id: "vision-fidelity",
+        excludes: VISION_EXCLUDES,
     },
     GateCoverage {
         id: "ttft-warm-gate",

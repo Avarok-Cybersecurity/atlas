@@ -154,7 +154,25 @@ spark benchmark history
 nor touches the GPU. The one exception is `--pull-request-gate`, which *does*
 start a server: it serves the benchmark's own recipe on a free port (900 s boot
 timeout, for a cold NVFP4 load) and tears it down on drop
-(`cli/bench_selfstart.rs`). Point `run` somewhere else with `--url`:
+(`cli/bench_selfstart.rs`).
+
+A benchmark can be defined on more than one **model variant** — one
+`BENCH.toml` entry per checkpoint, each carrying its own serve recipe and its
+own thresholds (`spark benchmark list <id>` prints them, and the TUI shows them
+as a step after selecting the benchmark). A gate run serves the variant marked
+`default = true` unless you name another:
+
+```
+spark benchmark run agentic-webserver --yes --pull-request-gate   --checkpoint unsloth/Qwen3.8-27B-NVFP4
+```
+
+Records are keyed by variant too — a non-default variant's record gets the
+checkpoint slug in its filename, and only the default variant's records can
+discharge the required gate. Numbers never compare across variants: the dense
+27B's wall band is roughly 2× the 35B MoE's, which is exactly why the
+thresholds live per checkpoint.
+
+Point `run` somewhere else with `--url`:
 
 ```
 spark benchmark run concurrency-sweep \

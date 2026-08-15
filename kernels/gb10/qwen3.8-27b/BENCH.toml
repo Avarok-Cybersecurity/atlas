@@ -1,0 +1,226 @@
+# Benchmarks for this model, and the thresholds its gate records must meet.
+#
+# Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path and cannot disagree with the
+# contents. Read by `atlas_plugin::gate::bench`.
+#
+# ★ This file may land BEFORE the model's MODEL.toml/kernels do (they arrive in
+# a sibling change adding the qwen3.8-27b kernel target via a `kernel_source`
+# redirect to qwen3.6-27b). `gate::bench::bench_files` discovers BENCH.toml by
+# path alone for exactly this reason — the gate definition does not wait on the
+# compiled target.
+#
+# Thresholds are per CHECKPOINT, not per model: two checkpoints of one model
+# can differ by several BFCL points, so they cannot share a bar.
+#
+# This file is deliberately OUTSIDE the closure hash (`taxon::configs` does not
+# list it), so ratcheting a threshold does not invalidate the record that
+# justified the ratchet.
+#
+# `status = "unmeasured"` entries carry NO [benchmarks.metrics] table. Absence
+# is the TODO -- a guessed threshold a run could clear would report PASS for
+# something nobody measured.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "agentic-webserver"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+# NOT the default: the required Gate A subject stays the 35B MoE flagship
+# (qwen3.6-35b-a3b/BENCH.toml), whose recorded history is untouched. This
+# variant runs via `--checkpoint unsloth/Qwen3.8-27B-NVFP4`, or from the TUI's
+# variant list.
+default = false
+status = "measured"
+note = """\
+The DENSE variant of the agentic gate. Not comparable to the 35B MoE entry in \
+any direction: a dense 27B activates every parameter per token where the 35B \
+MoE activates ~3B, so its wall band is roughly 2x — which is why this is a \
+separate baseline entry with its own ceiling rather than a shared bar. \
+REFERENCE RUN (the definition of these numbers): 2026-08-14, dgx2, binary main \
+680b3a568, N=10 — webserver_ok 10/10, followed_directions 10/10, Sigma-wall \
+1925.1 s, per-run walls 156.0/187.3/274.2/144.7/230.5/243.3/205.2/117.3/185.2/\
+181.4 s (range 117-274 s, 2.3x min-to-max). That run FAILED only the \
+35B-calibrated 1000 s budget while both correctness counts were perfect — the \
+exact miscomparison per-variant thresholds exist to remove; under this entry's \
+own ceiling it is a PASS. Serve profile of the reference run (what the recipe \
+must pin): --gpu-memory-utilization 0.85 --max-batch-size 1 --max-seq-len \
+32768 --kv-cache-dtype bf16 --lm-head-dtype bf16 --scheduling-policy slai \
+--speculative --mtp-quantization bf16 --enable-prefix-caching \
+--ssm-cache-slots 256 --ssm-checkpoint-interval 16 --kv-high-precision-layers \
+auto, thinking ON. The 35B Gate-A profile (0.70 util, batch 2) CANNOT serve \
+this model at all — it dies at boot with no memory left for KV cache — so the \
+recipe is part of the variant, not a detail. The recipe id above now EXISTS in \
+atlas-recipes (merged 2026-08-14 as atlas-recipes#19, commit 20ac6e8), \
+pinning exactly the profile stated above, so this variant can self-start \
+under --pull-request-gate. ★ Note the recipe pins `num_drafts: 3` (K=4), \
+matching the reference run; the qwen3.8-27b target deliberately omits \
+`default_num_drafts`, so an unpinned run would instead take the engine \
+default K=2. When running against an operator-started endpoint pass \
+`--param wall_budget_s=2500` explicitly: threshold_params substitution \
+happens only under the gate (and in the TUI's variant step), so a plain \
+`benchmark run` keeps the schema default 1000 s and a healthy dense tier \
+(Sigma-wall ~1925 s) FAILS its run verdict on wall alone. \
+The two 10/10 counts are ABSOLUTE correctness \
+bounds and take no noise, same footing as the 35B entry; `iterations` is \
+PINNED at exactly 10 for the same reason stated there — a count bound alone \
+does not describe the run that produced it."""
+
+[benchmarks.metrics.followed_directions]
+min = 10.0
+
+[benchmarks.metrics.iterations]
+min = 10.0
+max = 10.0
+
+[benchmarks.metrics.sum_wall_s]
+# Set from TWO measured N=10 tiers on dgx2 (2026-08-14, this branch's binary):
+#   temp 1.0 -> 4090 s      temp 0.6 -> 4182 s
+# Both 10/10 webserver_ok and 10/10 followed_directions, so the model is
+# healthy at this wall; the number is what the current serve costs, not a
+# defect. 5000 s is the slower tier + ~20% headroom.
+#
+# ★ This is ~2x the 1925 s reference tier taken 2026-08-14 on the pre-branch
+# nightly. That gap is NOT sampling and NOT the inter-tool prose budget (both
+# investigated and ruled out — see the MODEL.toml note and the prose-budget
+# analysis): it is per-turn decode cost, 18 s/turn there vs ~40 s/turn here
+# with turn counts unchanged. That regression is UNEXPLAINED and tracked
+# separately; if it is found and fixed, this ceiling should come down with it
+# rather than being left loose. A blow-up detector set at 5000 s only detects
+# blow-ups relative to the CURRENT serve cost.
+#
+# Ratchet only after repeated back-to-back tiers, never to the best tier.
+max = 5000.0
+
+[benchmarks.metrics.webserver_ok]
+min = 10.0
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "bfcl-subset"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+# NOT the default: the bfcl-subset default subject stays Qwen3.6-27B
+# (qwen3.6-27b/BENCH.toml), whose recorded history and MLPerf floor are
+# untouched by this entry. Select with
+# `--checkpoint unsloth/Qwen3.8-27B-NVFP4`.
+default = false
+# MEASURED 2026-08-14 (dgx1, this branch's binary, golden draw n=995 seed 42):
+# overall 84.22 / normalized 84.12. See the metrics table below and the sharp
+# caveat in the note.
+status = "measured"
+note = """\
+The DENSE 3.8 leg of the BFCL gate. Exists so a Qwen3.8-27B score can be read \
+directly against the recorded Qwen3.6-27B results — same golden ST-995 draw \
+(62/10/10, floor 25, n=995, seed 42, temp 0), same scorer, and a serve recipe \
+whose defaults are byte-identical to the 3.6 sibling's (atlas-recipes#20; only \
+the checkpoint differs). That identity is load-bearing: BFCL's normalized \
+score moves with serve config as well as with the draw, so the two legs must \
+share a config or the generation-over-generation delta means nothing. \
+Thresholds are ABSENT until a run establishes them; until then a run here \
+BASELINES rather than gates. ★ Do NOT copy the 3.6 entry's floors \
+(87.44 / 88.59) or the MLPerf floor (83.64 / 85.32) into this entry: same \
+architecture and same draw, but DIFFERENT WEIGHTS, so neither transfers. The \
+MLPerf-edge submission rides on 3.6, and nothing here guards it. \
+★ One discontinuity vs the recorded 3.6 history: `num_drafts = 1` (K=2) was \
+silently discarded before the 2026-08-14 --num-drafts precedence fix, so those \
+3.6 numbers were measured at K=4. Speculative decode is lossless, so ACCURACY \
+is comparable across that boundary; wall and TPOT are not."""
+
+[benchmarks.metrics.samples]
+# The golden MLPerf draw is exactly 995. A run reporting anything else is not
+# this draw and its score is not comparable — pin both ends.
+min = 995.0
+max = 995.0
+
+[benchmarks.metrics.overall_accuracy]
+# Measured 84.22 (2026-08-14, dgx1, golden draw n=995 seed 42, temp 0,
+# recipe qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl). Bar set at the measured
+# value less the documented +-0.4 MTP-nondeterminism noise floor.
+min = 83.82
+noise = 0.4
+
+[benchmarks.metrics.normalized_single_turn_score]
+# Measured 84.12, same run. ★ THIS IS 1.20 BELOW THE MLPERF-EDGE FLOOR (85.32).
+# The floor was derived for Qwen3.6-27B and is NOT inherited here — different
+# weights — so this is a QUALITY ALARM on this gate, not an MLPerf submission
+# failure; the submission rides on 3.6, which still scores 87.44 / 88.59.
+# ★ DO NOT treat this bar as an endorsement. Qwen3.8-27B scored 3-4 points
+# BELOW Qwen3.6-27B on the same draw and serve config, and the per-subset split
+# is suspicious rather than uniformly weaker: simple_python 95.16 against
+# simple_java 45.16 and simple_javascript 29.03, with the hallucination category
+# down 11 points (96.02 -> 84.85). A model does not lose 66 points between
+# Python and JavaScript function calls by capability; that pattern points at a
+# defect in the serve path, with the chat-template change the prime suspect
+# (this run rendered through the checkpoint's own template, while every recorded
+# 3.6 number came through the retired override, and the two serialize tool
+# arguments differently). Tracked separately. These bars exist so a regression
+# below TODAY's behaviour is caught; they are not a claim that today's behaviour
+# is correct.
+min = 83.72
+noise = 0.4
+# --- vision-fidelity -------------------------------------------------------
+# Vision models only. This gate is declared on the three targets that ship a
+# vision tower and have a BENCH.toml; a text-only target has no entry and the
+# gate simply does not apply to it.
+#
+# The bounds are ABSOLUTE and take no noise term, like the cross-contamination
+# gate's. Vision-token count is arithmetic over the patch grid -- there is no
+# run-to-run variance for a tolerance to absorb, so any movement is a real
+# change in preprocessing. That is the property that makes this gate worth
+# requiring: the 2026-08-14 resolution-cap defect silently reduced every image
+# above 1280px to about a tenth of its permitted area, and every capability
+# check passed throughout, because a downscaled picture is still recognisably
+# what it is.
+#
+#   geometry_matched  = 9   the CORRECTNESS floor, and the one that moves when
+#                           preprocessing changes. Rung 09 (1600x900) is the
+#                           ONLY rung above the retired 1280px clamp: under the
+#                           clamp it is 920 tokens, un-downscaled it is 1400.
+#                           The other eight fit under either regime and so
+#                           cannot tell the two apart -- without rung 09 this
+#                           gate could not fail on the defect it exists for.
+#   geometry_asserted = 9   the MEASUREMENT floor, which is a DIFFERENT failure.
+#                           A cell the server cannot serve reports UNMEASURED,
+#                           which is not a mismatch -- so without this floor an
+#                           encoder-capacity regression would turn every cell
+#                           UNMEASURED and still read as PASS. Both are kept
+#                           because neither implies the other.
+#   probes_passed     = 3   capability, all three.
+#   control_held      = 1   the no-image control MUST hold. The non-vacuity
+#                           requirement expressed as a threshold: if the control
+#                           answers as though it saw a picture, the probes are
+#                           not evidence and the run is VACUOUS.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "vision-fidelity"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary vision/sprint @ 5e05465b: PASS, 9/9 geometry \
+cells matched, 3/3 probes, control held, 26.5 s. Geometry was IDENTICAL across all \
+three vision targets (49/121/192/220/576/576/920/405/1400 merged tokens) -- token \
+count is a property of the preprocessor rather than the checkpoint, so agreement \
+across a dense NVFP4, an unsloth NVFP4 and an FP8 MoE is evidence the arithmetic is \
+right rather than a coincidence. Ships preprocessor_config.json plus a separate \
+video_preprocessor_config.json (unused until video support lands), so it resolved \
+16.7M px before the resolver fix as well; clamped to the encoder's 16384-patch \
+ceiling. Run at --max-seq-len 32768 for this record."""
+
+[benchmarks.metrics.geometry_matched]
+min = 9.0
+
+[benchmarks.metrics.geometry_asserted]
+min = 9.0
+
+[benchmarks.metrics.probes_passed]
+min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0

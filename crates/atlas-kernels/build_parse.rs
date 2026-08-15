@@ -204,6 +204,9 @@ pub(super) fn parse_sampling_presets(
                     .get("lz_penalty")
                     .and_then(|t| t.as_float())
                     .unwrap_or(0.0) as f32,
+                // NO unwrap_or: an absent min_p must stay None so the
+                // server's --default-min-p keeps owning the field.
+                min_p: v.get("min_p").and_then(|t| t.as_float()).map(|p| p as f32),
             },
             None => SamplingCat::default(),
         }
@@ -248,6 +251,86 @@ pub(super) fn parse_model_types(model_dir: &std::path::Path) -> Vec<ModelTypeMat
             })
         })
         .collect()
+}
+
+/// Parse `[model] match_names` from MODEL.toml.
+///
+/// Checkpoint-reference needles (case-insensitive substrings of the HF id /
+/// `--model-name` / resolved model dir) that identify checkpoints this
+/// target serves. Consulted at runtime only to break a tie when several
+/// targets declare the same `(model_type, hidden_size)` — see
+/// `src/resolve.rs`. Empty entries are rejected: an empty needle would
+/// match every reference and silently win every tie.
+pub(super) fn parse_match_names(model_dir: &std::path::Path) -> Vec<String> {
+    let path = model_dir.join("MODEL.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let toml: toml::Value =
+        toml::from_str(&text).unwrap_or_else(|e| panic!("Bad TOML in {}: {e}", path.display()));
+    let Some(arr) = toml
+        .get("model")
+        .and_then(|m| m.get("match_names"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    arr.iter()
+        .map(|v| {
+            let s = v.as_str().unwrap_or_else(|| {
+                panic!(
+                    "{}: [model] match_names entries must be strings",
+                    path.display()
+                )
+            });
+            assert!(
+                !s.trim().is_empty(),
+                "{}: [model] match_names entries must be non-empty — an empty needle \
+                 would match every checkpoint reference",
+                path.display()
+            );
+            // The needles are emitted into generated Rust as `"{needle}"`
+            // string literals (build_codegen.rs) with no escaping; a quote
+            // or backslash would produce an uncompilable target_ptx.rs with
+            // an error pointing nowhere near this file. Reject here, where
+            // the operator can see which TOML entry to fix. (No legitimate
+            // HF id / model-dir needle contains either character.)
+            assert!(
+                !s.contains('"') && !s.contains('\\'),
+                "{}: [model] match_names entry {s:?} contains a quote or backslash — \
+                 needles are emitted verbatim into generated Rust string literals \
+                 and checkpoint references never contain these characters",
+                path.display()
+            );
+            s.to_string()
+        })
+        .collect()
+}
+
+/// Parse `[model] kernel_source` from MODEL.toml.
+///
+/// Names ANOTHER kernel-target directory whose per-quant kernel sources
+/// this target compiles instead of shipping its own copies (SSOT for
+/// architecturally-identical checkpoints — qwen3.8-27b reuses
+/// qwen3.6-27b's .cu tree verbatim). Everything else in MODEL.toml
+/// (sampling, behavior, model_types, match_names, expected_absent) still
+/// belongs to this target. `build.rs` validates the referent exists and
+/// refuses redirect chains.
+pub(super) fn parse_kernel_source(model_dir: &std::path::Path) -> Option<String> {
+    let path = model_dir.join("MODEL.toml");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let toml: toml::Value =
+        toml::from_str(&text).unwrap_or_else(|e| panic!("Bad TOML in {}: {e}", path.display()));
+    let src = toml.get("model")?.get("kernel_source")?;
+    let s = src
+        .as_str()
+        .unwrap_or_else(|| panic!("{}: [model] kernel_source must be a string", path.display()));
+    assert!(
+        !s.trim().is_empty(),
+        "{}: [model] kernel_source must name a kernel target directory",
+        path.display()
+    );
+    Some(s.to_string())
 }
 
 /// Parse `[dflash]` from MODEL.toml. Returns `None` when the section is

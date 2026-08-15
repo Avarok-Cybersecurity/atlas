@@ -119,6 +119,7 @@ mod build_tests {
         match build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             msgs,
             tools_active,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -164,6 +165,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -197,6 +199,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -211,6 +214,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &msgs,
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -231,6 +235,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &messages,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -263,6 +268,7 @@ mod build_tests {
         match build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &[url_msg],
             false,
             &crate::api::chat::levers::ChatLevers::OFF,
@@ -282,8 +288,16 @@ mod build_tests {
             "client prompt\nworking directory: /tmp/project",
         )];
 
-        let enabled =
-            build_msg_entries(None, None, &msgs, true, &ChatLevers::OFF, false).expect("enabled");
+        let enabled = build_msg_entries(
+            None,
+            None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &msgs,
+            true,
+            &ChatLevers::OFF,
+            false,
+        )
+        .expect("enabled");
         assert_eq!(enabled.cwd_hint.as_deref(), Some("/tmp/project"));
         assert!(enabled.messages[0].content.contains("<environment>"));
 
@@ -291,8 +305,16 @@ mod build_tests {
             disable_cwd_hint_injection: true,
             ..ChatLevers::OFF
         };
-        let disabled =
-            build_msg_entries(None, None, &msgs, true, &disabled_levers, false).expect("disabled");
+        let disabled = build_msg_entries(
+            None,
+            None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
+            &msgs,
+            true,
+            &disabled_levers,
+            false,
+        )
+        .expect("disabled");
         assert_eq!(disabled.cwd_hint.as_deref(), Some("/tmp/project"));
         assert_eq!(
             disabled.messages[0].content,

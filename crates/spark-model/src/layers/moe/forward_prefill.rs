@@ -203,29 +203,12 @@ impl MoeLayer {
                 h,
                 stream,
             )?;
-        } else if ctx.dispatch.cublas_gemm && n > 1 {
-            ops::cublas_bf16_proj_dense(
-                router_in,
-                self.weights.gate.weight,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
         } else {
-            ops::dense_gemm_prefill(
-                ctx.gpu,
-                self.dense_gemm,
-                self.dense_gemm_pipelined,
-                router_in,
-                &self.weights.gate,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
+            // Selection numerics — see router_gate_gemm_dense for why this
+            // must stay on the scalar kernel and why ATLAS_CUBLAS_GEMM must
+            // not reroute it either (2026-08-12 BFCL regression: a rerouted
+            // router GEMM flips top-k on borderline tokens deterministically).
+            self.router_gate_gemm_dense(router_in, gate_logits, n, num_experts, h, ctx, stream)?;
         }
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");

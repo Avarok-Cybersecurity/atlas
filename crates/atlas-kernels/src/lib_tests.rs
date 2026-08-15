@@ -156,3 +156,80 @@ fn ptx_for_model_lookup() {
         "ptx_for_model('qwen3-next-80b') should find the default target"
     );
 }
+
+/// End-to-end resolution against the COMPILED registry (multi-target build):
+/// the config-identical dense-27B checkpoints must land on their own targets,
+/// the identity-free reference must hard-error, and the pin must break it.
+/// The same routes are pinned against the raw MODEL.tomls in
+/// `tests/target_resolution.rs`, which runs on the skip-build CI host; this
+/// leg proves build.rs carried the declarations into the binary intact.
+#[test]
+#[ignore = "requires nvcc and ATLAS_SKIP_BUILD unset (multi-target build)"]
+fn ptx_for_config_breaks_the_dense_27b_tie_in_the_compiled_registry() {
+    let name = |r: Result<Option<TargetPtxSet>, TargetResolveError>| {
+        r.expect("resolves").expect("some target").target.model
+    };
+    assert_eq!(
+        name(ptx_for_config(
+            "qwen3_5",
+            5120,
+            &["unsloth/Qwen3.8-27B-NVFP4"],
+            None
+        )),
+        "qwen3.8-27b"
+    );
+    assert_eq!(
+        name(ptx_for_config(
+            "qwen3_5",
+            5120,
+            &["unsloth/Qwen3.6-27B-NVFP4"],
+            None
+        )),
+        "qwen3.6-27b"
+    );
+    assert_eq!(
+        name(ptx_for_config(
+            "qwen3_5",
+            5120,
+            &["Kbenkhaled/Qwen3.5-27B-NVFP4"],
+            None
+        )),
+        "qwen3.6-27b"
+    );
+    assert!(matches!(
+        ptx_for_config("qwen3_5", 5120, &["/model"], None),
+        Err(TargetResolveError::Ambiguous { .. })
+    ));
+    assert_eq!(
+        name(ptx_for_config(
+            "qwen3_5",
+            5120,
+            &["/model"],
+            Some("qwen3.8-27b")
+        )),
+        "qwen3.8-27b"
+    );
+    // The redirected target embeds the SAME kernel set as its source.
+    let q36 = ptx_for_exact_target("qwen3.6-27b", "nvfp4").expect("compiled");
+    let q38 = ptx_for_exact_target("qwen3.8-27b", "nvfp4").expect("compiled");
+    assert_eq!(q36.modules.len(), q38.modules.len());
+    let names36: Vec<&str> = q36.modules.iter().map(|(n, _)| *n).collect();
+    let names38: Vec<&str> = q38.modules.iter().map(|(n, _)| *n).collect();
+    assert_eq!(names36, names38, "kernel_source must mirror the module set");
+}
+
+#[test]
+fn behavior_default_prose_budget_matches_shared_constant() {
+    // #328: `ModelBehavior::default()` sat at 384 for a month after P2-1
+    // raised the intended default to 3072 in spark-server — production
+    // resolves the budget from THIS struct, so every model without an
+    // explicit MODEL.toml pin kept truncating agent narration at 384
+    // tokens. The default must come from the shared constant (also
+    // `include!`d by the build script) and stay plan-sized.
+    let b = ModelBehavior::default();
+    assert_eq!(b.max_inter_tool_prose, DEFAULT_MAX_INTER_TOOL_PROSE);
+    assert!(
+        b.max_inter_tool_prose >= 2048,
+        "inter-tool prose budget default must fit a plan/analysis turn"
+    );
+}

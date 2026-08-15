@@ -78,3 +78,117 @@ measured — the exact failure this file's header warns about. Thresholds land \
 here after the first measured run, and that run is what promotes the bench \
 from PROMOTION_CANDIDATES to REQUIRED.\
 """
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "agentic-webserver"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+default = false
+status = "unmeasured"
+note = """\
+The DENSE agentic leg — REGISTERED 2026-08-14 SO THE 27B CAN BE BASELINED, NEVER YET \
+MEASURED. No agentic-webserver number has ever been recorded on this checkpoint, and it \
+cannot inherit the 35B's ceiling: the 35B is A3B (~3B active parameters per token) while \
+the dense 27B activates all 27B on every token, so on a memory-bound GB10 its per-token \
+decode is several times heavier and its agentic Σwall will land substantially higher — \
+expected above the 35B's entire ceiling (>1200 s per the owner's estimate; the 35B's bound \
+in ITS entry is 1000 s, tightened from 1300 on 2026-08-09). Per this file's header, \
+thresholds are per CHECKPOINT — the 35B's bounds simply do not apply here. || NO \
+[benchmarks.metrics] TABLE ON PURPOSE, and in particular NO Σwall floor or ceiling: this \
+repo's recurring failure mode is a plausible-looking number written down before anyone \
+measured it (the 384 inter-tool prose budget, the hardcoded 256 effort rung, the P2-1 \
+default), and a guessed ceiling either passes vacuously or fails honest PRs. `default = \
+false` — the 35B owns this gate's default serve — and `baseline_for` drops unmeasured \
+entries anyway, so `--pull-request-gate` cannot serve this leg and a record against this \
+checkpoint fails `check_record` loudly with "no baseline for model" rather than reading as \
+PASS. Until floors land here, every dense run is informational. || ★ WHOEVER WRITES THE \
+DENSE CEILING MUST FIRST DECIDE WHAT IT IS. The 35B's Σwall is documented in its entry as \
+a BLOWUP DETECTOR with generous headroom, NOT a perf bound — it cannot see a 5-10% TTFT \
+regression, which is what the two TTFT gates are for. A tight ceiling here silently \
+converts the blowup detector into a perf gate that every unrelated PR then pays for. \
+Whichever is chosen, state it in this note beside the number. || CALIBRATION PROTOCOL, in \
+order, before any floors: (1) serve this entry's recipe on an IDLE box — walls are \
+box-specific and Σwall carries ±200-300 s of outlier noise on the 35B; a co-tenant makes \
+the number meaningless; (2) drive it manually, since the gate cannot serve an unmeasured \
+entry: `spark benchmark run agentic-webserver --yes --url <serve> --model \
+unsloth/Qwen3.6-27B-NVFP4 --param wall_budget_s=100000` — the wall_budget_s override \
+neutralizes the leg's 35B-tuned 1000 s default so the run verdict does not encode another \
+checkpoint's ceiling; iterations stays at the pinned 10; (3) ≥3 repeats, so the spread is \
+MEASURED rather than assumed — the dense band is unknown; (4) ratchet from the measurement \
+with the run's sha, date and box recorded beside the numbers, the way bfcl-subset-echolp's \
+floors are; (5) only then flip status = "measured". || RE-POINTING AT QWEN3.8-27B (owned \
+by a separate workstream) is a checkpoint/recipe swap, not a rewrite: change `checkpoint` \
+and `recipe` here (or add the sibling entry under kernels/gb10/qwen3.8-27b once that \
+target exists) and add its family to the agentic descriptor's `intended_for` list in \
+crates/atlas-plugin/src/benchmarks/agentic/descriptors.rs. Thresholds are per checkpoint: \
+nothing measured on Qwen3.6 transfers, and the calibration protocol runs again from (1).\
+"""
+
+# --- vision-fidelity -------------------------------------------------------
+# Vision models only. This gate is declared on the three targets that ship a
+# vision tower and have a BENCH.toml; a text-only target has no entry and the
+# gate simply does not apply to it.
+#
+# The bounds are ABSOLUTE and take no noise term, like the cross-contamination
+# gate's. Vision-token count is arithmetic over the patch grid -- there is no
+# run-to-run variance for a tolerance to absorb, so any movement is a real
+# change in preprocessing. That is the property that makes this gate worth
+# requiring: the 2026-08-14 resolution-cap defect silently reduced every image
+# above 1280px to about a tenth of its permitted area, and every capability
+# check passed throughout, because a downscaled picture is still recognisably
+# what it is.
+#
+#   geometry_matched  = 9   the CORRECTNESS floor, and the one that moves when
+#                           preprocessing changes. Rung 09 (1600x900) is the
+#                           ONLY rung above the retired 1280px clamp: under the
+#                           clamp it is 920 tokens, un-downscaled it is 1400.
+#                           The other eight fit under either regime and so
+#                           cannot tell the two apart -- without rung 09 this
+#                           gate could not fail on the defect it exists for.
+#   geometry_asserted = 9   the MEASUREMENT floor, which is a DIFFERENT failure.
+#                           A cell the server cannot serve reports UNMEASURED,
+#                           which is not a mismatch -- so without this floor an
+#                           encoder-capacity regression would turn every cell
+#                           UNMEASURED and still read as PASS. Both are kept
+#                           because neither implies the other.
+#   probes_passed     = 3   capability, all three.
+#   control_held      = 1   the no-image control MUST hold. The non-vacuity
+#                           requirement expressed as a threshold: if the control
+#                           answers as though it saw a picture, the probes are
+#                           not evidence and the run is VACUOUS.
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
+gate = "vision-fidelity"
+recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
+label = "Qwen3.6-27B dense (NVFP4, unsloth)"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-08-14, dgx-00, binary vision/sprint @ 5e05465b: PASS, 9/9 geometry \
+cells matched, 3/3 probes, control held, 29.3 s. Geometry was IDENTICAL across all \
+three vision targets (49/121/192/220/576/576/920/405/1400 merged tokens) -- token \
+count is a property of the preprocessor rather than the checkpoint, so agreement \
+across a dense NVFP4, an unsloth NVFP4 and an FP8 MoE is evidence the arithmetic is \
+right rather than a coincidence. * THIS is the checkpoint that exposed the resolver \
+defect. It ships processor_config.json and NO preprocessor_config.json, and Atlas read \
+only the latter -- so it declared 16777216 px under image_processor.size and was \
+served at the 1280px fallback with a 6400-patch encoder anyway. An earlier record here \
+said this checkpoint declared no bound; that was the missing reader, not the \
+checkpoint. With the fix it resolves 16.7M px, capacity clamps to 16384, and rung 09 \
+reports 1400 where the fallback produced 920 -- the gate catching exactly the class of \
+defect it was built for, on a real model rather than in a unit test."""
+
+[benchmarks.metrics.geometry_matched]
+min = 9.0
+
+[benchmarks.metrics.geometry_asserted]
+min = 9.0
+
+[benchmarks.metrics.probes_passed]
+min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0

@@ -15,14 +15,31 @@ use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
 const STD: [f32; 3] = [0.5, 0.5, 0.5];
 
-/// Maximum allowed image dimension in pixels (longer side), applied AFTER
-/// decode by the resize below. See [`DECODE_MAX_SIDE`] for the pre-decode cap.
-const MAX_DIM: u32 = 1280;
+/// Long-side cap used ONLY when nothing else bounds the image — i.e. the
+/// caller passed no `max_pixels` because the checkpoint shipped no
+/// `preprocessor_config.json` and the operator set no `--vision-max-pixels`.
+///
+/// This was an UNCONDITIONAL ceiling until 2026-08-14, which silently threw
+/// away most of the resolution such checkpoints allow. Qwen3.8-27B declares
+/// `size = {longest_edge: 16777216, shortest_edge: 65536}` — pixel AREAS, so
+/// up to 4096² — while this constant clamped every image to 1280 on the long
+/// side, roughly a tenth of the permitted area. Measured before the change:
+/// a 1344×1344 input came back as 1600 merged tokens (1280×1280), and
+/// 1920×1080 as ~900 (1280×720). Detail-bearing inputs — documents, charts,
+/// dense screenshots — paid for that directly, and nothing logged it.
+const FALLBACK_MAX_DIM: u32 = 1280;
+
+/// Absolute long-side ceiling that applies even when a `max_pixels` bound is
+/// in force. `max_pixels` is an AREA, so on a pathological aspect ratio it
+/// alone permits an unbounded long side (a 1×N strip). This is the safety
+/// net [`FALLBACK_MAX_DIM`] was informally providing before it became a
+/// fallback; it is deliberately far above any sane vision input.
+const ABS_MAX_DIM: u32 = 4096;
 
 /// Decoder limit: reject a header declaring more than this on either side
-/// before a single pixel is allocated. Everything is resized down to
-/// [`MAX_DIM`] anyway, so this only has to be above any real camera image;
-/// 16384 is ~4× the long side of a 50 MP photo.
+/// before a single pixel is allocated. Everything is resized down to at most
+/// [`ABS_MAX_DIM`] anyway, so this only has to be above any real camera
+/// image; 16384 is ~4× the long side of a 50 MP photo.
 const DECODE_MAX_SIDE: u32 = 16_384;
 
 /// Decoder limit: bytes the decoder may hold at once for one image. The
@@ -92,21 +109,40 @@ fn validate_geometry(vcfg: &VisionConfig) -> Result<()> {
 }
 
 /// Compute the target (H, W) so that:
-/// - Neither side exceeds `MAX_DIM`.
+/// - The area bound is respected: `max_pixels` when the caller supplies one,
+///   otherwise the long side is clamped to [`FALLBACK_MAX_DIM`].
+/// - The long side never exceeds [`ABS_MAX_DIM`], bound or not.
 /// - Both sides are multiples of `grid_unit = patch_size × spatial_merge_size`.
 /// - Aspect ratio is preserved (rounded to nearest grid_unit).
+/// - The image is never upscaled.
+///
+/// `max_pixels` is an area, matching the `size.longest_edge` /
+/// `shortest_edge` convention HF's Qwen2VL/Qwen3VL processors use (both are
+/// pixel counts, not edge lengths, despite the names). It comes from the
+/// checkpoint's `preprocessor_config.json` or the operator's
+/// `--vision-max-pixels`; the operator's value wins.
+///
+/// ★ `max_pixels` REPLACES the long-side clamp rather than combining with it.
+/// Combining was the bug: `dim_scale.min(pixel_scale)` meant a checkpoint
+/// permitting 4096² could never exceed 1280 on the long side, so the model's
+/// own declared bound could only ever lower the resolution, never raise it.
 fn target_size_with_max_pixels(
     orig_h: u32,
     orig_w: u32,
     grid_unit: u32,
     max_pixels: Option<usize>,
 ) -> (u32, u32) {
-    let dim_scale = (MAX_DIM as f32) / (orig_h.max(orig_w) as f32);
-    let pixel_scale = max_pixels
-        .filter(|&p| p > 0)
-        .map(|p| ((p as f32) / ((orig_h as f32) * (orig_w as f32))).sqrt())
-        .unwrap_or(1.0);
-    let scale = dim_scale.min(pixel_scale).min(1.0); // never upscale
+    let long_side = orig_h.max(orig_w) as f32;
+    let area = (orig_h as f32) * (orig_w as f32);
+    let bound_scale = match max_pixels.filter(|&p| p > 0) {
+        // Model- or operator-declared AREA bound governs.
+        Some(p) => ((p as f32) / area).sqrt(),
+        // Nothing declared: fall back to the historical long-side clamp.
+        None => (FALLBACK_MAX_DIM as f32) / long_side,
+    };
+    // Safety net, always applied.
+    let abs_scale = (ABS_MAX_DIM as f32) / long_side;
+    let scale = bound_scale.min(abs_scale).min(1.0); // never upscale
     let target_h = ((orig_h as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
     let target_w = ((orig_w as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
     (target_h, target_w)
@@ -252,6 +288,10 @@ mod tests {
             out_hidden_size: 2048,
             deepstack_visual_indexes: vec![8, 16, 24],
             image_pad_token_id: 151_655,
+            // These tests drive `preprocess_image_with_max_pixels` directly
+            // with an explicit bound, so the config-carried one is not the
+            // subject here.
+            max_pixels: None,
         }
     }
 
@@ -358,5 +398,102 @@ mod tests {
     fn test_image_pad_count_non_divisible_floors() {
         // Integer division truncates: 65/2 = 32 (not 33).
         assert_eq!(image_pad_count(65, 64, 2), 32 * 32);
+    }
+
+    // ── area-bound sizing (Gap 1, 2026-08-14) ────────────────────────────
+    // grid_unit 32 = patch_size 16 x spatial_merge_size 2, the Qwen3.8 shape.
+    const GU: u32 = 32;
+
+    /// Merged vision tokens the LM will see for a (h, w) target.
+    fn merged_tokens(h: u32, w: u32) -> u32 {
+        (h / 16) * (w / 16) / 4
+    }
+
+    #[test]
+    fn no_declared_bound_keeps_the_1280_fallback() {
+        // Non-regression: a checkpoint shipping no preprocessor_config.json
+        // must behave exactly as it did before this change.
+        let (h, w) = target_size_with_max_pixels(1344, 1344, GU, None);
+        assert_eq!((h, w), (1280, 1280));
+        assert_eq!(merged_tokens(h, w), 1600, "the pre-change measured value");
+    }
+
+    #[test]
+    fn declared_area_bound_raises_above_the_fallback() {
+        // THE FIX. Qwen3.8-27B declares size.longest_edge = 16777216 (4096^2).
+        // Before, .min() against the 1280 clamp meant this could never exceed
+        // 1280 on the long side: the model's own bound could only ever lower.
+        let (h, w) = target_size_with_max_pixels(2048, 2048, GU, Some(16_777_216));
+        assert_eq!((h, w), (2048, 2048), "2048^2 sits inside a 4096^2 bound");
+        assert!(
+            h > 1280,
+            "a declared bound must be able to RAISE past the fallback clamp"
+        );
+    }
+
+    #[test]
+    fn declared_area_bound_still_downscales_when_exceeded() {
+        // 8192^2 is 4x over the bound and must come back to the BOUND, not to
+        // the old 1280 clamp.
+        let (h, w) = target_size_with_max_pixels(8192, 8192, GU, Some(16_777_216));
+        assert!(
+            (h as u64) * (w as u64) <= 16_777_216,
+            "area {} exceeds the declared bound",
+            (h as u64) * (w as u64)
+        );
+        assert!(h > 1280, "downscaled to the bound, not to the old clamp");
+    }
+
+    #[test]
+    fn operator_override_can_lower_below_the_fallback() {
+        let (h, w) = target_size_with_max_pixels(1344, 1344, GU, Some(256 * 256));
+        assert!((h as u64) * (w as u64) <= 256 * 256);
+        assert!(h < 1280);
+    }
+
+    #[test]
+    fn absolute_ceiling_bounds_a_pathological_aspect_ratio() {
+        // max_pixels is an AREA, so a 1xN strip satisfies any area bound at an
+        // unbounded long side. ABS_MAX_DIM is the guard.
+        let (_h, w) = target_size_with_max_pixels(32, 1_000_000, GU, Some(16_777_216));
+        assert!(
+            w <= ABS_MAX_DIM,
+            "long side {w} escaped the absolute ceiling"
+        );
+    }
+
+    #[test]
+    fn never_upscales() {
+        // A tiny image under a huge bound stays tiny. Atlas diverges from HF
+        // here (HF honours shortest_edge/min_pixels by scaling UP); that is
+        // deliberate and out of scope, but it must not drift silently.
+        let (h, w) = target_size_with_max_pixels(64, 64, GU, Some(16_777_216));
+        assert_eq!((h, w), (64, 64));
+    }
+
+    #[test]
+    fn sides_are_always_grid_multiples() {
+        for (oh, ow, mp) in [
+            (1080u32, 1920u32, None),
+            (1080, 1920, Some(16_777_216usize)),
+            (450, 300, None),
+            (33, 33, Some(65_536)),
+        ] {
+            let (h, w) = target_size_with_max_pixels(oh, ow, GU, mp);
+            assert_eq!(h % GU, 0, "h={h} not a multiple of {GU}");
+            assert_eq!(w % GU, 0, "w={w} not a multiple of {GU}");
+            assert!(h >= GU && w >= GU, "degenerate target {h}x{w}");
+        }
+    }
+
+    #[test]
+    fn aspect_ratio_is_preserved_within_grid_rounding() {
+        let (h, w) = target_size_with_max_pixels(1080, 1920, GU, Some(16_777_216));
+        let want = 1920.0f32 / 1080.0;
+        let got = w as f32 / h as f32;
+        assert!(
+            (got - want).abs() < 0.05,
+            "aspect drifted: {got} vs {want} ({h}x{w})"
+        );
     }
 }

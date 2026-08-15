@@ -12,9 +12,25 @@ export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/'
 // Series color follows the MODEL (the entity), never the tab or verdict.
 // Pair validated for CVD + contrast on the paper surfaces (#f4f0e8/#fbf9f3):
 // copper #b5622f ↔ steel #1f6a9e, protan ΔE 17.6, normal ΔE 24.5, both ≥3:1.
+//
+// Qwen3.8-27B added 2026-08-14 as teal #1c7a6b. The pair above was a PAIR —
+// a third entry has to hold against BOTH, and the load-bearing comparison is
+// 3.8 vs 3.6-27B (steel): same architecture, same draw, so they overlay on one
+// axis and the whole point is reading the generation-over-generation delta.
+// Measured under CIEDE2000 with Viénot CVD simulation (NOT the method behind
+// the 17.6/24.5 figures above, so these numbers are not continuous with them —
+// re-derive all three together if the palette is ever revisited):
+//   vs steel  #1f6a9e — normal 26.1, protan 27.5, deutan 20.3
+//   vs copper #b5622f — normal 43.8, protan 16.3, deutan 27.1
+//   contrast on both paper surfaces — 4.57:1 (≥3:1)
+// Plum #7d3c6e was rejected: only ΔE 12.1 from steel under both protan and
+// deutan, i.e. it blurred exactly the comparison this series exists to show.
+// Maroon #8f2f3f scored marginally better on worst case (19.1) but reads as a
+// failure color on a chart that already marks failed runs by verdict.
 const MODEL_COLORS = {
   'Qwen/Qwen3.6-35B-A3B-FP8': '#b5622f',
-  'unsloth/Qwen3.6-27B-NVFP4': '#1f6a9e'
+  'unsloth/Qwen3.6-27B-NVFP4': '#1f6a9e',
+  'unsloth/Qwen3.8-27B-NVFP4': '#1c7a6b'
 };
 export const colorFor = (model) => MODEL_COLORS[model] ?? '#625c51';
 export const shortModel = (model) => (model || '').split('/').pop() || model;

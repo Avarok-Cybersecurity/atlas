@@ -68,6 +68,13 @@ impl ToolCallParser for PoolsideV1Parser {
         true
     }
 
+    fn promotes_bare_call_names(&self) -> bool {
+        // Poolside v1's zero-argument call IS a bare name inside the
+        // envelope — `<tool_call>get_status</tool_call>` is well-formed here
+        // and only here. See the trait doc for why this must not default on.
+        true
+    }
+
     fn leak_markers(&self) -> LeakMarkers {
         LeakMarkers {
             orphan_open: &["<arg_key>", "<arg_value>"],
@@ -162,11 +169,58 @@ mod tests {
 
     #[test]
     fn blocking_parser_accepts_complete_zero_argument_call() {
-        let (_, calls) = parse_tool_calls("<tool_call>get_status</tool_call>");
+        // The zero-argument bare-name form is a POOLSIDE encoding, so the
+        // caller must opt in via the promoting entry point (chosen from
+        // `ToolCallParser::promotes_bare_call_names`).
+        let (_, calls) = parse_tool_calls_promoting_bare_names("<tool_call>get_status</tool_call>");
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "get_status");
         assert_eq!(calls[0].function.arguments, "{}");
+    }
+
+    #[test]
+    fn default_parse_drops_bare_identifier_instead_of_fabricating_a_call() {
+        // Regression pin for the 2026-08 bfcl-subset-echolp residual: for
+        // hermes/qwen3_coder-class parsers a bare identifier inside
+        // `<tool_call>` is malformed output. Promoting it fabricates a call
+        // the model never made — on BFCL irrelevance-class samples that
+        // single phantom call flips a correct sample to wrong.
+        let (_content, calls) = parse_tool_calls("<tool_call>get_status</tool_call>");
+
+        assert!(
+            calls.is_empty(),
+            "bare identifier must not become a call by default — got {calls:#?}"
+        );
+    }
+
+    #[test]
+    fn streaming_detector_promotes_bare_names_only_when_opted_in() {
+        let closed = "<tool_call>get_status</tool_call>";
+
+        let mut default_detector = StreamingToolDetector::new();
+        let mut outputs = default_detector.process(closed);
+        outputs.extend(default_detector.flush());
+        assert!(
+            outputs
+                .iter()
+                .all(|output| !matches!(output, DetectorOutput::ToolCall(..))),
+            "default detector must not fabricate a call from a bare identifier"
+        );
+
+        let mut poolside_detector = StreamingToolDetector::new();
+        poolside_detector.set_promote_bare_names(true);
+        let mut outputs = poolside_detector.process(closed);
+        outputs.extend(poolside_detector.flush());
+        let call = outputs
+            .iter()
+            .find_map(|output| match output {
+                DetectorOutput::ToolCall(tc, _) => Some(tc),
+                _ => None,
+            })
+            .expect("poolside detector must emit the zero-argument call");
+        assert_eq!(call.function.name, "get_status");
+        assert_eq!(call.function.arguments, "{}");
     }
 
     #[test]

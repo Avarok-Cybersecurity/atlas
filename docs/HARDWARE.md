@@ -48,6 +48,21 @@ Qwen3.5/3.6 family), the mechanical recipe is:
    model_type = "qwen3_5"          # what the HF config.json says
    hidden_size = NNNN              # exact hidden dim — wins over wildcards
 
+   # Only if ANOTHER target declares the same (model_type, hidden_size) —
+   # e.g. qwen3.8-27b's config is bit-identical to qwen3.6-27b's — declare
+   # checkpoint-reference needles so runtime resolution can break the tie
+   # (case-insensitive substrings of the HF id / --model-name / model dir).
+   # build.rs FAILS if colliding targets omit this, and a tie the needles
+   # cannot break to exactly one target is a hard startup error (never a
+   # build-order pick; `--kernel-target` pins explicitly). Rules + rationale:
+   # crates/atlas-kernels/src/resolve.rs.
+   # match_names = ["qwen3.7-XXb"]
+
+   # Architecturally-identical sibling (zero new kernels)? Reuse another
+   # target's .cu tree instead of copying it — qwen3.8-27b compiles
+   # qwen3.6-27b's sources this way and ships no files of its own:
+   # kernel_source = "qwen3.6-27b"
+
    [behavior]
    default_num_drafts = 1
    max_thinking_budget = 512
@@ -74,7 +89,9 @@ Qwen3.5/3.6 family), the mechanical recipe is:
    ATLAS_TARGET_MODEL='*' cargo build --release -p spark-server
    ```
    The new target compiles into the binary; runtime selects it via
-   `model_type` + `hidden_size` matching.
+   `model_type` + `hidden_size` matching, with `match_names` breaking any
+   tie between config-identical checkpoints (see
+   `crates/atlas-kernels/src/resolve.rs`).
 
 If your model is genuinely new (different attention pattern, novel SSM
 variant, etc.), you'll also need to:

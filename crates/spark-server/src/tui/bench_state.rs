@@ -3,8 +3,10 @@
 //! Benchmarks-section state: what is selected, what the parameters are set to,
 //! and what the running benchmark has reported so far.
 //!
-//! The section is a three-step flow — **Suite → Parameters → Run** — plus a
-//! History pane over `~/.atlas/runs`. Nothing here awaits: the executor owns
+//! The section is a stepped flow — **Suite → Model variants → Parameters →
+//! Run**, the variant step appearing only for a benchmark whose baseline
+//! declares model variants (see [`super::bench_variants`]) — plus a History
+//! pane over `~/.atlas/runs`. Nothing here awaits: the executor owns
 //! the tokio side and this drains its channels once per tick, exactly like
 //! [`crate::tui::chat`].
 
@@ -24,6 +26,9 @@ const LOG_CAPACITY: usize = 500;
 pub enum View {
     #[default]
     List,
+    /// Which model variant of the selected benchmark — shown when its
+    /// baseline declares any; see [`super::bench_variants`].
+    Variants,
     Params,
     Run,
 }
@@ -57,8 +62,22 @@ pub struct BenchState {
     /// benchmark request carrying the old name is exactly the trigger that
     /// swaps the server back, mid-run.
     pub target_model_pinned: bool,
+    /// True when the current pin came from [`choose_variant`], not from the
+    /// operator's keyboard. A variant pin is scoped to the benchmark it was
+    /// chosen for: selecting a different benchmark releases it (so the form
+    /// follows the live model again), while an operator-typed pin survives
+    /// benchmark switches — targeting a different endpoint on purpose is a
+    /// real thing to want across the whole session.
+    ///
+    /// [`choose_variant`]: super::bench_variants
+    pub variant_pinned: bool,
     /// Set for a benchmark whose descriptor demands confirmation.
     pub confirm_open: bool,
+    /// The selected benchmark's model variants, from its assembled baseline.
+    /// Empty when it has none (or there is no checkout to read them from).
+    pub variants: Vec<super::bench_variants::VariantRow>,
+    /// Cursor into `variants`.
+    pub variant_row: usize,
 
     executor: Option<atlas_plugin::BenchmarkExecutor>,
     run: Option<RunHandle>,
@@ -110,6 +129,14 @@ impl BenchState {
             return;
         }
         self.target = TargetEndpoint::new(self.target.base_url.clone(), live);
+        // The form's model row displays its edit buffer (built at `select`
+        // time), so following the live model must move it too or the form
+        // keeps showing the value the target no longer has.
+        if !self.editing
+            && let Some(model_row) = self.edit.get_mut(self.specs.len() + 1)
+        {
+            *model_row = self.target.model.clone();
+        }
     }
 
     pub fn attach(&mut self, executor: atlas_plugin::BenchmarkExecutor, target: TargetEndpoint) {
@@ -156,6 +183,18 @@ impl BenchState {
         self.errors.clear();
         self.row = 0;
         self.editing = false;
+        // Another benchmark's variants would adopt the wrong checkpoint —
+        // and a variant PIN is scoped to the benchmark it was chosen for:
+        // without this release, choosing the dense variant and then
+        // selecting a variantless benchmark left its checkpoint pinned (and
+        // `follow_live_model` disabled) for the rest of the session.
+        // An operator-typed pin (`variant_pinned == false`) survives.
+        self.variants.clear();
+        self.variant_row = 0;
+        if self.variant_pinned {
+            self.variant_pinned = false;
+            self.target_model_pinned = false;
+        }
     }
 
     /// Provenance of the selected benchmark.
@@ -224,6 +263,8 @@ impl BenchState {
                 } else {
                     self.target = TargetEndpoint::new(self.target.base_url.clone(), trimmed);
                     self.target_model_pinned = true;
+                    // Typed by hand: outlives benchmark switches (see field doc).
+                    self.variant_pinned = false;
                     self.errors.remove("__model");
                 }
             }
@@ -417,33 +458,6 @@ impl BenchState {
         // to keep an in-memory list in sync with the filesystem.
         self.history_loaded = false;
     }
-
-    /// Populate the History pane. Lazy and re-run after each persisted frame.
-    ///
-    /// Sorted newest-first across ALL benchmarks rather than grouped by
-    /// benchmark: every row already prints its own age and id, and a single
-    /// chronological list is what "what ran recently" actually asks for.
-    pub fn load_history(&mut self) {
-        if self.history_loaded {
-            return;
-        }
-        self.history_loaded = true;
-        self.history = match &self.executor {
-            Some(executor) => atlas_plugin::history::load_all(executor.artifacts()),
-            None => Vec::new(),
-        };
-        self.history_row = self.history_row.min(self.history.len().saturating_sub(1));
-    }
-
-    pub fn elapsed_text(&self) -> String {
-        let secs = self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0);
-        format!(
-            "{:02}:{:02}:{:02}",
-            secs / 3600,
-            (secs / 60) % 60,
-            secs % 60
-        )
-    }
 }
 
 /// Shown only before `attach` has selected anything.
@@ -453,6 +467,9 @@ impl BenchState {
 /// string table that happens to need a stable address to be borrowed from.
 const FALLBACK_METADATA: atlas_plugin::PluginMetadata =
     atlas_plugin::PluginMetadata::atlas("no benchmark selected");
+
+#[path = "bench_state_history.rs"]
+mod history;
 
 #[cfg(test)]
 #[path = "bench_state_tests.rs"]

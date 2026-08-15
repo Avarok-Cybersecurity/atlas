@@ -54,6 +54,7 @@ use crate::result::{BenchmarkResult, LogLine, RunStatus, Verdict};
 
 use super::compare::{self, RoundVerdict};
 use super::probe;
+use super::score::RoundRecord;
 
 const SUMMARY: &str = "Replayed conversations must come back byte-identical";
 pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
@@ -76,16 +77,22 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              and is recorded but passed; restore POISONING collapses the output (early-EOS \
              stubs or runaway, the exact signature the batch4 stack shipped 2026-08-11) and \
              FAILS the gate. Any collapsed or unmeasured round fails; jitter only records. \
-             Serves with --serve-override ssm_cache_slots=256 so the snapshot pool cannot evict \
-             mid-run (eviction churn is noise, not the poisoning class). ~8-10 min.",
+             Two self-honesty checks keep the gate from passing vacuously: the reference \
+             round must satisfy the script's semantic anchors (poisoning deterministic from \
+             round 0 would otherwise certify as Invariant), and every replay's first turn \
+             must attest a nonzero prefix-cache restore (with caching off, the gate would \
+             green-light a path it never exercised). Serves with --serve-override \
+             ssm_cache_slots=256 so the snapshot pool cannot evict mid-run (eviction churn \
+             is noise, not the poisoning class). ~8-10 min.",
     duration_hint: "~8–10 min",
-    updated: "2026-08-12",
+    updated: "2026-08-13",
     needs_confirmation: false,
     // The invariant is a property of the ENGINE (deterministic replay must
     // hold for any served model), but the thresholds and recipe binding are
     // defined on the flagship — same footing as the contamination detector,
     // which runs anywhere, with its baseline measured on one checkpoint.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(SsmPoison::default()),
 };
 
@@ -109,8 +116,9 @@ pub struct SsmPoison {
     probed: bool,
     /// Round 0's transcripts, one per turn — the reference.
     reference: Vec<Transcript>,
-    /// (round number, 1-based over the replays) → verdict.
-    replays: Vec<(usize, RoundVerdict)>,
+    /// One record per replay round: verdict plus the turn-1 cache
+    /// attestation the vacuity check reads.
+    replays: Vec<RoundRecord>,
 }
 
 impl SsmPoison {
@@ -223,9 +231,14 @@ impl Benchmark for SsmPoison {
             ParamSpec::new(
                 "max_tokens",
                 "Max tokens per turn",
-                "Output budget per turn. The script's longest answer is a paragraph.",
+                "Output budget per turn. Sized so the COLLAPSE_RATIO_CEIL (2.0) stays \
+                 reachable: the script's longest answer is a short paragraph (~a few hundred \
+                 tokens), and a runaway replay must be able to reach twice the reference \
+                 length before the budget clamps it. The old 256 clamped runaways below the \
+                 ceiling on any turn past 128 tokens. A reference turn that hits this budget \
+                 fails the reference anchors, so a budget still too small is loud, not silent.",
                 ParamKind::Int { min: 32, max: 4096 },
-                ParamValue::Int(256),
+                ParamValue::Int(1024),
             ),
             ParamSpec::new(
                 "request_timeout_s",
@@ -275,52 +288,87 @@ impl Benchmark for SsmPoison {
         match self.phase {
             Phase::Baseline => {
                 self.reference = self.replay_script("reference").await?;
+                // The replays are only held to round 0, so round 0 must be
+                // held to the script: poisoning that is deterministic from
+                // the first round produces the same wrong bytes every time
+                // and would otherwise certify as Invariant.
+                let violations = probe::validate_reference(&self.reference);
+                if !violations.is_empty() {
+                    self.phase = Phase::Done;
+                    let reason = format!(
+                        "reference round failed the script anchors ({}) — replays compared \
+                         against it would certify nothing",
+                        violations.join("; ")
+                    );
+                    let (s, _) = self.scored();
+                    let mut metrics = super::report::metrics(&s);
+                    metrics.insert("sum_wall_s".to_string(), self.elapsed().as_secs_f64());
+                    return Ok(BenchmarkResult {
+                        status: RunStatus::Completed,
+                        ..BenchmarkResult::running("reference", self.elapsed())
+                    }
+                    .with_metrics(metrics)
+                    .with_verdict(Verdict::fail(reason.clone()))
+                    .log_line(LogLine::error(one_line(reason))));
+                }
                 self.phase = Phase::Replay;
                 Ok(self.frame(
                     "reference",
                     Some(LogLine::info(format!(
-                        "reference round captured: {} turns",
+                        "reference round captured: {} turns, script anchors hold",
                         self.reference.len()
                     ))),
                 ))
             }
             Phase::Replay => {
                 let n = self.replays.len() + 1;
-                let v = match self.replay_script(&format!("replay {n}")).await {
-                    Ok(replay) => compare::compare_round(&self.reference, &replay),
-                    Err(e) => RoundVerdict::Unmeasured {
-                        reason: one_line(format!("{e:#}")),
-                    },
+                // Turn 1 of every replay is the cross-round prefix restore
+                // under test; its cached-token attestation is what separates
+                // a measured round from a cold rerun of the script.
+                let (v, turn1_cached) = match self.replay_script(&format!("replay {n}")).await {
+                    Ok(replay) => {
+                        let cached = replay.first().map(|t| t.cached_prompt_tokens);
+                        (compare::compare_round(&self.reference, &replay), cached)
+                    }
+                    Err(e) => (
+                        RoundVerdict::Unmeasured {
+                            reason: one_line(format!("{e:#}")),
+                        },
+                        None,
+                    ),
                 };
-                if let RoundVerdict::Collapsed { turns } = &v {
-                    let line = LogLine::error(format!(
+                let line = match &v {
+                    RoundVerdict::Collapsed { turns } => Some(LogLine::error(format!(
                         "replay {n} COLLAPSED — restored state produced degenerate output on \
                          turns {:?} (the SSM state poisoning signature)",
                         turns.iter().map(|t| t.turn).collect::<Vec<_>>()
-                    ));
-                    self.replays.push((n, v));
-                    if self.replays.len() >= self.rounds {
-                        self.phase = Phase::Score;
-                    }
-                    return Ok(self.frame(&format!("replay {n}"), Some(line)));
-                }
-                if let RoundVerdict::Jittered { turns } = &v {
-                    let line = LogLine::info(format!(
+                    ))),
+                    RoundVerdict::Jittered { turns } => Some(LogLine::info(format!(
                         "replay {n} jittered (healthy) on turns {:?} — restore anchor \
                          selection varies between rounds",
                         turns.iter().map(|t| t.turn).collect::<Vec<_>>()
-                    ));
-                    self.replays.push((n, v));
-                    if self.replays.len() >= self.rounds {
-                        self.phase = Phase::Score;
-                    }
-                    return Ok(self.frame(&format!("replay {n}"), Some(line)));
-                }
-                self.replays.push((n, v));
+                    ))),
+                    _ => None,
+                };
+                // A collapse or jitter line keeps priority; the vacuity line
+                // only fills silence, since collapse already fails the round.
+                let line = if line.is_none() && turn1_cached == Some(0) {
+                    Some(LogLine::error(format!(
+                        "replay {n} restored 0 cached prompt tokens on turn 1 — the round \
+                         never exercised the prefix restore path"
+                    )))
+                } else {
+                    line
+                };
+                self.replays.push(RoundRecord {
+                    round: n,
+                    verdict: v,
+                    turn1_cached,
+                });
                 if self.replays.len() >= self.rounds {
                     self.phase = Phase::Score;
                 }
-                Ok(self.frame(&format!("replay {n}"), None))
+                Ok(self.frame(&format!("replay {n}"), line))
             }
             Phase::Score => {
                 let (s, v) = self.scored();

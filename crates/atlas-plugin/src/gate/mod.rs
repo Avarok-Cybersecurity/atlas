@@ -26,6 +26,7 @@ pub mod closure;
 pub mod codeowners;
 pub mod coverage;
 pub mod record;
+pub mod scoring;
 pub mod taxon;
 
 /// The PR INTENT taxonomy — what a change is FOR, and the benchmarks that
@@ -44,7 +45,7 @@ pub use check::{
 };
 pub use record::{
     Bound, GateBaseline, GateRecord, HardwareBaseline, ModelBaseline, date_of, now_secs,
-    read_baseline, read_record, record_path, write_record,
+    read_baseline, read_record, record_path, record_path_for, variant_slug, write_record,
 };
 
 /// The five benches whose records must pass for the branch to be gated.
@@ -63,13 +64,14 @@ pub use record::{
 /// mix — which is exactly what makes crossing them so easy to miss. Each
 /// bench's `BASELINE.json` pins its own model, and a model mismatch is a hard
 /// fail in `check_record`.
-pub const REQUIRED_GATES: [&str; 6] = [
+pub const REQUIRED_GATES: [&str; 7] = [
     coverage::REQUIRED[0].id,
     coverage::REQUIRED[1].id,
     coverage::REQUIRED[2].id,
     coverage::REQUIRED[3].id,
     coverage::REQUIRED[4].id,
     coverage::REQUIRED[5].id,
+    coverage::REQUIRED[6].id,
 ];
 
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.
@@ -201,6 +203,10 @@ pub fn dirty_perf_paths(root: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "variant_tests.rs"]
+mod variant_tests;
 
 /// Split from `tests.rs` for the 500-LoC cap: writing a fixture baseline into
 /// the kernel tree, where the thresholds now live.

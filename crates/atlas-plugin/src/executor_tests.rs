@@ -31,6 +31,7 @@ const FAKE_DESC: BenchmarkDescriptor = BenchmarkDescriptor {
     updated: "2026-07-31",
     needs_confirmation: false,
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(Fake::new(1, None, Arc::new(AtomicUsize::new(0)))),
 };
 

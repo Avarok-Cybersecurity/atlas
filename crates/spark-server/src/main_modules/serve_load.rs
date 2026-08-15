@@ -138,6 +138,71 @@ pub(crate) fn load_model(
     // whose TOP LEVEL is already the quantization block.
     serve_phases::merge_sidecar_quant_config(&model_dir, &mut config);
 
+    // Vision area bound, resolved ONCE and installed on the config before
+    // anything derived from it exists.
+    //
+    // Ordering is load-bearing: the vision encoder sizes every device buffer
+    // from this number, and it is constructed inside `build_model` below. This
+    // used to be resolved AFTER the model was built, which is how the CPU
+    // preprocessor and the GPU encoder came to hold two different ideas of the
+    // maximum image — the preprocessor clamped to 1280px, the encoder
+    // allocated for 6400 patches, and nothing connected them.
+    let vision_max_pixels = resolve_vision_max_pixels(&args, &model_dir)?;
+    if let Some(v) = config.vision.as_mut() {
+        v.max_pixels = vision_max_pixels;
+    }
+    match vision_max_pixels {
+        Some(px) => tracing::info!(
+            "Vision area bound: {} px ({})",
+            px,
+            if args.vision_max_pixels > 0 {
+                "--vision-max-pixels"
+            } else {
+                // Deliberately does not name a file: the bound comes from
+                // whichever of preprocessor_config.json /
+                // processor_config.json the checkpoint actually ships, and
+                // `read_preprocessor_max_pixels` logs the resolved path and
+                // key on its own line. Naming one here was wrong for every
+                // unsloth checkpoint, which ships only the other.
+                "checkpoint processor config / ATLAS_VISION_MAX_PIXELS"
+            }
+        ),
+        None => tracing::info!(
+            "Vision area bound: none declared — falling back to the 1280px long-side clamp"
+        ),
+    }
+
+    // Remote image fetching. Logged at WARN when on, because it is the one
+    // vision setting that changes what the server is allowed to REACH rather
+    // than how it processes what it was given — an operator reading the boot
+    // log should see it without looking for it.
+    let remote_image_policy = crate::api::chat::remote_image::RemoteImagePolicy {
+        enabled: args.vision_allow_remote_images,
+        max_bytes: args.vision_remote_image_max_mb.saturating_mul(1024 * 1024),
+        timeout_secs: args.vision_remote_image_timeout_s,
+        allow_private: args.vision_remote_image_allow_private,
+    };
+    if remote_image_policy.enabled {
+        tracing::warn!(
+            "Remote image fetching ENABLED (--vision-allow-remote-images): this server will \
+             issue outbound HTTP to URLs supplied in chat requests. Cap {} MiB, timeout {} s, \
+             private/loopback/link-local destinations {}.",
+            args.vision_remote_image_max_mb,
+            remote_image_policy.timeout_secs,
+            if remote_image_policy.allow_private {
+                "ALLOWED (--vision-remote-image-allow-private)"
+            } else {
+                "refused"
+            }
+        );
+    } else {
+        tracing::info!(
+            "Remote image fetching disabled (default); image_url parts carrying an http(s) \
+             URL are refused with a 400. Send base64 data: URIs, or pass \
+             --vision-allow-remote-images."
+        );
+    }
+
     if let Some(ref qc) = config.quantization_config {
         tracing::info!(
             "Quantization config: method={:?}, algo={:?}, format={:?}, {} module(s) in ignore list",
@@ -163,27 +228,46 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(3, "gpu init");
     //
     // Each kernel target declares which (model_type, hidden_size) pairs it supports
-    // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over wildcards.
-    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
-        .with_context(|| {
-            format!(
-                "No compiled kernel target matches model_type '{}' / hidden_size={}. \
+    // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over
+    // wildcards. Config-identical checkpoints (Qwen3.6-27B vs Qwen3.8-27B both
+    // parse to (qwen3_5, 5120)) are disambiguated by matching each colliding
+    // target's declared `match_names` against these checkpoint references; a
+    // tie that does not break to exactly one target is a hard error here (never
+    // a build-order pick), and `--kernel-target` pins the choice explicitly.
+    let model_dir_str = model_dir.display().to_string();
+    let model_refs: Vec<&str> = [
+        args.model.as_deref(),
+        args.model_name.as_deref(),
+        Some(model_dir_str.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let ptx_set = atlas_kernels::ptx_for_config(
+        &config.model_type,
+        config.hidden_size,
+        &model_refs,
+        args.kernel_target.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?
+    .with_context(|| {
+        format!(
+            "No compiled kernel target matches model_type '{}' / hidden_size={}. \
              Available targets: {:?}",
-                config.model_type,
-                config.hidden_size,
-                atlas_kernels::available_targets()
-                    .iter()
-                    .map(|t| &t.target.model)
-                    .collect::<Vec<_>>(),
-            )
-        })?;
+            config.model_type,
+            config.hidden_size,
+            atlas_kernels::available_targets()
+                .iter()
+                .map(|t| &t.target.model)
+                .collect::<Vec<_>>(),
+        )
+    })?;
     let sampling_presets = ptx_set.sampling;
-    // The dashboard's kernel table re-resolves the live target through this
-    // same `ptx_for_config` call. It needs the config shape that selected the
-    // target, because the served-model name is an HF id, not a kernel-target
-    // directory name — and `atlas_kernels::ptx_modules()` (what the table used
-    // to read) is a plain alias of TARGET 0 in a multi-target build.
-    crate::tui::data::kernels::publish_loaded_shape(&config.model_type, config.hidden_size);
+    // Record the RESOLVED target identity for the dashboard's kernel table.
+    // It used to re-run resolution from (model_type, hidden_size), but that
+    // shape no longer identifies a target on its own (see the tie-break
+    // above) — publishing the outcome is exact and cannot disagree with it.
+    crate::tui::data::kernels::publish_loaded_target(ptx_set.target.model, ptx_set.target.quant);
 
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //
@@ -240,7 +324,9 @@ pub(crate) fn load_model(
         config.vision = None;
     }
 
-    // Apply MODEL.toml [behavior].default_num_drafts unless user passed --num-drafts.
+    // Resolve num_drafts: explicit --num-drafts (any value) → MODEL.toml
+    // [behavior].default_num_drafts → engine default. After this call
+    // `args.num_drafts` is Some and `args.resolved_num_drafts()` is valid.
     serve_phases::apply_model_default_num_drafts(&mut args, &ptx_set);
 
     let (gpu, free_mem) = serve_phases::init_gpu_backend(&args, &ptx_set)?;
@@ -279,12 +365,14 @@ pub(crate) fn load_model(
         tp_rank: _tp_rank,
         ep_rank,
     } = serve_phases::resolve_topology(&args, &mut config)?;
-    // FP8 KV calibration: CLI flag overrides MODEL.toml default.
-    config.fp8_kv_calibration_tokens = if args.fp8_kv_calibration_tokens > 0 {
-        args.fp8_kv_calibration_tokens
-    } else {
-        ptx_set.behavior.fp8_kv_calibration_tokens
-    };
+    // FP8 KV calibration precedence (highest wins): an explicit
+    // --fp8-kv-calibration-tokens ALWAYS wins — including 0, which
+    // force-disables calibration on a model whose MODEL.toml enables it
+    // (the previous `> 0` sentinel could not express that). Omitted falls
+    // back to MODEL.toml [behavior].fp8_kv_calibration_tokens (0 if absent).
+    config.fp8_kv_calibration_tokens = args
+        .fp8_kv_calibration_tokens
+        .unwrap_or(ptx_set.behavior.fp8_kv_calibration_tokens);
     // Unconditional: the serde(skip) default is 0.0, and the CLI default (2.0)
     // is the real one. Validated ≥ 1.0 in `validate_serve_args`.
     config.fp8_kv_headroom = args.fp8_kv_headroom;
@@ -673,7 +761,7 @@ pub(crate) fn load_model(
     let num_drafts = if args.dflash {
         args.dflash_gamma.saturating_sub(1).max(1)
     } else {
-        args.num_drafts
+        args.resolved_num_drafts()
     };
 
     if args.dflash {
@@ -758,12 +846,20 @@ pub(crate) fn load_model(
     // Per-model watchdog tunables. Built here, before the scheduler thread
     // spawns — the installer this replaces ran from `log_behavior_audit`,
     // which is called well after the spawn.
-    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(&ptx_set.behavior);
+    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
+        &ptx_set.behavior,
+        args.max_inter_tool_prose,
+        args.content_loop_min_repeats,
+    );
     // The run's levers. Shared with the dashboard so `/watchdog on|off`
     // toggles this run's flag; the MODEL.toml `[behavior]` value is its
     // starting position.
     let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
-    sched_levers.set_loop_watchdog(ptx_set.behavior.enable_loop_watchdog);
+    sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
+        ptx_set.behavior.enable_loop_watchdog,
+        std::env::var("ATLAS_CONTENT_LOOP_WATCHDOG").ok().as_deref(),
+        args.content_loop_watchdog,
+    ));
     // The run's snapshot cell, shared with the dashboard for the same reason
     // and by the same route as the levers.
     let sched_snapshot = std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default());
@@ -834,10 +930,6 @@ pub(crate) fn load_model(
     } = carried;
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
     let dump_writer = serve_phases::open_dump_writer(&args);
-    let vision_max_pixels = resolve_vision_max_pixels(&args)?;
-    if let Some(max_pixels) = vision_max_pixels {
-        tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
-    }
     // #27: build the STAGEABLE registry (name -> {peer_stage_id, peft}). The peer
     // WeightManifest carries no r/alpha, so the peft scaling is parsed from each
     // adapter's local CONFIG_DIR/adapter_config.json HERE (fail-fast at startup —
@@ -982,6 +1074,7 @@ pub(crate) fn load_model(
         ),
         vision_config: config.vision.clone(),
         vision_max_pixels,
+        remote_image_policy,
         default_temperature,
         default_top_k,
         default_top_p,

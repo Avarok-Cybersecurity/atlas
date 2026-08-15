@@ -237,6 +237,45 @@ impl MoeLayer {
         Ok(true)
     }
 
+    /// Router gate GEMM for a BF16 (dense) gate weight at prefill:
+    /// `gate_logits[n, num_experts] = router_in @ gate^T`.
+    ///
+    /// PINNED to the scalar `dense_gemm` kernel, never a rerouted fast GEMM.
+    /// Router logits are selection inputs, not data: top-k reads them after a
+    /// BF16 store, where near-tied experts sit 1 ulp apart, so ANY change in
+    /// accumulation order flips selections on borderline tokens and the flip
+    /// compounds through every downstream layer. Rerouting this one GEMM to
+    /// `dense_gemm_bf16_pipelined` (mma.sync accumulation, "cosine=1.0" but
+    /// not bit-identical) moved BFCL on the FP8 MoE flagship from 86.55 to
+    /// 84.76 overall — deterministic, reproduced to the hundredth on two
+    /// trees (2026-08-12, 03a74eac19 / cb9f8ecab4) — while every dense-model
+    /// gate stayed inside noise. The routed-expert GEMMs tolerate order
+    /// changes; the router does not. Perf is a non-argument at this shape:
+    /// N = num_experts is tiny next to the expert GEMMs this feeds.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn router_gate_gemm_dense(
+        &self,
+        router_in: DevicePtr,
+        gate_logits: DevicePtr,
+        num_tokens: u32,
+        num_experts: u32,
+        hidden_size: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        ops::dense_gemm(
+            ctx.gpu,
+            self.dense_gemm,
+            router_in,
+            &self.weights.gate,
+            gate_logits,
+            num_tokens,
+            num_experts,
+            hidden_size,
+            stream,
+        )
+    }
+
     /// Apply the router pre-normalization (Gemma-4 only) and return the
     /// pointer that should be fed into the gate GEMV. If the MoE has no
     /// router_pre_norm weight, this is a no-op and returns `input` unchanged.

@@ -85,6 +85,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     needs_confirmation: true,
     // The matrix is defined on whatever the box holds — that IS the measurement.
     intended_for: None,
+    threshold_params: &[],
     ctor: || Box::new(ServeMatrix::default()),
 };
 

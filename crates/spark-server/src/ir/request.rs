@@ -42,6 +42,13 @@ pub struct ChatRequest {
     /// Qualitative reasoning effort retained separately from the token budget.
     /// DeepSeek-V4 uses this to select its checkpoint-native prompt prefix.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Per-request `chat_template_kwargs.preserve_thinking` (Qwen3.6+ dense
+    /// templates): keep historical `<think>` blocks when re-rendering
+    /// assistant turns. `None` = client silent — the MODEL.toml
+    /// `[behavior].preserve_thinking` override applies, and when that too is
+    /// unset the variable is left undefined so the model template's own
+    /// default rules (see `tokenizer/chat_impl.rs`).
+    pub preserve_thinking: Option<bool>,
     /// Per-request token-loop detector override.
     pub repetition_detection: Option<crate::api::inference_types::RepetitionDetectionParams>,
     /// M2 per-request LoRA routing: optional resident adapter NAME for
@@ -129,21 +136,53 @@ pub enum ThinkingDirective {
     /// force-injects `</think>` mid-reasoning and wrecks tool
     /// selection).
     On { budget: Option<u32> },
+    /// Client asked for a QUALITATIVE effort level (OpenAI
+    /// `reasoning.effort` / `reasoning_effort`) rather than a token
+    /// budget. Carried symbolically so `api/chat/thinking.rs` can scale
+    /// it against the model's effective `max_thinking_budget` (MODEL.toml
+    /// or `--max-thinking-budget`) — mapping it to an absolute token
+    /// count at the wire edge is how "medium" became a hardcoded 256
+    /// that no server knob could reach (#328 family).
+    OnEffort(EffortLevel),
+}
+
+/// The OpenAI `reasoning_effort` ladder, kept symbolic until budget
+/// resolution. Distinct from [`ReasoningEffort`], which is the 3-level
+/// template-kwarg vocabulary some chat templates consume verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffortLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningEffort {
     Low,
+    Medium,
     High,
     Max,
 }
 
 impl ReasoningEffort {
+    /// The string handed to chat templates (Jinja `reasoning_effort`) and
+    /// the DeepSeek-V4 native encoder. Every spelling here must be accepted
+    /// by every consumer that validates the value:
+    /// - Qwen3.8 template: `('xhigh', 'medium', 'low')` after remapping
+    ///   'high'→'xhigh' — so `Max` MUST render as "xhigh", not "max"
+    ///   (the template raises on "max" and the request 400s).
+    /// - DeepSeek-V4 `ReasoningEffort::parse`: accepts all four.
+    /// - Mistral template: `['none', 'high']` — it rejected "low"/"max"
+    ///   before this mapping and rejects "low"/"medium"/"xhigh" after
+    ///   (unchanged behavior; "high" and thinking-off "none" still pass).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
+            Self::Medium => "medium",
             Self::High => "high",
-            Self::Max => "max",
+            Self::Max => "xhigh",
         }
     }
 }

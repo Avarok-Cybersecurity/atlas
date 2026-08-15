@@ -12,6 +12,11 @@ pub struct StreamingToolDetector {
     pub(super) buffer: String,
     pub(super) inside_tag: bool,
     pub(super) inside_dsml: bool,
+    /// Whether a bare identifier inside `<tool_call>` is a legitimate
+    /// zero-argument call (Poolside v1 only — see
+    /// `ToolCallParser::promotes_bare_call_names`). Default FALSE: every
+    /// other format drops it as malformed, matching the blocking parser.
+    pub(super) promote_bare_names: bool,
     pub(super) call_counter: u32,
     /// Track if any tool calls were emitted during process() to prevent
     /// flush() from re-emitting them (causes duplicate arguments in stream).

@@ -25,6 +25,11 @@ parking_lot = { workspace = true }
 tracing = "0.1"
 # `Stream` for `Benchmark::run`, `BoxFuture` for the dyn-safe bridge.
 futures = "0.3"
+# Vision fixtures reach the API as base64 `data:` URIs — Atlas rejects remote
+# image URLs, so this is the only shape the endpoint accepts. Same version the
+# rest of the workspace pins; hand-rolling base64 for one function would be a
+# worse trade than the dependency.
+base64 = "0.22"
 # Benchmarks are I/O state machines: TCP to the endpoint, child processes for
 # the BFCL artifacts, timers for warmup/timeouts. No `rt-multi-thread` — the
 # executor runs on the server's existing runtime.

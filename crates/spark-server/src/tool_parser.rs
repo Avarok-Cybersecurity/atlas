@@ -359,6 +359,20 @@ pub trait ToolCallParser: Send + Sync {
     fn wants_typed_arguments(&self) -> bool {
         false
     }
+
+    /// Whether this format encodes a ZERO-ARGUMENT call as a bare tool name
+    /// inside the `<tool_call>` envelope (Poolside v1 only). Every other
+    /// format has a well-formed zero-argument encoding (`{"name":"f",
+    /// "arguments":{}}`, `<function=f></function>`, …), so for them a bare
+    /// identifier is malformed output and promoting it FABRICATES a call the
+    /// model never made. Measured: the un-gated promotion that shipped with
+    /// the 2026-08-12 batch4 stack surfaced phantom calls on the Qwen3.6-35B
+    /// FP8 BFCL leg — irrelevance-class samples score "did it call at all",
+    /// so each phantom flips a correct sample to wrong (bfcl-subset-echolp
+    /// residual after the router-GEMM pin: 86.95 → 86.32 normalized).
+    fn promotes_bare_call_names(&self) -> bool {
+        false
+    }
 }
 
 impl std::fmt::Display for dyn ToolCallParser {
@@ -472,6 +486,7 @@ mod qwen3_coder;
 mod qwen3_xml;
 mod streaming;
 mod streaming_emit;
+mod streaming_flush;
 mod streaming_impl;
 mod type_coerce;
 pub(crate) mod validation;

@@ -36,8 +36,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use atlas_plugin::{TargetEndpoint, gate};
+
+use super::bench_resolve::Resolved;
 
 /// How long to wait for the endpoint to answer with the model we asked for.
 /// A cold NVFP4 load on GB10 is minutes, not seconds.
@@ -78,6 +80,12 @@ pub struct SelfServed {
     /// numbers describe a config that exists nowhere in the repo, which the
     /// record must state — otherwise it reads as a measurement of the recipe.
     pub overrides: BTreeMap<String, String>,
+    /// The served variant's baseline entry — its committed thresholds, note
+    /// and label. Carried so the run can DERIVE anything its own verdict
+    /// shares with the gate (`BenchmarkDescriptor::threshold_params`) from the
+    /// variant that is actually serving, instead of from a schema default that
+    /// is only right for one variant.
+    pub baseline_entry: gate::ModelBaseline,
     /// `None` once teardown has taken it. An `Option` rather than a bare handle
     /// so that `Drop` — which cannot move out of `self` — can still tear down
     /// whatever `shutdown()` did not.
@@ -133,92 +141,6 @@ impl Drop for SelfServed {
     }
 }
 
-/// What a baseline says to serve.
-#[derive(Debug)]
-pub(super) struct Resolved {
-    pub model: String,
-    pub recipe_id: String,
-}
-
-/// Pick the (model, recipe) a gate run should serve.
-///
-/// Split out from the serving itself so the branching — which box class, which
-/// model, and whether a recipe is bound at all — is testable without a GPU.
-/// Every refusal names both what was asked for and what exists; an unresolvable
-/// baseline must never read as "nothing to serve".
-pub(super) fn resolve(
-    baseline: &gate::GateBaseline,
-    benchmark_id: &str,
-    hardware: Option<&str>,
-) -> Result<Resolved> {
-    let hw_key = match hardware {
-        Some(h) => h.to_string(),
-        None => {
-            let mut keys = baseline.hardware.keys();
-            match (keys.next(), keys.next()) {
-                (Some(only), None) => only.clone(),
-                // Two box classes and no instruction is not a coin flip: TTFT
-                // ceilings differ per box, so guessing would score the run
-                // against another machine's numbers.
-                (Some(_), Some(_)) => bail!(
-                    "{benchmark_id} has baselines for several box classes ([{}]); pass \
-                     --hardware to say which one this run is for rather than guessing",
-                    baseline
-                        .hardware
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                (None, _) => bail!("{benchmark_id} has no hardware entries in its baseline"),
-            }
-        }
-    };
-
-    let (model, entry) = baseline.resolve(&hw_key, None)?;
-    let recipe_id = entry.recipe.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no recipe is bound to {model:?} on {hw_key:?} for {benchmark_id}. Self-start needs \
-             one; either add `recipe` to the baseline entry or drive an existing server with \
-             --url/--model and no --pull-request-gate."
-        )
-    })?;
-    Ok(Resolved { model, recipe_id })
-}
-
-/// Parse `--serve-override KEY=VALUE` pairs into recipe overrides.
-///
-/// Only splits and validates — whether the KEY exists is `Recipe::argv`'s
-/// question, and it already refuses an unknown one, so re-checking here would
-/// be a second copy of that rule.
-///
-/// `port` is refused: `serve_for` picks a free port and passes its own, so a
-/// second opinion would either be silently dropped or race whatever else holds
-/// the operator's port. Saying so beats both.
-pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
-    for pair in pairs {
-        let (key, value) = pair.split_once('=').with_context(|| {
-            format!("--serve-override {pair:?} is not KEY=VALUE (e.g. kv_cache_dtype=fp8)")
-        })?;
-        let key = key.trim();
-        ensure!(
-            !key.is_empty(),
-            "--serve-override {pair:?} has an empty key"
-        );
-        ensure!(
-            key != "port",
-            "--serve-override cannot set `port`: the gate binds a free port itself and serves \
-             on it, so an override here would name a port nothing is listening on."
-        );
-        // Last wins, deliberately: repeating a key is how you edit a long
-        // command line, and silently keeping the FIRST would contradict every
-        // other CLI on the box.
-        out.insert(key.to_string(), value.to_string());
-    }
-    Ok(out)
-}
-
 /// Resolve the recipe for `benchmark_id` and serve it on a free port.
 ///
 /// `hardware` picks the baseline entry; `None` uses the sole entry when the
@@ -231,11 +153,16 @@ pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String,
 pub async fn serve_for(
     benchmark_id: &str,
     hardware: Option<&str>,
+    checkpoint: Option<&str>,
     overrides: BTreeMap<String, String>,
 ) -> Result<SelfServed> {
     let root = super::bench_run::repo_root()?;
     let baseline = gate::read_baseline(&root, benchmark_id)?;
-    let Resolved { model, recipe_id } = resolve(&baseline, benchmark_id, hardware)?;
+    let Resolved {
+        model,
+        recipe_id,
+        entry,
+    } = super::bench_resolve::resolve(&baseline, benchmark_id, hardware, checkpoint)?;
 
     let store = atlas_plugin::ArtifactStore::discover()?;
     let index = crate::recipe::fetch::cached(store.root());
@@ -304,6 +231,7 @@ pub async fn serve_for(
         target: TargetEndpoint::local(port, &model),
         recipe_id,
         overrides: requested,
+        baseline_entry: entry,
         server: Some(server),
     };
     await_serving(

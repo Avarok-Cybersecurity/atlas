@@ -18,7 +18,7 @@
 use crate::tool_parser::PromptLevers;
 
 /// Chat-path levers for one server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatLevers {
     /// Prompt-rendering decisions, handed to `ToolCallParser::system_prompt`
     /// and the chat template.
@@ -36,6 +36,25 @@ pub struct ChatLevers {
     /// system message when tools are active. Model-scoped: some checkpoints
     /// treat the injected block as conversation content and degrade.
     pub disable_cwd_hint_injection: bool,
+    /// `ATLAS_INTHINK_TOOL_LEAK_OPENERS=N` — how many tool-call openers
+    /// (`<tool_call>`, `<function=`, …) the in-think leak scanner tolerates
+    /// in a stream's reasoning before cancelling the sequence. Every opener
+    /// is stripped from the emitted reasoning regardless; this knob governs
+    /// only the CANCEL. Default 1 = the historical fire-on-first behaviour.
+    /// 0 = never cancel (strip-only) — for models like the qwen3_coder
+    /// family whose native tool syntax plausibly appears in legitimate
+    /// reasoning.
+    pub in_think_leak_openers: u32,
+}
+
+impl Default for ChatLevers {
+    /// [`ChatLevers::OFF`] — a derived Default would zero
+    /// `in_think_leak_openers`, silently DISARMING the in-think leak
+    /// cancel (0 = strip-only) instead of leaving it at the historical
+    /// fire-on-first.
+    fn default() -> Self {
+        Self::OFF
+    }
 }
 
 impl ChatLevers {
@@ -46,6 +65,8 @@ impl ChatLevers {
         bash_wander: false,
         phase_timing: false,
         disable_cwd_hint_injection: false,
+        // 1 = cancel on the first opener, the pre-knob behaviour.
+        in_think_leak_openers: 1,
     };
 
     /// Resolve from the environment plus this model's `[behavior]` table.
@@ -56,7 +77,31 @@ impl ChatLevers {
             bash_wander: std::env::var("ATLAS_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"),
             phase_timing: std::env::var("ATLAS_CHAT_PHASE_TIMING").as_deref() == Ok("1"),
             disable_cwd_hint_injection,
+            in_think_leak_openers: in_think_leak_openers_from(
+                std::env::var("ATLAS_INTHINK_TOOL_LEAK_OPENERS")
+                    .ok()
+                    .as_deref(),
+            ),
         }
+    }
+}
+
+/// SSOT parse for `ATLAS_INTHINK_TOOL_LEAK_OPENERS`. A set-but-unparseable
+/// value is a config error, not an absent one — silently keeping the default
+/// is how an operator's "fix" fails to apply (#328 class), so it warns.
+fn in_think_leak_openers_from(env: Option<&str>) -> u32 {
+    match env {
+        None => ChatLevers::OFF.in_think_leak_openers,
+        Some(v) => match v.trim().parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => {
+                tracing::warn!(
+                    value = %v,
+                    "ATLAS_INTHINK_TOOL_LEAK_OPENERS is set but not a u32; using default"
+                );
+                ChatLevers::OFF.in_think_leak_openers
+            }
+        },
     }
 }
 
@@ -67,6 +112,16 @@ mod tests {
     #[test]
     fn off_is_the_default() {
         assert_eq!(ChatLevers::default(), ChatLevers::OFF);
+    }
+
+    #[test]
+    fn leak_opener_threshold_parses_and_defaults() {
+        assert_eq!(in_think_leak_openers_from(None), 1);
+        assert_eq!(in_think_leak_openers_from(Some("0")), 0);
+        assert_eq!(in_think_leak_openers_from(Some("3")), 3);
+        // Unparseable → default, never a silent zero (which would disarm
+        // the guard as a side effect of a typo).
+        assert_eq!(in_think_leak_openers_from(Some("many")), 1);
     }
 
     #[test]

@@ -34,15 +34,22 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     duration_hint: "~3.5 h",
     updated: "2026-07-31",
     needs_confirmation: false,
-    // Gates B and D. B runs on whichever model the PR targets, D on the dense
-    // 27B MLPerf checkpoint — so both families are legitimate here, and only a
-    // third one is worth mentioning.
+    // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
+    // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
+    // same golden draw and a serve recipe byte-identical to the 3.6 one, so the
+    // two legs read as a generation-over-generation delta on one axis. It is
+    // UNMEASURED — its BENCH.toml entry carries no thresholds, so a run there
+    // baselines rather than gates, and it does NOT inherit 3.6's floors or the
+    // MLPerf floor: same architecture and draw, different weights.
     intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-27b", "qwen3.6-35b-a3b"],
-        note: "The BFCL gates are defined on Qwen3.6-27B (dense, gate D — the MLPerf-edge \
-               floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
-               checkpoint have no recorded baseline to beat.",
+        families: &["qwen3.6-27b", "qwen3.6-35b-a3b", "qwen3.8-27b"],
+        note: "The BFCL gates are defined on Qwen3.6-27B (dense — the MLPerf-edge floor \
+               83.64/85.32 rides on this checkpoint), Qwen3.6-35B-A3B (MoE, gate B), and \
+               Qwen3.8-27B (dense, UNMEASURED — a run there baselines rather than gates, \
+               and inherits neither 3.6's floors nor the MLPerf floor). Scores on any \
+               other checkpoint have no recorded baseline to beat.",
     }),
+    threshold_params: &[],
     ctor: || Box::new(Bfcl::new(Variant::Subset)),
 };
 
@@ -57,15 +64,22 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     duration_hint: "~12 h",
     updated: "2026-07-31",
     needs_confirmation: false,
-    // Gates B and D. B runs on whichever model the PR targets, D on the dense
-    // 27B MLPerf checkpoint — so both families are legitimate here, and only a
-    // third one is worth mentioning.
+    // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
+    // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
+    // same golden draw and a serve recipe byte-identical to the 3.6 one, so the
+    // two legs read as a generation-over-generation delta on one axis. It is
+    // UNMEASURED — its BENCH.toml entry carries no thresholds, so a run there
+    // baselines rather than gates, and it does NOT inherit 3.6's floors or the
+    // MLPerf floor: same architecture and draw, different weights.
     intended_for: Some(crate::benchmark::ModelExpectation {
-        families: &["qwen3.6-27b", "qwen3.6-35b-a3b"],
-        note: "The BFCL gates are defined on Qwen3.6-27B (dense, gate D — the MLPerf-edge \
-               floor 83.64/85.32) and Qwen3.6-35B-A3B (MoE, gate B). Scores on another \
-               checkpoint have no recorded baseline to beat.",
+        families: &["qwen3.6-27b", "qwen3.6-35b-a3b", "qwen3.8-27b"],
+        note: "The BFCL gates are defined on Qwen3.6-27B (dense — the MLPerf-edge floor \
+               83.64/85.32 rides on this checkpoint), Qwen3.6-35B-A3B (MoE, gate B), and \
+               Qwen3.8-27B (dense, UNMEASURED — a run there baselines rather than gates, \
+               and inherits neither 3.6's floors nor the MLPerf floor). Scores on any \
+               other checkpoint have no recorded baseline to beat.",
     }),
+    threshold_params: &[],
     ctor: || Box::new(Bfcl::new(Variant::Full)),
 };
 
@@ -89,5 +103,6 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
                high-water). The dense 27B is gated on the golden n=995 draw instead — do not \
                cross the two, the category mix alone moves normalized by ~1.8 points.",
     }),
+    threshold_params: &[],
     ctor: || Box::new(Bfcl::new(Variant::SubsetEcholp)),
 };

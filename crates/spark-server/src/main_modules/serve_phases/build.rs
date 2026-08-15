@@ -74,7 +74,7 @@ pub(crate) fn build_model(
         if args.dflash {
             args.dflash_gamma.saturating_sub(1).max(1)
         } else {
-            args.num_drafts
+            args.resolved_num_drafts()
         },
         kv_dtype,
         inference_reserve,

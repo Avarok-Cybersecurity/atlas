@@ -286,12 +286,12 @@ pub struct ReasoningConfig {
 pub struct ChatTemplateKwargs {
     pub enable_thinking: Option<bool>,
     pub thinking_budget: Option<u32>,
+    /// Qwen3.6+ dense-family template flag: keep historical `<think>`
+    /// blocks in re-rendered assistant turns. Absent = defer to the
+    /// MODEL.toml `[behavior].preserve_thinking` override, then to the
+    /// model template's own default.
+    pub preserve_thinking: Option<bool>,
 }
-
-/// Default thinking budget when thinking is enabled but no explicit budget set.
-/// 256 tokens is enough for the model to plan without overthinking — longer
-/// budgets waste decode throughput on reasoning that rarely improves output.
-const DEFAULT_THINKING_BUDGET: u32 = 256;
 
 impl ChatCompletionRequest {
     fn requested_reasoning_effort(&self) -> Option<&str> {
@@ -304,7 +304,8 @@ impl ChatCompletionRequest {
     pub fn client_reasoning_effort(&self) -> Option<crate::ir::ReasoningEffort> {
         match self.requested_reasoning_effort()? {
             "none" => None,
-            "minimal" | "low" | "medium" => Some(crate::ir::ReasoningEffort::Low),
+            "minimal" | "low" => Some(crate::ir::ReasoningEffort::Low),
+            "medium" => Some(crate::ir::ReasoningEffort::Medium),
             "high" => Some(crate::ir::ReasoningEffort::High),
             "xhigh" | "max" => Some(crate::ir::ReasoningEffort::Max),
             _ => None,
@@ -345,8 +346,8 @@ impl ChatCompletionRequest {
             }
             // Anthropic "adaptive" / thinking object with no explicit budget
             // means "think as long as needed" — defer to the per-model
-            // `max_thinking_budget` (budget: None), NOT the conservative
-            // 256-token DEFAULT_THINKING_BUDGET. A hard 256 cut force-injects
+            // `max_thinking_budget` (budget: None), NOT a conservative
+            // hardcoded default. A hard 256-class cut force-injects
             // </think> mid-reasoning on agentic turns and wrecks tool
             // selection. Mirrors the step-5 enable_thinking path below.
             return ThinkingDirective::On { budget: None };
@@ -370,21 +371,23 @@ impl ChatCompletionRequest {
         // request to the server/model default — including `"none"`,
         // which must force thinking OFF.
         if let Some(effort) = self.requested_reasoning_effort() {
-            let budget = match effort {
-                "none" => 0,
-                "minimal" => 64,
-                "low" => 128,
-                "medium" => 256,
-                "high" => 512,
-                "xhigh" | "max" => 1024,
-                _ => DEFAULT_THINKING_BUDGET,
-            };
-            return if budget > 0 {
-                ThinkingDirective::On {
-                    budget: Some(budget),
-                }
-            } else {
-                ThinkingDirective::Off
+            use crate::ir::EffortLevel;
+            // Kept SYMBOLIC: the token budget for an effort level is
+            // server policy, resolved in `api/chat/thinking.rs` against
+            // the model's effective `max_thinking_budget` so MODEL.toml
+            // and `--max-thinking-budget` reach it. The old absolute
+            // ladder here (64/128/256/512/1024) silently capped every
+            // effort-sending client at 256-class budgets no matter what
+            // the operator configured.
+            return match effort {
+                "none" => ThinkingDirective::Off,
+                "minimal" => ThinkingDirective::OnEffort(EffortLevel::Minimal),
+                "low" => ThinkingDirective::OnEffort(EffortLevel::Low),
+                "high" => ThinkingDirective::OnEffort(EffortLevel::High),
+                "xhigh" | "max" => ThinkingDirective::OnEffort(EffortLevel::XHigh),
+                // "medium" and unknown strings both resolved to 256 —
+                // exactly the Medium rung — before the symbolic switch.
+                _ => ThinkingDirective::OnEffort(EffortLevel::Medium),
             };
         }
 
@@ -401,8 +404,8 @@ impl ChatCompletionRequest {
             }
             if let Some(enabled) = kwargs.enable_thinking {
                 // enable_thinking via chat_template_kwargs: defer the budget
-                // to the per-model max_thinking_budget (None) rather than the
-                // conservative 256-token DEFAULT — same rationale as the
+                // to the per-model max_thinking_budget (None) rather than a
+                // conservative hardcoded 256 — same rationale as the
                 // legacy branch below. Without this, a server default of
                 // '{"enable_thinking":true}' silently capped EVERY request's
                 // thinking at 256.
@@ -420,7 +423,7 @@ impl ChatCompletionRequest {
         // fall through to Unspecified so clients that don't know this flag
         // inherit the model's design intent. `budget: None` so
         // `api/chat/thinking.rs` uses the per-model MODEL.toml cap rather than
-        // the conservative DEFAULT_THINKING_BUDGET (opencode-style clients
+        // a conservative hardcoded default (opencode-style clients
         // otherwise hit a 256-token mid-sentence cut on thinking-tier models).
         if let Some(enabled) = self.enable_thinking {
             return if enabled {

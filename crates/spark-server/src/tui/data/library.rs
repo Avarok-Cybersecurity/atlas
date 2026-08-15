@@ -23,7 +23,9 @@ pub struct LibraryEntry {
     pub heads: usize,
     pub experts: usize,
     pub context: usize,
-    /// A compiled kernel target matches this model's (model_type, hidden).
+    /// A compiled kernel target resolves UNAMBIGUOUSLY for this model's
+    /// (model_type, hidden) + HF id. False also when targets exist but the
+    /// tie-break fails — serving the entry as-is would refuse.
     pub optimized: bool,
 }
 
@@ -131,8 +133,19 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
                     q.quant_algo.to_lowercase()
                 };
             }
-            entry.optimized =
-                atlas_kernels::ptx_for_config(&cfg.model_type, cfg.hidden_size).is_some();
+            // The HF id is the reference the tie-break matches against for
+            // config-identical checkpoints (Qwen3.6-27B vs Qwen3.8-27B).
+            // An ambiguity error is shown as un-optimized: serving this
+            // entry as-is WOULD refuse, which is what the flag reports.
+            entry.optimized = matches!(
+                atlas_kernels::ptx_for_config(
+                    &cfg.model_type,
+                    cfg.hidden_size,
+                    &[entry.id.as_str()],
+                    None,
+                ),
+                Ok(Some(_))
+            );
         }
         out.push(entry);
     }

@@ -77,8 +77,38 @@ pub fn print_schema(id: &str, format: OutputFormat) -> Result<()> {
         println!("  defined on   {}", expect.families.join(" | "));
         println!("  {}\n", expect.note);
     }
+    print_variants(descriptor.id);
     print_specs(&specs);
     Ok(())
+}
+
+/// The benchmark's model variants, from its assembled baseline — the values
+/// `--checkpoint` accepts, so the reader is not left to grep BENCH.toml for
+/// them. Prints nothing outside a checkout or for a benchmark with no baseline
+/// entries; the `defined on` families above still describe those.
+fn print_variants(benchmark_id: &str) {
+    let Ok(root) = super::bench_run::repo_root() else {
+        return;
+    };
+    let Ok(baseline) = atlas_plugin::gate::read_baseline(&root, benchmark_id) else {
+        return;
+    };
+    for (hardware, hw) in &baseline.hardware {
+        for (checkpoint, entry) in &hw.models {
+            let default = if *checkpoint == hw.default {
+                "  (default — runs when no --checkpoint is passed)"
+            } else {
+                "  (select with --checkpoint under --pull-request-gate)"
+            };
+            let label = if entry.label.is_empty() {
+                String::new()
+            } else {
+                format!("  — {}", entry.label)
+            };
+            println!("  variant [{hardware}]  {checkpoint}{label}{default}");
+        }
+    }
+    println!();
 }
 
 fn print_specs(specs: &[ParamSpec]) {

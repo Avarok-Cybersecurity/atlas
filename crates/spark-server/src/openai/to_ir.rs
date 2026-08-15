@@ -74,6 +74,10 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
     fn from(req: ChatCompletionRequest) -> Self {
         let thinking = req.client_thinking_directive();
         let reasoning_effort = req.client_reasoning_effort();
+        let preserve_thinking = req
+            .chat_template_kwargs
+            .as_ref()
+            .and_then(|kw| kw.preserve_thinking);
         let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
         // Logit bias: OpenAI's string-keyed map → typed pairs. Keys that
         // don't parse as token ids are dropped (historical behavior).
@@ -117,6 +121,7 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
             response_format,
             thinking,
             reasoning_effort,
+            preserve_thinking,
             repetition_detection: req.repetition_detection,
             adapter: req.adapter,
             src_lang: req.src_lang,

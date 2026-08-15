@@ -79,8 +79,19 @@ impl ArtifactStore {
 ///
 /// Returns `true` when the file was written.
 pub fn write_asset(dir: &Path, name: &str, contents: &str) -> Result<bool> {
+    write_asset_bytes(dir, name, contents.as_bytes())
+}
+
+/// [`write_asset`] for assets that are not text.
+///
+/// Same contract — compare content, write only on a difference, return whether
+/// it wrote — but over bytes, because `read_to_string` fails on any file that
+/// is not valid UTF-8 and would therefore report every binary asset as
+/// "differs" and rewrite it on each `load()`, churning mtimes that downstream
+/// stamps depend on. The vision benchmark provisions PNGs.
+pub fn write_asset_bytes(dir: &Path, name: &str, contents: &[u8]) -> Result<bool> {
     let path = dir.join(name);
-    if let Ok(existing) = std::fs::read_to_string(&path)
+    if let Ok(existing) = std::fs::read(&path)
         && existing == contents
     {
         return Ok(false);

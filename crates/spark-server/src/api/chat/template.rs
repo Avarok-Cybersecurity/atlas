@@ -34,6 +34,7 @@ pub(super) fn render_template(
     enable_thinking: bool,
     thinking_budget: Option<u32>,
     reasoning_effort: Option<crate::ir::ReasoningEffort>,
+    preserve_thinking: Option<bool>,
     tools_active: bool,
 ) -> Result<TemplateOut, Response> {
     // Use closed thinking when client doesn't explicitly enable it.
@@ -76,6 +77,7 @@ pub(super) fn render_template(
                 template_thinking,
                 state.behavior.disable_tool_steering,
                 reasoning_effort.map(crate::ir::ReasoningEffort::as_str),
+                preserve_thinking,
             )
             .map(|t| t.len())
             .unwrap_or(0);
@@ -94,6 +96,7 @@ pub(super) fn render_template(
         template_thinking,
         state.behavior.disable_tool_steering,
         reasoning_effort.map(crate::ir::ReasoningEffort::as_str),
+        preserve_thinking,
     ) {
         Ok(t) => t,
         Err(e) => {
@@ -275,6 +278,7 @@ mod json_message_tests {
         let out = super::super::msg_entry::build_msg_entries(
             None,
             None,
+            &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &msgs,
             true,
             &crate::api::chat::levers::ChatLevers::OFF,
