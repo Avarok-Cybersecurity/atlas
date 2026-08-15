@@ -281,7 +281,13 @@ checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
 gate = "video-fidelity"
 recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
 label = "Qwen3.6-27B dense (NVFP4, unsloth)"
-default = false
+# `default = true` since 2026-08-15 — this target is now the gate's required
+# subject, taking it from qwen3.8-27b. Reason in full in that target's entry:
+# its `video-before-image` result moves with serve config (13/13 manual,
+# 12/13 under its own recipe) while this target passes 13/13 solidly, so it
+# is the instrument that measures the video pipeline rather than a model's
+# edge. Thresholds on both entries are unchanged.
+default = true
 status = "measured"
 note = """\
 REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \

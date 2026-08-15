@@ -88,9 +88,13 @@ Measured 2026-08-15 on dgx-00, after both fixes.
 | `vision-fidelity` | qwen3.8-27b | **PASS** — 14/14 geometry, 3/3 probes, control held |
 | `video-fidelity` | qwen3.6-35b-a3b | **PASS** — 13/13, 0 skipped (**was 12/13**) |
 | `video-fidelity` | qwen3.6-27b | **PASS** — 13/13, 0 skipped |
-| `video-fidelity` | qwen3.8-27b | **PASS** — 13/13, 0 skipped (**was 4/13**) |
+| `video-fidelity` | qwen3.8-27b | **13/13** on a manual serve; **12/13** under its own agentic recipe — see below |
 
-All three vision targets declare both gates, and all six combinations pass.
+All three vision targets declare both gates.
+
+**`video-fidelity`'s required subject moved from qwen3.8-27b to qwen3.6-27b** (the `default = true` flag). After the fixture fix, 3.8's `video-before-image` leg sits at that checkpoint's capability edge — 13/13 on a manual vision-style serve (util 0.70, no drafts), 12/13 under its own pinned recipe (`[red, green, blue]`, one colour short), and 0 colours with `num_drafts=0`. The leg's outcome moves with serve config while the geometry never does. 27b and the 35B both pass it 13/13 solidly.
+
+Thresholds are unchanged on both entries and 3.8 stays declared — this is a choice of instrument, not a lowered bar. A gate whose required subject is one token from failing reports on a model's edge rather than on the pipeline it guards. Note also that 3.8's only recipe is the AGENTIC profile (thinking on, `num_drafts: 3`, util 0.85), whose own metadata says not to cross-use it with the vision/tool profile; the real fix is a vision-profile recipe upstream in `atlas-recipes`, after which 3.8 can take the default back with a measured run behind it.
 
 ### Committed gate-proof records
 

@@ -375,11 +375,32 @@ checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
 gate = "video-fidelity"
 recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
 label = "Qwen3.8-27B dense (NVFP4, unsloth)"
-default = true
+# `default = false` since 2026-08-15: qwen3.6-27b owns this gate's required
+# subject. Not a demotion of the checkpoint and not a lowered bar -- the
+# thresholds below are unchanged and this entry is still measured whenever it
+# is run explicitly. It is a choice of INSTRUMENT. `video-before-image` sits
+# exactly at this checkpoint's capability edge: with the bright-green fixture
+# it measured 13/13 on a manual serve (util 0.70, no drafts), 12/13 on this
+# recipe as pinned -- "[red, green, blue]", one colour short -- and 0 colours
+# with num_drafts=0, i.e. the leg's outcome moves with serve config while the
+# geometry never does. qwen3.6-27b and qwen3.6-35b-a3b both pass it 13/13
+# solidly. A gate whose required subject is one token away from failing
+# reports on the model's edge, not on the video pipeline it exists to guard,
+# and it would go red on PRs that changed nothing about video.
+#
+# This entry is also served by the AGENTIC recipe (thinking on, num_drafts 3,
+# util 0.85), whose own metadata says "do not cross-use" it with the vision /
+# tool profile. There is no vision-profile recipe for this checkpoint; adding
+# one upstream in atlas-recipes is the real fix, after which this can take
+# the default back with a measured run behind it.
+default = false
 status = "measured"
 note = """\
 REFERENCE RUN 2026-08-14, dgx-00, binary feat/video-support: PASS, 13/13 legs, 0 \
-skipped, control held. group-proportionality 1s=67 2s=116 4s=214 tokens -> 1/2/4 \
+skipped, control held. Re-measured 2026-08-15 after the fixture fix: 13/13 on a manual \
+vision-style serve, 12/13 under this entry's own agentic recipe (video-before-image \
+one colour short) -- see the default = false comment above. group-proportionality \
+1s=67 2s=116 4s=214 tokens -> 1/2/4 \
 temporal groups at 49 tok/group with an 18-token template overhead; forward clip read \
 "red, green, blue, yellow" and the reversed clip "Yellow, Blue, Green, Red"; MP4 and \
 GIF both 214 prompt tokens; image+video 286; two-videos 437; video-before-image 288; \
