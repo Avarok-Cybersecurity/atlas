@@ -64,17 +64,58 @@ pub fn cublas_fp8_proj(
     )
 }
 
+/// `(weight, scale)` verbatim when `fp8w` is ALREADY the row-wise pair the
+/// cuBLASLt row-wise GEMM wants, else `None`.
+///
+/// Pure, and split out from the GPU path so the invariant is testable on a
+/// CPU-only runner: the whole claim is "a row-wise checkpoint is passed
+/// through untouched", and that is a decision about a tag, not about a device.
+pub(super) fn rowwise_pair_passthrough(
+    fp8w: &crate::weight_map::Fp8Weight,
+) -> Option<(u64, u64)> {
+    use crate::weight_map::WeightQuantFormat;
+    (fp8w.scale_format == WeightQuantFormat::Fp8PerRow).then_some((fp8w.weight.0, fp8w.row_scale.0))
+}
+
 /// Re-quantize a block-scaled FP8 weight `[N,K]` → ROW-WISE FP8 (E4M3 + per-row
 /// FP32 scale `[N]`) on-GPU once, cached by the FP8 weight pointer. Path:
 /// block-fp8 → BF16 (transient) → row-wise fp8. Backs the GB10-supported
 /// `cublas_fp8_rowwise_proj`. Returns `(fp8_weight_ptr, per_row_scale_ptr)`.
+///
+/// A weight that is ALREADY row-wise returns its own pointers untouched — see
+/// the early return, which is the whole point of the `scale_format` tag here.
 fn requant_weight_rowwise_fp8_cached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     derived: &super::DerivedWeights,
     fp8w: &crate::weight_map::Fp8Weight,
     stream: u64,
 ) -> anyhow::Result<(u64, u64)> {
+    use crate::weight_map::WeightQuantFormat;
     use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+
+    // ── Already row-wise: nothing to do, and nothing to lose ──────────────
+    //
+    // A mixed-precision compressed-tensors checkpoint (e.g.
+    // unsloth/Qwen3.8-27B-NVFP4, `format = mixed-precision`) ships its
+    // attention and GDN projections as FP8 E4M3 with a PER-CHANNEL scale —
+    // which is exactly `(weight, [N] f32)`, the pair this function exists to
+    // produce. Converting it would mean fp8 → bf16 → fp8, losing precision to
+    // manufacture something it already is.
+    //
+    // Without this arm those checkpoints take the loader's fallback instead:
+    // dequant to BF16 and RE-quantise to NVFP4, i.e. 8-bit weights served at
+    // 4 bits. Measured on the video benchmark's hardest leg, that fallback
+    // answered "Red, Blue" where the natively-loaded FP8 build of the same
+    // weights managed "Red, Blue, Yellow".
+    if let Some(pair) = rowwise_pair_passthrough(fp8w) {
+        return Ok(pair);
+    }
+    // The conversion below reads `row_scale` as a `[N/128, K/128]` FP32 grid.
+    // Anything else here is a caller bug, and a silent one — the buffer is
+    // smaller than the grid, so it reads in-bounds garbage rather than
+    // faulting. Assert instead.
+    fp8w.scale_format
+        .expect(WeightQuantFormat::Fp8BlockScaled, "rowwise-fp8 requant");
     let cache_key = fp8w.weight.0;
     if let Some(hit) = derived.get_pair(super::Derivation::RowwiseFp8, cache_key) {
         return Ok(hit);
@@ -401,4 +442,52 @@ pub fn cutlass_nvfp4_proj_from_fp8(
     spark_runtime::cutlass::nvfp4_gemm_bf16_act_weight_t(
         act.0, packed_t, scale_t, 1.0, out.0, m, n, k, stream,
     )
+}
+
+#[cfg(test)]
+mod rowwise_passthrough_tests {
+    use super::rowwise_pair_passthrough;
+    use crate::weight_map::{Fp8Weight, WeightQuantFormat};
+    use spark_runtime::gpu::DevicePtr;
+
+    fn weight(scale_format: WeightQuantFormat) -> Fp8Weight {
+        Fp8Weight {
+            weight: DevicePtr(0xBEEF),
+            row_scale: DevicePtr(0x5CA1E),
+            n: 4096,
+            k: 5120,
+            scale_format,
+        }
+    }
+
+    /// ★ The point of the change: a checkpoint that already ships per-row
+    /// scales is handed to the row-wise GEMM untouched. Converting it would be
+    /// fp8 -> bf16 -> fp8, spending precision to produce what it already is.
+    #[test]
+    fn an_already_rowwise_weight_passes_through_verbatim() {
+        let w = weight(WeightQuantFormat::Fp8PerRow);
+        assert_eq!(
+            rowwise_pair_passthrough(&w),
+            Some((w.weight.0, w.row_scale.0)),
+            "the checkpoint's own pointers, not a converted copy"
+        );
+    }
+
+    /// Every other format still takes the requant path — in particular
+    /// block-scaled, which is what every current caller carries.
+    #[test]
+    fn other_formats_still_requantize() {
+        for f in [
+            WeightQuantFormat::Fp8BlockScaled,
+            WeightQuantFormat::Fp8SingleScale,
+            WeightQuantFormat::Bf16,
+            WeightQuantFormat::Nvfp4,
+        ] {
+            assert_eq!(
+                rowwise_pair_passthrough(&weight(f)),
+                None,
+                "{f:?} is not a row-wise pair and must not be passed through"
+            );
+        }
+    }
 }
