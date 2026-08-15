@@ -101,6 +101,36 @@ fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
     );
 }
 
+/// ★ The decode-floor candidate: engine and kernel paths accrue debt, its own
+/// single-FILE driver accrues debt (the pins are the benchmark), and the
+/// usage-plumbing its accept pin reads is engine code under `crates`, so it
+/// accrues too. Another driver's directory owes nothing — pinned for the
+/// file-driver shape specifically, since the other candidates' own-driver
+/// tests all use directory drivers.
+#[test]
+fn the_decode_floor_candidate_accrues_debt_like_a_gate() {
+    assert!(
+        coverage::PROMOTION_CANDIDATES
+            .iter()
+            .any(|g| g.id == "decode-floor"),
+        "the decode-floor candidate must be registered"
+    );
+    for path in [
+        "crates/spark-server/src/scheduler/mod.rs",
+        "kernels/gb10/common/paged_decode_attn_fp8.cu",
+        "crates/spark-server/src/openai/encode_stream.rs",
+        "crates/atlas-plugin/src/benchmarks/decode_floor.rs",
+    ] {
+        let owed = coverage::promotion_debt([path]);
+        assert!(owed.contains(&"decode-floor"), "{path} must owe: {owed:?}");
+    }
+    assert!(
+        !coverage::promotion_debt(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"])
+            .contains(&"decode-floor"),
+        "the BFCL driver cannot change the decode rate"
+    );
+}
+
 /// Candidate exclusions are held to the same bar as required-gate exclusions:
 /// a written rationale, a prefix that exists, and a prefix that is actually on
 /// the boundary (an off-boundary exclusion is a rule with no effect).

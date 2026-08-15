@@ -86,6 +86,29 @@ pub fn percentile(values: &[f64], p: u32) -> Option<f64> {
     Some(sorted[idx.min(n - 1)])
 }
 
+/// True median: middle element for odd `n`, mean of the two middle elements
+/// for even `n`.
+///
+/// ★ NOT `percentile(values, 50)`. The nearest-rank rule above computes
+/// `idx = int(n*0.5 + 0.5)`, which for n=3 is index 2 — the MAXIMUM of three
+/// samples, not the middle one. A "median of 3 runs" metric built on it would
+/// quietly report the best run. Kept separate rather than fixing `percentile`
+/// because the percentile rule is pinned bit-compatible with the Python
+/// harness the recorded sweeps came from.
+pub fn median(values: &[f64]) -> Option<f64> {
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("filtered to finite"));
+    let n = sorted.len();
+    Some(if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    })
+}
+
 /// p50 / p90 / p99 in one pass over the same sorted view.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Percentiles {
