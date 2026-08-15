@@ -470,18 +470,22 @@ fn tojson_filter_default_compact_hf_ref_opt_in() {
         "default tojson must be COMPACT (ST-995 GDN irrelevance fix)\ngot:\n{got_default}\n"
     );
 
-    // OPT-IN (ATLAS_USE_HF_REF_JSON_DUMPS=1): spaced, byte-parity with Python
-    // `json.dumps(..., ensure_ascii=False, sort_keys=False)` — the #90 / HF
-    // reference serialization (len 234). SAFETY: this is the only test that
-    // reads this env var; it is set and cleared within this scope.
-    unsafe {
-        std::env::set_var("ATLAS_USE_HF_REF_JSON_DUMPS", "1");
-    }
-    let env_hf = super::jinja_helpers::build_jinja_env("{{ tool | tojson }}")
-        .expect("inline template compiles");
-    unsafe {
-        std::env::remove_var("ATLAS_USE_HF_REF_JSON_DUMPS");
-    }
+    // OPT-IN (ATLAS_USE_HF_REF_JSON_DUMPS=1 in production): spaced, byte-parity
+    // with Python `json.dumps(..., ensure_ascii=False, sort_keys=False)` — the
+    // #90 / HF reference serialization (len 234).
+    //
+    // Requested EXPLICITLY, not via `set_var`. The earlier version of this test
+    // set the env var around this render and claimed in a SAFETY note that it
+    // was "the only test that reads this env var". That was false: every
+    // `build_jinja_env` call reads it, 13 of them from tests, and the harness
+    // runs tests as threads in ONE process — so this window silently flipped
+    // other tests' renders to spaced. It broke `qwen_dense_parity` under
+    // `cargo llvm-cov` while `cargo test` stayed green on the same commit.
+    let env_hf = super::jinja_helpers::build_jinja_env_with(
+        "{{ tool | tojson }}",
+        super::jinja_helpers::ToolJsonStyle::HfSpaced,
+    )
+    .expect("inline template compiles");
     let spaced = "{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Execute a bash command\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"The command to run\"}}, \"required\": [\"command\"]}}}";
     let got_hf = env_hf
         .get_template("chat")
