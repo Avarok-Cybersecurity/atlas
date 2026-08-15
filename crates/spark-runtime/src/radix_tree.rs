@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
+mod lookup;
 mod snapshot;
 mod snapshot_insert;
 mod snapshot_stats;
@@ -79,64 +80,24 @@ impl PrefixCache for RadixTree {
         session_hash: u64,
         adapter_id: u64,
     ) -> PrefixMatch {
-        // Phase 1: walk tree (lock inner, then release)
-        let (matched_blocks, matched_disk_block_ids, matched_tokens) = {
-            let mut inner = self.inner.lock();
-            let (blocks, disk, matched) = inner.walk(tokens, block_size, adapter_id);
-            if matched > 0 {
-                inner.inc_refs(tokens, block_size, matched, adapter_id);
-                crate::prefix_cache::record_cache_hit(matched);
-            } else {
-                crate::prefix_cache::record_cache_miss();
-            }
-            (blocks, disk, matched)
-        };
-        // Phase 2: snapshot lookup (lock snapshot_index, inner NOT held).
-        // Tier-aware: `lookup_tiered` returns the deepest anchor across resident
-        // AND spilled entries. A resident hit populates `ssm_snapshot` (restore
-        // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
-        // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
-        // byte-identical to the old resident-only lookup.
-        let mut ssm_snapshot = None;
-        let mut ssm_snapshot_tokens = 0;
-        let mut ssm_snapshot_tier_key = None;
-        let mut ssm_snapshot_tier_tokens = 0;
-        let mut ssm_snapshot_is_tail = false;
-        if matched_tokens > 0 {
-            let mut idx = self.snapshot_index.lock();
-            if let Some(m) = idx.lookup_tiered(tokens, matched_tokens, session_hash, adapter_id) {
-                ssm_snapshot_is_tail = m.is_tail;
-                match m.loc {
-                    snapshot::SnapLoc::Hbm(slot) => {
-                        ssm_snapshot = Some(slot);
-                        ssm_snapshot_tokens = m.token_count;
-                    }
-                    snapshot::SnapLoc::Tier(key) => {
-                        ssm_snapshot_tier_key = Some(key);
-                        ssm_snapshot_tier_tokens = m.token_count;
-                    }
-                }
-            }
-        }
-        // Filter disk_block_ids to MAX-free entries when HSS isn't in use, so
-        // the caller can check `!matched_disk_block_ids.is_empty()` as the
-        // HSS-engaged signal. When HSS *is* in use every entry should be a
-        // valid disk_id (not MAX).
-        let matched_disk_block_ids = if matched_disk_block_ids.iter().all(|&id| id == u32::MAX) {
-            Vec::new()
+        let m = self.lookup_uncounted(tokens, block_size, session_hash, adapter_id);
+        if m.matched_tokens > 0 {
+            crate::prefix_cache::record_cache_hit(m.matched_tokens);
         } else {
-            matched_disk_block_ids
-        };
-        PrefixMatch {
-            matched_blocks,
-            matched_disk_block_ids,
-            matched_tokens,
-            ssm_snapshot,
-            ssm_snapshot_tokens,
-            ssm_snapshot_tier_key,
-            ssm_snapshot_tier_tokens,
-            ssm_snapshot_is_tail,
+            crate::prefix_cache::record_cache_miss();
         }
+        m
+    }
+
+    fn lookup_paired(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> PrefixMatch {
+        let m = self.lookup_uncounted(tokens, block_size, session_hash, adapter_id);
+        self.pair_or_miss(tokens, block_size, adapter_id, m)
     }
 
     fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize, adapter_id: u64) -> usize {

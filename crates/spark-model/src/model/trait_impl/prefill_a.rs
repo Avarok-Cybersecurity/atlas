@@ -81,8 +81,7 @@ impl TransformerModel {
         let prefix_match = if self.tokens_have_vision_pad(tokens) {
             spark_runtime::prefix_cache::PrefixMatch::empty()
         } else {
-            self.prefix_cache
-                .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+            self.lookup_prefill_prefix(tokens, bs, seq.session_hash, seq.adapter_id)
         };
         let mut kv_write_start = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = prefix_match.matched_tokens;
@@ -146,9 +145,10 @@ impl TransformerModel {
             if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
                 && snap_tok > 0
                 && kv_write_start <= n
-                && self
-                    .ssm_snapshots
-                    .session_matches(snap_id, seq.session_hash)
+                && (!prefix_match.ssm_snapshot_is_tail
+                    || self
+                        .ssm_snapshots
+                        .session_matches(snap_id, seq.session_hash))
             {
                 self.ssm_snapshots.restore(
                     snap_id,
@@ -189,7 +189,14 @@ impl TransformerModel {
                 };
                 true
             } else {
-                if kv_write_start > 0 {
+                if kv_write_start > 0 && self.config.num_ssm_layers() > 0 {
+                    tracing::info!(
+                        "Prefix cache miss: {} KV tokens ({} blocks) SSM snapshot not restorable — full prefill",
+                        kv_write_start,
+                        prefix_match.matched_blocks.len(),
+                    );
+                    kv_write_start = 0;
+                } else if kv_write_start > 0 {
                     tracing::info!(
                         "Prefix cache hit: {} tokens ({} blocks) reused (KV only)",
                         kv_write_start,
@@ -201,11 +208,11 @@ impl TransformerModel {
         } else {
             let has_ssm_layers = self.config.num_ssm_layers() > 0;
             if kv_write_start > 0 && has_ssm_layers {
-                // SSM models: can't reuse KV without SSM snapshot — the SSM state
-                // is recomputed from scratch, producing different hidden states than
-                // what originally populated the cached KV blocks. Force full KV rewrite.
+                // lookup_paired already demoted an unrestorable KV walk.
+                // Force full KV rewrite so shared prefix blocks are not reused
+                // without a bit-identical SSM restore.
                 tracing::info!(
-                    "Prefix cache hit: {} tokens ({} blocks) but no SSM snapshot — recomputing all KV",
+                    "Prefix cache miss: {} KV tokens ({} blocks) without a restorable SSM snapshot at that length — full prefill",
                     kv_write_start,
                     prefix_match.matched_blocks.len(),
                 );

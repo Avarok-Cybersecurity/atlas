@@ -50,8 +50,7 @@ impl TransformerModel {
                 } else if let Some(prefix_match) = reserved_match {
                     prefix_match
                 } else {
-                    self.prefix_cache
-                        .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+                    self.lookup_prefill_prefix(tokens, bs, seq.session_hash, seq.adapter_id)
                 };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
@@ -82,7 +81,7 @@ impl TransformerModel {
                 if agreed < prefix_match.matched_tokens {
                     self.prefix_cache.release(tokens, bs, seq.adapter_id);
                     if agreed > 0 {
-                        prefix_match = self.prefix_cache.lookup(
+                        prefix_match = self.lookup_prefill_prefix(
                             &tokens[..agreed],
                             bs,
                             seq.session_hash,
@@ -99,6 +98,25 @@ impl TransformerModel {
                     tracing::debug!(
                         "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} (no cap)"
                     );
+                }
+                // Hybrid re-pair at `agreed` can drop further (no SSM at that
+                // length). A second min keeps ranks from diverging: anyone
+                // still above the new min releases and misses.
+                if self.config.num_ssm_layers() > 0 {
+                    let local2 = prefix_match.matched_tokens as u32;
+                    let agreed2 = self.ep_min_u32(local2)? as usize;
+                    if agreed2 < prefix_match.matched_tokens {
+                        self.prefix_cache.release_matched(
+                            tokens,
+                            bs,
+                            prefix_match.matched_tokens,
+                            seq.adapter_id,
+                        );
+                        prefix_match = PrefixMatch::empty();
+                        tracing::info!(
+                            "F83 EP-cache-sync: hybrid re-pair miss local={local2} agreed={agreed2}"
+                        );
+                    }
                 }
             }
             let matched = prefix_match.matched_tokens;
@@ -300,17 +318,21 @@ impl TransformerModel {
                 );
             }
             let has_ssm = self.config.num_ssm_layers() > 0;
-            if matched > 0 && !skip && has_ssm {
+            if matched > 0 && !skip && has_ssm && prefix_match.paired_ssm_tokens(bs).is_none() {
                 tracing::info!(
-                    "Prefix cache hit: {} tokens ({} blocks) but no SSM snapshot — recomputing all KV",
+                    "Prefix cache miss: {} KV tokens ({} blocks) without a restorable \
+                     SSM snapshot at that length — full prefill",
                     matched,
                     prefix_match.matched_blocks.len(),
                 );
-            } else if matched > 0 && !skip {
-                // F82 (2026-04-30): non-SSM cache-hit skip path.
+            } else if matched > 0 && !skip && !has_ssm {
+                // F82 (2026-04-30): attention-only cache-hit skip.
+                // Hybrid/GDN must not take this path: a paired snapshot that
+                // we chose not to restore (exact-leaf bypass) still needs a
+                // full prefill. KV-only skip + unrestored SSM is fast-and-wrong.
                 skip = true;
                 tracing::info!(
-                    "Prefix cache hit: {} tokens ({} blocks) reused (F82+F83: non-SSM cache-hit skip)",
+                    "Prefix cache hit: {} tokens ({} blocks) reused (F82+F83: attention-only skip)",
                     matched,
                     prefix_match.matched_blocks.len(),
                 );
