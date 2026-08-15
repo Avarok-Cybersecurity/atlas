@@ -245,9 +245,36 @@ impl Benchmark for VideoFidelity {
                  enough that a reply is not truncated mid-sequence. Keep it well above the \
                  model's thinking budget if you re-enable thinking, or a reasoning block \
                  consumes the whole budget and returns empty content that reads as a video \
-                 failure and is not one.",
+                 failure and is not one. The same trap has a thinking-OFF form, which is \
+                 why the default is 320 and not the 120 it was: a cell that sends TWO \
+                 media items can provoke a preamble the single-item cells never see, and \
+                 a budget that truncates the preamble truncates the answer with it.",
                 ParamKind::Int { min: 16, max: 2048 },
-                ParamValue::Int(120),
+                // 320, from measurement rather than taste. On qwen3.8-27B-NVFP4 the
+                // video-before-image reply needs 153 completion tokens and returned
+                // `finish_reason=length` at the old 120: with a second media item
+                // present the model stops obeying the prompt's "Only color names" and
+                // writes a preamble first, where the identical video-ONLY control
+                // answers in 8 tokens. A cap that truncates the preamble truncates the
+                // color list with it, so 120 was a latent false-FAIL and 320 removes it.
+                //
+                // It was NOT, however, what made that cell fail — raising the cap to 320
+                // changed nothing, and saying otherwise would be a tidier story than the
+                // measurement supports. The cause is SPECULATIVE DECODE. Same recipe,
+                // same override path, one variable (2026-08-15, qwen3.8-27B-NVFP4):
+                //   speculative=true  num_drafts=3 -> FAILED (3 runs, identical output,
+                //                                    at both max_tokens 120 and 320)
+                //   speculative=false num_drafts=0 -> PASS 13/13
+                //   speculative=true  + ATLAS_NO_MTP_DRAFTER_CONTEXT=1 -> FAILED
+                // At temperature 0 speculative decode is supposed to be output-identical
+                // to plain decode (the verify step accepts a draft only where it matches
+                // the target's argmax), so a greedy answer that changes when MTP is on is
+                // a verify-path divergence, not a video defect. The third leg rules out
+                // the drafter's prefill/carry context as the mechanism.
+                //
+                // Raising the cap cannot slow the well-behaved cells: every one of them
+                // stops at EOS far below even the old ceiling.
+                ParamValue::Int(320),
             ),
             ParamSpec::new(
                 "request_timeout_s",
