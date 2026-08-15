@@ -152,6 +152,7 @@ pub const TURNS: [&str; 4] = [
 ///      degenerates to a 2-token stop on qwen3_6_moe). The shared bf16head
 ///      recipe carries `disable_thinking: false` in its defaults precisely so
 ///      this override is accepted; the other gates sharing it keep thinking on.
+///
 /// Nothing under test is lost by thinking-off: the gate polices the PREFILL
 /// restore of the shared document prefix; thinking tokens are post-prefill
 /// output the template strips from replayed history.
