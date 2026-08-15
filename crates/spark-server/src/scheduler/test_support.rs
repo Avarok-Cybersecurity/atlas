@@ -98,6 +98,7 @@ pub(super) fn test_seq(
         param_body_chars_emitted: 0,
         suppress_tool_call: false,
         disable_mtp: false,
+        mtp_acct: Default::default(),
         content_started: false,
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,

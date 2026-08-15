@@ -26,9 +26,11 @@
 //! - While in Serial, re-probe MTP after [`reprobe_tokens`] emitted tokens.
 //!   While in Mtp, refresh the serial baseline after
 //!   [`serial_refresh_tokens`] (one window ≈ ≤0.3% overhead bound).
-//! - A depth-regime change (factor [`REMEASURE_DEPTH_FACTOR`]) marks the
-//!   OTHER mode's baseline stale and schedules a refresh probe instead of
-//!   wiping all state.
+//! - A depth-regime change (factor [`REMEASURE_DEPTH_FACTOR`] = 2, floor
+//!   [`REMEASURE_DEPTH_FLOOR`] = 512) marks both baselines stale and
+//!   pulls the next probe forward (one [`WINDOW_STEPS`] window). A stale
+//!   other-mode EWMA cannot win a switch. This is the shipped gate
+//!   (#337 / #344 / #242 / d6171c4), not a second gate.
 //!
 //! `ATLAS_MTP_GATE_FORCE=1` (existing) bypasses the gate entirely.
 
@@ -114,6 +116,33 @@ fn entry_pin_tokens() -> u32 {
 /// one entering sequence pins the whole (already spec-eligible) batch.
 pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
     min_post_think_emitted < entry_pin_tokens()
+}
+
+/// Existing scheduler dispatch predicate for the throughput gate — not a
+/// second gate. Standard MTP verifies during `<think>` (ForcedThinkEnd
+/// stays on that path). DFlash raw-argmax stays serial-in-think unless
+/// `ATLAS_DFLASH_SPEC_THINK=1`.
+pub fn spec_dispatch_eligible(
+    inside_thinking: bool,
+    post_think_emitted: u32,
+    output_len: u32,
+    suppress_tool_call: bool,
+    disable_mtp: bool,
+    spec_think: bool,
+    resume_guard: u32,
+    dflash_raw_argmax: bool,
+) -> bool {
+    if suppress_tool_call || disable_mtp {
+        return false;
+    }
+    if dflash_raw_argmax && !spec_think {
+        return !inside_thinking && post_think_emitted >= resume_guard;
+    }
+    if inside_thinking {
+        output_len >= resume_guard
+    } else {
+        post_think_emitted >= resume_guard
+    }
 }
 
 /// What the gate wants the scheduler to run for the NEXT step.
@@ -203,6 +232,8 @@ pub struct MtpGate {
     observed_depth: usize,
     measured_at_depth: usize,
     fresh: Option<GateDecision>,
+    /// Depth-regime changes this serve (Done-line / tests).
+    regime_reprobes: usize,
 }
 
 impl MtpGate {
@@ -253,6 +284,7 @@ impl MtpGate {
             observed_depth: 0,
             measured_at_depth: 0,
             fresh: None,
+            regime_reprobes: 0,
         }
     }
 
@@ -261,9 +293,10 @@ impl MtpGate {
     }
 
     /// Depth-regime change: mark BOTH baselines stale (economics moved) and
-    /// let the normal probe cadence refresh them — no state wipe, no forced
-    /// serial phase.
-    pub fn maybe_remeasure(&mut self, current_depth: usize) {
+    /// pull the next probe forward — no state wipe. Returns true when a
+    /// regime change fired. The early probe is one [`WINDOW_STEPS`] window
+    /// (existing test); it must not dominate a 300–1000 token think.
+    pub fn maybe_remeasure(&mut self, current_depth: usize) -> bool {
         let measured = self.measured_at_depth.max(REMEASURE_DEPTH_FLOOR);
         let live = current_depth.max(REMEASURE_DEPTH_FLOOR);
         if live >= measured * REMEASURE_DEPTH_FACTOR || measured >= live * REMEASURE_DEPTH_FACTOR {
@@ -278,6 +311,10 @@ impl MtpGate {
             self.measured_at_depth = current_depth;
             // Refresh the off-mode soon rather than waiting a full interval.
             self.tokens_since_event = self.tokens_since_event.max(self.event_interval());
+            self.regime_reprobes = self.regime_reprobes.saturating_add(1);
+            true
+        } else {
+            false
         }
     }
 
@@ -388,6 +425,17 @@ impl MtpGate {
         let (Some(mtp), Some(serial)) = (self.mtp.tps, self.serial.tps) else {
             return; // need both baselines before any switch
         };
+        // A stale other-mode EWMA is a measurement from a different depth
+        // regime. Switching onto it dumps a long think into serial for a
+        // full reprobe interval — that is the costly failure, not the
+        // one-window early probe `maybe_remeasure` already schedules.
+        let other_stale = match self.mode {
+            Mode::Mtp => self.serial.stale,
+            Mode::Serial => self.mtp.stale,
+        };
+        if other_stale {
+            return;
+        }
         let (cur, other, other_dev) = match self.mode {
             Mode::Mtp => (mtp, serial, self.serial.dev),
             Mode::Serial => (serial, mtp, self.mtp.dev),
@@ -434,6 +482,12 @@ impl MtpGate {
     }
     pub fn in_serial_mode(&self) -> bool {
         self.mode == Mode::Serial
+    }
+    pub fn regime_reprobe_count(&self) -> usize {
+        self.regime_reprobes
+    }
+    pub fn is_probing(&self) -> bool {
+        self.probing
     }
 }
 
