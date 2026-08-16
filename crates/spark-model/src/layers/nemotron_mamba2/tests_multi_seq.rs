@@ -96,6 +96,11 @@ fn run_multi_seq(
         token_ids: None,
         routed_lora_layers: None,
         midchunk_capture: None,
+        // Added on main after these tests were written (MoE-LoRA fold
+        // decision). `Fold` is the default that keeps legacy
+        // single-request call sites byte-identical, which is what a
+        // batched-decode shape test wants.
+        moe_lora_route: crate::layer::MoeLoraRoute::Fold,
     };
     let kv_config = spark_runtime::kv_cache::KvCacheConfig {
         block_size: 16,
